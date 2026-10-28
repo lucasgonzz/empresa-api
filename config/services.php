@@ -479,10 +479,22 @@ return [
      * `imagenes_inteligentes`: `tope_catalogo` son los artículos como máximo por lanzamiento de «todo el
      * catálogo» (se relanza y sigue con los que faltan) y `segundos_por_tramo` cuánto trabaja cada tramo
      * del job antes de re-encolarse (el job lo acota a 20..90 s).
+     *
+     * Respaldo por el scrape de Serper (misión medidas-sin-datos, 28/10/2026): cuando una página no se baja
+     * (403, timeout) o es un PDF, el motor le pide su texto a scrape.serper.dev (2 créditos normalmente, hasta 10
+     * en sitios difíciles). Topes de costo:
+     *   - `max_scrapes_por_articulo`: scrapes como máximo por artículo, sumando los planes (0 = apagado).
+     *   - `max_creditos_por_scrape`: créditos que se esperan como máximo por scrape. Si Serper cobra más, igual se
+     *     usa la respuesta pero queda anotado en el diagnóstico (`creditos_sobre_el_tope`).
+     *   - `creditos_estimados_por_articulo`: lo que la previa suma como costo probable de scrapes por artículo
+     *     (1,5 scrapes × 4 créditos = 6): es un promedio conservador, no un tope.
      */
     'medidas_masivas' => [
         'tope_catalogo'      => (int) env('MEDIDAS_TOPE_CATALOGO', 5000),
         'segundos_por_tramo' => (int) env('MEDIDAS_SEGUNDOS_POR_TRAMO', 50),
+        'max_scrapes_por_articulo'        => (int) env('MEDIDAS_MAX_SCRAPES_POR_ARTICULO', 3),
+        'max_creditos_por_scrape'         => (int) env('MEDIDAS_MAX_CREDITOS_POR_SCRAPE', 10),
+        'creditos_estimados_por_articulo' => (float) env('MEDIDAS_CREDITOS_ESTIMADOS_POR_ARTICULO', 6),
     ],
 
     /**

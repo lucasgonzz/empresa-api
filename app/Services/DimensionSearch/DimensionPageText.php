@@ -25,6 +25,9 @@ class DimensionPageText
     /** Máximo de caracteres de JSON-LD de una página (todos los bloques juntos). */
     const MAXIMO_JSON_LD = 8000;
 
+    /** Máximo de caracteres del texto plano de un respaldo (scrape) que se procesa. */
+    const MAXIMO_TEXTO_DE_RESPALDO = 400000;
+
     /** Tipos de código con los que se identifica un artículo en una página. */
     const CODIGO_DE_BARRAS = 'codigo_de_barras';
     const CODIGO_PROVEEDOR = 'codigo_proveedor';
@@ -118,47 +121,64 @@ class DimensionPageText
      * @param  string $html
      * @param  array  $codigos  Lista de ['codigo' => string, 'tipo' => CODIGO_*] que se buscan en el texto
      *                          (las ventanas de texto se centran en ellos). Puede ir vacía.
+     * @param  bool   $es_texto true = `$html` NO es HTML sino texto plano (lo que devuelve el respaldo por el
+     *                          scrape de Serper, también de un PDF). No se "limpian" tags y no hay metas ni
+     *                          JSON-LD: solo se acomodan los espacios y se recorta igual que el HTML
+     *                          (ventanas alrededor del código y de las palabras de ficha técnica).
+     *                          (misión medidas-sin-datos, 28/10/2026)
+     * @param  string $titulo   Solo con `$es_texto`: el título que informó el scrape (metadata), si lo hay.
      * @return string  Texto plano; '' si la página no tiene nada útil.
      */
-    public static function recortar($html, array $codigos = [])
+    public static function recortar($html, array $codigos = [], $es_texto = false, $titulo = '')
     {
         // Siempre UTF-8 válido: con bytes inválidos las regex /u devuelven null y el extracto sale vacío.
         $html   = self::a_utf8((string) $html);
         $partes = [];
 
-        if (preg_match('#<title[^>]*>(.*?)</title>#is', $html, $m)) {
-            $partes[] = 'TÍTULO: '.trim(html_entity_decode(strip_tags($m[1]), ENT_QUOTES, 'UTF-8'));
-        }
+        if ($es_texto) {
+            // Texto plano: el título (si lo hay) va como siempre y el cuerpo se usa tal cual, sin tocar tags.
+            $titulo = trim((string) preg_replace('/\s+/u', ' ', (string) $titulo));
 
-        foreach (['og:title', 'description', 'og:description', 'product:brand', 'product:weight:value', 'product:weight:units'] as $nombre) {
-            $valor = self::meta($html, $nombre);
-
-            if ($valor !== '') {
-                $partes[] = strtoupper($nombre).': '.mb_substr($valor, 0, 1500);
-            }
-        }
-
-        // JSON-LD: puede tener el código y las unidades. Se conserva como DATO, jamás se ejecuta.
-        preg_match_all('#<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>#is', $html, $ld);
-
-        $ld_total = 0;
-
-        foreach ($ld[1] as $bloque) {
-            if (!preg_match('/Product|gtin|sku/i', $bloque)) {
-                continue;
+            if ($titulo !== '') {
+                $partes[] = 'TÍTULO: '.mb_substr($titulo, 0, 300);
             }
 
-            $bloque = mb_substr(preg_replace('/\s+/u', ' ', trim($bloque)), 0, 6000);
-
-            if ($ld_total + mb_strlen($bloque) > self::MAXIMO_JSON_LD) {
-                break;
+            $texto = self::texto_de_respaldo($html);
+        } else {
+            if (preg_match('#<title[^>]*>(.*?)</title>#is', $html, $m)) {
+                $partes[] = 'TÍTULO: '.trim(html_entity_decode(strip_tags($m[1]), ENT_QUOTES, 'UTF-8'));
             }
 
-            $ld_total += mb_strlen($bloque);
-            $partes[] = 'JSON-LD: '.$bloque;
-        }
+            foreach (['og:title', 'description', 'og:description', 'product:brand', 'product:weight:value', 'product:weight:units'] as $nombre) {
+                $valor = self::meta($html, $nombre);
 
-        $texto = self::texto_plano($html);
+                if ($valor !== '') {
+                    $partes[] = strtoupper($nombre).': '.mb_substr($valor, 0, 1500);
+                }
+            }
+
+            // JSON-LD: puede tener el código y las unidades. Se conserva como DATO, jamás se ejecuta.
+            preg_match_all('#<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>#is', $html, $ld);
+
+            $ld_total = 0;
+
+            foreach ($ld[1] as $bloque) {
+                if (!preg_match('/Product|gtin|sku/i', $bloque)) {
+                    continue;
+                }
+
+                $bloque = mb_substr(preg_replace('/\s+/u', ' ', trim($bloque)), 0, 6000);
+
+                if ($ld_total + mb_strlen($bloque) > self::MAXIMO_JSON_LD) {
+                    break;
+                }
+
+                $ld_total += mb_strlen($bloque);
+                $partes[] = 'JSON-LD: '.$bloque;
+            }
+
+            $texto = self::texto_plano($html);
+        }
 
         // Ventanas [desde, hasta] (en bytes: son offsets de preg). Las del CÓDIGO van primero: el tope del
         // extracto no puede dejar afuera justo la ventana que prueba que la página es del artículo.
@@ -253,6 +273,23 @@ class DimensionPageText
         }
 
         return $unidas;
+    }
+
+    /**
+     * El texto que devolvió el respaldo (scrape de Serper, también de un PDF) listo para recortar: sin
+     * caracteres de control, con los espacios y saltos de línea colapsados, y acotado a un tamaño razonable
+     * (un PDF largo puede traer cientos de miles de caracteres y las regex de las ventanas no lo necesitan
+     * entero). NO toca `<` ni `>`: es texto, no HTML.
+     *
+     * @param  string $texto
+     * @return string
+     */
+    public static function texto_de_respaldo($texto)
+    {
+        $texto = (string) preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F]/', ' ', (string) $texto);
+        $texto = (string) preg_replace('/\s+/u', ' ', $texto);
+
+        return mb_substr($texto, 0, self::MAXIMO_TEXTO_DE_RESPALDO);
     }
 
     /**

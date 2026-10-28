@@ -107,6 +107,12 @@ class ArticleDimensionSearchEngine
     const PROCESO_SERPER = 'medidas_busqueda';
     const PROCESO_IA     = 'busqueda_medidas';
 
+    /**
+     * Dominios en los que NO se gasta un scrape (redes sociales y sitios que no traen fichas técnicas): el
+     * dominio exacto o cualquier subdominio. `pinterest.*` se resuelve en dominio_sin_utilidad().
+     */
+    const DOMINIOS_SIN_RESPALDO = ['facebook.com', 'instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'twitter.com', 'x.com'];
+
     /** Lo que la IA contesta en `match`. */
     const MATCH_EXACTO           = 'exacto';
     const MATCH_PROBABLE         = 'probable';
@@ -140,6 +146,15 @@ class ArticleDimensionSearchEngine
 
     /** @var \App\Services\DimensionSearch\DimensionPageReader|null Se crea al primer uso. */
     protected $lector = null;
+
+    /**
+     * El respaldo por el scrape de Serper del artículo que se está procesando (se reinicia en cada procesar()):
+     * usados = scrapes pedidos, creditos = lo que informó Serper, tope_demo = la demo ya no tiene búsquedas,
+     * sin_clave = no hay clave de Serper para el respaldo.
+     *
+     * @var array
+     */
+    protected $scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false];
 
     /**
      * @param \App\Models\DimensionSearchRun $run
@@ -211,9 +226,14 @@ class ArticleDimensionSearchEngine
         $hubo_misma_cosa     = false;  // La IA dijo que era el mismo producto (aunque no trajera medidas).
         $ia_intentos         = 0;
         $ia_respuestas       = 0;
-        $leidas              = [];     // url => ['html', 'enviada']: no se vuelven a bajar entre planes.
+        $leidas              = [];     // url => ['contenido', 'enviada', …]: no se vuelven a bajar entre planes.
         $titulos             = [];     // url => título del resultado de búsqueda.
         $cupo_a_mitad        = false;
+
+        // Misión medidas-sin-datos: lo que la IA propuso y el validador no pudo respaldar con la página
+        // (campo => propuesta), y el gasto del respaldo por el scrape de Serper de ESTE artículo.
+        $propuestas_sin_respaldo = [];
+        $this->scrapes = ['usados' => 0, 'creditos' => 0.0, 'tope_demo' => false, 'sin_clave' => false];
 
         foreach ($planes as $plan) {
             if ($resultado['busquedas_intentadas'] >= self::MAX_BUSQUEDAS) {
@@ -271,7 +291,7 @@ class ArticleDimensionSearchEngine
             $hubo_resultados = true;
 
             // Se leen las páginas y se arma lo que se le pasa a la IA.
-            $documentos = $this->leer_paginas($busqueda['organicos'], $plan, $codigos, $leidas, $titulos, $entrada['paginas']);
+            $documentos = $this->leer_paginas($busqueda['organicos'], $plan, $codigos, $leidas, $titulos, $entrada['paginas'], $hubo_misma_cosa);
 
             if (empty($documentos)) {
                 $entrada['resultado'] = 'sin_paginas';
@@ -328,6 +348,22 @@ class ArticleDimensionSearchEngine
                     $entrada['ia']['campos'][$campo] = 'ok';
                 } else {
                     $entrada['ia']['campos'][$campo] = $validado['motivo'];
+
+                    // El valor se rechazó porque la cita no se pudo comprobar, pero la IA SÍ propuso un número
+                    // con una unidad válida: se guarda aparte (la primera por campo, en el orden de los planes)
+                    // para dejarlo «a revisar» si ningún campo llega a validar. Nunca se escribe solo.
+                    if (!isset($propuestas_sin_respaldo[$campo]) && $this->validador->es_motivo_de_propuesta_sin_respaldo($validado['motivo'])) {
+                        $propuesta = $this->validador->normalizar_propuesta($campo, isset($datos[$clave_ia]) ? $datos[$clave_ia] : null);
+
+                        if (!is_null($propuesta)) {
+                            $propuestas_sin_respaldo[$campo] = array_merge($propuesta, [
+                                'motivo_rechazo' => $validado['motivo'],
+                                'criterio'       => $plan['criterio'],
+                                'match'          => $match,
+                                'nota'           => $nota,
+                            ]);
+                        }
+                    }
                 }
             }
 
@@ -369,6 +405,8 @@ class ArticleDimensionSearchEngine
 
         $resultado['ia_respondio']     = $ia_respuestas > 0;
         $resultado['ia_sin_respuesta'] = $ia_intentos > 0 && $ia_respuestas === 0;
+        $resultado['scrapes']          = $this->scrapes['usados'];
+        $resultado['creditos_scrape']  = $this->scrapes['creditos'];
 
         // Todas las búsquedas fallaron por el proveedor (y no por el tope de la demo).
         if (!$hubo_busqueda_ok && !$cupo_a_mitad && $resultado['busquedas_intentadas'] > 0) {
@@ -397,13 +435,14 @@ class ArticleDimensionSearchEngine
                 return $resultado;
             }
 
-            if ($hubo_misma_cosa) {
-                $campos_cerrar = $this->sin_datos('sin_medidas_en_la_pagina', 'Se encontró el producto, pero la página no trae peso ni medidas que se puedan comprobar con una cita.');
-            } elseif ($hubo_paginas || $hubo_resultados) {
-                $campos_cerrar = $this->sin_datos('no_coincide', 'Se revisaron páginas pero ninguna era el mismo producto, o no tenían el código del artículo.');
-            } else {
-                $campos_cerrar = $this->sin_datos('sin_resultados', 'La búsqueda no devolvió resultados útiles para este artículo.');
+            // Lo que la IA propuso sin que se pudiera comprobar en la página no se tira: queda «a revisar».
+            if (!empty($propuestas_sin_respaldo)) {
+                $this->cerrar($item, array_merge($this->propuesta_sin_respaldo($propuestas_sin_respaldo, $titulos), ['diagnostico' => $diagnostico]), $gasto);
+
+                return $resultado;
             }
+
+            $campos_cerrar = $this->sin_datos_del_diagnostico($diagnostico, $hubo_misma_cosa, $hubo_paginas, $hubo_resultados);
 
             $this->cerrar($item, array_merge($campos_cerrar, ['diagnostico' => $diagnostico]), $gasto);
 
@@ -685,39 +724,41 @@ class ArticleDimensionSearchEngine
      * Baja las páginas de los resultados y arma los documentos que se le pasan a la IA.
      *
      * Para un plan de código, una página solo cuenta si CONTIENE el código; para el de nombre cuentan todas
-     * las que bajen. Nunca un PDF. Una página ya leída en un plan anterior no se vuelve a bajar.
+     * las que bajen. Una página ya leída en un plan anterior no se vuelve a bajar.
+     *
+     * RESPALDO POR EL SCRAPE DE SERPER (misión medidas-sin-datos, 28/10/2026): una página que la descarga directa no
+     * baja (403, timeout) y un PDF se anotan como candidatas y, terminada la lectura directa, se piden al scrape de
+     * Serper (texto plano) respetando los topes de costo (ver respaldar()).
      *
      * @param  array $organicos  Los resultados de Serper.
      * @param  array $plan
      * @param  array $codigos    Los códigos del artículo ([codigo, tipo]).
-     * @param  array $leidas     (por referencia) url => ['html', 'enviada']: las páginas ya bajadas y si ya se le pasaron a la IA.
+     * @param  array $leidas     (por referencia) url => lectura (ver lectura_fallida()/lectura_ok()): las páginas ya bajadas y si ya se le pasaron a la IA.
      * @param  array $titulos    (por referencia) url => título del resultado.
      * @param  array $paginas    (por referencia) las entradas de diagnóstico de las páginas.
+     * @param  bool  $hubo_misma_cosa  true si en un plan anterior la IA ya dijo que era el mismo producto (en el plan de nombre, eso evita gastar scrapes).
      * @return array  url => ['texto', 'titulo', 'codigo_de_barras' (bool), 'codigo_proveedor' (bool)].
      */
-    protected function leer_paginas(array $organicos, array $plan, array $codigos, array &$leidas, array &$titulos, array &$paginas)
+    protected function leer_paginas(array $organicos, array $plan, array $codigos, array &$leidas, array &$titulos, array &$paginas, $hubo_misma_cosa = false)
     {
         $documentos = [];
         $descargas  = 0;
+        $candidatas = [];   // url => páginas que no bajaron y admiten el respaldo.
 
         foreach ($organicos as $resultado) {
             if (count($documentos) >= self::MAX_PAGINAS_LEIDAS || $descargas >= self::MAX_DESCARGAS_POR_BUSQUEDA) {
                 break;
             }
 
-            $url    = isset($resultado['link']) && is_string($resultado['link']) ? trim($resultado['link']) : '';
-            $titulo = isset($resultado['title']) && is_string($resultado['title']) ? mb_substr(trim($resultado['title']), 0, 200) : '';
+            $url      = isset($resultado['link']) && is_string($resultado['link']) ? trim($resultado['link']) : '';
+            $titulo   = isset($resultado['title']) && is_string($resultado['title']) ? mb_substr(trim($resultado['title']), 0, 200) : '';
+            $snippet  = isset($resultado['snippet']) && is_string($resultado['snippet']) ? trim($resultado['snippet']) : '';
 
             if ($url === '') {
                 continue;
             }
 
-            $pagina = ['url' => $url, 'titulo' => $titulo, 'dominio' => $this->dominio($url)];
-
-            if (preg_match('/\.pdf($|\?)/i', $url)) {
-                $paginas[] = array_merge($pagina, ['leida' => false, 'motivo' => 'Es un PDF: no se leen.']);
-                continue;
-            }
+            $pagina = ['url' => $url, 'titulo' => $titulo, 'dominio' => $this->dominio($url), 'via_scrape' => false];
 
             // Una página que ya se le pasó a la IA en otra búsqueda no se manda dos veces.
             if (isset($leidas[$url]) && $leidas[$url]['enviada']) {
@@ -725,71 +766,386 @@ class ArticleDimensionSearchEngine
                 continue;
             }
 
-            // Una que se bajó pero se descartó (no tenía el código de ese plan) se reusa sin volver a bajarla.
-            if (isset($leidas[$url])) {
-                $html = $leidas[$url]['html'];
-            } else {
-                $descargas++;
-                $html = $this->lector()->leer($url);
-                $leidas[$url] = ['html' => $html, 'enviada' => false];
+            if (!isset($leidas[$url])) {
+                if (preg_match('/\.pdf($|\?)/i', $url)) {
+                    // Un PDF no se baja directo: solo se puede leer con el respaldo.
+                    $leidas[$url] = $this->lectura_fallida(DimensionPageReader::FALLO_PDF, null);
+                } else {
+                    $descargas++;
+                    $html = $this->lector()->leer($url);
+
+                    $leidas[$url] = is_null($html) || $html === ''
+                        ? $this->lectura_fallida($this->lector()->motivo_del_fallo() ?: DimensionPageReader::FALLO_OTRO, $this->lector()->ultimo_estado())
+                        : $this->lectura_ok($html, false, '', null);
+                }
             }
 
             $titulos[$url] = $titulo;
+            $lectura       = $leidas[$url];
 
-            if (is_null($html) || $html === '') {
-                $paginas[] = array_merge($pagina, ['leida' => false, 'motivo' => 'No se pudo descargar la página.']);
+            // No se pudo leer: se anota por qué y, si el respaldo puede servir, queda como candidata.
+            if (is_null($lectura['contenido'])) {
+                $relevante = !$this->dominio_sin_utilidad($pagina['dominio']) && $this->es_relevante_para_el_plan($plan, $titulo, $snippet);
+
+                $paginas[] = array_merge($pagina, $this->entrada_de_pagina_no_leida($lectura), ['relevante' => $relevante]);
+
+                if (!$lectura['scrapeada'] && DimensionPageReader::fallo_admite_respaldo($lectura['fallo'])) {
+                    $candidatas[$url] = ['indice' => count($paginas) - 1, 'pagina' => $pagina, 'relevante' => $relevante];
+                }
+
                 continue;
             }
 
-            // 🔴 El código tiene que estar en el texto que se le MANDA a la IA (la ventana alrededor), no en
-            // cualquier lugar del HTML crudo (un script, un comentario, un producto relacionado).
-            $texto = DimensionPageText::recortar($html, $codigos);
+            $armado    = $this->armar_documento($url, $lectura, $titulo, $plan, $codigos, $pagina);
+            $paginas[] = $armado['entrada'];
 
-            if (trim($texto) === '') {
-                $paginas[] = array_merge($pagina, ['leida' => false, 'motivo' => 'La página no tiene contenido útil.']);
+            if (!is_null($armado['documento'])) {
+                $leidas[$url]['enviada'] = true;
+                $documentos[$url]        = $armado['documento'];
+            }
+        }
+
+        $this->respaldar($candidatas, $plan, $codigos, $leidas, $documentos, $paginas, $hubo_misma_cosa);
+
+        return $documentos;
+    }
+
+    /**
+     * Pide al scrape de Serper el texto de las candidatas (páginas que no bajaron o PDF), con los topes de costo.
+     *
+     * Reglas (plan medidas-sin-datos, §2):
+     *   - Nunca más de `max_scrapes_por_articulo` por artículo, sumando todos los planes; ni en una demo sin
+     *     búsquedas; ni sin clave de Serper.
+     *   - Nunca en dominios sociales o inútiles (dominio_sin_utilidad()), ni en una página que ya se scrapeó.
+     *   - Plan de CÓDIGO: solo las páginas cuyo título o snippet de la búsqueda contiene el código del plan (la página
+     *     solo cuenta si lo tiene; el título/snippet es la pista antes de gastar créditos). Van en el orden del resultado.
+     *   - Plan de NOMBRE: solo si, tras leer las que bajan, no quedó ninguna página con el código ni la IA reconoció el
+     *     producto antes; y hasta completar el tope por artículo.
+     *   - No se pasa de MAX_PAGINAS_LEIDAS documentos por búsqueda.
+     *
+     * @param  array $candidatas  url => ['indice' (en $paginas), 'pagina', 'relevante'].
+     * @param  array $plan
+     * @param  array $codigos
+     * @param  array $leidas      (por referencia)
+     * @param  array $documentos  (por referencia) se le suman los que salgan del respaldo.
+     * @param  array $paginas     (por referencia) se actualizan las entradas de las que se pidió el respaldo.
+     * @param  bool  $hubo_misma_cosa
+     * @return void
+     */
+    protected function respaldar(array $candidatas, array $plan, array $codigos, array &$leidas, array &$documentos, array &$paginas, $hubo_misma_cosa)
+    {
+        if (empty($candidatas)) {
+            return;
+        }
+
+        // Plan de nombre: solo si no hay una página con el código ni un producto reconocido.
+        if (is_null($plan['codigo'])) {
+            if ($hubo_misma_cosa) {
+                return;
+            }
+
+            foreach ($documentos as $documento) {
+                if (!empty($documento['codigo_de_barras']) || !empty($documento['codigo_proveedor'])) {
+                    return;
+                }
+            }
+        }
+
+        foreach ($candidatas as $url => $candidata) {
+            if (count($documentos) >= self::MAX_PAGINAS_LEIDAS) {
+                break;
+            }
+
+            // Plan de código: la pista del resultado de búsqueda tiene que traer el código. Dominio inútil: nunca.
+            if (!$candidata['relevante']) {
                 continue;
             }
 
-            $tiene_barras    = false;
-            $tiene_proveedor = false;
+            if (!$this->puede_pedir_respaldo()) {
+                break;
+            }
 
-            foreach ($codigos as $c) {
-                if (DimensionPageText::contiene_codigo($texto, $c['codigo'], $c['tipo'])) {
-                    if ($c['tipo'] === DimensionPageText::CODIGO_DE_BARRAS) {
-                        $tiene_barras = true;
-                    } else {
-                        $tiene_proveedor = true;
-                    }
+            $respuesta = $this->lector()->scrapear($url);
+
+            if (!empty($respuesta['tope_demo'])) {
+                $this->scrapes['tope_demo'] = true;
+                break;
+            }
+
+            if (!empty($respuesta['sin_clave'])) {
+                $this->scrapes['sin_clave'] = true;
+                break;
+            }
+
+            $this->scrapes['usados']++;
+            $this->scrapes['creditos'] += (float) $respuesta['creditos'];
+
+            $leidas[$url]['scrapeada'] = true;
+            $leidas[$url]['creditos']  = $respuesta['creditos'];
+
+            $pagina = $candidata['pagina'];
+
+            if (!is_null($respuesta['creditos'])) {
+                $pagina['creditos'] = $respuesta['creditos'];
+
+                // Serper cobró más de lo que se espera por un scrape: se usa igual, pero queda anotado.
+                if ($respuesta['creditos'] > $this->max_creditos_por_scrape()) {
+                    $pagina['creditos_sobre_el_tope'] = true;
                 }
             }
 
-            // En un plan de código, la página tiene que traer EL código de ese plan.
-            if (!is_null($plan['codigo'])) {
-                $trae_el_codigo = $plan['tipo_codigo'] === DimensionPageText::CODIGO_DE_BARRAS ? $tiene_barras : $tiene_proveedor;
+            if (!$respuesta['ok']) {
+                $paginas[$candidata['indice']] = array_merge($pagina, [
+                    'leida'     => false,
+                    'motivo'    => 'No se pudo leer ni con el respaldo.',
+                    'fallo'     => $leidas[$url]['fallo'],
+                    'relevante' => true,
+                ]);
 
-                if (!$trae_el_codigo) {
-                    $paginas[] = array_merge($pagina, ['leida' => false, 'motivo' => 'La página no contiene el código buscado.']);
-                    continue;
+                continue;
+            }
+
+            $leidas[$url] = array_merge($leidas[$url], $this->lectura_ok($respuesta['texto'], true, $respuesta['titulo'], $respuesta['creditos']), [
+                'fallo'     => $leidas[$url]['fallo'],
+                'scrapeada' => true,
+            ]);
+
+            $armado = $this->armar_documento($url, $leidas[$url], $pagina['titulo'], $plan, $codigos, $pagina);
+
+            $paginas[$candidata['indice']] = $armado['entrada'];
+
+            if (!is_null($armado['documento'])) {
+                $leidas[$url]['enviada'] = true;
+                $documentos[$url]        = $armado['documento'];
+            }
+        }
+    }
+
+    /**
+     * Arma el documento que se le pasa a la IA con el contenido de una página (HTML bajado o texto del respaldo) y
+     * la entrada de diagnóstico correspondiente.
+     *
+     * 🔴 El código tiene que estar en el texto que se le MANDA a la IA (la ventana alrededor), no en cualquier
+     * lugar del contenido crudo (un script, un comentario, un producto relacionado).
+     *
+     * @param  string $url
+     * @param  array  $lectura  La lectura de la página (con contenido).
+     * @param  string $titulo   El título del resultado de búsqueda.
+     * @param  array  $plan
+     * @param  array  $codigos
+     * @param  array  $pagina   url, titulo, dominio, via_scrape (y creditos si hubo scrape).
+     * @return array  ['documento' => array|null, 'entrada' => array]
+     */
+    protected function armar_documento($url, array $lectura, $titulo, array $plan, array $codigos, array $pagina)
+    {
+        $pagina['via_scrape'] = !empty($lectura['via_scrape']);
+
+        if ($pagina['via_scrape'] && !is_null($lectura['creditos']) && !isset($pagina['creditos'])) {
+            $pagina['creditos'] = $lectura['creditos'];
+        }
+
+        $texto = DimensionPageText::recortar($lectura['contenido'], $codigos, !empty($lectura['es_texto']), (string) $lectura['titulo_scrape']);
+
+        if (trim($texto) === '') {
+            return ['documento' => null, 'entrada' => array_merge($pagina, ['leida' => false, 'motivo' => 'La página no tiene contenido útil.'])];
+        }
+
+        $tiene_barras    = false;
+        $tiene_proveedor = false;
+
+        foreach ($codigos as $c) {
+            if (DimensionPageText::contiene_codigo($texto, $c['codigo'], $c['tipo'])) {
+                if ($c['tipo'] === DimensionPageText::CODIGO_DE_BARRAS) {
+                    $tiene_barras = true;
+                } else {
+                    $tiene_proveedor = true;
                 }
             }
-            $leidas[$url]['enviada'] = true;
+        }
 
-            $documentos[$url] = [
+        // En un plan de código, la página tiene que traer EL código de ese plan.
+        if (!is_null($plan['codigo'])) {
+            $trae_el_codigo = $plan['tipo_codigo'] === DimensionPageText::CODIGO_DE_BARRAS ? $tiene_barras : $tiene_proveedor;
+
+            if (!$trae_el_codigo) {
+                return ['documento' => null, 'entrada' => array_merge($pagina, ['leida' => false, 'motivo' => 'La página no contiene el código buscado.'])];
+            }
+        }
+
+        $motivo = null;
+
+        if ($pagina['via_scrape']) {
+            $motivo = $lectura['fallo'] === DimensionPageReader::FALLO_PDF ? 'PDF leído con el respaldo.' : 'Página leída con el respaldo.';
+        }
+
+        return [
+            'documento' => [
                 'texto'            => $texto,
                 'titulo'           => $titulo,
                 'codigo_de_barras' => $tiene_barras,
                 'codigo_proveedor' => $tiene_proveedor,
-            ];
-
-            $paginas[] = array_merge($pagina, [
+            ],
+            'entrada'   => array_merge($pagina, [
                 'leida'            => true,
-                'motivo'           => null,
+                'motivo'           => $motivo,
                 'codigo_de_barras' => $tiene_barras,
                 'codigo_proveedor' => $tiene_proveedor,
-            ]);
+            ]),
+        ];
+    }
+
+    /**
+     * El estado de una página que no se pudo leer (lo que se guarda en $leidas).
+     *
+     * @param  string   $fallo   Un DimensionPageReader::FALLO_*.
+     * @param  int|null $estado  El estado HTTP si hubo respuesta.
+     * @return array
+     */
+    protected function lectura_fallida($fallo, $estado)
+    {
+        return [
+            'contenido'     => null,
+            'es_texto'      => false,
+            'titulo_scrape' => '',
+            'via_scrape'    => false,
+            'creditos'      => null,
+            'fallo'         => $fallo,
+            'estado'        => $estado,
+            'enviada'       => false,
+            'scrapeada'     => false,
+        ];
+    }
+
+    /**
+     * El estado de una página que sí se leyó (lo que se guarda en $leidas).
+     *
+     * @param  string      $contenido     El HTML bajado o el texto plano del respaldo.
+     * @param  bool        $es_texto      true si es texto plano (respaldo), false si es HTML.
+     * @param  string      $titulo_scrape El título que informó el scrape (si lo hay).
+     * @param  float|null  $creditos      Lo que costó el scrape (null si se bajó directo).
+     * @return array
+     */
+    protected function lectura_ok($contenido, $es_texto, $titulo_scrape, $creditos)
+    {
+        return [
+            'contenido'     => (string) $contenido,
+            'es_texto'      => (bool) $es_texto,
+            'titulo_scrape' => (string) $titulo_scrape,
+            'via_scrape'    => (bool) $es_texto,
+            'creditos'      => $creditos,
+            'fallo'         => null,
+            'estado'        => null,
+            'enviada'       => false,
+            'scrapeada'     => (bool) $es_texto,
+        ];
+    }
+
+    /**
+     * La parte de la entrada de diagnóstico de una página que no se pudo leer: leida, motivo, fallo (y creditos
+     * si ya se intentó el respaldo).
+     *
+     * @param  array $lectura  Una lectura fallida.
+     * @return array
+     */
+    protected function entrada_de_pagina_no_leida(array $lectura)
+    {
+        if ($lectura['scrapeada']) {
+            $motivo = 'No se pudo leer ni con el respaldo.';
+        } elseif ($lectura['fallo'] === DimensionPageReader::FALLO_PDF) {
+            $motivo = 'Es un PDF: no se leen.';
+        } elseif ($lectura['fallo'] === DimensionPageReader::FALLO_BLOQUEADA) {
+            $motivo = 'El sitio bloquea la descarga ('.(int) $lectura['estado'].')';
+        } else {
+            $motivo = 'No se pudo descargar la página.';
         }
 
-        return $documentos;
+        $entrada = ['leida' => false, 'motivo' => $motivo, 'fallo' => $lectura['fallo']];
+
+        if (!is_null($lectura['creditos'])) {
+            $entrada['creditos'] = $lectura['creditos'];
+        }
+
+        return $entrada;
+    }
+
+    /**
+     * ¿Esta página del resultado de búsqueda vale la pena como candidata al respaldo? En un plan de código, solo si
+     * el título o el snippet del resultado trae el código del plan; en el de nombre, cualquiera.
+     *
+     * @param  array  $plan
+     * @param  string $titulo
+     * @param  string $snippet
+     * @return bool
+     */
+    protected function es_relevante_para_el_plan(array $plan, $titulo, $snippet)
+    {
+        if (is_null($plan['codigo'])) {
+            return true;
+        }
+
+        return DimensionPageText::contiene_codigo($titulo.' '.$snippet, $plan['codigo'], $plan['tipo_codigo']);
+    }
+
+    /**
+     * ¿Es un dominio en el que no se gasta un scrape (redes sociales, videos)? El exacto o un subdominio de
+     * DOMINIOS_SIN_RESPALDO, o cualquier `pinterest.*`.
+     *
+     * @param  string $dominio  Sin «www.».
+     * @return bool
+     */
+    protected function dominio_sin_utilidad($dominio)
+    {
+        $dominio = strtolower((string) $dominio);
+
+        if ($dominio === '') {
+            return false;
+        }
+
+        if (preg_match('/(^|\.)pinterest\.[a-z.]+$/', $dominio)) {
+            return true;
+        }
+
+        foreach (self::DOMINIOS_SIN_RESPALDO as $malo) {
+            if ($dominio === $malo || substr($dominio, -(strlen($malo) + 1)) === '.'.$malo) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿Todavía se puede pedir un scrape para este artículo? No si ya se usaron los del tope, si la demo no tiene
+     * búsquedas, o si no hay clave de Serper.
+     *
+     * @return bool
+     */
+    protected function puede_pedir_respaldo()
+    {
+        $maximo = (int) config('services.medidas_masivas.max_scrapes_por_articulo', 3);
+
+        if ($maximo <= 0 || $this->scrapes['usados'] >= $maximo || $this->scrapes['tope_demo'] || $this->scrapes['sin_clave']) {
+            return false;
+        }
+
+        // En una demo con las búsquedas agotadas no se sale a la red (cuenta como una búsqueda).
+        if (TopeSerperDemo::agotado($this->owner)) {
+            $this->scrapes['tope_demo'] = true;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Los créditos que se esperan como máximo por un scrape (config `max_creditos_por_scrape`).
+     *
+     * @return int
+     */
+    protected function max_creditos_por_scrape()
+    {
+        return (int) config('services.medidas_masivas.max_creditos_por_scrape', 10);
     }
 
     /**
@@ -1194,6 +1550,219 @@ class ArticleDimensionSearchEngine
         }
 
         return true;
+    }
+
+    /**
+     * Cierra como «a revisar» un artículo en el que NINGÚN campo validó pero la IA sí propuso valores (misión
+     * medidas-sin-datos, 28/10/2026): `valor_sin_respaldo`. Los valores van llevados a kg / cm con las reglas de
+     * unidad del validador, junto a la cita tal cual la dio la IA, la url y el motivo por el que no se pudo
+     * comprobar. NUNCA se escribe solo en el artículo: aprobar es una decisión de una persona (que puede editar
+     * los valores o excluir campos).
+     *
+     * @param  array $propuestas  campo => propuesta (valor, unidad, valor_original, unidad_original, convertido,
+     *                            cita, url, alcance, motivo_rechazo, criterio, match, nota). La primera por campo,
+     *                            en el orden de los planes.
+     * @param  array $titulos     url => título del resultado de búsqueda.
+     * @return array  Los campos del item: status, motivo, motivo_detalle, criterio_usado, propuesta, evidencia, fuentes, nota_ia.
+     */
+    protected function propuesta_sin_respaldo(array $propuestas, array $titulos)
+    {
+        $primera   = reset($propuestas);
+        $propuesta = [];
+        $evidencia = [];
+        $urls      = [];
+        $variante  = false;
+
+        foreach (DimensionApplier::COLUMNA_DE_PROPUESTA as $campo => $columna) {
+            if (!isset($propuestas[$campo])) {
+                $propuesta[$columna] = null;
+                continue;
+            }
+
+            $p = $propuestas[$campo];
+
+            $propuesta[$columna] = $p['valor'];
+
+            $evidencia[$campo] = [
+                'valor'           => $p['valor'],
+                'unidad'          => $p['unidad'],
+                'valor_original'  => $p['valor_original'],
+                'unidad_original' => $p['unidad_original'],
+                'convertido'      => $p['convertido'],
+                'cita'            => $p['cita'],
+                'url'             => $p['url'],
+                'alcance'         => $p['alcance'],
+                // Marca de que NADIE comprobó este valor contra la página: la SPA lo avisa.
+                'sin_respaldo'    => true,
+                'motivo_rechazo'  => $p['motivo_rechazo'],
+            ];
+
+            if ($p['url'] !== '') {
+                $urls[$p['url']] = true;
+            }
+
+            if ($p['match'] === self::MATCH_VARIANTE_DISTINTA) {
+                $variante = true;
+            }
+        }
+
+        $fuentes = [];
+
+        foreach (array_keys($urls) as $url) {
+            $fuentes[] = ['url' => $url, 'titulo' => isset($titulos[$url]) ? $titulos[$url] : null];
+        }
+
+        $detalle = 'La IA encontró estos valores pero el sistema no pudo comprobarlos en la página: revisalos antes de aprobar.';
+
+        if ($variante) {
+            $detalle .= ' Además, la página parece de otra variante o presentación del producto'.(is_null($primera['nota']) ? '.' : ': '.rtrim($primera['nota'], '. ').'.');
+        }
+
+        return array_merge($propuesta, [
+            'status'         => DimensionSearchItem::STATUS_A_REVISAR,
+            'motivo'         => 'valor_sin_respaldo',
+            'motivo_detalle' => $detalle,
+            'criterio_usado' => $primera['criterio'],
+            'evidencia'      => $evidencia,
+            'fuentes'        => $fuentes,
+            'nota_ia'        => $primera['nota'],
+        ]);
+    }
+
+    /**
+     * El `sin_datos` que dice lo que pasó de verdad, calculado del diagnóstico (no se adivina):
+     *
+     *   - `sin_medidas_en_la_pagina`: la IA reconoció el producto y de verdad no había medidas que citar.
+     *   - `paginas_bloqueadas`: el producto apareció pero hubo páginas del resultado que no se pudieron leer
+     *     (el sitio bloquea la descarga), ni con el respaldo.
+     *   - `pdf_no_leido`: idem, pero las que no se leyeron eran PDF.
+     *   - `no_coincide`: se revisaron páginas pero ninguna era el mismo producto, o no tenían el código.
+     *   - `sin_resultados`: la búsqueda no devolvió nada útil.
+     *
+     * @param  array $diagnostico      Las entradas de diagnóstico de los planes.
+     * @param  bool  $hubo_misma_cosa  La IA dijo que era el mismo producto en algún plan.
+     * @param  bool  $hubo_paginas     Alguna página se leyó y entró a la IA.
+     * @param  bool  $hubo_resultados  Alguna búsqueda devolvió resultados.
+     * @return array  status, motivo, motivo_detalle.
+     */
+    protected function sin_datos_del_diagnostico(array $diagnostico, $hubo_misma_cosa, $hubo_paginas, $hubo_resultados)
+    {
+        $resumen = $this->resumen_de_paginas($diagnostico);
+
+        // Cómo terminó el respaldo, para decir la verdad sobre «ni con el respaldo».
+        $con_respaldo = $this->scrapes['usados'] > 0 ? ', ni con el respaldo' : '';
+
+        if (!$this->scrapes['usados'] && ($this->scrapes['sin_clave'] || $this->scrapes['tope_demo'])) {
+            $con_respaldo = ' y el respaldo no estaba disponible';
+        }
+
+        $aviso_de_bloqueadas = $resumen['bloqueadas'] + $resumen['pdf'] > 0
+            ? ' Además, '.$this->no_se_pudieron_leer($resumen['bloqueadas'] + $resumen['pdf']).($resumen['pdf'] > 0 ? ' (el sitio bloquea la descarga o son PDF'.$con_respaldo.')' : ' (el sitio bloquea la descarga'.$con_respaldo.')').'.'
+            : '';
+
+        if ($hubo_misma_cosa) {
+            return $this->sin_datos(
+                'sin_medidas_en_la_pagina',
+                'Se encontró el producto, pero '.($resumen['leidas'] === 1 ? 'la página que se leyó' : 'las '.$resumen['leidas'].' páginas que se leyeron').' no trae peso ni medidas que se puedan comprobar con una cita.'.$aviso_de_bloqueadas
+            );
+        }
+
+        if ($resumen['bloqueadas'] > 0 && $resumen['bloqueadas'] >= $resumen['pdf']) {
+            return $this->sin_datos(
+                'paginas_bloqueadas',
+                'El producto apareció pero '.$this->no_se_pudieron_leer($resumen['bloqueadas'] + $resumen['pdf']).' (el sitio bloquea la descarga'.$con_respaldo.').'
+            );
+        }
+
+        if ($resumen['pdf'] > 0) {
+            return $this->sin_datos(
+                'pdf_no_leido',
+                'Las páginas que aparecieron eran PDF que no se pudieron leer'.($con_respaldo !== '' ? ' ('.ltrim($con_respaldo, ', ').')' : '').'.'
+            );
+        }
+
+        if ($hubo_paginas || $hubo_resultados) {
+            return $this->sin_datos(
+                'no_coincide',
+                'Se revisaron '.($resumen['leidas'] > 0 ? $this->cuantas_paginas($resumen['leidas']) : 'los resultados').' pero ninguna era el mismo producto, o no tenían el código del artículo.'
+            );
+        }
+
+        return $this->sin_datos('sin_resultados', 'La búsqueda no devolvió resultados útiles para este artículo.');
+    }
+
+    /**
+     * Cuenta las páginas del diagnóstico por lo que pasó con ellas (sin repetir una url que apareció en varios
+     * planes, y sin contar como «no leída» a una que otro plan sí logró leer).
+     *
+     * @param  array $diagnostico
+     * @return array  leidas (las que entraron a la IA), bloqueadas (relevantes que el sitio no dejó bajar),
+     *                pdf (relevantes que eran PDF y no se pudieron leer).
+     */
+    protected function resumen_de_paginas(array $diagnostico)
+    {
+        $leidas     = [];
+        $bloqueadas = [];
+        $pdf        = [];
+
+        foreach ($diagnostico as $entrada) {
+            if (empty($entrada['paginas']) || !is_array($entrada['paginas'])) {
+                continue;
+            }
+
+            foreach ($entrada['paginas'] as $pagina) {
+                $url = isset($pagina['url']) ? (string) $pagina['url'] : '';
+
+                if ($url === '') {
+                    continue;
+                }
+
+                if (!empty($pagina['leida'])) {
+                    $leidas[$url] = true;
+                    continue;
+                }
+
+                // Solo cuentan las que podían ser del producto (en un plan de código, las que traían el código en
+                // el título o el snippet) y no son un dominio inútil.
+                if (empty($pagina['relevante']) || !isset($pagina['fallo'])) {
+                    continue;
+                }
+
+                if ($pagina['fallo'] === DimensionPageReader::FALLO_PDF) {
+                    $pdf[$url] = true;
+                } elseif ($pagina['fallo'] === DimensionPageReader::FALLO_BLOQUEADA || $pagina['fallo'] === DimensionPageReader::FALLO_SIN_RESPUESTA) {
+                    $bloqueadas[$url] = true;
+                }
+            }
+        }
+
+        return [
+            'leidas'     => count($leidas),
+            'bloqueadas' => count(array_diff_key($bloqueadas, $leidas)),
+            'pdf'        => count(array_diff_key($pdf, $leidas)),
+        ];
+    }
+
+    /**
+     * «1 página no se pudo leer», «3 páginas no se pudieron leer».
+     *
+     * @param  int $cantidad
+     * @return string
+     */
+    protected function no_se_pudieron_leer($cantidad)
+    {
+        return (int) $cantidad === 1 ? '1 página no se pudo leer' : (int) $cantidad.' páginas no se pudieron leer';
+    }
+
+    /**
+     * «1 página», «3 páginas».
+     *
+     * @param  int $cantidad
+     * @return string
+     */
+    protected function cuantas_paginas($cantidad)
+    {
+        return (int) $cantidad === 1 ? '1 página' : (int) $cantidad.' páginas';
     }
 
     /**

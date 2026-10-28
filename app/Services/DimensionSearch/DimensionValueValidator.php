@@ -265,6 +265,87 @@ class DimensionValueValidator
     }
 
     /**
+     * Motivos de rechazo de `validar()` por los que la propuesta de la IA igual se conserva como «a revisar»
+     * (misión medidas-sin-datos, 28/10/2026): el valor y la unidad son utilizables pero el sistema no pudo
+     * comprobar la cita contra la página. Los demás motivos (`valor_invalido`, `unidad_invalida`,
+     * `fuera_de_rango`, `no_informado`, …) NO se conservan: ahí no hay un valor que mostrarle a una persona.
+     */
+    const MOTIVOS_DE_PROPUESTA_SIN_RESPALDO = [
+        'cita_no_esta_en_la_pagina',
+        'cita_no_coincide_con_el_valor',
+        'fuente_desconocida',
+        'sin_cita',
+    ];
+
+    /**
+     * ¿Este motivo de rechazo deja una propuesta sin respaldo para revisar?
+     *
+     * @param  string|null $motivo  El `motivo` que devolvió validar().
+     * @return bool
+     */
+    public function es_motivo_de_propuesta_sin_respaldo($motivo)
+    {
+        return in_array($motivo, self::MOTIVOS_DE_PROPUESTA_SIN_RESPALDO, true);
+    }
+
+    /**
+     * Lleva a kg / cm lo que propuso la IA para un campo SIN comprobar la cita (para guardarlo como
+     * propuesta «sin respaldo» que una persona revisa; nunca se escribe solo).
+     *
+     * Aplica las mismas reglas de valor y unidad que validar(): el valor tiene que ser un número positivo y la
+     * unidad tiene que ser del tipo del campo (kg/g/… para el peso; cm/mm/… para las medidas). Devuelve null
+     * si no hay valor utilizable, si la unidad no es la del campo o si el resultado supera el tope de cordura
+     * (`fuera_de_rango`): esas propuestas no se guardan.
+     *
+     * @param  string $campo  peso | alto | ancho | profundidad.
+     * @param  mixed  $dato   Lo que devolvió la IA: {value, unit, evidence, source_url, scope} o null.
+     * @return array|null  valor (en kg o cm), unidad ('kg'|'cm'), valor_original, unidad_original, convertido,
+     *                     cita (tal cual la dio la IA, hasta 300 caracteres), url y alcance; null si no sirve.
+     */
+    public function normalizar_propuesta($campo, $dato)
+    {
+        if (!isset(self::CAMPOS[$campo]) || !is_array($dato) || empty($dato)) {
+            return null;
+        }
+
+        $tipo  = self::CAMPOS[$campo];
+        $valor = $this->numero_del_modelo(isset($dato['value']) ? $dato['value'] : null);
+
+        // Sin número positivo no hay propuesta.
+        if (is_null($valor) || $valor <= 0) {
+            return null;
+        }
+
+        $unidad = $this->unidad_del_modelo(isset($dato['unit']) ? $dato['unit'] : null);
+
+        // La unidad tiene que existir y ser del tipo del campo (no se guarda un peso en cm).
+        if (is_null($unidad) || $unidad[0] !== $tipo) {
+            return null;
+        }
+
+        $canonico = round($valor * $unidad[1], self::DECIMALES);
+        $maximo   = $tipo === self::TIPO_PESO ? self::MAXIMO_PESO_KG : self::MAXIMO_MEDIDA_CM;
+
+        if ($canonico <= 0 || $canonico > $maximo) {
+            return null;
+        }
+
+        $cita = isset($dato['evidence']) && is_string($dato['evidence']) ? trim($dato['evidence']) : '';
+        $url  = isset($dato['source_url']) && is_string($dato['source_url']) ? trim($dato['source_url']) : '';
+
+        return [
+            'valor'           => $canonico,
+            'unidad'          => self::UNIDAD_CANONICA[$tipo],
+            'valor_original'  => $valor,
+            'unidad_original' => $unidad[2],
+            'convertido'      => $unidad[2] !== self::UNIDAD_CANONICA[$tipo],
+            'cita'            => mb_substr($cita, 0, 300),
+            'url'             => $url,
+            'alcance'         => isset($dato['scope']) && in_array($dato['scope'], self::ALCANCES, true) ? $dato['scope'] : 'producto',
+        ];
+    }
+
+    /**
      * ¿El par candidato es mejor que el mejor hasta ahora? Primero el más limpio (sin ambigüedad ni rango),
      * después el más cercano a lo que afirmó el modelo.
      *
