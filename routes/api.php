@@ -112,6 +112,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     // en UserController@update con id = "set-chat-ia-preferencias" (set-dark-mode zafa solo
     // porque sus tres segmentos no calzan en el comodín de dos).
     Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
+    // Tres segmentos: una API vieja debe dar 404, nunca entrar al PUT user/{id} del perfil.
+    Route::put('user/current-acount/consulta', 'UserController@set_current_acount_consulta');
     // Impresora del Ticket 2.0. Misma familia que las dos de arriba: preferencia POR PERSONA,
     // y con la misma trampa del orden — dos segmentos, así que abajo de `user/{id}` caería en
     // UserController@update con id = "set-impresora".

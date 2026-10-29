@@ -2074,41 +2074,35 @@ class ProcessRow {
 
 
     function update_provider_relation($articulo_ya_creado, $data, $provider_id) {
-
-        $epsilon = 0.01; // ajustalo según tu caso (p.ej. centavos: 0.01 / 0.001)
-
-        // $this->log('update_provider_relation, data:');
-        // $this->log($data);
-        // $this->log('actual cost: '.$articulo_ya_creado->cost);
-
-        if (
-            isset($data['cost'])
-            // && abs((float)$data['cost'] - (float)$articulo_ya_creado->cost) > $epsilon 
-        ) {
-
-            $pivot_data = [
-                'provider_code' => isset($data['provider_code']) ? $data['provider_code']: null,
-                'cost'          => isset($data['cost']) ? $data['cost'] : null,
-            ];
-
-            // ⚡️ Performance: no hacemos DB write por fila.
-            // Guardamos para upsert masivo al final del chunk.
-            $this->buffer_provider_relation((int)$articulo_ya_creado->id, (int)$provider_id, $pivot_data);
-
-            // $this->log('Se adjunta relacion con provider a '.$articulo_ya_creado->name. ' a provider_id: '.$provider_id);
-            // $this->log('provider_id '.$provider_id);
-            // $this->log('pivot_data '.$pivot_data);
-
-            // ✅ 1 sola operación: inserta o actualiza pivot sin hacer exists() antes
-            // $articulo_ya_creado->providers()->syncWithoutDetaching([
-            //     $provider_id => $pivot_data
-            // ]);
-        } else {
-
-            // $this->log('NO Se adjunta relacion con provider');
+        $codigo = isset($data['provider_code']) && trim((string) $data['provider_code']) !== ''
+            ? (string) $data['provider_code'] : null;
+        if (!isset($data['cost']) && is_null($codigo)) {
+            return;
         }
-        
-
+        // Una columna ausente no borra el dato que dejó otra lista del mismo proveedor.
+        $relacion = $articulo_ya_creado->providers->firstWhere('id', (int) $provider_id);
+        $previo = $this->provider_relations_buffer[$articulo_ya_creado->id][$provider_id] ?? [
+            'provider_code' => $relacion ? $relacion->pivot->provider_code : null,
+            'cost' => $relacion ? $relacion->pivot->cost : null,
+        ];
+        $pivot_data = [
+            'provider_code' => is_null($codigo) ? $previo['provider_code'] : $codigo,
+            'cost' => isset($data['cost']) ? $data['cost'] : $previo['cost'],
+        ];
+        $relacion_anterior = $articulo_ya_creado->providers->firstWhere('id', (int) $articulo_ya_creado->provider_id);
+        if ($articulo_ya_creado->provider_id && (int) $articulo_ya_creado->provider_id !== (int) $provider_id
+            && !is_null($articulo_ya_creado->provider_code) && trim((string) $articulo_ya_creado->provider_code) !== ''
+            && (!$relacion_anterior || is_null($relacion_anterior->pivot->provider_code) || trim((string) $relacion_anterior->pivot->provider_code) === '')) {
+            // Conservar también el proveedor legado, sin una escritura por fila durante la importación.
+            $this->buffer_provider_relation((int) $articulo_ya_creado->id, (int) $articulo_ya_creado->provider_id, [
+                'provider_code' => $articulo_ya_creado->provider_code,
+                'cost' => $relacion_anterior ? $relacion_anterior->pivot->cost : $articulo_ya_creado->cost,
+            ]);
+        }
+        $this->buffer_provider_relation((int) $articulo_ya_creado->id, (int) $provider_id, $pivot_data);
+        ArticleIndexCache::agregar_referencia_proveedor($articulo_ya_creado->user_id, $articulo_ya_creado->id, $provider_id, $pivot_data['provider_code']);
+        // La próxima fila usa esta copia del índice; actualizar sólo la RAM estática no la refresca.
+        $this->article_index = ArticleIndexCache::get_index((int) $articulo_ya_creado->user_id);
     }
 
     

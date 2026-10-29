@@ -148,7 +148,7 @@ class ProviderOrderController extends Controller
              */
             'created_at'                                => SaleHelper::resolver_created_at($request->created_at),
             'childrens'                                 => $request->childrens,
-            'articles'                                  => $request->articles,
+            'articles'                                  => \App\Services\Compras\CodigosDeProveedor::articulos_de_carga_manual($request->articles, $this->userId(), $request->provider_id),
         ]);
 
         return response()->json(['model' => $this->fullModel('ProviderOrder', $model->id)], 201);
@@ -401,7 +401,8 @@ class ProviderOrderController extends Controller
             $model->save();
 
 
-            $helper = new NewProviderOrderHelper($model, $request->articles, $ya_se_actualizo_stock);
+            $articulos = \App\Services\Compras\CodigosDeProveedor::articulos_de_carga_manual($request->articles, $this->userId(), $model->provider_id);
+            $helper = new NewProviderOrderHelper($model, $articulos, $ya_se_actualizo_stock);
 
             $helper->attach_articles(true);
 

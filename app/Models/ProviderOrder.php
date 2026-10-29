@@ -16,8 +16,24 @@ class ProviderOrder extends Model
         'precios_incluyen_iva' => 'boolean',
     ];
 
+    public function toArray()
+    {
+        // Al reabrir/editar una compra no reenviar el código del último proveedor de cada artículo.
+        // Se proyecta sólo la respuesta de la compra; el campo escalar del catálogo no se modifica.
+        if ($this->relationLoaded('articles')) {
+            $this->loadMissing('articles.providers');
+        }
+        $datos = parent::toArray();
+        if ($this->relationLoaded('articles') && isset($datos['articles'])) {
+            foreach ($this->articles as $indice => $article) {
+                $datos['articles'][$indice]['provider_code'] = \App\Services\Compras\CodigosDeProveedor::codigo_para($article, $this->provider_id);
+            }
+        }
+        return $datos;
+    }
+
     function scopeWithAll($query) {
-        $query->with('articles.addresses', 'articles.images', 'provider', 'provider_order_afip_tickets.provider_order_afip_ticket_ivas', 'provider_order_status', 'provider_order_extra_costs', 'provider_order_discounts');
+        $query->with('articles.addresses', 'articles.images', 'articles.providers', 'provider', 'provider_order_afip_tickets.provider_order_afip_ticket_ivas', 'provider_order_status', 'provider_order_extra_costs', 'provider_order_discounts');
 
         /*
          * Cuántos escaneos de factura tuvo la compra (misión historial-escaneos-compra). Es un
