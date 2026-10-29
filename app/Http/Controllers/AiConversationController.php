@@ -55,23 +55,96 @@ class AiConversationController extends Controller
      */
     const MINUTOS_VENCIMIENTO_PENDIENTE = 10;
 
+    /** Techo del texto de búsqueda de la barra lateral de la app. */
+    const MAX_BUSCAR = 100;
+
+    /** Techo del título que pone el dueño a mano (contrato C5; la columna admite 150). */
+    const MAX_TITULO = 120;
+
     /**
      * Conversaciones de la persona autenticada, ordenadas por actividad
      * (last_message_at DESC con nulls al final, D44: la SPA abre
      * conversations[0] al abrir el panel).
      *
+     * Misión app-ia-y-memoria (29/10/2026, contrato C5): las FIJADAS van primero (cada conversación trae
+     * `fijada`), y `buscar` (opcional) filtra por el título y por lo que dicen los mensajes, con los
+     * comodines de LIKE escapados (un "%" busca el carácter). Sin `buscar`, la lista de siempre.
+     *
+     * @param  Request  $request
      * @return JsonResponse
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $models = AiConversation::where('auth_user_id', UserHelper::userId(false))
-            ->where('user_id', UserHelper::userId(true))
+        $query = AiConversation::where('auth_user_id', UserHelper::userId(false))
+            ->where('user_id', UserHelper::userId(true));
+
+        $buscar = mb_substr(trim((string) $request->query('buscar', '')), 0, self::MAX_BUSCAR);
+
+        if ($buscar !== '') {
+            $como = '%' . addcslashes($buscar, '%_\\') . '%';
+
+            $query->where(function ($donde) use ($como) {
+                $donde->where('titulo', 'like', $como)
+                    ->orWhereExists(function ($en_los_mensajes) use ($como) {
+                        $en_los_mensajes->selectRaw('1')
+                            ->from('ai_messages')
+                            ->whereColumn('ai_messages.ai_conversation_id', 'ai_conversations.id')
+                            ->where('ai_messages.contenido', 'like', $como);
+                    });
+            });
+        }
+
+        $models = $query
+            ->orderBy('fijada', 'DESC')
             ->orderByRaw('last_message_at IS NULL')
             ->orderBy('last_message_at', 'DESC')
             ->orderBy('id', 'DESC')
             ->get();
 
         return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Renombra o fija una conversación de la persona (misión app-ia-y-memoria, contrato C5):
+     * `PATCH api/ai-conversations/{id}` con `{titulo?: string ≤ 120, fijada?: bool}` → la conversación.
+     * Un campo que no viene no se toca; un título vacío es un 422 (para "sin título" no hay botón).
+     *
+     * @param  Request  $request
+     * @param  int  $id
+     * @return JsonResponse  200 {model} · 404 · 422 {code: validacion}
+     */
+    public function update(Request $request, $id): JsonResponse
+    {
+        $conversation = $this->conversacion_de_la_persona($id);
+
+        if (is_null($conversation)) {
+            return response()->json(['message' => 'Conversación no encontrada.'], 404);
+        }
+
+        $validador = Validator::make($request->all(), [
+            'titulo' => 'sometimes|required|string|max:' . self::MAX_TITULO,
+            'fijada' => 'sometimes|boolean',
+        ]);
+
+        if ($validador->fails()) {
+            return response()->json([
+                'code'    => 'validacion',
+                'message' => $validador->errors()->first(),
+                'errors'  => $validador->errors(),
+            ], 422);
+        }
+
+        if ($request->has('titulo')) {
+            $conversation->titulo = trim((string) $request->input('titulo'));
+        }
+
+        if ($request->has('fijada')) {
+            $conversation->fijada = $request->boolean('fijada');
+        }
+
+        $conversation->save();
+
+        return response()->json(['model' => $conversation->fresh()], 200);
     }
 
     /**

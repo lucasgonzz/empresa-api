@@ -1391,6 +1391,8 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('ai-conversations', 'AiConversationController@index');
         Route::post('ai-conversations', 'AiConversationController@store');
         Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+        // Renombrar y fijar desde la barra lateral de la app (misión app-ia-y-memoria, contrato C5).
+        Route::patch('ai-conversations/{id}', 'AiConversationController@update');
         Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
         Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
         Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
