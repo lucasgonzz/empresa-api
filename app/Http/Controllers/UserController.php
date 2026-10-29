@@ -771,6 +771,44 @@ class UserController extends Controller
         }
     }
 
+    /** Guarda el modo de consulta de cuenta corriente de la persona autenticada. */
+    function set_current_acount_consulta(Request $request) {
+        $request->validate([
+            'modo' => 'required|in:defecto,atajo,personalizado,ultimos',
+            'cantidad' => 'required|integer|min:1|max:2000',
+            'clave' => 'required|in:defecto,este_mes,mes_anterior,ultimos_30_dias,ultimos_3_meses,este_anio,todo,personalizado,ultimos',
+        ]);
+
+        $modo = $request->modo;
+        $claves = ['este_mes', 'mes_anterior', 'ultimos_30_dias', 'ultimos_3_meses', 'este_anio', 'todo'];
+        $clave_correcta = $modo === 'atajo' ? in_array($request->clave, $claves, true) : $request->clave === $modo;
+        if (!$clave_correcta) {
+            return response()->json(['message' => 'El modo y el período elegido no coinciden.'], 422);
+        }
+
+        if ($modo === 'personalizado') {
+            $request->validate([
+                'desde' => 'required|date_format:Y-m-d|after_or_equal:2000-01-01|before_or_equal:2099-12-31',
+                'hasta' => 'required|date_format:Y-m-d|after_or_equal:desde|before_or_equal:2099-12-31',
+            ]);
+        }
+
+        // Auth::user(), nunca userId(): un empleado conserva SU elección, sin pisar al dueño.
+        // Solo se guardan filtros. Ningún identificador ni movimiento puede entrar en este JSON.
+        $model = Auth::user();
+        $model->current_acount_consulta = [
+            'modo' => $modo,
+            'clave' => $request->clave,
+            'desde' => $modo === 'personalizado' ? $request->desde : null,
+            'hasta' => $modo === 'personalizado' ? $request->hasta : null,
+            'cantidad' => (int) $request->cantidad,
+        ];
+        $model->save();
+        UserHelper::set_sessions($model);
+
+        return response()->json(['current_acount_consulta' => $model->current_acount_consulta], 200);
+    }
+
     /**
      * Guarda la preferencia de modo oscuro del usuario AUTENTICADO (dueño o empleado).
      *
