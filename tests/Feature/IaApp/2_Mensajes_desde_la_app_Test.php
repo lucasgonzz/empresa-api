@@ -471,7 +471,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
         $conversation = $this->conversacion(['titulo' => 'Audio']);
 
         $respuesta = $this->mandar($conversation->id, [
-            'audio'        => UploadedFile::fake()->createWithContent('nota.webm', 'bytes-de-un-webm'),
+            'audio'        => UploadedFile::fake()->createWithContent('nota.webm', $this->webm()),
             'duracion_seg' => '4.2',
         ]);
 
@@ -507,6 +507,24 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
             ->assertJsonPath('model.audio.duracion_seg', 4.2);
     }
 
+    public function test_un_html_renombrado_webm_no_entra_como_audio()
+    {
+        $conversation = $this->conversacion(['titulo' => 'Audio']);
+
+        // 🔴 La extensión dice audio; el contenido, HTML. Se valida por el contenido (finfo).
+        $this->mandar($conversation->id, [
+            'audio' => UploadedFile::fake()->createWithContent('nota.webm', '<!doctype html><html><body><script>alert(1)</script></body></html>'),
+        ])->assertStatus(422)->assertJsonPath('code', 'adjunto_invalido');
+
+        $this->assertSame(0, AiMessage::where('ai_conversation_id', $conversation->id)->count());
+
+        $this->como_otro_cliente();
+
+        $this->post('api/ia-app/transcribir', [
+            'audio' => UploadedFile::fake()->createWithContent('dictado.webm', '<html>no</html>'),
+        ], $this->de_la_app())->assertStatus(422)->assertJsonPath('code', 'audio_invalido');
+    }
+
     public function test_si_la_transcripcion_falla_contesta_lo_mismo_que_whatsapp_sin_llamar_al_modelo()
     {
         $this->claves();
@@ -515,7 +533,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
         $conversation = $this->conversacion(['titulo' => 'Audio']);
 
         $respuesta = $this->mandar($conversation->id, [
-            'audio' => UploadedFile::fake()->createWithContent('nota.ogg', 'bytes-de-un-ogg'),
+            'audio' => UploadedFile::fake()->createWithContent('nota.ogg', $this->ogg()),
         ]);
 
         $respuesta->assertStatus(201);
@@ -540,7 +558,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
 
         $respuesta = $this->mandar($conversation->id, [
             'contenido' => 'te mando las dos cosas',
-            'audio'     => UploadedFile::fake()->createWithContent('nota.webm', 'bytes-del-audio'),
+            'audio'     => UploadedFile::fake()->createWithContent('nota.webm', $this->webm()),
             'archivos'  => [UploadedFile::fake()->createWithContent('precios.csv', "a;b\n1;2\n")],
         ]);
 
@@ -552,7 +570,9 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
 
         $audio = $this->get('api/ai-mensajes/' . $id . '/audio', $this->de_la_app());
         $audio->assertStatus(200);
-        $this->assertSame('bytes-del-audio', $this->binario_de($audio));
+        $this->assertSame($this->webm(), $this->binario_de($audio));
+        $this->assertSame('video/webm', (string) $audio->headers->get('Content-Type'), 'Con el mime validado por el contenido.');
+        $this->assertSame('nosniff', (string) $audio->headers->get('X-Content-Type-Options'));
         $this->assertStringContainsString('private', (string) $audio->headers->get('Cache-Control'));
 
         $this->como_otro_cliente();
@@ -585,7 +605,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
         $this->fakes('vendemos herramientas y bulonería');
 
         $this->post('api/ia-app/transcribir', [
-            'audio' => UploadedFile::fake()->createWithContent('dictado.webm', 'bytes'),
+            'audio' => UploadedFile::fake()->createWithContent('dictado.webm', $this->webm()),
         ], $this->de_la_app())
             ->assertStatus(200)
             ->assertExactJson(['texto' => 'vendemos herramientas y bulonería']);
@@ -603,7 +623,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
         $this->como_otro_cliente();
 
         $this->post('api/ia-app/transcribir', [
-            'audio' => UploadedFile::fake()->createWithContent('dictado.webm', 'bytes'),
+            'audio' => UploadedFile::fake()->createWithContent('dictado.webm', $this->webm()),
         ], $this->de_la_app())
             ->assertStatus(503)
             ->assertJsonPath('code', 'sin_transcripcion');

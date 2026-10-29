@@ -30,6 +30,13 @@ class AudioDelMensajeIaHelper
     /** Peso máximo, en MB (contrato C5). */
     const MAX_MB = 10;
 
+    /**
+     * Además de cualquier `audio/*`, los mimes con que finfo reconoce un audio grabado por el navegador:
+     * MediaRecorder de Chrome y Firefox graba en un contenedor webm, el ogg suele salir como
+     * application/ogg y Safari graba en mp4.
+     */
+    const MIMES_DE_AUDIO_EXTRA = ['video/webm', 'application/ogg', 'video/mp4'];
+
     /** Duración máxima que se acepta como dato (una hora); más que eso es un dato roto. */
     const MAX_DURACION_SEG = 3600;
 
@@ -65,7 +72,50 @@ class AudioDelMensajeIaHelper
             return 'Ese formato de audio no lo puedo escuchar. Se aceptan: ' . implode(', ', self::FORMATOS) . '.';
         }
 
+        /*
+         * 🔴 POR EL CONTENIDO, NO POR EL NOMBRE (corrección de la revisión, 29/10/2026): un HTML renombrado
+         * `.webm` pasaba la extensión, quedaba guardado y se servía con el mime que adivinara el navegador.
+         * finfo lee la firma del archivo.
+         */
+        if (is_null(self::mime_de_audio($audio->getRealPath()))) {
+
+            return 'Ese archivo no es un audio que pueda escuchar.';
+        }
+
         return null;
+    }
+
+    /**
+     * El mime de un archivo según su CONTENIDO (finfo), si es de audio; null si no lo es.
+     *
+     * @param  string  $ruta
+     * @return string|null
+     */
+    public static function mime_de_audio($ruta)
+    {
+        try {
+
+            $mime = (string) (new \finfo(FILEINFO_MIME_TYPE))->file((string) $ruta);
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+
+        return self::es_mime_de_audio($mime) ? $mime : null;
+    }
+
+    /**
+     * true si el mime es de audio: `audio/*` o uno de MIMES_DE_AUDIO_EXTRA.
+     *
+     * @param  string  $mime
+     * @return bool
+     */
+    public static function es_mime_de_audio($mime): bool
+    {
+        $mime = strtolower(trim((string) $mime));
+
+        return strpos($mime, 'audio/') === 0 || in_array($mime, self::MIMES_DE_AUDIO_EXTRA, true);
     }
 
     /**
@@ -127,7 +177,8 @@ class AudioDelMensajeIaHelper
             'path'          => $path,
             'nombre'        => mb_substr(trim((string) $audio->getClientOriginalName()), 0, 120),
             'ext'           => $extension,
-            'mime'          => (string) $audio->getMimeType(),
+            /* El validado por el contenido (motivo_de_rechazo()): es el que se manda al servirlo. */
+            'mime'          => (string) self::mime_de_audio($audio->getRealPath()),
             'tamano'        => (int) $audio->getSize(),
             'duracion_seg'  => self::duracion_valida($duracion_seg),
             'transcripcion' => self::TRANSCRIPCION_PENDIENTE,

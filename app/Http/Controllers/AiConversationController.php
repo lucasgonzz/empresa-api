@@ -628,11 +628,12 @@ class AiConversationController extends Controller
             return response()->json(['message' => 'Audio no encontrado.'], 404);
         }
 
+        /* Solo con un mime de audio validado; si no, como binario (nunca algo que el navegador ejecute). */
         $mime = trim((string) ($audio['mime'] ?? ''));
 
         return $this->archivo_privado(
             Storage::disk('local')->path($audio['path']),
-            $mime === '' ? 'application/octet-stream' : $mime,
+            AudioDelMensajeIaHelper::es_mime_de_audio($mime) ? $mime : 'application/octet-stream',
             null
         );
     }
@@ -668,7 +669,8 @@ class AiConversationController extends Controller
     /**
      * Un binario del disco privado, con caché `private` (ver el 🔴 de imagen_de_mensaje(): el
      * `Cache-Control` se pone con setPrivate(), nunca en el array de headers) y, si se pasa nombre, como
-     * descarga con ese nombre (con un respaldo en ASCII: el header no admite tildes sin él).
+     * descarga con ese nombre (con un respaldo en ASCII: el header no admite tildes sin él). Siempre con
+     * `X-Content-Type-Options: nosniff`: el navegador usa el mime que se manda y no adivina otro.
      *
      * @param  string  $ruta
      * @param  string  $mime
@@ -677,7 +679,7 @@ class AiConversationController extends Controller
      */
     protected function archivo_privado($ruta, $mime, $nombre)
     {
-        $respuesta = response()->file($ruta, ['Content-Type' => $mime]);
+        $respuesta = response()->file($ruta, ['Content-Type' => $mime, 'X-Content-Type-Options' => 'nosniff']);
 
         if (!is_null($nombre) && $nombre !== '') {
             $ascii = preg_replace('/[^A-Za-z0-9\.\-_ ]/', '_', Str::ascii($nombre));
