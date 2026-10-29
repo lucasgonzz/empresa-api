@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
@@ -249,6 +250,9 @@ class AiConversationController extends Controller
 
         AccionesIaHelper::cargar_en_mensajes($paginator->getCollection());
 
+        /* Misión app-ia-y-memoria: una imagen que lleva más de 8 h sin llegar se da por fallida (persistido). */
+        PedidosDeImagenIaHelper::vencer_las_colgadas($paginator->getCollection());
+
         return response()->json(['models' => $paginator], 200);
     }
 
@@ -385,6 +389,19 @@ class AiConversationController extends Controller
 
             foreach ($cerrados as $cerrado_id) {
                 AccionesIaHelper::descartar_de_mensaje($cerrado_id);
+
+                /*
+                 * Misión app-ia-y-memoria: si lo que había mandado el dueño era un audio que no llegó a
+                 * transcribirse (el job nunca corrió), la transcripción queda `fallida`: si no, la app
+                 * muestra "transcribiendo…" para siempre debajo del audio.
+                 */
+                AudioDelMensajeIaHelper::cerrar_si_quedo_pendiente(
+                    AiMessage::where('ai_conversation_id', $conversation->id)
+                        ->where('rol', 'user')
+                        ->where('id', '<', (int) $cerrado_id)
+                        ->orderBy('id', 'DESC')
+                        ->first()
+                );
             }
         }
 
@@ -558,6 +575,8 @@ class AiConversationController extends Controller
         }
 
         AccionesIaHelper::cargar_en_mensajes([$message]);
+
+        PedidosDeImagenIaHelper::vencer_las_colgadas([$message]);
 
         return response()->json(['model' => $message], 200);
     }

@@ -42,6 +42,18 @@ class PedidosDeImagenIaHelper
     /** Lo que ve el dueño cuando el admin rechazó el pedido por el tope de imágenes del día (C2.1, 429 `tope_diario`). */
     const TOPE_PARA_EL_DUENO = 'Llegaste al tope de imágenes de hoy; probá mañana.';
 
+    /**
+     * Horas después de las cuales una imagen que sigue `pendiente` o `generando` se da por perdida: la PC
+     * que la genera estuvo apagada, el admin no la entregó. Sin esto el bloque queda girando para siempre.
+     */
+    const HORAS_PARA_DARLA_POR_PERDIDA = 8;
+
+    /** Lo que ve el dueño en el bloque de una imagen que se dio por perdida. */
+    const PERDIDA_PARA_EL_DUENO = 'No pude terminar la imagen. Pedímela de nuevo.';
+
+    /** Los estados del bloque que todavía esperan la imagen. */
+    const ESTADOS_EN_CURSO = ['pendiente', 'generando'];
+
     /** Lo que ve el dueño cuando su sistema no tiene todavía el circuito de imágenes del otro lado. */
     const NO_DISPONIBLE_PARA_EL_DUENO = 'La generación de imágenes todavía no está disponible para tu sistema.';
 
@@ -256,6 +268,126 @@ class PedidosDeImagenIaHelper
         $pedido->save();
 
         self::actualizar_bloque($pedido, $para_el_dueno);
+    }
+
+    /**
+     * Da por fallidas las imágenes que llevan más de HORAS_PARA_DARLA_POR_PERDIDA horas `pendiente` o
+     * `generando`, en los mensajes que se están por servir (lo llama el listado de mensajes y el mensaje
+     * puntual). Queda PERSISTIDO: el pedido pasa a `fallida` y el bloque del mensaje a `fallida` con
+     * PERDIDA_PARA_EL_DUENO, y el mensaje en memoria se refresca para que la respuesta ya lo muestre así.
+     *
+     * Si la imagen llega igual después (el admin la entrega tarde), recibir_resultado() la acepta y el
+     * bloque pasa a `lista`.
+     *
+     * Barato cuando no hay nada que hacer: solo mira los mensajes que tienen un bloque de imagen en curso
+     * y son más viejos que el tope. Nunca lanza: servir los mensajes es más importante.
+     *
+     * @param  iterable  $mensajes  AiMessage[]
+     * @return void
+     */
+    public static function vencer_las_colgadas($mensajes)
+    {
+        $limite = Carbon::now()->subHours(self::HORAS_PARA_DARLA_POR_PERDIDA);
+
+        foreach ($mensajes as $mensaje) {
+
+            if (!($mensaje instanceof AiMessage) || is_null($mensaje->created_at) || $mensaje->created_at->gt($limite)) {
+                continue;
+            }
+
+            $bloques = $mensaje->bloques;
+
+            if (!is_array($bloques)) {
+                continue;
+            }
+
+            $uuids = [];
+
+            foreach ($bloques as $bloque) {
+
+                if (is_array($bloque)
+                    && ($bloque['tipo'] ?? '') === BloquesIaHelper::TIPO_IMAGEN
+                    && in_array((string) ($bloque['estado'] ?? ''), self::ESTADOS_EN_CURSO, true)) {
+
+                    $uuids[] = (string) ($bloque['uuid'] ?? '');
+                }
+            }
+
+            if (!count($uuids)) {
+                continue;
+            }
+
+            try {
+
+                self::vencer_las_del_mensaje($mensaje, $uuids);
+
+            } catch (\Throwable $e) {
+
+                Log::warning('PedidosDeImagenIaHelper: no se pudieron dar por perdidas las imágenes colgadas', [
+                    'ai_message_id' => $mensaje->id,
+                    'error'         => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * Los pedidos y los bloques de un mensaje, a `fallida` (ver vencer_las_colgadas()).
+     *
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  array<int, string>  $uuids
+     * @return void
+     */
+    protected static function vencer_las_del_mensaje(AiMessage $mensaje, array $uuids)
+    {
+        if (ColumnasDeLaAppIaHelper::hay_tabla('ia_imagen_pedidos')) {
+
+            IaImagenPedido::whereIn('uuid', $uuids)
+                ->where('ai_message_id', (int) $mensaje->id)
+                ->whereIn('estado', [IaImagenPedido::ESTADO_PENDIENTE])
+                ->update([
+                    'estado' => IaImagenPedido::ESTADO_FALLIDA,
+                    'error'  => 'se dio por perdida: más de ' . self::HORAS_PARA_DARLA_POR_PERDIDA . ' h sin resultado',
+                ]);
+        }
+
+        DB::transaction(function () use ($mensaje, $uuids) {
+
+            $fila = AiMessage::where('id', (int) $mensaje->id)->lockForUpdate()->first();
+
+            if (is_null($fila) || !is_array($fila->bloques)) {
+
+                return;
+            }
+
+            $bloques = $fila->bloques;
+            $tocado  = false;
+
+            foreach ($bloques as $i => $bloque) {
+
+                if (is_array($bloque)
+                    && ($bloque['tipo'] ?? '') === BloquesIaHelper::TIPO_IMAGEN
+                    && in_array((string) ($bloque['uuid'] ?? ''), $uuids, true)
+                    && in_array((string) ($bloque['estado'] ?? ''), self::ESTADOS_EN_CURSO, true)) {
+
+                    $bloque['estado'] = 'fallida';
+                    $bloque['url']    = null;
+                    $bloque['error']  = self::PERDIDA_PARA_EL_DUENO;
+                    $bloques[$i]      = $bloque;
+                    $tocado           = true;
+                }
+            }
+
+            if ($tocado) {
+                $fila->bloques = $bloques;
+                $fila->save();
+            }
+
+            /* El mensaje que se va a servir, con lo que quedó en la base (sin dejarlo "sucio"). */
+            $atributos = $mensaje->getAttributes();
+            $atributos['bloques'] = $fila->getAttributes()['bloques'] ?? null;
+            $mensaje->setRawAttributes($atributos, true);
+        });
     }
 
     /**
