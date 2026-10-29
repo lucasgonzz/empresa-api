@@ -409,6 +409,16 @@ return [
         'modelo_transcripcion' => env('OPENAI_MODELO_TRANSCRIPCION', 'gpt-4o-mini-transcribe'),
     ],
 
+    /*
+     * Imágenes que el agente genera para el dueño desde la app «ComercioCity IA» (misión app-ia-y-memoria,
+     * 29/10/2026): la herramienta pedir_imagen deja el pedido, el admin lo genera en la PC de Lucas y lo
+     * devuelve. `tope_diario`: pedidos por día y por dueño; pasado el tope, el agente lo explica y no se
+     * pide nada. Ver PedidosDeImagenIaHelper.
+     */
+    'ia_imagenes' => [
+        'tope_diario' => (int) env('IA_IMAGENES_TOPE_DIARIO', 20),
+    ],
+
     /**
      * Google Custom Search API (asignación batch de imágenes en ProcessArticleBatchImagesJob).
      * En Windows/WAMP sin CA bundle suele aparecer cURL error 60; ver .env.example.

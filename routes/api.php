@@ -1404,6 +1404,8 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::delete('ia-app/token', 'IaAppController@revocar_token');
         // El dictado del cuestionario de inicio: un audio que vuelve como texto (OpenAI).
         Route::post('ia-app/transcribir', 'IaAppController@transcribir');
+        // La imagen que generó el agente (la `url` del bloque `imagen_generada`), con tenencia por dueño.
+        Route::get('ia-imagenes/{uuid}', 'IaAppController@imagen_generada');
 
         /*
          * El binario de una foto que el dueño mandó por WhatsApp (misión
@@ -1763,6 +1765,8 @@ Route::prefix('admin-sync')
     ->group(function () {
         Route::post('ia-app/token', 'AdminSync\\IaAppController@token');
         Route::get('ia-app/dueno', 'AdminSync\\IaAppController@dueno');
+        // C1.4: el admin entrega la imagen generada de un pedido del agente (multipart, idempotente).
+        Route::post('ia-imagenes/{uuid}/resultado', 'AdminSync\\IaImagenesController@resultado');
     });
 
 // El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026, contrato C1): el SPA pide un

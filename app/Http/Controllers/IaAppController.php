@@ -6,8 +6,10 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
+use App\Models\IaImagenPedido;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Las rutas propias de la app «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026, contrato C5).
@@ -112,5 +114,36 @@ class IaAppController extends Controller
         }
 
         return response()->json(['texto' => $resultado['texto']], 200, [], JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * GET api/ia-imagenes/{uuid} → el binario de una imagen que generó el agente (misión
+     * app-ia-y-memoria, contrato C5). Es la `url` del bloque `imagen_generada` cuando está `lista`.
+     *
+     * Tenencia por DUEÑO (el pedido es del negocio, no de la persona) y 404 —no 403— si es de otro o
+     * todavía no llegó. Caché `private`, como las fotos del chat.
+     *
+     * @param  string  $uuid
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|\Illuminate\Http\JsonResponse
+     */
+    public function imagen_generada($uuid)
+    {
+        $pedido = IaImagenPedido::where('uuid', (string) $uuid)
+            ->where('user_id', (int) UserHelper::userId(true))
+            ->where('estado', IaImagenPedido::ESTADO_LISTA)
+            ->first();
+
+        if (is_null($pedido) || empty($pedido->path) || !Storage::disk('local')->exists($pedido->path)) {
+
+            return response()->json(['code' => 'imagen_inexistente', 'message' => 'Imagen no encontrada.'], 404);
+        }
+
+        $respuesta = response()->file(Storage::disk('local')->path($pedido->path));
+
+        // setPrivate() y no un header en el array: ver el 🔴 de AiConversationController::imagen_de_mensaje().
+        $respuesta->setPrivate();
+        $respuesta->setMaxAge(300);
+
+        return $respuesta;
     }
 }

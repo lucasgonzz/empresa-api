@@ -277,6 +277,8 @@ class AiConversationController extends Controller
                 'contenido'     => ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
                 'estado'        => 'error',
                 'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
+                // Misión app-ia-y-memoria: la línea de progreso de un huérfano no queda colgada.
+                'progreso'      => null,
             ]);
 
         /*

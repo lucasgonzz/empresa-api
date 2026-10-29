@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
@@ -24,6 +25,7 @@ use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
@@ -210,6 +212,32 @@ class AsistenteIaService
     protected $fotos_del_payload = [];
 
     /**
+     * Los bloques (gráficos, tablas, imágenes generadas) que dejaron las herramientas de la app en la
+     * respuesta que se está generando (misión app-ia-y-memoria, §4 E1.6). Mismo patrón que $adjuntos: se
+     * juntan en execute_tool_calls() y el job los guarda con el mensaje.
+     *
+     * @var array<int, array<string, mixed>>
+     */
+    protected $bloques = [];
+
+    /**
+     * Los ids de los pedidos de imagen (IaImagenPedido) que creó pedir_imagen en esta respuesta: el job
+     * los manda al admin DESPUÉS de guardar el mensaje con sus bloques.
+     *
+     * @var array<int, int>
+     */
+    protected $pedidos_de_imagen = [];
+
+    /**
+     * true mientras corre el loop de responder(): solo ahí se escribe la línea de progreso antes de cada
+     * herramienta. El servidor MCP llama a execute_tool_calls() sin el loop y su mensaje no pasa por el
+     * job que la vuelve a null (ver ProgresoIaHelper).
+     *
+     * @var bool
+     */
+    protected $marcar_progreso = false;
+
+    /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
      * es un error: sin clave, el job deja el mensaje en error amigable sin salir a la red.
      *
@@ -273,6 +301,9 @@ class AsistenteIaService
         $this->candidatos_a_mencion = [];
         $this->menciones = [];
         $this->adjuntos = [];
+        $this->bloques = [];
+        $this->pedidos_de_imagen = [];
+        $this->marcar_progreso = true;
 
         $owner = User::find($conversation->user_id);
 
@@ -293,6 +324,13 @@ class AsistenteIaService
          * confirmación por texto.
          */
         $es_whatsapp = $assistant_message->es_de_whatsapp();
+
+        /*
+         * Misión app-ia-y-memoria (29/10/2026): el canal de la app también sale del MENSAJE. Cambia el
+         * formato del prompt (markdown simple) y suma las herramientas de bloques; todo lo demás es el
+         * sistema (tarjetas con botón).
+         */
+        $es_app = $assistant_message->es_de_la_app();
 
         /*
          * Misión asistente-fotos-barras-y-compras (24/9/2026): si la persona contestó un "sí" corto a
@@ -341,7 +379,7 @@ class AsistenteIaService
          * carga — y se duplicaba. En ese caso la respuesta es el resultado de la carga, tal cual.
          */
         try {
-            return $this->responder_con_el_modelo($conversation, $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista);
+            return $this->responder_con_el_modelo($conversation, $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista, $es_app);
         } catch (\Throwable $e) {
             $respaldo = is_null($confirmacion_determinista)
                 ? null
@@ -376,11 +414,11 @@ class AsistenteIaService
      *
      * @throws AsistenteIaException
      */
-    protected function responder_con_el_modelo(AiConversation $conversation, AiMessage $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista): string
+    protected function responder_con_el_modelo(AiConversation $conversation, AiMessage $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista, $es_app = false): string
     {
-        $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp);
+        $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
         $messages = $this->build_messages_payload($conversation);
-        $tools    = $this->build_tools($con_acciones, $es_whatsapp);
+        $tools    = $this->build_tools($con_acciones, $es_whatsapp, $es_app);
 
         /*
          * La nota con el resultado REAL de la confirmación viaja pegada al "sí" de la persona: el
@@ -1231,6 +1269,27 @@ class AsistenteIaService
     }
 
     /**
+     * Los bloques de la última respuesta (misión app-ia-y-memoria): gráficos, tablas e imágenes
+     * generadas, ya validados por BloquesIaHelper. Vacío fuera de la app o si no hubo.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    public function bloques(): array
+    {
+        return $this->bloques;
+    }
+
+    /**
+     * Los ids de los pedidos de imagen que creó la última respuesta, para que el job los mande al admin.
+     *
+     * @return array<int, int>
+     */
+    public function pedidos_de_imagen(): array
+    {
+        return $this->pedidos_de_imagen;
+    }
+
+    /**
      * Texto del bloque 1 del system: identidad, tono, formato texto plano y
      * reglas de qué puede afirmar. Es el prefijo común a TODAS las
      * conversaciones (por eso es el que lleva cache_control).
@@ -1239,9 +1298,10 @@ class AsistenteIaService
      * @param User|null $owner Dueño de la cuenta, para el nombre del negocio.
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @param bool $es_whatsapp true si el mensaje entró por WhatsApp (misión asistente-por-whatsapp).
+     * @param bool $es_app true si el mensaje entró por la app «ComercioCity IA» (misión app-ia-y-memoria).
      * @return string
      */
-    public function build_system_prompt(AiConversation $conversation, $owner, $con_acciones = false, $es_whatsapp = false): string
+    public function build_system_prompt(AiConversation $conversation, $owner, $con_acciones = false, $es_whatsapp = false, $es_app = false): string
     {
         // Mismo fallback que el resto del sistema cuando el negocio no cargó su nombre.
         $company_name = '';
@@ -1303,6 +1363,15 @@ class AsistenteIaService
          */
         $bloque_de_whatsapp = $es_whatsapp ? $this->bloque_de_whatsapp($con_acciones, $confianza) : '';
 
+        /*
+         * Misión app-ia-y-memoria (29/10/2026): en la app la pantalla SÍ muestra markdown simple y hay
+         * gráficos, tablas e imágenes. El formato cambia la regla dura de "Formato de la respuesta" (no se
+         * puede corregir después: el modelo ya leyó "prohibido el markdown") y el bloque del canal va donde
+         * va el de WhatsApp. En el sistema y en WhatsApp, el texto de siempre, byte a byte.
+         */
+        $formato = $es_app ? $this->formato_de_la_app() : $this->formato_de_texto_plano();
+        $bloque_de_la_app = $es_app ? $this->bloque_de_la_app() : '';
+
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
 adentro del sistema de gestión de ese negocio y le hablás a la persona que lo usa.
@@ -1313,13 +1382,7 @@ Cómo hablás:
 - Respuestas cortas: hasta 6 oraciones, salvo que te pidan explícitamente el detalle.
 - No saludes ni te presentes en cada mensaje: la conversación ya está empezada.
 
-Formato de la respuesta (regla dura):
-- TEXTO PLANO. Está prohibido el markdown: nada de asteriscos, almohadillas,
-  guiones de lista, tablas ni bloques de código. La pantalla que te muestra NO
-  interpreta markdown y los símbolos se ven crudos.
-- Si tenés que enumerar, usá líneas cortas separadas por salto de línea, empezando
-  cada una con la cosa nombrada. Nunca con "- " ni "* ".
-
+{$formato}
 Qué podés afirmar:
 - SOLO lo que salga de las herramientas de consulta o del contexto de esta
   conversación. Nunca inventes números, precios, saldos, stock ni fechas.
@@ -1368,11 +1431,78 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
 SYSTEM;
+    }
+
+    /**
+     * La regla de formato de siempre (sistema, WhatsApp, MCP): texto plano. Es el MISMO texto que había
+     * en build_system_prompt() antes de la misión app-ia-y-memoria, con su línea en blanco final.
+     *
+     * @return string
+     */
+    protected function formato_de_texto_plano(): string
+    {
+        return <<<FORMATO
+Formato de la respuesta (regla dura):
+- TEXTO PLANO. Está prohibido el markdown: nada de asteriscos, almohadillas,
+  guiones de lista, tablas ni bloques de código. La pantalla que te muestra NO
+  interpreta markdown y los símbolos se ven crudos.
+- Si tenés que enumerar, usá líneas cortas separadas por salto de línea, empezando
+  cada una con la cosa nombrada. Nunca con "- " ni "* ".
+
+FORMATO;
+    }
+
+    /**
+     * La regla de formato de la app «ComercioCity IA» (misión app-ia-y-memoria, §4 E1.6): markdown
+     * simple, sin tablas de markdown (para eso está mostrar_tabla).
+     *
+     * @return string
+     */
+    protected function formato_de_la_app(): string
+    {
+        return <<<FORMATO
+Formato de la respuesta (regla dura):
+- Estás en la app ComercioCity IA, que SÍ muestra markdown simple: podés usar
+  **negrita** para lo importante, listas con "- " y títulos cortos con "### " cuando
+  la respuesta es larga. Nada más: sin tablas en markdown (para eso está
+  mostrar_tabla), sin bloques de código, sin HTML y sin links que no te haya dado
+  una herramienta.
+- Una respuesta corta va en una o dos oraciones, sin adornos ni títulos.
+
+FORMATO;
+    }
+
+    /**
+     * Las reglas del canal de la app (misión app-ia-y-memoria, §4 E1.6), con una línea en blanco al
+     * final: cuándo mostrar un gráfico o una tabla, cómo pedir una imagen. Va donde va el de WhatsApp
+     * (son excluyentes) y, como ese, después del bloque de carga.
+     *
+     * @return string
+     */
+    protected function bloque_de_la_app(): string
+    {
+        return <<<APP
+Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño):
+- Podés mostrar GRÁFICOS (mostrar_grafico) y TABLAS (mostrar_tabla) debajo de tu texto.
+  Usalos cuando ayudan a entender: una evolución en el tiempo, una comparación entre
+  varios, cuánto pesa cada parte en un total, o un listado que la persona va a querer
+  recorrer fila por fila. Una pregunta con un solo número se contesta con el número.
+- Los números del gráfico o de la tabla salen SIEMPRE de las herramientas de consulta:
+  primero consultás, después mostrás. Nunca inventes ni redondees a ojo.
+- Después de un gráfico o una tabla, en el texto contá lo importante en una o dos
+  oraciones; no repitas todos los números.
+- Si te pide una imagen (una placa para redes, un cartel, una promo), llamá a
+  pedir_imagen con un prompt detallado. Tarda unos minutos y aparece sola en este
+  mensaje: decilo en una línea, sin prometer que ya está.
+- Si la persona te dijo cómo prefiere que le respondas (más breve, más explicado, con
+  gráficos o con números directos), eso manda sobre estas reglas.
+
+APP;
     }
 
     /**
@@ -2143,14 +2273,15 @@ CONFIRMACION;
      * @param User|null $owner
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @param bool $es_whatsapp true si el mensaje entró por WhatsApp (misión asistente-por-whatsapp).
+     * @param bool $es_app true si el mensaje entró por la app «ComercioCity IA» (misión app-ia-y-memoria).
      * @return array<int, array<string, mixed>>
      */
-    public function build_system_payload(AiConversation $conversation, $owner, $con_acciones = false, $es_whatsapp = false): array
+    public function build_system_payload(AiConversation $conversation, $owner, $con_acciones = false, $es_whatsapp = false, $es_app = false): array
     {
         $system = [
             [
                 'type'          => 'text',
-                'text'          => $this->build_system_prompt($conversation, $owner, $con_acciones, $es_whatsapp),
+                'text'          => $this->build_system_prompt($conversation, $owner, $con_acciones, $es_whatsapp, $es_app),
                 'cache_control' => ['type' => 'ephemeral'],
             ],
         ];
@@ -3171,6 +3302,16 @@ CONFIRMACION;
         $contenido = TarjetaPrometidaIaHelper::sin_avisos($contenido);
         $contenido .= ContextoDeBusquedaDeProductoIaHelper::para_historial($message);
 
+        /*
+         * Misión app-ia-y-memoria: qué gráficos, tablas o imágenes mostró esa respuesta (una línea por
+         * bloque, sin los datos), para que el modelo sepa de qué le hablan en "¿y el de la semana pasada?".
+         */
+        $de_los_bloques = BloquesIaHelper::lineas_de_historial($message->bloques);
+
+        if ($de_los_bloques !== '') {
+            $contenido = rtrim($contenido) . "\n" . $de_los_bloques;
+        }
+
         if (! $message->relationLoaded('acciones') || $message->acciones->isEmpty()) {
             return $contenido;
         }
@@ -3207,16 +3348,27 @@ CONFIRMACION;
      * y darle a la IA una herramienta para confirmar sola lo que ella misma
      * propuso sería sacarle el control a quien tiene que darlo.
      *
+     * Misión app-ia-y-memoria: con el canal de la app se suman al final mostrar_grafico, mostrar_tabla y
+     * pedir_imagen (HerramientasDeLaApp). Es un tercer prefijo de caché, solo de la app; el sistema y
+     * WhatsApp mandan exactamente lo mismo que antes.
+     *
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @param bool $es_whatsapp true si el mensaje entró por WhatsApp.
+     * @param bool $es_app true si el mensaje entró por la app «ComercioCity IA».
      * @return array<int, array<string, mixed>>
      */
-    public function build_tools($con_acciones = false, $es_whatsapp = false): array
+    public function build_tools($con_acciones = false, $es_whatsapp = false, $es_app = false): array
     {
         $tools = $this->herramientas_de_lectura();
 
         if ($con_acciones) {
             foreach (HerramientasDeCarga::definiciones($es_whatsapp) as $definicion) {
+                $tools[] = $definicion;
+            }
+        }
+
+        if ($es_app) {
+            foreach (HerramientasDeLaApp::definiciones() as $definicion) {
                 $tools[] = $definicion;
             }
         }
@@ -4197,6 +4349,14 @@ CONFIRMACION;
             $tool_name  = (string) ($block['name'] ?? '');
             $tool_input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
 
+            /*
+             * Misión app-ia-y-memoria (§4 E1.5): la línea de progreso, antes de cada herramienta y solo
+             * adentro del loop de responder() (el job la vuelve a null al terminar). Nunca lanza.
+             */
+            if ($this->marcar_progreso) {
+                ProgresoIaHelper::marcar($assistant_message, $tool_name);
+            }
+
             try {
                 // true cuando la tool pedida no está en la whitelist: el
                 // tool_result viaja con is_error para que Claude no lo lea
@@ -4210,7 +4370,25 @@ CONFIRMACION;
 
                 $handler = $this->handler_de_lectura($tool_name);
 
-                if (! is_null($handler)) {
+                /*
+                 * Misión app-ia-y-memoria: las herramientas de bloques existen SOLO para un mensaje de la
+                 * app. En el sistema, en WhatsApp o desde MCP caen en "Tool desconocida", igual que una
+                 * que no está declarada.
+                 */
+                if ($assistant_message instanceof AiMessage && $assistant_message->es_de_la_app() && HerramientasDeLaApp::maneja($tool_name)) {
+                    $de_la_app = HerramientasDeLaApp::ejecutar($tool_name, $tool_input, $conversation, $assistant_message, count($this->bloques));
+
+                    if (! is_null($de_la_app['bloque'])) {
+                        $this->bloques[] = $de_la_app['bloque'];
+                    }
+
+                    if (! is_null($de_la_app['pedido_id'])) {
+                        $this->pedidos_de_imagen[] = (int) $de_la_app['pedido_id'];
+                    }
+
+                    $content = $de_la_app['content'];
+                    $error_de_la_herramienta = (bool) $de_la_app['is_error'];
+                } elseif (! is_null($handler)) {
                     // Las dos puntas de una tool de lectura (su definición y su handler) son la
                     // misma entrada de registro_de_lectura(): acá solo se la invoca. La conversación
                     // va tercera para las tools que recortan por QUIÉN pregunta (ver el docblock

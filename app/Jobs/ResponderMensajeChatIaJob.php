@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
 use App\Models\AiConversation;
@@ -199,7 +200,27 @@ class ResponderMensajeChatIaJob implements ShouldQueue
              * y por el mismo motivo: fuera del loop ya no existen.
              */
             $message->adjuntos = $service->adjuntos();
+
+            /*
+             * Misión app-ia-y-memoria (§4 E1.5–E1.7): los gráficos, tablas e imágenes de la respuesta, por
+             * el mismo motivo que las menciones (fuera del loop ya no existen), y la línea de progreso
+             * vuelve a null. Solo se tocan si hay algo: así un mensaje del sistema guarda exactamente lo
+             * de antes.
+             */
+            $bloques = $service->bloques();
+
+            if (count($bloques)) {
+                $message->bloques = $bloques;
+            }
+
+            if (! is_null($message->progreso)) {
+                $message->progreso = null;
+            }
+
             $message->save();
+
+            /* Recién con el mensaje guardado (el bloque ya existe), los pedidos de imagen salen al admin. */
+            $this->despachar_pedidos_de_imagen($service->pedidos_de_imagen());
         } catch (\Throwable $e) {
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [
                 'ai_message_id'      => $this->ai_message_id,
@@ -212,6 +233,28 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         }
 
         $this->avisar($conversation, $message);
+    }
+
+    /**
+     * Manda al admin los pedidos de imagen de la respuesta (EnviarPedidoDeImagenAlAdminJob, contrato
+     * C2.1). Protegido: el mensaje ya quedó guardado y una falla al encolar (o un envío que falla en la
+     * cola sync) no puede voltear la respuesta; si no sale, el pedido queda `fallida` por failed().
+     *
+     * @param  array<int, int>  $pedidos
+     * @return void
+     */
+    protected function despachar_pedidos_de_imagen(array $pedidos)
+    {
+        foreach ($pedidos as $pedido_id) {
+            try {
+                dispatch(new EnviarPedidoDeImagenAlAdminJob($pedido_id));
+            } catch (\Throwable $e) {
+                Log::warning('ResponderMensajeChatIaJob: no se pudo mandar un pedido de imagen al admin', [
+                    'ia_imagen_pedido_id' => $pedido_id,
+                    'error'               => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**
@@ -405,7 +448,16 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         $message->estado = 'error';
         // Recorte defensivo: la columna es text, pero un body de error HTTP puede ser enorme.
         $message->error_mensaje = mb_substr((string) $detalle_tecnico, 0, 5000);
+
+        // Misión app-ia-y-memoria: la línea de progreso no queda colgada en un mensaje en error.
+        if (! is_null($message->progreso)) {
+            $message->progreso = null;
+        }
+
         $message->save();
+
+        /* Los pedidos de imagen de una respuesta que falló no se van a mostrar nunca: se cierran. */
+        PedidosDeImagenIaHelper::cerrar_los_del_mensaje($message->id);
 
         /*
          * Una tarjeta de una respuesta que falló no se puede confirmar: nació

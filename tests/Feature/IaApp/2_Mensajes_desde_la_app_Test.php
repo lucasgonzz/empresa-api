@@ -176,7 +176,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
             ->assertJsonPath('user_message.canal', 'app')
             ->assertJsonPath('assistant_message.canal', 'app');
 
-        foreach (['modelo_pedido', 'audio', 'archivos'] as $campo) {
+        foreach (['bloques', 'progreso', 'modelo_pedido', 'audio', 'archivos'] as $campo) {
             $this->assertArrayHasKey($campo, $respuesta->json('assistant_message'), 'El mensaje trae ' . $campo . ' (aunque sea null).');
         }
 

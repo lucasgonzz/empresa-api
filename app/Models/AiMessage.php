@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use Illuminate\Database\Eloquent\Model;
@@ -70,6 +71,10 @@ use Illuminate\Database\Eloquent\Model;
  *   - `archivos` (json, en el user): PDF/Excel/CSV con su texto; hacia afuera `[{orden, nombre, tipo, tamano, url}]`.
  * Los dos últimos tienen datos internos (la ruta del disco, el texto extraído) y salen recortados por
  * toArray(), igual que `imagenes`.
+ *   - `bloques` (json, en el assistant): los gráficos, tablas e imágenes generadas que la app dibuja
+ *     debajo del texto (BloquesIaHelper). Se guarda normalizado; null si no hay.
+ *   - `progreso` (string, en el assistant): mientras está 'pendiente', qué está haciendo el loop
+ *     («Buscando las ventas…»). Vuelve a null al terminar (ProgresoIaHelper).
  */
 class AiMessage extends Model
 {
@@ -207,6 +212,42 @@ class AiMessage extends Model
     }
 
     /**
+     * Los bloques de la respuesta (misión app-ia-y-memoria, formato del §3 del plan) como lista, o null
+     * si no tiene. Lee de $attributes por el mismo motivo que getMencionesAttribute().
+     *
+     * @param  mixed  $valor  Ignorado a propósito.
+     * @return array<int, array<string, mixed>>|null
+     */
+    public function getBloquesAttribute($valor = null)
+    {
+        $crudo = array_key_exists('bloques', $this->attributes) ? $this->attributes['bloques'] : null;
+
+        if (is_null($crudo) || $crudo === '') {
+            return null;
+        }
+
+        $bloques = is_array($crudo) ? $crudo : json_decode((string) $crudo, true);
+
+        return is_array($bloques) && count($bloques) ? array_values($bloques) : null;
+    }
+
+    /**
+     * Guarda los bloques ya normalizados (lo que no cumple el formato no entra a la columna; más de 6,
+     * los primeros). Una lista vacía se guarda como null.
+     *
+     * @param  mixed  $valor
+     * @return void
+     */
+    public function setBloquesAttribute($valor)
+    {
+        $bloques = BloquesIaHelper::normalizar($valor);
+
+        $this->attributes['bloques'] = empty($bloques)
+            ? null
+            : json_encode($bloques, JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
      * Suma `imagenes` —las fotos que mandó el dueño— a TODA serialización del mensaje, con el
      * contrato de P5: `[{id, orden, url}]`, siempre lista, nunca null y nunca ausente.
      *
@@ -237,6 +278,8 @@ class AiMessage extends Model
          * `audio` y `archivos` con el recorte público —sin la ruta del disco ni el texto extraído, que
          * parent::toArray() trae crudos por el cast—. Una SPA vieja los ignora.
          */
+        $array['bloques']       = $this->bloques;
+        $array['progreso']      = array_key_exists('progreso', $this->attributes) ? $this->attributes['progreso'] : null;
         $array['modelo_pedido'] = array_key_exists('modelo_pedido', $this->attributes) ? $this->attributes['modelo_pedido'] : null;
         $array['audio']         = AudioDelMensajeIaHelper::para_la_respuesta($this);
         $array['archivos']      = ArchivosAdjuntosIaHelper::para_la_respuesta($this);
