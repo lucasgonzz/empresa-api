@@ -23,6 +23,7 @@
         "openspout/openspout": "4.32.0",
         "predis/predis": "^3.3",
         "pusher/pusher-php-server": "^7.2",
+        "smalot/pdfparser": "^2.13",
         "tecnickcom/tcpdf": "^6.10"
     },
     "require-dev": {
@@ -72,8 +73,8 @@
         },
         "comerciocity": {
             "runtime-profile": "vps-php84-v1",
-            "base-manifest-sha256": "7ad10e846d094fbe9b63497701a10d45ed8e7c8e169a4fc69172614dd1ff1ce1",
-            "base-lock-sha256": "b4611aa89f2feda87c84b55b07ddf0e4d7a8dc54e2721ee751da547fecc7327c"
+            "base-manifest-sha256": "a38a59372018d55e894a8c504901d9f25380a461faf0acbdf65630fc5fd16bbd",
+            "base-lock-sha256": "6ed3e7efad65abe28271be13190652e58bcb71fb8097789ec0366ad324a27e3c"
         }
     },
     "config": {
