@@ -130,6 +130,12 @@ class ProgresoIaHelper
             return;
         }
 
+        /* Sin la migración no hay dónde escribirlo (y es el camino del chat del sistema y de WhatsApp). */
+        if (!ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'progreso')) {
+
+            return;
+        }
+
         try {
 
             AiMessage::where('id', (int) $assistant_message->id)->update(['progreso' => $valor]);

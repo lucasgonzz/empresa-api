@@ -267,6 +267,12 @@ class PedidosDeImagenIaHelper
      */
     public static function cerrar_los_del_mensaje($ai_message_id)
     {
+        /* Lo llama el job en CUALQUIER respuesta que falla, también en el sistema y en WhatsApp. */
+        if (!ColumnasDeLaAppIaHelper::hay_tabla('ia_imagen_pedidos')) {
+
+            return;
+        }
+
         try {
 
             IaImagenPedido::where('ai_message_id', (int) $ai_message_id)

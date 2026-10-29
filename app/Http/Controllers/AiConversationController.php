@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
@@ -66,9 +67,13 @@ class AiConversationController extends Controller
      * (last_message_at DESC con nulls al final, D44: la SPA abre
      * conversations[0] al abrir el panel).
      *
-     * Misión app-ia-y-memoria (29/10/2026, contrato C5): las FIJADAS van primero (cada conversación trae
-     * `fijada`), y `buscar` (opcional) filtra por el título y por lo que dicen los mensajes, con los
-     * comodines de LIKE escapados (un "%" busca el carácter). Sin `buscar`, la lista de siempre.
+     * Misión app-ia-y-memoria (29/10/2026, contrato C5): cada conversación trae `fijada`, y `buscar`
+     * (opcional) filtra por el título y por lo que dicen los mensajes, con los comodines de LIKE escapados
+     * (un "%" busca el carácter). Sin `buscar`, la lista de siempre.
+     *
+     * 🔴 Las FIJADAS van primero SOLO para la app (token `ia-app`): el panel del sistema abre
+     * conversations[0] al abrirse (D44), y una conversación fijada en la app no puede cambiarle cuál abre.
+     * Con la cookie, el orden de siempre (corrección de la revisión).
      *
      * @param  Request  $request
      * @return JsonResponse
@@ -94,8 +99,11 @@ class AiConversationController extends Controller
             });
         }
 
+        if (IaAppHelper::es_pedido_de_la_app($request) && ColumnasDeLaAppIaHelper::hay_columna('ai_conversations', 'fijada')) {
+            $query->orderBy('fijada', 'DESC');
+        }
+
         $models = $query
-            ->orderBy('fijada', 'DESC')
             ->orderByRaw('last_message_at IS NULL')
             ->orderBy('last_message_at', 'DESC')
             ->orderBy('id', 'DESC')
@@ -138,7 +146,8 @@ class AiConversationController extends Controller
             $conversation->titulo = trim((string) $request->input('titulo'));
         }
 
-        if ($request->has('fijada')) {
+        /* Sin la columna (migración todavía sin correr) no hay dónde guardarlo: se ignora. */
+        if ($request->has('fijada') && ColumnasDeLaAppIaHelper::hay_columna('ai_conversations', 'fijada')) {
             $conversation->fijada = $request->boolean('fijada');
         }
 
@@ -342,17 +351,25 @@ class AiConversationController extends Controller
             ->where('created_at', '<', $limite_pendiente_vigente)
             ->pluck('id');
 
+        $cierre_del_huerfano = [
+            'contenido'     => ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
+            'estado'        => 'error',
+            'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
+        ];
+
+        /*
+         * Misión app-ia-y-memoria: la línea de progreso de un huérfano no queda colgada. Solo si la
+         * columna ya existe: sin la migración, este UPDATE es el de siempre (el chat no se cae).
+         */
+        if (ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'progreso')) {
+            $cierre_del_huerfano['progreso'] = null;
+        }
+
         AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'assistant')
             ->where('estado', 'pendiente')
             ->where('created_at', '<', $limite_pendiente_vigente)
-            ->update([
-                'contenido'     => ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
-                'estado'        => 'error',
-                'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
-                // Misión app-ia-y-memoria: la línea de progreso de un huérfano no queda colgada.
-                'progreso'      => null,
-            ]);
+            ->update($cierre_del_huerfano);
 
         /*
          * Misión asistente-ia-acciones: las tarjetas que un pendiente vencido

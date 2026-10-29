@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
@@ -2374,21 +2375,27 @@ CONFIRMACION;
          * no tiene fotos —o sea, todo el chat de la pantalla— la condición es exactamente la de
          * antes.
          */
+        /*
+         * Misión app-ia-y-memoria: un PDF o un Excel sin texto al lado también es un mensaje (el texto del
+         * archivo lo suma contenido_para_el_historial()). Solo si la columna ya existe: este es el camino
+         * del chat del sistema y de WhatsApp, y un frente con la migración sin correr no puede perderlos.
+         */
+        $con_archivos = ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'archivos');
+
         $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('estado', 'listo')
-            ->where(function ($query) {
+            ->where(function ($query) use ($con_archivos) {
                 $query->where(function ($con_texto) {
                     $con_texto->whereNotNull('contenido')->where('contenido', '!=', '');
                 })->orWhereExists(function ($con_fotos) {
                     $con_fotos->selectRaw('1')
                         ->from('ai_message_imagenes')
                         ->whereColumn('ai_message_imagenes.ai_message_id', 'ai_messages.id');
-                })
-                    /*
-                     * Misión app-ia-y-memoria: un PDF o un Excel sin texto al lado también es un mensaje
-                     * (el texto del archivo lo suma contenido_para_el_historial()).
-                     */
-                    ->orWhereNotNull('archivos');
+                });
+
+                if ($con_archivos) {
+                    $query->orWhereNotNull('archivos');
+                }
             })
             ->orderBy('id', 'DESC')
             ->limit(self::MAX_MENSAJES_HISTORIAL)
