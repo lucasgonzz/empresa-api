@@ -4,6 +4,7 @@ namespace App\Services\AsistenteIa\Mcp;
 
 use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
+use App\Services\AsistenteIa\HerramientasDeContexto;
 
 /**
  * El registro de tools del servidor MCP (misión asistente-mcp, 22/9/2026): las mismas herramientas
@@ -62,6 +63,8 @@ class McpHerramientasHelper
      */
     const LECTURAS_POR_NOMBRE = [
         'buscar_producto_por_codigo_de_barras',
+        // Misión app-ia-y-memoria (E2): abrir un archivo de la memoria del negocio no escribe nada.
+        'leer_contexto',
     ];
 
     /**
@@ -128,6 +131,10 @@ class McpHerramientasHelper
      * Las definiciones tal como viven en el asistente (forma de la API de Anthropic), ya filtradas
      * por EXCLUIDAS y sin reordenar.
      *
+     * Misión app-ia-y-memoria (E2, 29/10/2026): al final, las dos de la memoria del negocio
+     * (HerramientasDeContexto), en el mismo orden que el loop interno: lectura, carga, memoria. El
+     * servidor MCP vive detrás de `check_extencion_empresa:agentes_ia`, así que acá van siempre.
+     *
      * @return array<int, array<string, mixed>>
      */
     protected static function definiciones_de_origen(): array
@@ -142,6 +149,11 @@ class McpHerramientasHelper
 
                 continue;
             }
+
+            $definiciones[] = $definicion;
+        }
+
+        foreach (HerramientasDeContexto::definiciones() as $definicion) {
 
             $definiciones[] = $definicion;
         }

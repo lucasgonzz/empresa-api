@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
@@ -418,7 +419,7 @@ class AsistenteIaService
     {
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
         $messages = $this->build_messages_payload($conversation);
-        $tools    = $this->build_tools($con_acciones, $es_whatsapp, $es_app);
+        $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app);
 
         /*
          * La nota con el resultado REAL de la confirmación viaja pegada al "sí" de la persona: el
@@ -1372,6 +1373,14 @@ class AsistenteIaService
         $formato = $es_app ? $this->formato_de_la_app() : $this->formato_de_texto_plano();
         $bloque_de_la_app = $es_app ? $this->bloque_de_la_app() : '';
 
+        /*
+         * Misión app-ia-y-memoria (E2, 29/10/2026): las reglas de la memoria del negocio (qué se
+         * guarda, qué no, cuándo leerla), para el dueño con Agentes de IA y en TODOS los canales. Son
+         * FIJAS, así que van en este bloque, el cacheado; lo que cambia —el contexto maestro y el
+         * índice— va en un bloque aparte, después (build_system_payload()), para no invalidar el caché.
+         */
+        $reglas_de_memoria = $this->con_memoria($owner) ? AgenteContextoHelper::reglas_para_prompt() : '';
+
         return <<<SYSTEM
 Sos el asistente de inteligencia artificial del negocio "{$company_name}". Trabajás
 adentro del sistema de gestión de ese negocio y le hablás a la persona que lo usa.
@@ -1431,7 +1440,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -2269,6 +2278,9 @@ CONFIRMACION;
      * cache_control — el prefijo cacheable tiene que ser idéntico entre
      * conversaciones para que el caché pegue.
      *
+     * Misión app-ia-y-memoria (E2): con Agentes de IA, entre el bloque 1 y el
+     * contexto de fondo va la memoria del negocio, también SIN cache_control.
+     *
      * @param AiConversation $conversation
      * @param User|null $owner
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
@@ -2285,6 +2297,23 @@ CONFIRMACION;
                 'cache_control' => ['type' => 'ephemeral'],
             ],
         ];
+
+        /*
+         * Misión app-ia-y-memoria (E2, 29/10/2026): la memoria del negocio —el contexto maestro y el
+         * índice, enteros— en un bloque SIN cache_control y DESPUÉS del cacheado: cambia cada vez que
+         * el agente o el dueño escriben, y adentro del bloque 1 tiraría el caché de todo el system. Va
+         * antes del contexto de fondo de la conversación porque es del dueño (más estable entre
+         * conversaciones) y aquél es de esta charla. Solo con Agentes de IA, en todos los canales; si
+         * falla, el helper devuelve '' y el chat sigue sin memoria.
+         */
+        $memoria = $this->con_memoria($owner) ? AgenteContextoHelper::bloque_para_prompt($owner) : '';
+
+        if ($memoria !== '') {
+            $system[] = [
+                'type' => 'text',
+                'text' => $memoria,
+            ];
+        }
 
         $contexto = trim((string) ($conversation->contexto ?? ''));
 
@@ -3348,21 +3377,34 @@ CONFIRMACION;
      * y darle a la IA una herramienta para confirmar sola lo que ella misma
      * propuso sería sacarle el control a quien tiene que darlo.
      *
+     * Misión app-ia-y-memoria (E2, 29/10/2026): con el dueño (tercer argumento, opcional para no
+     * tocar a los llamadores de antes) y la extensión Agentes de IA, se suman AL FINAL las dos
+     * herramientas de la memoria (HerramientasDeContexto), en todos los canales. Al final para que el
+     * prefijo de todas las de antes quede idéntico; el marcador de caché pasa a la última, como
+     * siempre. Sin dueño, o sin la extensión, viaja exactamente lo de antes.
+     *
      * Misión app-ia-y-memoria: con el canal de la app se suman al final mostrar_grafico, mostrar_tabla y
      * pedir_imagen (HerramientasDeLaApp). Es un tercer prefijo de caché, solo de la app; el sistema y
      * WhatsApp mandan exactamente lo mismo que antes.
      *
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
      * @param bool $es_whatsapp true si el mensaje entró por WhatsApp.
+     * @param User|null $owner El dueño de la conversación (para las herramientas de la memoria).
      * @param bool $es_app true si el mensaje entró por la app «ComercioCity IA».
      * @return array<int, array<string, mixed>>
      */
-    public function build_tools($con_acciones = false, $es_whatsapp = false, $es_app = false): array
+    public function build_tools($con_acciones = false, $es_whatsapp = false, $owner = null, $es_app = false): array
     {
         $tools = $this->herramientas_de_lectura();
 
         if ($con_acciones) {
             foreach (HerramientasDeCarga::definiciones($es_whatsapp) as $definicion) {
+                $tools[] = $definicion;
+            }
+        }
+
+        if ($this->con_memoria($owner)) {
+            foreach (HerramientasDeContexto::definiciones() as $definicion) {
                 $tools[] = $definicion;
             }
         }
@@ -3374,6 +3416,19 @@ CONFIRMACION;
         }
 
         return $this->con_cache_control($tools);
+    }
+
+    /**
+     * true si el dueño tiene la memoria de contexto del agente: es parte de Agentes de IA (misión
+     * app-ia-y-memoria, E2). Decide las reglas del prompt, el bloque de la memoria y las dos
+     * herramientas, así las tres cosas van siempre juntas.
+     *
+     * @param User|null $owner
+     * @return bool
+     */
+    protected function con_memoria($owner): bool
+    {
+        return ($owner instanceof User) && AgentesIaHelper::tiene($owner);
     }
 
     /**
@@ -4415,6 +4470,13 @@ CONFIRMACION;
                     $this->juntar_adjuntos($tool_name, $datos);
 
                     $content = $this->contenido_de_tool_result($datos);
+                } elseif (HerramientasDeContexto::maneja($tool_name)) {
+                    // Misión app-ia-y-memoria (E2): leer_contexto y guardar_en_contexto, en todos los
+                    // canales y también sin mensaje (el MCP llama así). El dueño sale de la
+                    // conversación y la extensión se vuelve a mirar adentro.
+                    $resultado_de_contexto = HerramientasDeContexto::ejecutar($tool_name, $tool_input, $conversation);
+                    $content = $resultado_de_contexto['content'];
+                    $error_de_la_herramienta = (bool) $resultado_de_contexto['is_error'];
                 } elseif (! is_null($assistant_message) && $assistant_message->acciones_habilitadas && HerramientasDeCarga::maneja($tool_name)) {
                     // Las dos puntas de las herramientas de carga (definición y
                     // despacho) viven juntas en HerramientasDeCarga: acá solo se

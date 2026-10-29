@@ -1475,6 +1475,22 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('mcp/conexion', 'McpConexionController@estado');
         Route::post('mcp/conexion', 'McpConexionController@crear');
         Route::delete('mcp/conexion', 'McpConexionController@revocar');
+
+        /*
+         * La memoria de contexto del agente y el cuestionario de inicio de la app (misión
+         * app-ia-y-memoria, E2, 29/10/2026, contrato C5). La memoria es del COMERCIO: se lee y se
+         * escribe en el dueño (UserHelper::user(true)), con revisión en cada escritura. El PUT es la
+         * edición del dueño desde la app; el cuestionario escribe la memoria de forma determinista y la
+         * confianza en la misma columna que `user/asistente-config`. Mismo gate que el chat.
+         */
+        Route::get('agente-contexto', 'AgenteContextoController@index');
+        Route::put('agente-contexto', 'AgenteContextoController@update');
+        Route::get('ia-app/cuestionario', 'IaCuestionarioController@show');
+        Route::post('ia-app/cuestionario', 'IaCuestionarioController@store');
+        Route::post('ia-app/cuestionario/saltear', 'IaCuestionarioController@saltear');
+        // Cómo quiere que le respondan, cambiado desde la configuración de la app: body parcial
+        // {largo?, forma?, confianza?}; reescribe solo el bloque de preferencias de la memoria.
+        Route::patch('ia-app/preferencias', 'IaCuestionarioController@preferencias');
     });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
@@ -1749,6 +1765,12 @@ Route::middleware('admin.api.key')
         Route::get('catalogo/categorias/propuestas/{run_id}/pendientes', 'AdminSync\\CatalogoCategoriasController@pendientes')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/listo', 'AdminSync\\CatalogoCategoriasController@listo')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/descartar', 'AdminSync\\CatalogoCategoriasController@descartar')->where('run_id', '[0-9]+');
+
+        // La memoria del agente, creada apenas el admin prende Agentes de IA (misión app-ia-y-memoria, E2,
+        // 29/10/2026, contrato C1.3). Idempotente: `{creada, archivos}`. La clave X-Admin-Api-Key se exige
+        // SIEMPRE adentro del controlador (trait ClaveEstrictaDeAdmin); 409 `sin_extension` si el comercio no
+        // tiene la extensión. Un cliente viejo sin esta ruta responde 404 y el admin lo ignora con log.
+        Route::put('agente-contexto/inicializar', 'AdminSync\\AgenteContextoController@inicializar');
 
         // El canje del pase del centro de recursos (misión centro-de-recursos-clientes, 13/10/2026,
         // contrato C3): el admin lo llama cuando la página le manda un pase que este sistema emitió en

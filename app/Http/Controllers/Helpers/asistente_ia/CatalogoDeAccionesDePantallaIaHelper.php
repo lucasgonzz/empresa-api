@@ -121,6 +121,14 @@ class CatalogoDeAccionesDePantallaIaHelper
         '#^[A-Z]+ api/user/set-chat-ia-preferencias#' => 'el asistente mismo: sus preferencias de chat',
         '#/ficha-asistente$#'                         => 'el asistente mismo: la ficha de una mención del chat',
         '#/para-cuenta-corriente$#'                   => 'el asistente mismo: el cliente de una mención del chat',
+        /*
+         * Misión app-ia-y-memoria (29/10/2026): la memoria del negocio y la app del agente. La memoria la
+         * escribe el agente con guardar_en_contexto (con revisión y origen `agente`); por una acción de
+         * pantalla quedaría firmada como `dueno`. Y el cuestionario de inicio escribe el modo de
+         * confianza, que el agente no se cambia solo (mismo motivo que user/asistente-config).
+         */
+        '#^[A-Z]+ api/agente-contexto(/|$)#'          => 'el asistente mismo: su memoria del negocio (la escribe con guardar_en_contexto y la corrige el dueño desde la app)',
+        '#^[A-Z]+ api/ia-app(/|$)#'                   => 'el asistente mismo: la app del agente y su cuestionario de inicio (que cambia el modo de confianza)',
         // ── Sesión y cuenta ───────────────────────────────────────────────────────────────────
         '#^[A-Z]+ api/user$#'                         => 'sesión y cuenta: el usuario autenticado',
         '#^[A-Z]+ api/user/\{id\}$#'                  => 'sesión y cuenta: la configuración de la cuenta (márgenes, IVA, redondeos) dispara el recálculo de todos los precios',
