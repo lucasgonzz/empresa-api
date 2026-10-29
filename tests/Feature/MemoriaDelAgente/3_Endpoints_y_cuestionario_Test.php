@@ -156,11 +156,13 @@ class Endpoints_y_cuestionario_Test extends MemoriaTestCase
         $this->assertStringContainsString('fin de mes', $prioridades);
 
         $this->assertStringContainsString('Pinturería de barrio', AgenteContextoHelper::leer($this->dueno, 'negocio/resumen.md')['contenido']);
-        $this->assertStringContainsString("## Lo que contó al empezar\n\nAbro de lunes a sábado", AgenteContextoHelper::leer($this->dueno, 'dueno/perfil.md')['contenido']);
+        $this->assertStringContainsString("## Lo que contó al empezar\n\n<!-- cuestionario -->\nAbro de lunes a sábado", AgenteContextoHelper::leer($this->dueno, 'dueno/perfil.md')['contenido']);
+        $this->assertStringContainsString("<!-- preferencias -->\n- Largo de las respuestas: Breve", $como['contenido'], 'Lo de cómo responder va en su bloque.');
+        $this->assertStringContainsString('> Para qué es este archivo', $como['contenido'], 'El encabezado de la plantilla queda.');
 
         $maestro = AgenteContextoHelper::leer($this->dueno, 'contexto/contexto_maestro.md')['contenido'];
-        $this->assertStringContainsString("## El negocio\n\nPinturería de barrio", $maestro);
-        $this->assertStringContainsString("## Cómo quiere que le respondan\n\n- Largo: Breve", $maestro);
+        $this->assertStringContainsString("## El negocio\n\n<!-- cuestionario -->\nPinturería de barrio", $maestro);
+        $this->assertStringContainsString("## Cómo quiere que le respondan\n\n<!-- preferencias -->\n- Largo: Breve", $maestro);
         $this->assertStringContainsString('fin de mes', $maestro);
         $this->assertStringContainsString('## Dónde buscar cada cosa', $maestro, 'Las secciones que el cuestionario no toca quedan.');
         $this->assertStringNotContainsString('cauteloso', $maestro, 'La confianza no se copia a la memoria: su fuente es la columna.');
@@ -168,11 +170,12 @@ class Endpoints_y_cuestionario_Test extends MemoriaTestCase
         // Y todo eso entra al prompt del agente.
         $this->assertStringContainsString('Pinturería de barrio', AgenteContextoHelper::bloque_para_prompt($this->dueno));
 
-        // GET devuelve lo mismo.
+        // GET devuelve lo mismo, con las preferencias vigentes.
         $this->actingAs($this->dueno, 'sanctum')->getJson('api/ia-app/cuestionario')
              ->assertStatus(200)
              ->assertJsonPath('completado', true)
-             ->assertJsonPath('respuestas.forma', 'graficos');
+             ->assertJsonPath('respuestas.forma', 'graficos')
+             ->assertJsonPath('preferencias', ['largo' => 'breve', 'forma' => 'graficos', 'confianza' => 'cauteloso']);
 
         $this->assertTrue(AgenteContextoHelper::estado_cuestionario($this->dueno->fresh())['completado']);
     }
@@ -191,6 +194,117 @@ class Endpoints_y_cuestionario_Test extends MemoriaTestCase
         $this->assertSame([], $r->json('escritos'), 'Nada cambió: nada se escribió.');
         $this->assertSame($versiones, AgenteContextoArchivo::where('user_id', $this->dueno->id)->pluck('version', 'ruta')->all());
         $this->assertSame($revisiones, AgenteContextoRevision::count());
+    }
+
+    /**
+     * 🔴 Pedido del coordinador (29/10/2026): reenviar el cuestionario reemplaza SOLO sus bloques. Lo
+     * que el agente y el dueño agregaron después, en los mismos archivos y en las mismas secciones del
+     * maestro, sobrevive.
+     *
+     * @test
+     */
+    public function lo_que_agrego_el_agente_sobrevive_a_un_segundo_cuestionario()
+    {
+        $this->actingAs($this->dueno, 'sanctum')->postJson('api/ia-app/cuestionario', $this->respuestas())->assertStatus(200);
+
+        AgenteContextoHelper::guardar($this->dueno, 'negocio/objetivos.md', 'agregar', '- Quiere abrir los domingos en diciembre.', null, 'm', 'agente');
+        AgenteContextoHelper::guardar($this->dueno, 'contexto/contexto_maestro.md', 'agregar', '- Esta semana lo preocupa la entrega de Rex.', null, 'm', 'agente', null, 'Lo que le importa hoy');
+        AgenteContextoHelper::guardar($this->dueno, 'contexto/contexto_maestro.md', 'agregar', '- No le gustan los emojis.', null, 'm', 'agente', null, 'Cómo quiere que le respondan');
+        AgenteContextoHelper::guardar($this->dueno, 'dueno/como_responder.md', 'agregar', '- Odia que le digan "jefe".', null, 'm', 'agente');
+        AgenteContextoHelper::guardar($this->dueno, 'dueno/perfil.md', 'agregar', '- Su hijo Tomás lo ayuda los sábados.', null, 'm', 'dueno', null, 'Lo que contó al empezar');
+        AgenteContextoHelper::guardar($this->dueno, 'negocio/prioridades.md', 'agregar', '- Ordenar el depósito antes de fin de año.', null, 'm', 'agente');
+
+        $this->actingAs($this->dueno, 'sanctum')->postJson('api/ia-app/cuestionario', $this->respuestas([
+            'negocio_frase' => 'Pinturería y ferretería de barrio.',
+            'objetivos'     => ['mejorar márgenes'],
+            'importa_hoy'   => 'Bajar el stock parado.',
+            'largo'         => 'explayado',
+            'extra'         => 'Abro de lunes a viernes.',
+        ]))->assertStatus(200);
+
+        $objetivos = AgenteContextoHelper::leer($this->dueno, 'negocio/objetivos.md')['contenido'];
+        $this->assertStringContainsString('- Mejorar márgenes', $objetivos, 'Lo nuevo del cuestionario está.');
+        $this->assertStringNotContainsString('- Vender más', $objetivos, 'Lo viejo del cuestionario se reemplazó.');
+        $this->assertStringContainsString('abrir los domingos', $objetivos, 'Lo del agente sobrevive.');
+        $this->assertSame(1, substr_count($objetivos, '<!-- cuestionario -->'), 'Un solo bloque, no uno por envío.');
+
+        $maestro = AgenteContextoHelper::leer($this->dueno, 'contexto/contexto_maestro.md')['contenido'];
+        $this->assertStringContainsString('Pinturería y ferretería de barrio.', $maestro);
+        $this->assertStringNotContainsString('venta al por mayor a pintores', $maestro);
+        $this->assertStringContainsString('Bajar el stock parado.', $maestro);
+        $this->assertStringContainsString('la entrega de Rex', $maestro, 'Lo del agente en la sección sobrevive.');
+        $this->assertStringContainsString('No le gustan los emojis', $maestro);
+        $this->assertStringContainsString('- Largo: Explayado', $maestro);
+        $this->assertStringNotContainsString('- Largo: Breve', $maestro);
+
+        $como = AgenteContextoHelper::leer($this->dueno, 'dueno/como_responder.md')['contenido'];
+        $this->assertStringContainsString('Explayado', $como);
+        $this->assertStringContainsString('le digan "jefe"', $como);
+
+        $perfil = AgenteContextoHelper::leer($this->dueno, 'dueno/perfil.md')['contenido'];
+        $this->assertStringContainsString('Abro de lunes a viernes.', $perfil);
+        $this->assertStringNotContainsString('lunes a sábado', $perfil);
+        $this->assertStringContainsString('Su hijo Tomás', $perfil, 'Lo del dueño en la misma sección sobrevive.');
+
+        $prioridades = AgenteContextoHelper::leer($this->dueno, 'negocio/prioridades.md')['contenido'];
+        $this->assertStringContainsString('Ordenar el depósito', $prioridades);
+        $this->assertStringContainsString('Bajar el stock parado.', $prioridades);
+    }
+
+    /** @test */
+    public function las_preferencias_se_cambian_de_a_una_y_reescriben_solo_su_bloque()
+    {
+        // Sin nada guardado: los valores por defecto, aunque el cuestionario se haya salteado.
+        $this->actingAs($this->dueno, 'sanctum')->postJson('api/ia-app/cuestionario/saltear')->assertStatus(204);
+
+        $this->actingAs($this->dueno, 'sanctum')->getJson('api/ia-app/cuestionario')
+             ->assertStatus(200)
+             ->assertJsonPath('salteado', true)
+             ->assertJsonPath('preferencias.largo', 'equilibrado')
+             ->assertJsonPath('preferencias.forma', 'explicado');
+
+        AgenteContextoHelper::guardar($this->dueno, 'dueno/como_responder.md', 'agregar', '- Odia que le digan "jefe".', null, 'm', 'agente');
+
+        $r = $this->actingAs($this->dueno, 'sanctum')->patchJson('api/ia-app/preferencias', ['largo' => 'breve']);
+
+        $r->assertStatus(200)->assertExactJson(['largo' => 'breve', 'forma' => 'explicado', 'confianza' => (string) \App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper::con_default($this->dueno->fresh())]);
+
+        $como = AgenteContextoHelper::leer($this->dueno, 'dueno/como_responder.md');
+        $this->assertStringContainsString("<!-- preferencias -->\n- Largo de las respuestas: Breve", $como['contenido']);
+        $this->assertStringContainsString('Explicado', $como['contenido']);
+        $this->assertStringContainsString('le digan "jefe"', $como['contenido'], 'Lo del agente sobrevive.');
+        $this->assertSame('dueno', $como['origen']);
+
+        $id = AgenteContextoArchivo::where('user_id', $this->dueno->id)->where('ruta', 'dueno/como_responder.md')->value('id');
+        $revision = AgenteContextoRevision::where('archivo_id', $id)->orderByDesc('version')->first();
+        $this->assertSame('dueno', $revision->origen);
+        $this->assertSame('Lo cambió el dueño en la configuración de la app', $revision->motivo);
+
+        $this->assertStringContainsString('- Largo: Breve', AgenteContextoHelper::leer($this->dueno, 'contexto/contexto_maestro.md')['contenido']);
+
+        // Solo la confianza: va a la columna de la configuración y no toca la memoria.
+        $version_antes = AgenteContextoHelper::leer($this->dueno, 'dueno/como_responder.md')['version'];
+
+        $this->actingAs($this->dueno, 'sanctum')->patchJson('api/ia-app/preferencias', ['confianza' => 'resuelto'])
+             ->assertStatus(200)->assertExactJson(['largo' => 'breve', 'forma' => 'explicado', 'confianza' => 'resuelto']);
+
+        $this->assertSame('resuelto', (string) $this->dueno->fresh()->agente_confianza);
+        $this->actingAs($this->dueno, 'sanctum')->getJson('api/user/asistente-config')->assertJsonPath('confianza', 'resuelto');
+        $this->assertSame($version_antes, AgenteContextoHelper::leer($this->dueno, 'dueno/como_responder.md')['version']);
+
+        // GET del cuestionario devuelve las vigentes.
+        $this->actingAs($this->dueno, 'sanctum')->getJson('api/ia-app/cuestionario')
+             ->assertJsonPath('preferencias', ['largo' => 'breve', 'forma' => 'explicado', 'confianza' => 'resuelto'])
+             ->assertJsonPath('respuestas', null);
+
+        // Un valor fuera del enum corta con 422 y no cambia nada.
+        $this->actingAs($this->dueno, 'sanctum')->patchJson('api/ia-app/preferencias', ['forma' => 'poesia'])
+             ->assertStatus(422)->assertJsonPath('code', 'validacion');
+
+        $this->assertSame('explicado', \App\Http\Controllers\Helpers\asistente_ia\CuestionarioDeInicioIaHelper::preferencias($this->dueno->fresh())['forma']);
+
+        // Un empleado común no llega.
+        $this->actingAs($this->empleado(0), 'sanctum')->patchJson('api/ia-app/preferencias', ['largo' => 'explayado'])->assertStatus(403);
     }
 
     /** @test */
@@ -264,7 +378,7 @@ class Endpoints_y_cuestionario_Test extends MemoriaTestCase
         $catalogo::olvidar();
 
         foreach ([['GET', 'api/agente-contexto'], ['PUT', 'api/agente-contexto'], ['GET', 'api/ia-app/cuestionario'],
-                  ['POST', 'api/ia-app/cuestionario'], ['POST', 'api/ia-app/cuestionario/saltear']] as $ruta) {
+                  ['POST', 'api/ia-app/cuestionario'], ['POST', 'api/ia-app/cuestionario/saltear'], ['PUT', 'api/ia-app/preferencias']] as $ruta) {
 
             $this->assertNull($catalogo::declaracion($ruta[0], $ruta[1]), $ruta[0] . ' ' . $ruta[1] . ' no puede ofrecerse como acción de pantalla.');
             $motivo = (string) $catalogo::motivo_de_exclusion($ruta[0], $ruta[1]);

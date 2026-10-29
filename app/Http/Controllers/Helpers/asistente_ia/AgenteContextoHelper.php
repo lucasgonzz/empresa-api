@@ -424,17 +424,52 @@ class AgenteContextoHelper
      */
     public static function guardar($owner, $ruta, $operacion, $contenido, $resumen = null, $motivo = null, $origen = self::ORIGEN_AGENTE, $conversacion_id = null, $seccion = null)
     {
-        return self::escribir($owner, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion, true);
+        return self::escribir($owner, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion, null, true);
     }
 
     /**
-     * El cuerpo de guardar(), con el permiso de reintentar UNA vez si otra escritura creó el mismo
-     * archivo nuevo en el mismo instante (índice único).
+     * Escribe un BLOQUE PROPIO de quien escribe, entre `<!-- marca -->` y `<!-- /marca -->` (pedido
+     * del coordinador de la misión, 29/10/2026). Es lo que usan el cuestionario (marca `cuestionario`)
+     * y las preferencias de respuesta (marca `preferencias`): mandarlos otra vez reemplaza SOLO su
+     * bloque y deja intacto lo que el agente o el dueño agregaron afuera, en el mismo archivo o en la
+     * misma sección. Si el bloque no estaba (o alguien borró las marcas), se agrega como un `agregar`.
+     * Mismo camino que guardar(): versión, revisión, topes e índice.
      *
+     * @param  \App\Models\User|null  $owner
+     * @param  string  $ruta
+     * @param  string  $marca    Solo minúsculas y guiones bajos (por ejemplo «cuestionario»).
+     * @param  string  $contenido
+     * @param  string|null  $resumen
+     * @param  string|null  $motivo
+     * @param  string  $origen
+     * @param  int|null  $conversacion_id
+     * @param  string|null  $seccion  El bloque se busca y se escribe solo adentro de esa sección.
+     * @return array  Lo mismo que guardar().
+     */
+    public static function guardar_bloque($owner, $ruta, $marca, $contenido, $resumen = null, $motivo = null, $origen = self::ORIGEN_SISTEMA, $conversacion_id = null, $seccion = null)
+    {
+        if (!preg_match('/^[a-z_]{1,40}$/', (string) $marca)) {
+
+            return self::falla('marca_invalida', 'La marca de un bloque va en minúsculas y guiones bajos.');
+        }
+
+        if (trim((string) $contenido) === '') {
+
+            return self::falla('contenido_vacio', 'No hay nada para escribir: el contenido vino vacío.');
+        }
+
+        return self::escribir($owner, $ruta, self::REEMPLAZAR, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion, (string) $marca, true);
+    }
+
+    /**
+     * El cuerpo de guardar() y guardar_bloque(), con el permiso de reintentar UNA vez si otra
+     * escritura creó el mismo archivo nuevo en el mismo instante (índice único).
+     *
+     * @param  string|null  $marca  null = escritura común; si no, la del bloque propio.
      * @param  bool  $puede_reintentar
      * @return array
      */
-    protected static function escribir($owner, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion, $puede_reintentar)
+    protected static function escribir($owner, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion, $marca, $puede_reintentar)
     {
         $dueno = self::dueno($owner);
 
@@ -486,7 +521,7 @@ class AgenteContextoHelper
 
         try {
 
-            return DB::transaction(function () use ($dueno, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion) {
+            return DB::transaction(function () use ($dueno, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion, $marca) {
 
                 /*
                  * El índice del dueño hace de candado: lo bloquea cada escritura antes de leer el
@@ -529,7 +564,7 @@ class AgenteContextoHelper
 
                 $anterior = (string) $archivo->contenido;
 
-                $nuevo = self::aplicar($anterior, $operacion, $contenido, $seccion);
+                $nuevo = self::aplicar($anterior, $operacion, $contenido, $seccion, $marca);
 
                 $tope = $ruta === self::MAESTRO ? self::TOPE_MAESTRO : self::TOPE_ARCHIVO;
                 $largo = mb_strlen($nuevo);
@@ -578,7 +613,7 @@ class AgenteContextoHelper
             if ($puede_reintentar && self::es_duplicado($e)) {
 
                 /* Otra escritura creó el mismo archivo nuevo en el mismo instante: se reintenta una vez sobre el que quedó. */
-                return self::escribir($dueno, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion === '' ? null : $seccion, false);
+                return self::escribir($dueno, $ruta, $operacion, $contenido, $resumen, $motivo, $origen, $conversacion_id, $seccion === '' ? null : $seccion, $marca, false);
             }
 
             throw $e;
@@ -588,17 +623,28 @@ class AgenteContextoHelper
     /**
      * El contenido nuevo de un archivo después de aplicar la operación.
      *
+     * Con `$marca` la escritura es un BLOQUE PROPIO (guardar_bloque()): el texto va entre
+     * `<!-- marca -->` y `<!-- /marca -->`, y si ese bloque ya estaba (en el archivo, o en la sección
+     * si se pidió una) se reemplaza SOLO lo de adentro; lo de afuera —lo que agregaron el agente o el
+     * dueño— queda como estaba. Si no estaba, el bloque se agrega como un `agregar`.
+     *
      * @param  string  $anterior
      * @param  string  $operacion
      * @param  string  $texto
      * @param  string  $seccion   '' = el archivo entero
+     * @param  string|null  $marca
      * @return string
      */
-    protected static function aplicar($anterior, $operacion, $texto, $seccion)
+    protected static function aplicar($anterior, $operacion, $texto, $seccion, $marca = null)
     {
         if ($seccion !== '') {
 
-            return self::aplicar_en_seccion($anterior, $operacion, $texto, $seccion);
+            return self::aplicar_en_seccion($anterior, $operacion, $texto, $seccion, $marca);
+        }
+
+        if (!is_null($marca)) {
+
+            return rtrim(self::con_bloque($anterior, $texto, $marca)) . "\n";
         }
 
         if ($operacion === self::REEMPLAZAR) {
@@ -606,25 +652,62 @@ class AgenteContextoHelper
             return trim($texto) === '' ? '' : rtrim($texto) . "\n";
         }
 
-        $texto = trim($texto);
+        return rtrim(self::agregado($anterior, $texto)) . "\n";
+    }
 
-        /* Primera escritura de un archivo de la plantilla: el texto ocupa el lugar del «(todavía vacío)». */
-        $lineas = explode("\n", $anterior);
+    /**
+     * Un texto agregado a un cuerpo: ocupa el lugar del «(todavía vacío)» si estaba (primera
+     * escritura de un archivo o sección de la plantilla); si no, va al final.
+     *
+     * @param  string  $cuerpo
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function agregado($cuerpo, $texto)
+    {
+        $texto  = trim($texto);
+        $lineas = explode("\n", (string) $cuerpo);
 
         foreach ($lineas as $i => $linea) {
             if (trim($linea) === self::VACIO) {
                 $lineas[$i] = $texto;
 
-                return rtrim(implode("\n", $lineas)) . "\n";
+                return implode("\n", $lineas);
             }
         }
 
-        if (trim($anterior) === '') {
+        if (trim((string) $cuerpo) === '') {
 
-            return $texto . "\n";
+            return $texto;
         }
 
-        return rtrim($anterior) . self::separador($texto) . $texto . "\n";
+        return rtrim((string) $cuerpo) . self::separador($texto) . $texto;
+    }
+
+    /**
+     * El cuerpo con el bloque `<!-- marca -->…<!-- /marca -->` puesto: reemplazado adentro si ya
+     * estaba, agregado si no.
+     *
+     * @param  string  $cuerpo
+     * @param  string  $texto
+     * @param  string  $marca
+     * @return string
+     */
+    protected static function con_bloque($cuerpo, $texto, $marca)
+    {
+        $apertura = '<!-- ' . $marca . ' -->';
+        $cierre   = '<!-- /' . $marca . ' -->';
+        $bloque   = $apertura . "\n" . trim($texto) . "\n" . $cierre;
+
+        $desde = strpos((string) $cuerpo, $apertura);
+        $hasta = $desde === false ? false : strpos((string) $cuerpo, $cierre, $desde);
+
+        if ($desde !== false && $hasta !== false) {
+
+            return substr((string) $cuerpo, 0, $desde) . $bloque . substr((string) $cuerpo, $hasta + strlen($cierre));
+        }
+
+        return self::agregado($cuerpo, $bloque);
     }
 
     /**
@@ -635,10 +718,18 @@ class AgenteContextoHelper
      * @param  string  $operacion
      * @param  string  $texto
      * @param  string  $seccion
+     * @param  string|null  $marca  Ver aplicar(): el bloque se busca SOLO adentro de esta sección.
      * @return string
      */
-    protected static function aplicar_en_seccion($anterior, $operacion, $texto, $seccion)
+    protected static function aplicar_en_seccion($anterior, $operacion, $texto, $seccion, $marca = null)
     {
+        /* Con marca, lo que se escribe es el bloque entero (para una sección nueva o vacía). */
+        $original = $texto;
+
+        if (!is_null($marca)) {
+            $texto = self::con_bloque('', $texto, $marca);
+        }
+
         $texto   = trim($texto);
         $lineas  = explode("\n", rtrim($anterior));
         $buscada = mb_strtolower($seccion);
@@ -669,7 +760,9 @@ class AgenteContextoHelper
 
         $cuerpo = trim(implode("\n", array_slice($lineas, $inicio + 1, $fin - $inicio - 1)));
 
-        if ($operacion === self::REEMPLAZAR) {
+        if (!is_null($marca)) {
+            $nuevo_cuerpo = trim(self::con_bloque($cuerpo, $original, $marca));
+        } elseif ($operacion === self::REEMPLAZAR) {
             $nuevo_cuerpo = $texto === '' ? self::VACIO : $texto;
         } elseif ($cuerpo === '' || $cuerpo === self::VACIO) {
             $nuevo_cuerpo = $texto;
@@ -837,7 +930,8 @@ class AgenteContextoHelper
                 continue;
             }
 
-            if (strpos($linea, '#') === 0 || strpos($linea, '>') === 0) {
+            /* Títulos, la línea «Para qué» y las marcas de un bloque propio (`<!-- … -->`) no son contenido. */
+            if (strpos($linea, '#') === 0 || strpos($linea, '>') === 0 || preg_match('/^<!--.*-->$/u', $linea)) {
                 continue;
             }
 

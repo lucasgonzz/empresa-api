@@ -8,10 +8,11 @@ use Illuminate\Support\Facades\DB;
 /**
  * El cuestionario de inicio de la app del agente (misión app-ia-y-memoria, 29/10/2026, §E2.4 del
  * plan): «Conozcámonos». El dueño cuenta en qué anda su negocio, qué quiere lograr, qué área quiere
- * mejorar, qué le importa hoy, cómo quiere que le respondan y cuántas confirmaciones quiere.
+ * mejorar, qué le importa hoy, cómo quiere que le respondan y cuántas confirmaciones quiere. Y las
+ * preferencias de respuesta, que el dueño cambia después desde la configuración de la app.
  *
  * 🔴 ESCRIBE DE FORMA DETERMINISTA, SIN LLAMAR A UN MODELO. Cada respuesta va a un lugar fijo de la
- * memoria por el único camino de escritura (AgenteContextoHelper::guardar, origen `cuestionario`):
+ * memoria por el camino de escritura de siempre (AgenteContextoHelper::guardar_bloque):
  *
  *   negocio_frase              → negocio/resumen.md y la sección «El negocio» del maestro
  *   objetivos + objetivos_texto→ negocio/objetivos.md (y la lista en «Lo que le importa hoy»)
@@ -21,13 +22,20 @@ use Illuminate\Support\Facades\DB;
  *   confianza                  → users.agente_confianza, la MISMA columna y el mismo enum
  *                                (ConfianzaDelAgenteIaHelper::MODOS) que PUT user/asistente-config
  *
+ * 🔴 ESCRIBE EN BLOQUES PROPIOS Y NO PISA LO DE LOS DEMÁS (pedido del coordinador, 29/10/2026). Lo del
+ * cuestionario va entre `<!-- cuestionario -->` y `<!-- /cuestionario -->`, y lo de cómo responder
+ * entre `<!-- preferencias -->` y `<!-- /preferencias -->` (lo escriben el cuestionario y
+ * PATCH ia-app/preferencias, el mismo bloque). Reenviar el cuestionario reemplaza SOLO esos bloques:
+ * lo que el agente o el dueño agregaron afuera, en el mismo archivo o en la misma sección, sobrevive.
+ * Por eso el cuestionario tampoco toca el resumen del índice de esos archivos (salvo el de
+ * como_responder, que es todo suyo) ni escribe títulos «##» adentro de sus bloques.
+ *
  * 🔴 LA CONFIANZA NO SE COPIA A LA MEMORIA. La fuente de verdad es la columna, que el dueño puede
  * cambiar después desde la configuración: una copia en un archivo quedaría vieja y le diría al modelo
  * lo contrario de lo que hace el sistema.
  *
- * Mandarlo dos veces con lo mismo no sube ninguna versión (guardar() no escribe lo que no cambió).
- * Mandarlo con otras respuestas reemplaza lo que escribió el cuestionario; lo anterior queda en las
- * revisiones.
+ * Mandarlo dos veces con lo mismo (el mismo día) no sube ninguna versión: guardar_bloque() no escribe
+ * lo que no cambió. Lo anterior queda siempre en las revisiones.
  *
  * IMPORTANTE (PHP 7.4): nada de `?->`, `match`, `str_contains` ni argumentos nombrados.
  */
@@ -36,9 +44,26 @@ class CuestionarioDeInicioIaHelper
     /** Motivo de las revisiones que deja el cuestionario. */
     const MOTIVO = 'Cuestionario de inicio de la app';
 
+    /** Motivo de las revisiones que deja el cambio de preferencias desde la configuración. */
+    const MOTIVO_PREFERENCIAS = 'Lo cambió el dueño en la configuración de la app';
+
+    /** La marca de los bloques del cuestionario. */
+    const MARCA = 'cuestionario';
+
+    /** La marca del bloque de cómo responder (cuestionario y PATCH ia-app/preferencias). */
+    const MARCA_PREFERENCIAS = 'preferencias';
+
+    /** La sección del maestro donde van las preferencias. */
+    const SECCION_PREFERENCIAS = 'Cómo quiere que le respondan';
+
     const LARGOS = ['breve', 'equilibrado', 'explayado'];
 
     const FORMAS = ['numeros', 'graficos', 'explicado'];
+
+    /** Los valores vigentes cuando el dueño todavía no eligió nada (lo que el agente hace por defecto). */
+    const LARGO_POR_DEFECTO = 'equilibrado';
+
+    const FORMA_POR_DEFECTO = 'explicado';
 
     /** Los chips que muestra la app (el servidor acepta cualquier texto de hasta 60 caracteres). */
     const OBJETIVOS_SUGERIDOS = ['vender más', 'mejorar márgenes', 'ordenar el stock', 'cobrar a tiempo', 'ahorrar tiempo', 'crecer online', 'ordenar las finanzas', 'armar el equipo'];
@@ -60,7 +85,7 @@ class CuestionarioDeInicioIaHelper
     ];
 
     /**
-     * Las reglas de validación del POST (§E2.4 del plan).
+     * Las reglas de validación del POST del cuestionario (§E2.4 del plan).
      *
      * `objetivos` y `areas` se aceptan ausentes o vacías: la app las manda siempre, y una lista vacía
      * es una respuesta válida («no elegí ninguna»).
@@ -81,6 +106,20 @@ class CuestionarioDeInicioIaHelper
             'forma'           => 'required|in:' . implode(',', self::FORMAS),
             'confianza'       => 'required|in:' . implode(',', ConfianzaDelAgenteIaHelper::MODOS),
             'extra'           => 'nullable|string|max:1500',
+        ];
+    }
+
+    /**
+     * Las reglas del PATCH de preferencias: las tres opcionales (body parcial).
+     *
+     * @return array<string, string>
+     */
+    public static function reglas_de_preferencias()
+    {
+        return [
+            'largo'     => 'nullable|in:' . implode(',', self::LARGOS),
+            'forma'     => 'nullable|in:' . implode(',', self::FORMAS),
+            'confianza' => 'nullable|in:' . implode(',', ConfianzaDelAgenteIaHelper::MODOS),
         ];
     }
 
@@ -124,28 +163,11 @@ class CuestionarioDeInicioIaHelper
             $avisos   = [];
 
             foreach (self::escrituras($respuestas, $fecha) as $escritura) {
+                self::escribir($dueno, $escritura, self::MOTIVO, AgenteContextoHelper::ORIGEN_CUESTIONARIO, $escritos, $avisos);
+            }
 
-                $resultado = AgenteContextoHelper::guardar(
-                    $dueno,
-                    $escritura['ruta'],
-                    $escritura['operacion'],
-                    $escritura['contenido'],
-                    isset($escritura['resumen']) ? $escritura['resumen'] : null,
-                    self::MOTIVO,
-                    AgenteContextoHelper::ORIGEN_CUESTIONARIO,
-                    null,
-                    isset($escritura['seccion']) ? $escritura['seccion'] : null
-                );
-
-                if (!$resultado['ok']) {
-                    /* Un tope no frena el cuestionario: lo demás se guarda y la app lo puede mostrar. */
-                    $avisos[] = $escritura['ruta'] . ': ' . $resultado['error'];
-                    continue;
-                }
-
-                if (!$resultado['sin_cambios'] && !in_array($escritura['ruta'], $escritos, true)) {
-                    $escritos[] = $escritura['ruta'];
-                }
+            foreach (self::escrituras_de_preferencias($respuestas['largo'], $respuestas['forma']) as $escritura) {
+                self::escribir($dueno, $escritura, self::MOTIVO, AgenteContextoHelper::ORIGEN_CUESTIONARIO, $escritos, $avisos);
             }
 
             $respuestas_guardadas = $respuestas;
@@ -153,6 +175,7 @@ class CuestionarioDeInicioIaHelper
 
             /* La confianza va a la misma columna y con el mismo enum que PUT user/asistente-config. */
             $dueno->agente_confianza              = $respuestas['confianza'];
+            $dueno->ia_preferencias               = json_encode(['largo' => $respuestas['largo'], 'forma' => $respuestas['forma']]);
             $dueno->ia_cuestionario_completado_at = now()->toDateTimeString();
             $dueno->ia_cuestionario_respuestas    = json_encode($respuestas_guardadas, JSON_UNESCAPED_UNICODE);
             $dueno->save();
@@ -163,6 +186,84 @@ class CuestionarioDeInicioIaHelper
                 'avisos'     => $avisos,
             ];
         });
+    }
+
+    /**
+     * PATCH ia-app/preferencias: cambia lo que vino de largo, forma y confianza (body parcial) y
+     * reescribe SOLO el bloque de cómo responder (dueno/como_responder.md y la sección del maestro),
+     * con origen `dueno` y su revisión. La confianza va por la misma columna que la configuración.
+     *
+     * @param  \App\Models\User  $owner
+     * @param  array  $datos  Validado con reglas_de_preferencias(); lo que viene null o ausente no cambia.
+     * @return array{preferencias: array, escritos: array<int, string>, avisos: array<int, string>}
+     */
+    public static function cambiar_preferencias(User $owner, array $datos)
+    {
+        $dueno  = AgenteContextoHelper::dueno($owner);
+        $actual = self::preferencias($dueno);
+
+        $largo     = !empty($datos['largo']) ? (string) $datos['largo'] : $actual['largo'];
+        $forma     = !empty($datos['forma']) ? (string) $datos['forma'] : $actual['forma'];
+        $confianza = !empty($datos['confianza']) ? (string) $datos['confianza'] : null;
+
+        return DB::transaction(function () use ($dueno, $largo, $forma, $confianza, $datos) {
+
+            $escritos = [];
+            $avisos   = [];
+
+            /* La memoria solo se toca si vino algo de cómo responder (cambiar la confianza no la toca). */
+            if (!empty($datos['largo']) || !empty($datos['forma'])) {
+
+                foreach (self::escrituras_de_preferencias($largo, $forma) as $escritura) {
+                    self::escribir($dueno, $escritura, self::MOTIVO_PREFERENCIAS, AgenteContextoHelper::ORIGEN_DUENO, $escritos, $avisos);
+                }
+
+                $dueno->ia_preferencias = json_encode(['largo' => $largo, 'forma' => $forma]);
+            }
+
+            if (!is_null($confianza)) {
+                $dueno->agente_confianza = $confianza;
+            }
+
+            if ($dueno->isDirty()) {
+                $dueno->save();
+            }
+
+            return [
+                'preferencias' => self::preferencias($dueno),
+                'escritos'     => $escritos,
+                'avisos'       => $avisos,
+            ];
+        });
+    }
+
+    /**
+     * Las preferencias vigentes del dueño: `{largo, forma, confianza}`. Sin nada guardado, los valores
+     * por defecto; la confianza, la de la configuración del asistente (con su default).
+     *
+     * @param  \App\Models\User|null  $owner
+     * @return array{largo: string, forma: string, confianza: string}
+     */
+    public static function preferencias($owner)
+    {
+        $dueno = AgenteContextoHelper::dueno($owner);
+
+        $guardadas = [];
+
+        if (!is_null($dueno) && !empty($dueno->ia_preferencias)) {
+            $valor     = $dueno->ia_preferencias;
+            $guardadas = is_array($valor) ? $valor : json_decode((string) $valor, true);
+            $guardadas = is_array($guardadas) ? $guardadas : [];
+        }
+
+        $largo = isset($guardadas['largo']) && in_array($guardadas['largo'], self::LARGOS, true) ? $guardadas['largo'] : self::LARGO_POR_DEFECTO;
+        $forma = isset($guardadas['forma']) && in_array($guardadas['forma'], self::FORMAS, true) ? $guardadas['forma'] : self::FORMA_POR_DEFECTO;
+
+        return [
+            'largo'     => $largo,
+            'forma'     => $forma,
+            'confianza' => ConfianzaDelAgenteIaHelper::con_default($dueno),
+        ];
     }
 
     /**
@@ -208,8 +309,72 @@ class CuestionarioDeInicioIaHelper
     }
 
     /**
-     * La lista de escrituras que generan las respuestas, en orden. Lo que no vino no escribe nada (un
-     * archivo no se pisa con vacío porque el dueño no contestó esa pregunta).
+     * Una escritura de bloque, juntando lo escrito y los avisos (un tope no frena el resto).
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  array  $escritura  {ruta, marca, contenido, resumen?, seccion?}
+     * @param  string  $motivo
+     * @param  string  $origen
+     * @param  array  $escritos
+     * @param  array  $avisos
+     * @return void
+     */
+    protected static function escribir(User $dueno, array $escritura, $motivo, $origen, array &$escritos, array &$avisos)
+    {
+        $resultado = AgenteContextoHelper::guardar_bloque(
+            $dueno,
+            $escritura['ruta'],
+            $escritura['marca'],
+            $escritura['contenido'],
+            isset($escritura['resumen']) ? $escritura['resumen'] : null,
+            $motivo,
+            $origen,
+            null,
+            isset($escritura['seccion']) ? $escritura['seccion'] : null
+        );
+
+        if (!$resultado['ok']) {
+            $avisos[] = $escritura['ruta'] . ': ' . $resultado['error'];
+
+            return;
+        }
+
+        if (!$resultado['sin_cambios'] && !in_array($escritura['ruta'], $escritos, true)) {
+            $escritos[] = $escritura['ruta'];
+        }
+    }
+
+    /**
+     * Las escrituras del bloque de cómo responder: el archivo y la sección del maestro.
+     *
+     * @param  string  $largo
+     * @param  string  $forma
+     * @return array<int, array>
+     */
+    protected static function escrituras_de_preferencias($largo, $forma)
+    {
+        $texto_largo = self::TEXTO_DEL_LARGO[$largo];
+        $texto_forma = self::TEXTO_DE_LA_FORMA[$forma];
+
+        return [
+            [
+                'ruta'      => 'dueno/como_responder.md',
+                'marca'     => self::MARCA_PREFERENCIAS,
+                'contenido' => '- Largo de las respuestas: ' . $texto_largo . "\n" . '- Forma: ' . $texto_forma,
+                'resumen'   => 'Largo: ' . $largo . '. Forma: ' . $forma . '.',
+            ],
+            [
+                'ruta'      => AgenteContextoHelper::MAESTRO,
+                'marca'     => self::MARCA_PREFERENCIAS,
+                'seccion'   => self::SECCION_PREFERENCIAS,
+                'contenido' => '- Largo: ' . $texto_largo . "\n" . '- Forma: ' . $texto_forma . "\n" . '- El detalle está en dueno/como_responder.md.',
+            ],
+        ];
+    }
+
+    /**
+     * Las escrituras del cuestionario (sin las de cómo responder), en orden. Lo que no vino no escribe
+     * nada: un bloque no se pisa con vacío porque el dueño no contestó esa pregunta.
      *
      * @param  array  $r      Respuestas normalizadas.
      * @param  string $fecha  d/m/Y de hoy.
@@ -217,46 +382,21 @@ class CuestionarioDeInicioIaHelper
      */
     protected static function escrituras(array $r, $fecha)
     {
-        $plantilla = AgenteContextoHelper::plantilla();
-        $al_pie    = 'Lo contó en el cuestionario de inicio el ' . $fecha . '.';
-        $lista     = [];
-
-        // ---- Cómo quiere que le respondan (siempre viene: largo y forma son obligatorios) ----
-        $largo = self::TEXTO_DEL_LARGO[$r['largo']];
-        $forma = self::TEXTO_DE_LA_FORMA[$r['forma']];
-
-        $lista[] = [
-            'ruta'      => 'dueno/como_responder.md',
-            'operacion' => AgenteContextoHelper::REEMPLAZAR,
-            'contenido' => self::archivo($plantilla, 'dueno/como_responder.md', [
-                '- Largo de las respuestas: ' . $largo,
-                '- Forma: ' . $forma,
-                '',
-                $al_pie,
-            ]),
-            'resumen'   => 'Largo: ' . $r['largo'] . '. Forma: ' . $r['forma'] . '.',
-        ];
-
-        $lista[] = [
-            'ruta'      => AgenteContextoHelper::MAESTRO,
-            'operacion' => AgenteContextoHelper::REEMPLAZAR,
-            'seccion'   => 'Cómo quiere que le respondan',
-            'contenido' => '- Largo: ' . $largo . "\n" . '- Forma: ' . $forma . "\n" . '- El detalle está en dueno/como_responder.md.',
-        ];
+        $al_pie = 'Lo contó en el cuestionario de inicio el ' . $fecha . '.';
+        $lista  = [];
 
         // ---- El negocio en una frase ----
         if ($r['negocio_frase'] !== '') {
 
             $lista[] = [
                 'ruta'      => 'negocio/resumen.md',
-                'operacion' => AgenteContextoHelper::REEMPLAZAR,
-                'contenido' => self::archivo($plantilla, 'negocio/resumen.md', [$r['negocio_frase'], '', $al_pie]),
-                'resumen'   => $r['negocio_frase'],
+                'marca'     => self::MARCA,
+                'contenido' => $r['negocio_frase'] . "\n\n" . $al_pie,
             ];
 
             $lista[] = [
                 'ruta'      => AgenteContextoHelper::MAESTRO,
-                'operacion' => AgenteContextoHelper::REEMPLAZAR,
+                'marca'     => self::MARCA,
                 'seccion'   => 'El negocio',
                 'contenido' => $r['negocio_frase'],
             ];
@@ -283,22 +423,18 @@ class CuestionarioDeInicioIaHelper
 
             $lista[] = [
                 'ruta'      => 'negocio/objetivos.md',
-                'operacion' => AgenteContextoHelper::REEMPLAZAR,
-                'contenido' => self::archivo($plantilla, 'negocio/objetivos.md', $renglones),
-                'resumen'   => count($r['objetivos']) > 0
-                    ? 'Quiere: ' . implode(', ', $r['objetivos']) . '.'
-                    : self::corto($r['objetivos_texto']),
+                'marca'     => self::MARCA,
+                'contenido' => implode("\n", $renglones),
             ];
         }
 
-        // ---- Prioridades: áreas a mejorar y lo que le importa hoy ----
+        // ---- Prioridades: áreas a mejorar y lo que le importa hoy (sin «##» adentro del bloque) ----
         if (count($r['areas']) > 0 || $r['importa_hoy'] !== '') {
 
             $renglones = [];
 
             if (count($r['areas']) > 0) {
-                $renglones[] = '## Áreas que quiere mejorar';
-                $renglones[] = '';
+                $renglones[] = 'Áreas que quiere mejorar:';
                 foreach ($r['areas'] as $area) {
                     $renglones[] = '- ' . self::con_mayuscula($area);
                 }
@@ -306,9 +442,7 @@ class CuestionarioDeInicioIaHelper
             }
 
             if ($r['importa_hoy'] !== '') {
-                $renglones[] = '## Lo que le importa hoy';
-                $renglones[] = '';
-                $renglones[] = $r['importa_hoy'];
+                $renglones[] = 'Lo que le importa hoy: ' . $r['importa_hoy'];
                 $renglones[] = '';
             }
 
@@ -316,11 +450,8 @@ class CuestionarioDeInicioIaHelper
 
             $lista[] = [
                 'ruta'      => 'negocio/prioridades.md',
-                'operacion' => AgenteContextoHelper::REEMPLAZAR,
-                'contenido' => self::archivo($plantilla, 'negocio/prioridades.md', $renglones),
-                'resumen'   => count($r['areas']) > 0
-                    ? 'Quiere mejorar: ' . implode(', ', $r['areas']) . '.'
-                    : self::corto($r['importa_hoy']),
+                'marca'     => self::MARCA,
+                'contenido' => implode("\n", $renglones),
             ];
         }
 
@@ -343,7 +474,7 @@ class CuestionarioDeInicioIaHelper
 
             $lista[] = [
                 'ruta'      => AgenteContextoHelper::MAESTRO,
-                'operacion' => AgenteContextoHelper::REEMPLAZAR,
+                'marca'     => self::MARCA,
                 'seccion'   => 'Lo que le importa hoy',
                 'contenido' => implode("\n", $hoy) . "\n" . '- El detalle está en negocio/prioridades.md y negocio/objetivos.md.',
             ];
@@ -354,31 +485,13 @@ class CuestionarioDeInicioIaHelper
 
             $lista[] = [
                 'ruta'      => 'dueno/perfil.md',
-                'operacion' => AgenteContextoHelper::REEMPLAZAR,
+                'marca'     => self::MARCA,
                 'seccion'   => 'Lo que contó al empezar',
                 'contenido' => $r['extra'] . "\n\n" . $al_pie,
             ];
         }
 
         return $lista;
-    }
-
-    /**
-     * Un archivo completo con el encabezado de su plantilla (título y para qué es) y los renglones.
-     *
-     * @param  array  $plantilla
-     * @param  string $ruta
-     * @param  array  $renglones
-     * @return string
-     */
-    protected static function archivo(array $plantilla, $ruta, array $renglones)
-    {
-        $titulo = $plantilla[$ruta][0];
-        $para   = $plantilla[$ruta][1];
-
-        return '# ' . $titulo . "\n\n"
-             . '> Para qué es este archivo: ' . $para . "\n\n"
-             . rtrim(implode("\n", $renglones)) . "\n";
     }
 
     /**
@@ -433,18 +546,5 @@ class CuestionarioDeInicioIaHelper
     protected static function con_mayuscula($texto)
     {
         return mb_strtoupper(mb_substr($texto, 0, 1)) . mb_substr($texto, 1);
-    }
-
-    /**
-     * La primera línea de un texto, en una línea, para un resumen del índice.
-     *
-     * @param  string  $texto
-     * @return string
-     */
-    protected static function corto($texto)
-    {
-        $una_linea = trim(preg_replace('/\s+/u', ' ', (string) $texto));
-
-        return mb_strlen($una_linea) > 200 ? rtrim(mb_substr($una_linea, 0, 199)) . '…' : $una_linea;
     }
 }

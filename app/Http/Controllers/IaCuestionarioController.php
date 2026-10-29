@@ -14,9 +14,11 @@ use Illuminate\Support\Facades\Validator;
  * El cuestionario de inicio de la app del agente, «Conozcámonos» (misión app-ia-y-memoria,
  * 29/10/2026, §E2.4 y contrato C5 del plan):
  *
- *   GET  api/ia-app/cuestionario           → {completado, salteado, completado_en, respuestas: {...}|null}
- *   POST api/ia-app/cuestionario           → lo mismo + {escritos: [rutas], avisos: [...]}
- *   POST api/ia-app/cuestionario/saltear   → 204
+ *   GET   api/ia-app/cuestionario           → {completado, salteado, completado_en, respuestas: {...}|null,
+ *                                            preferencias: {largo, forma, confianza}}
+ *   POST  api/ia-app/cuestionario           → lo mismo + {escritos: [rutas], avisos: [...]}
+ *   POST  api/ia-app/cuestionario/saltear   → 204
+ *   PATCH api/ia-app/preferencias {largo?, forma?, confianza?} → {largo, forma, confianza}
  *
  * Mismo gate que el chat (auth:sanctum + check_extencion_empresa:agentes_ia + solo_el_dueno_ia). Las
  * respuestas se guardan en el DUEÑO (UserHelper::user(true)): el cuestionario es del comercio. La
@@ -99,7 +101,42 @@ class IaCuestionarioController extends Controller
     }
 
     /**
-     * El estado del cuestionario y las respuestas guardadas.
+     * PATCH api/ia-app/preferencias — body parcial `{largo?, forma?, confianza?}` → `{largo, forma,
+     * confianza}` vigentes. Reescribe SOLO el bloque de cómo responder de la memoria (origen `dueno`, con
+     * revisión) y la confianza por la misma columna que la configuración del asistente. Lo que no vino
+     * (o viene null) no cambia.
+     *
+     * @param  Request  $request
+     * @return JsonResponse
+     */
+    public function preferencias(Request $request): JsonResponse
+    {
+        $validador = Validator::make($request->all(), CuestionarioDeInicioIaHelper::reglas_de_preferencias());
+
+        if ($validador->fails()) {
+
+            return response()->json([
+                'code'    => 'validacion',
+                'message' => $validador->errors()->first(),
+                'errors'  => $validador->errors(),
+            ], 422);
+        }
+
+        $owner = UserHelper::user(true);
+
+        if (is_null($owner)) {
+
+            return $this->sin_dueno();
+        }
+
+        $resultado = CuestionarioDeInicioIaHelper::cambiar_preferencias($owner, $validador->validated());
+
+        return response()->json($resultado['preferencias'], 200);
+    }
+
+    /**
+     * El estado del cuestionario, las respuestas guardadas y las preferencias vigentes (estas van
+     * siempre, aunque el cuestionario se haya salteado).
      *
      * @param  \App\Models\User  $owner
      * @return array
@@ -107,7 +144,8 @@ class IaCuestionarioController extends Controller
     protected function estado($owner): array
     {
         $estado = AgenteContextoHelper::estado_cuestionario($owner);
-        $estado['respuestas'] = CuestionarioDeInicioIaHelper::respuestas($owner);
+        $estado['respuestas']   = CuestionarioDeInicioIaHelper::respuestas($owner);
+        $estado['preferencias'] = CuestionarioDeInicioIaHelper::preferencias($owner);
 
         return $estado;
     }

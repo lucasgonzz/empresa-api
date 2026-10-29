@@ -1466,6 +1466,9 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('ia-app/cuestionario', 'IaCuestionarioController@show');
         Route::post('ia-app/cuestionario', 'IaCuestionarioController@store');
         Route::post('ia-app/cuestionario/saltear', 'IaCuestionarioController@saltear');
+        // Cómo quiere que le respondan, cambiado desde la configuración de la app: body parcial
+        // {largo?, forma?, confianza?}; reescribe solo el bloque de preferencias de la memoria.
+        Route::patch('ia-app/preferencias', 'IaCuestionarioController@preferencias');
     });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
