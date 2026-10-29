@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -44,6 +45,9 @@ class IaAppHelper
     /** Techo del nombre del dispositivo (contrato C1.1). */
     const MAX_DISPOSITIVO = 100;
 
+    /** Tokens de la app vivos por persona, como mucho: al emitir el siguiente se borran los más viejos. */
+    const MAX_TOKENS_POR_PERSONA = 10;
+
     /** Versión del contrato C5 que expone este API. La app la lee para saber con qué está hablando. */
     const VERSION_API = '1';
 
@@ -51,11 +55,8 @@ class IaAppHelper
     const CANAL = 'app';
 
     /**
-     * Lo que esta versión sabe hacer para la app (contrato C1.1). La app apaga lo que no esté.
-     *
-     * `contexto` y `cuestionario` los expone la otra mitad de la misión (la memoria del negocio, E2):
-     * se anuncian SOLO si esa mitad está en este código (ver funciones()). Anunciar una función cuyas
-     * rutas no existen haría que la app muestre una pantalla que da 404.
+     * Lo que esta versión sabe hacer para la app (contrato C1.1). La app apaga lo que no esté. `contexto`,
+     * `cuestionario` y `preferencias` son de la memoria del negocio (AgenteContextoHelper).
      */
     const FUNCIONES = ['modelo', 'adjuntos', 'audio', 'bloques', 'imagenes', 'contexto', 'cuestionario', 'preferencias', 'buscar', 'renombrar'];
 
@@ -65,19 +66,13 @@ class IaAppHelper
      */
     const HASH_DE_RELLENO = '$2y$10$D/2UyNmSHOz8DRxOCe5jCubD2nA2JbCjl0kHfW1pl0F7QwGIBJ.16';
 
-    /** Las funciones que dependen de la memoria del negocio (AgenteContextoHelper). */
-    const FUNCIONES_DE_LA_MEMORIA = ['contexto', 'cuestionario', 'preferencias'];
-
-    /** La clase de la memoria del negocio (la arma E2). Se usa por nombre para no exigirla. */
-    const CLASE_DE_LA_MEMORIA = 'App\\Http\\Controllers\\Helpers\\asistente_ia\\AgenteContextoHelper';
 
     /**
      * Las rutas que un token `ia-app` puede usar, como "MÉTODO uri" tal cual están declaradas en
      * routes/api.php. Todo lo demás le da 403 `fuera_de_la_app` (SoloRutasDeLaApp).
      *
-     * 🔴 Incluye las de la memoria y el cuestionario (E2) aunque no estén en este código todavía: es
-     * una lista de lo PERMITIDO, y una ruta que no existe da 404 igual. Así el día que se mergea la otra
-     * mitad no hay que acordarse de volver acá.
+     * Una ruta nueva de la app se suma ACÁ en el mismo commit que la declara en routes/api.php: si no,
+     * la app recibe 403 `fuera_de_la_app`.
      *
      * 🔴 NO incluye `GET api/user` (corre el candado de sesión única) ni `api/mcp` (el servidor MCP
      * tiene su propio token con la habilidad `mcp`).
@@ -88,7 +83,7 @@ class IaAppHelper
         'DELETE api/ia-app/token',
         'POST api/ia-app/transcribir',
         'GET api/ia-imagenes/{uuid}',
-        // La memoria del negocio y el cuestionario (E2).
+        // La memoria del negocio, el cuestionario y las preferencias.
         'GET api/ia-app/cuestionario',
         'POST api/ia-app/cuestionario',
         'POST api/ia-app/cuestionario/saltear',
@@ -128,21 +123,7 @@ class IaAppHelper
      */
     public static function funciones(): array
     {
-        $hay_memoria = class_exists(self::CLASE_DE_LA_MEMORIA);
-
-        $funciones = [];
-
-        foreach (self::FUNCIONES as $funcion) {
-
-            if (!$hay_memoria && in_array($funcion, self::FUNCIONES_DE_LA_MEMORIA, true)) {
-
-                continue;
-            }
-
-            $funciones[] = $funcion;
-        }
-
-        return $funciones;
+        return self::FUNCIONES;
     }
 
     /**
@@ -331,22 +312,6 @@ class IaAppHelper
     }
 
     /**
-     * El dueño de la cuenta de una persona (ella misma si no tiene owner_id).
-     *
-     * @param  \App\Models\User  $persona
-     * @return \App\Models\User|null
-     */
-    public static function dueno_de(User $persona)
-    {
-        if (empty($persona->owner_id)) {
-
-            return $persona;
-        }
-
-        return User::find((int) $persona->owner_id);
-    }
-
-    /**
      * true si la persona puede usar el asistente: el MISMO criterio que solo_el_dueno_ia
      * (MostradorHelper::puede_ver()), aplicado a una persona que todavía no está autenticada —el
      * dueño, o un empleado con admin_access—. El acceso maestro no existe acá: sin `loginLucas()` no
@@ -369,8 +334,14 @@ class IaAppHelper
      * Emite el token de la app para la persona y devuelve el texto plano ("<id>|<texto>"). El texto
      * viaja UNA sola vez: Sanctum guarda el hash.
      *
-     * A diferencia de la clave MCP, NO revoca los anteriores: el dueño puede tener la app abierta en el
-     * teléfono y en la compu, y cada una tiene su token (por eso el nombre lleva el dispositivo).
+     * El dueño puede tener la app abierta en el teléfono y en la compu, y cada una tiene su token (por eso
+     * el nombre lleva el dispositivo). Pero un login no puede ir acumulando tokens vivos para siempre
+     * (corrección de la revisión, 29/10/2026), así que, en una transacción y DESPUÉS de crear el nuevo
+     * (si createToken() fallara, la persona no queda sin ninguno):
+     *   - se borran los anteriores con el MISMO nombre (`ia-app:<dispositivo>`): volver a entrar desde el
+     *     mismo dispositivo reemplaza su token;
+     *   - quedan como mucho MAX_TOKENS_POR_PERSONA tokens de la app; los más viejos se borran.
+     * La clave MCP y cualquier otro token no se tocan.
      *
      * @param  \App\Models\User  $persona
      * @param  string|null  $dispositivo
@@ -384,9 +355,26 @@ class IaAppHelper
             $dispositivo = 'app';
         }
 
-        $dispositivo = mb_substr($dispositivo, 0, self::MAX_DISPOSITIVO);
+        $nombre = self::PREFIJO_DEL_TOKEN . mb_substr($dispositivo, 0, self::MAX_DISPOSITIVO);
 
-        return $persona->createToken(self::PREFIJO_DEL_TOKEN . $dispositivo, [self::HABILIDAD])->plainTextToken;
+        return DB::transaction(function () use ($persona, $nombre) {
+
+            $creado = $persona->createToken($nombre, [self::HABILIDAD]);
+            $id     = (int) $creado->accessToken->id;
+
+            $persona->tokens()->where('name', $nombre)->where('id', '<>', $id)->delete();
+
+            $sobran = array_slice(
+                $persona->tokens()->where('name', 'like', self::PREFIJO_DEL_TOKEN . '%')->orderBy('id', 'DESC')->pluck('id')->all(),
+                self::MAX_TOKENS_POR_PERSONA
+            );
+
+            if (count($sobran)) {
+                $persona->tokens()->whereIn('id', $sobran)->delete();
+            }
+
+            return $creado->plainTextToken;
+        });
     }
 
     /**
@@ -470,69 +458,34 @@ class IaAppHelper
     /**
      * El estado del cuestionario de inicio del dueño (contrato C5, `ia-app/yo`).
      *
-     * Lo resuelve la memoria del negocio (E2, AgenteContextoHelper::estado_cuestionario()). Si esa
-     * mitad no está en este código, o falla, va el estado "no completado ni salteado": la app ofrece el
-     * cuestionario y, como `cuestionario` no está en las funciones, no lo muestra.
+     * Lo resuelve la memoria del negocio (AgenteContextoHelper::estado_cuestionario()).
      *
      * @param  \App\Models\User|null  $dueno
      * @return array{completado: bool, salteado: bool, completado_en: string|null}
      */
     public static function cuestionario($dueno): array
     {
-        $por_defecto = ['completado' => false, 'salteado' => false, 'completado_en' => null];
-
-        $clase = self::CLASE_DE_LA_MEMORIA;
-
-        if (is_null($dueno) || !class_exists($clase) || !method_exists($clase, 'estado_cuestionario')) {
-
-            return $por_defecto;
-        }
-
-        try {
-
-            $estado = call_user_func([$clase, 'estado_cuestionario'], $dueno);
-
-        } catch (\Throwable $e) {
-
-            Log::warning('IaAppHelper: no se pudo leer el estado del cuestionario', [
-                'owner_id' => $dueno->id,
-                'error'    => $e->getMessage(),
-            ]);
-
-            return $por_defecto;
-        }
-
-        if (!is_array($estado)) {
-
-            return $por_defecto;
-        }
-
-        return [
-            'completado'    => !empty($estado['completado']),
-            'salteado'      => !empty($estado['salteado']),
-            'completado_en' => isset($estado['completado_en']) && $estado['completado_en'] !== '' ? (string) $estado['completado_en'] : null,
-        ];
+        return AgenteContextoHelper::estado_cuestionario($dueno);
     }
 
     /**
-     * Asegura que el dueño tenga su memoria armada (E2, AgenteContextoHelper::asegurar(), idempotente).
-     * Protegido: si esa mitad no está o falla, la app abre igual.
+     * Asegura que el dueño tenga su memoria armada (AgenteContextoHelper::asegurar(), idempotente).
+     * Protegido: si falla (la base, una carrera), la app abre igual y la memoria se arma en el próximo
+     * turno, que también la asegura.
      *
      * @param  \App\Models\User|null  $dueno
      * @return void
      */
     public static function asegurar_la_memoria($dueno)
     {
-        $clase = self::CLASE_DE_LA_MEMORIA;
-
-        if (is_null($dueno) || !class_exists($clase) || !method_exists($clase, 'asegurar')) {
+        if (is_null($dueno)) {
 
             return;
         }
 
         try {
 
-            call_user_func([$clase, 'asegurar'], $dueno);
+            AgenteContextoHelper::asegurar($dueno);
 
         } catch (\Throwable $e) {
 

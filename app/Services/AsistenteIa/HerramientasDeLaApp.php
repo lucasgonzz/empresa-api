@@ -40,7 +40,7 @@ class HerramientasDeLaApp
                 'description'  => 'Muestra un GRÁFICO debajo de tu respuesta en la app. Usalo cuando un gráfico se entiende mejor que los números sueltos: '
                     . 'una evolución en el tiempo (lineas o area), una comparación entre varios (barras, barras_horizontales si los nombres son largos, barras_apiladas para partes que suman), '
                     . 'la participación de cada parte en un total (torta o dona, una sola serie y hasta 8 porciones), o la relación entre dos medidas (dispersion, con puntos [x, y]). '
-                    . 'Los números salen SIEMPRE de las herramientas de consulta: primero consultás, después graficás. Los datos van como NÚMEROS sin formato (1234.5, no "$ 1.234,50"), '
+                    . 'Los números salen SIEMPRE de las herramientas de consulta: primero consultás, después graficás. Los datos van como NÚMEROS sin formato (1234.5, no "$ 1.234,50"); un porcentaje va en puntos (15 = 15 %, no 0.15) con eje_y.formato porcentaje, '
                     . 'un dato por categoría y en el mismo orden (null si falta uno). Hasta 8 series y 500 datos por serie. Si te contesta un error, corregí lo que dice y volvé a llamarla. '
                     . 'Después de mostrarlo, comentá en el texto lo importante en una o dos oraciones; no repitas todos los números.',
                 'input_schema' => [
@@ -98,7 +98,7 @@ class HerramientasDeLaApp
                 'description'  => 'Muestra una TABLA debajo de tu respuesta en la app, con scroll y un botón para bajarla a Excel. Usala cuando la persona va a querer ver fila por fila '
                     . '(un listado de clientes con su deuda, los artículos a reponer, las ventas de un día). Nunca armes una tabla en el texto con | o guiones: para eso está esta herramienta. '
                     . 'Cada columna tiene una clave corta (letras, números o _), su etiqueta y su formato (texto, numero, moneda, porcentaje o fecha). Cada fila es un objeto con esas claves; '
-                    . 'en las columnas numéricas el valor va como NÚMERO sin formato. Hasta 12 columnas y 300 filas. Los datos salen de las herramientas de consulta. '
+                    . 'en las columnas numéricas el valor va como NÚMERO sin formato; en una columna porcentaje, en puntos (15 = 15 %, no 0.15). Hasta 12 columnas y 300 filas. Los datos salen de las herramientas de consulta. '
                     . 'Después, en el texto, contá lo importante en una o dos oraciones.',
                 'input_schema' => [
                     'type'       => 'object',

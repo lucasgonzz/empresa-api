@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\AdminSync\Concerns\ClaveEstrictaDeAdmin;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
 use Illuminate\Http\JsonResponse;
@@ -90,7 +91,7 @@ class IaAppController extends Controller
             ], 401, [], JSON_UNESCAPED_UNICODE);
         }
 
-        $dueno = IaAppHelper::dueno_de($persona);
+        $dueno = AgenteContextoHelper::dueno($persona);
 
         if (!AsistenteCanalHelper::tiene_extension($dueno)) {
 

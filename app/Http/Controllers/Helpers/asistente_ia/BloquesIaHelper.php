@@ -15,7 +15,9 @@ use Illuminate\Support\Facades\Log;
  * pasa todo por normalizar() antes de guardar, y lo que no cumple se descarta con un log, sin romper la
  * respuesta. Los topes (§3): 1–8 series; ≤ 500 datos por serie; torta/dona con una sola serie;
  * dispersión con `puntos [[x,y],…]` (≤ 500) en vez de `datos`; tabla ≤ 12 columnas y ≤ 300 filas;
- * ≤ 6 bloques por mensaje. Los valores son NÚMEROS: un "1.234,50" no es un dato.
+ * ≤ 6 bloques por mensaje. Los valores son NÚMEROS: un "1.234,50" no es un dato. Un PORCENTAJE va en
+ * puntos (15 = 15 %, no 0.15), en un eje o una columna con formato `porcentaje`: la app le pone el
+ * signo, no lo multiplica.
  *
  * Los textos largos se recortan (un título de 130 caracteres no merece perder el gráfico); los datos
  * que no entran o no son números NO se recortan ni se arreglan: se rechazan, porque un gráfico con la

@@ -228,7 +228,9 @@ class Token_y_rutas_de_la_app_Test extends IaAppTestCase
         $con_puntos = substr($documento, 0, 2) . '.' . substr($documento, 2, 3) . '.' . substr($documento, 5);
         $this->pedir_token(['doc_number' => $con_puntos, 'password' => 'la-misma-clave'])->assertStatus(200)->assertJsonPath('usuario.id', $a->id);
 
-        $this->assertSame(2, \Laravel\Sanctum\PersonalAccessToken::where('tokenable_id', $a->id)->count());
+        // A entró dos veces desde el mismo dispositivo (sin nombre: "app"): el segundo token reemplaza al
+        // primero (emitir_token borra los anteriores con el mismo nombre). B, uno. Nadie recibió el del otro.
+        $this->assertSame(1, \Laravel\Sanctum\PersonalAccessToken::where('tokenable_id', $a->id)->count());
         $this->assertSame(1, \Laravel\Sanctum\PersonalAccessToken::where('tokenable_id', $b->id)->count());
     }
 
@@ -275,12 +277,64 @@ class Token_y_rutas_de_la_app_Test extends IaAppTestCase
                 'cuestionario' => ['completado', 'salteado', 'completado_en'],
             ])
             ->assertJsonPath('cuestionario.completado', false)
-            ->assertJsonPath('cuestionario.salteado', false);
+            ->assertJsonPath('cuestionario.salteado', false)
+            ->assertJsonPath('cuestionario.completado_en', null)
+            ->assertJsonPath('capacidades.funciones', IaAppHelper::FUNCIONES);
 
-        $hay_memoria = class_exists(IaAppHelper::CLASE_DE_LA_MEMORIA);
+        foreach (['contexto', 'cuestionario', 'preferencias'] as $funcion) {
+            $this->assertContains($funcion, $respuesta->json('capacidades.funciones'));
+        }
 
-        $this->assertSame($hay_memoria, in_array('contexto', $respuesta->json('capacidades.funciones'), true),
-            'contexto se anuncia solo si la memoria del negocio está en este código.');
+        // ia-app/yo deja armada la memoria del negocio.
+        $this->assertTrue(
+            \App\Models\AgenteContextoArchivo::where('user_id', $this->dueno->id)->where('ruta', \App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper::MAESTRO)->exists()
+        );
+
+        // El valor REAL del cuestionario: completado, con su fecha.
+        $completado = \Carbon\Carbon::parse('2026-10-29 10:30:00');
+        User::where('id', $this->dueno->id)->update(['ia_cuestionario_completado_at' => $completado]);
+
+        $this->como_otro_cliente();
+
+        $this->getJson('api/ia-app/yo', $this->de_la_app())
+            ->assertStatus(200)
+            ->assertJsonPath('cuestionario.completado', true)
+            ->assertJsonPath('cuestionario.salteado', false)
+            ->assertJsonPath('cuestionario.completado_en', $completado->toIso8601String());
+    }
+
+    public function test_cada_dispositivo_tiene_un_token_y_hay_10_como_mucho()
+    {
+        $tokens_de_la_app = function () {
+            return PersonalAccessToken::where('tokenable_id', $this->dueno->id)->where('name', 'like', 'ia-app:%')->orderBy('id')->get();
+        };
+
+        $mcp = $this->dueno->createToken('mcp', ['mcp']);
+
+        // Volver a entrar desde el mismo dispositivo reemplaza su token.
+        $viejo = IaAppHelper::emitir_token($this->dueno, 'Moto G');
+        $nuevo = IaAppHelper::emitir_token($this->dueno, 'Moto G');
+
+        $this->assertNull(PersonalAccessToken::findToken($viejo));
+        $this->assertNotNull(PersonalAccessToken::findToken($nuevo));
+        $this->assertSame(1, $tokens_de_la_app()->where('name', 'ia-app:Moto G')->count());
+
+        // Doce dispositivos más: quedan los diez más nuevos.
+        $emitidos = [];
+        foreach (range(1, 12) as $i) {
+            $emitidos[] = IaAppHelper::emitir_token($this->dueno, 'Dispositivo ' . $i);
+        }
+
+        $vivos = $tokens_de_la_app();
+
+        $this->assertCount(IaAppHelper::MAX_TOKENS_POR_PERSONA, $vivos);
+        $this->assertSame('ia-app:Dispositivo 12', $vivos->last()->name);
+        $this->assertSame('ia-app:Dispositivo 3', $vivos->first()->name, 'Se fueron los más viejos (el del setUp, Moto G, 1 y 2).');
+        $this->assertNull(PersonalAccessToken::findToken($this->token));
+        $this->assertNull(PersonalAccessToken::findToken($emitidos[0]));
+        $this->assertNotNull(PersonalAccessToken::findToken($emitidos[11]));
+
+        $this->assertNotNull(PersonalAccessToken::find($mcp->accessToken->id), 'La clave MCP no se toca.');
     }
 
     public function test_un_token_de_la_app_no_abre_nada_fuera_de_la_app()

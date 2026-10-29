@@ -84,11 +84,6 @@ class ProgresoIaHelper
             return 'Preparando la carga…';
         }
 
-        if (strpos($tool_name, 'consultar_') === 0) {
-
-            return self::POR_DEFECTO;
-        }
-
         return self::POR_DEFECTO;
     }
 
