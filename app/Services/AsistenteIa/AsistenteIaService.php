@@ -1339,7 +1339,7 @@ class AsistenteIaService
          * acciones ese renglón no va (sería mentira) y en su lugar se suma el
          * bloque "Qué podés cargar", con sus reglas.
          */
-        $regla_de_solo_lectura = $con_acciones ? '' : $this->regla_de_solo_lectura();
+        $regla_de_solo_lectura = $con_acciones ? '' : $this->regla_de_solo_lectura($this->con_memoria($owner));
 
         /*
          * Misión asistente-capacidades-y-hilos (22/9/2026): el bloque de carga depende del MODO DE
@@ -1520,15 +1520,24 @@ APP;
      * misión (con su salto de línea final). Solo va cuando el mensaje NO
      * tiene las herramientas de carga.
      *
+     * Misión app-ia-y-memoria (corrección de la revisión): con la memoria del negocio (Agentes de IA),
+     * un renglón más dice que anotar en la memoria SÍ se puede. Sin él, "no podés crear ni modificar
+     * nada" le prohibía al modelo justo la herramienta que tiene en ese turno.
+     *
+     * @param  bool  $con_memoria
      * @return string
      */
-    protected function regla_de_solo_lectura(): string
+    protected function regla_de_solo_lectura($con_memoria = false): string
     {
+        $memoria = $con_memoria
+            ? "- Anotar en tu memoria del negocio con guardar_en_contexto SÍ está permitido: no crea ni\n  cambia nada del sistema.\n"
+            : '';
+
         return <<<REGLA
 - Solo podés LEER. No podés crear, modificar ni borrar nada del sistema, ni mandar
   mensajes, ni prometer que vas a hacerlo. Si te lo piden, explicá adónde ir en el
   sistema para hacerlo a mano.
-
+{$memoria}
 REGLA;
     }
 
