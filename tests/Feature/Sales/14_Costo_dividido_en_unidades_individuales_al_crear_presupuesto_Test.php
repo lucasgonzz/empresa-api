@@ -6,6 +6,7 @@ use App\Models\Article;
 use App\Models\BudgetStatus;
 use App\Models\Client;
 use App\Models\User;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Tests\TestCase;
 
 /**
@@ -28,6 +29,13 @@ use Tests\TestCase;
  */
 class Costo_dividido_en_unidades_individuales_al_crear_presupuesto_Test extends TestCase
 {
+    /*
+     * Dentro de una transacción: sin esto, el artículo, el cliente y la venta (o el presupuesto)
+     * de prueba quedaban CONFIRMADOS en la base de testing del slot, colgados del usuario 500 del
+     * fixture, y ensuciaban a los tests que corren después (misión app-ia-y-memoria, 29/10/2026).
+     */
+    use DatabaseTransactions;
+
     public $costo_real = 2000;
     public $unidades_individuales = 20;
     public $amount = 5;
