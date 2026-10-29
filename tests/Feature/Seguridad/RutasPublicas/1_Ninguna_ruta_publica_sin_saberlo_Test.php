@@ -102,6 +102,13 @@ class Ninguna_ruta_publica_sin_saberlo_Test extends RutasPublicasTestCase
         'GET api/integraciones/articulos/{export_key}' => 'Catálogo para n8n por la export_key (>= 20 caracteres) del dueño; throttle 120/min. Es el reemplazo de n8n/productos-disponibles.',
         'POST api/print-agent/vincular'    => 'El agente de impresión canjea un código de vinculación (sha256, un solo uso, con vencimiento) por su token; throttle 20/min.',
         'POST api/admin-sync/demo-setup'   => 'Lo llama admin-api sin clave para armar las demos. Guarda propia (misión guarda-demo-setup): fuera de una demo, con la base con datos, 409 sin tocar nada (GuardaDeInstanciaDelDemoSetupTest).',
+        // App «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026): sin middleware a propósito para que el 401
+        // lleve el `code` del contrato que el admin distingue de una contraseña mala. La clave se exige SIEMPRE
+        // adentro, con hash_equals y sin el tri-estado de admin.api.key (ClaveEstrictaDeAdmin): IaApp/1_Token_y_rutas_de_la_app_Test
+        // y IaApp/3_Bloques_progreso_e_imagenes_Test prueban el 401 sin clave y con clave equivocada.
+        'POST api/admin-sync/ia-app/token'  => 'El admin pide el token de la app del dueño. Clave estricta adentro (ClaveEstrictaDeAdmin); la contraseña se valida antes de revelar nada.',
+        'GET api/admin-sync/ia-app/dueno'   => 'El admin arma su directorio con el documento del dueño. Clave estricta adentro (ClaveEstrictaDeAdmin).',
+        'POST api/admin-sync/ia-imagenes/{uuid}/resultado' => 'El admin entrega la imagen generada de un pedido del agente. Clave estricta adentro (ClaveEstrictaDeAdmin), idempotente.',
     ];
 
     /**
