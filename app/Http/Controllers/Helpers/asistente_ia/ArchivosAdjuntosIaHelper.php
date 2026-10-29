@@ -524,10 +524,16 @@ class ArchivosAdjuntosIaHelper
     }
 
     /**
-     * El texto de un .xlsx EN STREAMING con openspout (3.7, compatible con PHP 7.4; ya estaba en
-     * composer): hoja por hoja hasta MAX_HOJAS, y de cada una hasta MAX_FILAS filas y MAX_COLUMNAS
-     * columnas, cortando la lectura ahí. openspout lee la hoja renglón por renglón del XML sin armarla
-     * en memoria, así que una planilla de 50.000 renglones cuesta lo mismo que una de 200.
+     * El texto de un .xlsx EN STREAMING con openspout: hoja por hoja hasta MAX_HOJAS, y de cada una
+     * hasta MAX_FILAS filas y MAX_COLUMNAS columnas, cortando la lectura ahí. openspout lee la hoja
+     * renglón por renglón del XML sin armarla en memoria, así que una planilla de 50.000 renglones
+     * cuesta lo mismo que una de 200.
+     *
+     * 🔴 Va por OpenSpoutCompatible (el mismo puente que el importador de Excel): el perfil normal
+     * trae openspout 3 (PHP 7.4) y el perfil del VPS (vps-php84-v1) trae openspout 4, que no tiene
+     * ReaderEntityFactory ni los setters de opciones. normalizar_fila() deja en 4 el valor guardado
+     * de las fórmulas y las fechas como DateTime, igual que en 3; cerrar_hoja() suelta el XML de una
+     * hoja que se dejó a medias (en 4.32 close() no lo hace).
      *
      * Las fórmulas salen con el valor que dejó guardado Excel (openspout no recalcula): un SUM
      * recalculado sobre lo leído daría un total chico y creíble que no es el de la planilla.
@@ -537,11 +543,8 @@ class ArchivosAdjuntosIaHelper
      */
     protected static function texto_de_xlsx($ruta)
     {
-        $lector = \OpenSpout\Reader\Common\Creator\ReaderEntityFactory::createXLSXReader();
-
-        /* Las fechas como DateTime (se escriben dd/mm/aaaa) y sin los renglones vacíos. */
-        $lector->setShouldFormatDates(false);
-        $lector->setShouldPreserveEmptyRows(false);
+        /* Sin los renglones vacíos; las fechas llegan como DateTime (se escriben dd/mm/aaaa). */
+        $lector = \App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::createXLSXReader(false);
 
         $lector->open($ruta);
 
@@ -572,6 +575,7 @@ class ArchivosAdjuntosIaHelper
                         break;
                     }
 
+                    $fila   = \App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::normalizar_fila($fila);
                     $celdas = [];
 
                     foreach (array_slice($fila->getCells(), 0, self::MAX_COLUMNAS) as $celda) {
@@ -589,6 +593,7 @@ class ArchivosAdjuntosIaHelper
                 $titulo = 'Hoja «' . $hoja->getName() . '»';
 
                 if ($sigue) {
+                    \App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible::cerrar_hoja($hoja);
                     $titulo .= ' (se leyeron las primeras ' . self::MAX_FILAS . ' filas)';
                 }
 
