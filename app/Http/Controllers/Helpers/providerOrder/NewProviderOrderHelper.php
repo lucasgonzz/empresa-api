@@ -83,6 +83,21 @@ class NewProviderOrderHelper {
      */
     protected $historial_de_proveedores_pendiente = [];
 
+    /**
+     * Si esta pasada registra la oferta del proveedor en article_provider (catalogar_costo_proveedor()).
+     *
+     * Desde la misión codigos-por-proveedor (29/10/2026) se registra también con «Actualizar
+     * precios» apagado, porque en una compra real el costo es lo que cotizó ese proveedor. La única
+     * pasada que lo apaga es la orden que nace de una sugerencia de compra
+     * (PurchaseSuggestionController::create_provider_order()): ahí el costo es costo_estimado, una
+     * ESTIMACIÓN, y grabarlo como oferta de ese proveedor contaminaría su catálogo (decisión de Lucas,
+     * 29/10/2026). Si el dueño después edita esa orden con los costos reales, esa otra pasada sí
+     * los registra.
+     *
+     * @var bool
+     */
+    public $catalogar_costo_del_proveedor = true;
+
 	function __construct($provider_order, $new_articles, $ya_se_actualizo_stock = false) {
 
         $this->provider_order           = $provider_order;
@@ -2107,8 +2122,11 @@ class NewProviderOrderHelper {
                 // comprar).
             }
 
-            // Registrar la referencia y oferta no depende de cambiar el costo/precio vigente del artículo.
-            $this->catalogar_costo_proveedor($article, $new_article);
+            // Registrar la referencia y oferta no depende de cambiar el costo/precio vigente del artículo,
+            // salvo en la orden que nace de una sugerencia (costo estimado: ver $catalogar_costo_del_proveedor).
+            if ($this->catalogar_costo_del_proveedor) {
+                $this->catalogar_costo_proveedor($article, $new_article);
+            }
 
             // Si el articulo esta inacive, se actualiza la info de bar_code y demas
             $article = $this->update_article_data($article, $new_article);
