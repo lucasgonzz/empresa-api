@@ -806,13 +806,7 @@ class AsistenteController extends Controller
      */
     protected function imagenes_del_request(Request $request)
     {
-        $imagenes = $request->file('imagenes');
-
-        if (is_null($imagenes)) {
-
-            return [];
-        }
-
-        return is_array($imagenes) ? array_values($imagenes) : [$imagenes];
+        /* El mismo camino que la app de IA (misión app-ia-y-memoria): ver AsistenteImagenHelper::del_request(). */
+        return AsistenteImagenHelper::del_request($request);
     }
 }

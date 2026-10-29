@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -69,5 +71,46 @@ class IaAppController extends Controller
         }
 
         return response()->noContent();
+    }
+
+    /**
+     * POST api/ia-app/transcribir (multipart `{audio}`) → `{texto}`: el dictado del cuestionario de
+     * inicio. Mismos formatos y tope que el audio de un mensaje (AudioDelMensajeIaHelper) y la misma
+     * transcripción (TranscripcionDeAudioIaHelper). No guarda nada.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse  200 {texto} · 422 audio_invalido · 503 sin_transcripcion
+     */
+    public function transcribir(Request $request): JsonResponse
+    {
+        $audio = $request->file('audio');
+
+        $motivo = AudioDelMensajeIaHelper::motivo_de_rechazo($audio);
+
+        if (!is_null($motivo)) {
+
+            return response()->json(['code' => 'audio_invalido', 'message' => $motivo], 422, [], JSON_UNESCAPED_UNICODE);
+        }
+
+        $resultado = null;
+
+        if (TranscripcionDeAudioIaHelper::disponible()) {
+
+            $resultado = TranscripcionDeAudioIaHelper::transcribir(
+                (string) file_get_contents($audio->getRealPath()),
+                'audio.' . AudioDelMensajeIaHelper::extension_de($audio),
+                ['user_id' => UserHelper::userId(true), 'auth_user_id' => UserHelper::userId(false)]
+            );
+        }
+
+        if (is_null($resultado)) {
+
+            return response()->json([
+                'code'    => 'sin_transcripcion',
+                'message' => 'No pude pasar el audio a texto. Probá de nuevo o escribilo.',
+            ], 503, [], JSON_UNESCAPED_UNICODE);
+        }
+
+        return response()->json(['texto' => $resultado['texto']], 200, [], JSON_UNESCAPED_UNICODE);
     }
 }

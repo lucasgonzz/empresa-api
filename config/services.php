@@ -400,6 +400,13 @@ return [
          * en producción (ver CompanyPerformanceController::check_tiempo_ultima_creada()).
          */
         'embeddings_generacion_pausada' => filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN),
+
+        /*
+         * Modelo con que se pasan a texto los audios del dueño en la app «ComercioCity IA» (misión
+         * app-ia-y-memoria, 29/10/2026): el mensaje de audio y el dictado del cuestionario. Misma clave que
+         * los embeddings. Ver TranscripcionDeAudioIaHelper.
+         */
+        'modelo_transcripcion' => env('OPENAI_MODELO_TRANSCRIPCION', 'gpt-4o-mini-transcribe'),
     ],
 
     /**

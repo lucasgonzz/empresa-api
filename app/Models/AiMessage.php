@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use Illuminate\Database\Eloquent\Model;
@@ -59,6 +61,15 @@ use Illuminate\Database\Eloquent\Model;
  * DUEÑO —al revés que `adjuntos`, que son las que manda el asistente—, con el
  * recorte `{id, orden, url}` y siempre como lista. Lo inyecta toArray(); ver el
  * 🔴 de ese método por qué no va en $appends como las otras dos.
+ *
+ * Misión app-ia-y-memoria (29/10/2026): cuarto canal, 'app' — la app «ComercioCity IA»
+ * (ia.comerciocity.com), con un token `ia-app`. Se comporta como 'sistema' (hay tarjetas con botón:
+ * NO confirma por texto) salvo el formato del prompt y las herramientas de bloques. Suma:
+ *   - `modelo_pedido` (en el assistant): `rapido` | `pensamiento` para ESE turno, o null.
+ *   - `audio` (json, en el user): la nota de voz; hacia afuera `{url, duracion_seg, transcripcion}`.
+ *   - `archivos` (json, en el user): PDF/Excel/CSV con su texto; hacia afuera `[{orden, nombre, tipo, tamano, url}]`.
+ * Los dos últimos tienen datos internos (la ruta del disco, el texto extraído) y salen recortados por
+ * toArray(), igual que `imagenes`.
  */
 class AiMessage extends Model
 {
@@ -70,6 +81,9 @@ class AiMessage extends Model
 
     /** Canal de un mensaje que entró por el servidor MCP (misión asistente-mcp): un cliente MCP externo con token. */
     const CANAL_MCP = 'mcp';
+
+    /** Canal de un mensaje que entró por la app «ComercioCity IA» (misión app-ia-y-memoria): un token `ia-app`. */
+    const CANAL_APP = 'app';
 
     /**
      * Los canales donde NO hay tarjeta que tocar y una carga se confirma por texto (WhatsApp y
@@ -96,6 +110,8 @@ class AiMessage extends Model
     protected $casts = [
         'acciones_habilitadas' => 'boolean',
         'busquedas_de_productos' => 'array',
+        'audio' => 'array',
+        'archivos' => 'array',
     ];
 
     /**
@@ -216,6 +232,15 @@ class AiMessage extends Model
 
         $array['imagenes'] = FotosDelMensajeIaHelper::del_mensaje($this);
 
+        /*
+         * Misión app-ia-y-memoria (contrato C5): los campos nuevos viajan SIEMPRE (null si no hay), y
+         * `audio` y `archivos` con el recorte público —sin la ruta del disco ni el texto extraído, que
+         * parent::toArray() trae crudos por el cast—. Una SPA vieja los ignora.
+         */
+        $array['modelo_pedido'] = array_key_exists('modelo_pedido', $this->attributes) ? $this->attributes['modelo_pedido'] : null;
+        $array['audio']         = AudioDelMensajeIaHelper::para_la_respuesta($this);
+        $array['archivos']      = ArchivosAdjuntosIaHelper::para_la_respuesta($this);
+
         return $array;
     }
 
@@ -271,5 +296,15 @@ class AiMessage extends Model
     public function confirma_por_texto()
     {
         return in_array((string) $this->canal, self::CANALES_QUE_CONFIRMAN_POR_TEXTO, true);
+    }
+
+    /**
+     * true si el mensaje entró por la app «ComercioCity IA» (misión app-ia-y-memoria).
+     *
+     * @return bool
+     */
+    public function es_de_la_app()
+    {
+        return (string) $this->canal === self::CANAL_APP;
     }
 }

@@ -77,6 +77,18 @@ class ProveedorIaHelper
     /** Beta de caché de prompt: los system y las tools llevan cache_control (DeepSeek lo ignora). */
     const ANTHROPIC_BETA = 'prompt-caching-2024-07-31';
 
+    /**
+     * El selector de modelo de la app «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026): el dueño
+     * elige, para UN turno, entre Rápido (DeepSeek ágil, el default de la app) y Pensamiento (DeepSeek
+     * profundo). Viaja en el mensaje del asistente (`ai_messages.modelo_pedido`) y no toca la
+     * configuración guardada del dueño. Sin clave de DeepSeek no aplica: va la configuración del dueño.
+     */
+    const MODELO_PEDIDO_RAPIDO = 'rapido';
+
+    const MODELO_PEDIDO_PENSAMIENTO = 'pensamiento';
+
+    const MODELOS_PEDIDOS = [self::MODELO_PEDIDO_RAPIDO, self::MODELO_PEDIDO_PENSAMIENTO];
+
     /** Ruta del endpoint de mensajes, común a los dos proveedores. */
     const RUTA_MESSAGES = '/v1/messages';
 
@@ -280,10 +292,20 @@ class ProveedorIaHelper
      * @param  bool  $forzar_profundo  true para correr esta llamada con el modelo Profundo.
      * @return array{proveedor:string, pensamiento:string, modelo:string, thinking:array|null}
      */
-    public static function modelo_del_asistente($owner, $necesita_vision = false, $forzar_profundo = false): array
+    public static function modelo_del_asistente($owner, $necesita_vision = false, $forzar_profundo = false, $modelo_pedido = null): array
     {
         $proveedor   = self::proveedor_de($owner);
         $pensamiento = self::pensamiento_de($owner, $proveedor);
+
+        /*
+         * Misión app-ia-y-memoria: el modelo que pidió el dueño desde la app manda SOLO en este turno
+         * (DeepSeek, ágil o profundo). El forzado a Profundo de las cargas y de las fotos sigue igual
+         * abajo, y la visión también: Pensamiento con una foto va por el camino de siempre.
+         */
+        if (self::modelo_pedido_aplica($modelo_pedido)) {
+            $proveedor   = self::DEEPSEEK;
+            $pensamiento = (string) $modelo_pedido === self::MODELO_PEDIDO_PENSAMIENTO ? 'profundo' : 'agil';
+        }
 
         /* El `in_array` es por si alguna vez hay un proveedor sin variante profunda: ahí no se fuerza nada. */
         if ($forzar_profundo && in_array('profundo', self::pensamientos_de($proveedor), true)) {
@@ -325,6 +347,32 @@ class ProveedorIaHelper
             'modelo'      => self::modelo_o_general($preferido, self::ANTHROPIC),
             'thinking'    => null,
         ];
+    }
+
+    /**
+     * true si el modelo que pidió el dueño desde la app vale para este turno: es uno de los dos del
+     * selector y hay clave de DeepSeek. Sin clave, el turno corre con la configuración del dueño (la app
+     * no puede pedir un proveedor que esta instalación no tiene).
+     *
+     * @param  string|null  $modelo_pedido
+     * @return bool
+     */
+    public static function modelo_pedido_aplica($modelo_pedido): bool
+    {
+        return in_array((string) $modelo_pedido, self::MODELOS_PEDIDOS, true) && self::hay_credenciales(self::DEEPSEEK);
+    }
+
+    /**
+     * El proveedor con el que corre ESTE turno: DeepSeek si el dueño eligió un modelo desde la app (y
+     * hay clave), si no el de siempre (proveedor_de()).
+     *
+     * @param  \App\Models\User|null  $owner
+     * @param  string|null  $modelo_pedido
+     * @return string
+     */
+    public static function proveedor_del_turno($owner, $modelo_pedido = null): string
+    {
+        return self::modelo_pedido_aplica($modelo_pedido) ? self::DEEPSEEK : self::proveedor_de($owner);
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Models\AiMessage;
 use App\Models\AiMessageImagen;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Intervention\Image\ImageManager;
@@ -103,6 +104,29 @@ class AsistenteImagenHelper
         }
 
         return null;
+    }
+
+    /**
+     * Las fotos de un request, siempre como lista (el que sube puede mandar una sola sin corchetes).
+     *
+     * Vivía en AdminSync\AsistenteController (WhatsApp) y se movió acá en la misión app-ia-y-memoria
+     * (29/10/2026) para que la app use EL MISMO camino: misma lectura del request, misma validación
+     * (motivo_de_rechazo()) y mismo guardado (guardar(), webp de 1568 px en ai_message_imagenes).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  string  $campo
+     * @return array  UploadedFile[]
+     */
+    public static function del_request(Request $request, $campo = 'imagenes')
+    {
+        $imagenes = $request->file($campo);
+
+        if (is_null($imagenes)) {
+
+            return [];
+        }
+
+        return is_array($imagenes) ? array_values($imagenes) : [$imagenes];
     }
 
     /**

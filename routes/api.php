@@ -1402,6 +1402,8 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
          */
         Route::get('ia-app/yo', 'IaAppController@yo');
         Route::delete('ia-app/token', 'IaAppController@revocar_token');
+        // El dictado del cuestionario de inicio: un audio que vuelve como texto (OpenAI).
+        Route::post('ia-app/transcribir', 'IaAppController@transcribir');
 
         /*
          * El binario de una foto que el dueño mandó por WhatsApp (misión
@@ -1414,6 +1416,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
          * conversación (el globo optimista del POST); la conversación igual se chequea adentro.
          */
         Route::get('ai-mensajes/{message_id}/imagen/{orden}', 'AiConversationController@imagen_de_mensaje');
+
+        /*
+         * La nota de voz y los archivos (PDF, Excel, CSV) que el dueño mandó desde la app (misión
+         * app-ia-y-memoria, contrato C5). Mismo criterio que la foto de arriba: disco `local`, mismo gate
+         * y la misma tenencia doble adentro; son las `url` de `audio` y `archivos` de cada mensaje.
+         */
+        Route::get('ai-mensajes/{message_id}/audio', 'AiConversationController@audio_de_mensaje');
+        Route::get('ai-mensajes/{message_id}/archivo/{orden}', 'AiConversationController@archivo_de_mensaje');
 
         // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
         // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con

@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
@@ -404,11 +405,19 @@ class AsistenteIaService
         $lleva_imagenes = $this->lleva_imagenes($messages);
 
         /*
+         * Misión app-ia-y-memoria (29/10/2026): el modelo que el dueño eligió en la app para ESTE turno
+         * (`rapido` | `pensamiento`, o null). Si aplica (hay clave de DeepSeek), el turno corre en
+         * DeepSeek con ese pensamiento; el escalado de las cargas y de las fotos sigue igual.
+         */
+        $modelo_pedido = (string) $assistant_message->modelo_pedido;
+        $pedido_aplica = ProveedorIaHelper::modelo_pedido_aplica($modelo_pedido);
+
+        /*
          * El PROVEEDOR se resuelve una sola vez y no cambia en todo el turno (con él, el cliente
          * HTTP y la URL). El MODELO sí: se recalcula en cada vuelta, adentro del loop — ver el 🔴
          * del escalado ahí abajo.
          */
-        $proveedor = ProveedorIaHelper::proveedor_de($owner);
+        $proveedor = ProveedorIaHelper::proveedor_del_turno($owner, $modelo_pedido);
         $model     = '';
         $thinking  = null;
         $http      = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
@@ -511,7 +520,22 @@ class AsistenteIaService
          */
         $turno_transcripto = false;
 
-        if ($lleva_imagenes && TranscripcionDeFotosIaHelper::corresponde($owner, $proveedor, $toco_una_carga)) {
+        /*
+         * Con el modelo pedido desde la app, el pensamiento del turno es el que eligió el dueño y no el de
+         * su configuración: Pensamiento arranca escalado (transcribe las fotos y corre en Pro, el camino de
+         * siempre) y Rápido no transcribe salvo que el turno ya venga escalado por una foto o una carga.
+         */
+        $transcribe_las_fotos = $lleva_imagenes && (
+            ($pedido_aplica && $modelo_pedido === ProveedorIaHelper::MODELO_PEDIDO_RAPIDO && ! $toco_una_carga)
+                ? false
+                : TranscripcionDeFotosIaHelper::corresponde(
+                    $owner,
+                    $proveedor,
+                    $toco_una_carga || ($pedido_aplica && $modelo_pedido === ProveedorIaHelper::MODELO_PEDIDO_PENSAMIENTO)
+                )
+        );
+
+        if ($transcribe_las_fotos) {
             $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation);
 
             if (! is_null($transcriptos)) {
@@ -637,7 +661,7 @@ class AsistenteIaService
              * el Pro de DeepSeek —que no ve imágenes y no lo avisa con un error— nunca recibe una.
              * Con el turno transcripto ya no hay imágenes en el payload y va Pro desde la vuelta 0.
              */
-            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga || $turno_transcripto);
+            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga || $turno_transcripto, $modelo_pedido);
             $model    = $eleccion['modelo'];
 
             /*
@@ -2199,7 +2223,12 @@ CONFIRMACION;
                     $con_fotos->selectRaw('1')
                         ->from('ai_message_imagenes')
                         ->whereColumn('ai_message_imagenes.ai_message_id', 'ai_messages.id');
-                });
+                })
+                    /*
+                     * Misión app-ia-y-memoria: un PDF o un Excel sin texto al lado también es un mensaje
+                     * (el texto del archivo lo suma contenido_para_el_historial()).
+                     */
+                    ->orWhereNotNull('archivos');
             })
             ->orderBy('id', 'DESC')
             ->limit(self::MAX_MENSAJES_HISTORIAL)
@@ -3107,6 +3136,18 @@ CONFIRMACION;
         $contenido = (string) $message->contenido;
 
         if ($message->rol === 'user') {
+            /*
+             * Misión app-ia-y-memoria: los PDF / Excel / CSV que mandó desde la app entran como texto
+             * («Archivo adjunto: nombre — contenido: …»). Completos en el último mensaje del dueño (el
+             * mismo flag que manda las fotos en base64) y con un extracto en los anteriores, para que el
+             * historial no se coma el techo de caracteres. Sin archivos no cambia nada.
+             */
+            $de_los_archivos = ArchivosAdjuntosIaHelper::texto_para_el_modelo($message, (bool) $manda_las_imagenes);
+
+            if ($de_los_archivos !== '') {
+                $contenido = trim($contenido) === '' ? $de_los_archivos : rtrim($contenido) . "\n\n" . $de_los_archivos;
+            }
+
             if ($manda_las_imagenes || ! $message->relationLoaded('imagenes')) {
                 return $contenido;
             }
