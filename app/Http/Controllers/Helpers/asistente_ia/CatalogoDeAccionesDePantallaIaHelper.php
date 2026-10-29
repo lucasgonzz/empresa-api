@@ -129,6 +129,7 @@ class CatalogoDeAccionesDePantallaIaHelper
          */
         '#^[A-Z]+ api/agente-contexto(/|$)#'          => 'el asistente mismo: su memoria del negocio (la escribe con guardar_en_contexto y la corrige el dueño desde la app)',
         '#^[A-Z]+ api/ia-app(/|$)#'                   => 'el asistente mismo: la app del agente y su cuestionario de inicio (que cambia el modo de confianza)',
+        '#^[A-Z]+ api/ia-imagenes(/|$)#'              => 'el asistente mismo: las imágenes que generó para la app (las pide con pedir_imagen)',
         // ── Sesión y cuenta ───────────────────────────────────────────────────────────────────
         '#^[A-Z]+ api/user$#'                         => 'sesión y cuenta: el usuario autenticado',
         '#^[A-Z]+ api/user/\{id\}$#'                  => 'sesión y cuenta: la configuración de la cuenta (márgenes, IVA, redondeos) dispara el recálculo de todos los precios',

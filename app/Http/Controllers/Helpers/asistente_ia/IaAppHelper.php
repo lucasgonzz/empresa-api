@@ -57,7 +57,7 @@ class IaAppHelper
      * se anuncian SOLO si esa mitad está en este código (ver funciones()). Anunciar una función cuyas
      * rutas no existen haría que la app muestre una pantalla que da 404.
      */
-    const FUNCIONES = ['modelo', 'adjuntos', 'audio', 'bloques', 'imagenes', 'contexto', 'cuestionario', 'buscar', 'renombrar'];
+    const FUNCIONES = ['modelo', 'adjuntos', 'audio', 'bloques', 'imagenes', 'contexto', 'cuestionario', 'preferencias', 'buscar', 'renombrar'];
 
     /**
      * Un bcrypt de un texto cualquiera (costo 10, el de Laravel), para que "ese documento no existe"
@@ -66,7 +66,7 @@ class IaAppHelper
     const HASH_DE_RELLENO = '$2y$10$D/2UyNmSHOz8DRxOCe5jCubD2nA2JbCjl0kHfW1pl0F7QwGIBJ.16';
 
     /** Las funciones que dependen de la memoria del negocio (AgenteContextoHelper). */
-    const FUNCIONES_DE_LA_MEMORIA = ['contexto', 'cuestionario'];
+    const FUNCIONES_DE_LA_MEMORIA = ['contexto', 'cuestionario', 'preferencias'];
 
     /** La clase de la memoria del negocio (la arma E2). Se usa por nombre para no exigirla. */
     const CLASE_DE_LA_MEMORIA = 'App\\Http\\Controllers\\Helpers\\asistente_ia\\AgenteContextoHelper';
@@ -92,6 +92,7 @@ class IaAppHelper
         'GET api/ia-app/cuestionario',
         'POST api/ia-app/cuestionario',
         'POST api/ia-app/cuestionario/saltear',
+        'PATCH api/ia-app/preferencias',
         'GET api/agente-contexto',
         'PUT api/agente-contexto',
         // El chat, igual que el del sistema.
