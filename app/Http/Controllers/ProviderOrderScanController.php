@@ -962,7 +962,8 @@ class ProviderOrderScanController extends Controller
                 'id'            => $article->id,
                 'status'        => $article->status,
                 'bar_code'      => $article->bar_code,
-                'provider_code' => $article->provider_code,
+                // El código leído pertenece al proveedor de esta factura; el escalar puede ser de otro.
+                'provider_code' => $this->texto_o_null(isset($item['codigo_proveedor']) ? $item['codigo_proveedor'] : null),
                 'pivot' => [
                     'amount'          => $this->numero_o_null(isset($item['cantidad']) ? $item['cantidad'] : null),
                     'cost'            => $this->numero_o_null(isset($item['costo_unitario']) ? $item['costo_unitario'] : null),

@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Article;
 use App\Models\Iva;
 use App\Models\ProviderOrderScan;
+use App\Services\Compras\CodigosDeProveedor;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Intervention\Image\ImageManager;
@@ -995,36 +996,43 @@ class EscaneoFacturaCompraService
     protected function matchear_articulos(array $articulos, ProviderOrderScan $scan): array
     {
         $owner_id = (int) $scan->user_id;
+        $provider_id = optional($scan->provider_order)->provider_id;
 
         foreach ($articulos as $indice => $articulo) {
             $encontrado = null;
             $criterio   = null;
 
-            /* Cascada de tres criterios, en orden de confiabilidad. */
+            $ambiguo = false;
+            /* Una coincidencia ambigua se revisa: nunca elegir el primer artículo de una colisión. */
             if (!is_null($articulo['bar_code'])) {
-                $encontrado = Article::where('user_id', $owner_id)
+                $candidatos = Article::where('user_id', $owner_id)
                     ->where('bar_code', $articulo['bar_code'])
-                    ->first();
+                    ->limit(2)->get();
+                $ambiguo = $candidatos->count() > 1;
+                $encontrado = $candidatos->count() === 1 ? $candidatos->first() : null;
 
                 if (!is_null($encontrado)) {
                     $criterio = 'bar_code';
                 }
             }
 
-            if (is_null($encontrado) && !is_null($articulo['codigo_proveedor'])) {
-                $encontrado = Article::where('user_id', $owner_id)
-                    ->where('provider_code', $articulo['codigo_proveedor'])
-                    ->first();
+            if (!$ambiguo && is_null($encontrado) && $provider_id && !is_null($articulo['codigo_proveedor'])) {
+                $candidatos = CodigosDeProveedor::candidatos($owner_id, $provider_id, $articulo['codigo_proveedor']);
+                $ambiguo = $candidatos->count() > 1;
+                $encontrado = $candidatos->count() === 1 ? $candidatos->first() : null;
 
                 if (!is_null($encontrado)) {
                     $criterio = 'provider_code';
                 }
             }
 
-            if (is_null($encontrado) && !is_null($articulo['nombre'])) {
-                $encontrado = Article::where('user_id', $owner_id)
+            if (!$ambiguo && is_null($encontrado) && !is_null($articulo['nombre'])) {
+                $candidatos = Article::where('user_id', $owner_id)
                     ->where('name', $articulo['nombre'])
-                    ->first();
+                    ->get()->filter(function ($candidato) use ($articulo) {
+                        return CodigosDeProveedor::nombre_exacto($candidato->name) === CodigosDeProveedor::nombre_exacto($articulo['nombre']);
+                    });
+                $encontrado = $candidatos->count() === 1 ? $candidatos->first() : null;
 
                 if (!is_null($encontrado)) {
                     $criterio = 'name';

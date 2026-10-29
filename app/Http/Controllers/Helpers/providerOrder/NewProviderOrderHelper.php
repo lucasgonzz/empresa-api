@@ -83,6 +83,21 @@ class NewProviderOrderHelper {
      */
     protected $historial_de_proveedores_pendiente = [];
 
+    /**
+     * Si esta pasada registra la oferta del proveedor en article_provider (catalogar_costo_proveedor()).
+     *
+     * Desde la misión codigos-por-proveedor (29/10/2026) se registra también con «Actualizar
+     * precios» apagado, porque en una compra real el costo es lo que cotizó ese proveedor. La única
+     * pasada que lo apaga es la orden que nace de una sugerencia de compra
+     * (PurchaseSuggestionController::create_provider_order()): ahí el costo es costo_estimado, una
+     * ESTIMACIÓN, y grabarlo como oferta de ese proveedor contaminaría su catálogo (decisión de Lucas,
+     * 29/10/2026). Si el dueño después edita esa orden con los costos reales, esa otra pasada sí
+     * los registra.
+     *
+     * @var bool
+     */
+    public $catalogar_costo_del_proveedor = true;
+
 	function __construct($provider_order, $new_articles, $ya_se_actualizo_stock = false) {
 
         $this->provider_order           = $provider_order;
@@ -2091,6 +2106,7 @@ class NewProviderOrderHelper {
 
         if (!is_null($article)) {
 
+            \App\Services\Compras\CodigosDeProveedor::resguardar_referencia_actual($article);
             $article = $this->update_iva($article, $new_article);
             
             if ($this->provider_order->update_prices) {
@@ -2104,6 +2120,11 @@ class NewProviderOrderHelper {
                 // Prompt 306 — Tarea 5: catalogar el costo bruto de este proveedor en
                 // article_provider (dato para la futura recomendación de a qué proveedor conviene
                 // comprar).
+            }
+
+            // Registrar la referencia y oferta no depende de cambiar el costo/precio vigente del artículo,
+            // salvo en la orden que nace de una sugerencia (costo estimado: ver $catalogar_costo_del_proveedor).
+            if ($this->catalogar_costo_del_proveedor) {
                 $this->catalogar_costo_proveedor($article, $new_article);
             }
 
@@ -2144,7 +2165,9 @@ class NewProviderOrderHelper {
 
         if ($this->provider_order->update_prices || $tilda_update_provider) {
 
+            $codigo_del_proveedor = \App\Services\Compras\CodigosDeProveedor::codigo_para($article, $this->provider_order->provider_id);
             $article->provider_id = $this->provider_order->provider_id;
+            $article->provider_code = $codigo_del_proveedor;
             $article->timestamps = false;
             $article->save();
         }
@@ -2163,7 +2186,7 @@ class NewProviderOrderHelper {
      * proveedores. Se normaliza acá también para que la comparación de costo entre proveedores sea
      * homogénea (todos netos), sin importar si cada proveedor factura con IVA incluido o no.
      *
-     * Gate: solo se llama con `update_prices` ON (ver update_article()).
+     * También se registra con `update_prices` apagado: es la oferta de este proveedor, no el costo vigente.
      */
     function catalogar_costo_proveedor($article, $new_article) {
 
@@ -2175,13 +2198,9 @@ class NewProviderOrderHelper {
 
         // Costo bruto literal cargado en el pivot de esta compra (mismo valor que usa update_cost()
         // antes del back-out).
-        $cost = (isset($new_article['pivot']['cost']) && $new_article['pivot']['cost'] != '')
+        $cost = (isset($new_article['pivot']['cost']) && trim((string) $new_article['pivot']['cost']) !== '')
             ? $new_article['pivot']['cost']
             : null;
-
-        if (is_null($cost)) {
-            return;
-        }
 
         // Prompt 514: mismo back-out que update_cost() — si la orden trae precios con IVA incluido,
         // se guarda el costo NETO también en article_provider, para mantener la convención
@@ -2198,16 +2217,17 @@ class NewProviderOrderHelper {
          * dependiera de él, un MT que no lo tilda guardaría su costo 21% abajo sin que nada lo
          * denuncie. El resolvedor único es el que sabe esto.
          */
-        if (ArticlePricesHelper::el_costo_cargado_es_bruto($this->user, $this->provider_order->precios_incluyen_iva)) {
+        if (!is_null($cost) && ArticlePricesHelper::el_costo_cargado_es_bruto($this->user, $this->provider_order->precios_incluyen_iva)) {
             $cost = ArticlePricesHelper::back_out_iva($article, $cost);
         }
 
-        $pivot_data = [
-            'cost' => $cost,
-        ];
+        $pivot_data = [];
+        if (!is_null($cost)) {
+            $pivot_data['cost'] = $cost;
+        }
 
         // provider_code es opcional: solo se propaga si vino informado en el artículo de la compra.
-        if (isset($new_article['provider_code']) && $new_article['provider_code'] != '') {
+        if (isset($new_article['provider_code']) && trim((string) $new_article['provider_code']) !== '') {
             $pivot_data['provider_code'] = $new_article['provider_code'];
         }
 
@@ -2222,6 +2242,8 @@ class NewProviderOrderHelper {
 
             $article->providers()->attach($provider_id, $pivot_data);
         }
+
+        $article->unsetRelation('providers');
 
         try {
             // Arreglo post-chequeo (A1): moneda REAL de este costo, para que el

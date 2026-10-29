@@ -4,7 +4,14 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
@@ -15,6 +22,9 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
 
 /**
  * Endpoints REST del chat con el asistente de IA (misión chat-ia-y-modulo-ia).
@@ -47,23 +57,104 @@ class AiConversationController extends Controller
      */
     const MINUTOS_VENCIMIENTO_PENDIENTE = 10;
 
+    /** Techo del texto de búsqueda de la barra lateral de la app. */
+    const MAX_BUSCAR = 100;
+
+    /** Techo del título que pone el dueño a mano (contrato C5; la columna admite 150). */
+    const MAX_TITULO = 120;
+
     /**
      * Conversaciones de la persona autenticada, ordenadas por actividad
      * (last_message_at DESC con nulls al final, D44: la SPA abre
      * conversations[0] al abrir el panel).
      *
+     * Misión app-ia-y-memoria (29/10/2026, contrato C5): cada conversación trae `fijada`, y `buscar`
+     * (opcional) filtra por el título y por lo que dicen los mensajes, con los comodines de LIKE escapados
+     * (un "%" busca el carácter). Sin `buscar`, la lista de siempre.
+     *
+     * 🔴 Las FIJADAS van primero SOLO para la app (token `ia-app`): el panel del sistema abre
+     * conversations[0] al abrirse (D44), y una conversación fijada en la app no puede cambiarle cuál abre.
+     * Con la cookie, el orden de siempre (corrección de la revisión).
+     *
+     * @param  Request  $request
      * @return JsonResponse
      */
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
-        $models = AiConversation::where('auth_user_id', UserHelper::userId(false))
-            ->where('user_id', UserHelper::userId(true))
+        $query = AiConversation::where('auth_user_id', UserHelper::userId(false))
+            ->where('user_id', UserHelper::userId(true));
+
+        $buscar = mb_substr(trim((string) $request->query('buscar', '')), 0, self::MAX_BUSCAR);
+
+        if ($buscar !== '') {
+            $como = '%' . addcslashes($buscar, '%_\\') . '%';
+
+            $query->where(function ($donde) use ($como) {
+                $donde->where('titulo', 'like', $como)
+                    ->orWhereExists(function ($en_los_mensajes) use ($como) {
+                        $en_los_mensajes->selectRaw('1')
+                            ->from('ai_messages')
+                            ->whereColumn('ai_messages.ai_conversation_id', 'ai_conversations.id')
+                            ->where('ai_messages.contenido', 'like', $como);
+                    });
+            });
+        }
+
+        if (IaAppHelper::es_pedido_de_la_app($request) && ColumnasDeLaAppIaHelper::hay_columna('ai_conversations', 'fijada')) {
+            $query->orderBy('fijada', 'DESC');
+        }
+
+        $models = $query
             ->orderByRaw('last_message_at IS NULL')
             ->orderBy('last_message_at', 'DESC')
             ->orderBy('id', 'DESC')
             ->get();
 
         return response()->json(['models' => $models], 200);
+    }
+
+    /**
+     * Renombra o fija una conversación de la persona (misión app-ia-y-memoria, contrato C5):
+     * `PATCH api/ai-conversations/{id}` con `{titulo?: string ≤ 120, fijada?: bool}` → la conversación.
+     * Un campo que no viene no se toca; un título vacío es un 422 (para "sin título" no hay botón).
+     *
+     * @param  Request  $request
+     * @param  int  $id
+     * @return JsonResponse  200 {model} · 404 · 422 {code: validacion}
+     */
+    public function update(Request $request, $id): JsonResponse
+    {
+        $conversation = $this->conversacion_de_la_persona($id);
+
+        if (is_null($conversation)) {
+            return response()->json(['message' => 'Conversación no encontrada.'], 404);
+        }
+
+        $validador = Validator::make($request->all(), [
+            'titulo' => 'sometimes|required|string|max:' . self::MAX_TITULO,
+            'fijada' => 'sometimes|boolean',
+        ]);
+
+        if ($validador->fails()) {
+            return response()->json([
+                'code'    => 'validacion',
+                'message' => $validador->errors()->first(),
+                'errors'  => $validador->errors(),
+            ], 422);
+        }
+
+        if ($request->has('titulo')) {
+            $conversation->titulo = trim((string) $request->input('titulo'));
+        }
+
+        /* Sin la columna (migración todavía sin correr) no hay dónde guardarlo: se ignora. */
+        if ($request->has('fijada') && ColumnasDeLaAppIaHelper::hay_columna('ai_conversations', 'fijada')) {
+            $conversation->fijada = $request->boolean('fijada');
+        }
+
+        $conversation->save();
+
+        return response()->json(['model' => $conversation->fresh()], 200);
     }
 
     /**
@@ -159,6 +250,9 @@ class AiConversationController extends Controller
 
         AccionesIaHelper::cargar_en_mensajes($paginator->getCollection());
 
+        /* Misión app-ia-y-memoria: una imagen que lleva más de 8 h sin llegar se da por fallida (persistido). */
+        PedidosDeImagenIaHelper::vencer_las_colgadas($paginator->getCollection());
+
         return response()->json(['models' => $paginator], 200);
     }
 
@@ -172,9 +266,16 @@ class AiConversationController extends Controller
      * dos mensajes seguidos (R2) — una pestaña vieja o un doble clic pasan
      * por encima del bloqueo del composer de la SPA.
      *
-     * @param  Request  $request  Espera `contenido` (obligatorio, hasta 4000 caracteres) y
-     *                            `acciones` (opcional, default false: con true el asistente
-     *                            puede proponer cargas; misión asistente-ia-acciones).
+     * Misión app-ia-y-memoria (29/10/2026, contrato C5): acepta JSON o multipart, y además del texto
+     * `modelo` (rapido | pensamiento, solo para este turno), `imagenes[]` (≤ 3; por el MISMO camino que
+     * las fotos de WhatsApp), `archivos[]` (≤ 3; PDF, Excel, CSV) y `audio` (1; se transcribe en el job).
+     * `contenido` puede venir vacío si hay algo de eso, y se guarda '' (nunca null). Con un token
+     * `ia-app` los dos mensajes del turno son del canal `app`. Las validaciones nuevas contestan 422
+     * con `code` (validacion | mensaje_vacio | adjunto_invalido) y ANTES de crear nada.
+     *
+     * @param  Request  $request  Espera `contenido` (hasta 4000 caracteres; obligatorio salvo que vengan
+     *                            adjuntos o audio) y `acciones` (opcional, default false: con true el
+     *                            asistente puede proponer cargas; misión asistente-ia-acciones).
      * @param  int  $id
      * @return JsonResponse
      */
@@ -186,9 +287,58 @@ class AiConversationController extends Controller
             return response()->json(['message' => 'Conversación no encontrada.'], 404);
         }
 
-        $request->validate([
-            'contenido' => 'required|string|max:4000',
+        $validador = Validator::make($request->all(), [
+            'contenido'    => 'nullable|string|max:4000',
+            'modelo'       => 'nullable|in:' . implode(',', ProveedorIaHelper::MODELOS_PEDIDOS),
+            'duracion_seg' => 'nullable|numeric',
         ]);
+
+        if ($validador->fails()) {
+            return response()->json([
+                'code'    => 'validacion',
+                'message' => $validador->errors()->first(),
+                'errors'  => $validador->errors(),
+            ], 422);
+        }
+
+        $contenido = (string) $request->input('contenido', '');
+        $imagenes  = AsistenteImagenHelper::del_request($request);
+        $archivos  = ArchivosAdjuntosIaHelper::como_lista($request->file('archivos'));
+        $audio     = $request->file('audio');
+
+        if (is_array($audio)) {
+            $audio = count($audio) ? array_values($audio)[0] : null;
+        }
+
+        /*
+         * Sin texto y sin nada adjunto no hay nada que contestar. `errors.contenido` va igual que antes
+         * de la misión (el 422 de `required`), para la SPA del sistema.
+         */
+        if (trim($contenido) === '' && !count($imagenes) && !count($archivos) && is_null($audio)) {
+            return response()->json([
+                'code'    => 'mensaje_vacio',
+                'message' => 'El mensaje no puede venir vacío.',
+                'errors'  => ['contenido' => ['El mensaje no puede venir vacío.']],
+            ], 422);
+        }
+
+        /*
+         * Los adjuntos se validan ANTES de crear el mensaje: un 422 con el mensaje ya creado dejaría en la
+         * conversación algo del dueño que nadie va a contestar (mismo criterio que WhatsApp).
+         */
+        $motivo = AsistenteImagenHelper::motivo_de_rechazo($imagenes);
+
+        if (is_null($motivo)) {
+            $motivo = ArchivosAdjuntosIaHelper::motivo_de_rechazo($archivos);
+        }
+
+        if (is_null($motivo) && !is_null($audio)) {
+            $motivo = AudioDelMensajeIaHelper::motivo_de_rechazo($audio);
+        }
+
+        if (!is_null($motivo)) {
+            return response()->json(['code' => 'adjunto_invalido', 'message' => $motivo], 422);
+        }
 
         $limite_pendiente_vigente = now()->subMinutes(self::MINUTOS_VENCIMIENTO_PENDIENTE);
 
@@ -205,15 +355,25 @@ class AiConversationController extends Controller
             ->where('created_at', '<', $limite_pendiente_vigente)
             ->pluck('id');
 
+        $cierre_del_huerfano = [
+            'contenido'     => ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
+            'estado'        => 'error',
+            'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
+        ];
+
+        /*
+         * Misión app-ia-y-memoria: la línea de progreso de un huérfano no queda colgada. Solo si la
+         * columna ya existe: sin la migración, este UPDATE es el de siempre (el chat no se cae).
+         */
+        if (ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'progreso')) {
+            $cierre_del_huerfano['progreso'] = null;
+        }
+
         AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'assistant')
             ->where('estado', 'pendiente')
             ->where('created_at', '<', $limite_pendiente_vigente)
-            ->update([
-                'contenido'     => ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
-                'estado'        => 'error',
-                'error_mensaje' => 'pendiente vencido: superó los ' . self::MINUTOS_VENCIMIENTO_PENDIENTE . ' minutos sin que el job lo resolviera (dispatch fallido o worker caído)',
-            ]);
+            ->update($cierre_del_huerfano);
 
         /*
          * Misión asistente-ia-acciones: las tarjetas que un pendiente vencido
@@ -229,6 +389,19 @@ class AiConversationController extends Controller
 
             foreach ($cerrados as $cerrado_id) {
                 AccionesIaHelper::descartar_de_mensaje($cerrado_id);
+
+                /*
+                 * Misión app-ia-y-memoria: si lo que había mandado el dueño era un audio que no llegó a
+                 * transcribirse (el job nunca corrió), la transcripción queda `fallida`: si no, la app
+                 * muestra "transcribiendo…" para siempre debajo del audio.
+                 */
+                AudioDelMensajeIaHelper::cerrar_si_quedo_pendiente(
+                    AiMessage::where('ai_conversation_id', $conversation->id)
+                        ->where('rol', 'user')
+                        ->where('id', '<', (int) $cerrado_id)
+                        ->orderBy('id', 'DESC')
+                        ->first()
+                );
             }
         }
 
@@ -255,17 +428,37 @@ class AiConversationController extends Controller
                 ->where('rol', 'user')
                 ->exists();
 
+        /*
+         * Misión app-ia-y-memoria: el canal sale de CÓMO entró el pedido. Con un token `ia-app` es la app
+         * (formato y herramientas de bloques); con la cookie del sistema, 'sistema' como siempre.
+         */
+        $canal = IaAppHelper::es_pedido_de_la_app($request) ? AiMessage::CANAL_APP : AiMessage::CANAL_SISTEMA;
+
+        $tipo = AiMessage::TIPO_TEXTO;
+
+        if (!is_null($audio)) {
+            $tipo = AiMessage::TIPO_AUDIO;
+        } elseif (count($imagenes)) {
+            $tipo = AiMessage::TIPO_IMAGEN;
+        }
+
         $user_message = AiMessage::create([
             'ai_conversation_id' => $conversation->id,
             'rol'                => 'user',
-            'contenido'          => $request->contenido,
+            // '' y nunca null: una SPA vieja hace .length sobre el contenido.
+            'contenido'          => $contenido,
             'estado'             => 'listo',
+            'canal'              => $canal,
+            'tipo'               => $tipo,
         ]);
 
-        $assistant_message = AiMessage::create([
+        $this->guardar_adjuntos($user_message, (int) $conversation->user_id, $imagenes, $archivos, $audio, $request->input('duracion_seg'));
+
+        $datos_del_assistant = [
             'ai_conversation_id'   => $conversation->id,
             'rol'                  => 'assistant',
             'estado'               => 'pendiente',
+            'canal'                => $canal,
             /*
              * Misión asistente-ia-acciones: el flag va en el assistant que se
              * va a generar, no en la conversación. Una pestaña vieja manda el
@@ -273,7 +466,16 @@ class AiConversationController extends Controller
              * siempre, aunque la misma conversación tenga mensajes con tarjetas.
              */
             'acciones_habilitadas' => $request->boolean('acciones'),
-        ]);
+        ];
+
+        /* El modelo que eligió el dueño en la app, solo para este turno (ProveedorIaHelper::modelo_del_asistente()). */
+        $modelo = trim((string) $request->input('modelo', ''));
+
+        if ($modelo !== '') {
+            $datos_del_assistant['modelo_pedido'] = $modelo;
+        }
+
+        $assistant_message = AiMessage::create($datos_del_assistant);
 
         $conversation->last_message_at = now();
         $conversation->save();
@@ -288,6 +490,9 @@ class AiConversationController extends Controller
             $assistant_message->contenido = TopeDeTokensHelper::MENSAJE_LIMITE;
             $assistant_message->estado = 'listo';
             $assistant_message->save();
+
+            // El audio no se va a transcribir: que la app no muestre "transcribiendo…" para siempre.
+            AudioDelMensajeIaHelper::cerrar_si_quedo_pendiente($user_message);
 
             return response()->json([
                 'user_message'      => $user_message,
@@ -316,12 +521,16 @@ class AiConversationController extends Controller
             throw $e;
         }
 
-        if ($inferir_titulo) {
+        /*
+         * Sin texto (una foto sola, un audio) no hay de dónde sacar el título acá: el de un audio lo
+         * infiere el job después de transcribirlo.
+         */
+        if ($inferir_titulo && trim($contenido) !== '') {
             // El título es cosmético (D19: si falla queda null y la SPA
             // muestra "Nueva conversación"): una falla al encolarlo no puede
             // voltear un POST cuyo job de respuesta ya quedó despachado.
             try {
-                dispatch(new InferirTituloConversacionIaJob($conversation->id, (string) $request->contenido));
+                dispatch(new InferirTituloConversacionIaJob($conversation->id, $contenido));
             } catch (\Throwable $e) {
                 Log::warning('AiConversationController: no se pudo encolar la inferencia del título', [
                     'ai_conversation_id' => $conversation->id,
@@ -367,6 +576,8 @@ class AiConversationController extends Controller
 
         AccionesIaHelper::cargar_en_mensajes([$message]);
 
+        PedidosDeImagenIaHelper::vencer_las_colgadas([$message]);
+
         return response()->json(['model' => $message], 200);
     }
 
@@ -397,14 +608,7 @@ class AiConversationController extends Controller
      */
     public function imagen_de_mensaje($message_id, $orden)
     {
-        $message = AiMessage::whereIn('ai_conversation_id', function ($query) {
-            $query->select('id')
-                ->from('ai_conversations')
-                ->where('auth_user_id', UserHelper::userId(false))
-                ->where('user_id', UserHelper::userId(true));
-        })
-            ->where('id', (int) $message_id)
-            ->first();
+        $message = $this->mensaje_de_la_persona($message_id);
 
         if (is_null($message)) {
             return response()->json(['message' => 'Mensaje no encontrado.'], 404);
@@ -438,6 +642,134 @@ class AiConversationController extends Controller
         $respuesta->setMaxAge(300);
 
         return $respuesta;
+    }
+
+    /**
+     * El audio que el dueño mandó desde la app (misión app-ia-y-memoria, contrato C5):
+     * `GET api/ai-mensajes/{message_id}/audio`. Es la `url` de `audio` del mensaje.
+     *
+     * Mismo criterio que imagen_de_mensaje(): disco `local`, la tenencia doble y 404 (no 403) si no es
+     * de esta persona, y `private` para que ningún proxy lo guarde.
+     *
+     * @param  int  $message_id
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|JsonResponse
+     */
+    public function audio_de_mensaje($message_id)
+    {
+        $message = $this->mensaje_de_la_persona($message_id);
+
+        $audio = is_null($message) ? null : AudioDelMensajeIaHelper::datos($message);
+
+        if (is_null($audio) || empty($audio['path']) || !Storage::disk('local')->exists($audio['path'])) {
+            return response()->json(['message' => 'Audio no encontrado.'], 404);
+        }
+
+        /* Solo con un mime de audio validado; si no, como binario (nunca algo que el navegador ejecute). */
+        $mime = trim((string) ($audio['mime'] ?? ''));
+
+        return $this->archivo_privado(
+            Storage::disk('local')->path($audio['path']),
+            AudioDelMensajeIaHelper::es_mime_de_audio($mime) ? $mime : 'application/octet-stream',
+            null
+        );
+    }
+
+    /**
+     * Un archivo (PDF, Excel, CSV) que el dueño mandó desde la app (misión app-ia-y-memoria, contrato
+     * C5): `GET api/ai-mensajes/{message_id}/archivo/{orden}`, con su nombre en Content-Disposition para
+     * que se baje como lo mandó. Misma tenencia que el audio y la foto.
+     *
+     * @param  int  $message_id
+     * @param  int  $orden
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse|JsonResponse
+     */
+    public function archivo_de_mensaje($message_id, $orden)
+    {
+        $message = $this->mensaje_de_la_persona($message_id);
+
+        $archivo = is_null($message) ? null : ArchivosAdjuntosIaHelper::archivo($message, $orden);
+
+        if (is_null($archivo) || empty($archivo['path']) || !Storage::disk('local')->exists($archivo['path'])) {
+            return response()->json(['message' => 'Archivo no encontrado.'], 404);
+        }
+
+        $mime = trim((string) ($archivo['mime'] ?? ''));
+
+        return $this->archivo_privado(
+            Storage::disk('local')->path($archivo['path']),
+            $mime === '' ? 'application/octet-stream' : $mime,
+            (string) ($archivo['nombre'] ?? 'archivo')
+        );
+    }
+
+    /**
+     * Un binario del disco privado, con caché `private` (ver el 🔴 de imagen_de_mensaje(): el
+     * `Cache-Control` se pone con setPrivate(), nunca en el array de headers) y, si se pasa nombre, como
+     * descarga con ese nombre (con un respaldo en ASCII: el header no admite tildes sin él). Siempre con
+     * `X-Content-Type-Options: nosniff`: el navegador usa el mime que se manda y no adivina otro.
+     *
+     * @param  string  $ruta
+     * @param  string  $mime
+     * @param  string|null  $nombre
+     * @return \Symfony\Component\HttpFoundation\BinaryFileResponse
+     */
+    protected function archivo_privado($ruta, $mime, $nombre)
+    {
+        $respuesta = response()->file($ruta, ['Content-Type' => $mime, 'X-Content-Type-Options' => 'nosniff']);
+
+        if (!is_null($nombre) && $nombre !== '') {
+            $ascii = preg_replace('/[^A-Za-z0-9\.\-_ ]/', '_', Str::ascii($nombre));
+            $respuesta->setContentDisposition('attachment', $nombre, $ascii === '' ? 'archivo' : $ascii);
+        }
+
+        $respuesta->setPrivate();
+        $respuesta->setMaxAge(300);
+
+        return $respuesta;
+    }
+
+    /**
+     * Guarda lo que trajo el mensaje del dueño desde la app: fotos (el MISMO camino que WhatsApp:
+     * AsistenteImagenHelper, webp en ai_message_imagenes), archivos y audio (cada uno en su columna).
+     * Después de crear el mensaje: las rutas llevan su id.
+     *
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  int  $owner_id
+     * @param  array  $imagenes
+     * @param  array  $archivos
+     * @param  mixed  $audio
+     * @param  mixed  $duracion_seg
+     * @return void
+     */
+    protected function guardar_adjuntos(AiMessage $mensaje, $owner_id, array $imagenes, array $archivos, $audio, $duracion_seg)
+    {
+        if (count($imagenes)) {
+            AsistenteImagenHelper::guardar($mensaje, $imagenes, $owner_id);
+        }
+
+        $cambio = false;
+
+        if (count($archivos)) {
+            $entradas = ArchivosAdjuntosIaHelper::guardar($mensaje, $archivos, $owner_id);
+
+            if (count($entradas)) {
+                $mensaje->archivos = $entradas;
+                $cambio = true;
+            }
+        }
+
+        if (!is_null($audio)) {
+            $datos = AudioDelMensajeIaHelper::guardar($mensaje, $audio, $owner_id, $duracion_seg);
+
+            if (!is_null($datos)) {
+                $mensaje->audio = $datos;
+                $cambio = true;
+            }
+        }
+
+        if ($cambio) {
+            $mensaje->save();
+        }
     }
 
     /**
@@ -506,6 +838,26 @@ class AiConversationController extends Controller
         return AiConversation::where('auth_user_id', UserHelper::userId(false))
             ->where('user_id', UserHelper::userId(true))
             ->where('id', $id)
+            ->first();
+    }
+
+    /**
+     * Un mensaje de una conversación de la PERSONA autenticada (null si no existe o es de otra
+     * persona/cuenta): la misma tenencia doble, para los binarios que se piden por id de mensaje (la
+     * foto, el audio, el archivo).
+     *
+     * @param  int  $message_id
+     * @return AiMessage|null
+     */
+    protected function mensaje_de_la_persona($message_id)
+    {
+        return AiMessage::whereIn('ai_conversation_id', function ($query) {
+            $query->select('id')
+                ->from('ai_conversations')
+                ->where('auth_user_id', UserHelper::userId(false))
+                ->where('user_id', UserHelper::userId(true));
+        })
+            ->where('id', (int) $message_id)
             ->first();
     }
 }

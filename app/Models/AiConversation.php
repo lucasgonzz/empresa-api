@@ -53,6 +53,9 @@ use Illuminate\Database\Eloquent\Model;
  * `titulo` null significa "todavía se está infiriendo" y la SPA muestra
  * "Nueva conversación"; si la inferencia falla queda null para siempre y no
  * pasa nada (un título es cosmético).
+ *
+ * `fijada` (misión app-ia-y-memoria, 29/10/2026): el dueño la fijó desde la barra lateral de la app
+ * «ComercioCity IA»; las fijadas van primero en el listado. Default false.
  */
 class AiConversation extends Model
 {
@@ -63,6 +66,13 @@ class AiConversation extends Model
     const ORIGEN_MCP = 'mcp';
 
     protected $guarded = [];
+
+    /**
+     * @var array<string, string>
+     */
+    protected $casts = [
+        'fijada' => 'boolean',
+    ];
 
     /**
      * Titulo de una conversacion que nace de una sugerencia terminada: el nombre del tipo

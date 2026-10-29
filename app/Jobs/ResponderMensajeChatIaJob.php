@@ -4,11 +4,17 @@ namespace App\Jobs;
 
 use App\Events\ChatIaMensajeActualizado;
 use App\Exceptions\AsistenteIaException;
+use App\Http\Controllers\AdminSync\AsistenteController;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Bus\Queueable;
@@ -131,6 +137,31 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             return;
         }
 
+        /*
+         * Misión app-ia-y-memoria (29/10/2026): lo que el dueño mandó desde la app se prepara ANTES de
+         * llamar al modelo. Un audio se transcribe (y si no se pudo y no hay nada más, se contesta acá
+         * con el texto fijo de WhatsApp, sin gastar una llamada a la IA); a los archivos se les saca el
+         * texto. Para el resto del loop, después de esto es un mensaje de texto más.
+         */
+        $pedido = $this->mensaje_del_pedido($message);
+
+        if (!is_null($pedido) && $this->contesto_un_audio_sin_transcribir($pedido, $message, $conversation)) {
+            $this->avisar($conversation, $message);
+
+            return;
+        }
+
+        if (!is_null($pedido)) {
+            try {
+                ArchivosAdjuntosIaHelper::extraer_pendientes($pedido);
+            } catch (\Throwable $e) {
+                Log::warning('ResponderMensajeChatIaJob: no se pudieron leer los archivos del mensaje', [
+                    'ai_message_id' => $pedido->id,
+                    'error'         => $e->getMessage(),
+                ]);
+            }
+        }
+
         $service = new AsistenteIaService();
 
         // Guard por si el job quedó encolado y la clave se quitó después:
@@ -169,7 +200,27 @@ class ResponderMensajeChatIaJob implements ShouldQueue
              * y por el mismo motivo: fuera del loop ya no existen.
              */
             $message->adjuntos = $service->adjuntos();
+
+            /*
+             * Misión app-ia-y-memoria (§4 E1.5–E1.7): los gráficos, tablas e imágenes de la respuesta, por
+             * el mismo motivo que las menciones (fuera del loop ya no existen), y la línea de progreso
+             * vuelve a null. Solo se tocan si hay algo: así un mensaje del sistema guarda exactamente lo
+             * de antes.
+             */
+            $bloques = $service->bloques();
+
+            if (count($bloques)) {
+                $message->bloques = $bloques;
+            }
+
+            if (! is_null($message->progreso)) {
+                $message->progreso = null;
+            }
+
             $message->save();
+
+            /* Recién con el mensaje guardado (el bloque ya existe), los pedidos de imagen salen al admin. */
+            $this->despachar_pedidos_de_imagen($service->pedidos_de_imagen());
         } catch (\Throwable $e) {
             Log::error('ResponderMensajeChatIaJob: falló la generación de la respuesta', [
                 'ai_message_id'      => $this->ai_message_id,
@@ -182,6 +233,137 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         }
 
         $this->avisar($conversation, $message);
+    }
+
+    /**
+     * Manda al admin los pedidos de imagen de la respuesta (EnviarPedidoDeImagenAlAdminJob, contrato
+     * C2.1). Protegido: el mensaje ya quedó guardado y una falla al encolar (o un envío que falla en la
+     * cola sync) no puede voltear la respuesta; si no sale, el pedido queda `fallida` por failed().
+     *
+     * @param  array<int, int>  $pedidos
+     * @return void
+     */
+    protected function despachar_pedidos_de_imagen(array $pedidos)
+    {
+        foreach ($pedidos as $pedido_id) {
+            try {
+                dispatch(new EnviarPedidoDeImagenAlAdminJob($pedido_id));
+            } catch (\Throwable $e) {
+                Log::warning('ResponderMensajeChatIaJob: no se pudo mandar un pedido de imagen al admin', [
+                    'ia_imagen_pedido_id' => $pedido_id,
+                    'error'               => $e->getMessage(),
+                ]);
+            }
+        }
+    }
+
+    /**
+     * El mensaje del dueño que este assistant contesta (el último 'user' anterior), o null.
+     *
+     * @param  \App\Models\AiMessage  $message
+     * @return \App\Models\AiMessage|null
+     */
+    protected function mensaje_del_pedido(AiMessage $message)
+    {
+        return AiMessage::where('ai_conversation_id', $message->ai_conversation_id)
+            ->where('rol', 'user')
+            ->where('id', '<', (int) $message->id)
+            ->orderBy('id', 'DESC')
+            ->first();
+    }
+
+    /**
+     * Transcribe el audio del dueño, si lo trae y todavía no se transcribió (misión app-ia-y-memoria).
+     *
+     * Con la transcripción, el texto queda en `contenido` del mensaje del dueño (sumado a lo que haya
+     * escrito) y, si la conversación no tiene título, se infiere de ese texto. Si falla, el mensaje queda
+     * con AUDIO_SIN_TRANSCRIPCION; si además no trae nada más con qué contestar (ni texto, ni fotos, ni
+     * archivos), el assistant se contesta ACÁ con RESPUESTA_AUDIO_SIN_TRANSCRIPCION, las mismas
+     * constantes que el canal de WhatsApp, y devuelve true (no hay que llamar al modelo).
+     *
+     * @param  \App\Models\AiMessage  $pedido
+     * @param  \App\Models\AiMessage  $message
+     * @param  \App\Models\AiConversation  $conversation
+     * @return bool  true si el turno ya quedó contestado.
+     */
+    protected function contesto_un_audio_sin_transcribir(AiMessage $pedido, AiMessage $message, AiConversation $conversation): bool
+    {
+        if (!AudioDelMensajeIaHelper::falta_transcribir($pedido)) {
+
+            return false;
+        }
+
+        $datos   = AudioDelMensajeIaHelper::datos($pedido);
+        $binario = AudioDelMensajeIaHelper::binario($pedido);
+        $escrito = trim((string) $pedido->contenido);
+
+        $resultado = is_null($binario) ? null : TranscripcionDeAudioIaHelper::transcribir(
+            $binario,
+            'audio.' . (string) ($datos['ext'] ?? 'webm'),
+            [
+                'user_id'            => (int) $conversation->user_id,
+                'auth_user_id'       => (int) $conversation->auth_user_id,
+                'ai_conversation_id' => (int) $conversation->id,
+            ]
+        );
+
+        if (!is_null($resultado)) {
+            $pedido->contenido = $escrito === '' ? $resultado['texto'] : $escrito . "\n" . $resultado['texto'];
+            AudioDelMensajeIaHelper::marcar($pedido, AudioDelMensajeIaHelper::TRANSCRIPCION_LISTA, $resultado['duracion_seg']);
+
+            if ($escrito === '') {
+                $this->inferir_titulo_si_falta($conversation, $pedido);
+            }
+
+            return false;
+        }
+
+        $tiene_otra_cosa = $escrito !== ''
+            || AiMessageImagen::where('ai_message_id', $pedido->id)->exists()
+            || count(ArchivosAdjuntosIaHelper::datos($pedido)) > 0;
+
+        $pedido->contenido = $escrito === ''
+            ? AsistenteController::AUDIO_SIN_TRANSCRIPCION
+            : $escrito . "\n" . AsistenteController::AUDIO_SIN_TRANSCRIPCION;
+        AudioDelMensajeIaHelper::marcar($pedido, AudioDelMensajeIaHelper::TRANSCRIPCION_FALLIDA);
+
+        if ($tiene_otra_cosa) {
+
+            return false;
+        }
+
+        $message->contenido = AsistenteController::RESPUESTA_AUDIO_SIN_TRANSCRIPCION;
+        $message->estado = 'listo';
+        $message->error_mensaje = null;
+        $message->save();
+
+        return true;
+    }
+
+    /**
+     * El título de una conversación que arrancó con un audio: se infiere de la transcripción (el POST no
+     * tenía texto). Mismo criterio que send_message(): solo si no tiene título y es el primer mensaje del
+     * dueño. Cosmético: una falla al encolarlo no voltea nada.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $pedido
+     * @return void
+     */
+    protected function inferir_titulo_si_falta(AiConversation $conversation, AiMessage $pedido)
+    {
+        try {
+            $primero = is_null($conversation->titulo)
+                && AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'user')->count() === 1;
+
+            if ($primero) {
+                dispatch(new InferirTituloConversacionIaJob($conversation->id, (string) $pedido->contenido));
+            }
+        } catch (\Throwable $e) {
+            Log::warning('ResponderMensajeChatIaJob: no se pudo encolar el título de una conversación de audio', [
+                'ai_conversation_id' => $conversation->id,
+                'error'              => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -266,7 +448,16 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         $message->estado = 'error';
         // Recorte defensivo: la columna es text, pero un body de error HTTP puede ser enorme.
         $message->error_mensaje = mb_substr((string) $detalle_tecnico, 0, 5000);
+
+        // Misión app-ia-y-memoria: la línea de progreso no queda colgada en un mensaje en error.
+        if (! is_null($message->progreso)) {
+            $message->progreso = null;
+        }
+
         $message->save();
+
+        /* Los pedidos de imagen de una respuesta que falló no se van a mostrar nunca: se cierran. */
+        PedidosDeImagenIaHelper::cerrar_los_del_mensaje($message->id);
 
         /*
          * Una tarjeta de una respuesta que falló no se puede confirmar: nació
@@ -278,6 +469,19 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             AccionesIaHelper::descartar_de_mensaje($message->id);
         } catch (\Throwable $e) {
             Log::warning('ResponderMensajeChatIaJob: no se pudieron descartar las tarjetas del mensaje en error', [
+                'ai_message_id' => $message->id,
+                'error'         => $e->getMessage(),
+            ]);
+        }
+
+        /*
+         * Misión app-ia-y-memoria: un audio del dueño que no llegó a transcribirse (el turno falló antes)
+         * queda `fallida`, para que la app no muestre "transcribiendo…" para siempre.
+         */
+        try {
+            AudioDelMensajeIaHelper::cerrar_si_quedo_pendiente($this->mensaje_del_pedido($message));
+        } catch (\Throwable $e) {
+            Log::warning('ResponderMensajeChatIaJob: no se pudo cerrar el audio pendiente', [
                 'ai_message_id' => $message->id,
                 'error'         => $e->getMessage(),
             ]);

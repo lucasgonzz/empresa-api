@@ -468,6 +468,8 @@ class PurchaseSuggestionController extends Controller
             }
 
             $helper = new NewProviderOrderHelper($order, $articles_payload);
+            // El costo es costo_estimado: no se registra como oferta de ese proveedor (ver el helper).
+            $helper->catalogar_costo_del_proveedor = false;
             $helper->attach_articles();
 
             $this->sendAddModelNotification('ProviderOrder', $order->id);

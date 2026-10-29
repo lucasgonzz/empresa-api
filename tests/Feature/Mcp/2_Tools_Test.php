@@ -15,6 +15,7 @@ use App\Models\Pending;
 use App\Models\Provider;
 use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
+use App\Services\AsistenteIa\HerramientasDeContexto;
 use App\Services\AsistenteIa\Mcp\McpHerramientasHelper;
 use Carbon\Carbon;
 
@@ -123,6 +124,13 @@ class Tools_Test extends McpTestCase
                 continue;
             }
 
+            $esperados[] = $nombre;
+        }
+
+        // Misión app-ia-y-memoria (29/10/2026): la tercera punta del registro, la memoria del negocio, al
+        // final y en el mismo orden que en el loop interno (build_tools). No es un ajuste para que pase:
+        // el contrato de tools/list suma esas dos, y esto sigue exigiendo igualdad, no "contiene".
+        foreach (HerramientasDeContexto::nombres() as $nombre) {
             $esperados[] = $nombre;
         }
 

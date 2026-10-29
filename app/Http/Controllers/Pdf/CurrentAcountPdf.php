@@ -9,7 +9,8 @@ use App\Http\Controllers\Helpers\currentAcount\CuentaCorrientePeriodoHelper;
 use App\Models\User;
 use Carbon\Carbon;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+// Otros comprobantes pueden haber cargado FPDF en este mismo proceso.
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class CurrentAcountPdf extends fpdf {
     
@@ -118,8 +119,8 @@ class CurrentAcountPdf extends fpdf {
 
 			if (is_null($this->periodo)) {
 
-				$saldo = $this->models[count($this->models)-1]->saldo;
-				// $saldo = $this->models[0]->saldo;
+				// Últimos N también puede venir en orden inverso: el saldo actual es el del más nuevo.
+				$saldo = CuentaCorrientePeriodoHelper::saldo_del_periodo($this->models);
 				$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
 
 				$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');

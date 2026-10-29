@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\providerOrder\ModoFacturacionHelper;
 use App\Http\Controllers\Helpers\providerOrder\NewProviderOrderHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Models\Article;
+use App\Services\Compras\CodigosDeProveedor;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Maatwebsite\Excel\Concerns\ToCollection;
@@ -234,8 +235,8 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
     }
 
     /**
-     * Precarga en memoria los artículos candidatos de TODO el rango en hasta 3 queries (una por
-     * criterio de búsqueda), en vez de la query por fila que hacía get_article() antes de esta
+     * Precarga en memoria los artículos candidatos de TODO el rango, por criterio y en lotes
+     * de códigos de proveedor, en vez de la query por fila que hacía get_article() antes de esta
      * misión — con 700 filas eso eran hasta 700 roundtrips secuenciales a la base durante el
      * mismo proceso. Sigue sin poder precargar lo que todavía no existe: crear un artículo nuevo
      * sigue pasando fila por fila en get_article().
@@ -259,13 +260,14 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
                 $provider_code = ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns);
                 $name          = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
 
-                // Mismo orden de prioridad que get_article(): una fila consulta UN solo criterio,
-                // el primero de los tres que venga cargado.
+                // Preparar los tres criterios para permitir la cascada si un código no coincide.
                 if (!is_null($bar_code)) {
                     $bar_codes[] = $bar_code;
-                } else if (!is_null($provider_code)) {
+                }
+                if (!is_null($provider_code)) {
                     $provider_codes[] = $provider_code;
-                } else if (!is_null($name)) {
+                }
+                if (!is_null($name)) {
                     $names[] = $name;
                 }
             }
@@ -283,12 +285,35 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
         }
 
         if (count($provider_codes) > 0) {
-            $this->articulos_por_provider_code = $this->indexar_por(
-                Article::where('user_id', $this->user->id)
-                    ->whereIn('provider_code', array_unique($provider_codes))
-                    ->get(),
-                'provider_code'
-            );
+            foreach (array_chunk(array_values(array_unique(array_map('strval', $provider_codes))), 100) as $lote) {
+                $provider_id = $this->provider_order->provider_id;
+                $articulos = Article::where('user_id', $this->user->id)->where(function ($query) use ($lote, $provider_id) {
+                    $query->where(function ($legado) use ($lote, $provider_id) {
+                        $legado->whereIn('provider_code', $lote);
+                        if ($provider_id) {
+                            $legado->where('provider_id', $provider_id);
+                        }
+                    })->orWhereHas('providers', function ($relacion) use ($lote, $provider_id) {
+                        $relacion->where('providers.user_id', $this->user->id)->whereIn('article_provider.provider_code', $lote);
+                        if ($provider_id) {
+                            $relacion->where('providers.id', $provider_id);
+                        }
+                    });
+                })->with('providers')->get();
+                foreach ($articulos as $article) {
+                    $codigos = $article->providers->filter(function ($provider) use ($provider_id) {
+                        return !$provider_id || (int) $provider->id === (int) $provider_id;
+                    })->map(function ($provider) { return $provider->pivot->provider_code; })->all();
+                    if (!$provider_id || (int) $article->provider_id === (int) $provider_id) {
+                        $codigos[] = $article->provider_code;
+                    }
+                    foreach ($codigos as $codigo) {
+                        if (!is_null($codigo) && trim((string) $codigo) !== '') {
+                            $this->articulos_por_provider_code[$this->clave_codigo($codigo)][$article->id] = $article;
+                        }
+                    }
+                }
+            }
         }
 
         if (count($names) > 0) {
@@ -302,37 +327,55 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
     }
 
     /**
-     * Arma un índice en memoria de artículos por uno de sus identificadores, con la clave pasada
-     * SIEMPRE por clave_de_indice().
+     * Conserva todos los candidatos de cada clave: las colisiones requieren revisión, nunca first().
      *
      * 🔴 NO reemplazar por `->keyBy('<campo>')->all()`, que es lo que hacía hasta el 17/9/2026.
      * El porqué está entero en clave_de_indice(): la clave cruda deja el índice sensible a
      * mayúsculas y a ceros a la izquierda, y con `import_type = 'pedido'` una fila que no matchea
      * no falla — CREA un artículo duplicado, en silencio.
      *
-     * ⚠️ Si dos artículos distintos del catálogo colapsan en la misma clave normalizada (existen
-     * `Martillo` y `MARTILLO` como dos filas separadas), este índice se queda con UNO solo — el
-     * último de la colección. Es aceptable a propósito: replica exactamente lo que hacía el
-     * `Article::where('name', $name)->first()` de antes de la precarga, que con la collation `_ci`
-     * de MySQL veía las dos filas y devolvía una sola.
+     * Los códigos de proveedor pasan por clave_codigo(), que conserva ceros a la izquierda.
      *
      * @param \Illuminate\Support\Collection $articulos
      * @param string $campo 'bar_code' | 'provider_code' | 'name'
-     * @return array<string,\App\Models\Article>
+     * @return array<string,array<int,\App\Models\Article>>
      */
     protected function indexar_por(Collection $articulos, $campo)
     {
         $indice = [];
 
         foreach ($articulos as $articulo) {
-            $indice[$this->clave_de_indice($articulo->getAttribute($campo))] = $articulo;
+            $valor = $articulo->getAttribute($campo);
+            $clave = $campo === 'provider_code' ? $this->clave_codigo($valor) : $this->clave_de_indice($valor);
+            $indice[$clave][$articulo->id] = $articulo;
         }
 
         return $indice;
     }
 
+    protected function clave_codigo($valor)
+    {
+        // Un código es texto: 001 y 1 pueden ser productos diferentes del mismo proveedor.
+        return mb_strtolower(trim((string) $valor), 'UTF-8');
+    }
+
+    protected function resolver_indice($indice, $valor, $campo, $nombre_exacto = false)
+    {
+        $clave = $campo === 'provider_code' ? $this->clave_codigo($valor) : $this->clave_de_indice($valor);
+        $candidatos = $indice[$clave] ?? [];
+        if ($campo === 'name' && $nombre_exacto) {
+            $candidatos = array_filter($candidatos, function ($article) use ($valor) {
+                return CodigosDeProveedor::nombre_exacto($article->name) === CodigosDeProveedor::nombre_exacto($valor);
+            });
+        }
+        if (count($candidatos) > 1) {
+            throw new InvalidArgumentException('Hay más de un artículo con ' . $campo . ' ' . $valor . '. Revisá la coincidencia antes de importar.');
+        }
+        return count($candidatos) === 1 ? reset($candidatos) : null;
+    }
+
     /**
-     * Normaliza un identificador (código de barras, código de proveedor o nombre) para usarlo como
+     * Normaliza un código de barras o nombre para usarlo como
      * CLAVE del índice precargado de artículos.
      *
      * 🔴 ACÁ ES DONDE ALGUIEN VA A QUERER "SIMPLIFICAR" Y VOLVER A LA CLAVE CRUDA. No se hace, y
@@ -468,7 +511,8 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
             'id'           => $article->id,
             'status'       => $article->status,
             'bar_code'     => $article->bar_code,
-            'provider_code' => $article->provider_code,
+            'provider_code' => ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)
+                ?? CodigosDeProveedor::codigo_para($article, $this->provider_order->provider_id),
             'pivot' => [
                 'amount'          => $amount,
                 'received'        => $received,
@@ -526,18 +570,18 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
          * caja. Y no matchear no es un error visible — abajo, en modo 'pedido', crea el artículo.
          */
         if (!is_null($bar_code)) {
-            $article = $this->articulos_por_bar_code[$this->clave_de_indice($bar_code)] ?? null;
-        } else if (!is_null($provider_code)) {
-            $article = $this->articulos_por_provider_code[$this->clave_de_indice($provider_code)] ?? null;
-        } else if (!is_null($name)) {
-            $article = $this->articulos_por_name[$this->clave_de_indice($name)] ?? null;
-        } else {
-            /*
-             * Fila sin ningún identificador: comportamiento preexistente (no introducido por esta
-             * misión), que esta query replica tal cual — Article::where('user_id', ...)->first()
-             * sin ningún otro filtro. No se precarga porque no hay con qué indexarlo.
-             */
-            $article = Article::where('user_id', $this->user->id)->first();
+            $article = $this->resolver_indice($this->articulos_por_bar_code, $bar_code, 'bar_code');
+        }
+        if (is_null($article) && !is_null($provider_code)) {
+            $article = $this->resolver_indice($this->articulos_por_provider_code, $provider_code, 'provider_code');
+        }
+        if (is_null($article) && !is_null($name)) {
+            // Este fallback es nuevo: un código desconocido no debe aprenderse sobre un nombre sólo parecido.
+            $article = $this->resolver_indice($this->articulos_por_name, $name, 'name', !is_null($bar_code) || !is_null($provider_code));
+        }
+        if (is_null($bar_code) && is_null($provider_code) && is_null($name)) {
+            // Una fila vacía no puede identificar el primer artículo del comercio.
+            return null;
         }
 
         if (is_null($article)) {
@@ -569,14 +613,21 @@ class ProviderOrderArticleImport implements ToCollection, WithMultipleSheets
             // repite el identificador con otra caja (`MARTILLO` y después `Martillo`) volvería a
             // crear el duplicado dentro del mismo archivo.
             if (!is_null($bar_code)) {
-                $this->articulos_por_bar_code[$this->clave_de_indice($bar_code)] = $article;
-            } else if (!is_null($provider_code)) {
-                $this->articulos_por_provider_code[$this->clave_de_indice($provider_code)] = $article;
-            } else if (!is_null($name)) {
-                $this->articulos_por_name[$this->clave_de_indice($name)] = $article;
+                $this->articulos_por_bar_code[$this->clave_de_indice($bar_code)][$article->id] = $article;
+            }
+            if (!is_null($provider_code)) {
+                $this->articulos_por_provider_code[$this->clave_codigo($provider_code)][$article->id] = $article;
+            }
+            if (!is_null($name)) {
+                $this->articulos_por_name[$this->clave_de_indice($name)][$article->id] = $article;
             }
         } else {
             $this->actualizados++;
+        }
+
+        if (!is_null($provider_code)) {
+            // Otra fila del mismo archivo puede traer sólo el código que esta fila acaba de vincular.
+            $this->articulos_por_provider_code[$this->clave_codigo($provider_code)][$article->id] = $article;
         }
 
         return $article;

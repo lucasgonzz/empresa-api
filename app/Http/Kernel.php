@@ -42,6 +42,12 @@ class Kernel extends HttpKernel
 
         'api' => [
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
+            /*
+             * Un token de la app «ComercioCity IA» (habilidad `ia-app`) solo abre las rutas de la app
+             * (misión app-ia-y-memoria, 29/10/2026). Sin Bearer, o con un token de otro uso (la clave
+             * MCP), pasa sin mirar nada: la cookie del sistema no cambia en nada. Ver SoloRutasDeLaApp.
+             */
+            \App\Http\Middleware\SoloRutasDeLaApp::class,
             'throttle:custom-api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
             /**

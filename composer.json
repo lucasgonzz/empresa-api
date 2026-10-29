@@ -20,6 +20,7 @@
         "openspout/openspout": "^3.7",
         "predis/predis": "^3.3",
         "pusher/pusher-php-server": "^7.2",
+        "smalot/pdfparser": "^2.13",
         "tecnickcom/tcpdf": "^6.10"
     },
     "require-dev": {

@@ -49,6 +49,7 @@ class User extends Authenticatable
 
     protected $casts = [
         'email_verified_at' => 'datetime',
+        'current_acount_consulta' => 'array',
         // Si es true, descuentos/recargos de la venta se aplican al costo en cálculos de SaleHelper.
         // 'aplicar_descuentos_de_venta_a_costos' => 'boolean',
     ];

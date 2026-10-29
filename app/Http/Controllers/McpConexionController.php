@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -268,6 +269,11 @@ class McpConexionController extends Controller
      * seguir. Ver el 🔴 del docblock de la clase. Se pregunta sobre $request->user() porque es el
      * modelo que tiene el access token colgado (UserHelper::user() hace un find nuevo, sin él).
      *
+     * Misión app-ia-y-memoria (29/10/2026, contrato C5): también pasa un token de la app «ComercioCity
+     * IA» (habilidad `ia-app`, sin `*`), porque la conexión se administra desde su configuración igual
+     * que desde el modal del sistema. 🔴 NUNCA una clave `mcp`: una clave filtrada no puede fabricarse
+     * otra que sobreviva a la revocación.
+     *
      * @param  \Illuminate\Http\Request  $request
      * @return JsonResponse|null
      */
@@ -279,7 +285,10 @@ class McpConexionController extends Controller
             ? null
             : $autenticado->currentAccessToken();
 
-        if (!($token_actual instanceof TransientToken)) {
+        $es_de_la_app = IaAppHelper::es_token_de_la_app($token_actual)
+            && !in_array('mcp', is_array($token_actual->abilities) ? $token_actual->abilities : [], true);
+
+        if (!($token_actual instanceof TransientToken) && !$es_de_la_app) {
 
             return response()->json(
                 ['message' => 'La clave de conexión se administra desde el sistema, no desde un cliente MCP.'],

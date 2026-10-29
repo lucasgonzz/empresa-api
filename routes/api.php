@@ -112,6 +112,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     // en UserController@update con id = "set-chat-ia-preferencias" (set-dark-mode zafa solo
     // porque sus tres segmentos no calzan en el comodín de dos).
     Route::put('user/set-chat-ia-preferencias', 'UserController@set_chat_ia_preferencias');
+    // Tres segmentos: una API vieja debe dar 404, nunca entrar al PUT user/{id} del perfil.
+    Route::put('user/current-acount/consulta', 'UserController@set_current_acount_consulta');
     // Impresora del Ticket 2.0. Misma familia que las dos de arriba: preferencia POR PERSONA,
     // y con la misma trampa del orden — dos segmentos, así que abajo de `user/{id}` caería en
     // UserController@update con id = "set-impresora".
@@ -1391,9 +1393,23 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('ai-conversations', 'AiConversationController@index');
         Route::post('ai-conversations', 'AiConversationController@store');
         Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
+        // Renombrar y fijar desde la barra lateral de la app (misión app-ia-y-memoria, contrato C5).
+        Route::patch('ai-conversations/{id}', 'AiConversationController@update');
         Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
         Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
         Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
+
+        /*
+         * La app «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026, contrato C5): quién es y qué sabe
+         * este sistema, y cerrar sesión (revocar su token). Mismo gate que el chat: la app es este chat
+         * visto desde otro lado. 🔴 La app nunca llama a `GET api/user` (corre el candado de sesión única).
+         */
+        Route::get('ia-app/yo', 'IaAppController@yo');
+        Route::delete('ia-app/token', 'IaAppController@revocar_token');
+        // El dictado del cuestionario de inicio: un audio que vuelve como texto (OpenAI).
+        Route::post('ia-app/transcribir', 'IaAppController@transcribir');
+        // La imagen que generó el agente (la `url` del bloque `imagen_generada`), con tenencia por dueño.
+        Route::get('ia-imagenes/{uuid}', 'IaAppController@imagen_generada');
 
         /*
          * El binario de una foto que el dueño mandó por WhatsApp (misión
@@ -1406,6 +1422,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
          * conversación (el globo optimista del POST); la conversación igual se chequea adentro.
          */
         Route::get('ai-mensajes/{message_id}/imagen/{orden}', 'AiConversationController@imagen_de_mensaje');
+
+        /*
+         * La nota de voz y los archivos (PDF, Excel, CSV) que el dueño mandó desde la app (misión
+         * app-ia-y-memoria, contrato C5). Mismo criterio que la foto de arriba: disco `local`, mismo gate
+         * y la misma tenencia doble adentro; son las `url` de `audio` y `archivos` de cada mensaje.
+         */
+        Route::get('ai-mensajes/{message_id}/audio', 'AiConversationController@audio_de_mensaje');
+        Route::get('ai-mensajes/{message_id}/archivo/{orden}', 'AiConversationController@archivo_de_mensaje');
 
         // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
         // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
@@ -1453,6 +1477,22 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('mcp/conexion', 'McpConexionController@estado');
         Route::post('mcp/conexion', 'McpConexionController@crear');
         Route::delete('mcp/conexion', 'McpConexionController@revocar');
+
+        /*
+         * La memoria de contexto del agente y el cuestionario de inicio de la app (misión
+         * app-ia-y-memoria, E2, 29/10/2026, contrato C5). La memoria es del COMERCIO: se lee y se
+         * escribe en el dueño (UserHelper::user(true)), con revisión en cada escritura. El PUT es la
+         * edición del dueño desde la app; el cuestionario escribe la memoria de forma determinista y la
+         * confianza en la misma columna que `user/asistente-config`. Mismo gate que el chat.
+         */
+        Route::get('agente-contexto', 'AgenteContextoController@index');
+        Route::put('agente-contexto', 'AgenteContextoController@update');
+        Route::get('ia-app/cuestionario', 'IaCuestionarioController@show');
+        Route::post('ia-app/cuestionario', 'IaCuestionarioController@store');
+        Route::post('ia-app/cuestionario/saltear', 'IaCuestionarioController@saltear');
+        // Cómo quiere que le respondan, cambiado desde la configuración de la app: body parcial
+        // {largo?, forma?, confianza?}; reescribe solo el bloque de preferencias de la memoria.
+        Route::patch('ia-app/preferencias', 'IaCuestionarioController@preferencias');
     });
 
     // El mostrador del módulo IA (misión modulo-ia-mostrador): el escritorio de informes
@@ -1728,12 +1768,31 @@ Route::middleware('admin.api.key')
         Route::post('catalogo/categorias/propuestas/{run_id}/listo', 'AdminSync\\CatalogoCategoriasController@listo')->where('run_id', '[0-9]+');
         Route::post('catalogo/categorias/propuestas/{run_id}/descartar', 'AdminSync\\CatalogoCategoriasController@descartar')->where('run_id', '[0-9]+');
 
+        // La memoria del agente, creada apenas el admin prende Agentes de IA (misión app-ia-y-memoria, E2,
+        // 29/10/2026, contrato C1.3). Idempotente: `{creada, archivos}`. La clave X-Admin-Api-Key se exige
+        // SIEMPRE adentro del controlador (trait ClaveEstrictaDeAdmin); 409 `sin_extension` si el comercio no
+        // tiene la extensión. Un cliente viejo sin esta ruta responde 404 y el admin lo ignora con log.
+        Route::put('agente-contexto/inicializar', 'AdminSync\\AgenteContextoController@inicializar');
+
         // El canje del pase del centro de recursos (misión centro-de-recursos-clientes, 13/10/2026,
         // contrato C3): el admin lo llama cuando la página le manda un pase que este sistema emitió en
         // POST centro-recursos/pase. Lo marca usado (una sola vez, vence a los 5 minutos) y devuelve el
         // usuario. 404 `pase_invalido` si no vale; un cliente viejo sin esta ruta también da 404 y el
         // admin lo trata igual (la página sigue sin sesión). La clave la pone el middleware del grupo.
         Route::post('recursos/canjear-pase', 'CentroRecursosController@canjear');
+    });
+
+// La app «ComercioCity IA» del lado del admin (misión app-ia-y-memoria, 29/10/2026, contratos C1.1 y C1.2):
+// el admin atiende el login de la app y le pide acá el token del dueño, y arma su directorio con el
+// documento del dueño. 🔴 Sin el middleware `admin.api.key` a propósito: la clave se exige SIEMPRE adentro
+// (ClaveEstrictaDeAdmin), porque esta ruta EMITE un token, y así el 401 trae el `code` del contrato. Un
+// cliente viejo sin estas rutas le da 404 al admin, que lo muestra como `version_vieja`.
+Route::prefix('admin-sync')
+    ->group(function () {
+        Route::post('ia-app/token', 'AdminSync\\IaAppController@token');
+        Route::get('ia-app/dueno', 'AdminSync\\IaAppController@dueno');
+        // C1.4: el admin entrega la imagen generada de un pedido del agente (multipart, idempotente).
+        Route::post('ia-imagenes/{uuid}/resultado', 'AdminSync\\IaImagenesController@resultado');
     });
 
 // El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026, contrato C1): el SPA pide un
