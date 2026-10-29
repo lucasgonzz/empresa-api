@@ -1,0 +1,26 @@
+COMERCIOCITY — DIAGNÓSTICO DE CONEXIÓN — TICKET 27 INNOVATE
+
+1. Extraé la carpeta completa del ZIP en tu computadora.
+2. Abrí ComercioCity-Diagnostico.exe. No requiere instalación ni administrador.
+3. Cerrá tareas de carga o guardado que tengas en curso. Tocá Iniciar diagnóstico.
+4. Esperá el informe (aproximadamente 2 a 4 minutos). Podés cancelar y conservar lo medido.
+5. Tocá Abrir carpeta del informe. Revisá diagnostico.html y compartí ese archivo y
+   diagnostico.json con soporte de ComercioCity por el canal ya acordado.
+
+Puede abrirse Edge o Chrome con una ventana nueva y vacía durante la prueba. No
+inicies sesión ni escribas datos personales en esa ventana. El programa usa un
+perfil temporal propio, no el historial ni las extensiones de tu navegador habitual.
+
+El diagnóstico consulta recursos públicos de Innovate, Microsoft y Cloudflare.
+No lee contraseñas, cookies, historial ni datos del negocio. No modifica DNS,
+proxy, antivirus, firewall, certificados ni configuraciones de la computadora.
+No hace compras, ventas ni operaciones en el sistema. No sube el informe solo.
+No pide desactivar ninguna protección ni ignorar advertencias de Windows.
+
+Si Windows bloquea el archivo, no saltees la advertencia: avisale a soporte.
+
+El resultado no certifica que tu PC esté averiada. Sirve para que soporte y el
+técnico comparen mediciones y encuentren la causa antes de hacer una reparación.
+
+Los informes quedan en Documentos\ComercioCity\Diagnostico-27-fecha-hora.
+La herramienta es portátil. Para dejar de usarla alcanza con cerrar el programa.
