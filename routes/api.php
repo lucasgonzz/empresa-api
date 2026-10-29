@@ -1396,6 +1396,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
 
         /*
+         * La app «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026, contrato C5): quién es y qué sabe
+         * este sistema, y cerrar sesión (revocar su token). Mismo gate que el chat: la app es este chat
+         * visto desde otro lado. 🔴 La app nunca llama a `GET api/user` (corre el candado de sesión única).
+         */
+        Route::get('ia-app/yo', 'IaAppController@yo');
+        Route::delete('ia-app/token', 'IaAppController@revocar_token');
+
+        /*
          * El binario de una foto que el dueño mandó por WhatsApp (misión
          * asistente-capacidades-y-hilos, P5). Es la `url` que viaja en `imagenes` de cada mensaje.
          *
@@ -1734,6 +1742,17 @@ Route::middleware('admin.api.key')
         // usuario. 404 `pase_invalido` si no vale; un cliente viejo sin esta ruta también da 404 y el
         // admin lo trata igual (la página sigue sin sesión). La clave la pone el middleware del grupo.
         Route::post('recursos/canjear-pase', 'CentroRecursosController@canjear');
+    });
+
+// La app «ComercioCity IA» del lado del admin (misión app-ia-y-memoria, 29/10/2026, contratos C1.1 y C1.2):
+// el admin atiende el login de la app y le pide acá el token del dueño, y arma su directorio con el
+// documento del dueño. 🔴 Sin el middleware `admin.api.key` a propósito: la clave se exige SIEMPRE adentro
+// (ClaveEstrictaDeAdmin), porque esta ruta EMITE un token, y así el 401 trae el `code` del contrato. Un
+// cliente viejo sin estas rutas le da 404 al admin, que lo muestra como `version_vieja`.
+Route::prefix('admin-sync')
+    ->group(function () {
+        Route::post('ia-app/token', 'AdminSync\\IaAppController@token');
+        Route::get('ia-app/dueno', 'AdminSync\\IaAppController@dueno');
     });
 
 // El centro de recursos (misión centro-de-recursos-clientes, 13/10/2026, contrato C1): el SPA pide un

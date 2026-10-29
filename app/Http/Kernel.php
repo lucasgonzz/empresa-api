@@ -42,6 +42,12 @@ class Kernel extends HttpKernel
 
         'api' => [
             \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
+            /*
+             * Un token de la app «ComercioCity IA» (habilidad `ia-app`) solo abre las rutas de la app
+             * (misión app-ia-y-memoria, 29/10/2026). Sin Bearer, o con un token de otro uso (la clave
+             * MCP), pasa sin mirar nada: la cookie del sistema no cambia en nada. Ver SoloRutasDeLaApp.
+             */
+            \App\Http\Middleware\SoloRutasDeLaApp::class,
             'throttle:custom-api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
             /**
@@ -83,6 +89,8 @@ class Kernel extends HttpKernel
         'print.agent.token' => \App\Http\Middleware\PrintAgentToken::class,
         /* Solo el dueño (o admin_access / acceso maestro) entra al asistente de IA. */
         'solo_el_dueno_ia' => \App\Http\Middleware\SoloElDuenoIa::class,
+        /* Un token de la app de IA solo abre las rutas de la app (va en el grupo `api`; ver SoloRutasDeLaApp). */
+        'solo_rutas_de_la_app' => \App\Http\Middleware\SoloRutasDeLaApp::class,
         /* Solo el dueño (o un empleado con admin_access) escribe la configuración general y online. */
         'solo_administrador' => \App\Http\Middleware\SoloAdministrador::class,
         /*
