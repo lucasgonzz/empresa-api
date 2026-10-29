@@ -170,4 +170,37 @@ class Periodo_del_pdf_y_del_helper_Test extends EmpresaTestCase
         $this->assertEquals(175, CuentaCorrientePeriodoHelper::saldo_del_periodo(collect([$medio, $nuevo, $viejo])));
         $this->assertNull(CuentaCorrientePeriodoHelper::saldo_del_periodo(collect([])));
     }
+
+    public function test_el_pdf_de_ultimos_movimientos_imprime_el_saldo_actual_en_ambos_ordenes()
+    {
+        $viejo = $this->movimiento($this->cuenta, ['debe' => 100, 'saldo' => 100, 'created_at' => '2026-09-01 10:00:00']);
+        $nuevo = $this->movimiento($this->cuenta, ['debe' => 75, 'saldo' => 175, 'created_at' => '2026-09-10 10:00:00']);
+        foreach ([[$viejo, $nuevo], [$nuevo, $viejo]] as $orden) {
+            // Se prueba el método real sin el constructor que envía el PDF y hace exit.
+            $pdf = new SaldoConsultaPdfCapturado($this->cuenta, collect($orden));
+            $pdf->saldo_actual();
+            $this->assertStringContainsString('Saldo actual:', $pdf->texto);
+            $this->assertStringContainsString('175', $pdf->texto);
+            $this->assertStringNotContainsString('100', $pdf->texto);
+        }
+    }
+}
+
+class SaldoConsultaPdfCapturado extends \App\Http\Controllers\Pdf\CurrentAcountPdf
+{
+    public $texto = '';
+
+    public function __construct($cuenta, $models)
+    {
+        $this->credit_account = $cuenta;
+        $this->models = $models;
+        $this->y_final_commerce_line = 0;
+    }
+
+    public function SetFont($family, $style = '', $size = 0) {}
+
+    public function Cell($w, $h = 0, $txt = '', $border = 0, $ln = 0, $align = '', $fill = false, $link = '')
+    {
+        $this->texto = $txt;
+    }
 }

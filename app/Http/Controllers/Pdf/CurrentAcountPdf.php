@@ -118,8 +118,8 @@ class CurrentAcountPdf extends fpdf {
 
 			if (is_null($this->periodo)) {
 
-				$saldo = $this->models[count($this->models)-1]->saldo;
-				// $saldo = $this->models[0]->saldo;
+				// Últimos N también puede venir en orden inverso: el saldo actual es el del más nuevo.
+				$saldo = CuentaCorrientePeriodoHelper::saldo_del_periodo($this->models);
 				$saldo = Numbers::price($saldo, true, $this->credit_account->moneda_id);
 
 				$this->Cell(100, 15, 'Saldo actual: '.$saldo, 1, 0, 'C');
