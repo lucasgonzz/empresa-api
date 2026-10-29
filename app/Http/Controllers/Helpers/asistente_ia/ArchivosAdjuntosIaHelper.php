@@ -57,8 +57,17 @@ class ArchivosAdjuntosIaHelper
      */
     const MAX_CARACTERES_EN_EL_HISTORIAL = 3000;
 
-    /** Clase del lector de PDF (smalot/pdfparser). Por nombre: sin el paquete, el PDF se informa como no legible. */
-    const CLASE_DEL_LECTOR_DE_PDF = 'Smalot\\PdfParser\\Parser';
+    /**
+     * Renglones que se RECORREN como mucho en una hoja o un CSV buscando los MAX_FILAS que tienen algo:
+     * un archivo de miles de renglones vacíos no se lee hasta el final.
+     */
+    const MAX_FILAS_RECORRIDAS = 4000;
+
+    /** Páginas de un PDF que se leen (una lista de precios de 300 páginas no entra al turno igual). */
+    const MAX_PAGINAS_PDF = 30;
+
+    /** Techo de lo que se descomprime de CADA stream de un PDF (smalot `setDecodeMemoryLimit`), en bytes. */
+    const MAX_BYTES_DECODIFICADOS_PDF = 16777216;
 
     const ESTADO_PENDIENTE = 'pendiente';
 
@@ -351,9 +360,26 @@ class ArchivosAdjuntosIaHelper
             throw new \RuntimeException('el archivo ya no está guardado');
         }
 
-        $ruta = Storage::disk('local')->path($path);
-        $tipo = (string) ($entrada['tipo'] ?? '');
+        return self::texto_de_un_archivo(Storage::disk('local')->path($path), (string) ($entrada['tipo'] ?? ''));
+    }
 
+    /**
+     * El texto de un archivo del disco, según su tipo (pdf | csv | xlsx | xls). Sin Laravel adentro:
+     * lo usa también el test de memoria, que lo corre en un proceso aparte para medir el pico.
+     *
+     * 🔴 NINGÚN LECTOR CARGA EL ARCHIVO ENTERO EN MEMORIA (corrección de la revisión, 29/10/2026). El
+     * worker de la cola comparte la memoria con las importaciones, y un "Out of memory" no se puede
+     * atrapar: mata el job y el dueño ve un error. Los topes de lectura (MAX_HOJAS, MAX_FILAS,
+     * MAX_COLUMNAS, MAX_PAGINAS_PDF) cortan la LECTURA, no solo lo que se guarda.
+     *
+     * @param  string  $ruta
+     * @param  string  $tipo
+     * @return string
+     *
+     * @throws \RuntimeException
+     */
+    public static function texto_de_un_archivo($ruta, $tipo)
+    {
         if ($tipo === 'pdf') {
 
             return self::texto_de_pdf($ruta);
@@ -364,11 +390,20 @@ class ArchivosAdjuntosIaHelper
             return self::texto_de_csv($ruta);
         }
 
-        return self::texto_de_planilla($ruta, $tipo);
+        if ($tipo === 'xlsx') {
+
+            return self::texto_de_xlsx($ruta);
+        }
+
+        return self::texto_de_xls($ruta);
     }
 
     /**
-     * El texto de un PDF con smalot/pdfparser.
+     * El texto de un PDF con smalot/pdfparser, de las primeras MAX_PAGINAS_PDF páginas.
+     *
+     * Con `setRetainImageContent(false)` el parser no guarda el contenido de las imágenes (en un
+     * catálogo escaneado son casi todo el peso) y con `setDecodeMemoryLimit` cada stream comprimido se
+     * descomprime hasta un techo: un stream que pide más se corta en vez de comerse la memoria.
      *
      * @param  string  $ruta
      * @return string
@@ -377,94 +412,250 @@ class ArchivosAdjuntosIaHelper
      */
     protected static function texto_de_pdf($ruta)
     {
-        $clase = self::CLASE_DEL_LECTOR_DE_PDF;
-
-        if (!class_exists($clase)) {
+        if (!class_exists('Smalot\\PdfParser\\Parser') || !class_exists('Smalot\\PdfParser\\Config')) {
 
             throw new \RuntimeException('este sistema todavía no puede leer PDF');
         }
 
-        $parser = new $clase();
+        $config = new \Smalot\PdfParser\Config();
+        $config->setRetainImageContent(false);
+        $config->setDecodeMemoryLimit(self::MAX_BYTES_DECODIFICADOS_PDF);
+
+        $parser = new \Smalot\PdfParser\Parser([], $config);
 
         $documento = $parser->parseFile($ruta);
 
-        return (string) $documento->getText();
+        $paginas = count($documento->getPages());
+        $texto   = (string) $documento->getText(self::MAX_PAGINAS_PDF);
+
+        if ($paginas > self::MAX_PAGINAS_PDF) {
+            $texto .= "\n[El PDF tiene " . $paginas . ' páginas: se leyeron las primeras ' . self::MAX_PAGINAS_PDF . '.]';
+        }
+
+        return $texto;
     }
 
     /**
-     * El texto de un CSV, como renglones separados por " | ". Detecta el separador (`;`, `,` o
-     * tabulador, lo que más aparezca en la primera línea) y pasa a UTF-8 un archivo que viene en
-     * Latin-1 (el Excel en español lo guarda así).
+     * El texto de un CSV, como renglones separados por " | ", leído EN STREAMING (renglón por renglón,
+     * sin traer el archivo a memoria). Detecta el separador (`;`, `,` o tabulador, lo que más aparezca
+     * en la primera línea) y pasa a UTF-8 cada celda que viene en Latin-1 (el Excel en español guarda
+     * así el CSV).
      *
      * @param  string  $ruta
      * @return string
+     *
+     * @throws \RuntimeException
      */
     protected static function texto_de_csv($ruta)
     {
-        $contenido = (string) file_get_contents($ruta);
+        $flujo = @fopen($ruta, 'rb');
 
-        if (!mb_check_encoding($contenido, 'UTF-8')) {
-            $contenido = mb_convert_encoding($contenido, 'UTF-8', 'ISO-8859-1');
+        if ($flujo === false) {
+
+            throw new \RuntimeException('no se pudo abrir el archivo');
         }
 
-        /* Sin el BOM que deja Excel al principio. */
-        $contenido = preg_replace('/^\xEF\xBB\xBF/', '', $contenido);
+        try {
 
-        $primera = strtok($contenido, "\n");
-        $primera = $primera === false ? '' : $primera;
+            $primera = (string) fgets($flujo, 65536);
+            $bom     = substr($primera, 0, 3) === "\xEF\xBB\xBF";
 
-        $separador = ',';
-        $mas       = -1;
+            $separador = ',';
+            $mas       = -1;
 
-        foreach ([';', ',', "\t"] as $candidato) {
+            foreach ([';', ',', "\t"] as $candidato) {
 
-            $veces = substr_count($primera, $candidato);
+                $veces = substr_count($primera, $candidato);
 
-            if ($veces > $mas) {
-                $mas       = $veces;
-                $separador = $candidato;
-            }
-        }
-
-        $flujo = fopen('php://temp', 'r+');
-        fwrite($flujo, $contenido);
-        rewind($flujo);
-
-        $renglones = [];
-        $filas     = 0;
-
-        while (($fila = fgetcsv($flujo, 0, $separador)) !== false && $filas < self::MAX_FILAS) {
-
-            $celdas = array_slice(array_map(function ($celda) {
-                return trim((string) $celda);
-            }, $fila), 0, self::MAX_COLUMNAS);
-
-            if (implode('', $celdas) === '') {
-                continue;
+                if ($veces > $mas) {
+                    $mas       = $veces;
+                    $separador = $candidato;
+                }
             }
 
-            $renglones[] = implode(' | ', $celdas);
-            $filas++;
+            /* Sin el BOM que deja Excel al principio. */
+            fseek($flujo, $bom ? 3 : 0);
+
+            $renglones = [];
+            $filas     = 0;
+            $leidas    = 0;
+            $mas_filas = false;
+
+            while (($fila = fgetcsv($flujo, 0, $separador)) !== false) {
+
+                if ($filas >= self::MAX_FILAS) {
+                    $mas_filas = true;
+                    break;
+                }
+
+                /* Techo de renglones RECORRIDOS: un archivo de renglones vacíos no se lee hasta el final. */
+                if (++$leidas > self::MAX_FILAS_RECORRIDAS) {
+                    $mas_filas = true;
+                    break;
+                }
+
+                $celdas = [];
+
+                foreach (array_slice($fila, 0, self::MAX_COLUMNAS) as $celda) {
+
+                    $celda = trim((string) $celda);
+
+                    if (!mb_check_encoding($celda, 'UTF-8')) {
+                        $celda = mb_convert_encoding($celda, 'UTF-8', 'ISO-8859-1');
+                    }
+
+                    $celdas[] = $celda;
+                }
+
+                if (implode('', $celdas) === '') {
+                    continue;
+                }
+
+                $renglones[] = implode(' | ', $celdas);
+                $filas++;
+            }
+
+        } finally {
+
+            fclose($flujo);
         }
-
-        $mas_filas = $fila !== false;
-
-        fclose($flujo);
 
         return implode("\n", $renglones) . ($mas_filas ? "\n[El archivo tiene más filas: se leyeron las primeras " . self::MAX_FILAS . '.]' : '');
     }
 
     /**
-     * El texto de una planilla (xlsx / xls) con PhpSpreadsheet, hoja por hoja: hasta MAX_HOJAS hojas,
-     * MAX_FILAS filas y MAX_COLUMNAS columnas cada una, con los VALORES calculados (no las fórmulas).
+     * El texto de un .xlsx EN STREAMING con openspout (3.7, compatible con PHP 7.4; ya estaba en
+     * composer): hoja por hoja hasta MAX_HOJAS, y de cada una hasta MAX_FILAS filas y MAX_COLUMNAS
+     * columnas, cortando la lectura ahí. openspout lee la hoja renglón por renglón del XML sin armarla
+     * en memoria, así que una planilla de 50.000 renglones cuesta lo mismo que una de 200.
+     *
+     * Las fórmulas salen con el valor que dejó guardado Excel (openspout no recalcula): un SUM
+     * recalculado sobre lo leído daría un total chico y creíble que no es el de la planilla.
      *
      * @param  string  $ruta
-     * @param  string  $tipo
      * @return string
      */
-    protected static function texto_de_planilla($ruta, $tipo)
+    protected static function texto_de_xlsx($ruta)
     {
-        $lector = \PhpOffice\PhpSpreadsheet\IOFactory::createReader($tipo === 'xls' ? 'Xls' : 'Xlsx');
+        $lector = \OpenSpout\Reader\Common\Creator\ReaderEntityFactory::createXLSXReader();
+
+        /* Las fechas como DateTime (se escriben dd/mm/aaaa) y sin los renglones vacíos. */
+        $lector->setShouldFormatDates(false);
+        $lector->setShouldPreserveEmptyRows(false);
+
+        $lector->open($ruta);
+
+        $partes        = [];
+        $hojas         = 0;
+        $hay_mas_hojas = false;
+
+        try {
+
+            foreach ($lector->getSheetIterator() as $hoja) {
+
+                if ($hojas >= self::MAX_HOJAS) {
+                    $hay_mas_hojas = true;
+                    break;
+                }
+
+                $hojas++;
+
+                $renglones = [];
+                $filas     = 0;
+                $leidas    = 0;
+                $sigue     = false;
+
+                foreach ($hoja->getRowIterator() as $fila) {
+
+                    if ($filas >= self::MAX_FILAS || ++$leidas > self::MAX_FILAS_RECORRIDAS) {
+                        $sigue = true;
+                        break;
+                    }
+
+                    $celdas = [];
+
+                    foreach (array_slice($fila->getCells(), 0, self::MAX_COLUMNAS) as $celda) {
+                        $celdas[] = self::valor_de_openspout($celda->getValue());
+                    }
+
+                    if (implode('', $celdas) === '') {
+                        continue;
+                    }
+
+                    $renglones[] = implode(' | ', $celdas);
+                    $filas++;
+                }
+
+                $titulo = 'Hoja «' . $hoja->getName() . '»';
+
+                if ($sigue) {
+                    $titulo .= ' (se leyeron las primeras ' . self::MAX_FILAS . ' filas)';
+                }
+
+                $partes[] = $titulo . ":\n" . implode("\n", $renglones);
+            }
+
+        } finally {
+
+            $lector->close();
+        }
+
+        if ($hay_mas_hojas) {
+            $partes[] = '[La planilla tiene más hojas: se leyeron las primeras ' . self::MAX_HOJAS . '.]';
+        }
+
+        return implode("\n\n", $partes);
+    }
+
+    /**
+     * El valor de una celda de openspout como texto: las fechas en dd/mm/aaaa (con la hora si tiene),
+     * los números sin notación científica, los booleanos en sí / no.
+     *
+     * @param  mixed  $valor
+     * @return string
+     */
+    protected static function valor_de_openspout($valor)
+    {
+        if ($valor instanceof \DateTimeInterface) {
+
+            return $valor->format('H:i:s') === '00:00:00' ? $valor->format('d/m/Y') : $valor->format('d/m/Y H:i');
+        }
+
+        if (is_bool($valor)) {
+
+            return $valor ? 'sí' : 'no';
+        }
+
+        if (is_float($valor)) {
+
+            if (!is_finite($valor)) {
+
+                return '';
+            }
+
+            return floor($valor) === $valor && abs($valor) < 1e15
+                ? number_format($valor, 0, '.', '')
+                : rtrim(rtrim(sprintf('%.6F', $valor), '0'), '.');
+        }
+
+        return is_scalar($valor) ? trim((string) $valor) : '';
+    }
+
+    /**
+     * El texto de un .xls (el formato binario viejo de Excel) con PhpSpreadsheet, hoja por hoja: hasta
+     * MAX_HOJAS hojas, MAX_FILAS filas y MAX_COLUMNAS columnas cada una, con los VALORES (no las
+     * fórmulas).
+     *
+     * Va por PhpSpreadsheet y no por openspout porque openspout no lee .xls. Lo que acota la memoria es
+     * el filtro de lectura (solo se cargan las celdas que se van a leer) y que el formato mismo tiene
+     * techo: 65.536 filas, en un archivo de hasta MAX_MB.
+     *
+     * @param  string  $ruta
+     * @return string
+     */
+    protected static function texto_de_xls($ruta)
+    {
+        $lector = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Xls');
 
         /*
          * Con los formatos (no `setReadDataOnly(true)`): sin ellos una fecha sale como el número de
