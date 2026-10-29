@@ -108,7 +108,12 @@ class CodigosPorProveedorTest extends ComprasTestCase
 
     public function test_confirmar_vinculo_aprende_codigo_aun_sin_actualizar_precios_y_es_idempotente()
     {
-        $extencion = ExtencionEmpresa::firstOrCreate(['slug' => 'agentes_ia'], ['name' => 'Agentes de IA']);
+        // ExtencionEmpresa no tiene $fillable: firstOrCreate() tira MassAssignmentException en una base
+        // recién sembrada sin la fila (gate 4.3.25). Mismo patrón que la prueba de variantes de abajo.
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
+        if (!$extencion) {
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Agentes de IA']);
+        }
         auth()->user()->extencions()->syncWithoutDetaching([$extencion->id]);
         auth()->user()->load('extencions');
         $article = $this->producto();
