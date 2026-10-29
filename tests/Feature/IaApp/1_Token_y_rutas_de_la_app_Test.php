@@ -197,6 +197,58 @@ class Token_y_rutas_de_la_app_Test extends IaAppTestCase
             ->assertJsonPath('code', 'credenciales_invalidas');
     }
 
+    public function test_en_una_base_compartida_cada_frente_solo_emite_el_token_de_su_dueno()
+    {
+        // 🔴 Dos comercios en la misma base, con el MISMO documento y la MISMA contraseña.
+        $documento = '20' . substr(uniqid(), -7);
+
+        $a = User::create([
+            'name' => 'Dueño A', 'company_name' => 'Negocio A', 'email' => 'ia-app-a-' . uniqid() . '@test.local',
+            'doc_number' => $documento, 'password' => \Illuminate\Support\Facades\Hash::make('la-misma-clave'),
+        ]);
+        $b = User::create([
+            'name' => 'Dueño B', 'company_name' => 'Negocio B', 'email' => 'ia-app-b-' . uniqid() . '@test.local',
+            'doc_number' => $documento, 'password' => \Illuminate\Support\Facades\Hash::make('la-misma-clave'),
+        ]);
+        $this->dar_extension($a);
+        $this->dar_extension($b);
+
+        $body = ['doc_number' => $documento, 'password' => 'la-misma-clave'];
+
+        // El frente de A (USER_ID = A) solo emite el token de A…
+        config(['app.USER_ID' => $a->id]);
+        $this->pedir_token($body)->assertStatus(200)->assertJsonPath('usuario.id', $a->id)->assertJsonPath('negocio.nombre', 'Negocio A');
+
+        // …y el de B, solo el de B.
+        config(['app.USER_ID' => $b->id]);
+        $this->pedir_token($body)->assertStatus(200)->assertJsonPath('usuario.id', $b->id);
+
+        // Con el documento con puntos, igual: dentro del mismo dueño.
+        config(['app.USER_ID' => $a->id]);
+        $con_puntos = substr($documento, 0, 2) . '.' . substr($documento, 2, 3) . '.' . substr($documento, 5);
+        $this->pedir_token(['doc_number' => $con_puntos, 'password' => 'la-misma-clave'])->assertStatus(200)->assertJsonPath('usuario.id', $a->id);
+
+        $this->assertSame(2, \Laravel\Sanctum\PersonalAccessToken::where('tokenable_id', $a->id)->count());
+        $this->assertSame(1, \Laravel\Sanctum\PersonalAccessToken::where('tokenable_id', $b->id)->count());
+    }
+
+    public function test_sin_dueno_resoluble_da_409_sin_buscar_a_nadie()
+    {
+        // La base de testing tiene muchos dueños: sin USER_ID no se puede decidir de quién es este frente.
+        config(['app.USER_ID' => null]);
+
+        $this->pedir_token(['doc_number' => $this->dueno->doc_number, 'password' => self::CLAVE])
+            ->assertStatus(409)
+            ->assertJsonPath('code', 'dueno_no_resoluble');
+
+        $this->assertSame(1, PersonalAccessToken::where('tokenable_id', $this->dueno->id)->count(), 'Solo el token del setUp.');
+
+        // C1.2, mismo criterio: todo null.
+        $this->getJson('api/admin-sync/ia-app/dueno', $this->del_admin())
+            ->assertStatus(200)
+            ->assertExactJson(['doc_number' => null, 'nombre' => null, 'negocio' => null, 'extension_activa' => false]);
+    }
+
     public function test_el_dueno_para_el_directorio_del_admin()
     {
         $this->getJson('api/admin-sync/ia-app/dueno', $this->del_admin())

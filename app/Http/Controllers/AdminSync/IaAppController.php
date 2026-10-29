@@ -22,8 +22,8 @@ use Illuminate\Support\Facades\Validator;
  *
  * 🔴 LA CLAVE SE EXIGE SIEMPRE (trait ClaveEstrictaDeAdmin): esta ruta EMITE un token que abre el chat
  * del dueño, y "no hay clave cargada" no puede ser un pase libre aunque ADMIN_SYNC_REQUIRE_API_KEY esté
- * apagado. A diferencia del trait, el dueño no resoluble NO es un 409: la persona se busca por su
- * documento (ver IaAppHelper::persona_por_credenciales()).
+ * apagado. Y el usuario sale SOLO del dueño de este frente: sin dueño resoluble (base compartida sin
+ * USER_ID) es un 409 `dueno_no_resoluble` y no se busca a nadie (ver IaAppHelper::persona_por_credenciales()).
  *
  * 🔴 Y NO TOCA EL CANDADO DE SESIÓN ÚNICA. Nada de `Auth::attempt`, de `loginLucas()` ni de
  * `session_id`/`last_activity`: emitir el token no le cierra la sesión al dueño en la caja.
@@ -38,7 +38,7 @@ class IaAppController extends Controller
      * Body: `{doc_number (req, ≤64), password (req, ≤255), dispositivo (opc, ≤100)}`.
      *
      * @param  \Illuminate\Http\Request  $request
-     * @return \Illuminate\Http\JsonResponse  200 · 401 clave_invalida | credenciales_invalidas · 403 sin_extension | no_es_dueno · 422
+     * @return \Illuminate\Http\JsonResponse  200 · 401 clave_invalida | credenciales_invalidas · 403 sin_extension | no_es_dueno · 409 dueno_no_resoluble · 422
      */
     public function token(Request $request): JsonResponse
     {
@@ -47,6 +47,22 @@ class IaAppController extends Controller
         if (!is_null($rechazo)) {
 
             return $rechazo;
+        }
+
+        /*
+         * El dueño de ESTE frente, con el mismo criterio que el resto de los admin-sync del asistente
+         * (USER_ID o el único dueño de la base). Si no se puede decidir, no se busca a nadie: en una base
+         * compartida, cualquier otra cosa puede darle el token a un usuario de otro negocio.
+         */
+        $dueno_del_frente = AsistenteCanalHelper::dueno();
+
+        if (is_null($dueno_del_frente)) {
+
+            return response()->json([
+                'code'    => 'dueno_no_resoluble',
+                'message' => 'No se pudo resolver el dueño de esta instancia. '
+                           . 'Si la base la comparten varios comercios, falta USER_ID en el .env de este frente.',
+            ], 409, [], JSON_UNESCAPED_UNICODE);
         }
 
         $validador = Validator::make($request->all(), [
@@ -64,7 +80,7 @@ class IaAppController extends Controller
             ], 422, [], JSON_UNESCAPED_UNICODE);
         }
 
-        $persona = IaAppHelper::persona_por_credenciales($request->input('doc_number'), $request->input('password'));
+        $persona = IaAppHelper::persona_por_credenciales($dueno_del_frente, $request->input('doc_number'), $request->input('password'));
 
         if (is_null($persona)) {
 

@@ -235,29 +235,32 @@ class IaAppHelper
      * acceso maestro de `loginLucas()`, ni el candado de sesión única. Lo único que se lee es
      * `users.password`.
      *
-     * Con el dueño de la instancia resuelto (USER_ID o un único dueño en la base), se busca solo entre
-     * él y sus empleados: en una base compartida por varios comercios, el mismo documento puede estar
-     * en dos negocios y el que pregunta es ESTE. Sin dueño resoluble, se busca en toda la base, igual
-     * que el login del sistema (el negocio queda determinado por la persona que coincide).
+     * 🔴 SOLO ENTRE EL DUEÑO DE ESTE FRENTE Y SUS USUARIOS (`id = dueño` u `owner_id = dueño`), nunca
+     * en toda la base. Una base compartida del shared tiene decenas de comercios juntos separados por
+     * `users.owner_id`, y el mismo documento con la misma contraseña puede estar en dos de ellos:
+     * buscar en toda la base le emitiría a un usuario de OTRO negocio un token por el frente equivocado.
+     * Sin dueño resoluble no se busca a nadie (el controller contesta 409 `dueno_no_resoluble` antes de
+     * llegar acá; si igual llega, null).
      *
      * El documento se prueba tal cual y, si no aparece, sin puntos ni espacios (lo que la gente tipea
-     * en el teléfono: "20.123.456").
+     * en el teléfono: "20.123.456"), siempre dentro de ese mismo dueño.
      *
+     * @param  \App\Models\User|null  $dueno  El dueño de este frente (AsistenteCanalHelper::dueno()).
      * @param  string  $doc_number
      * @param  string  $password
      * @return \App\Models\User|null
      */
-    public static function persona_por_credenciales($doc_number, $password)
+    public static function persona_por_credenciales($dueno, $doc_number, $password)
     {
         $doc_number = trim((string) $doc_number);
         $password   = (string) $password;
 
-        $candidatos = self::candidatos($doc_number);
+        $candidatos = self::candidatos($dueno, $doc_number);
 
         $sin_puntos = preg_replace('/[\s\.]+/', '', $doc_number);
 
         if (!count($candidatos) && $sin_puntos !== $doc_number && $sin_puntos !== '') {
-            $candidatos = self::candidatos($sin_puntos);
+            $candidatos = self::candidatos($dueno, $sin_puntos);
         }
 
         /*
@@ -302,30 +305,28 @@ class IaAppHelper
     }
 
     /**
-     * Los usuarios con ese documento que puede atender esta instancia (máximo 5).
+     * Los usuarios con ese documento del dueño de este frente: él o sus usuarios (máximo 5). Sin dueño,
+     * ninguno.
      *
+     * @param  \App\Models\User|null  $dueno
      * @param  string  $doc_number
      * @return \Illuminate\Support\Collection
      */
-    protected static function candidatos($doc_number)
+    protected static function candidatos($dueno, $doc_number)
     {
-        if ($doc_number === '') {
+        if ($doc_number === '' || is_null($dueno) || (int) $dueno->id <= 0) {
 
             return collect();
         }
 
-        $query = User::where('doc_number', $doc_number);
-
-        $dueno = AsistenteCanalHelper::dueno();
-
-        if (!is_null($dueno)) {
-            $query->where(function ($q) use ($dueno) {
+        return User::where('doc_number', $doc_number)
+            ->where(function ($q) use ($dueno) {
                 $q->where('id', (int) $dueno->id)
                   ->orWhere('owner_id', (int) $dueno->id);
-            });
-        }
-
-        return $query->orderBy('id')->limit(5)->get();
+            })
+            ->orderBy('id')
+            ->limit(5)
+            ->get();
     }
 
     /**
