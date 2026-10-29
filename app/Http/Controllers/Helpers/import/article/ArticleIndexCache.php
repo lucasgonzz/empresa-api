@@ -776,6 +776,9 @@ class ArticleIndexCache
             self::poblar_indice_completo($index, $user_id, $indexar_sin_proveedor);
         }
 
+        // El escalar sólo conserva un proveedor: las referencias de los demás viven en el pivot.
+        self::indexar_referencias_de_proveedores($index, $user_id, is_null($claves) ? null : array_keys($index['ids']));
+
         return self::guardar_indice_construido($key, $index, $user_id, $inicio, is_null($claves) ? 'completo' : 'acotado');
     }
 
@@ -912,6 +915,13 @@ class ArticleIndexCache
                         ->get()
                 );
             }
+        }
+
+        foreach (array_chunk(array_map('strval', array_keys($claves['provider_codes'])), self::CLAVES_POR_CONSULTA) as $lote) {
+            $indexar_lote(Article::where('user_id', $user_id)
+                ->whereHas('providers', function ($query) use ($lote, $user_id) {
+                    $query->where('providers.user_id', $user_id)->whereIn('article_provider.provider_code', $lote);
+                })->select($columnas)->get());
         }
 
         $nombres = $claves['names'];
@@ -1060,6 +1070,44 @@ class ArticleIndexCache
             }
             $index['names'][$name_key][] = $article_id;
         }
+    }
+
+    protected static function indexar_referencias_de_proveedores(array &$index, $user_id, $article_ids = null)
+    {
+        $consulta = DB::table('article_provider')->join('articles', 'articles.id', '=', 'article_provider.article_id')
+            ->join('providers', 'providers.id', '=', 'article_provider.provider_id')
+            ->where('articles.user_id', $user_id)->where('providers.user_id', $user_id)
+            ->whereNull('articles.deleted_at')->whereNotNull('article_provider.provider_code')
+            ->select('article_provider.id', 'article_provider.article_id', 'article_provider.provider_id', 'article_provider.provider_code');
+        $indexar = function ($filas) use (&$index) {
+            foreach ($filas as $fila) {
+                self::indexar_referencia($index, $fila->article_id, $fila->provider_id, $fila->provider_code);
+            }
+        };
+        if (is_null($article_ids)) {
+            $consulta->orderBy('article_provider.id')->chunk(2000, $indexar);
+        } else {
+            foreach (array_chunk($article_ids, 1000) as $lote) {
+                $indexar((clone $consulta)->whereIn('article_provider.article_id', $lote)->get());
+            }
+        }
+    }
+
+    protected static function indexar_referencia(array &$index, $article_id, $provider_id, $codigo)
+    {
+        if (is_null($codigo) || trim((string) $codigo) === '') {
+            return;
+        }
+        $ids = self::index_entry_to_ids($index['provider_codes'][$provider_id][(string) $codigo] ?? null);
+        $ids[] = (int) $article_id;
+        $index['provider_codes'][$provider_id][(string) $codigo] = array_values(array_unique($ids));
+    }
+
+    public static function agregar_referencia_proveedor($user_id, $article_id, $provider_id, $codigo)
+    {
+        $index = &self::indice_en_ram((int) $user_id);
+        self::indexar_referencia($index, $article_id, $provider_id, $codigo);
+        self::$runtime_dirty_by_key[self::cache_key($user_id)] = true;
     }
 
     /**
@@ -1677,7 +1725,7 @@ class ArticleIndexCache
         // is_null($article_id) porque el bloque de arriba ya no es mutuamente
         // excluyente con este por construccion de if/elseif -- el guard cumple el
         // mismo rol: solo se llega aca si nada matcheo (ni fue ambiguo) todavia.
-        if (is_null($article_id) && !empty($data['provider_code'])) {
+        if (is_null($article_id) && isset($data['provider_code']) && trim((string) $data['provider_code']) !== '') {
 
 
             $provider_code = trim((string)$data['provider_code']);
@@ -2247,7 +2295,7 @@ class ArticleIndexCache
         if (!$fake_eliminado) {
 
             // b) Si existe fake en provider_codes
-            if (!empty($article->provider_id) && !empty($article->provider_code)) {
+            if (!empty($article->provider_id) && !is_null($article->provider_code) && trim((string) $article->provider_code) !== '') {
 
                 $prov_id = $article->provider_id;
                 $prov_code = $article->provider_code;
@@ -2383,7 +2431,7 @@ class ArticleIndexCache
         }
 
         // provider_code
-        if (!empty($article->provider_id) && !empty($article->provider_code)) {
+        if (!empty($article->provider_id) && !is_null($article->provider_code) && trim((string) $article->provider_code) !== '') {
 
             if ($codigos_proveedor_repetidos) {
 
@@ -2403,7 +2451,7 @@ class ArticleIndexCache
                 $index['provider_codes'][$article->provider_id][$article->provider_code][] = $article->id;
             }
 
-        } elseif (empty($article->provider_id) && !empty($article->provider_code)) {
+        } elseif (empty($article->provider_id) && !is_null($article->provider_code) && trim((string) $article->provider_code) !== '') {
 
             /*
              * Codigo de proveedor SIN proveedor asignado (decision de Lucas, 24/8/2026):

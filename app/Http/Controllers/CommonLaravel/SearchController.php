@@ -15,6 +15,8 @@ use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
 use App\Models\CurrentAcount;
+use App\Models\Provider;
+use App\Services\Compras\CodigosDeProveedor;
 use App\Services\Filter\FilterHistoryService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
@@ -586,6 +588,11 @@ class SearchController extends Controller
         // Solo el modelo article tiene lógica de contexto (Vender busca artículos). Cualquier otro
         // modelo, o un contexto fuera de la whitelist, sigue el camino normal sin tocar nada de esto.
         $usar_contexto_vender = $model_name_param == 'article' && VenderSearchHelper::is_valid_contexto($contexto);
+        $es_compra = $model_name_param === 'article' && $contexto === 'provider_order';
+        $provider_id_compra = $es_compra ? (int) $request->input('provider_id', 0) : 0;
+        if ($provider_id_compra && !Provider::where('user_id', $this->userId())->where('id', $provider_id_compra)->exists()) {
+            return response()->json(['message' => 'El proveedor no pertenece a este comercio.'], 422);
+        }
 
         // Instancia temporal del modelo, usada solo para chequear existencia de columnas/relaciones
         // antes de armar la query (evita 500 por prop o relación inexistente).
@@ -656,11 +663,18 @@ class SearchController extends Controller
         // el SQL queda exactamente como antes.
         $name_extension_condition = $usar_contexto_vender ? VenderSearchHelper::variant_description_condition_callback() : null;
 
+        // Cambiar sólo cómo se evalúa esta propiedad conserva keyword_mode, conector y filtros.
+        $property_conditions = $es_compra ? [
+            'provider_code' => function ($sub, $keyword) use ($provider_id_compra) {
+                CodigosDeProveedor::filtrar($sub, $keyword, $provider_id_compra, true);
+            },
+        ] : [];
+
         // Grupo de coincidencia de texto (props + relaciones, con su keyword_mode y el conector),
         // delegado en GlobalSearchQueryHelper. Reemplaza el armado inline que antes mezclaba OR de
         // props con AND de palabras adentro de cada una (ver PHPDoc del helper para la lógica de
         // los dos modos y su combinación).
-        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions, $name_extension_condition);
+        $models = GlobalSearchQueryHelper::apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions, $name_extension_condition, $property_conditions);
 
         // AND de filtros extra, fuera del closure del grupo OR para que sean condiciones AND reales.
         // Delegado en ExtraFiltersHelper::apply (whitelist de operadores genéricos: '=', 'like',
@@ -815,7 +829,10 @@ class SearchController extends Controller
             //
             // Fase 1: consulta LIVIANA (mismo WHERE de arriba, sin ninguna relación pesada) solo
             // para decidir qué pares (artículo, variante) son el resultado y en qué orden.
-            $light_query = (clone $models)->select($table . '.id', 'name', 'provider_code', 'bar_code');
+            $light_query = (clone $models)->select($table . '.id', 'name', 'provider_code', 'bar_code', 'provider_id');
+            if ($es_compra) {
+                $light_query->with('providers');
+            }
 
             if (UserHelper::hasExtencion('article_variants')) {
                 $light_query->with(['article_variants' => function ($variant_query) {
@@ -824,6 +841,13 @@ class SearchController extends Controller
             }
 
             $light_articles = $light_query->get();
+            if ($es_compra) {
+                foreach ($light_articles as $article) {
+                    $article->provider_code = $provider_id_compra
+                        ? CodigosDeProveedor::codigo_para($article, $provider_id_compra)
+                        : trim((string) $article->provider_code . ' ' . $article->providers->map(function ($provider) { return $provider->pivot->provider_code; })->implode(' '));
+                }
+            }
 
             $descriptors = VenderSearchHelper::match_descriptors($light_articles, $query_value);
 
@@ -842,11 +866,14 @@ class SearchController extends Controller
 
             // El orden final es el de los descriptores (Fase 1), no el de whereIn (Fase 2, sin
             // garantía de orden): se arma buscando cada artículo completo por id.
-            $results = $page_descriptors->map(function ($descriptor) use ($full_articles) {
+            $results = $page_descriptors->map(function ($descriptor) use ($full_articles, $es_compra, $provider_id_compra) {
                             $article = $full_articles->get($descriptor->article_id);
 
                             if (is_null($article)) {
                                 return null;
+                            }
+                            if ($es_compra) {
+                                $article->provider_code = CodigosDeProveedor::codigo_para($article, $provider_id_compra);
                             }
 
                             $variant = is_null($descriptor->variant_id)

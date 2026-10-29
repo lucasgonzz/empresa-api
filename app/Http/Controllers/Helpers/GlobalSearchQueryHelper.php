@@ -56,7 +56,7 @@ class GlobalSearchQueryHelper
      *        siempre.
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    public static function apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions = null, $name_extension_condition = null)
+    public static function apply($models, $query_value, $props, $relation_props, $conector, $table, $model_instance, $extra_text_conditions = null, $name_extension_condition = null, array $property_conditions = [])
     {
         // Criterio de texto normalizado. Si viene vacío, la búsqueda puede ser solo por filtros
         // fijos (extra_filters): no tocamos la query.
@@ -164,7 +164,8 @@ class GlobalSearchQueryHelper
             $conector,
             $table,
             $extra_text_conditions,
-            $name_extension_condition
+            $name_extension_condition,
+            $property_conditions
         ) {
             // Hay grupo estricto si hay al menos una prop o relacion en modo 'todas'.
             $has_strict_group = !empty($strict_props) || !empty($strict_relations);
@@ -178,8 +179,17 @@ class GlobalSearchQueryHelper
             if ($has_strict_group) {
                 // Grupo estricto: estructura de hoy del buscador general. OR entre props/relaciones,
                 // con AND de todas las palabras adentro de cada una.
-                $add_strict_group = function ($grupo) use ($strict_props, $strict_relations, $keywords, $table, $extra_text_conditions, $name_extension_condition) {
+                $add_strict_group = function ($grupo) use ($strict_props, $strict_relations, $keywords, $table, $extra_text_conditions, $name_extension_condition, $property_conditions) {
                     foreach ($strict_props as $prop) {
+                        if (isset($property_conditions[$prop])) {
+                            $condicion = $property_conditions[$prop];
+                            $grupo->orWhere(function ($sub) use ($condicion, $keywords) {
+                                foreach ($keywords as $keyword) {
+                                    $sub->where(function ($palabra) use ($condicion, $keyword) { $condicion($palabra, $keyword); });
+                                }
+                            });
+                            continue;
+                        }
                         // La extension de `name` (variantes) solo se cuelga de la prop `name`.
                         $extension_de_la_prop = $prop === 'name' ? $name_extension_condition : null;
 
@@ -232,11 +242,16 @@ class GlobalSearchQueryHelper
             if ($has_distributed_group) {
                 // Grupo distribuido: estructura de Vender. AND de palabras, con OR entre props y
                 // relaciones del "pozo comun" adentro de cada palabra.
-                $add_distributed_group = function ($grupo) use ($distributed_props, $distributed_relations, $keywords, $table, $extra_text_conditions, $name_extension_condition) {
+                $add_distributed_group = function ($grupo) use ($distributed_props, $distributed_relations, $keywords, $table, $extra_text_conditions, $name_extension_condition, $property_conditions) {
                     foreach ($keywords as $keyword) {
-                        $grupo->where(function ($sub) use ($distributed_props, $distributed_relations, $keyword, $keywords, $table, $extra_text_conditions, $name_extension_condition) {
+                        $grupo->where(function ($sub) use ($distributed_props, $distributed_relations, $keyword, $keywords, $table, $extra_text_conditions, $name_extension_condition, $property_conditions) {
                             foreach ($distributed_props as $prop) {
-                                self::apply_single_keyword($sub, $prop, $keyword, $table);
+                                if (isset($property_conditions[$prop])) {
+                                    $condicion = $property_conditions[$prop];
+                                    $sub->orWhere(function ($palabra) use ($condicion, $keyword) { $condicion($palabra, $keyword); });
+                                } else {
+                                    self::apply_single_keyword($sub, $prop, $keyword, $table);
+                                }
                             }
 
                             foreach ($distributed_relations as $relation_entry) {
