@@ -9,7 +9,8 @@ use App\Http\Controllers\Helpers\currentAcount\CuentaCorrientePeriodoHelper;
 use App\Models\User;
 use Carbon\Carbon;
 use fpdf;
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+// Otros comprobantes pueden haber cargado FPDF en este mismo proceso.
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 class CurrentAcountPdf extends fpdf {
     
