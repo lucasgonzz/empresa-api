@@ -44,8 +44,8 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
     /** @var int */
     public $timeout = 60;
 
-    /** Ruta del admin (contrato C2.1). */
-    const RUTA = '/api/inbound/ia-imagenes';
+    /** Ruta del admin (contrato C2.1), relativa a su `/api`. */
+    const RUTA = '/inbound/ia-imagenes';
 
     /** @var int */
     protected $ia_imagen_pedido_id;
@@ -84,7 +84,7 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
             return;
         }
 
-        $admin_url   = rtrim((string) config('services.admin_api.url'), '/');
+        $admin_url   = self::base_del_admin();
         $client_uuid = (string) config('services.admin_api.client_uuid');
 
         if ($admin_url === '' || $client_uuid === '') {
@@ -104,7 +104,7 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
         $response = Http::withHeaders($headers)
             ->timeout(20)
             ->withOptions(['allow_redirects' => false])
-            ->post($admin_url . self::RUTA, [
+            ->post($admin_url . '/api' . self::RUTA, [
                 'client_uuid'   => $client_uuid,
                 'uuid'          => $pedido->uuid,
                 'prompt'        => $pedido->prompt,
@@ -157,6 +157,24 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
         }
 
         throw new \RuntimeException('El admin contestó HTTP ' . $status . ' al pedido de imagen ' . $pedido->uuid);
+    }
+
+    /**
+     * La base del admin SIN el `/api` del final: hay clientes con ADMIN_API_URL cargada con `/api` y otros
+     * sin él (el mismo criterio que CentralProductFactsClient), y pegarle `/api/inbound/…` a una que ya lo
+     * trae daba `/api/api/…`, un 404 que dejaba el pedido como `no_disponible`. '' si no está cargada.
+     *
+     * @return string
+     */
+    public static function base_del_admin(): string
+    {
+        $url = rtrim(trim((string) config('services.admin_api.url')), '/');
+
+        if (substr($url, -4) === '/api') {
+            $url = substr($url, 0, -4);
+        }
+
+        return $url;
     }
 
     /**

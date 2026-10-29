@@ -475,6 +475,31 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
         }
     }
 
+    public function test_la_url_del_admin_con_api_al_final_no_se_duplica()
+    {
+        foreach (['https://admin.ia-app.test/api', 'https://admin.ia-app.test/api/', 'https://admin.ia-app.test'] as $base) {
+
+            config(['services.admin_api.url' => $base]);
+
+            Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
+            Http::fake(['admin.ia-app.test/*' => Http::response(['ok' => true, 'estado' => 'pendiente'], 201)]);
+
+            list($pedido) = $this->pedido_pendiente();
+            $pedido->enviado_al_admin_en = null;
+            $pedido->save();
+
+            (new \App\Jobs\EnviarPedidoDeImagenAlAdminJob($pedido->id))->handle();
+
+            $urls = [];
+            foreach (Http::recorded() as $par) {
+                $urls[] = $par[0]->url();
+            }
+
+            $this->assertSame(['https://admin.ia-app.test/api/inbound/ia-imagenes'], $urls, 'Con la base "' . $base . '".');
+            $this->assertNotNull($pedido->fresh()->enviado_al_admin_en);
+        }
+    }
+
     public function test_pasado_el_tope_diario_no_se_crea_el_pedido()
     {
         config(['services.ia_imagenes.tope_diario' => 2]);
