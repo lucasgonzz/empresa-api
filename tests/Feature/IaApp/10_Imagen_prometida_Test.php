@@ -36,6 +36,13 @@ use Illuminate\Support\Str;
  *   7. «La pedí; aparece acá» cuenta si la persona pidió la imagen en este turno o en el anterior, y
  *      no cuenta si la vuelta anterior ya la había pedido de verdad.
  *   8. El mismo texto por el sistema o por WhatsApp queda intacto (la guarda es solo de la app).
+ *
+ * Re-revisión de abf71266:
+ *   9. 🔴 «Placas de durlock» y «la placa de yeso está en camino» (catálogo de Ferre Total) no disparan:
+ *      placa y banner cuentan solo con contexto de redes o de promo.
+ *  10. Una pregunta final que no es por la imagen («¿La confirmás?») no evita el reintento.
+ *  11. Con la imagen de la vuelta anterior pedida de verdad, «hacé otra igual pero vertical» es un pedido
+ *      nuevo: si el texto dice que se está generando sin pedir_imagen, la guarda actúa.
  */
 class Imagen_prometida_Test extends IaAppTestCase
 {
@@ -466,5 +473,73 @@ class Imagen_prometida_Test extends IaAppTestCase
 
         $this->assertSame($texto, $respuesta);
         $this->assertCount(1, $this->pedidos_al_modelo(), 'Sin reintento fuera de la app.');
+    }
+
+    /**
+     * 🔴 El catálogo de un corralón: la consulta de stock de placas de durlock no es un pedido de imagen,
+     * y «están en camino» habla de las placas, no de una imagen. Sin reintento (sería una vuelta a Pro).
+     */
+    public function test_las_placas_de_durlock_con_consultar_stock_no_reintentan()
+    {
+        $stock = [
+            'stop_reason' => 'tool_use',
+            'content'     => [[
+                'type'  => 'tool_use',
+                'id'    => 'toolu_' . Str::random(8),
+                'name'  => 'consultar_stock_de_articulos',
+                'input' => ['busqueda' => 'placa durlock 12mm'],
+            ]],
+            'usage'       => ['input_tokens' => 10, 'output_tokens' => 5],
+        ];
+
+        $texto = 'No tenés stock cargado de placas de durlock de 12mm. Las placas de durlock están en camino si ya las pediste a Distribuidora Norte.';
+
+        $assistant = $this->conversar('placas de durlock 12mm cuántas hay', [$stock, $this->end_turn($texto)]);
+
+        $this->assertCount(2, $this->pedidos_al_modelo(), 'La herramienta y el texto: sin reintento.');
+        $this->assertSame($texto, $assistant->contenido);
+
+        Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
+        $this->como_otro_cliente();
+
+        $yeso = $this->conversar('quiero una placa de durlock', [$this->end_turn('La placa de yeso está en camino.')]);
+
+        $this->assertCount(1, $this->pedidos_al_modelo(), 'Sin reintento.');
+        $this->assertSame('La placa de yeso está en camino.', $yeso->contenido);
+    }
+
+    public function test_una_pregunta_que_no_es_por_la_imagen_no_evita_el_reintento()
+    {
+        $assistant = $this->conversar('Generá una imagen cuadrada del chaleco de polar azul', [
+            $this->end_turn('Te preparé una promoción por WhatsApp para 25 clientes. ¿La confirmás?'),
+            $this->pide_la_imagen(),
+            $this->end_turn('La pedí; aparece acá cuando esté lista.'),
+        ]);
+
+        $this->assertCount(3, $this->pedidos_al_modelo());
+        $this->assertSame(1, IaImagenPedido::where('ai_message_id', $assistant->id)->count());
+    }
+
+    public function test_si_la_vuelta_anterior_ya_la_pidio_y_ahora_pide_otra_la_guarda_actua()
+    {
+        $conversation = $this->conversacion(['titulo' => 'Otra versión']);
+
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'estado' => 'listo', 'canal' => 'app',
+            'contenido' => 'Haceme una imagen cuadrada para Instagram del chaleco']);
+        $anterior = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'estado' => 'listo', 'canal' => 'app',
+            'contenido' => 'La pedí; aparece acá cuando esté lista.']);
+        IaImagenPedido::create([
+            'uuid' => (string) Str::uuid(), 'user_id' => $this->dueno->id, 'ai_message_id' => $anterior->id,
+            'prompt' => 'Placa cuadrada del chaleco', 'tamano' => 'cuadrada', 'estado' => 'lista',
+        ]);
+
+        $assistant = $this->conversar_en($conversation, 'hacé otra igual pero vertical', [
+            $this->end_turn('La imagen vertical se está generando.'),
+            $this->end_turn('Listo, la imagen vertical se está generando.'),
+        ]);
+
+        $this->assertCount(2, $this->pedidos_al_modelo(), 'Un solo reintento.');
+        $this->assertSame(ImagenPrometidaIaHelper::TEXTO_HONESTO, $assistant->contenido);
+        $this->assertSame(0, IaImagenPedido::where('ai_message_id', $assistant->id)->count());
     }
 }

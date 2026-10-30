@@ -13,6 +13,11 @@ use PHPUnit\Framework\TestCase;
  * frases que el revisor probó contra el primer arreglo (c49fb2e5): las que tienen que disparar y, sobre
  * todo, las que NO (gráficos, diseños de PDF, historias de compras, presupuestos y ventas con «la imagen»,
  * fotos del catálogo, ofrecimientos y preguntas del asistente). Sin base ni red: el helper es puro.
+ *
+ * Re-revisión de abf71266: «placa» y «banner» son productos de ferreterías y corralones (placa de yeso,
+ * de durlock, banner con ojales) y cuentan solo con contexto de redes o de promo; la pregunta que evita el
+ * reintento tiene que ser por la imagen; y con una imagen ya pedida en la vuelta anterior, solo el estado
+ * de ESA no cuenta («hacé otra igual pero vertical» es un pedido nuevo).
  */
 class Imagen_prometida_frases_Test extends TestCase
 {
@@ -39,15 +44,21 @@ class Imagen_prometida_frases_Test extends TestCase
             'imagen para redes del chaleco porfa',
             'me armás un flyer?',
             'Te pido una imagen para Instagram',
-            'podés hacerme una placa?',
             'haceme una foto para instagram del chaleco',
             'Hacé un flyer de la promo',
             'Generame un flyer del chaleco',
             'creame una imagen de la vidriera del local',
             'haceme una imagen de la sucursal para Instagram',
-            'quiero un banner para la tienda',
             'Haceme una imagen del chaleco, mandásela a mis clientes por WhatsApp',
             'Haceme un arte para redes',
+            // Placa y banner, con contexto de redes o de promo en la misma frase.
+            'haceme una placa para Instagram',
+            'armame un banner para la promo',
+            'necesito una placa para el estado de WhatsApp',
+            'una placa para historias con el chaleco',
+            // Imagen y flyer no necesitan contexto.
+            'quiero un flyer de la promo',
+            'necesito una imagen del chaleco',
         ]);
     }
 
@@ -100,6 +111,19 @@ class Imagen_prometida_frases_Test extends TestCase
             'hacé la factura',
             'el sistema genera una imagen?',
             'hace un rato te mandé una foto',
+            // 🔴 Placas y banners del catálogo de ferreterías y corralones (re-revisión de abf71266).
+            'Placa de yeso',
+            'placa de durlock 12mm precio',
+            'placas para cielorraso cuántas hay',
+            'quiero una placa de durlock',
+            'banner con ojales precio',
+            'podés hacerme una placa?',
+            'quiero un banner para la tienda',
+            'necesito unas placas de durlock para el lunes',
+            'tenés placas de yeso con descuento?',
+            'pasame el precio de la placa por whatsapp',
+            'mandame una placa de 9mm',
+            'quiero un banner de 2x1 con ojales',
         ]);
     }
 
@@ -119,6 +143,11 @@ class Imagen_prometida_frases_Test extends TestCase
             'La imagen va a aparecer acá.',
             'La imagen está en camino.',
             'Te hice la imagen del chaleco.',
+            // Placa y banner con contexto de redes o de promo.
+            'Te armé la placa para Instagram.',
+            'La placa para la promo se está generando.',
+            'Ya pedí el banner para las redes.',
+            'Te diseñé una placa con el 20% off.',
         ]);
     }
 
@@ -178,6 +207,12 @@ class Imagen_prometida_frases_Test extends TestCase
             // Sin un pedido de imagen en este turno o el anterior, «la pedí» no dice qué se pidió.
             'La pedí; aparece acá cuando esté lista.',
             'Listo, la pedí. Mientras, te cuento: el chaleco se vendió 12 veces este mes.',
+            // 🔴 Placas y banners que son productos (re-revisión de abf71266).
+            'Ya pedí las placas de durlock a Distribuidora Norte.',
+            'La placa de yeso está en camino.',
+            'Las placas de durlock de 12mm están en camino: llegan el viernes.',
+            'Te armé el banner con ojales.',
+            'Ya pedí los banners con ojales por WhatsApp a Distribuidora Norte.',
         ]);
     }
 
@@ -267,13 +302,78 @@ class Imagen_prometida_frases_Test extends TestCase
         );
     }
 
-    public function test_termina_preguntando()
+    public function test_termina_preguntando_por_la_imagen()
     {
-        $this->assertTrue(ImagenPrometidaIaHelper::termina_preguntando('Dale. ¿La querés cuadrada o vertical?'));
-        $this->assertTrue(ImagenPrometidaIaHelper::termina_preguntando('¿Qué producto tiene que mostrar? Decime y la pido'));
-        $this->assertFalse(ImagenPrometidaIaHelper::termina_preguntando('¿Cuadrada? Listo, la pedí.'));
-        $this->assertFalse(ImagenPrometidaIaHelper::termina_preguntando('Te preparé una promoción por WhatsApp.'));
-        $this->assertFalse(ImagenPrometidaIaHelper::termina_preguntando(''));
+        foreach ([
+            'Dale. ¿La querés cuadrada o vertical?',
+            '¿Qué producto tiene que mostrar? Decime y la pido',
+            'Dale. ¿Qué texto querés que lleve?',
+            '¿Querés que la imagen tenga el logo?',
+            'Perfecto. ¿Con qué colores?',
+            '¿Para historia o para el feed?',
+        ] as $texto) {
+            $this->assertTrue(ImagenPrometidaIaHelper::termina_preguntando_por_la_imagen($texto), $texto);
+        }
+
+        // 🔴 Una pregunta final que no es por la imagen no alcanza (re-revisión de abf71266).
+        foreach ([
+            'Te preparé una promoción por WhatsApp para 25 clientes. ¿La confirmás?',
+            '¿Algo más?',
+            '¿Querés que la mande? Decime.',
+            '¿Cuadrada? Listo, la pedí.',
+            'Te preparé una promoción por WhatsApp.',
+            '',
+        ] as $texto) {
+            $this->assertFalse(ImagenPrometidaIaHelper::termina_preguntando_por_la_imagen($texto), $texto);
+        }
+    }
+
+    public function test_otra_version_de_la_imagen()
+    {
+        foreach ([
+            'hacé otra igual pero vertical', 'haceme otra más clara', 'Haceme otra.', 'otra pero con fondo blanco',
+            'hacela vertical', '¿y en vertical?', 'quiero otra versión', 'generame otra con el logo', 'dame otra parecida',
+            'otra igual pero sin el texto', 'hacemela más grande',
+        ] as $pedido) {
+            $this->assertTrue(ImagenPrometidaIaHelper::pide_otra_version($pedido), $pedido);
+        }
+
+        foreach ([
+            'quiero otra cosa: ¿cuánto vendí hoy?', '¿Cuánto vendí hoy?', 'mostrame otra vez las ventas',
+            'haceme otra venta igual a la de ayer', 'haceme otro presupuesto', 'dame otro cliente', 'cuadrada',
+            'otra consulta: ¿hay stock de chalecos?',
+        ] as $pedido) {
+            $this->assertFalse(ImagenPrometidaIaHelper::pide_otra_version($pedido), $pedido);
+        }
+    }
+
+    public function test_con_una_ya_pedida_solo_su_estado_no_cuenta()
+    {
+        // El estado de la imagen que la vuelta anterior pidió de verdad no es una promesa sin pedido…
+        foreach ([
+            'La pedí; aparece acá cuando esté lista.',
+            'Vendiste $50.000 hoy. La imagen se está generando.',
+            'La imagen está en camino.',
+            'Ya pedí la imagen.',
+        ] as $texto) {
+            $this->assertFalse(ImagenPrometidaIaHelper::afirma_una_imagen($texto, false, true), $texto);
+            $this->assertTrue(ImagenPrometidaIaHelper::afirma_una_imagen($texto, true, false), 'Sin la ya pedida, sí: ' . $texto);
+        }
+
+        // …pero otra imagen, o decir que ya está hecha, sí.
+        foreach ([
+            'La imagen vertical se está generando.',
+            'La nueva imagen se está generando.',
+            'Te hice otra imagen más clara.',
+            'Te hice la imagen del chaleco.',
+        ] as $texto) {
+            $this->assertTrue(ImagenPrometidaIaHelper::afirma_una_imagen($texto, false, true), $texto);
+        }
+
+        $this->assertSame(
+            "Vendiste \$50.000 hoy. La imagen se está generando.\n\n" . ImagenPrometidaIaHelper::TEXTO_HONESTO,
+            ImagenPrometidaIaHelper::sin_lo_prometido("Vendiste \$50.000 hoy. La imagen se está generando.\nTe hice otra imagen más clara.", false, ImagenPrometidaIaHelper::TEXTO_HONESTO, true)
+        );
     }
 
     public function test_las_herramientas_de_otra_funcion_excluyen_la_guarda()

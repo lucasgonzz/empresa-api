@@ -1317,9 +1317,12 @@ class AsistenteIaService
      * app-ia-imagen-prometida): no llamó a pedir_imagen ni quedó ningún pedido de este turno, no usó
      * herramientas de otra función (las imágenes del catálogo, un gráfico, una tabla, un diseño de PDF,
      * una venta, un presupuesto, el envío de un comprobante), y el texto la da por pedida o —con
-     * $mirar_el_pedido— la persona pidió claramente generarla y el modelo no contestó preguntando lo que
-     * falta (eso es lo correcto: no se reintenta). Si la vuelta anterior del asistente ya la pidió y la
-     * persona no pide otra, lo que el texto diga de «la imagen» habla de esa: no es una promesa sin pedido.
+     * $mirar_el_pedido— la persona pidió claramente generarla y el modelo no contestó preguntando por un
+     * dato de la imagen (eso es lo correcto: no se reintenta; cualquier otra pregunta final, como «¿La
+     * confirmás?», no alcanza). Si la vuelta anterior del asistente ya la pidió y la persona no pide otra,
+     * las oraciones que solo dicen en qué estado está esa imagen («la pedí; aparece acá…», «se está
+     * generando») no son una promesa sin pedido; todo lo demás se sigue mirando, y si la persona pide otra
+     * («hacé otra igual pero vertical») la guarda actúa entera.
      *
      * @param  string  $texto
      * @param  array<int, string>  $herramientas_pedidas
@@ -1344,33 +1347,31 @@ class AsistenteIaService
 
         $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
 
-        if ($contexto['ya_estaba_pedida'] && ! $contexto['pidio_ahora']) {
-
-            return false;
-        }
-
-        if (ImagenPrometidaIaHelper::afirma_una_imagen($texto, $contexto['hubo_pedido'])) {
+        if (ImagenPrometidaIaHelper::afirma_una_imagen($texto, $contexto['hubo_pedido'], $contexto['hay_una_ya_pedida'])) {
 
             return true;
         }
 
         return $mirar_el_pedido
             && $contexto['pidio_ahora']
-            && ! ImagenPrometidaIaHelper::termina_preguntando($texto);
+            && ! ImagenPrometidaIaHelper::termina_preguntando_por_la_imagen($texto);
     }
 
     /**
      * Qué se sabe del pedido de imagen alrededor de este turno (misión app-ia-imagen-prometida):
-     *   - `pidio_ahora`: el pedido que se está contestando pide generar una imagen;
+     *   - `pidio_ahora`: el pedido que se está contestando pide generar una imagen, o —si la vuelta
+     *     anterior pidió una de verdad— otra versión de esa («hacé otra igual pero vertical»);
      *   - `hubo_pedido`: ese pedido o el inmediatamente anterior de la persona la pidieron. A «Haceme una
      *     imagen» el modelo pregunta «¿cuadrada o vertical?», la persona contesta «cuadrada», y ahí «la
      *     pedí; aparece acá cuando esté lista» solo se entiende por el pedido de antes;
      *   - `ya_estaba_pedida`: alguna vuelta del asistente posterior a ese pedido anterior sí la pidió (hay
-     *     un IaImagenPedido colgado de ella). Entonces el pedido de antes ya está atendido y no cuenta.
+     *     un IaImagenPedido colgado de ella). Entonces el pedido de antes ya está atendido y no cuenta;
+     *   - `hay_una_ya_pedida`: ya_estaba_pedida y la persona no pidió otra: lo que el texto diga del estado
+     *     de «la imagen» habla de esa (ver ImagenPrometidaIaHelper::afirma_una_imagen()).
      *
      * @param  AiConversation  $conversation
      * @param  AiMessage  $assistant_message
-     * @return array{pidio_ahora: bool, hubo_pedido: bool, ya_estaba_pedida: bool}
+     * @return array{pidio_ahora: bool, hubo_pedido: bool, ya_estaba_pedida: bool, hay_una_ya_pedida: bool}
      */
     protected function contexto_de_la_imagen(AiConversation $conversation, AiMessage $assistant_message): array
     {
@@ -1403,10 +1404,16 @@ class AsistenteIaService
                 && IaImagenPedido::whereIn('ai_message_id', $respuestas_desde_entonces)->exists();
         }
 
+        /* «Hacé otra igual pero vertical» solo se entiende si la vuelta anterior pidió una imagen. */
+        if (! $pidio_ahora && $ya_estaba_pedida && ! is_null($actual)) {
+            $pidio_ahora = ImagenPrometidaIaHelper::pide_otra_version((string) $actual->contenido);
+        }
+
         return [
-            'pidio_ahora'      => $pidio_ahora,
-            'hubo_pedido'      => $pidio_ahora || ($pidio_antes && ! $ya_estaba_pedida),
-            'ya_estaba_pedida' => $ya_estaba_pedida,
+            'pidio_ahora'       => $pidio_ahora,
+            'hubo_pedido'       => $pidio_ahora || ($pidio_antes && ! $ya_estaba_pedida),
+            'ya_estaba_pedida'  => $ya_estaba_pedida,
+            'hay_una_ya_pedida' => $ya_estaba_pedida && ! $pidio_ahora,
         ];
     }
 
@@ -1453,7 +1460,7 @@ class AsistenteIaService
                 'texto'                => mb_substr($texto, 0, 300),
             ]);
 
-            return ImagenPrometidaIaHelper::sin_lo_prometido($texto, $contexto['hubo_pedido']);
+            return ImagenPrometidaIaHelper::sin_lo_prometido($texto, $contexto['hubo_pedido'], ImagenPrometidaIaHelper::TEXTO_HONESTO, $contexto['hay_una_ya_pedida']);
         }
 
         if (! ImagenPrometidaIaHelper::afirma_una_imagen($texto, true)) {
