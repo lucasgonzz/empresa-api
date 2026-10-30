@@ -78,7 +78,10 @@ class Envios_a_clientes_en_el_prompt_y_el_canal_Test extends EmpresaTestCase
 
         $directo = $this->prompt(ConfianzaDelAgenteIaHelper::DIRECTO);
 
-        $this->assertStringContainsString('NUEVE cosas siguen dejando tarjeta SIEMPRE', $directo);
+        // El número cuenta las que siguen dejando tarjeta: nueve con los tres envíos de esta misión, doce desde
+        // agente-mejoras-uso-real (29/10/2026: compra sin artículos, márgenes que pierden el precio fijo o lo
+        // bajan, cambio de proveedor con proveedor nuevo). Lo que este test cuida es que los envíos estén.
+        $this->assertStringContainsString('DOCE cosas siguen dejando tarjeta SIEMPRE', $directo);
         $this->assertStringContainsString('los tres ENVÍOS A CLIENTES', $directo);
         // Por WhatsApp, la lista de lo que siempre espera el sí también los nombra.
         $this->assertStringContainsString('mandarle algo a un cliente: un comprobante', $directo);
