@@ -3,8 +3,12 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\MasiveUpdateHelper;
+use App\Http\Controllers\Helpers\article\PermisoStockPorSucursalHelper;
+use App\Http\Controllers\Helpers\article\StockMinimoMaximoEnMasivaHelper;
 use App\Http\Controllers\Helpers\article\precios\PrecioFinalEnMasivaHelper;
+use App\Models\Address;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Article;
@@ -12,6 +16,7 @@ use App\Models\Iva;
 use App\Services\AuditLog\AuditContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Actualización masiva de artículos propuesta por el asistente de IA (misión
@@ -123,6 +128,35 @@ class PropuestaActualizacionMasivaIaHelper
         'disponible_tienda_nube'      => ['prop' => 'disponible_tienda_nube',         'etiqueta' => 'Disponible en Tienda Nube'],
     ];
 
+    // -------------------------------------------------------------------------------------------
+    // Stock mínimo y máximo (misión agente-mejoras-uso-real, E2 punto 1, 29/10/2026)
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * El campo de la IA para el stock mínimo. Pablo (Ferre Total, CONV 14) pidió «a todos los clavos
+     * punta París poneles stock mínimo 10» y el agente le dijo que la masiva no lo admitía y le
+     * ofreció setear el STOCK en 10 (un ingreso de mercadería real). Ver cambio_de_minimo_o_maximo().
+     */
+    const CAMPO_STOCK_MINIMO = 'stock_minimo';
+
+    /** El campo de la IA para el stock máximo (solo existe por sucursal, ver cambio_de_minimo_o_maximo()). */
+    const CAMPO_STOCK_MAXIMO = 'stock_maximo';
+
+    /**
+     * El permiso de la pantalla para ver y editar el mínimo y el máximo
+     * (`can('article.stock_min_max')` de EditAddressStock.vue; lo describe PermisosCatalogoHelper).
+     */
+    const PERMISO_MINIMO_Y_MAXIMO = 'article.stock_min_max';
+
+    /**
+     * Lo que dice la tarjeta del mínimo: las alertas de "Stock mínimo" salen del reporte nocturno de
+     * inventario (InventoryPerformanceHelper), así que el mínimo nuevo no aparece en el acto.
+     */
+    const AVISO_DEL_MINIMO = 'El stock mínimo nuevo se ve en Alertas en el próximo reporte (04:00) o tocando Actualizar en Alertas.';
+
+    /** Lo que dice la persona para "en todas las sucursales" (ya normalizado, ver normalizar_sucursal()). */
+    const TODAS_LAS_SUCURSALES = ['todas', 'todos', 'todas las sucursales', 'todos los depositos', 'todas las sucursales y depositos', 'cada sucursal', 'en todas', 'en todas las sucursales'];
+
     /**
      * Herramienta proponer_actualizacion_masiva.
      *
@@ -162,11 +196,22 @@ class PropuestaActualizacionMasivaIaHelper
             return $traducido;
         }
 
-        $cambios_traducidos = self::traducir_cambios($cambios, $contexto->owner_id);
+        $cambios_traducidos = self::traducir_cambios($cambios, $contexto->owner_id, $contexto);
 
         if (RespuestaDeCargaIa::es_negativa($cambios_traducidos)) {
 
             return $cambios_traducidos;
+        }
+
+        /*
+         * El mínimo o el máximo por sucursal se expanden en un renglón del update_form por sucursal,
+         * así que ese update_form ya no está alineado uno a uno con los cambios. El único análisis que
+         * reescribe el update_form por posición es el del precio (precio_manual / precio_final): con
+         * uno de esos en la misma tarjeta, va aparte.
+         */
+        if (self::trae_minimo_o_maximo($cambios) && self::trae_cambio_de_precio($cambios)) {
+
+            return RespuestaDeCargaIa::error('El stock mínimo o máximo va en una tarjeta aparte de un cambio de precio: primero uno y después el otro.');
         }
 
         $total = FiltroDeArticulosIaHelper::contar($contexto->owner_id, $traducido['filter_form'], $traducido['imagen']);
@@ -232,6 +277,18 @@ class PropuestaActualizacionMasivaIaHelper
             $avisos[] = $renglon['valor'];
         }
 
+        /*
+         * Stock mínimo / máximo (misión agente-mejoras-uso-real, E2): los renglones de atención de
+         * las sucursales donde algún alcanzado no tiene stock repartido (ahí no se le pone el mínimo,
+         * ver StockMinimoMaximoEnMasivaHelper) y los avisos que trajo la traducción (sucursales que la
+         * persona no puede tocar).
+         */
+        foreach (self::renglones_de_minimo_o_maximo($contexto, $traducido, $cambios_traducidos) as $renglon) {
+
+            $renglones[] = $renglon;
+            $avisos[] = $renglon['valor'];
+        }
+
         $datos = [
             'filtros'          => $filtros,
             'filter_form'      => $traducido['filter_form'],
@@ -258,6 +315,13 @@ class PropuestaActualizacionMasivaIaHelper
             $datos[self::CLAVE_EJEMPLOS] = $ejemplos;
 
             $aviso_de_la_tarjeta = self::AVISO . ' ' . self::texto_de_ejemplos($ejemplos) . '.';
+        }
+
+        // Con un mínimo o un máximo, dónde se ve: las alertas salen del reporte nocturno.
+        if (self::trae_minimo_o_maximo($cambios)) {
+
+            $aviso_de_la_tarjeta .= ' ' . self::AVISO_DEL_MINIMO;
+            $avisos[] = self::AVISO_DEL_MINIMO;
         }
 
         $creada = AccionesIaHelper::crear(
@@ -801,6 +865,13 @@ class PropuestaActualizacionMasivaIaHelper
             throw new AccionIaException(422, 'Esta tarjeta no tiene ningún cambio para aplicar. Pedímelo de nuevo.');
         }
 
+        /*
+         * El mínimo y el máximo se re-verifican sobre QUIEN CONFIRMA (misión agente-mejoras-uso-real,
+         * E2): el permiso de la pantalla y, por sucursal, el mismo recorte que la edición de stock por
+         * sucursal. Una tarjeta vieja no trae estas claves y no pasa por acá.
+         */
+        self::verificar_minimo_o_maximo_al_ejecutar($contexto, $update_form);
+
         $persona = $contexto->persona;
 
         $auth_user_id = !is_null($persona) ? (int) $persona->id : (int) $contexto->conversation->auth_user_id;
@@ -1157,14 +1228,23 @@ class PropuestaActualizacionMasivaIaHelper
      * Traduce los cambios de la IA (`[{campo, operacion, valor, redondear}]`) al update_form de
      * MasiveUpdateHelper::apply_form_change, que es el mismo que arma el modal de la pantalla.
      *
+     * Misión agente-mejoras-uso-real (E2, 29/10/2026): `stock_minimo` y `stock_maximo` (ver
+     * cambio_de_minimo_o_maximo()). Con 2 o más sucursales un cambio de esos puede dar VARIOS
+     * renglones del update_form (uno por sucursal) y uno solo en los legibles; por eso el resultado
+     * trae además `minimos_y_maximos` (las sucursales de cada uno) y `avisos_de_minimo`. Sin esos dos
+     * campos, el resultado es exactamente el de antes.
+     *
      * @param  array  $cambios
      * @param  int  $owner_id
+     * @param  ContextoDeCargaIa|null  $contexto  Para el mínimo y el máximo (permisos y sucursales). Opcional.
      * @return array  ['update_form' => [...], 'legibles' => [...]] o la respuesta negativa.
      */
-    public static function traducir_cambios(array $cambios, $owner_id)
+    public static function traducir_cambios(array $cambios, $owner_id, $contexto = null)
     {
         $update_form = [];
         $legibles = [];
+        $minimos_y_maximos = [];
+        $avisos_de_minimo = [];
 
         foreach ($cambios as $cambio) {
 
@@ -1176,6 +1256,35 @@ class PropuestaActualizacionMasivaIaHelper
             $campo = mb_strtolower(EntradaDeCargaIa::texto($cambio, 'campo'));
             $operacion = mb_strtolower(EntradaDeCargaIa::texto($cambio, 'operacion'));
             $valor = EntradaDeCargaIa::valor($cambio, 'valor');
+
+            /*
+             * El mínimo y el máximo pueden ser un renglón del update_form o varios (uno por
+             * sucursal): van por su lado y siguen con el próximo cambio.
+             */
+            if ($campo === self::CAMPO_STOCK_MINIMO || $campo === self::CAMPO_STOCK_MAXIMO) {
+
+                $traducido = self::cambio_de_minimo_o_maximo($campo, $operacion, $valor, EntradaDeCargaIa::texto($cambio, 'sucursal'), $owner_id, $contexto);
+
+                if (RespuestaDeCargaIa::es_negativa($traducido)) {
+
+                    return $traducido;
+                }
+
+                foreach ($traducido['forms'] as $form) {
+
+                    $update_form[] = $form;
+                }
+
+                $legibles[] = $traducido['texto'];
+                $minimos_y_maximos[] = $traducido['sucursales'];
+
+                foreach ($traducido['avisos'] as $aviso) {
+
+                    $avisos_de_minimo[] = $aviso;
+                }
+
+                continue;
+            }
 
             if ($campo === self::CAMPO_PRECIO_FINAL) {
 
@@ -1218,10 +1327,420 @@ class PropuestaActualizacionMasivaIaHelper
             return RespuestaDeCargaIa::faltan(['qué cambio hay que aplicarles a esos artículos']);
         }
 
-        return [
+        $resultado = [
             'update_form' => $update_form,
             'legibles'    => $legibles,
         ];
+
+        // Solo con un mínimo o un máximo: sin ellos, la forma de siempre.
+        if (count($minimos_y_maximos)) {
+
+            $resultado['minimos_y_maximos'] = $minimos_y_maximos;
+            $resultado['avisos_de_minimo'] = $avisos_de_minimo;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * El stock mínimo o el máximo de los alcanzados (misión agente-mejoras-uso-real, E2 punto 1).
+     *
+     * Dónde vive depende de cuántas sucursales tiene el negocio (FichaArticuloIaHelper::
+     * tiene_depositos(), el mismo criterio de la interfaz: "las sucursales se muestran desde la
+     * segunda"):
+     *
+     *  - 0 o 1 sucursal: en `articles.stock_min`, por la rama genérica `set_` de
+     *    MasiveUpdateHelper::apply_form_change() (queda en el historial y se revierte como cualquier
+     *    columna). El máximo solo si `articles` tiene una columna `stock_max` (hoy no la tiene: el
+     *    máximo existe solo por sucursal) — si no, se dice.
+     *  - 2 o más: en el pivote de cada sucursal (`stock_min_sucursal_{id}` / `stock_max_sucursal_{id}`,
+     *    ver StockMinimoMaximoEnMasivaHelper). La sucursal va por nombre o "todas"; sin sucursal se
+     *    pregunta con la lista. Cada sucursal tiene que poder tocarla la persona
+     *    (PermisoStockPorSucursalHelper, el recorte de la pantalla): con "todas", las que no puede se
+     *    dejan afuera y se avisa; nombrada una que no puede, error.
+     *
+     * Siempre exige `article.stock_min_max` (el permiso de la pantalla para el mínimo y el máximo) y
+     * la operación es solo setear, con un entero mayor o igual a 0 (las dos columnas son INT).
+     *
+     * 🔴 NUNCA es el `stock`: el stock se cambia con un movimiento de mercadería real. Por eso es un
+     * campo aparte y la descripción de la herramienta le prohíbe al modelo ofrecerlo como reemplazo.
+     *
+     * @param  string  $campo  stock_minimo | stock_maximo
+     * @param  string  $operacion
+     * @param  mixed  $valor
+     * @param  string  $sucursal  El nombre de la sucursal, "todas" o vacío.
+     * @param  int  $owner_id
+     * @param  ContextoDeCargaIa|null  $contexto
+     * @return array  ['forms' => [...], 'texto' => string, 'sucursales' => [{address_id, nombre}],
+     *                 'avisos' => [...]] o la respuesta negativa.
+     */
+    protected static function cambio_de_minimo_o_maximo($campo, $operacion, $valor, $sucursal, $owner_id, $contexto = null)
+    {
+        $es_minimo = $campo === self::CAMPO_STOCK_MINIMO;
+        $etiqueta = $es_minimo ? 'Stock mínimo' : 'Stock máximo';
+
+        $persona = !is_null($contexto) ? $contexto->persona : null;
+
+        if (!PermisosIaHelper::puede($persona, self::PERMISO_MINIMO_Y_MAXIMO)) {
+
+            return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('el stock mínimo y máximo de los artículos'));
+        }
+
+        if ($operacion !== 'setear') {
+
+            return RespuestaDeCargaIa::error('Para ' . $etiqueta . ' la única operación es setear, con el número en valor.');
+        }
+
+        if (!is_numeric($valor) || (float) $valor < 0) {
+
+            return RespuestaDeCargaIa::error('El valor de ' . $etiqueta . ' tiene que ser un número mayor o igual a 0.');
+        }
+
+        if ((float) $valor != (float) (int) $valor) {
+
+            return RespuestaDeCargaIa::error($etiqueta . ' se guarda como número entero: decime ' . (int) floor((float) $valor) . ' o ' . (int) ceil((float) $valor) . '.');
+        }
+
+        $numero = (int) $valor;
+
+        // 0 o 1 sucursal: la columna del artículo.
+        if (!FichaArticuloIaHelper::tiene_depositos((int) $owner_id)) {
+
+            $columna = $es_minimo ? 'stock_min' : 'stock_max';
+
+            if (!$es_minimo && !Schema::hasColumn('articles', 'stock_max')) {
+
+                return RespuestaDeCargaIa::error('Con una sola sucursal el sistema guarda solo el stock mínimo del artículo: el stock máximo existe por sucursal, y este negocio no reparte el stock entre sucursales. El mínimo sí se puede poner.');
+            }
+
+            return [
+                'forms'      => [['type' => 'number', 'key' => 'set_' . $columna, 'value' => $numero]],
+                'texto'      => $etiqueta . ' → ' . $numero,
+                'sucursales' => [],
+                'avisos'     => [],
+            ];
+        }
+
+        // 2 o más sucursales: por sucursal, con su permiso.
+        $elegidas = self::sucursales_para_minimo_o_maximo((int) $owner_id, $sucursal, $persona);
+
+        if (RespuestaDeCargaIa::es_negativa($elegidas)) {
+
+            return $elegidas;
+        }
+
+        $forms = [];
+        $sucursales = [];
+        $nombres = [];
+
+        foreach ($elegidas['sucursales'] as $deposito) {
+
+            $forms[] = [
+                'type'  => StockMinimoMaximoEnMasivaHelper::TIPO,
+                'key'   => $es_minimo
+                    ? StockMinimoMaximoEnMasivaHelper::clave_minimo($deposito->id)
+                    : StockMinimoMaximoEnMasivaHelper::clave_maximo($deposito->id),
+                'value' => $numero,
+                // Para el historial de actualizaciones masivas, que muestra el label si viene.
+                'label' => $etiqueta . ' en ' . PropuestaStockIaHelper::nombre_de_deposito($deposito),
+            ];
+
+            $sucursales[] = ['address_id' => (int) $deposito->id, 'nombre' => PropuestaStockIaHelper::nombre_de_deposito($deposito)];
+            $nombres[] = PropuestaStockIaHelper::nombre_de_deposito($deposito);
+        }
+
+        return [
+            'forms'      => $forms,
+            'texto'      => $etiqueta . ' → ' . $numero . ' en ' . self::enumerar($nombres),
+            'sucursales' => $sucursales,
+            'avisos'     => $elegidas['avisos'],
+        ];
+    }
+
+    /**
+     * Las sucursales a las que va un mínimo o un máximo: la nombrada, o "todas" las que la persona
+     * puede tocar.
+     *
+     * @param  int  $owner_id
+     * @param  string  $texto  Nombre, "todas" o vacío.
+     * @param  \App\Models\User|null  $persona
+     * @return array  ['sucursales' => Address[], 'avisos' => string[]] o la respuesta negativa.
+     */
+    protected static function sucursales_para_minimo_o_maximo($owner_id, $texto, $persona)
+    {
+        $depositos = Address::sucursales_de($owner_id)->get();
+
+        $opciones = [];
+
+        foreach ($depositos as $deposito) {
+
+            $opciones[] = ['nombre' => PropuestaStockIaHelper::nombre_de_deposito($deposito)];
+        }
+
+        $opciones[] = ['nombre' => 'todas'];
+
+        $buscado = self::normalizar_sucursal($texto);
+
+        // Sin sucursal se pregunta: con dos o más, el mínimo de un depósito no es el de otro.
+        if ($buscado === '') {
+
+            return RespuestaDeCargaIa::faltan(
+                ['en qué sucursal va (o "todas"): este negocio reparte el stock entre sucursales y el mínimo es de cada una'],
+                ['sucursales' => $opciones]
+            );
+        }
+
+        if (in_array($buscado, self::TODAS_LAS_SUCURSALES, true)) {
+
+            $permitidas = [];
+            $afuera = [];
+
+            foreach ($depositos as $deposito) {
+
+                if (PermisoStockPorSucursalHelper::puede_editar($persona, $deposito->id)) {
+
+                    $permitidas[] = $deposito;
+
+                } else {
+
+                    $afuera[] = PropuestaStockIaHelper::nombre_de_deposito($deposito);
+                }
+            }
+
+            if (!count($permitidas)) {
+
+                return RespuestaDeCargaIa::error('Tu usuario no puede tocar el stock de ninguna sucursal.');
+            }
+
+            $avisos = [];
+
+            if (count($afuera)) {
+
+                $avisos[] = 'Tu usuario solo puede tocar el stock de su sucursal: en ' . self::enumerar($afuera) . ' no se cambia';
+            }
+
+            return ['sucursales' => $permitidas, 'avisos' => $avisos];
+        }
+
+        $exactas = [];
+        $parecidas = [];
+
+        foreach ($depositos as $deposito) {
+
+            $nombre = self::normalizar_sucursal(PropuestaStockIaHelper::nombre_de_deposito($deposito));
+
+            if ($nombre === $buscado) {
+
+                $exactas[] = $deposito;
+
+            } elseif ($nombre !== '' && strpos($nombre, $buscado) !== false) {
+
+                $parecidas[] = $deposito;
+            }
+        }
+
+        $encontradas = count($exactas) ? $exactas : $parecidas;
+
+        if (!count($encontradas)) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['en qué sucursal va: no hay ninguna que se llame "' . trim((string) $texto) . '"'],
+                ['sucursales' => $opciones]
+            );
+        }
+
+        if (count($encontradas) > 1) {
+
+            $candidatas = [];
+
+            foreach ($encontradas as $deposito) {
+
+                $candidatas[] = ['nombre' => PropuestaStockIaHelper::nombre_de_deposito($deposito)];
+            }
+
+            return RespuestaDeCargaIa::faltan(['en cuál de estas sucursales va'], ['sucursales' => $candidatas]);
+        }
+
+        if (!PermisoStockPorSucursalHelper::puede_editar($persona, $encontradas[0]->id)) {
+
+            return RespuestaDeCargaIa::error('Tu usuario solo puede tocar el stock de la sucursal que tiene asignada, y ' . PropuestaStockIaHelper::nombre_de_deposito($encontradas[0]) . ' no es esa.');
+        }
+
+        return ['sucursales' => [$encontradas[0]], 'avisos' => []];
+    }
+
+    /**
+     * Los renglones de la tarjeta que explican el mínimo o el máximo por sucursal: los avisos de la
+     * traducción (sucursales afuera por permiso) y, por cada sucursal, cuántos alcanzados no tienen
+     * stock repartido ahí (a esos no se les pone, ver StockMinimoMaximoEnMasivaHelper). Una consulta
+     * por sucursal. Sin mínimo ni máximo por sucursal, ninguno.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $traducido  FiltroDeArticulosIaHelper::traducir().
+     * @param  array  $cambios_traducidos  traducir_cambios().
+     * @return array<int, array{etiqueta: string, valor: string}>
+     */
+    protected static function renglones_de_minimo_o_maximo(ContextoDeCargaIa $contexto, array $traducido, array $cambios_traducidos)
+    {
+        if (!isset($cambios_traducidos['minimos_y_maximos'])) {
+
+            return [];
+        }
+
+        $renglones = [];
+
+        foreach ($cambios_traducidos['avisos_de_minimo'] as $aviso) {
+
+            $renglones[] = ['etiqueta' => 'Atención', 'valor' => $aviso];
+        }
+
+        // Cada sucursal una vez, aunque el mínimo y el máximo vayan a la misma.
+        $vistas = [];
+
+        foreach ($cambios_traducidos['minimos_y_maximos'] as $sucursales) {
+
+            foreach ($sucursales as $sucursal) {
+
+                if (isset($vistas[$sucursal['address_id']])) {
+
+                    continue;
+                }
+
+                $vistas[$sucursal['address_id']] = true;
+
+                $sin_fila = StockMinimoMaximoEnMasivaHelper::contar_sin_fila(
+                    FiltroDeArticulosIaHelper::query($contexto->owner_id, $traducido['filter_form'], $traducido['imagen']),
+                    $sucursal['address_id']
+                );
+
+                if ($sin_fila > 0) {
+
+                    $renglones[] = [
+                        'etiqueta' => 'Atención',
+                        'valor'    => ($sin_fila === 1 ? '1 de los alcanzados no tiene' : $sin_fila . ' de los alcanzados no tienen')
+                            . ' stock repartido en ' . $sucursal['nombre'] . ': ahí no se ' . ($sin_fila === 1 ? 'le' : 'les') . ' pone',
+                    ];
+                }
+            }
+        }
+
+        return $renglones;
+    }
+
+    /**
+     * Re-verifica, al confirmar, el permiso del mínimo y el máximo sobre quien confirma: el de la
+     * pantalla (`article.stock_min_max`) para cualquiera de los dos y, para los de una sucursal, el
+     * recorte por sucursal. Sin ninguna de esas claves en el update_form (toda tarjeta vieja), no
+     * hace nada.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $update_form
+     * @return void
+     *
+     * @throws AccionIaException  422 si la persona ya no puede.
+     */
+    protected static function verificar_minimo_o_maximo_al_ejecutar(ContextoDeCargaIa $contexto, array $update_form)
+    {
+        foreach ($update_form as $form) {
+
+            $clave = is_array($form) && isset($form['key']) ? (string) $form['key'] : '';
+
+            $es_de_sucursal = StockMinimoMaximoEnMasivaHelper::es_clave_de_masiva($clave);
+
+            if (!$es_de_sucursal && $clave !== 'set_stock_min' && $clave !== 'set_stock_max') {
+
+                continue;
+            }
+
+            if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO_MINIMO_Y_MAXIMO)) {
+
+                throw new AccionIaException(422, PermisosIaHelper::mensaje_sin_permiso('el stock mínimo y máximo de los artículos'));
+            }
+
+            if ($es_de_sucursal) {
+
+                $partes = StockMinimoMaximoEnMasivaHelper::partes_de_la_clave($clave);
+
+                if (!PermisoStockPorSucursalHelper::puede_editar($contexto->persona, $partes['address_id'])) {
+
+                    throw new AccionIaException(422, 'Tu usuario no puede tocar el stock de una de las sucursales de esta tarjeta. Pedímelo de nuevo.');
+                }
+            }
+        }
+    }
+
+    /**
+     * true si alguno de los cambios es el stock mínimo o el máximo.
+     *
+     * @param  array  $cambios
+     * @return bool
+     */
+    protected static function trae_minimo_o_maximo(array $cambios)
+    {
+        foreach ($cambios as $cambio) {
+
+            $campo = is_array($cambio) ? mb_strtolower(EntradaDeCargaIa::texto($cambio, 'campo')) : '';
+
+            if ($campo === self::CAMPO_STOCK_MINIMO || $campo === self::CAMPO_STOCK_MAXIMO) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si alguno de los cambios es de precio (precio_final o precio_manual): los que
+     * analizar_cambios_de_precio() reescribe por posición en el update_form.
+     *
+     * @param  array  $cambios
+     * @return bool
+     */
+    protected static function trae_cambio_de_precio(array $cambios)
+    {
+        foreach ($cambios as $cambio) {
+
+            $campo = is_array($cambio) ? mb_strtolower(EntradaDeCargaIa::texto($cambio, 'campo')) : '';
+
+            if ($campo === self::CAMPO_PRECIO_FINAL || $campo === self::CAMPO_PRECIO_MANUAL) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Minúsculas, sin tildes y con los espacios colapsados, para comparar nombres de sucursal.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function normalizar_sucursal($texto)
+    {
+        return trim((string) preg_replace('/\s+/u', ' ', ConsultasSistemaIaHelper::normalize_text((string) $texto)));
+    }
+
+    /**
+     * "A", "A y B", "A, B y C".
+     *
+     * @param  array<int, string>  $partes
+     * @return string
+     */
+    protected static function enumerar(array $partes)
+    {
+        $partes = array_values($partes);
+
+        if (count($partes) <= 1) {
+
+            return count($partes) ? (string) $partes[0] : '';
+        }
+
+        $ultima = array_pop($partes);
+
+        return implode(', ', $partes) . ' y ' . $ultima;
     }
 
     /**
@@ -1595,7 +2114,9 @@ class PropuestaActualizacionMasivaIaHelper
             array_keys(self::CAMPOS_NUMERICOS),
             array_keys(self::CAMPOS_DE_RELACION),
             array_keys(self::CAMPOS_DE_SELECT),
-            array_keys(self::CAMPOS_DE_CHECKBOX)
+            array_keys(self::CAMPOS_DE_CHECKBOX),
+            // Al final: misión agente-mejoras-uso-real (E2).
+            [self::CAMPO_STOCK_MINIMO, self::CAMPO_STOCK_MAXIMO]
         );
     }
 
