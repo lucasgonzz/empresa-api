@@ -331,6 +331,22 @@ class Ganancia_por_articulo_que_cuadra_con_el_total_Test extends TestCase
         $this->assertSame(['desc', 'asc'], $definicion['input_schema']['properties']['direccion']['enum']);
         $this->assertStringContainsString('SIN costo cargado', $definicion['description']);
 
+        /*
+         * Revisión (30/10/2026), CONV 9 de Pablo: «separámelos en unidades y en precio de venta» son DOS
+         * rankings, en el resumen y en los más vendidos.
+         */
+        $this->assertStringContainsString('"en unidades y en pesos" son DOS rankings', $definicion['description']);
+
+        $mas_vendidos = null;
+
+        foreach ($servicio->herramientas_de_lectura() as $herramienta) {
+            if ($herramienta['name'] === 'consultar_articulos_mas_vendidos') {
+                $mas_vendidos = $herramienta;
+            }
+        }
+
+        $this->assertStringContainsString('dale DOS rankings, uno ordenado por unidades y otro por plata', $mas_vendidos['description']);
+
         $conversation = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $this->comercio->id]);
 
         $resultados = $servicio->execute_tool_calls([[

@@ -689,5 +689,8 @@ class Stock_minimo_en_la_masiva_Test extends TestCase
         $this->assertContains('stock_maximo', $item['properties']['campo']['enum']);
         $this->assertArrayHasKey('sucursal', $item['properties']);
         $this->assertStringContainsString('NUNCA ofrezcas setear stock en lugar del mínimo', $definicion['description']);
+
+        // Revisión (30/10/2026): «stock mínimo 10 kilos» en artículos por kilo es 10, sin preguntar.
+        $this->assertStringContainsString('"stock mínimo 10 kilos" en artículos que se venden por kilo), aplicá 10 sin preguntar si son unidades o kilos', $definicion['description']);
     }
 }
