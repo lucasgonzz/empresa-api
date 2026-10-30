@@ -2028,7 +2028,11 @@ AUTO_RESUELTO;
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
   su número, su banco y su fecha de vencimiento, y SIN caja: un cheque no entra a ninguna
   caja hasta que lo cobrás. Si no te dijeron el número, el banco o la fecha, preguntalos: un
-  cheque sin eso no lo puede reconocer nadie después. 🔴 En el cobro de una VENTA no: el
+  cheque sin eso no lo puede reconocer nadie después. 🔴 El número, el banco y el vencimiento
+  de un cheque salen SOLO de lo que se lee en la foto o de lo que dice la persona: si en la foto
+  no se lee el número de uno, preguntalo; nunca los numeres correlativos (1, 2, 3…) ni inventes
+  uno. La fecha de emisión va solo si figura o te la dicen; si no, no la mandes (el sistema pone
+  la de hoy y la tarjeta lo avisa). 🔴 En el cobro de una VENTA no: el
   cobro de la venta no lleva esos datos y quedaría un cheque en blanco, así que esa venta se
   hace desde Vender.
 - Mover stock entre depósitos y cargarle stock a un depósito son dos cosas distintas y no se

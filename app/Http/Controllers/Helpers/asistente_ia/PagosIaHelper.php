@@ -263,7 +263,9 @@ class PagosIaHelper {
                 $datos[] = self::fila_de_cheque($fila['metodo']->id, (float) $fila['monto'], $moneda_id, $fila['cheque']);
 
                 $detalle = ' · N° '.$fila['cheque']['numero'].' de '.$fila['cheque']['banco']
-                    .' · vence '.FormatoIaHelper::fecha_con_dia(Carbon::createFromFormat('Y-m-d', $fila['cheque']['fecha_pago'])->startOfDay());
+                    .' · vence '.FormatoIaHelper::fecha_con_dia(Carbon::createFromFormat('Y-m-d', $fila['cheque']['fecha_pago'])->startOfDay())
+                    // Misión agente-mejoras-uso-real: la emisión que no vino se dice, no se esconde.
+                    .(!empty($fila['cheque']['emision_supuesta']) ? ' · emisión: hoy (no vino)' : '');
 
                 $renglones[] = [
                     'etiqueta' => 'Cheque',
@@ -292,7 +294,134 @@ class PagosIaHelper {
             'filas'     => $datos,
             'renglones' => $renglones,
             'resumen'   => implode(' + ', $partes),
+            // Misión agente-mejoras-uso-real: lo que la tarjeta tiene que marcar de los cheques (ver avisos_de_cheques()).
+            'avisos_de_cheques'        => self::avisos_de_cheques($filas),
+            'cheques_para_revisar'     => self::numeros_para_revisar($filas),
         ];
+    }
+
+    /**
+     * Los números de cheque mínimos para que una tanda se considere "numerada a mano".
+     */
+    const CHEQUES_PARA_SOSPECHAR = 2;
+
+    /** Hasta cuántos dígitos un número de cheque se considera "corto" (los impresos tienen 8). */
+    const DIGITOS_DE_UN_NUMERO_CORTO = 4;
+
+    /**
+     * Lo que la tarjeta de un pago con cheques tiene que MARCAR porque no vino de la persona (misión
+     * agente-mejoras-uso-real, 29/10/2026, revisión independiente).
+     *
+     * EL CASO REAL (CONV 23 de Ferre Total): un pago a Pinturas Sudamericanas con 5 e-cheq desde una
+     * foto. El agente cargó los números 7, 8, 9, 10 y 11 —correlativos y de un dígito, cuando un cheque
+     * impreso tiene 8— y la fecha de emisión de hoy en los cinco. Con la confianza en "directo" el pago se
+     * registró en el acto y nadie lo vio. Desde acá:
+     *
+     *   - la fecha de emisión que NO vino (validar_cheque pone la de hoy) se dice en la tarjeta;
+     *   - los números CORTOS y CORRELATIVOS de una misma tanda se marcan como para revisar
+     *     (numeros_para_revisar), y la propuesta los hace esperar el sí de la persona aunque el modo sea
+     *     "directo". No se rechazan: los cheques de una misma chequera SÍ son correlativos (por eso
+     *     también se mira que sean cortos), y el dato lo decide la persona, no esta cuenta.
+     *
+     * @param  array  $filas  Las filas ya validadas de validar().
+     * @return array<int, string>
+     */
+    protected static function avisos_de_cheques(array $filas)
+    {
+        $avisos = [];
+
+        $sin_emision = 0;
+
+        foreach ($filas as $fila) {
+
+            if (!is_null($fila['cheque']) && !empty($fila['cheque']['emision_supuesta'])) {
+                $sin_emision++;
+            }
+        }
+
+        if ($sin_emision > 0) {
+
+            $avisos[] = $sin_emision === 1
+                ? 'La fecha de emisión del cheque no vino: va la de hoy. Si figura en el cheque, corregila.'
+                : 'La fecha de emisión de ' . $sin_emision . ' cheques no vino: va la de hoy. Si figura en los cheques, corregila.';
+        }
+
+        $para_revisar = self::numeros_para_revisar($filas);
+
+        if (count($para_revisar)) {
+
+            $avisos[] = 'Los números de cheque ' . self::lista_de_numeros($para_revisar) . ' son correlativos y muy cortos (un cheque impreso tiene 8 dígitos): '
+                . 'confirmá que sean los que figuran en los cheques antes de cargar el pago.';
+        }
+
+        return $avisos;
+    }
+
+    /**
+     * Los números de cheque de la tanda que parecen numerados a mano: al menos CHEQUES_PARA_SOSPECHAR
+     * cheques, todos con números de hasta DIGITOS_DE_UN_NUMERO_CORTO dígitos y consecutivos entre sí
+     * (en el orden en que vinieron, o al revés). Vacío si no hay sospecha.
+     *
+     * @param  array  $filas
+     * @return array<int, string>
+     */
+    public static function numeros_para_revisar(array $filas)
+    {
+        $numeros = [];
+
+        foreach ($filas as $fila) {
+
+            if (!is_null($fila['cheque'])) {
+                $numeros[] = trim((string) $fila['cheque']['numero']);
+            }
+        }
+
+        if (count($numeros) < self::CHEQUES_PARA_SOSPECHAR) {
+
+            return [];
+        }
+
+        foreach ($numeros as $numero) {
+
+            if (!preg_match('/^\d{1,' . self::DIGITOS_DE_UN_NUMERO_CORTO . '}$/', $numero)) {
+
+                return [];
+            }
+        }
+
+        $suben = true;
+        $bajan = true;
+
+        for ($i = 1; $i < count($numeros); $i++) {
+
+            if ((int) $numeros[$i] !== (int) $numeros[$i - 1] + 1) {
+                $suben = false;
+            }
+
+            if ((int) $numeros[$i] !== (int) $numeros[$i - 1] - 1) {
+                $bajan = false;
+            }
+        }
+
+        return ($suben || $bajan) ? $numeros : [];
+    }
+
+    /**
+     * "7, 8, 9, 10 y 11".
+     *
+     * @param  array<int, string>  $numeros
+     * @return string
+     */
+    protected static function lista_de_numeros(array $numeros)
+    {
+        if (count($numeros) < 2) {
+
+            return implode('', $numeros);
+        }
+
+        $ultimo = array_pop($numeros);
+
+        return implode(', ', $numeros) . ' y ' . $ultimo;
     }
 
     /**
@@ -596,7 +725,10 @@ class PagosIaHelper {
 
         $fecha_emision = EntradaDeCargaIa::valor($cheque, 'fecha_emision');
 
-        if (EntradaDeCargaIa::vacio($fecha_emision)) {
+        // true si la fecha de emisión NO vino y se puso la de hoy: la tarjeta lo marca (avisos_de_cheques).
+        $emision_supuesta = EntradaDeCargaIa::vacio($fecha_emision);
+
+        if ($emision_supuesta) {
 
             $fecha_emision = $contexto->hoy;
 
@@ -626,6 +758,8 @@ class PagosIaHelper {
             'fecha_pago'    => $fecha_pago->format('Y-m-d'),
             'es_echeq'      => EntradaDeCargaIa::valor($cheque, 'es_echeq') ? 1 : 0,
             'notes'         => $notas === '' ? null : mb_substr($notas, 0, 500),
+            // Solo para la tarjeta: fila_de_cheque() no la copia, así que no llega al backend.
+            'emision_supuesta' => $emision_supuesta,
         ];
     }
 
