@@ -3230,6 +3230,12 @@ CONFIRMACION;
      * Una foto cuyo archivo ya no está, o que no es de un tipo que Anthropic
      * acepte, se saltea sin voltear nada: el texto del mensaje viaja igual.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): el empresa guarda hasta
+     * AsistenteImagenHelper::MAX_IMAGENES fotos por mensaje, pero al modelo le
+     * viajan como mucho MAX_FOTOS_AL_MODELO (las primeras, en el orden en que
+     * llegaron). Las demás no se pierden: el texto del mensaje lleva el
+     * `imagen_id` de todas (ver marca_de_las_fotos_del_mensaje()).
+     *
      * @param AiMessage $message
      * @return array<int, array<string, mixed>>
      */
@@ -3241,7 +3247,7 @@ CONFIRMACION;
 
         $bloques = [];
 
-        foreach ($message->imagenes as $imagen) {
+        foreach ($message->imagenes->take(AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) as $imagen) {
             $bloque = $this->bloque_de_una_imagen($imagen);
 
             if (! is_null($bloque)) {
@@ -3303,6 +3309,10 @@ CONFIRMACION;
      * que saber que hubo una foto —para poder decir "la que me mandaste
      * recién"— sin que la imagen se vuelva a pagar en cada turno.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): la marca lleva además el
+     * `imagen_id` de cada foto, y el mensaje actual con varias fotos también
+     * dice sus ids (ver marca_de_las_fotos_del_mensaje()).
+     *
      * @param AiMessage $message Con las relaciones `acciones` e `imagenes` cargadas.
      * @param bool $manda_las_imagenes true si este mensaje manda sus fotos en base64.
      * @return string
@@ -3324,17 +3334,16 @@ CONFIRMACION;
                 $contenido = trim($contenido) === '' ? $de_los_archivos : rtrim($contenido) . "\n\n" . $de_los_archivos;
             }
 
-            if ($manda_las_imagenes || ! $message->relationLoaded('imagenes')) {
+            if (! $message->relationLoaded('imagenes') || $message->imagenes->isEmpty()) {
                 return $contenido;
             }
 
-            $cuantas = $message->imagenes->count();
+            /* Con el imagen_id de cada foto (misión agente-mejoras-uso-real): ver marca_de_las_fotos_del_mensaje(). */
+            $marca = $this->marca_de_las_fotos_del_mensaje($message, (bool) $manda_las_imagenes);
 
-            if ($cuantas === 0) {
+            if ($marca === '') {
                 return $contenido;
             }
-
-            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
 
             return trim($contenido) === '' ? $marca : rtrim($contenido) . "\n" . $marca;
         }
@@ -3368,6 +3377,63 @@ CONFIRMACION;
         }
 
         return rtrim($contenido) . "\n" . implode("\n", $lineas);
+    }
+
+    /**
+     * La marca con las fotos de un mensaje del dueño, para el texto que viaja al modelo (misión
+     * agente-mejoras-uso-real, E1 punto 2, 29/10/2026). Vacía si no corresponde ninguna.
+     *
+     * 🔴 POR QUÉ LLEVA EL `imagen_id`. Hasta esta misión el modelo nunca veía el id de las fotos del
+     * dueño: las del mensaje actual le llegaban en base64 sin id y las anteriores como "[Foto adjunta]".
+     * Así no podía decir «la misma de antes»: en Ferre Total (CONV 15) Pablo pidió «la misma para los
+     * otros 8» y el agente le pidió que la reenviara. Con el id en el historial, proponer_foto_articulo
+     * recibe esa foto por su imagen_id (FotosDeLaConversacionIaHelper::reutilizable_para_articulo).
+     *
+     * Las tres formas:
+     *   - un mensaje ANTERIOR (sus fotos ya no viajan): "[Foto adjunta] [imagen_id 12]" o
+     *     "[3 fotos adjuntas] [imagen_id 12, 13, 14]". La marca de siempre va primero y entera.
+     *   - el mensaje ACTUAL con UNA foto: nada. La foto la ve el modelo y la herramienta la toma sola
+     *     (es la más nueva sin usar); el payload queda exactamente como antes de esta misión.
+     *   - el mensaje ACTUAL con VARIAS: "[Fotos de este mensaje, en orden: imagen_id 6, 7, 8]", para que
+     *     pueda asignar cada una a su artículo; y si son más que MAX_FOTOS_AL_MODELO, cuántas no se le
+     *     muestran (siguen guardadas y se usan por su id).
+     *
+     * @param  AiMessage  $message  Con la relación `imagenes` cargada y no vacía.
+     * @param  bool  $manda_las_imagenes  true si este mensaje manda sus fotos en base64 (el actual).
+     * @return string
+     */
+    protected function marca_de_las_fotos_del_mensaje(AiMessage $message, $manda_las_imagenes): string
+    {
+        $ids = [];
+
+        foreach ($message->imagenes as $imagen) {
+            $ids[] = (int) $imagen->id;
+        }
+
+        $cuantas = count($ids);
+
+        if ($cuantas === 0) {
+            return '';
+        }
+
+        if (! $manda_las_imagenes) {
+            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
+
+            return $marca . ' [imagen_id ' . implode(', ', $ids) . ']';
+        }
+
+        if ($cuantas === 1) {
+            return '';
+        }
+
+        $marca = '[Fotos de este mensaje, en orden: imagen_id ' . implode(', ', $ids) . ']';
+
+        if ($cuantas > AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) {
+            $marca .= ' [Te muestro las primeras ' . AsistenteImagenHelper::MAX_FOTOS_AL_MODELO . '; las otras '
+                . ($cuantas - AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) . ' quedaron guardadas y se usan por su imagen_id]';
+        }
+
+        return $marca;
     }
 
     /**

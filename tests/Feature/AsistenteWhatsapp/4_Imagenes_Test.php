@@ -92,16 +92,27 @@ class Imagenes_Test extends AsistenteWhatsappTestCase
      * @group asistente-whatsapp
      * @test
      */
-    public function mas_de_tres_fotos_en_un_mensaje_es_422_y_no_deja_nada()
+    public function mas_fotos_que_el_tope_en_un_mensaje_es_422_y_no_deja_nada()
     {
-        $this->assertEquals(3, AsistenteImagenHelper::MAX_IMAGENES);
+        /*
+         * El tope pasó de 3 a 10 en la misión agente-mejoras-uso-real (29/10/2026, decisión del plan,
+         * E1 punto 3: Pablo de Ferre Total mandó 5 y 4 fotos juntas y se perdieron las que pasaban de
+         * 3). Lo que este test fija no cambia: UNA foto más que el tope es 422 y no deja nada.
+         */
+        $this->assertEquals(10, AsistenteImagenHelper::MAX_IMAGENES);
+
+        $fotos = [];
+
+        for ($i = 1; $i <= AsistenteImagenHelper::MAX_IMAGENES + 1; $i++) {
+            $fotos[] = $this->foto('foto-' . $i . '.jpg');
+        }
 
         $respuesta = $this->call(
             'POST',
             'api/admin-sync/asistente/mensajes',
-            ['texto' => 'Cuatro fotos', 'tipo' => 'imagen'],
+            ['texto' => 'Once fotos', 'tipo' => 'imagen'],
             [],
-            ['imagenes' => [$this->foto('a.jpg'), $this->foto('b.jpg'), $this->foto('c.jpg'), $this->foto('d.jpg')]],
+            ['imagenes' => $fotos],
             $this->transformHeadersToServerVars($this->headers())
         );
 

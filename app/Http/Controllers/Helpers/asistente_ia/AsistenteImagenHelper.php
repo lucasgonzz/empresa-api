@@ -28,11 +28,29 @@ use Intervention\Image\ImageManager;
 class AsistenteImagenHelper
 {
     /**
-     * Fotos por mensaje. Es el mismo tope que usa el recolector de imágenes del soporte en el
-     * admin (SupportAiImageCollector): más de tres fotos en un solo mensaje de WhatsApp no es un
-     * caso real, y cada una que entra viaja a Anthropic en base64.
+     * Fotos por mensaje que el empresa ACEPTA Y GUARDA (todas en `ai_message_imagenes`).
+     *
+     * 🔴 ERAN 3 HASTA LA MISIÓN agente-mejoras-uso-real (29/10/2026), y el uso real lo desmintió. Era el
+     * tope del recolector de imágenes del soporte en el admin (SupportAiImageCollector), con la idea de
+     * que más de tres fotos en un mensaje de WhatsApp "no es un caso real". En Ferre Total (CONV 15)
+     * Pablo mandó 5 fotos juntas y después 4 para los clavos que faltaban: llegaron 3 y 3, y el resto
+     * se perdió con un aviso al modelo. Ahora el empresa guarda hasta 10, y lo que viaja al modelo tiene
+     * su propio tope (MAX_FOTOS_AL_MODELO): guardar una foto es barato, mandarla en base64 no.
+     *
+     * ⚠️ EL TOPE DEL ADMIN (3) NO SE TOCA EN ESTA MISIÓN. El admin corta antes de reenviar; subirlo allá
+     * antes de que toda la flota tenga este release haría que un empresa viejo devuelva 422 a la cuarta
+     * foto. Queda anotado para después del release (plan de la misión, E1 punto 3).
      */
-    const MAX_IMAGENES = 3;
+    const MAX_IMAGENES = 10;
+
+    /**
+     * Cuántas fotos de UN mensaje viajan al modelo en base64 (misión agente-mejoras-uso-real). Las demás
+     * quedan guardadas igual y el texto del mensaje le dice al modelo sus `imagen_id`, para que las
+     * herramientas las usen (AsistenteIaService::bloques_de_imagen()). Seis es lo que acepta un escaneo
+     * de factura (`services.escaneo_factura_compra.max_imagenes`), el caso más grande que necesita
+     * MIRARLAS todas.
+     */
+    const MAX_FOTOS_AL_MODELO = 6;
 
     /**
      * Formatos aceptados, nombrados para el mensaje de error. La validación NO los mira: mira los
