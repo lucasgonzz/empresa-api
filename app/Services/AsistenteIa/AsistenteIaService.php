@@ -359,6 +359,18 @@ class AsistenteIaService
     protected $cargas_vistas_de_otras_conversaciones = [];
 
     /**
+     * El detalle técnico de una respuesta que terminó en respuesta_sin_terminar() (segunda ronda de
+     * arreglos, F3), o null. El job lo guarda en `error_mensaje` del mensaje aunque quede `listo`: el
+     * mensaje no es un error para la persona, pero lo que lo cortó tiene que quedar a la vista para
+     * soporte. Ninguna SPA (empresa-spa, ia-spa) pinta el `error_mensaje` de un MENSAJE (solo el de una
+     * tarjeta), y el admin lo lee solo con el mensaje en `error`: verificado en origin/develop y
+     * origin/master de empresa-spa, origin/master de ia-spa y de admin-api.
+     *
+     * @var string|null
+     */
+    protected $detalle_tecnico = null;
+
+    /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
      * es un error: sin clave, el job deja el mensaje en error amigable sin salir a la red.
      *
@@ -425,6 +437,7 @@ class AsistenteIaService
         $this->bloques = [];
         $this->pedidos_de_imagen = [];
         $this->cargas_vistas_de_otras_conversaciones = [];
+        $this->detalle_tecnico = null;
         $this->marcar_progreso = true;
 
         $owner = User::find($conversation->user_id);
@@ -911,10 +924,14 @@ class AsistenteIaService
                 $segundos_del_cierre = min(self::TIMEOUT_SEGUNDOS, $this->techo_de_la_llamada_de_cierre($assistant_message) - $transcurrido);
 
                 if ($segundos_del_cierre < self::SEGUNDOS_MINIMOS_DEL_CIERRE) {
-                    /* Sin ventana para el cierre: lo hecho, armado sin el modelo (ver respuesta_sin_terminar()). */
+                    /*
+                     * Sin ventana para el cierre: lo hecho, armado sin el modelo (ver respuesta_sin_terminar()).
+                     * No es una falla (nada se rompió: se terminó el tiempo), así que no va como error al log.
+                     */
                     return $this->respuesta_sin_terminar(
                         $conversation, $assistant_message, $confirmacion_determinista,
-                        'no quedó tiempo para la llamada de cierre (' . $transcurrido . 's) tras ' . $iterations . ' iteraciones'
+                        'no quedó tiempo para la llamada de cierre (' . $transcurrido . 's) tras ' . $iterations . ' iteraciones',
+                        false
                     );
                 }
 
@@ -992,11 +1009,15 @@ class AsistenteIaService
              * tool_choice forzado no aplica — y `none`, además, es de los que Anthropic acepta con
              * thinking. Con DeepSeek va el que decidió thinking_apto_para_historial(), igual que en
              * cualquier vuelta: apagarlo solo para el cierre dejaría un turno que pensó con sus bloques
-             * `thinking` en el historial y el thinking apagado, una combinación que nadie midió. Lo
-             * medido el 30/10 fue con el thinking apagado, que es el caso real de Ferre Total (Flash, o
-             * Pro escalado a mitad de turno, que ese helper apaga); un turno que arranca pensando en Pro
-             * y cierra con `none` queda para la medición contra DeepSeek real. Si esa llamada fallara,
-             * el turno termina en `tiempo_agotado`, que es lo de antes de esta misión.
+             * `thinking` en el historial y el thinking apagado. MEDIDO contra DeepSeek real el 30/10 en
+             * las dos combinaciones: con el thinking apagado (el caso de Ferre Total: Flash, o Pro
+             * escalado a mitad de turno, que ese helper apaga) y con el thinking PRENDIDO —Pro y Flash,
+             * `thinking: enabled` + `tool_choice: none` después de una vuelta real con bloques
+             * [thinking, tool_use] y su tool_result con la nota de cierre—: HTTP 200, `end_turn`, bloques
+             * [thinking, text], y el texto cuenta lo hecho y pide «seguí» (diag/probar-tool-choice-thinking.php,
+             * resultado en diag/resultado-tool-choice-thinking.txt de la misión). Si igual esa llamada
+             * fallara, el turno cierra `listo` con lo hecho armado sin el modelo (respuesta_sin_terminar(),
+             * rondas de arreglos R1 y F3), no en `tiempo_agotado`.
              */
             if ($cerrando) {
                 $body['tool_choice'] = ['type' => 'none'];
@@ -1917,6 +1938,18 @@ class AsistenteIaService
     public function pedidos_de_imagen(): array
     {
         return $this->pedidos_de_imagen;
+    }
+
+    /**
+     * El detalle técnico de la última respuesta si terminó en respuesta_sin_terminar() (qué la cortó), o
+     * null si terminó normal. El job lo guarda en `error_mensaje` del mensaje `listo` (segunda ronda de
+     * arreglos, F3): ver el docblock de la propiedad.
+     *
+     * @return string|null
+     */
+    public function detalle_tecnico()
+    {
+        return $this->detalle_tecnico;
     }
 
     /**
@@ -4525,16 +4558,34 @@ CONFIRMACION;
      * @param  AiMessage  $assistant_message
      * @param  array|null  $confirmacion_determinista  Lo que devolvió ConfirmacionDeterministaIaHelper::quizas_confirmar():
      *                                                 su tarjeta (de un mensaje anterior) va entre lo hecho.
-     * @param  string  $detalle  Qué pasó, para el log (el detalle técnico de antes).
+     * @param  string  $detalle  Qué pasó: va al log y al `error_mensaje` del mensaje (detalle_tecnico()).
+     * @param  bool  $por_un_error  true si lo cortó una falla (excepción, HTTP de error, sin texto): log
+     *                              de error. false si solo no quedó tiempo para el cierre: warning.
      * @return string
      */
-    protected function respuesta_sin_terminar(AiConversation $conversation, AiMessage $assistant_message, $confirmacion_determinista, $detalle): string
+    protected function respuesta_sin_terminar(AiConversation $conversation, AiMessage $assistant_message, $confirmacion_determinista, $detalle, $por_un_error = true): string
     {
-        Log::warning('AsistenteIaService: el turno no terminó y el cierre no escribió nada; se contesta con lo hecho, armado sin el modelo.', [
+        /*
+         * Segunda ronda de arreglos (F3): el detalle técnico queda para el job, que lo guarda en
+         * `error_mensaje` del mensaje `listo` (ver detalle_tecnico()). Y cuando lo que cortó el turno fue
+         * una FALLA (una excepción, un HTTP de error, una vuelta sin texto) va como error al log: es lo que
+         * hay que mirar. Con «no quedó tiempo» (nada se rompió) queda en warning.
+         */
+        $this->detalle_tecnico = 'turno sin terminar, se contestó con lo hecho: ' . (string) $detalle;
+
+        $rastro = [
             'ai_conversation_id' => $conversation->id,
             'ai_message_id'      => $assistant_message->id,
-            'detalle'            => mb_substr((string) $detalle, 0, 1000),
-        ]);
+            'user_id'            => $conversation->user_id,
+            'canal'              => (string) $assistant_message->canal,
+            'causa'              => mb_substr((string) $detalle, 0, 1000),
+        ];
+
+        if ($por_un_error) {
+            Log::error('AsistenteIaService: el turno falló después de hacer algo; se contesta con lo hecho, armado sin el modelo.', $rastro);
+        } else {
+            Log::warning('AsistenteIaService: el turno no terminó y no quedó tiempo para el cierre; se contesta con lo hecho, armado sin el modelo.', $rastro);
+        }
 
         $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'user')

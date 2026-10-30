@@ -22,6 +22,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\Fakes\HttpFactorySinSalida;
 use Tests\TestCase;
 
@@ -636,8 +637,83 @@ class Cierre_con_lo_hecho_Test extends TestCase
         $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
         $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
         $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que falta.', AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR);
-        $this->assertNull($assistant->error_mensaje);
+
+        /*
+         * Contrato cambiado a propósito en la segunda ronda (F3): el detalle técnico de lo que cortó el
+         * turno queda en `error_mensaje` aunque el mensaje esté `listo` (antes quedaba null). Ninguna SPA
+         * pinta el error_mensaje de un mensaje y el admin solo lo lee con el mensaje en `error`.
+         */
+        $this->assertStringContainsString('cierre', (string) $assistant->error_mensaje);
+        $this->assertStringContainsString('HTTP 400', (string) $assistant->error_mensaje);
         $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'Sin vueltas de más después del cierre.');
+    }
+
+    /**
+     * F3 de la segunda ronda: cuando lo que cortó el turno es una FALLA (acá, la llamada de cierre vuelve
+     * con un 400), va como error al log con la causa, el mensaje y la conversación.
+     *
+     * @test
+     */
+    public function el_turno_cortado_por_una_falla_va_como_error_al_log()
+    {
+        Log::spy();
+
+        $this->proveedor_que_siempre_pide_herramientas(Http::response([
+            'error' => ['type' => 'invalid_request_error', 'message' => 'tool_choice no soportado (P102 F3)'],
+        ], 400));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $servicio = new AsistenteIaService();
+
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $servicio->responder($conversation, $assistant));
+        $this->assertStringContainsString('HTTP 400', (string) $servicio->detalle_tecnico());
+
+        Log::shouldHaveReceived('error')->withArgs(function ($mensaje, $contexto = []) use ($conversation, $assistant) {
+            return strpos((string) $mensaje, 'el turno falló después de hacer algo') !== false
+                && (int) $contexto['ai_conversation_id'] === (int) $conversation->id
+                && (int) $contexto['ai_message_id'] === (int) $assistant->id
+                && strpos((string) $contexto['causa'], 'HTTP 400') !== false;
+        })->once();
+    }
+
+    /**
+     * F3: «no quedó tiempo para el cierre» no es una falla: warning y no error. Y un turno que termina
+     * normal deja `error_mensaje` en null, como siempre.
+     *
+     * @test
+     */
+    public function sin_tiempo_para_el_cierre_no_es_un_error_y_un_turno_normal_no_deja_detalle()
+    {
+        Log::spy();
+
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 66);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $servicio->responder($conversation, $assistant));
+        $this->assertStringContainsString('no quedó tiempo', (string) $servicio->detalle_tecnico());
+
+        Log::shouldNotHaveReceived('error');
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos((string) $mensaje, 'no quedó tiempo para el cierre') !== false;
+        })->once();
+
+        /* Un turno que cierra bien (con la llamada de cierre): sin detalle técnico. */
+        Http::swap(new HttpFactorySinSalida(app('events')));
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE));
+
+        list($otra, $normal) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($normal->id))->handle();
+
+        $normal = $normal->fresh();
+
+        $this->assertSame('listo', $normal->estado);
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $normal->contenido);
+        $this->assertNull($normal->error_mensaje);
     }
 
     /**
