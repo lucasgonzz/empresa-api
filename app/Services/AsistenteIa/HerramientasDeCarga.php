@@ -703,7 +703,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'contar_articulos_por_filtro',
-                'description'  => 'Cuenta cuántos artículos activos cumplen un filtro (todos los filtros a la vez) y devuelve los primeros nombres como muestra. Usala SIEMPRE antes de proponer_actualizacion_masiva o proponer_imagenes_para_articulos, para decirle a la persona cuántos artículos alcanza. Sin filtros cuenta el catálogo entero. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N (nunca los últimos). Los proveedores, categorías, subcategorías y marcas van por su NOMBRE, no por id: si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Cuenta cuántos artículos activos cumplen un filtro (todos los filtros a la vez) y devuelve los primeros nombres como muestra. Usala SIEMPRE antes de proponer_actualizacion_masiva o proponer_imagenes_para_articulos, para decirle a la persona cuántos artículos alcanza. Sin filtros cuenta el catálogo entero. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N (nunca los últimos). Los proveedores, categorías, subcategorías y marcas van por su NOMBRE, no por id: si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Si trae "error", contá ese motivo tal cual. 🔴 "¿Cuántos tienen margen 0 en la lista?" (o sin margen, o con precio fijo) = margen_en_lista igual 0 (o precio_fijo_en_lista) con lista = el nombre o "cualquiera": la respuesta trae por_lista (cuántos en CADA lista, cuántos con stock y cuántos con precio fijo) y muestra_por_lista con su article_id; contestá con esos números por lista, nunca con uno solo de la muestra.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -2430,7 +2430,7 @@ class HerramientasDeCarga
     {
         return [
             'type'        => 'array',
-            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Lista vacía = sin filtro.',
+            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Solo en contar_articulos_por_filtro: margen_en_lista (el margen de cada LISTA DE PRECIO) → igual, mayor, menor con el porcentaje, y precio_fijo_en_lista → igual si o no, los dos con lista = el nombre de la lista o "cualquiera"; con listas de precio, margen_de_ganancia (el del artículo) no arma el precio y se rechaza. Lista vacía = sin filtro.',
             'items'       => [
                 'type'       => 'object',
                 'properties' => [
@@ -2445,6 +2445,11 @@ class HerramientasDeCarga
                     'valor'    => [
                         'type'        => ['string', 'number'],
                         'description' => 'El nombre, el texto, el número, la fecha AAAA-MM-DD o si/no. No va con en_blanco ni no_en_blanco.',
+                    ],
+                    // Misión agente-mejoras-uso-real (E2): al final, por el prefijo del caché.
+                    'lista'    => [
+                        'type'        => 'string',
+                        'description' => 'Solo con margen_en_lista o precio_fijo_en_lista: el nombre de la lista de precios como lo dijo la persona, o "cualquiera" (en alguna lista; la respuesta trae el conteo de cada una).',
                     ],
                 ],
                 'required'   => ['campo', 'operador'],

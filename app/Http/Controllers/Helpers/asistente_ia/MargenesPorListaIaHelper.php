@@ -157,6 +157,37 @@ class MargenesPorListaIaHelper
     }
 
     /**
+     * UNA lista de precio del dueño por el nombre que dijo la persona, para CONSULTAR (misión
+     * agente-mejoras-uso-real, E2 punto 3, 29/10/2026: el filtro `margen_en_lista` de
+     * FiltroDeArticulosIaHelper). Es la misma búsqueda que resolver() —igual normalizado, sin las
+     * palabras de relleno, "mayor" → Mayorista; varias → `faltan` con las opciones; ninguna → error
+     * con las listas que existen— pero sin el "No se cargó nada:" del principio, que en una consulta
+     * no significa nada.
+     *
+     * @param  int  $owner_id
+     * @param  string  $texto
+     * @return \App\Models\PriceType|array  La lista, o la respuesta negativa con `listas` en las opciones.
+     */
+    public static function lista_por_nombre($owner_id, $texto)
+    {
+        $listas = self::listas_del_dueno($owner_id);
+
+        if (!count($listas)) {
+
+            return RespuestaDeCargaIa::error('Este negocio no tiene listas de precio cargadas.');
+        }
+
+        $lista = self::buscar_lista($listas, $texto);
+
+        if (RespuestaDeCargaIa::es_negativa($lista) && is_string($lista['error']) && strpos($lista['error'], self::NO_SE_CARGO) === 0) {
+
+            $lista['error'] = ucfirst(substr($lista['error'], strlen(self::NO_SE_CARGO)));
+        }
+
+        return $lista;
+    }
+
+    /**
      * Por qué este negocio NO acepta margenes_por_lista, o null si lo acepta.
      *
      * @param  \App\Models\User|null  $owner
