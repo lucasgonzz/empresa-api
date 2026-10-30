@@ -87,6 +87,16 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_articulos_sin_rotacion',
     ];
 
+    /**
+     * Las dos de las conversaciones anteriores (misión agente-memoria-y-sin-techo, 30/10/2026): no son
+     * del registro de lectura (HerramientasDeConversaciones) y van AL FINAL de TODOS los juegos de
+     * build_tools(), con o sin acciones. Escritas a mano por lo mismo que la lista de arriba.
+     */
+    const HERRAMIENTAS_DE_CONVERSACIONES = [
+        'buscar_conversaciones_anteriores',
+        'leer_conversacion_anterior',
+    ];
+
     /** @var User */
     protected $comercio;
 
@@ -242,7 +252,8 @@ class Acciones_service_y_job_Test extends TestCase
 
         $body = Http::recorded()[0][0]->data();
 
-        $this->assertEquals(self::HERRAMIENTAS_DE_LECTURA, array_column($body['tools'], 'name'), 'Sin el flag viajan exactamente las tools de lectura declaradas, en su orden.');
+        // Censo cambiado a propósito (misión agente-memoria-y-sin-techo): al final, las dos de las conversaciones anteriores.
+        $this->assertEquals(array_merge(self::HERRAMIENTAS_DE_LECTURA, self::HERRAMIENTAS_DE_CONVERSACIONES), array_column($body['tools'], 'name'), 'Sin el flag viajan exactamente las tools de lectura declaradas, en su orden.');
 
         $prompt = $body['system'][0]['text'];
 
@@ -267,7 +278,8 @@ class Acciones_service_y_job_Test extends TestCase
 
         $nombres = array_column($body['tools'], 'name');
 
-        $this->assertEquals(array_merge(self::HERRAMIENTAS_DE_LECTURA, HerramientasDeCarga::nombres()), $nombres);
+        // Censo cambiado a propósito (misión agente-memoria-y-sin-techo): al final, las dos de las conversaciones anteriores.
+        $this->assertEquals(array_merge(self::HERRAMIENTAS_DE_LECTURA, HerramientasDeCarga::nombres(), self::HERRAMIENTAS_DE_CONVERSACIONES), $nombres);
         $this->assertContains('proponer_gasto', $nombres);
         $this->assertContains('proponer_marcar_tarea_hecha', $nombres);
 
