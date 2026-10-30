@@ -98,7 +98,8 @@ class ValoracionIaHelper
             'id'                    => $mensaje->id,
             'valoracion'            => $mensaje->valoracion,
             'valoracion_comentario' => $mensaje->valoracion_comentario,
-            'valorado_at'           => $mensaje->valorado_at ? $mensaje->valorado_at->toIso8601String() : null,
+            // Mismo formato que en el listado de mensajes (serialización de Laravel: ISO 8601 en UTC).
+            'valorado_at'           => $mensaje->valorado_at ? $mensaje->valorado_at->toJSON() : null,
         ];
     }
 }
