@@ -25,6 +25,13 @@ use Tests\TestCase;
  * corta solo con un tope > 0; y el corte por tope de send_message contesta con el texto de límite sin
  * despachar el job.
  *
+ * 🔴 Misión agente-memoria-y-sin-techo (30/10/2026), CONTRATO CAMBIADO A PROPÓSITO: una interacción ya no
+ * es una fila `chat_mensaje` (una vuelta del loop) sino una RESPUESTA del agente, y el texto del corte
+ * dice cuál tope se pasó (el diario de interacciones o el mensual de tokens). Los tests que sembraban
+ * filas `chat_mensaje` para simular interacciones ahora siembran respuestas (sembrar_respuestas()), y
+ * el corte por interacciones espera MENSAJE_LIMITE_DIARIO. Caso real: Pablo (Ferre Total) leyó «de este
+ * mes» por el tope de HOY, con 106 filas `chat_mensaje` (una por vuelta del loop, no por pedido).
+ *
  * 🔴 Anthropic con clave nula o Http::fake: los tests jamás salen a la red.
  */
 class Config_y_tope_Test extends TestCase
@@ -146,6 +153,7 @@ class Config_y_tope_Test extends TestCase
         $this->comercio->save();
 
         $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 500, 300, 3);
+        $this->sembrar_respuestas(3);
 
         $r = $this->actingAs($this->comercio, 'sanctum')->getJson('api/mi-consumo-ia');
 
@@ -161,7 +169,7 @@ class Config_y_tope_Test extends TestCase
               'confianza'   => 'resuelto',
           ]);
 
-        // 3 filas chat_mensaje = 3 interacciones; (500+300)*3 = 2400 tokens.
+        // (500+300)*3 = 2400 tokens; 3 respuestas del agente = 3 interacciones.
         $this->assertSame(2400, $r->json('consumo_mes.tokens'));
         $this->assertSame(3, $r->json('consumo_mes.interacciones'));
     }
@@ -174,6 +182,7 @@ class Config_y_tope_Test extends TestCase
         $this->comercio->save();
 
         $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 999999, 999999, 100);
+        $this->sembrar_respuestas(100);
 
         $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
 
@@ -184,23 +193,30 @@ class Config_y_tope_Test extends TestCase
     /** @test */
     public function el_tope_supera_y_avisa_cerca()
     {
-        // Tope de interacciones = 10; con 8 filas está "cerca" (80%) pero no superó.
+        // Tope de interacciones = 10; con 8 respuestas está "cerca" (80%) pero no superó.
         $this->comercio->plan_ia_tope_interacciones_diarias = 10;
         $this->comercio->plan_ia_tope_tokens_mensual = null;
         $this->comercio->save();
 
-        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 1, 1, 8);
+        $this->sembrar_respuestas(8);
         $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
         $this->assertTrue($estado['cerca']);
         $this->assertFalse($estado['supero']);
 
         // Con 2 más (10) superó.
-        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 1, 1, 2);
+        $this->sembrar_respuestas(2);
         $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
         $this->assertTrue($estado['supero']);
+        $this->assertTrue($estado['supero_interacciones']);
+        $this->assertFalse($estado['supero_tokens']);
     }
 
-    /** @test */
+    /**
+     * Contrato cambiado a propósito (misión agente-memoria-y-sin-techo): el corte por el tope DIARIO de
+     * interacciones dice que es el de hoy y que mañana se renueva, no «de este mes».
+     *
+     * @test
+     */
     public function send_message_corta_por_tope_sin_despachar_el_job()
     {
         Queue::fake();
@@ -208,7 +224,7 @@ class Config_y_tope_Test extends TestCase
 
         $this->comercio->plan_ia_tope_interacciones_diarias = 5;
         $this->comercio->save();
-        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 10, 10, 5); // superó
+        $this->sembrar_respuestas(5); // superó
 
         $conversation = AiConversation::create([
             'user_id'      => $this->comercio->id,
@@ -223,10 +239,165 @@ class Config_y_tope_Test extends TestCase
 
         $r->assertStatus(201);
         $this->assertSame('listo', $r->json('assistant_message.estado'));
-        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE, $r->json('assistant_message.contenido'));
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE_DIARIO, $r->json('assistant_message.contenido'));
 
         // Lo central: NO se gastó una llamada a la API.
         Queue::assertNotPushed(ResponderMensajeChatIaJob::class);
+
+        // Y la respuesta del límite no cuenta como interacción: el consumo no sigue subiendo.
+        $this->assertSame(5, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones']);
+    }
+
+    /**
+     * El corte por el tope MENSUAL de tokens sigue diciendo «de este mes» (MENSAJE_LIMITE).
+     *
+     * @test
+     */
+    public function send_message_por_el_tope_mensual_dice_de_este_mes()
+    {
+        Queue::fake();
+        $this->dar_extension();
+
+        $this->comercio->plan_ia_tope_tokens_mensual = 1000;
+        $this->comercio->plan_ia_tope_interacciones_diarias = 100;
+        $this->comercio->save();
+        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 1000, 500, 1); // superó el mensual
+
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+        ]);
+
+        $r = $this->actingAs($this->comercio, 'sanctum')
+                  ->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
+                      'contenido' => '¿Cómo venís hoy?',
+                      'acciones'  => true,
+                  ]);
+
+        $r->assertStatus(201);
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE, $r->json('assistant_message.contenido'));
+        Queue::assertNotPushed(ResponderMensajeChatIaJob::class);
+    }
+
+    /**
+     * 🔴 El corte se mide ANTES de crear la respuesta del turno: con un tope de 2 y una respuesta hecha,
+     * el mensaje nuevo se contesta (antes de esta misión la respuesta pendiente recién creada ya contaba
+     * y el corte llegaba una respuesta antes).
+     *
+     * @test
+     */
+    public function el_corte_se_mide_antes_de_crear_la_respuesta()
+    {
+        Queue::fake();
+        $this->dar_extension();
+
+        $this->comercio->plan_ia_tope_interacciones_diarias = 2;
+        $this->comercio->save();
+        $this->sembrar_respuestas(1);
+
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+        ]);
+
+        $r = $this->actingAs($this->comercio, 'sanctum')
+                  ->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
+                      'contenido' => '¿Cómo venís hoy?',
+                      'acciones'  => true,
+                  ]);
+
+        $r->assertStatus(201);
+        $this->assertSame('pendiente', $r->json('assistant_message.estado'));
+        Queue::assertPushed(ResponderMensajeChatIaJob::class);
+
+        // La que se está generando ya cuenta: la próxima corta.
+        $this->assertSame(2, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones']);
+    }
+
+    /**
+     * 🔴 El caso de Pablo: un pedido que encadena 8 vueltas graba 8 filas `chat_mensaje`, y es UNA
+     * interacción, no 8.
+     *
+     * @test
+     */
+    public function una_respuesta_con_muchas_vueltas_es_una_sola_interaccion()
+    {
+        $this->comercio->plan_ia_tope_interacciones_diarias = 100;
+        $this->comercio->save();
+
+        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 10, 10, 8);
+        $this->sembrar_respuestas(1);
+
+        $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
+
+        $this->assertSame(1, $estado['consumo_interacciones']);
+        $this->assertSame(160, $estado['consumo_tokens'], 'Los tokens de las 8 vueltas cuentan enteros contra el mensual.');
+    }
+
+    /**
+     * Lo que no es una respuesta del agente a la persona no cuenta: los mensajes que escribe el sistema
+     * solo (un recordatorio que abre su conversación, un aviso después de una respuesta), las respuestas
+     * con el texto del límite, las conversaciones MCP y las respuestas de ayer. Y las de un empleado del
+     * negocio sí (el tope es del negocio).
+     *
+     * @test
+     */
+    public function solo_cuentan_las_respuestas_de_hoy_a_una_persona()
+    {
+        $this->sembrar_respuestas(2);
+
+        // Un recordatorio que abre su propia conversación (RecordatoriosDelAsistenteHelper).
+        $recordatorio = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $this->comercio->id, 'origen' => AiConversation::ORIGEN_WHATSAPP]);
+        AiMessage::create(['ai_conversation_id' => $recordatorio->id, 'rol' => 'assistant', 'contenido' => 'Recordatorio: mañana se acredita el cheque 7.', 'estado' => 'listo']);
+
+        // Un aviso después de una respuesta (AvisosDelAsistenteHelper).
+        $con_aviso = $this->sembrar_respuestas(1);
+        AiMessage::create(['ai_conversation_id' => $con_aviso->id, 'rol' => 'assistant', 'contenido' => 'Terminé de leer la factura.', 'estado' => 'listo']);
+
+        // Las respuestas con el texto del límite (el corte mismo).
+        foreach ([TopeDeTokensHelper::MENSAJE_LIMITE, TopeDeTokensHelper::MENSAJE_LIMITE_DIARIO] as $limite) {
+            $cortada = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $this->comercio->id]);
+            AiMessage::create(['ai_conversation_id' => $cortada->id, 'rol' => 'user', 'contenido' => 'Hola', 'estado' => 'listo']);
+            AiMessage::create(['ai_conversation_id' => $cortada->id, 'rol' => 'assistant', 'contenido' => $limite, 'estado' => 'listo']);
+        }
+
+        // Una conversación MCP (registro técnico de las herramientas de un cliente externo).
+        $mcp = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $this->comercio->id, 'origen' => AiConversation::ORIGEN_MCP]);
+        AiMessage::create(['ai_conversation_id' => $mcp->id, 'rol' => 'user', 'contenido' => 'proponer_gasto', 'estado' => 'listo']);
+        AiMessage::create(['ai_conversation_id' => $mcp->id, 'rol' => 'assistant', 'contenido' => '{}', 'estado' => 'listo']);
+
+        // Una respuesta de ayer.
+        $de_ayer = $this->sembrar_respuestas(1);
+        AiMessage::where('ai_conversation_id', $de_ayer->id)->update(['created_at' => Carbon::now()->subDay()]);
+
+        // Una respuesta a un empleado del negocio: cuenta.
+        $this->sembrar_respuestas(1, $this->empleado->id);
+
+        $this->assertSame(4, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones'], '2 + 1 (la del aviso) + 1 (la del empleado).');
+    }
+
+    /**
+     * El texto del límite dice cuál tope se pasó: el diario de interacciones o el mensual de tokens (que
+     * gana si se pasaron los dos: mañana no se arregla). Con un estado sin las claves nuevas, el de siempre.
+     *
+     * @test
+     */
+    public function el_texto_del_limite_dice_cual_tope_se_paso()
+    {
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE_DIARIO, TopeDeTokensHelper::mensaje_limite(['supero' => true, 'supero_tokens' => false, 'supero_interacciones' => true]));
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE, TopeDeTokensHelper::mensaje_limite(['supero' => true, 'supero_tokens' => true, 'supero_interacciones' => false]));
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE, TopeDeTokensHelper::mensaje_limite(['supero' => true, 'supero_tokens' => true, 'supero_interacciones' => true]));
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE, TopeDeTokensHelper::mensaje_limite(['supero' => true]));
+
+        $this->assertSame('Llegaste al límite de mensajes de hoy de tu plan. Mañana se renueva; si necesitás más, escribinos para ampliarlo.', TopeDeTokensHelper::MENSAJE_LIMITE_DIARIO);
+        $this->assertSame('Llegaste al límite de tu plan de este mes. Escribinos para ampliarlo.', TopeDeTokensHelper::MENSAJE_LIMITE, 'La constante de siempre queda.');
+
+        // estado() suma las dos claves sin sacar ninguna de las de antes.
+        $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
+
+        foreach (['consumo_tokens', 'consumo_interacciones', 'tope_tokens', 'tope_interacciones', 'supero', 'cerca', 'supero_tokens', 'supero_interacciones'] as $clave) {
+            $this->assertArrayHasKey($clave, $estado);
+        }
     }
 
     /**
@@ -303,6 +474,40 @@ class Config_y_tope_Test extends TestCase
                 'updated_at'                  => Carbon::now(),
             ]);
         }
+    }
+
+    /**
+     * Siembra $veces respuestas del agente de hoy (misión agente-memoria-y-sin-techo: la unidad del tope
+     * de interacciones): una conversación del comercio con $veces pares mensaje de la persona → respuesta.
+     *
+     * @param  int  $veces
+     * @param  int|null  $auth_user_id  La persona de la conversación (null = el dueño).
+     * @return AiConversation
+     */
+    protected function sembrar_respuestas($veces, $auth_user_id = null)
+    {
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => is_null($auth_user_id) ? $this->comercio->id : $auth_user_id,
+        ]);
+
+        for ($i = 0; $i < $veces; $i++) {
+            AiMessage::create([
+                'ai_conversation_id' => $conversation->id,
+                'rol'                => 'user',
+                'contenido'          => 'Pedido ' . $i,
+                'estado'             => 'listo',
+            ]);
+
+            AiMessage::create([
+                'ai_conversation_id' => $conversation->id,
+                'rol'                => 'assistant',
+                'contenido'          => 'Respuesta ' . $i,
+                'estado'             => 'listo',
+            ]);
+        }
+
+        return $conversation;
     }
 
     /**

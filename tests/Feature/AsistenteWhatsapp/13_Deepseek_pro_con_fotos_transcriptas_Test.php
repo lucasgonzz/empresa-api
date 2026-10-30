@@ -312,10 +312,14 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         /*
          * El tope: la transcripción NO es una interacción del dueño, pero sus tokens SÍ se pagaron y
          * cuentan en el mes (900 + 60 de la transcripción y 18 por cada una de las dos vueltas).
+         *
+         * 🔴 Contrato cambiado a propósito (misión agente-memoria-y-sin-techo, 30/10/2026): una
+         * interacción es una RESPUESTA del agente, no una vuelta del loop. Este turno —transcripción y dos
+         * vueltas— es UNA interacción (antes contaba 2, una por fila `chat_mensaje`).
          */
         $estado = TopeDeTokensHelper::estado(User::find($this->comercio->id));
 
-        $this->assertSame(2, $estado['consumo_interacciones']);
+        $this->assertSame(1, $estado['consumo_interacciones']);
         $this->assertSame(960 + 18 + 18, $estado['consumo_tokens']);
     }
 

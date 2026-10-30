@@ -16,6 +16,11 @@ use Illuminate\Support\Facades\Queue;
  * Protege: el receptor PUT admin-sync/plan-ia guarda los tres campos del contrato en el dueño (y un
  * tope 0 se guarda como "sin tope"), exige la clave cuando está configurada, y el canal de WhatsApp
  * contesta con el texto de límite sin despachar el job cuando el dueño superó su tope.
+ *
+ * 🔴 Misión agente-memoria-y-sin-techo (30/10/2026), CONTRATO CAMBIADO A PROPÓSITO: el tope diario se
+ * cuenta por RESPUESTAS del agente (no por filas `chat_mensaje`) y su corte dice «mensajes de hoy»
+ * (MENSAJE_LIMITE_DIARIO), no «de este mes». El caso real fue justamente por WhatsApp: Pablo (Ferre
+ * Total) leyó «de este mes» el 29/10 a las 23:51 y al otro día le andaba.
  */
 class Plan_ia_y_corte_Test extends AsistenteWhatsappTestCase
 {
@@ -69,7 +74,70 @@ class Plan_ia_y_corte_Test extends AsistenteWhatsappTestCase
         $this->comercio->plan_ia_tope_interacciones_diarias = 3;
         $this->comercio->save();
 
+        /*
+         * Tres respuestas del agente de hoy (con dos vueltas del loop cada una: las filas `chat_mensaje`
+         * ya no son la unidad, ver TopeDeTokensHelper).
+         */
+        $hilo = $this->conversacion_whatsapp(now()->subDay());
+
         for ($i = 0; $i < 3; $i++) {
+            $this->mensaje($hilo, 'user', 'listo', ['contenido' => 'Pedido ' . $i]);
+            $this->mensaje($hilo, 'assistant', 'listo', ['contenido' => 'Respuesta ' . $i]);
+
+            for ($vuelta = 0; $vuelta < 2; $vuelta++) {
+                AiTokenUsage::create([
+                    'user_id'                     => $this->comercio->id,
+                    'auth_user_id'                => $this->comercio->id,
+                    'proceso'                     => 'chat_mensaje',
+                    'proveedor'                   => 'anthropic',
+                    'modelo'                      => 'claude-sonnet-5',
+                    'input_tokens'                => 10,
+                    'output_tokens'               => 10,
+                    'cache_creation_input_tokens' => 0,
+                    'cache_read_input_tokens'     => 0,
+                    'created_at'                  => Carbon::now(),
+                    'updated_at'                  => Carbon::now(),
+                ]);
+            }
+        }
+
+        $this->mandar(['texto' => '¿Cómo venís hoy?', 'whatsapp_message_id' => 'wamid.tope.' . uniqid()])
+             ->assertStatus(202);
+
+        $assistant = AiMessage::where('rol', 'assistant')
+            ->where('canal', AiMessage::CANAL_WHATSAPP)
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        $this->assertNotNull($assistant);
+        $this->assertSame('listo', (string) $assistant->estado);
+        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE_DIARIO, (string) $assistant->contenido);
+
+        Queue::assertNotPushed(ResponderMensajeChatIaJob::class);
+    }
+
+    /**
+     * Con 2 respuestas de 3 permitidas —aunque el loop haya grabado muchas filas `chat_mensaje`— el canal
+     * de WhatsApp NO corta: el tope cuenta respuestas, no vueltas (misión agente-memoria-y-sin-techo).
+     *
+     * @test
+     */
+    public function el_canal_de_whatsapp_no_corta_por_las_vueltas_del_loop()
+    {
+        Queue::fake();
+        $this->dar_extension(self::SLUG_ASISTENTE);
+
+        $this->comercio->plan_ia_tope_interacciones_diarias = 3;
+        $this->comercio->save();
+
+        $hilo = $this->conversacion_whatsapp(now()->subDay());
+
+        for ($i = 0; $i < 2; $i++) {
+            $this->mensaje($hilo, 'user', 'listo', ['contenido' => 'Pedido ' . $i]);
+            $this->mensaje($hilo, 'assistant', 'listo', ['contenido' => 'Respuesta ' . $i]);
+        }
+
+        for ($vuelta = 0; $vuelta < 16; $vuelta++) {
             AiTokenUsage::create([
                 'user_id'                     => $this->comercio->id,
                 'auth_user_id'                => $this->comercio->id,
@@ -88,15 +156,6 @@ class Plan_ia_y_corte_Test extends AsistenteWhatsappTestCase
         $this->mandar(['texto' => '¿Cómo venís hoy?', 'whatsapp_message_id' => 'wamid.tope.' . uniqid()])
              ->assertStatus(202);
 
-        $assistant = AiMessage::where('rol', 'assistant')
-            ->where('canal', AiMessage::CANAL_WHATSAPP)
-            ->orderBy('id', 'DESC')
-            ->first();
-
-        $this->assertNotNull($assistant);
-        $this->assertSame('listo', (string) $assistant->estado);
-        $this->assertSame(TopeDeTokensHelper::MENSAJE_LIMITE, (string) $assistant->contenido);
-
-        Queue::assertNotPushed(ResponderMensajeChatIaJob::class);
+        Queue::assertPushed(ResponderMensajeChatIaJob::class);
     }
 }

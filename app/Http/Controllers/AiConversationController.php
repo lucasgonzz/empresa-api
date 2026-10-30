@@ -477,6 +477,14 @@ class AiConversationController extends Controller
             $datos_del_assistant['modelo_pedido'] = $modelo;
         }
 
+        /*
+         * El tope del plan se mide ANTES de crear la respuesta (misión agente-memoria-y-sin-techo,
+         * 30/10/2026): desde esa misión una interacción es una respuesta del agente
+         * (TopeDeTokensHelper::interacciones_del_dia()), y medido después la de este turno —que todavía
+         * no se generó— ya contaba: con un tope de 100 cortaba en la respuesta 100 y no en la 101.
+         */
+        $estado_del_tope = TopeDeTokensHelper::estado(User::find($conversation->user_id));
+
         $assistant_message = AiMessage::create($datos_del_assistant);
 
         $conversation->last_message_at = now();
@@ -484,12 +492,14 @@ class AiConversationController extends Controller
 
         /*
          * Corte por tope del plan (misión foto-sucursal-y-asistente-configurable): si el negocio ya
-         * superó el tope de su plan este mes, se contesta con el texto de límite SIN gastar una
+         * superó el tope de su plan (el mensual de tokens o el diario de interacciones, medido arriba),
+         * se contesta con el texto de límite SIN gastar una
          * llamada a la API. El assistant nace 'listo' y no se despacha ni el job de respuesta ni el
          * de título. Sin tope configurado, estado()['supero'] es false y todo sigue como siempre.
          */
-        if (TopeDeTokensHelper::estado(User::find($conversation->user_id))['supero']) {
-            $assistant_message->contenido = TopeDeTokensHelper::MENSAJE_LIMITE;
+        if ($estado_del_tope['supero']) {
+            /* El del tope diario («mañana se renueva») o el del mensual, según cuál se pasó. */
+            $assistant_message->contenido = TopeDeTokensHelper::mensaje_limite($estado_del_tope);
             $assistant_message->estado = 'listo';
             $assistant_message->save();
 

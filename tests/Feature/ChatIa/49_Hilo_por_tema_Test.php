@@ -8,7 +8,6 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
-use App\Models\AiTokenUsage;
 use Carbon\Carbon;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Http;
@@ -681,20 +680,13 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
         $this->comercio->plan_ia_tope_interacciones_diarias = 2;
         $this->comercio->save();
 
-        for ($i = 0; $i < 2; $i++) {
-
-            AiTokenUsage::create([
-                'user_id'                     => $this->comercio->id,
-                'auth_user_id'                => $this->comercio->id,
-                'proceso'                     => 'chat_mensaje',
-                'proveedor'                   => 'anthropic',
-                'modelo'                      => 'claude-modelo-fake',
-                'input_tokens'                => 10,
-                'output_tokens'               => 10,
-                'cache_creation_input_tokens' => 0,
-                'cache_read_input_tokens'     => 0,
-            ]);
-        }
+        /*
+         * Contrato cambiado a propósito (misión agente-memoria-y-sin-techo, 30/10/2026): el tope diario
+         * cuenta RESPUESTAS del agente, no filas `chat_mensaje`. La conversación vigente ya trae una de
+         * hoy; con una más se llega a las 2 del tope (antes se sembraban 2 filas de consumo).
+         */
+        $this->mensaje($vigente, 'user', 'listo', ['contenido' => '¿Y cuántas quedaron en Florida?']);
+        $this->mensaje($vigente, 'assistant', 'listo', ['contenido' => 'En Florida quedaron 5.']);
 
         $this->responde('nueva');
 
