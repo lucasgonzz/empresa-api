@@ -332,13 +332,14 @@ class PropuestaCompraConFacturaIaHelper
 
         /*
          * Misión agente-mejoras-uso-real (E1 punto 8): si la compra que se reusa tuvo un escaneo que
-         * FALLÓ sin leer nada (CONV 20 de Ferre Total, la Compra 1358), la tarjeta lo dice: es la
-         * compra de esta misma factura, que vuelve a escanearse.
+         * FALLÓ sin leer nada (CONV 20 de Ferre Total, la Compra 1358), la tarjeta lo dice. 🔴 Sin
+         * afirmar que es la misma factura (revisión independiente, arreglo 8, 30/10/2026): no hay cómo
+         * saberlo, el escaneo no leyó nada; se dice lo que se sabe de la compra.
          */
         $que_pasa = is_null($a_reusar)
             ? 'Se crea una compra nueva'
             : ('Se usa la compra N° ' . $a_reusar->num
-                . (self::tiene_algun_escaneo($a_reusar) ? ', cuyo escaneo anterior falló' : ', que está vacía'));
+                . (self::tiene_algun_escaneo($a_reusar) ? ', que estaba vacía y su escaneo anterior falló' : ', que está vacía'));
 
         if (!is_null($proveedor_nuevo)) {
 
@@ -1415,7 +1416,8 @@ class PropuestaCompraConFacturaIaHelper
 
         if ($escaneo_fallido) {
 
-            $como_estaba .= ', y su escaneo anterior falló: vuelvo a leer la factura en esta misma compra';
+            /* Sin afirmar que es la misma factura (arreglo 8): solo lo que se sabe de la compra. */
+            $como_estaba .= ', y su escaneo anterior falló';
         }
 
         /*

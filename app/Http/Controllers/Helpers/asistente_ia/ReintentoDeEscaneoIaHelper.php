@@ -268,6 +268,22 @@ class ReintentoDeEscaneoIaHelper
      */
     public static function escaneo_a_reintentar(ProviderOrder $compra)
     {
+        /*
+         * 🔴 LA COMPRA TIENE QUE SEGUIR VACÍA (revisión independiente, arreglo 8, 30/10/2026). Con
+         * `compra_num` el modelo puede nombrar cualquier compra; si alguien le cargó artículos a mano
+         * después del escaneo que falló, reescanear le sumaría una revisión encima de renglones que ya
+         * están (stock y deuda dos veces si se confirma sin mirar). Eso se hace desde Compras.
+         */
+        $articulos = $compra->articles()->count();
+
+        if ($articulos > 0) {
+
+            return RespuestaDeCargaIa::error(
+                'La Compra N° ' . $compra->num . ' ya tiene ' . ($articulos === 1 ? '1 artículo cargado' : $articulos . ' artículos cargados')
+                . ': no la vuelvo a escanear desde acá. Si querés sumarle la factura, hacelo desde Compras.'
+            );
+        }
+
         $ultimo = ProviderOrderScan::where('provider_order_id', $compra->id)
                                     ->orderBy('id', 'DESC')
                                     ->first();
