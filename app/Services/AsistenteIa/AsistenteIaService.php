@@ -717,13 +717,13 @@ class AsistenteIaService
              * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
              */
             try {
-                $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
+                $response = $this->post_al_proveedor($http, $url, ProveedorIaHelper::agregar_thinking([
                     'model'      => $model,
                     'max_tokens' => self::MAX_TOKENS,
                     'system'     => $system,
                     'tools'      => $tools,
                     'messages'   => $messages,
-                ], $thinking));
+                ], $thinking), $inicio_del_loop, is_null($texto_antes_del_reintento), (int) $conversation->id);
             } catch (\Throwable $e) {
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
@@ -3411,6 +3411,91 @@ CONFIRMACION;
         }
 
         return rtrim($contenido) . "\n" . implode("\n", $lineas);
+    }
+
+    /**
+     * La llamada al proveedor de IA de cada vuelta del loop, con UN reintento ante un corte de red o un
+     * error transitorio (misión agente-mejoras-uso-real, E1 punto 4, 29/10/2026).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, CONV 15, mensaje 92). Pablo mandó tres fotos para los clavos que
+     * faltaban y la PRIMERA llamada del turno volvió con «cURL error 28: Operation timed out after 60000
+     * milliseconds with 0 bytes received» contra DeepSeek. El turno murió ahí: un solo corte de red,
+     * que la vuelta siguiente casi seguro no tenía, le costó al dueño la tarea entera. Ahora:
+     *   - una ConnectionException (timeout, conexión rechazada) se reintenta UNA vez;
+     *   - una respuesta con error transitorio (ProveedorIaHelper::es_error_transitorio(): 529, 429,
+     *     500, 502, 503, overloaded_error / api_error) también, UNA vez; si el reintento falla de
+     *     cualquier forma, vuelve la respuesta original y el loop la maneja como siempre;
+     *   - y solo si queda presupuesto: el reintento arranca únicamente si (lo ya gastado +
+     *     TIMEOUT_SEGUNDOS) entra en PRESUPUESTO_SEGUNDOS. Así la cadena de techos documentada en
+     *     PRESUPUESTO_SEGUNDOS sigue cerrando (peor caso del turno: 210 + 60 = 270 < 300 del job).
+     *
+     * 🔴 NO SE REINTENTA DENTRO DEL REINTENTO DE LA TARJETA O DE LA CARGA PROMETIDA (`$puede_reintentar`
+     * en false): ahí una falla ya tiene su salida propia (volver al texto de antes, ver el loop), y una
+     * llamada de más cambiaría lo que esa guarda decide.
+     *
+     * Está en un método propio y fuera del loop a propósito: el loop solo cambia en la línea de la
+     * llamada (la zona del reintento de la tarjeta la toca otra misión en paralelo).
+     *
+     * @param  \Illuminate\Http\Client\PendingRequest  $http
+     * @param  string  $url
+     * @param  array  $body  El payload ya armado (con el thinking si corresponde).
+     * @param  int  $inicio_del_loop  time() del arranque del turno (el reloj de PRESUPUESTO_SEGUNDOS).
+     * @param  bool  $puede_reintentar  false durante el reintento de la tarjeta o de la carga.
+     * @param  int  $conversation_id  Solo para el log.
+     * @return \Illuminate\Http\Client\Response
+     *
+     * @throws \Illuminate\Http\Client\ConnectionException  Si se corta dos veces (o una sin presupuesto).
+     */
+    protected function post_al_proveedor($http, $url, array $body, $inicio_del_loop, $puede_reintentar, $conversation_id)
+    {
+        try {
+            $response = $http->post($url, $body);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            if (! $puede_reintentar || ! $this->queda_tiempo_para_reintentar($inicio_del_loop)) {
+                throw $e;
+            }
+
+            Log::warning('AsistenteIaService: se cortó la llamada al proveedor de IA; se reintenta una vez.', [
+                'ai_conversation_id' => $conversation_id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $http->post($url, $body);
+        }
+
+        if ($response->successful() || ! $puede_reintentar || ! ProveedorIaHelper::es_error_transitorio($response)
+            || ! $this->queda_tiempo_para_reintentar($inicio_del_loop)) {
+            return $response;
+        }
+
+        Log::warning('AsistenteIaService: el proveedor de IA devolvió un error transitorio; se reintenta una vez.', [
+            'ai_conversation_id' => $conversation_id,
+            'http'               => $response->status(),
+        ]);
+
+        try {
+            return $http->post($url, $body);
+        } catch (\Throwable $e) {
+            /* El reintento no puede dejar un error peor que el original: vuelve la respuesta de antes. */
+            Log::warning('AsistenteIaService: falló el reintento ante el error transitorio; se sigue con la respuesta original.', [
+                'ai_conversation_id' => $conversation_id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $response;
+        }
+    }
+
+    /**
+     * true si un reintento de la llamada al proveedor entra en el presupuesto del turno: lo ya gastado
+     * más una llamada entera (TIMEOUT_SEGUNDOS) no pasa PRESUPUESTO_SEGUNDOS. Ver post_al_proveedor().
+     *
+     * @param  int  $inicio_del_loop
+     * @return bool
+     */
+    protected function queda_tiempo_para_reintentar($inicio_del_loop): bool
+    {
+        return (time() - (int) $inicio_del_loop) + self::TIMEOUT_SEGUNDOS <= self::PRESUPUESTO_SEGUNDOS;
     }
 
     /**
