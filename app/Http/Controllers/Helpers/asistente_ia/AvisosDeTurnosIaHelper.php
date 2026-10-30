@@ -130,16 +130,30 @@ class AvisosDeTurnosIaHelper
      * Es la misma para el contenido del mensaje en error (lo que se ve en el sistema y queda en el
      * historial) y para el aviso por WhatsApp.
      *
+     * 🔴 NO DICE «NO LLEGUÉ A CARGARLAS» SI ALGO SÍ QUEDÓ HECHO EN ESE TURNO (revisión independiente,
+     * arreglo 4, 30/10/2026). En "directo" una carga sacada de una de las fotos (un gasto, una venta) se
+     * confirma sola en el acto; si después el turno se corta, decir que no se cargó nada lleva al dueño a
+     * pedirla otra vez y se duplica. Con tarjetas confirmadas en el mensaje, la frase dice qué quedó hecho
+     * (con el texto de su resultado) y que lo demás no.
+     *
      * @param  int  $sin_usar  Cuántas fotos del pedido no usó ninguna carga.
+     * @param  array<int, string>  $hechos  Lo que quedó hecho en el turno (el resultado de cada tarjeta confirmada).
      * @return string  Sin espacio adelante.
      */
-    public static function frase_de_fotos_sin_cargar($sin_usar)
+    public static function frase_de_fotos_sin_cargar($sin_usar, array $hechos = [])
     {
         $sin_usar = (int) $sin_usar;
 
         if ($sin_usar <= 0) {
 
             return '';
+        }
+
+        if (count($hechos)) {
+
+            return 'Alcancé a dejar hecho esto: ' . implode(' ', $hechos) . ' Lo demás no: '
+                . ($sin_usar === 1 ? 'la otra foto quedó guardada sin cargar.' : 'las otras ' . $sin_usar . ' fotos quedaron guardadas sin cargar.')
+                . ' Escribime «seguí» y continúo con eso.';
         }
 
         return $sin_usar === 1
@@ -149,7 +163,8 @@ class AvisosDeTurnosIaHelper
 
     /**
      * La frase de las fotos sin cargar de un turno que no terminó (frase_de_fotos_sin_cargar() con las
-     * fotos del pedido que ninguna carga usó), o vacío. Protegido: si algo falla, vacío (no se dice nada).
+     * fotos del pedido que ninguna carga usó y lo que SÍ quedó hecho: las tarjetas confirmadas de este
+     * mensaje, que el cierre del error no descarta), o vacío. Protegido: si algo falla, vacío.
      *
      * @param  \App\Models\AiMessage  $assistant  El mensaje del asistente que no terminó.
      * @param  \App\Models\AiMessage|null  $pedido  El mensaje del dueño que contestaba.
@@ -163,7 +178,22 @@ class AvisosDeTurnosIaHelper
                 ? AiMessageImagen::where('ai_message_id', (int) $pedido->id)->whereNull('gestionada_at')->count()
                 : 0;
 
-            return self::frase_de_fotos_sin_cargar($sin_usar);
+            $hechos = [];
+
+            foreach (AiMessageAction::where('ai_message_id', (int) $assistant->id)
+                                    ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                                    ->orderBy('id')
+                                    ->get() as $accion) {
+
+                $texto = is_object($accion->resultado) && isset($accion->resultado->texto) ? trim((string) $accion->resultado->texto) : '';
+
+                if ($texto !== '') {
+
+                    $hechos[] = rtrim($texto, '.') . '.';
+                }
+            }
+
+            return self::frase_de_fotos_sin_cargar($sin_usar, $hechos);
 
         } catch (\Throwable $e) {
 

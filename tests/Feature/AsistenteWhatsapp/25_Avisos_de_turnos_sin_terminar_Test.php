@@ -175,4 +175,45 @@ class Avisos_de_turnos_sin_terminar_Test extends AsistenteWhatsappTestCase
         (new ResponderMensajeChatIaJob($sin_anuncio->id))->handle();
         $this->assertSame(0, AiAvisoDelAsistente::where('ai_message_id', $sin_anuncio->id)->count());
     }
+
+    /**
+     * 🔴 Arreglo 4: si en ese turno una carga quedó confirmada (en "directo"), el aviso no dice «no
+     * llegué a cargarlas»: dice qué quedó hecho y que el resto no.
+     *
+     * @test
+     */
+    public function si_algo_quedo_hecho_en_el_turno_el_aviso_no_dice_que_no_se_cargo_nada()
+    {
+        list(, , $assistant, $fotos) = $this->turno(3);
+
+        /* Una de las fotos se usó en un gasto que se confirmó solo en el turno (directo). */
+        $fotos[0]->gestionada_at = now();
+        $fotos[0]->save();
+
+        AiMessageAction::create([
+            'ai_conversation_id' => $assistant->ai_conversation_id,
+            'ai_message_id'      => $assistant->id,
+            'user_id'            => $this->comercio->id,
+            'auth_user_id'       => $this->comercio->id,
+            'tipo'               => AiMessageAction::TIPO_GASTO,
+            'clave'              => 'gasto:e1r',
+            'estado'             => AiMessageAction::ESTADO_CONFIRMADA,
+            'datos'              => [],
+            'presentacion'       => ['titulo' => 'Gasto', 'renglones' => [], 'aviso' => null],
+            'resultado'          => ['texto' => 'Gasto N° 88 registrado por $ 207.500'],
+            'resuelta_at'        => now(),
+        ]);
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $contenido = (string) $assistant->fresh()->contenido;
+        $this->assertStringNotContainsString('no llegué a cargarlas', $contenido);
+        $this->assertStringContainsString('Gasto N° 88 registrado', $contenido);
+        $this->assertStringContainsString('las otras 2 fotos quedaron guardadas sin cargar', $contenido);
+
+        $aviso = AiAvisoDelAsistente::where('ai_message_id', $assistant->id)->first();
+        $this->assertNotNull($aviso);
+        $this->assertStringContainsString('Gasto N° 88 registrado', $aviso->texto);
+        $this->assertStringNotContainsString('no llegué a cargarlas', $aviso->texto);
+    }
 }
