@@ -879,6 +879,27 @@ class Cierre_con_lo_hecho_Test extends TestCase
         AiMessageImagen::where('ai_message_id', $pedido->id)->delete();
 
         $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido));
+
+        /* Muchas tarjetas: como mucho RENGLONES_POR_SECCION por sección y «- y N más.» (el texto sale por WhatsApp). */
+        for ($i = 1; $i <= AvisosDeTurnosIaHelper::RENGLONES_POR_SECCION + 3; $i++) {
+            AiMessageAction::create([
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $assistant->id,
+                'user_id'            => $this->comercio->id,
+                'auth_user_id'       => $this->comercio->id,
+                'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+                'clave'              => 'tarea:p102-muchas-' . $i,
+                'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+                'datos'              => [],
+                'presentacion'       => ['titulo' => 'Tarea ' . $i, 'renglones' => [], 'aviso' => null],
+            ]);
+        }
+
+        $con_muchas = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido);
+
+        $this->assertSame(AvisosDeTurnosIaHelper::RENGLONES_POR_SECCION + 1, substr_count($con_muchas, "\n- "), '10 renglones y el «y N más».');
+        $this->assertStringContainsString("\n- y 3 más.", $con_muchas);
+        $this->assertStringNotContainsString('Tarea ' . (AvisosDeTurnosIaHelper::RENGLONES_POR_SECCION + 1), $con_muchas);
     }
 
     /**

@@ -69,6 +69,14 @@ class AvisosDeTurnosIaHelper
     /** Techo de caracteres del renglón de cada carga en texto_de_turno_sin_terminar(). */
     const LARGO_DEL_RENGLON = 300;
 
+    /**
+     * Cuántas cargas se listan como mucho por sección en texto_de_turno_sin_terminar(); las demás van en
+     * un «- y N más.». Con el techo de 24 vueltas un turno puede dejar muchas tarjetas, y el texto sale por
+     * WhatsApp (un mensaje de 4.096 caracteres como mucho): 10 renglones de 300 entran con margen. Las que
+     * no se nombran igual viajan en el historial con su renglón.
+     */
+    const RENGLONES_POR_SECCION = 10;
+
     /** @var bool|null  Si la tabla existe en esta base (se pregunta una vez por proceso). */
     protected static $hay_tabla = null;
 
@@ -310,13 +318,13 @@ class AvisosDeTurnosIaHelper
 
             if (count($hechos)) {
 
-                $partes[] = self::ENCABEZADO_HECHO . "\n- " . implode("\n- ", $hechos);
+                $partes[] = self::ENCABEZADO_HECHO . self::lista($hechos);
             }
 
             if (count($para_confirmar)) {
 
                 $partes[] = (count($para_confirmar) === 1 ? self::ENCABEZADO_PARA_CONFIRMAR_UNA : self::ENCABEZADO_PARA_CONFIRMAR_VARIAS)
-                    . "\n- " . implode("\n- ", $para_confirmar);
+                    . self::lista($para_confirmar);
             }
 
             $fotos = $pedido instanceof AiMessage
@@ -389,6 +397,22 @@ class AvisosDeTurnosIaHelper
         }
 
         return self::recortar_renglon(count($renglones) ? $titulo . ' (' . implode('; ', $renglones) . ')' : $titulo);
+    }
+
+    /**
+     * Los renglones de una sección, uno por línea con «- » adelante (empieza con el salto de línea), con
+     * RENGLONES_POR_SECCION como mucho y un «- y N más.» si sobran.
+     *
+     * @param  array<int, string>  $renglones
+     * @return string
+     */
+    protected static function lista(array $renglones)
+    {
+        $sobran = count($renglones) - self::RENGLONES_POR_SECCION;
+
+        $lista = "\n- " . implode("\n- ", array_slice($renglones, 0, self::RENGLONES_POR_SECCION));
+
+        return $sobran > 0 ? $lista . "\n- y " . $sobran . ' más.' : $lista;
     }
 
     /**
