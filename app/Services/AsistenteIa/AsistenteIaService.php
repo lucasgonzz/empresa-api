@@ -219,6 +219,10 @@ class AsistenteIaService
      *
      * La PRIMERA vuelta siempre es una llamada normal, aunque el mensaje haya esperado en la cola más que
      * esto: sin ninguna ronda hecha no hay nada que contar en un cierre.
+     *
+     * Desde la ronda de arreglos de la revisión independiente (R6) se cierra también ANTES de los 105 si
+     * otra vuelta normal, durando lo que duró la última, ya no dejaría ventana para el cierre: ver
+     * MARGEN_DEL_CIERRE_EN_WHATSAPP.
      */
     const PRESUPUESTO_SEGUNDOS_WHATSAPP = 105;
 
@@ -228,6 +232,21 @@ class AsistenteIaService
      * turno termina en el error de tiempo agotado, como antes. Ver techo_de_la_llamada_de_cierre().
      */
     const SEGUNDOS_MINIMOS_DEL_CIERRE = 10;
+
+    /**
+     * Margen que tiene que quedarle a la llamada de cierre por WhatsApp, en segundos (ronda de arreglos de
+     * la revisión independiente de la misión agente-memoria-y-sin-techo, R6, 30/10/2026). Antes de cada
+     * vuelta normal por WhatsApp se mira si, durando lo que duró la última, terminaría a más de
+     * TECHO_DEL_REINTENTO_EN_WHATSAPP − este margen: si es así, esa vuelta ya es la de cierre (ver
+     * otra_vuelta_no_deja_ventana_para_el_cierre()).
+     *
+     * 🔴 POR QUÉ. El presupuesto de 105 s solo se mira al ARRANCAR la vuelta: una normal que arrancaba a
+     * los 104 s y tardaba 60 terminaba a los 164 y al cierre le quedaba 1 s (menos de
+     * SEGUNDOS_MINIMOS_DEL_CIERRE): no se hacía y la persona recibía el texto armado sin el modelo en vez
+     * del que cuenta lo hecho con los datos. 20 s es el doble del mínimo del cierre y alcanza para que
+     * Flash escriba (2-5 s, medido en Ferre Total) y para buena parte de lo que tarda un Profundo.
+     */
+    const MARGEN_DEL_CIERRE_EN_WHATSAPP = 20;
 
     /**
      * La nota del sistema de la LLAMADA DE CIERRE (misión agente-memoria-y-sin-techo, 30/10/2026): va
@@ -779,8 +798,16 @@ class AsistenteIaService
          */
         $cerrando = false;
 
-        /* Por qué cerró el turno ('techo' o 'presupuesto'), para el log y el detalle técnico. */
+        /* Por qué cerró el turno ('techo', 'presupuesto' o 'ventana'), para el log y el detalle técnico. */
         $motivo_del_cierre = '';
+
+        /*
+         * Ronda de arreglos de la revisión independiente (R6): cuándo arrancó la vuelta anterior (con
+         * ahora()), para medir cuánto duró y decidir si otra vuelta normal todavía deja ventana para la
+         * llamada de cierre por WhatsApp (ver otra_vuelta_no_deja_ventana_para_el_cierre()). null antes de
+         * la primera vuelta.
+         */
+        $inicio_de_la_vuelta_anterior = null;
 
         while ($iterations < $max_iterations) {
             /*
@@ -792,6 +819,23 @@ class AsistenteIaService
              */
             $transcurrido          = $this->segundos_del_turno($inicio_del_loop, $assistant_message);
             $vencio_el_presupuesto = $iterations > 0 && $transcurrido > $this->presupuesto_del_canal($assistant_message);
+
+            /*
+             * Ronda de arreglos de la revisión independiente (R6): por WhatsApp, aunque el presupuesto no
+             * se haya pasado, si otra vuelta normal que dure lo que duró la última ya no dejaría ventana
+             * para el cierre, se cierra ahora. Una vuelta que arrancaba a los 104 s y tardaba 60 dejaba
+             * menos de SEGUNDOS_MINIMOS_DEL_CIERRE hasta los 165 y el turno terminaba sin cierre. Cuenta
+             * como presupuesto vencido para todo lo demás (un reintento de guarda en curso vuelve a su
+             * texto, igual que con el presupuesto).
+             */
+            $duracion_de_la_ultima_vuelta = is_null($inicio_de_la_vuelta_anterior) ? 0 : max(0, $this->ahora() - $inicio_de_la_vuelta_anterior);
+            $sin_ventana_para_otra_vuelta = $iterations > 0
+                && ! $vencio_el_presupuesto
+                && $this->otra_vuelta_no_deja_ventana_para_el_cierre($transcurrido, $duracion_de_la_ultima_vuelta, $assistant_message);
+
+            if ($sin_ventana_para_otra_vuelta) {
+                $vencio_el_presupuesto = true;
+            }
 
             if ($vencio_el_presupuesto) {
                 if (! is_null($texto_antes_del_reintento)) {
@@ -862,7 +906,7 @@ class AsistenteIaService
             $segundos_del_cierre = 0;
 
             if ($cerrando) {
-                $motivo_del_cierre   = $vencio_el_presupuesto ? 'presupuesto' : 'techo';
+                $motivo_del_cierre   = $vencio_el_presupuesto ? ($sin_ventana_para_otra_vuelta ? 'ventana' : 'presupuesto') : 'techo';
                 $segundos_del_cierre = min(self::TIMEOUT_SEGUNDOS, $this->techo_de_la_llamada_de_cierre($assistant_message) - $transcurrido);
 
                 if ($segundos_del_cierre < self::SEGUNDOS_MINIMOS_DEL_CIERRE) {
@@ -879,11 +923,15 @@ class AsistenteIaService
                     'motivo'             => $motivo_del_cierre,
                     'iterations'         => $iterations,
                     'transcurrido'       => $transcurrido,
+                    'ultima_vuelta'      => $duracion_de_la_ultima_vuelta,
                     'herramientas'       => count($herramientas_pedidas),
                 ]);
 
                 $messages = $this->con_nota_en_el_ultimo_user($messages, self::NOTA_DE_CIERRE);
             }
+
+            /* R6: de acá hasta el arranque de la vuelta siguiente es lo que dura esta (llamada + herramientas). */
+            $inicio_de_la_vuelta_anterior = $this->ahora();
 
             $iterations++;
 
@@ -4368,6 +4416,33 @@ CONFIRMACION;
         }
 
         return self::PRESUPUESTO_SEGUNDOS + self::TIMEOUT_SEGUNDOS;
+    }
+
+    /**
+     * true si, por WhatsApp, otra vuelta normal que dure lo que duró la última ya no dejaría ventana para
+     * la llamada de cierre (ronda de arreglos de la revisión independiente, R6, 30/10/2026): terminaría
+     * después de TECHO_DEL_REINTENTO_EN_WHATSAPP − MARGEN_DEL_CIERRE_EN_WHATSAPP (165 − 20 = 145 s,
+     * contados como segundos_del_turno(), o sea desde que llegó el mensaje). Entonces esa vuelta ya es la de
+     * cierre, con la ventana entera.
+     *
+     * Solo por WhatsApp: ahí el techo es la paciencia del admin (180 s), que no se negocia. Sistema y app
+     * siguen con la cadena de PRESUPUESTO_SEGUNDOS tal cual (la misma regla les cambiaría el escalón 2).
+     * La duración de la última vuelta es la mejor estimación barata de la próxima (el mismo modelo, el
+     * mismo historial más un poco); la primera vuelta no tiene anterior y nunca cierra por acá.
+     *
+     * @param  int  $transcurrido  segundos_del_turno() al arrancar la vuelta.
+     * @param  int  $duracion_de_la_ultima_vuelta  Segundos que duró la vuelta anterior (llamada + herramientas).
+     * @param  AiMessage|null  $assistant_message
+     * @return bool
+     */
+    protected function otra_vuelta_no_deja_ventana_para_el_cierre($transcurrido, $duracion_de_la_ultima_vuelta, $assistant_message = null): bool
+    {
+        if (! ($assistant_message instanceof AiMessage) || ! $assistant_message->es_de_whatsapp()) {
+
+            return false;
+        }
+
+        return ((int) $transcurrido + (int) $duracion_de_la_ultima_vuelta) > (self::TECHO_DEL_REINTENTO_EN_WHATSAPP - self::MARGEN_DEL_CIERRE_EN_WHATSAPP);
     }
 
     /**

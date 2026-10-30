@@ -480,6 +480,52 @@ class Cierre_con_lo_hecho_Test extends TestCase
     }
 
     /**
+     * 🔴 R6 de la ronda de arreglos: por WhatsApp, con 50 s por llamada, la tercera vuelta arranca a los
+     * 100 s —dentro del presupuesto de 105— pero, durando lo que la anterior, terminaría a los 150, pasado
+     * 165 − MARGEN_DEL_CIERRE_EN_WHATSAPP (145): esa vuelta ya es la de cierre, con su ventana entera. Sin
+     * la regla había una tercera normal (hasta los 150) y el cierre quedaba con 15 s.
+     *
+     * @test
+     */
+    public function por_whatsapp_cierra_antes_si_otra_vuelta_no_deja_ventana_para_el_cierre()
+    {
+        $this->assertSame(20, AsistenteIaService::MARGEN_DEL_CIERRE_EN_WHATSAPP);
+
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 50);
+
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP);
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $servicio->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(3, $bodies, 'Dos vueltas normales (0-50 y 50-100 s) y la de cierre a los 100 s.');
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * R6: la regla de la ventana es solo de WhatsApp. El mismo reloj por el sistema (50 s por llamada) sigue
+     * cerrando recién pasado el presupuesto de 210 (ver el_presupuesto_vencido_cierra_aunque_queden_vueltas):
+     * a los 200 s, con una vuelta de 50, no cierra todavía.
+     *
+     * @test
+     */
+    public function por_el_sistema_la_ventana_de_whatsapp_no_aplica()
+    {
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 50);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $servicio->responder($conversation, $assistant));
+
+        $this->assertCount(6, $this->bodies_enviados(), '5 vueltas normales (hasta los 250 s) y la de cierre: igual que sin la regla.');
+    }
+
+    /**
      * Por el sistema sigue el presupuesto de 210: con 40 s por llamada cierra en la vuelta 7 (a los 240 s).
      *
      * @test
