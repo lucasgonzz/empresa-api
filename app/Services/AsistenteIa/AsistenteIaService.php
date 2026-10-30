@@ -3959,7 +3959,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'resumir_datos',
-                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada, pero 🔴 renglon_de_venta no prorratea los descuentos y recargos de la venta ni filtra las ventas sin terminar: no lo uses para el total de un día ni para "cuál me dejó más margen" (eso es consultar_resumen_de_ventas con agrupar_por articulo y orden ganancia, que cuadra con el total del período). Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4034,7 +4034,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4055,6 +4055,17 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre del método de pago, para dejar SOLO las ventas que lo tocaron (se combina con agrupar_por: metodo_de_pago "Tarjeta" + agrupar_por "cliente" contesta a quién le vendiste con tarjeta). También vale "Cuenta corriente" para quedarte con lo vendido fiado. 🔴 Cada importe sigue siendo el TOTAL de la venta, no la parte pagada con ese método: una venta pagada con dos métodos entra entera en los dos filtros, así que no sumes dos llamadas. Si el nombre no existe o encaja con varios, la respuesta trae "error" con los que hay: preguntá cuál y volvé a llamar.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final, por el prefijo del caché.
+                        'orden' => [
+                            'type'        => 'string',
+                            'description' => 'Por qué ordenar los grupos: total, ganancia (solo con articulo, rubro o proveedor) o cantidad. Con articulo, rubro o proveedor, mandarlo suma costo, ganancia y el id de cada grupo.',
+                            'enum'        => ResumenDeVentasIaHelper::ORDENES,
+                        ],
+                        'direccion' => [
+                            'type'        => 'string',
+                            'description' => 'desc (default: de mayor a menor) o asc (de menor a mayor: "los que menos", "margen negativo").',
+                            'enum'        => ['desc', 'asc'],
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -4065,7 +4076,9 @@ CONFIRMACION;
                         isset($input['hasta']) ? $input['hasta'] : null,
                         isset($input['agrupar_por']) ? (string) $input['agrupar_por'] : null,
                         isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
-                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null
+                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null,
+                        isset($input['orden']) ? (string) $input['orden'] : null,
+                        isset($input['direccion']) ? (string) $input['direccion'] : null
                     );
                 },
             ],
