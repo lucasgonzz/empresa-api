@@ -120,6 +120,12 @@ class Tools_de_lectura_Test extends TestCase
             // factura. Sin escaneos en este comercio: acá se prueba que la tool corre y contesta (el
             // camino entero lo cubre AsistenteWhatsapp/15_Aviso_del_escaneo_por_whatsapp_Test).
             'consultar_escaneo_de_factura'             => [],
+            // Misión agente-mejoras-uso-real (29/10/2026): el Excel del agente. Sin filas a propósito: corre
+            // la validación de la tabla y contesta sin escribir un archivo en el disco de trabajo (el camino
+            // entero, con el archivo y el link, lo cubre 95_Exportar_excel_del_agente_Test).
+            'exportar_excel'                           => ['titulo' => 'Tools B', 'columnas' => [['clave' => 'nombre', 'etiqueta' => 'Nombre']], 'filas' => []],
+            // Misma misión (E2): los artículos sin rotación (el cálculo lo cubre su propio test).
+            'consultar_articulos_sin_rotacion'         => ['limite' => 10],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

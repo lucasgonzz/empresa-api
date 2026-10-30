@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
@@ -229,7 +230,9 @@ class ResponderMensajeChatIaJob implements ShouldQueue
                 'message'            => $e->getMessage(),
             ]);
 
-            $this->marcar_error($message, $this->contenido_para_la_persona($e), $e->getMessage());
+            $this->marcar_error($message, $this->contenido_para_la_persona($e, $message), $e->getMessage());
+
+            $this->avisar_las_fotos_por_whatsapp($message);
         }
 
         $this->avisar($conversation, $message);
@@ -389,7 +392,9 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             return;
         }
 
-        $this->marcar_error($message, $this->contenido_para_la_persona($exception), $exception->getMessage());
+        $this->marcar_error($message, $this->contenido_para_la_persona($exception, $message), $exception->getMessage());
+
+        $this->avisar_las_fotos_por_whatsapp($message);
 
         $conversation = AiConversation::find($message->ai_conversation_id);
 
@@ -412,21 +417,92 @@ class ResponderMensajeChatIaJob implements ShouldQueue
      * puede traer el body crudo de la respuesta de Anthropic y eso no llega a la pantalla. Va a la
      * columna error_mensaje y al log, como siempre.
      *
+     * 🔴 Y SI EL DUEÑO HABÍA MANDADO FOTOS, SE LO DICE (misión agente-mejoras-uso-real, E1 punto 5,
+     * 29/10/2026). En Ferre Total (CONV 15, mensaje 92) Pablo mandó tres fotos para los clavos que
+     * faltaban, el turno se cortó por un timeout y le llegó «Se me cortó la conexión con el servicio
+     * de IA» y nada más: no supo si las fotos habían llegado ni si se había cargado alguna. Ahora, si el
+     * mensaje que este turno contestaba trae fotos que NINGUNA carga usó, el texto suma, determinista y
+     * sin el modelo, cuántas llegaron, que quedaron guardadas y que con «seguí» continúa. Las fotos sin
+     * usar vuelven a viajar con el mensaje siguiente (AsistenteIaService::con_las_fotos_de_la_ultima_tanda),
+     * así que «seguí» las encuentra.
+     *
      * @param \Throwable $exception
+     * @param \App\Models\AiMessage|null $message  El assistant que falló (para mirar las fotos del pedido).
      * @return string
      */
-    protected function contenido_para_la_persona(\Throwable $exception)
+    protected function contenido_para_la_persona(\Throwable $exception, $message = null)
     {
+        $texto = self::CONTENIDO_ERROR_AMIGABLE;
+
         if ($exception instanceof AsistenteIaException) {
             $propio = $exception->mensaje_para_la_persona();
 
             if (!is_null($propio)) {
 
-                return $propio;
+                $texto = $propio;
             }
         }
 
-        return self::CONTENIDO_ERROR_AMIGABLE;
+        return $texto . $this->aviso_de_fotos_sin_usar($message);
+    }
+
+    /**
+     * La frase de las fotos que llegaron y no se usaron, con un espacio adelante, o vacío. Ver el 🔴 de
+     * contenido_para_la_persona(). La arma AvisosDeTurnosIaHelper::frase_del_turno() (la misma que
+     * sale por WhatsApp). Protegido: si la consulta falla, el texto de error sale igual.
+     *
+     * @param \App\Models\AiMessage|null $message  El assistant que falló.
+     * @return string
+     */
+    protected function aviso_de_fotos_sin_usar($message)
+    {
+        if (!($message instanceof AiMessage)) {
+
+            return '';
+        }
+
+        try {
+
+            $frase = AvisosDeTurnosIaHelper::frase_del_turno($message, $this->mensaje_del_pedido($message));
+
+        } catch (\Throwable $e) {
+
+            Log::warning('ResponderMensajeChatIaJob: no se pudieron contar las fotos del pedido para el aviso de error', [
+                'ai_message_id' => $message->id,
+                'error'         => $e->getMessage(),
+            ]);
+
+            return '';
+        }
+
+        return $frase === '' ? '' : ' ' . $frase;
+    }
+
+    /**
+     * 🔴 LA MISMA FRASE, POR WHATSAPP (ronda de arreglos de la revisión independiente, 30/10/2026). Con
+     * el mensaje en `error`, el admin NO lee el contenido: manda su disculpa fija («Uf, no pude
+     * contestarte esta vez…», EnviarMensajeAlAsistenteJob del admin-api). La frase de las fotos sin
+     * cargar le quedaba al dueño solo en el sistema. Ahora se deja como aviso por el camino que el admin
+     * ya consulta (AvisosDeTurnosIaHelper, servido por AvisosDelAsistenteHelper::pendientes()): llega
+     * poco después de la disculpa. Uno por mensaje (handle() y failed() pueden pasar los dos por acá) y
+     * solo por WhatsApp con el admin que anunció que avisa. Nunca lanza.
+     *
+     * @param \App\Models\AiMessage $message  El assistant que falló.
+     * @return void
+     */
+    protected function avisar_las_fotos_por_whatsapp($message)
+    {
+        if (!($message instanceof AiMessage) || !$message->es_de_whatsapp()) {
+
+            return;
+        }
+
+        $frase = trim($this->aviso_de_fotos_sin_usar($message));
+
+        if ($frase !== '') {
+
+            AvisosDeTurnosIaHelper::dejar($message, $frase);
+        }
     }
 
     /**

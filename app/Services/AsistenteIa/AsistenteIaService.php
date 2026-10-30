@@ -18,6 +18,7 @@ use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EnvioSinPropuestaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ImagenPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
@@ -40,6 +41,7 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
+use App\Models\IaImagenPedido;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Log;
@@ -161,6 +163,15 @@ class AsistenteIaService
      * Si alguien toca uno de los cinco números, tiene que tocar los cinco.
      */
     const PRESUPUESTO_SEGUNDOS = 210;
+
+    /**
+     * Techo del reintento de la llamada al proveedor por WhatsApp (misión agente-mejoras-uso-real, ronda
+     * de arreglos, 30/10/2026): el reintento arranca solo si lo transcurrido más una llamada entera
+     * (TIMEOUT_SEGUNDOS) no pasa esto. El admin espera la respuesta 180 s y después manda su disculpa;
+     * 165 deja margen para el texto final. Ver queda_tiempo_para_reintentar(). No es parte de la cadena
+     * de cinco techos de PRESUPUESTO_SEGUNDOS: solo acota cuándo vale la pena reintentar.
+     */
+    const TECHO_DEL_REINTENTO_EN_WHATSAPP = 165;
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -648,6 +659,23 @@ class AsistenteIaService
             && $assistant_message->confirma_por_texto()
             && is_null($confirmacion_determinista);
 
+        /*
+         * 🔴 MISIÓN app-ia-imagen-prometida (29/10/2026): LA IMAGEN QUE EL TEXTO PROMETE TIENE QUE ESTAR
+         * PEDIDA. Demo3, conversación 13 (Rápido = DeepSeek Flash): a «Haceme una imagen cuadrada para
+         * Instagram…» contestó «La imagen la puse en marcha…» y armó una promoción por WhatsApp que nadie
+         * pidió, sin llamar nunca a pedir_imagen. Solo en la app (es la única con pedir_imagen). Si el turno
+         * no llamó a pedir_imagen y el texto da la imagen por pedida, o la persona pidió claramente generar
+         * una y el modelo no contestó preguntando lo que falta, va el mismo y único reintento del turno; si
+         * después sigue prometiéndola sin pedido, se cambian SOLO las oraciones que la prometen y se agrega
+         * el aviso honesto (el resto de la respuesta queda). Ver ImagenPrometidaIaHelper (y sus falsos
+         * positivos: las fotos del catálogo, los gráficos, los diseños de PDF y las tarjetas de venta o
+         * presupuesto no son pedidos de generar una imagen; los ofrecimientos no son afirmaciones).
+         */
+        $guarda_de_imagen = (bool) $es_app;
+
+        /* true si el único reintento del turno lo pidió la guarda de la imagen. Solo para el log. */
+        $reintento_de_la_imagen = false;
+
         while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
@@ -660,7 +688,7 @@ class AsistenteIaService
                         'ai_conversation_id' => $conversation->id,
                         'ai_message_id'      => $assistant_message->id,
                         'iterations'         => $iterations,
-                        'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
+                        'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
                     ]);
 
                     $final_text = $texto_antes_del_reintento;
@@ -717,13 +745,13 @@ class AsistenteIaService
              * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
              */
             try {
-                $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
+                $response = $this->post_al_proveedor($http, $url, ProveedorIaHelper::agregar_thinking([
                     'model'      => $model,
                     'max_tokens' => self::MAX_TOKENS,
                     'system'     => $system,
                     'tools'      => $tools,
                     'messages'   => $messages,
-                ], $thinking));
+                ], $thinking), $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message);
             } catch (\Throwable $e) {
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
@@ -733,7 +761,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
+                    'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
                     'excepcion'          => get_class($e),
                     'error'              => $e->getMessage(),
                 ]);
@@ -746,7 +774,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
+                    'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
                     'http'               => $response->status(),
                 ]);
 
@@ -858,6 +886,45 @@ class AsistenteIaService
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
             $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
+
+            /*
+             * La guarda de la imagen prometida va PRIMERO: es la más segura de las cuatro (o se llamó a
+             * pedir_imagen en este turno o no se llamó) y en el caso real el texto prometía la imagen Y
+             * armaba otra tarjeta: si el reintento se lo llevaba la de la carga, la imagen nunca se pedía.
+             */
+            if ($guarda_de_imagen
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && $this->promete_una_imagen_sin_pedirla($final_text, $herramientas_pedidas, $conversation, $assistant_message, true)) {
+
+                Log::warning('AsistenteIaService: la imagen se prometió (o se pidió) y no se llamó a pedir_imagen; se reintenta una vez.', [
+                    'ai_conversation_id'   => $conversation->id,
+                    'ai_message_id'        => $assistant_message->id,
+                    'iterations'           => $iterations,
+                    'herramientas_pedidas' => $herramientas_pedidas,
+                    'modelo'               => $model,
+                    'texto'                => mb_substr($final_text, 0, 300),
+                ]);
+
+                $texto_antes_del_reintento = $final_text;
+                $reintento_de_la_imagen    = true;
+
+                $messages[] = [
+                    'role'    => 'assistant',
+                    'content' => $final_text,
+                ];
+
+                $messages[] = [
+                    'role'    => 'user',
+                    'content' => ImagenPrometidaIaHelper::nota_para_reintentar(),
+                ];
+
+                $toco_una_carga = true;
+                $final_text = '';
+
+                continue;
+            }
 
             /*
              * (A, C y D) de la misión asistente-tarjeta-sin-accion: el texto afirma una tarjeta y este
@@ -1211,6 +1278,15 @@ class AsistenteIaService
         }
 
         /*
+         * Misión app-ia-imagen-prometida, después del reintento (o sin él, si no quedaba vuelta ni tiempo,
+         * o si el reintento lo usó otra guarda): el texto no puede prometer una imagen que no se pidió, ni
+         * decir que se está generando una cuyo bloque ya quedó no disponible o fallido en este turno.
+         */
+        if ($guarda_de_imagen) {
+            $final_text = $this->texto_coherente_con_la_imagen($final_text, $herramientas_pedidas, $conversation, $assistant_message, ! is_null($texto_antes_del_reintento));
+        }
+
+        /*
          * Misión asistente-envios-a-clientes (corrección 1 del chequeo, 16/10/2026): en los canales sin
          * botones, el bloque de cada envío a clientes que este turno dejó esperando el sí va al final
          * del mensaje, armado por el sistema. Va DESPUÉS de las guardas de arriba (que miran lo que
@@ -1243,6 +1319,181 @@ class AsistenteIaService
         }
 
         return $final_text;
+    }
+
+    /**
+     * true si el turno prometió (o le pidieron) una imagen nueva y NO la pidió (misión
+     * app-ia-imagen-prometida): no llamó a pedir_imagen ni quedó ningún pedido de este turno, no usó
+     * herramientas de otra función (las imágenes del catálogo, un gráfico, una tabla, un diseño de PDF,
+     * una venta, un presupuesto, el envío de un comprobante), y el texto la da por pedida o —con
+     * $mirar_el_pedido— la persona pidió claramente generarla y el modelo no contestó preguntando por un
+     * dato de la imagen (eso es lo correcto: no se reintenta; cualquier otra pregunta final, como «¿La
+     * confirmás?», no alcanza). Si la vuelta anterior del asistente ya la pidió y la persona no pide otra,
+     * las oraciones que solo dicen en qué estado está esa imagen («la pedí; aparece acá…», «se está
+     * generando») no son una promesa sin pedido; todo lo demás se sigue mirando, y si la persona pide otra
+     * («hacé otra igual pero vertical») la guarda actúa entera.
+     *
+     * @param  string  $texto
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  bool  $mirar_el_pedido  true adentro del bucle (dispara el reintento); false después, donde
+     *                                 solo se cambia un texto que AFIRMA la imagen (una pregunta para
+     *                                 completar el pedido se deja).
+     * @return bool
+     */
+    protected function promete_una_imagen_sin_pedirla($texto, array $herramientas_pedidas, AiConversation $conversation, AiMessage $assistant_message, $mirar_el_pedido): bool
+    {
+        if (in_array(ImagenPrometidaIaHelper::HERRAMIENTA, $herramientas_pedidas, true) || count($this->pedidos_de_imagen) > 0) {
+
+            return false;
+        }
+
+        if (ImagenPrometidaIaHelper::hablo_de_otra_cosa($herramientas_pedidas)) {
+
+            return false;
+        }
+
+        $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
+
+        if (ImagenPrometidaIaHelper::afirma_una_imagen($texto, $contexto['hubo_pedido'], $contexto['hay_una_ya_pedida'])) {
+
+            return true;
+        }
+
+        return $mirar_el_pedido
+            && $contexto['pidio_ahora']
+            && ! ImagenPrometidaIaHelper::termina_preguntando_por_la_imagen($texto);
+    }
+
+    /**
+     * Qué se sabe del pedido de imagen alrededor de este turno (misión app-ia-imagen-prometida):
+     *   - `pidio_ahora`: el pedido que se está contestando pide generar una imagen, o —si la vuelta
+     *     anterior pidió una de verdad— otra versión de esa («hacé otra igual pero vertical»);
+     *   - `hubo_pedido`: ese pedido o el inmediatamente anterior de la persona la pidieron. A «Haceme una
+     *     imagen» el modelo pregunta «¿cuadrada o vertical?», la persona contesta «cuadrada», y ahí «la
+     *     pedí; aparece acá cuando esté lista» solo se entiende por el pedido de antes;
+     *   - `ya_estaba_pedida`: alguna vuelta del asistente posterior a ese pedido anterior sí la pidió (hay
+     *     un IaImagenPedido colgado de ella). Entonces el pedido de antes ya está atendido y no cuenta;
+     *   - `hay_una_ya_pedida`: ya_estaba_pedida y la persona no pidió otra: lo que el texto diga del estado
+     *     de «la imagen» habla de esa (ver ImagenPrometidaIaHelper::afirma_una_imagen()).
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return array{pidio_ahora: bool, hubo_pedido: bool, ya_estaba_pedida: bool, hay_una_ya_pedida: bool}
+     */
+    protected function contexto_de_la_imagen(AiConversation $conversation, AiMessage $assistant_message): array
+    {
+        $pedidos = AiMessage::where('ai_conversation_id', $conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '<', $assistant_message->id)
+                            ->orderBy('id', 'DESC')
+                            ->limit(2)
+                            ->get(['id', 'contenido'])
+                            ->values();
+
+        $actual   = $pedidos->get(0);
+        $anterior = $pedidos->get(1);
+
+        $pidio_ahora = ! is_null($actual) && ImagenPrometidaIaHelper::pide_generar_una_imagen((string) $actual->contenido);
+        $pidio_antes = ! is_null($anterior) && ImagenPrometidaIaHelper::pide_generar_una_imagen((string) $anterior->contenido);
+
+        $ya_estaba_pedida = false;
+
+        if (! is_null($anterior)) {
+
+            $respuestas_desde_entonces = AiMessage::where('ai_conversation_id', $conversation->id)
+                                                  ->where('rol', 'assistant')
+                                                  ->where('id', '>', $anterior->id)
+                                                  ->where('id', '<', $assistant_message->id)
+                                                  ->pluck('id')
+                                                  ->all();
+
+            $ya_estaba_pedida = count($respuestas_desde_entonces) > 0
+                && IaImagenPedido::whereIn('ai_message_id', $respuestas_desde_entonces)->exists();
+        }
+
+        /* «Hacé otra igual pero vertical» solo se entiende si la vuelta anterior pidió una imagen. */
+        if (! $pidio_ahora && $ya_estaba_pedida && ! is_null($actual)) {
+            $pidio_ahora = ImagenPrometidaIaHelper::pide_otra_version((string) $actual->contenido);
+        }
+
+        return [
+            'pidio_ahora'       => $pidio_ahora,
+            'hubo_pedido'       => $pidio_ahora || ($pidio_antes && ! $ya_estaba_pedida),
+            'ya_estaba_pedida'  => $ya_estaba_pedida,
+            'hay_una_ya_pedida' => $ya_estaba_pedida && ! $pidio_ahora,
+        ];
+    }
+
+    /**
+     * El texto final, coherente con la imagen del turno (misión app-ia-imagen-prometida). En los dos
+     * casos se cambian SOLO las oraciones que dan la imagen por pedida o en curso, y se agrega el aviso:
+     * el resto de la respuesta (las ventas del día, la tarjeta que sí se armó) queda tal cual.
+     *   - si promete una imagen que no se pidió → aviso ImagenPrometidaIaHelper::TEXTO_HONESTO;
+     *   - si se pidió en este turno pero su bloque ya quedó `no_disponible` o `fallida` (por ejemplo, la
+     *     instalación no tiene la conexión con el admin) → aviso con el texto del bloque. Como pedir_imagen
+     *     se llamó, «la pedí; aparece acá cuando esté lista» cuenta como afirmación.
+     * Si no, el texto tal cual. Cuando el estado se conoce recién después (lo decide el job del envío),
+     * el texto queda como está: la herramienta le pide al modelo que diga «la pedí; aparece acá cuando
+     * esté lista», que es verdad pase lo que pase.
+     *
+     * @param  string  $texto
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  bool  $hubo_reintento
+     * @return string
+     */
+    protected function texto_coherente_con_la_imagen($texto, array $herramientas_pedidas, AiConversation $conversation, AiMessage $assistant_message, $hubo_reintento): string
+    {
+        $texto = (string) $texto;
+
+        $se_pidio_en_este_turno = in_array(ImagenPrometidaIaHelper::HERRAMIENTA, $herramientas_pedidas, true)
+            || count($this->pedidos_de_imagen) > 0;
+
+        if (! $se_pidio_en_este_turno) {
+
+            if (! $this->promete_una_imagen_sin_pedirla($texto, $herramientas_pedidas, $conversation, $assistant_message, false)) {
+
+                return $texto;
+            }
+
+            $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
+
+            Log::warning('AsistenteIaService: el texto promete una imagen que no se pidió; se cambian las oraciones que la prometen por el aviso honesto.', [
+                'ai_conversation_id'   => $conversation->id,
+                'ai_message_id'        => $assistant_message->id,
+                'herramientas_pedidas' => $herramientas_pedidas,
+                'hubo_reintento'       => (bool) $hubo_reintento,
+                'texto'                => mb_substr($texto, 0, 300),
+            ]);
+
+            return ImagenPrometidaIaHelper::sin_lo_prometido($texto, $contexto['hubo_pedido'], ImagenPrometidaIaHelper::TEXTO_HONESTO, $contexto['hay_una_ya_pedida']);
+        }
+
+        if (! ImagenPrometidaIaHelper::afirma_una_imagen($texto, true)) {
+
+            return $texto;
+        }
+
+        foreach ($this->bloques as $bloque) {
+
+            if (is_array($bloque)
+                && ($bloque['tipo'] ?? '') === BloquesIaHelper::TIPO_IMAGEN
+                && in_array((string) ($bloque['estado'] ?? ''), ['no_disponible', 'fallida'], true)) {
+
+                $error = trim((string) ($bloque['error'] ?? ''));
+
+                Log::info('AsistenteIaService: el texto daba la imagen por pedida y su bloque quedó ' . $bloque['estado'] . '; se cambia el texto.', [
+                    'ai_message_id' => $assistant_message->id,
+                ]);
+
+                return ImagenPrometidaIaHelper::sin_lo_prometido($texto, true, $error === '' ? ImagenPrometidaIaHelper::TEXTO_HONESTO : $error);
+            }
+        }
+
+        return $texto;
     }
 
     /**
@@ -1375,6 +1626,13 @@ class AsistenteIaService
         $bloque_de_la_app = $es_app ? $this->bloque_de_la_app() : '';
 
         /*
+         * Misión agente-mejoras-uso-real (29/10/2026): fuera de la app no hay pedir_imagen, y el agente
+         * contestaba "no tengo forma de generar una imagen". Va en el lugar del bloque de la app (son
+         * excluyentes): la regla de a dónde mandar a la persona cuando pide una imagen nueva.
+         */
+        $bloque_de_la_imagen = $es_app ? '' : $this->bloque_de_la_imagen_fuera_de_la_app($conversation, $owner);
+
+        /*
          * Misión app-ia-y-memoria (E2, 29/10/2026): las reglas de la memoria del negocio (qué se
          * guarda, qué no, cuándo leerla), para el dueño con Agentes de IA y en TODOS los canales. Son
          * FIJAS, así que van en este bloque, el cacheado; lo que cambia —el contexto maestro y el
@@ -1441,7 +1699,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -1507,12 +1765,70 @@ Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño
 - Después de un gráfico o una tabla, en el texto contá lo importante en una o dos
   oraciones; no repitas todos los números.
 - Si te pide una imagen (una placa para redes, un cartel, una promo), llamá a
-  pedir_imagen con un prompt detallado. Tarda unos minutos y aparece sola en este
-  mensaje: decilo en una línea, sin prometer que ya está.
+  pedir_imagen con un prompt detallado. Después decí en una línea que la pediste y que
+  aparece acá cuando esté lista: sin prometer tiempos ni decir que ya está. Nunca digas
+  que la pediste o que se está generando si no llamaste a pedir_imagen en este mensaje.
+- Pedir una imagen no autoriza a preparar promociones, envíos ni mensajes a clientes: si
+  te parece útil, ofrecelo en una línea y no armes la tarjeta hasta que la persona lo pida.
 - Si la persona te dijo cómo prefiere que le respondas (más breve, más explicado, con
   gráficos o con números directos), eso manda sobre estas reglas.
 
 APP;
+    }
+
+    /**
+     * La regla de las IMÁGENES NUEVAS fuera de la app (misión agente-mejoras-uso-real, 29/10/2026,
+     * revisión independiente), con su salto de línea final; '' en la app (ahí está pedir_imagen).
+     *
+     * EL CASO REAL (CONV 24 de Ferre Total): «¿Podés hacerme una imagen de oferta de este producto?» por
+     * WhatsApp, y el agente contestó *"No tengo forma de generar una imagen de oferta: el sistema no crea
+     * gráficos ni banners"*. Generarla sí se puede, desde la app ComercioCity IA (pedir_imagen existe solo
+     * en ese canal). La entrega de la imagen por WhatsApp o en el sistema queda para otra misión: acá solo
+     * se le dice al modelo a dónde mandar a la persona, para que nunca conteste que no se puede.
+     *
+     * 🔴 SOLO SI ESTA INSTALACIÓN TIENE LA APP PARA ESTE NEGOCIO: el token de la app lo emite
+     * admin-sync/ia-app/token únicamente con la extensión Agentes de IA (AsistenteCanalHelper::
+     * tiene_extension) y para el dueño o un administrador (IaAppHelper::puede_usar_el_asistente). Con la
+     * extensión y alguien que puede entrar: la dirección y que entra con su mismo usuario. Con la
+     * extensión y un empleado sin acceso: que la pida el dueño o un administrador. Sin la extensión no se
+     * sabe si la va a tener: se dice condicional, sin prometerla.
+     *
+     * @param  AiConversation  $conversation  Para saber quién escribe.
+     * @param  User|null  $owner
+     * @return string
+     */
+    protected function bloque_de_la_imagen_fuera_de_la_app(AiConversation $conversation, $owner): string
+    {
+        $cierre = '  🔴 Nunca digas que no se puede, que no tenés forma o que el sistema no genera imágenes, y no'
+            . "\n" . '  digas que la pediste: desde acá no hay pedido.' . "\n";
+
+        if (! \App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::tiene_extension($owner)) {
+
+            return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): se hacen desde' . "\n"
+                . '  la app ComercioCity IA (ia.comerciocity.com), que viene con Agentes de IA. Si te piden una,' . "\n"
+                . '  decí en una línea que, si el negocio la tiene activa, la pide desde ahí entrando con su mismo' . "\n"
+                . '  usuario y contraseña del sistema, y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+                . $cierre;
+        }
+
+        $persona = User::find($conversation->auth_user_id);
+
+        $puede_entrar = ($persona instanceof User) && \App\Http\Controllers\Helpers\asistente_ia\IaAppHelper::puede_usar_el_asistente($persona);
+
+        if (! $puede_entrar) {
+
+            return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): desde acá no las' . "\n"
+                . '  generás, pero se hacen desde la app ComercioCity IA (ia.comerciocity.com), que usan el dueño' . "\n"
+                . '  y los administradores. Si te piden una, decí eso en una línea (que se la pida a ellos) y' . "\n"
+                . '  ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+                . $cierre;
+        }
+
+        return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): desde acá no las' . "\n"
+            . '  generás, pero SÍ se hacen: desde la app ComercioCity IA (ia.comerciocity.com), entrando con el' . "\n"
+            . '  mismo usuario y contraseña del sistema; ahí se la pide al agente.' . "\n"
+            . '  Si te piden una, decí eso en una línea y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+            . $cierre;
     }
 
     /**
@@ -1626,33 +1942,42 @@ VERDAD;
   cambios y marcarlas hechas), los combos, las ofertas, la compra con factura, la foto de una
   sucursal y la de un artículo, las búsquedas de imágenes, los diseños de PDF, las altas y las
   ediciones del ABM genérico, las ventas, los presupuestos, los dos movimientos de stock (mover
-  entre depósitos y cargarle a uno) y las acciones de pantalla que no borran
-  (proponer_accion_de_pantalla). En todos esos casos avisá que YA quedó hecho, con lo que te
+  entre depósitos y cargarle a uno), las acciones de pantalla que no borran
+  (proponer_accion_de_pantalla), cambiarle el proveedor a una compra recién cargada a un
+  proveedor que ya existe (proponer_cambio_de_proveedor_de_compra) y volver a escanear una
+  factura cuyo escaneo falló. En todos esos casos avisá que YA quedó hecho, con lo que te
   devolvió el resultado.
-- 🔴 NUEVE cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
+- 🔴 DOCE cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
   saltearlas: borrar algo (proponer_baja y proponer_borrado_por_pantalla), la actualización masiva
   de artículos, la unificación de bancos de los cheques, los permisos de un empleado, las
   acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
   devolución con nota de crédito, editar una venta ya cargada —puede emitir una nota de crédito y
   avisarle al cliente—) o tocan muchos artículos de un saque (la respuesta te lo dice con
-  requiere_confirmacion), y los tres ENVÍOS A CLIENTES: mandar un comprobante
+  requiere_confirmacion), los tres ENVÍOS A CLIENTES: mandar un comprobante
   (proponer_envio_de_comprobante), los recordatorios de cobro (proponer_recordatorios_de_cobro) y
-  una promoción por WhatsApp (proponer_promocion_por_whatsapp). En esas nueve decí que queda
+  una promoción por WhatsApp (proponer_promocion_por_whatsapp), y tres que mueven plata o
+  precios con un dato dictado: una compra sin artículos (proponer_compra_sin_articulos), una
+  edición de márgenes por lista que le saca a un artículo su precio fijo o le baja el precio, y el
+  cambio de proveedor de una compra que da de alta un proveedor nuevo (en esas dos la respuesta te
+  lo dice con requiere_confirmacion). En esas doce decí que queda
   esperando su confirmación (en el sistema, la tarjeta; por WhatsApp, su sí), aunque la persona
   te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
   registros de un saque, un comprobante emitido ante ARCA no se borra, un permiso mal cambiado
-  deja a alguien sin poder trabajar y nadie se entera hasta que llega, y un mensaje que le llegó a
-  un cliente no se desmanda. Si insisten, explicá eso en una línea y no lo discutas más.
+  deja a alguien sin poder trabajar y nadie se entera hasta que llega, un mensaje que le llegó a
+  un cliente no se desmanda, y un total o un precio mal entendido se paga de más antes de que
+  alguien lo note. Si insisten, explicá eso en una línea y no lo discutas más.
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
   foto de una sucursal, mandar a buscar imágenes (categorías y artículos), cambiar un
-  diseño de PDF y la compra con factura (con el alta del proveedor si no existía); en ese
+  diseño de PDF, la compra con factura (con el alta del proveedor si no existía) y volver a
+  escanear una factura cuyo escaneo falló; en ese
   caso avisá que ya quedó hecho o mandado, con lo que te devolvió el resultado. Con
   "cauteloso" dejás la tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
   bancos de cheques, los permisos de un empleado, el borrado por pantalla
-  (proponer_borrado_por_pantalla) y los tres envíos a clientes (comprobante, recordatorios de cobro
-  y promoción por WhatsApp) SIEMPRE dejan tarjeta.
+  (proponer_borrado_por_pantalla), los tres envíos a clientes (comprobante, recordatorios de cobro
+  y promoción por WhatsApp) y la compra sin artículos (proponer_compra_sin_articulos) SIEMPRE
+  dejan tarjeta.
 - 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
   da ella con la tarjeta. Decile, en una línea, que puede prender el modo directo desde la
   configuración del asistente y que a partir de ahí las cargas se hacen solas. No vuelvas a
@@ -1704,14 +2029,19 @@ AUTO_RESUELTO;
   quiénes, cuántos, a quiénes no y por qué, y el texto exacto que sale (`para_mostrar`). Por las
   acciones de pantalla no se manda nada (esas rutas no están en el catálogo).
   Lo que queda afuera de verdad: las credenciales del negocio (claves, tokens, contraseñas) y
-  escribirle a alguien que no es cliente del negocio; los cobros con tarjeta de crédito, las
+  escribirle a alguien que no es cliente del negocio (pedirle algo al equipo de ComercioCity,
+  "pedile a Lucas que vea esto", NO es eso: es pedir_ayuda_a_soporte); los cobros con tarjeta de crédito, las
   retenciones y los cobros en otra moneda que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
   cliente como lo haría la pantalla (por ejemplo, editar una venta le manda el comprobante),
   así que si eso importa, decíselo a la persona antes de proponerla.
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
   su número, su banco y su fecha de vencimiento, y SIN caja: un cheque no entra a ninguna
   caja hasta que lo cobrás. Si no te dijeron el número, el banco o la fecha, preguntalos: un
-  cheque sin eso no lo puede reconocer nadie después. 🔴 En el cobro de una VENTA no: el
+  cheque sin eso no lo puede reconocer nadie después. 🔴 El número, el banco y el vencimiento
+  de un cheque salen SOLO de lo que se lee en la foto o de lo que dice la persona: si en la foto
+  no se lee el número de uno, preguntalo; nunca los numeres correlativos (1, 2, 3…) ni inventes
+  uno. La fecha de emisión va solo si figura o te la dicen; si no, no la mandes (el sistema pone
+  la de hoy y la tarjeta lo avisa). 🔴 En el cobro de una VENTA no: el
   cobro de la venta no lleva esos datos y quedaría un cheque en blanco, así que esa venta se
   hace desde Vender.
 - Mover stock entre depósitos y cargarle stock a un depósito son dos cosas distintas y no se
@@ -1794,6 +2124,7 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion y descripcion, nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+{$this->reglas_de_varias_fotos_y_compras()}
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
   la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
@@ -1862,6 +2193,50 @@ CARGA;
     }
 
     /**
+     * Las reglas de la misión agente-mejoras-uso-real (E1, 29/10/2026) para las fotos de varios
+     * artículos, las tareas de varios ítems y las compras. Van en su propio método, interpolado en
+     * bloque_de_carga() justo después de las reglas de las fotos, para que el bloque grande no cambie
+     * en cada misión y el merge con las que corren en paralelo sea una línea.
+     *
+     * 🔴 CADA REGLA SALE DE UNA CONVERSACIÓN REAL DE FERRE TOTAL (28 y 29/10/2026):
+     *   - CONV 15: una foto para los 10 clavos punta París → el agente la puso en uno y le pidió la foto
+     *     ocho veces más; llegaron más fotos y las contó en vez de usarlas; a los que no recibieron foto
+     *     nunca les avisó.
+     *   - CONV 19: «compra sin artículos con una factura sin IVA de 198.522» → le pidió la foto; y «volvé
+     *     a cargarla con el proveedor mariano limpieza» → creó otra compra.
+     *   - CONV 20: el escaneo falló y el dueño reenvió la foto → otra compra.
+     *
+     * @return string
+     */
+    protected function reglas_de_varias_fotos_y_compras(): string
+    {
+        return <<<VARIAS
+- 🔴 Una foto puede ir a VARIOS artículos: mandalos en UNA sola llamada con articulo_ids
+  (o con articulo y todos_los_que_coinciden: true) a proponer_foto_articulo, cuando la persona
+  pide la misma foto para varios o para todos ("que todos tengan la misma", "la misma para los
+  otros 8"). Nunca le digas que cada foto va a un solo artículo ni le pidas que te la reenvíe:
+  si ya se la pusiste a otro artículo en esta conversación, pasá su imagen_id (el de la línea
+  "[Foto adjunta] [imagen_id N]" del historial).
+- 🔴 Si la persona manda fotos para una tarea que está en curso (las que faltaban, las de los otros
+  artículos), usalas para esa tarea con la herramienta que corresponde: no te limites a contarlas.
+- 🔴 Al cerrar una tarea de varios ítems (fotos a varios artículos, varias cargas), decí
+  cuáles quedaron hechos y cuáles no, por nombre, con lo que dice el resultado (hechos y
+  no_hechos). Nunca digas que quedó todo si quedó alguno sin hacer.
+- 🔴 Una compra SIN artículos (la factura cargada como deuda, sin renglones: "una compra sin
+  artículos", "cargame la factura de X por tanto", el total dictado sin foto) va con
+  proponer_compra_sin_articulos: NO le pidas la foto de la factura. Pasale el total final y si es
+  sin IVA o con qué alícuota (si no lo dijo, preguntalo). Siempre espera su sí, en todos los modos.
+- 🔴 Si la persona pide volver a cargar con OTRO proveedor una compra que acabás de crear ("volvé a
+  cargarla con el proveedor X", "era de X"), se cambia el proveedor de ESA compra con
+  proponer_cambio_de_proveedor_de_compra: no se crea otra compra ni se le pide la foto de nuevo.
+- 🔴 Si el escaneo de una factura falló ("No pude leer la factura de … (compra N° X)") y la persona
+  pide volver a escanearla, usá proponer_reintento_de_escaneo: usa las fotos que ya están guardadas,
+  así que no se las pidas. Si te reenvía la foto, proponer_compra_con_factura la suma sola a esa
+  misma compra: no armes otra.
+VARIAS;
+    }
+
+    /**
      * Los módulos de carga que ESTE negocio no tiene, en una línea (misión asistente-altas-y-conversacion,
      * 16/10/2026). Vacío si los tiene todos.
      *
@@ -1912,6 +2287,19 @@ CARGA;
             }
         }
 
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026, §4 E3.2): con el módulo pero SIN el WhatsApp con los
+         * clientes conectado (ninguna `whatsapp_bot_configs` activa). Es el caso de Ferre Total en la CONV
+         * 24: el agente armó la promo durante diez vueltas y recién al «Mandalo» supo que no podía salir.
+         * Con este renglón lo dice en la primera respuesta y ofrece pedírselo a soporte. Las herramientas
+         * lo chequean igual, primero (WhatsappDeClientesIaHelper).
+         */
+        if (PermisosIaHelper::tiene_extencion($owner, AgentesIaHelper::SLUG)
+            && ! \App\Http\Controllers\Helpers\asistente_ia\WhatsappDeClientesIaHelper::conectado((int) $owner->id)) {
+
+            $apagados[] = \App\Http\Controllers\Helpers\asistente_ia\WhatsappDeClientesIaHelper::linea_para_el_prompt();
+        }
+
         if (! count($apagados)) {
 
             return '';
@@ -1951,7 +2339,9 @@ CARGA;
             ? <<<GEN_DIRECTO
 - 🔴 Con tu confianza en "directo", un alta y una edición se ejecutan en el acto: no digas que
   dejaste una tarjeta, contá lo que quedó creado o cambiado con lo que devolvió el `resultado`.
-  BORRAR es la excepción: proponer_baja SIEMPRE deja tarjeta, en todos los modos.
+  BORRAR es la excepción: proponer_baja SIEMPRE deja tarjeta, en todos los modos. Y una edición
+  de márgenes por lista que le saca a un artículo su precio fijo o le baja el precio también
+  espera su confirmación (la respuesta te lo dice con requiere_confirmacion): contale el aviso.
 GEN_DIRECTO
             : <<<GEN_CONFIRMA
 - 🔴 Estas cargas NUNCA se hacen solas en este modo: crear, cambiar o borrar datos del negocio y
@@ -2250,7 +2640,9 @@ WHATSAPP;
   registro?" para eso: o lo hacés, o la herramienta te dice por qué no se puede. Preguntá
   solo lo que de verdad falta para cargarlo (lo que la herramienta te devuelve en "faltan").
 - Lo que SIEMPRE espera el sí (borrar, la actualización masiva, unificar bancos, los permisos
-  de un empleado, lo que emite ante ARCA, y mandarle algo a un cliente: un comprobante, los
+  de un empleado, lo que emite ante ARCA, una compra sin artículos, una edición de márgenes que
+  saca un precio fijo o baja un precio, el cambio de proveedor de una compra que da de alta un
+  proveedor nuevo, y mandarle algo a un cliente: un comprobante, los
   recordatorios de cobro o una promoción) se confirma por texto: llamás igual a la
   herramienta, la respuesta te dice que quedó esperando, y vos decís en una línea qué vas a
   hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta. En un envío a
@@ -3230,6 +3622,12 @@ CONFIRMACION;
      * Una foto cuyo archivo ya no está, o que no es de un tipo que Anthropic
      * acepte, se saltea sin voltear nada: el texto del mensaje viaja igual.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): el empresa guarda hasta
+     * AsistenteImagenHelper::MAX_IMAGENES fotos por mensaje, pero al modelo le
+     * viajan como mucho MAX_FOTOS_AL_MODELO (las primeras, en el orden en que
+     * llegaron). Las demás no se pierden: el texto del mensaje lleva el
+     * `imagen_id` de todas (ver marca_de_las_fotos_del_mensaje()).
+     *
      * @param AiMessage $message
      * @return array<int, array<string, mixed>>
      */
@@ -3241,7 +3639,7 @@ CONFIRMACION;
 
         $bloques = [];
 
-        foreach ($message->imagenes as $imagen) {
+        foreach ($message->imagenes->take(AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) as $imagen) {
             $bloque = $this->bloque_de_una_imagen($imagen);
 
             if (! is_null($bloque)) {
@@ -3303,6 +3701,10 @@ CONFIRMACION;
      * que saber que hubo una foto —para poder decir "la que me mandaste
      * recién"— sin que la imagen se vuelva a pagar en cada turno.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): la marca lleva además el
+     * `imagen_id` de cada foto, y el mensaje actual con varias fotos también
+     * dice sus ids (ver marca_de_las_fotos_del_mensaje()).
+     *
      * @param AiMessage $message Con las relaciones `acciones` e `imagenes` cargadas.
      * @param bool $manda_las_imagenes true si este mensaje manda sus fotos en base64.
      * @return string
@@ -3324,17 +3726,16 @@ CONFIRMACION;
                 $contenido = trim($contenido) === '' ? $de_los_archivos : rtrim($contenido) . "\n\n" . $de_los_archivos;
             }
 
-            if ($manda_las_imagenes || ! $message->relationLoaded('imagenes')) {
+            if (! $message->relationLoaded('imagenes') || $message->imagenes->isEmpty()) {
                 return $contenido;
             }
 
-            $cuantas = $message->imagenes->count();
+            /* Con el imagen_id de cada foto (misión agente-mejoras-uso-real): ver marca_de_las_fotos_del_mensaje(). */
+            $marca = $this->marca_de_las_fotos_del_mensaje($message, (bool) $manda_las_imagenes);
 
-            if ($cuantas === 0) {
+            if ($marca === '') {
                 return $contenido;
             }
-
-            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
 
             return trim($contenido) === '' ? $marca : rtrim($contenido) . "\n" . $marca;
         }
@@ -3368,6 +3769,173 @@ CONFIRMACION;
         }
 
         return rtrim($contenido) . "\n" . implode("\n", $lineas);
+    }
+
+    /**
+     * La llamada al proveedor de IA de cada vuelta del loop, con UN reintento ante un corte de red o un
+     * error transitorio (misión agente-mejoras-uso-real, E1 punto 4, 29/10/2026).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, CONV 15, mensaje 92). Pablo mandó tres fotos para los clavos que
+     * faltaban y la PRIMERA llamada del turno volvió con «cURL error 28: Operation timed out after 60000
+     * milliseconds with 0 bytes received» contra DeepSeek. El turno murió ahí: un solo corte de red,
+     * que la vuelta siguiente casi seguro no tenía, le costó al dueño la tarea entera. Ahora:
+     *   - una ConnectionException (timeout, conexión rechazada) se reintenta UNA vez;
+     *   - una respuesta con error transitorio (ProveedorIaHelper::es_error_transitorio(): 529, 429,
+     *     500, 502, 503, overloaded_error / api_error) también, UNA vez; si el reintento falla de
+     *     cualquier forma, vuelve la respuesta original y el loop la maneja como siempre;
+     *   - y solo si queda presupuesto: el reintento arranca únicamente si (lo ya gastado +
+     *     TIMEOUT_SEGUNDOS) entra en PRESUPUESTO_SEGUNDOS. Así la cadena de techos documentada en
+     *     PRESUPUESTO_SEGUNDOS sigue cerrando (peor caso del turno: 210 + 60 = 270 < 300 del job).
+     *
+     * 🔴 NO SE REINTENTA DENTRO DEL REINTENTO DE LA TARJETA O DE LA CARGA PROMETIDA (`$puede_reintentar`
+     * en false): ahí una falla ya tiene su salida propia (volver al texto de antes, ver el loop), y una
+     * llamada de más cambiaría lo que esa guarda decide.
+     *
+     * 🔴 Y POR WHATSAPP, CON LA PACIENCIA DEL ADMIN (ronda de arreglos de la revisión independiente,
+     * 30/10/2026): el admin consulta el mensaje durante 180 s (EnviarMensajeAlAsistenteJob,
+     * ESPERAS_DE_POLLING) y después manda su disculpa; un reintento que termina más tarde contesta para
+     * nadie. Ver queda_tiempo_para_reintentar().
+     *
+     * Está en un método propio y fuera del loop a propósito: el loop solo cambia en la línea de la
+     * llamada (la zona del reintento de la tarjeta la toca otra misión en paralelo).
+     *
+     * @param  \Illuminate\Http\Client\PendingRequest  $http
+     * @param  string  $url
+     * @param  array  $body  El payload ya armado (con el thinking si corresponde).
+     * @param  int  $inicio_del_loop  time() del arranque del turno (el reloj de PRESUPUESTO_SEGUNDOS).
+     * @param  bool  $puede_reintentar  false durante el reintento de la tarjeta o de la carga.
+     * @param  AiMessage  $assistant_message  El mensaje que se está generando (su canal y su hora de alta
+     *                                        deciden el techo del reintento; su conversación va al log).
+     * @return \Illuminate\Http\Client\Response
+     *
+     * @throws \Illuminate\Http\Client\ConnectionException  Si se corta dos veces (o una sin presupuesto).
+     */
+    protected function post_al_proveedor($http, $url, array $body, $inicio_del_loop, $puede_reintentar, AiMessage $assistant_message)
+    {
+        $conversation_id = (int) $assistant_message->ai_conversation_id;
+
+        try {
+            $response = $http->post($url, $body);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            if (! $puede_reintentar || ! $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)) {
+                throw $e;
+            }
+
+            Log::warning('AsistenteIaService: se cortó la llamada al proveedor de IA; se reintenta una vez.', [
+                'ai_conversation_id' => $conversation_id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $http->post($url, $body);
+        }
+
+        if ($response->successful() || ! $puede_reintentar || ! ProveedorIaHelper::es_error_transitorio($response)
+            || ! $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)) {
+            return $response;
+        }
+
+        Log::warning('AsistenteIaService: el proveedor de IA devolvió un error transitorio; se reintenta una vez.', [
+            'ai_conversation_id' => $conversation_id,
+            'http'               => $response->status(),
+        ]);
+
+        try {
+            return $http->post($url, $body);
+        } catch (\Throwable $e) {
+            /* El reintento no puede dejar un error peor que el original: vuelve la respuesta de antes. */
+            Log::warning('AsistenteIaService: falló el reintento ante el error transitorio; se sigue con la respuesta original.', [
+                'ai_conversation_id' => $conversation_id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $response;
+        }
+    }
+
+    /**
+     * true si un reintento de la llamada al proveedor entra en el presupuesto del turno: lo ya gastado
+     * más una llamada entera (TIMEOUT_SEGUNDOS) no pasa el techo del canal. Ver post_al_proveedor().
+     *
+     * - Sistema y app: PRESUPUESTO_SEGUNDOS (210), medido desde el arranque del loop.
+     * - WhatsApp: TECHO_DEL_REINTENTO_EN_WHATSAPP (165), medido desde lo MÁS VIEJO entre el arranque del
+     *   loop y el alta del mensaje (`created_at`, que lo crea el POST del admin): el reloj del admin
+     *   arranca ahí, y la espera en la cola corre solo de su lado. 165 + lo que tarda la vuelta que sigue
+     *   entra en los 180 s que el admin espera.
+     *
+     * @param  int  $inicio_del_loop
+     * @param  AiMessage|null  $assistant_message
+     * @return bool
+     */
+    protected function queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message = null): bool
+    {
+        $transcurrido = time() - (int) $inicio_del_loop;
+
+        if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp()) {
+            if (! is_null($assistant_message->created_at)) {
+                $transcurrido = max($transcurrido, time() - \Carbon\Carbon::parse($assistant_message->created_at)->getTimestamp());
+            }
+
+            return $transcurrido + self::TIMEOUT_SEGUNDOS <= self::TECHO_DEL_REINTENTO_EN_WHATSAPP;
+        }
+
+        return $transcurrido + self::TIMEOUT_SEGUNDOS <= self::PRESUPUESTO_SEGUNDOS;
+    }
+
+    /**
+     * La marca con las fotos de un mensaje del dueño, para el texto que viaja al modelo (misión
+     * agente-mejoras-uso-real, E1 punto 2, 29/10/2026). Vacía si no corresponde ninguna.
+     *
+     * 🔴 POR QUÉ LLEVA EL `imagen_id`. Hasta esta misión el modelo nunca veía el id de las fotos del
+     * dueño: las del mensaje actual le llegaban en base64 sin id y las anteriores como "[Foto adjunta]".
+     * Así no podía decir «la misma de antes»: en Ferre Total (CONV 15) Pablo pidió «la misma para los
+     * otros 8» y el agente le pidió que la reenviara. Con el id en el historial, proponer_foto_articulo
+     * recibe esa foto por su imagen_id (FotosDeLaConversacionIaHelper::reutilizable_para_articulo).
+     *
+     * Las tres formas:
+     *   - un mensaje ANTERIOR (sus fotos ya no viajan): "[Foto adjunta] [imagen_id 12]" o
+     *     "[3 fotos adjuntas] [imagen_id 12, 13, 14]". La marca de siempre va primero y entera.
+     *   - el mensaje ACTUAL con UNA foto: nada. La foto la ve el modelo y la herramienta la toma sola
+     *     (es la más nueva sin usar); el payload queda exactamente como antes de esta misión.
+     *   - el mensaje ACTUAL con VARIAS: "[Fotos de este mensaje, en orden: imagen_id 6, 7, 8]", para que
+     *     pueda asignar cada una a su artículo; y si son más que MAX_FOTOS_AL_MODELO, cuántas no se le
+     *     muestran (siguen guardadas y se usan por su id).
+     *
+     * @param  AiMessage  $message  Con la relación `imagenes` cargada y no vacía.
+     * @param  bool  $manda_las_imagenes  true si este mensaje manda sus fotos en base64 (el actual).
+     * @return string
+     */
+    protected function marca_de_las_fotos_del_mensaje(AiMessage $message, $manda_las_imagenes): string
+    {
+        $ids = [];
+
+        foreach ($message->imagenes as $imagen) {
+            $ids[] = (int) $imagen->id;
+        }
+
+        $cuantas = count($ids);
+
+        if ($cuantas === 0) {
+            return '';
+        }
+
+        if (! $manda_las_imagenes) {
+            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
+
+            return $marca . ' [imagen_id ' . implode(', ', $ids) . ']';
+        }
+
+        if ($cuantas === 1) {
+            return '';
+        }
+
+        $marca = '[Fotos de este mensaje, en orden: imagen_id ' . implode(', ', $ids) . ']';
+
+        if ($cuantas > AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) {
+            $marca .= ' [Te muestro las primeras ' . AsistenteImagenHelper::MAX_FOTOS_AL_MODELO . '; las otras '
+                . ($cuantas - AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) . ' quedaron guardadas y se usan por su imagen_id]';
+        }
+
+        return $marca;
     }
 
     /**
@@ -3489,6 +4057,8 @@ CONFIRMACION;
      * El registro ÚNICO de las tools de LECTURA del asistente: cada entrada lleva JUNTAS su
      * definición para la API de Anthropic (name / description / input_schema) y el `handler` que la
      * resuelve cuando Claude la llama. Ninguna crea, modifica ni borra nada.
+     * (exportar_excel, misión agente-mejoras-uso-real, deja un archivo propio del agente con su link en
+     * el disco privado: tampoco toca ningún dato del negocio.)
      *
      * 🔴 POR QUÉ UN REGISTRO Y NO DOS LISTAS: hasta esta misión toda tool se declaraba en DOS
      * lugares de este archivo —el array de definiciones y su rama del if/elseif de
@@ -3526,11 +4096,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Texto a buscar en el nombre o los códigos del artículo. Ejemplo: "coca cola". Mandá cadena vacía para traer los primeros artículos sin filtrar.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3621,7 +4193,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál. 🔴 Si la persona pide el ranking "en unidades y en pesos" (o "por cantidad y por plata", "separámelos en unidades y en precio"), dale DOS rankings, uno ordenado por unidades y otro por plata (el de plata: consultar_resumen_de_ventas con agrupar_por articulo y orden total), no uno solo con las dos columnas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -3727,11 +4299,13 @@ CONFIRMACION;
                             'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30.',
                             'enum' => [7, 30, 90],
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input));
+                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input), self::articulo_id_del_input($input));
                 },
             ],
             /*
@@ -3785,11 +4359,13 @@ CONFIRMACION;
                             'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia, que es lo que la persona suele querer decir con "quién me compró más".',
                             'enum' => [0, 7, 30, 90, 365],
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3802,11 +4378,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3841,11 +4419,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3877,7 +4457,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_datos',
-                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Los renglones traen `importe` (la plata de ese renglón, unidades x precio o costo con su descuento): se filtra y se ordena como cualquier número. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP.',
+                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Los renglones traen `importe` (la plata de ese renglón, unidades x precio o costo con su descuento): se filtra y se ordena como cualquier número. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP. Con listas de precio, el margen de un artículo EN UNA LISTA no es su percentage_gain: para contar por margen de lista va contar_articulos_por_filtro con margen_en_lista.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -3959,7 +4539,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'resumir_datos',
-                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada, pero 🔴 renglon_de_venta no prorratea los descuentos y recargos de la venta ni filtra las ventas sin terminar: no lo uses para el total de un día ni para "cuál me dejó más margen" (eso es consultar_resumen_de_ventas con agrupar_por articulo y orden ganancia, que cuadra con el total del período). Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4034,7 +4614,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4055,6 +4635,17 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre del método de pago, para dejar SOLO las ventas que lo tocaron (se combina con agrupar_por: metodo_de_pago "Tarjeta" + agrupar_por "cliente" contesta a quién le vendiste con tarjeta). También vale "Cuenta corriente" para quedarte con lo vendido fiado. 🔴 Cada importe sigue siendo el TOTAL de la venta, no la parte pagada con ese método: una venta pagada con dos métodos entra entera en los dos filtros, así que no sumes dos llamadas. Si el nombre no existe o encaja con varios, la respuesta trae "error" con los que hay: preguntá cuál y volvé a llamar.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final, por el prefijo del caché.
+                        'orden' => [
+                            'type'        => 'string',
+                            'description' => 'Por qué ordenar los grupos: total, ganancia (solo con articulo, rubro o proveedor) o cantidad. Con articulo, rubro o proveedor, mandarlo suma costo, ganancia y el id de cada grupo.',
+                            'enum'        => ResumenDeVentasIaHelper::ORDENES,
+                        ],
+                        'direccion' => [
+                            'type'        => 'string',
+                            'description' => 'desc (default: de mayor a menor) o asc (de menor a mayor: "los que menos", "margen negativo").',
+                            'enum'        => ['desc', 'asc'],
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -4065,7 +4656,9 @@ CONFIRMACION;
                         isset($input['hasta']) ? $input['hasta'] : null,
                         isset($input['agrupar_por']) ? (string) $input['agrupar_por'] : null,
                         isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
-                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null
+                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null,
+                        isset($input['orden']) ? (string) $input['orden'] : null,
+                        isset($input['direccion']) ? (string) $input['direccion'] : null
                     );
                 },
             ],
@@ -4262,6 +4855,104 @@ CONFIRMACION;
                     );
                 },
             ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (29/10/2026, §4 E3.1), al final por la regla del prefijo
+             * del caché. En Ferre Total (CONV 9) el dueño pidió «¿me lo podés volcar en un archivo
+             * Excel?» y el agente contestó que no podía generar archivos. Va en el registro de LECTURA
+             * para que esté en los tres canales (sistema, WhatsApp y la app) aunque el mensaje no tenga
+             * las herramientas de carga: no toca ningún dato del negocio, solo arma un archivo con lo que
+             * el modelo ya consultó y deja su link (con token y vencimiento) en el disco privado. La
+             * validación de la tabla es la de mostrar_tabla (BloquesIaHelper::tabla) con techo de 1000
+             * filas; todo lo del link vive en ArchivosDelAgenteIaHelper.
+             */
+            [
+                'name' => 'exportar_excel',
+                'description' => 'Arma un archivo EXCEL (.xlsx) con una tabla y devuelve un LINK para bajarlo. Usala cuando la persona pida los datos "en un Excel", "en una planilla" o "en un archivo para bajar" (por ejemplo: "volcame ese ranking en un Excel"). Primero consultá los datos con las herramientas de consulta; después mandá acá las columnas (cada una con una clave corta de letras, números o _, su etiqueta y su formato: texto, numero, moneda, porcentaje o fecha) y las filas (un objeto por fila con esas claves; en las columnas numéricas el valor va como NÚMERO sin formato, y un porcentaje en puntos: 15 = 15 %). Hasta 12 columnas y 1000 filas. La respuesta trae el link: pasáselo TAL CUAL a la persona, sin acortarlo; vence a los 7 días. Anda en todos los canales: por WhatsApp el link se toca y se baja el archivo. 🔴 Nunca digas que no podés generar un Excel o un archivo: con esta herramienta podés. Si la respuesta trae "error", corregí lo que dice y volvé a llamarla, o contá el motivo tal cual.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'titulo' => [
+                            'type'        => 'string',
+                            'description' => 'Título de la tabla (hasta 120 caracteres): es el nombre de la hoja. Ejemplo: "Ranking de ventas, últimos 90 días".',
+                        ],
+                        'columnas' => [
+                            'type'  => 'array',
+                            'items' => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'clave'    => ['type' => 'string'],
+                                    'etiqueta' => ['type' => 'string'],
+                                    'formato'  => ['type' => 'string', 'enum' => BloquesIaHelper::FORMATOS_DE_COLUMNA],
+                                ],
+                                'required'   => ['clave', 'etiqueta'],
+                            ],
+                        ],
+                        'filas' => [
+                            'type'  => 'array',
+                            'items' => ['type' => 'object'],
+                        ],
+                        'nombre_archivo' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el nombre del archivo, sin la extensión ("ranking-de-ventas"). Sin esto, sale del título.',
+                        ],
+                    ],
+                    'required' => ['titulo', 'columnas', 'filas'],
+                ],
+                /*
+                 * La conversación y el mensaje en curso solo quedan registrados en la fila del archivo
+                 * (quién lo pidió y desde qué respuesta); el MCP llama sin mensaje y anda igual.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ArchivosDelAgenteIaHelper::exportar_excel(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                        $input
+                    );
+                },
+            ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (E2 punto 5, 29/10/2026), al final por la regla del
+             * prefijo del caché. Pablo (Ferre Total, CONV 11) pidió «el top ten con menos rotación» y
+             * el agente lo armó a mano con resumir_datos sobre los renglones (que solo ven lo que SÍ se
+             * vendió), nombró seis diciendo cuatro y reescribió los nombres. Es el mismo cálculo del
+             * informe de Stock del Mostrador (RecolectorStock), de lectura y en todos los canales.
+             */
+            [
+                'name' => 'consultar_articulos_sin_rotacion',
+                'description' => 'Los artículos SIN ROTACIÓN: activos, con stock y sin ninguna venta en los últimos N días (30, 60, 90 —el default— o 180), con su article_id, stock, días sin venta, la fecha de la última venta (o nunca_se_vendio), la última compra a un proveedor, cuántas compras tiene y su valor a costo; y en total cuántos son (sin_rotacion_encontrados) y el valor inmovilizado de todos. Es la herramienta de "los que menos rotan", "lo que no se vende", "el top ten con menos rotación" y "mercadería parada": no la armes con resumir_datos ni con los más vendidos, que solo ven lo que SÍ se vendió. solo_comprados deja solo los que alguna vez se compraron ("¿pero son productos que compré?"). Con incluir_poco_vendidos, si los que no se vendieron nada no llegan al límite, se completa con los que MENOS se vendieron (poco_vendidos, aparte: decí que sí se vendieron, poco). Para la ficha, el stock por sucursal o las compras de uno de estos, pasá su article_id (articulo_id) a esa herramienta: no reescribas el nombre.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'dias' => [
+                            'type'        => 'integer',
+                            'description' => 'Ventana sin ventas, en días. Si no la mandás se usan 90.',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::DIAS_VALIDOS,
+                        ],
+                        'limite' => [
+                            'type'        => 'integer',
+                            'description' => 'Cuántos artículos traer ("top ten" = 10, el default). Máximo ' . \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::LIMITE_MAXIMO . '.',
+                        ],
+                        'orden' => [
+                            'type'        => 'string',
+                            'description' => 'valor (default: mayor valor a costo inmovilizado primero), dias (los que llevan más días sin venderse primero) o stock (más stock primero).',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::ORDENES,
+                        ],
+                        'solo_comprados' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para dejar solo los que alguna vez se le compraron a un proveedor.',
+                        ],
+                        'incluir_poco_vendidos' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para completar el límite con los que menos unidades vendieron en la ventana, si los que no vendieron nada no alcanzan.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::consultar((int) $owner_id, $input);
+                },
+            ],
         ];
     }
 
@@ -4386,6 +5077,39 @@ CONFIRMACION;
         }
 
         return $dias;
+    }
+
+    /**
+     * El esquema de `articulo_id`, común a las cinco consultas de UN artículo (misión
+     * agente-mejoras-uso-real, E2 punto 6, 29/10/2026). Pablo (Ferre Total, CONV 11) pidió el stock y
+     * las compras de dos artículos de un ranking y el agente no encontró sus fichas: había reescrito
+     * los nombres («HºCARROCERA» → «H° carrocera», «90 º 60 X 60» → «90° 60x60») y estas consultas
+     * solo aceptaban texto. Con el id no hay nombre que reescribir.
+     *
+     * @return array<string, string>
+     */
+    protected static function esquema_de_articulo_id(): array
+    {
+        return [
+            'type'        => 'integer',
+            'description' => 'El id del artículo si salió de una respuesta anterior (article_id, articulo_id o id de cualquier consulta): pasalo acá y no reescribas el nombre. Manda sobre busqueda y encuentra también los inactivos y los de la papelera (la respuesta lo dice en estado_del_articulo).',
+        ];
+    }
+
+    /**
+     * El `articulo_id` de un input, o null si no vino o no es un entero positivo.
+     *
+     * @param array $input
+     * @return int|null
+     */
+    protected static function articulo_id_del_input(array $input)
+    {
+        if (! isset($input['articulo_id']) || ! is_numeric($input['articulo_id']) || (int) $input['articulo_id'] <= 0) {
+
+            return null;
+        }
+
+        return (int) $input['articulo_id'];
     }
 
     /**

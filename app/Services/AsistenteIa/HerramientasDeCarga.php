@@ -4,6 +4,7 @@ namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AltaDeArticuloConFotoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CambioDeProveedorDeCompraIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
@@ -15,6 +16,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelp
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraSinArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaEnvioComprobanteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
@@ -32,6 +34,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelpe
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ReintentoDeEscaneoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaAccionDePantallaIaHelper;
@@ -132,6 +135,13 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_DISENO_PDF,
         /* Al final, por la regla de siempre. Ver el 🔴 de la compra con factura en el docblock. */
         AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026): volver a escanear la factura de una compra cuyo
+         * escaneo falló, con las fotos ya guardadas. Cumple las dos condiciones de arriba —no mueve
+         * plata ni stock (la compra sigue vacía y la revisión del escaneo sigue siendo de la persona)—,
+         * y es la hermana de la compra con factura, que ya se ejecuta sola en este modo.
+         */
+        AiMessageAction::TIPO_REINTENTO_ESCANEO,
     ];
 
     /**
@@ -195,6 +205,15 @@ class HerramientasDeCarga
          * 🔴 TIPO_BORRADO_PANTALLA NO ESTÁ ACÁ, y está en NUNCA_AUTO_CONFIRMABLES: ver ahí.
          */
         AiMessageAction::TIPO_ACCION_PANTALLA,
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026), atrás de lo que había: el cambio de proveedor
+         * de una compra que creó el agente. Corrige una carga del propio agente (la compra vacía que
+         * acaba de crear) y la deuda que mueve pasa de una cuenta del negocio a otra, como un pago; en
+         * "resuelto" NO entra (ahí solo lo inocuo).
+         */
+        AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA,
+        /* El reescaneo de una factura que falló: en "directo" también (está en los de "resuelto"). */
+        AiMessageAction::TIPO_REINTENTO_ESCANEO,
     ];
 
     /**
@@ -245,6 +264,13 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_ENVIO_COMPROBANTE,
         AiMessageAction::TIPO_RECORDATORIOS_COBRO,
         AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+        /*
+         * 🔴 La compra sin artículos (misión agente-mejoras-uso-real, 29/10/2026): mueve la deuda con
+         * el proveedor por un total que la persona DICTÓ (muchas veces por audio), sin una factura
+         * escaneada que lo respalde. Un 198.522 entendido como 198.552 no se nota hasta que se le paga
+         * de más: la persona ve el total, el IVA y la cuenta corriente, y confirma ella.
+         */
+        AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS,
     ];
 
     /**
@@ -703,7 +729,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'contar_articulos_por_filtro',
-                'description'  => 'Cuenta cuántos artículos activos cumplen un filtro (todos los filtros a la vez) y devuelve los primeros nombres como muestra. Usala SIEMPRE antes de proponer_actualizacion_masiva o proponer_imagenes_para_articulos, para decirle a la persona cuántos artículos alcanza. Sin filtros cuenta el catálogo entero. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N (nunca los últimos). Los proveedores, categorías, subcategorías y marcas van por su NOMBRE, no por id: si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Cuenta cuántos artículos activos cumplen un filtro (todos los filtros a la vez) y devuelve los primeros nombres como muestra. Usala SIEMPRE antes de proponer_actualizacion_masiva o proponer_imagenes_para_articulos, para decirle a la persona cuántos artículos alcanza. Sin filtros cuenta el catálogo entero. "Los primeros N artículos" son los N más viejos por fecha de alta: orden primeros_creados con limite N (nunca los últimos). Los proveedores, categorías, subcategorías y marcas van por su NOMBRE, no por id: si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Si trae "error", contá ese motivo tal cual. 🔴 "¿Cuántos tienen margen 0 en la lista?" (o sin margen, o con precio fijo) = margen_en_lista igual 0 (o precio_fijo_en_lista) con lista = el nombre o "cualquiera": la respuesta trae por_lista (cuántos en CADA lista, cuántos con stock y cuántos con precio fijo) y muestra_por_lista con su article_id; contestá con esos números por lista, nunca con uno solo de la muestra.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -738,7 +764,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_actualizacion_masiva',
-                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos de precio manual sube ese precio, donde el margen no mueve el precio —listas de precio, proveedor con costo de lista + IVA— sube el costo, y en el resto ajusta el margen) y va solo, en una tarjeta aparte de cualquier otro cambio. precio_manual es solo cuando la persona habla del precio cargado a mano (si ninguno de los alcanzados lo usa, subir o bajar se convierte solo en precio_final). Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos de precio manual sube ese precio, donde el margen no mueve el precio —listas de precio, proveedor con costo de lista + IVA— sube el costo, y en el resto ajusta el margen) y va solo, en una tarjeta aparte de cualquier otro cambio. precio_manual es solo cuando la persona habla del precio cargado a mano (si ninguno de los alcanzados lo usa, subir o bajar se convierte solo en precio_final). "Poneles stock mínimo 10" es stock_minimo con setear 10 (y stock_maximo, el máximo); si el negocio reparte el stock entre sucursales, mandá también sucursal (el nombre, o "todas"), y si la respuesta pide la sucursal, preguntala. 🔴 NUNCA ofrezcas setear stock en lugar del mínimo: stock es la mercadería que hay y cambiarlo carga un ingreso o un egreso real. Si la persona dice el mínimo con una unidad ("stock mínimo 10 kilos" en artículos que se venden por kilo), aplicá 10 sin preguntar si son unidades o kilos: el mínimo está en la misma unidad en que se lleva el stock del artículo. Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso (si trae opciones y una es evidente —"kilos" es "Kilo"—, usala sin preguntar); si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -756,12 +782,14 @@ class HerramientasDeCarga
                                             'proveedor', 'categoria', 'sub_categoria', 'marca',
                                             'iva', 'unidad_de_medida',
                                             'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
+                                            // Misión agente-mejoras-uso-real (E2): al final.
+                                            'stock_minimo', 'stock_maximo',
                                         ],
                                     ],
                                     'operacion' => [
                                         'type'        => 'string',
                                         'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
-                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor.',
+                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor. stock_minimo y stock_maximo: solo setear, con un entero.',
                                     ],
                                     'valor'     => [
                                         'type'        => ['number', 'string'],
@@ -770,6 +798,11 @@ class HerramientasDeCarga
                                     'redondear' => [
                                         'type'        => 'boolean',
                                         'description' => 'Solo con subir_porcentaje o bajar_porcentaje: true redondea el resultado a entero (en precio_final, solo los artículos de precio manual).',
+                                    ],
+                                    // Misión agente-mejoras-uso-real (E2): al final.
+                                    'sucursal'  => [
+                                        'type'        => 'string',
+                                        'description' => 'Solo con stock_minimo o stock_maximo (setear, con un número entero en valor) en un negocio que reparte el stock entre sucursales: el nombre de la sucursal o "todas". Con una sola sucursal no hace falta.',
                                     ],
                                 ],
                                 'required'   => ['campo', 'operacion'],
@@ -985,7 +1018,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_edicion',
-                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme (con la confianza en "directo" se cambia en el acto y te devuelve el resultado). Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme (con la confianza en "directo" se cambia en el acto y te devuelve el resultado). Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`; la tarjeta muestra el precio de cada lista hoy → el que queda, y si la respuesta trae "aviso" (una lista con precio fijo que pasa a calcularse, o un precio que baja), decíselo a la persona ANTES de que confirme: el sistema no guarda margen y precio fijo a la vez en la misma lista, así que para conservar un precio fijo no se le cambia el margen a esa lista. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1115,7 +1148,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'proponer_foto_articulo',
-                'description'  => 'Arma la tarjeta para ponerle una foto a un ARTÍCULO QUE YA EXISTE. Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para ponerle una foto a uno o a VARIOS ARTÍCULOS QUE YA EXISTEN. 🔴 Una misma foto puede ir a muchos artículos: si la persona pide la misma foto para varios ("que todos tengan la misma", "a los 10 clavos", "la misma para los otros 8"), mandalos en UNA sola llamada, con articulo_ids (hasta 30) o con articulo + todos_los_que_coinciden: true; nunca le digas que una foto va a un solo artículo ni le pidas que te la reenvíe. Para volver a usar una foto que ya le pusiste a otro artículo en esta conversación, mandá su imagen_id (el de la línea "[Foto adjunta] [imagen_id N]" del historial). Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál (salvo que la persona haya pedido la foto para todos: ahí volvé a llamar con todos_los_que_coinciden). La foto se suma a las imágenes de cada artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Al confirmar, el resultado trae hechos y no_hechos: contá a cuáles se les puso y a cuáles NO, por nombre. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1129,9 +1162,23 @@ class HerramientasDeCarga
                         ],
                         'imagen_id' => [
                             'type' => 'integer',
-                            'description' => 'Id exacto de la foto elegida en el hallazgo de búsqueda. Si falta, se usa la última foto enviada por la persona; no lo omitas para una foto de internet.',
+                            'description' => 'Id exacto de la foto: la del hallazgo de búsqueda, o una que la persona ya mandó en esta conversación (el imagen_id del historial), aunque ya se la hayas puesto a otro artículo. Si falta, se usa la última foto enviada por la persona y todavía sin usar; no lo omitas para una foto de internet.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión agente-mejoras-uso-real (29/10/2026, E1 punto 1), AL FINAL de las
+                         * propiedades por la regla del prefijo del caché: UNA foto para N artículos
+                         * (Ferre Total, CONV 15: «que todos los clavos punta París tengan la misma»).
+                         */
+                        'articulo_ids' => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Si la misma foto va a VARIOS artículos: sus ids (hasta 30), de una herramienta o de las opciones de un "faltan". Va en UNA sola llamada: nunca una llamada por artículo.',
+                        ],
+                        'todos_los_que_coinciden' => [
+                            'type'        => 'boolean',
+                            'description' => 'true solo si la persona pidió la foto para TODOS los artículos que encajan con articulo ("a todos los clavos punta París"): la tarjeta los lleva a todos (hasta 30) en vez de preguntarte cuál.',
+                        ],
                     ],
                     'required'   => [],
                 ],
@@ -1472,7 +1519,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_promocion_por_whatsapp',
-                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda (de varios, hasta 5 en article_ids: cada uno sale con su link), o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` lo redactás VOS, sin pedírselo a la persona: qué se ofrece y a qué precio (el de cada artículo como lo devolvió consultar_stock_de_articulos), sin saludo (el saludo con el nombre lo pongo yo) y sin links (los pongo yo). La persona lo ve tal cual sale y lo corrige antes del sí. Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda (de varios, hasta 5 en article_ids: cada uno sale con su link), o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` lo redactás VOS, sin pedírselo a la persona: qué se ofrece y a qué precio (el de cada artículo como lo devolvió consultar_stock_de_articulos), sin saludo (el saludo con el nombre lo pongo yo) y sin links (los pongo yo). La persona lo ve tal cual sale y lo corrige antes del sí. Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Si la persona pide verla antes ("mandámela a mí primero", "quiero ver cómo queda"), llamala igual: lo que el sistema le muestra antes del sí (el bloque al final de tu mensaje por WhatsApp, o la tarjeta en el sistema) ES la vista previa exacta, palabra por palabra, de lo que le llega a cada cliente; decile que ahí la tiene y que no sale nada hasta su sí, y nunca digas que no se puede. Si la respuesta trae codigo sin_whatsapp_de_clientes, decilo en esa misma respuesta y ofrecé pedírselo a soporte; con sin_direccion_de_tienda, nunca digas que el negocio no tiene tienda ni que el artículo no está publicado: lo que falta es la dirección de la tienda.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1518,6 +1565,107 @@ class HerramientasDeCarga
                         ],
                     ],
                     'required'   => ['texto'],
+                ],
+            ],
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026, E1), al FINAL de lo que había: el orden del
+             * array es el prefijo del caché de prompt y lo nuevo nunca se intercala. Las compras que el
+             * agente no supo hacer en Ferre Total (CONV 19 y 20). Van en la lista común y no en la de
+             * WhatsApp: ninguna necesita una foto que llegue por ese canal.
+             */
+            [
+                'name'         => 'proponer_compra_sin_articulos',
+                'description'  => 'Arma la tarjeta de una COMPRA SIN ARTÍCULOS: la factura de un proveedor cargada como deuda, sin renglones, como la carga la pantalla de Compras con el total desde la factura. Es lo que va cuando la persona pide "una compra sin artículos", "cargame la factura de X por tanto" o dicta el total de una factura sin mandar la foto: NO le pidas la foto (para escanear una foto está proponer_compra_con_factura). Pasale el total FINAL de la factura y el IVA: "sin_iva" si la factura no discrimina IVA ("sin IVA", una C, un monotributista) o la alícuota (21, 10.5, 27) si lo discrimina; si la persona no lo dijo, preguntalo. Va a la cuenta corriente del proveedor salvo que la persona diga que no. Si el proveedor no existe, lo doy de alta en la misma carga. 🔴 SIEMPRE queda esperando la confirmación de la persona, en todos los modos: mueve la deuda con el proveedor. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'proveedor'          => [
+                            'type'        => 'string',
+                            'description' => 'El proveedor, tal como lo dijo la persona.',
+                        ],
+                        'total'              => [
+                            'type'        => 'number',
+                            'description' => 'El total FINAL de la factura, el que dijo la persona (198.522 = 198522).',
+                        ],
+                        'iva'                => [
+                            'type'        => 'string',
+                            'description' => '"sin_iva" si la factura no discrimina IVA, o la alícuota: "21", "10.5" o "27". Si la persona no lo dijo, no lo mandes: te lo pregunto.',
+                        ],
+                        'numero_comprobante' => [
+                            'type'        => 'string',
+                            'description' => 'El número de la factura, solo si la persona lo dijo (0001-00001234).',
+                        ],
+                        'fecha'              => [
+                            'type'        => 'string',
+                            'description' => 'AAAA-MM-DD de la factura, solo si la persona dijo una. Sin fecha, hoy.',
+                        ],
+                        'sucursal'           => [
+                            'type'        => 'string',
+                            'description' => 'Sucursal, solo si la persona la nombró. Nunca la preguntes.',
+                        ],
+                        'cuenta_corriente'   => [
+                            'type'        => 'boolean',
+                            'description' => 'false solo si la persona pidió que NO vaya a la cuenta corriente del proveedor. Por defecto va.',
+                        ],
+                        'reemplaza_a'        => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['proveedor', 'total'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_cambio_de_proveedor_de_compra',
+                'description'  => 'Le cambia el PROVEEDOR a una compra que vos (el agente) creaste hace poco, en vez de crear otra: es lo que va cuando la persona dice "volvé a cargarla con el proveedor X", "era de X, no de Y" o "cambiale el proveedor" sobre la compra recién hecha. 🔴 NUNCA armes una compra nueva para eso ni le pidas la foto de nuevo: la compra, su factura y su escaneo se conservan y solo cambia el proveedor (y su deuda pasa a la cuenta corriente del proveedor nuevo). Sin compra_num uso la última compra que creaste en esta conversación. Solo sirve si la compra la creaste vos en las últimas 24 horas, sigue sin artículos y su escaneo no está confirmado; si no, la respuesta trae el motivo. Si el proveedor no existe, lo doy de alta en la misma carga. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'proveedor'   => [
+                            'type'        => 'string',
+                            'description' => 'El proveedor NUEVO, tal como lo dijo la persona.',
+                        ],
+                        'compra_num'  => [
+                            'type'        => 'integer',
+                            'description' => 'El N° de la compra a corregir (el de "Creé la Compra N° X"). Si es la que acabás de crear en esta conversación, podés no mandarlo.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['proveedor'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_reintento_de_escaneo',
+                'description'  => 'Vuelve a escanear la factura de una compra cuyo escaneo FALLÓ ("no pude leer la factura"), con las mismas fotos que ya están guardadas: es lo que va cuando la persona dice "volvé a escanearla", "probá de nuevo con la factura" o "volvé a leerla". 🔴 No le pidas la foto de nuevo ni armes otra compra. Sin compra_num uso la compra del último escaneo que falló en esta conversación. Si el escaneo terminó bien o sigue en curso, o las fotos ya no están, la respuesta trae el motivo (si las fotos no están, ahí sí pedile que te mande la factura: la compra con factura la suma sola a esa compra). Con la confianza en "resuelto" o "directo" se hace en el acto. Contá por dónde llega el aviso tal como lo dice el resultado. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'compra_num'  => [
+                            'type'        => 'integer',
+                            'description' => 'El N° de la compra cuya factura se vuelve a escanear (el del aviso "No pude leer la factura de … (compra N° X)"). Si es la de un escaneo que falló en esta conversación, podés no mandarlo.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (29/10/2026, §4 E3.3), AL FINAL por la regla del prefijo del
+             * caché. En Ferre Total (CONV 24) el dueño escribió «Le pedis a lucas que vea este tema» y el
+             * agente contestó que no podía escribirle a Lucas. El canal existía: el chat de soporte del
+             * negocio con ComercioCity. SIN TARJETA (es un mensaje a ComercioCity que la persona pidió, no a
+             * un tercero) y con tope diario; el MCP no la declara (McpHerramientasHelper::EXCLUIDAS). Todo
+             * vive en PedidoDeAyudaASoporteIaHelper.
+             */
+            [
+                'name'         => 'pedir_ayuda_a_soporte',
+                'description'  => 'Le deja un pedido al equipo de SOPORTE DE COMERCIOCITY (Lucas y el equipo que atiende el sistema) en el chat de soporte del negocio, el mismo de Ayuda del sistema, junto con las últimas vueltas de esta conversación. Usala solo cuando la persona te lo pide o acepta que lo hagas: "pedile a Lucas que vea esto", "avisale a soporte", "que lo revisen los de ComercioCity", o cuando algo no lo podés resolver vos (conectar el WhatsApp con los clientes, cargar la dirección de la tienda, un error del sistema, activar un módulo) y la persona te dice que sí cuando se lo ofrecés. No es escribirle a un tercero: es el canal del propio negocio con ComercioCity. El `detalle` lo redactás VOS, en una o dos oraciones: qué necesita y qué ya probaron. No deja tarjeta: sale en el acto. Tope: 3 por día por persona. Después decí en una oración que quedó pedido y que soporte le contesta por ese chat; no prometas tiempos ni que ya está resuelto. 🔴 Nunca digas que no podés hablar con Lucas o con soporte: con esta herramienta podés. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'detalle' => [
+                            'type'        => 'string',
+                            'description' => 'Qué necesita la persona que vea soporte, redactado por vos en una o dos oraciones (hasta 2000 caracteres). Ejemplo: "Pablo quiere mandar promos por WhatsApp y el sistema dice que el negocio no tiene conectado el WhatsApp con los clientes; él cree que ya lo cargó."',
+                        ],
+                    ],
+                    'required'   => ['detalle'],
                 ],
             ],
         ];
@@ -2114,6 +2262,49 @@ class HerramientasDeCarga
             case 'proponer_promocion_por_whatsapp':
                 return self::resultado(PropuestaPromocionWhatsappIaHelper::proponer($contexto, $assistant_message, $input));
 
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026): la compra sin artículos. 🔴 SIN la puerta de
+             * la auto-confirmación, a propósito: mueve la deuda con el proveedor por un número dictado,
+             * y espera el sí de la persona en todos los modos (ver NUNCA_AUTO_CONFIRMABLES).
+             */
+            case 'proponer_compra_sin_articulos':
+                return self::resultado(PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * El cambio de proveedor de una compra del agente pasa por la puerta única: con el dueño
+             * en "directo" se hace en el acto (como un pago, mueve plata entre cuentas corrientes y el
+             * dueño pidió que todo se haga solo); en "resuelto" y "cauteloso" deja tarjeta.
+             */
+            case 'proponer_cambio_de_proveedor_de_compra':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    CambioDeProveedorDeCompraIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * El reescaneo de una factura que falló: inocuo como la compra con factura (vuelve a correr
+             * una lectura sobre la misma compra), así que pasa por la puerta y en "resuelto" y
+             * "directo" se hace en el acto.
+             */
+            case 'proponer_reintento_de_escaneo':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    ReintentoDeEscaneoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026): el pedido al chat de soporte. Sin tarjeta y sin
+             * pasar por quizas_auto_confirmar(): no es una carga del negocio, es un mensaje a ComercioCity
+             * que la persona pidió (las guardas, el tope y el corte del MCP viven en el helper y en
+             * McpHerramientasHelper::EXCLUIDAS).
+             */
+            case 'pedir_ayuda_a_soporte':
+                return self::resultado(\App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper::pedir($contexto, $assistant_message, $input));
+
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
 
@@ -2353,7 +2544,7 @@ class HerramientasDeCarga
                         'properties'  => [
                             'numero'        => [
                                 'type'        => 'string',
-                                'description' => 'Número del cheque, tal como está impreso.',
+                                'description' => 'Número del cheque, tal como está impreso en el cheque o en la foto, o como lo dijo la persona. Si no se lee, preguntalo: nunca lo inventes ni numeres los cheques correlativos (1, 2, 3...).',
                             ],
                             'banco'         => [
                                 'type'        => 'string',
@@ -2365,7 +2556,7 @@ class HerramientasDeCarga
                             ],
                             'fecha_emision' => [
                                 'type'        => 'string',
-                                'description' => 'AAAA-MM-DD. Si no la dicen, es hoy.',
+                                'description' => 'AAAA-MM-DD, solo si figura en el cheque o la dice la persona. Si no, no la mandes: se usa la de hoy y la tarjeta lo avisa.',
                             ],
                             'es_echeq'      => [
                                 'type'        => 'boolean',
@@ -2423,7 +2614,7 @@ class HerramientasDeCarga
     {
         return [
             'type'        => 'array',
-            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Lista vacía = sin filtro.',
+            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Solo en contar_articulos_por_filtro: margen_en_lista (el margen de cada LISTA DE PRECIO) → igual, mayor, menor con el porcentaje, y precio_fijo_en_lista → igual si o no, los dos con lista = el nombre de la lista o "cualquiera"; con listas de precio, margen_de_ganancia (el del artículo) no arma el precio y se rechaza. Lista vacía = sin filtro.',
             'items'       => [
                 'type'       => 'object',
                 'properties' => [
@@ -2438,6 +2629,11 @@ class HerramientasDeCarga
                     'valor'    => [
                         'type'        => ['string', 'number'],
                         'description' => 'El nombre, el texto, el número, la fecha AAAA-MM-DD o si/no. No va con en_blanco ni no_en_blanco.',
+                    ],
+                    // Misión agente-mejoras-uso-real (E2): al final, por el prefijo del caché.
+                    'lista'    => [
+                        'type'        => 'string',
+                        'description' => 'Solo con margen_en_lista o precio_fijo_en_lista: el nombre de la lista de precios como lo dijo la persona, o "cualquiera" (en alguna lista; la respuesta trae el conteo de cada una).',
                     ],
                 ],
                 'required'   => ['campo', 'operador'],

@@ -2,7 +2,6 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
-use App\Http\Controllers\Helpers\OfertaComunicacionHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Jobs\SendPromocionWhatsappJob;
@@ -121,6 +120,29 @@ class PropuestaPromocionWhatsappIaHelper
 
     const MOTIVO_SIN_CONFIGURACION = 'sin_configuracion';
 
+    /*
+     * Los CÓDIGOS de los motivos por los que no se arma la promo (misión agente-mejoras-uso-real,
+     * 29/10/2026, §4 E3.2 del plan). Viajan en `codigo` (RespuestaDeCargaIa::error_con_codigo) para que el
+     * modelo distinga "no se sabe la dirección de la tienda" de "el artículo no está publicado" sin
+     * interpretar el texto: en la CONV 24 de Ferre Total los mezcló tres veces seguidas. El de "sin
+     * WhatsApp con clientes" es WhatsappDeClientesIaHelper::CODIGO_SIN_WHATSAPP.
+     */
+
+    /** No hay dirección de la tienda guardada (`users.online` vacío): NO dice nada de lo publicado. */
+    const CODIGO_SIN_DIRECCION_DE_TIENDA = 'sin_direccion_de_tienda';
+
+    /** El artículo figura sin publicar en la tienda (`articles.online = 0`). */
+    const CODIGO_ARTICULO_NO_PUBLICADO = 'articulo_no_publicado';
+
+    /** El artículo figura publicado pero sin su dirección propia en la tienda (`slug` vacío). */
+    const CODIGO_ARTICULO_SIN_SLUG = 'articulo_sin_slug';
+
+    /** El negocio no tiene el módulo (Agentes de IA). */
+    const CODIGO_SIN_MODULO = 'sin_modulo';
+
+    /** La persona no es el dueño ni un administrador. */
+    const CODIGO_SIN_PERMISO = 'sin_permiso';
+
     /**
      * Cuántos artículos puede llevar una promo (N5 de la misión asistente-arreglos-segunda-prueba,
      * 19/10/2026). Cada uno suma un renglón con su link al mensaje: con más de cinco el WhatsApp deja de
@@ -152,11 +174,17 @@ class PropuestaPromocionWhatsappIaHelper
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input): array
     {
-        $corte = self::verificar_acceso($contexto);
+        /*
+         * 🔴 PRIMERO SI SE PUEDE MANDAR (misión agente-mejoras-uso-real, 29/10/2026): el módulo, quién pide
+         * y si el negocio tiene el WhatsApp con clientes conectado, ANTES de mirar el texto, el artículo o
+         * los clientes. En la CONV 24 de Ferre Total el agente dio diez vueltas con el artículo y la
+         * tienda y recién al «Mandalo» supo que no había WhatsApp: ahora es lo primero que contesta.
+         */
+        $corte = self::corte_de_acceso($contexto);
 
         if (!is_null($corte)) {
 
-            return RespuestaDeCargaIa::error($corte);
+            return RespuestaDeCargaIa::error_con_codigo($corte['codigo'], $corte['texto']);
         }
 
         $texto = self::texto_limpio(EntradaDeCargaIa::texto($input, 'texto'));
@@ -314,8 +342,12 @@ class PropuestaPromocionWhatsappIaHelper
             }
         }
 
-        // M3: sin link hay un solo motivo posible (sin artículo ni combo, el link es la portada de la tienda).
-        $link = is_null($destino['link']) ? 'sin link: el negocio no tiene tienda online cargada' : $destino['link'];
+        /*
+         * M3: sin link hay un solo motivo posible (sin artículo ni combo, el link es la portada de la tienda).
+         * Desde la misión agente-mejoras-uso-real (29/10/2026) dice lo que de verdad pasa —falta la
+         * DIRECCIÓN— y no "no tiene tienda", que el modelo repetía como un hecho.
+         */
+        $link = is_null($destino['link']) ? 'sin link: no tengo cargada la dirección de la tienda del negocio' : $destino['link'];
 
         $renglones = [
             ['etiqueta' => 'Le llega a ' . count($nombres), 'valor' => DestinatariosIaHelper::lista_de_nombres($nombres)],
@@ -1099,14 +1131,46 @@ class PropuestaPromocionWhatsappIaHelper
      */
     protected static function verificar_acceso(ContextoDeCargaIa $contexto)
     {
+        $corte = self::corte_de_acceso($contexto);
+
+        return is_null($corte) ? null : $corte['texto'];
+    }
+
+    /**
+     * El corte de acceso con su código (misión agente-mejoras-uso-real, 29/10/2026): el módulo, quién pide
+     * y —desde esta misión— si el negocio tiene el WhatsApp con clientes conectado, en ese orden.
+     * verificar_acceso() es este mismo corte en texto, para ejecutar() (que lo tira como excepción).
+     *
+     * 🔴 El WhatsApp va acá, en la puerta, y no después de resolver el artículo y los clientes: sin él la
+     * promo no puede salir, y todo lo que se resuelva antes es una vuelta de más para el dueño (CONV 24).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return array{codigo: string, texto: string}|null
+     */
+    protected static function corte_de_acceso(ContextoDeCargaIa $contexto)
+    {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION)) {
 
-            return PermisosIaHelper::mensaje_sin_extencion('WhatsApp (incluido en Agentes de IA)') . ' Sin él no se pueden mandar promociones.';
+            return [
+                'codigo' => self::CODIGO_SIN_MODULO,
+                'texto'  => PermisosIaHelper::mensaje_sin_extencion('WhatsApp (incluido en Agentes de IA)') . ' Sin él no se pueden mandar promociones.',
+            ];
         }
 
         if (!PermisosIaHelper::es_admin($contexto->persona)) {
 
-            return 'Las promociones a los clientes las manda el dueño del negocio o un administrador.';
+            return [
+                'codigo' => self::CODIGO_SIN_PERMISO,
+                'texto'  => 'Las promociones a los clientes las manda el dueño del negocio o un administrador.',
+            ];
+        }
+
+        if (!WhatsappDeClientesIaHelper::conectado($contexto->owner_id)) {
+
+            return [
+                'codigo' => WhatsappDeClientesIaHelper::CODIGO_SIN_WHATSAPP,
+                'texto'  => WhatsappDeClientesIaHelper::texto_sin_whatsapp('promociones'),
+            ];
         }
 
         return null;
@@ -1126,7 +1190,13 @@ class PropuestaPromocionWhatsappIaHelper
      */
     protected static function resolver_destino(ContextoDeCargaIa $contexto, array $input)
     {
-        $tienda = OfertaComunicacionHelper::url_de_la_tienda($contexto->owner);
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026): la dirección sale de TiendaDelNegocioIaHelper::url()
+         * (users.online y, en una demo, la de su tienda fija). Y el orden cambió: primero se resuelve el
+         * artículo o el combo, y recién después se mira si hay dirección, para que el motivo diga lo que se
+         * sabe del artículo ("figura publicado") en vez de afirmar que no hay tienda.
+         */
+        $tienda = TiendaDelNegocioIaHelper::url($contexto->owner);
 
         $article_id = EntradaDeCargaIa::valor($input, 'article_id');
         $articulo = EntradaDeCargaIa::texto($input, 'articulo');
@@ -1160,11 +1230,6 @@ class PropuestaPromocionWhatsappIaHelper
             return ['link' => $tienda];
         }
 
-        if (is_null($tienda)) {
-
-            return RespuestaDeCargaIa::error('El negocio no tiene tienda online cargada, así que no hay link al que mandar a los clientes. No mando una promo con un link roto: si querés, la mando sin artículo ni combo, sin link.');
-        }
-
         if ($quiere_articulo && count($article_ids) > 1) {
 
             return self::resolver_varios_articulos($contexto, $tienda, $article_ids);
@@ -1178,9 +1243,15 @@ class PropuestaPromocionWhatsappIaHelper
                 return $modelo;
             }
 
-            if (!(int) $modelo->online || trim((string) $modelo->slug) === '') {
+            // Lo que se sabe del artículo (sin publicar, sin slug) va antes que lo que falta del negocio.
+            $sin_link = self::corte_del_articulo($modelo, 'o mandá la promo sin el artículo', $tienda);
 
-                return RespuestaDeCargaIa::error('El artículo "' . $modelo->name . '" no está publicado en la tienda, así que su link no le abriría a nadie. Publicalo en la tienda primero, o mandá la promo sin el artículo.');
+            if (!is_null($sin_link)) {
+                return $sin_link;
+            }
+
+            if (is_null($tienda)) {
+                return self::sin_direccion_de_tienda($contexto, [$modelo]);
             }
 
             return [
@@ -1194,6 +1265,11 @@ class PropuestaPromocionWhatsappIaHelper
 
         if (RespuestaDeCargaIa::es_negativa($modelo)) {
             return $modelo;
+        }
+
+        // El combo se ve en la portada de la tienda: sin su dirección no hay link (y no es que no haya tienda).
+        if (is_null($tienda)) {
+            return self::sin_direccion_de_tienda($contexto, [], (string) $modelo->name);
         }
 
         $publicar = !(int) $modelo->online;
@@ -1219,14 +1295,21 @@ class PropuestaPromocionWhatsappIaHelper
      * nombrándolo: mandar la promo sin él cambiaría lo que el modelo le propuso al dueño, y mandarla con
      * un link que no abre es mandar un link roto.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): `$tienda` puede venir null. Primero se resuelven TODOS
+     * los artículos (cada uno con su motivo exacto: sin publicar o sin slug) y recién después, si falta la
+     * dirección de la tienda, se dice eso con lo que se sabe de ellos.
+     *
      * @param  ContextoDeCargaIa  $contexto
-     * @param  string  $tienda  La URL de la tienda (ya validada: no es null).
+     * @param  string|null  $tienda  La URL de la tienda, o null si el sistema no la tiene.
      * @param  array<int, int>  $article_ids  De 2 a MAXIMO_DE_ARTICULOS.
      * @return array  {link (la portada), article_ids, articulos: [{article_id, nombre, link}]} o la respuesta negativa.
      */
     protected static function resolver_varios_articulos(ContextoDeCargaIa $contexto, $tienda, array $article_ids)
     {
         $articulos = [];
+
+        // Los modelos ya resueltos, para el motivo de "sin dirección de la tienda".
+        $modelos = [];
 
         foreach ($article_ids as $id) {
 
@@ -1237,10 +1320,20 @@ class PropuestaPromocionWhatsappIaHelper
                 return RespuestaDeCargaIa::error('No encontré el artículo ' . (int) $id . ' en este negocio: sacalo de article_ids o buscá el id correcto con consultar_stock_de_articulos.');
             }
 
-            if (!(int) $modelo->online || trim((string) $modelo->slug) === '') {
+            $sin_link = self::corte_del_articulo($modelo, 'o sacalo de la promo', $tienda);
 
-                return RespuestaDeCargaIa::error('El artículo "' . $modelo->name . '" no está publicado en la tienda, así que su link no le abriría a nadie. Publicalo en la tienda primero, o sacalo de la promo.');
+            if (!is_null($sin_link)) {
+                return $sin_link;
             }
+
+            $modelos[] = $modelo;
+        }
+
+        if (is_null($tienda)) {
+            return self::sin_direccion_de_tienda($contexto, $modelos);
+        }
+
+        foreach ($modelos as $modelo) {
 
             $articulos[] = [
                 'article_id' => (int) $modelo->id,
@@ -1261,6 +1354,109 @@ class PropuestaPromocionWhatsappIaHelper
             'article_ids' => $ids,
             'articulos'   => $articulos,
         ];
+    }
+
+    /**
+     * Por qué UN artículo no puede llevar link, separado en sus dos motivos (misión agente-mejoras-uso-real,
+     * 29/10/2026), o null si por el lado del artículo está todo bien:
+     *
+     *   - CODIGO_ARTICULO_NO_PUBLICADO: `online = 0`. Es un hecho de la ficha: el artículo NO está publicado.
+     *   - CODIGO_ARTICULO_SIN_SLUG: publicado, pero sin su dirección propia en la tienda (`slug` vacío). Hasta
+     *     esta misión salía con el mismo texto que el de arriba ("no está publicado"), que era falso. El slug
+     *     se arma solo al volver a guardar el artículo (ArticleController::update lo completa si está vacío).
+     *
+     * 🔴 El texto del no publicado conserva su comienzo de siempre ('El artículo "X" no está publicado en la
+     * tienda'): lo leen los tests de la promoción de uno y de varios artículos. Si además falta la dirección
+     * de la tienda, se agrega como dato aparte.
+     *
+     * @param  Article  $modelo
+     * @param  string  $salida  Qué más puede hacer ("o mandá la promo sin el artículo", "o sacalo de la promo").
+     * @param  string|null  $tienda  La dirección de la tienda (null si no se sabe).
+     * @return array|null  La respuesta negativa con `codigo`, o null.
+     */
+    protected static function corte_del_articulo(Article $modelo, $salida, $tienda)
+    {
+        if (!(int) $modelo->online) {
+
+            return RespuestaDeCargaIa::error_con_codigo(
+                self::CODIGO_ARTICULO_NO_PUBLICADO,
+                'El artículo "' . $modelo->name . '" no está publicado en la tienda (en su ficha figura sin publicar), así que su link no le abriría a nadie. '
+                . 'Publicalo en la tienda primero, ' . $salida . '.'
+                . (is_null($tienda) ? ' Aparte, tampoco tengo cargada la dirección de la tienda del negocio.' : '')
+            );
+        }
+
+        if (trim((string) $modelo->slug) === '') {
+
+            return RespuestaDeCargaIa::error_con_codigo(
+                self::CODIGO_ARTICULO_SIN_SLUG,
+                'El artículo "' . $modelo->name . '" figura publicado en la tienda, pero le falta su dirección propia dentro de la tienda (el slug), así que no puedo '
+                . 'armar su link. 🔴 Está publicado: no digas lo contrario. Se arregla abriendo el artículo en el sistema y guardándolo de nuevo (ahí se arma '
+                . 'su dirección); después volvé a llamar, ' . $salida . '.'
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * El motivo cuando el sistema no tiene la DIRECCIÓN de la tienda (misión agente-mejoras-uso-real,
+     * 29/10/2026). Es el caso de Ferre Total: `users.online` vacío y 6.319 artículos publicados. El texto dice
+     * qué NO se sabe y lo que sí se sabe (los artículos que figuran publicados, cuántos publicados tiene el
+     * negocio), para que el modelo no lo traduzca en "no tiene tienda" ni en "no está publicado".
+     *
+     * 🔴 Conserva la frase "no tiene tienda online cargada", con su aclaración al lado: la lee el test de la
+     * promoción de un artículo sin tienda (76) desde que existe la herramienta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array<int, Article>  $articulos  Los artículos de la promo, ya resueltos (vacío si es un combo).
+     * @param  string|null  $combo  El nombre del combo, si la promo es de un combo.
+     * @return array  La respuesta negativa con `codigo`.
+     */
+    protected static function sin_direccion_de_tienda(ContextoDeCargaIa $contexto, array $articulos, $combo = null)
+    {
+        $nombres = [];
+
+        foreach ($articulos as $articulo) {
+            $nombres[] = '"' . $articulo->name . '"';
+        }
+
+        if (!is_null($combo)) {
+
+            $de_que = 'el combo "' . $combo . '" (se ve en la portada de la tienda)';
+
+        } elseif (count($nombres) === 1) {
+
+            $de_que = 'el artículo ' . $nombres[0];
+
+        } else {
+
+            $de_que = 'los artículos ' . implode(', ', $nombres);
+        }
+
+        // Lo que SÍ se sabe: qué figura publicado y cuántos publicados tiene el negocio.
+        $se_sabe = [];
+
+        if (count($nombres) === 1) {
+            $se_sabe[] = 'el artículo ' . $nombres[0] . ' figura publicado';
+        } elseif (count($nombres) > 1) {
+            $se_sabe[] = 'los ' . count($nombres) . ' artículos figuran publicados';
+        }
+
+        $publicados = TiendaDelNegocioIaHelper::articulos_publicados($contexto->owner_id);
+
+        if (!is_null($publicados) && $publicados > 0) {
+            $se_sabe[] = 'el negocio tiene ' . number_format($publicados, 0, ',', '.') . ' artículos publicados';
+        }
+
+        return RespuestaDeCargaIa::error_con_codigo(
+            self::CODIGO_SIN_DIRECCION_DE_TIENDA,
+            'No tengo la dirección de la tienda: en el sistema, el negocio no tiene tienda online cargada con su dirección (la URL), así que no puedo '
+            . 'armar el link de ' . $de_que . '. 🔴 Eso NO quiere decir que el negocio no tenga tienda ni que lo de la promo no esté publicado'
+            . (count($se_sabe) ? ': ' . implode(' y ', $se_sabe) : '') . '. Decíselo así a la persona, sin afirmar que le falta la tienda ni que '
+            . 'algo esté sin publicar. Podés mandar la promo SIN link (sin article_id, article_ids ni combo, nombrando el producto y el precio en el texto), '
+            . 'o, si quiere el link, ofrecele pedirle a soporte que carguen la dirección de la tienda (pedir_ayuda_a_soporte).'
+        );
     }
 
     /**

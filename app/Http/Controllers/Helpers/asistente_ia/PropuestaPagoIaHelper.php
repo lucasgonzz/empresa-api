@@ -208,6 +208,20 @@ class PropuestaPagoIaHelper {
                 : 'Supera lo que le debés: te quedan '.$a_favor.' a favor.';
         }
 
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026, CONV 23 de Ferre Total): lo de los cheques que no vino
+         * de la persona —la fecha de emisión que se puso de hoy, los números cortos y correlativos que
+         * parecen numerados a mano— se dice en la tarjeta (PagosIaHelper::avisos_de_cheques).
+         */
+        $avisos_de_cheques = isset($pagos['avisos_de_cheques']) ? $pagos['avisos_de_cheques'] : [];
+
+        if (count($avisos_de_cheques)) {
+
+            $aviso = trim((is_null($aviso) ? '' : $aviso.' ').implode(' ', $avisos_de_cheques));
+        }
+
+        $numeros_para_revisar = isset($pagos['cheques_para_revisar']) ? $pagos['cheques_para_revisar'] : [];
+
         $datos = [
             'model_name'                     => $model_name,
             'model_id'                       => (int) $modelo->id,
@@ -230,7 +244,23 @@ class PropuestaPagoIaHelper {
 
         $resumen = ($es_cliente ? 'Pago de ' : 'Pago a ').$nombre.' '.FormatoIaHelper::monto($monto, $moneda_id).' · '.$pagos['resumen'].' · '.FormatoIaHelper::fecha_con_dia($fecha);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+        /*
+         * 🔴 Con números de cheque que parecen numerados a mano, la tarjeta espera el sí de la persona
+         * también en "directo" (`requiere_confirmacion`, que quizas_auto_confirmar() respeta antes de mirar
+         * el modo), y el modelo sabe por qué: en la CONV 23 el pago se registró en el acto con 7, 8, 9, 10 y
+         * 11. No se rechaza: puede ser una chequera nueva; lo decide la persona.
+         */
+        $extra = [];
+
+        if (count($numeros_para_revisar)) {
+
+            $extra['requiere_confirmacion'] = true;
+            $extra['cheques_para_revisar'] = $numeros_para_revisar;
+            $extra['aviso_de_cheques'] = 'Los números de cheque '.implode(', ', $numeros_para_revisar).' son correlativos y muy cortos: si no los '
+                .'leíste en la foto ni te los dijo la persona, NO son los números. Decíselo y preguntáselos; el pago queda esperando su confirmación.';
+        }
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
     }
 
     /**

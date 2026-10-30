@@ -775,7 +775,9 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
          */
         $this->assertStringContainsString('proponer_borrado_por_pantalla', $prompts['directo']);
         // Misión asistente-envios-a-clientes (16/10/2026): seis más los tres envíos a clientes = nueve.
-        $this->assertStringContainsString('NUEVE cosas siguen dejando tarjeta SIEMPRE', $prompts['directo']);
+        // Misión agente-mejoras-uso-real (29/10/2026): más la compra sin artículos, la edición de márgenes
+        // que pierde un precio fijo o baja un precio, y el cambio de proveedor con proveedor nuevo = doce.
+        $this->assertStringContainsString('DOCE cosas siguen dejando tarjeta SIEMPRE', $prompts['directo']);
         $this->assertStringContainsString('las acciones de pantalla que no borran', $prompts['directo']);
         // La sexta: lo que emite comprobantes ante ARCA (facturar) tampoco corre solo en "directo".
         $this->assertStringContainsString('ARCA', $prompts['directo']);

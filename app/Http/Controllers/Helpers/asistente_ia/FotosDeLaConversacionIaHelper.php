@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
@@ -192,6 +193,240 @@ class FotosDeLaConversacionIaHelper
                                     $q->where('ai_conversation_id', $conversation_id);
                                 })
                                 ->first();
+    }
+
+    /**
+     * Una foto YA USADA que se puede volver a poner en otro artículo, por su id, o null (misión
+     * agente-mejoras-uso-real, E1 punto 2, 29/10/2026).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, CONV 15). Pablo mandó una foto para los clavos punta París, el agente
+     * se la puso a uno y la foto quedó sellada (`gestionada_at`); a «la misma para los otros 8» le
+     * contestó que la foto «ya quedó usada» y que la mandara de nuevo, ocho veces. Sellar la foto sigue
+     * siendo correcto —es lo que impide que una factura termine en dos compras—, pero una foto de
+     * PRODUCTO puesta en un artículo puede ir a otros.
+     *
+     * Las condiciones, todas juntas (es_reutilizable_para_articulo()):
+     *   - del dueño de la cuenta, de un mensaje `rol = user` de ESTA conversación y de las últimas HORAS
+     *     horas (las de internet cuelgan del asistente y se usan solo sin usar, por por_id());
+     *   - que ya se haya puesto en un ARTÍCULO de esta conversación: una tarjeta confirmada de foto de
+     *     artículo (`datos.imagen_id`) o de alta de artículo con su foto (`datos.extras.imagen_id`);
+     *   - y que no haya entrado en ninguna compra con factura CONFIRMADA: la foto de una factura no se
+     *     publica en la tienda (una tarjeta de compra cancelada, reemplazada o sin confirmar no cuenta).
+     *     Una sellada a mano o por otra carga, sin haber ido a un artículo, tampoco sirve.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $imagen_id
+     * @return \App\Models\AiMessageImagen|null
+     */
+    public static function reutilizable_para_articulo(ContextoDeCargaIa $contexto, $imagen_id)
+    {
+        $imagen_id = is_numeric($imagen_id) ? (int) $imagen_id : 0;
+
+        if ($imagen_id <= 0) {
+
+            return null;
+        }
+
+        $imagen = AiMessageImagen::where('id', $imagen_id)
+                                    ->where('user_id', $contexto->owner_id)
+                                    ->whereNotNull('gestionada_at')
+                                    ->first();
+
+        if (is_null($imagen)) {
+
+            return null;
+        }
+
+        return self::es_reutilizable_para_articulo($contexto, $imagen) ? $imagen : null;
+    }
+
+    /**
+     * true si esta foto, ya usada, se puede volver a poner en un artículo. Ver las condiciones en
+     * reutilizable_para_articulo(); acá se evalúan sobre una foto ya leída (la que ejecutar() tiene
+     * bloqueada con lockForUpdate).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return bool
+     */
+    public static function es_reutilizable_para_articulo(ContextoDeCargaIa $contexto, AiMessageImagen $imagen)
+    {
+        if ((int) $imagen->user_id !== (int) $contexto->owner_id || is_null($contexto->conversation)) {
+
+            return false;
+        }
+
+        if (!is_null($imagen->created_at) && Carbon::parse($imagen->created_at)->lt(self::desde())) {
+
+            return false;
+        }
+
+        $mensaje = AiMessage::where('id', (int) $imagen->ai_message_id)->first(['id', 'rol', 'ai_conversation_id']);
+
+        /*
+         * De ESTA conversación o de una hermana: la misma persona, el mismo canal y las últimas HORAS
+         * horas (revisión independiente, arreglo 11). Por WhatsApp la charla se parte en hilos por tema,
+         * y «la misma para los otros 8» puede llegar en el hilo siguiente al de la foto.
+         */
+        $hermanas = self::conversaciones_del_mismo_canal($contexto);
+
+        if (is_null($mensaje) || (string) $mensaje->rol !== 'user' || !in_array((int) $mensaje->ai_conversation_id, $hermanas, true)) {
+
+            return false;
+        }
+
+        $acciones = AiMessageAction::whereIn('ai_conversation_id', $hermanas)
+                                    ->whereIn('tipo', [AiMessageAction::TIPO_FOTO_ARTICULO, AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_COMPRA_CON_FACTURA])
+                                    ->get(['id', 'tipo', 'estado', 'datos']);
+
+        $en_un_articulo = false;
+
+        foreach ($acciones as $accion) {
+
+            $datos = is_array($accion->datos) ? $accion->datos : [];
+
+            /*
+             * 🔴 Si una compra con factura CONFIRMADA la tuvo entre sus fotos (miradas o páginas), nunca:
+             * es una factura, y está en un escaneo. Solo la confirmada (revisión independiente, arreglo
+             * 9, 30/10/2026): una tarjeta de compra cancelada, reemplazada, descartada o todavía sin
+             * confirmar no se llevó la foto a ningún lado, y bloquearla dejaba sin foto al artículo por
+             * una compra que no existe.
+             */
+            if ($accion->tipo === AiMessageAction::TIPO_COMPRA_CON_FACTURA) {
+
+                if ($accion->estado !== AiMessageAction::ESTADO_CONFIRMADA) {
+
+                    continue;
+                }
+
+                $de_la_compra = array_merge(
+                    isset($datos['imagen_ids']) && is_array($datos['imagen_ids']) ? $datos['imagen_ids'] : [],
+                    isset($datos['imagen_ids_miradas']) && is_array($datos['imagen_ids_miradas']) ? $datos['imagen_ids_miradas'] : []
+                );
+
+                if (in_array((int) $imagen->id, array_map('intval', $de_la_compra), true)) {
+
+                    return false;
+                }
+
+                continue;
+            }
+
+            if ($accion->estado !== AiMessageAction::ESTADO_CONFIRMADA) {
+
+                continue;
+            }
+
+            $usada = $accion->tipo === AiMessageAction::TIPO_FOTO_ARTICULO
+                ? (isset($datos['imagen_id']) ? (int) $datos['imagen_id'] : 0)
+                : (isset($datos['extras']['imagen_id']) ? (int) $datos['extras']['imagen_id'] : 0);
+
+            if ($usada === (int) $imagen->id) {
+
+                $en_un_articulo = true;
+            }
+        }
+
+        return $en_un_articulo;
+    }
+
+    /**
+     * La foto más nueva del dueño en esta conversación que ya se puso en un artículo y se puede volver a
+     * usar (reutilizable_para_articulo()), o null. NO se usa sola: es la pista que proponer_foto_articulo
+     * le da al MODELO cuando no hay ninguna foto nueva, para que vuelva a llamar con ese imagen_id si la
+     * persona pidió «la misma».
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que está proponiendo.
+     * @return \App\Models\AiMessageImagen|null
+     */
+    public static function la_ultima_reutilizable_para_articulo(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        /* En esta conversación y en sus hermanas del mismo canal (arreglo 11: ver conversaciones_del_mismo_canal()). */
+        $hermanas = self::conversaciones_del_mismo_canal($contexto);
+        $hasta = (int) $mensaje->id;
+
+        $usadas = AiMessageImagen::where('user_id', $contexto->owner_id)
+                                    ->whereNotNull('gestionada_at')
+                                    ->where('created_at', '>=', self::desde())
+                                    ->whereHas('message', function ($q) use ($hermanas, $hasta) {
+                                        $q->whereIn('ai_conversation_id', $hermanas)
+                                          ->where('rol', 'user')
+                                          ->where('id', '<=', $hasta);
+                                    })
+                                    ->orderBy('ai_message_id', 'DESC')
+                                    ->orderBy('orden', 'DESC')
+                                    ->limit(10)
+                                    ->get();
+
+        foreach ($usadas as $usada) {
+
+            if (self::es_reutilizable_para_articulo($contexto, $usada)) {
+
+                return $usada;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Los ids de las conversaciones HERMANAS de la actual (revisión independiente, arreglo 11,
+     * 30/10/2026): las del mismo dueño, con la MISMA persona (`auth_user_id`) y el mismo canal
+     * (`origen`), con algún mensaje en las últimas HORAS horas. La actual va siempre.
+     *
+     * 🔴 POR QUÉ. Por WhatsApp la charla se parte en hilos por tema (HiloPorTemaIaHelper): en Ferre Total
+     * la CONV 19 y la CONV 20 eran dos hilos del mismo mediodía, y la compra que el agente cargó en uno
+     * se quiso corregir en el otro. Lo que se busca «de recién» —la foto ya usada, la compra que creó el
+     * agente, el escaneo que falló— se busca en estas, no solo en la actual. Nunca en las de otra
+     * persona (un empleado tiene las suyas) ni de otro canal.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return array<int, int>
+     */
+    public static function conversaciones_del_mismo_canal(ContextoDeCargaIa $contexto)
+    {
+        if (is_null($contexto->conversation)) {
+
+            return [];
+        }
+
+        $actual = $contexto->conversation;
+
+        $desde = self::desde();
+
+        $consulta = AiConversation::where('user_id', (int) $contexto->owner_id)
+                                    ->where('auth_user_id', (int) $actual->auth_user_id)
+                                    ->whereExists(function ($q) use ($desde) {
+                                        $q->selectRaw('1')
+                                          ->from('ai_messages')
+                                          ->whereColumn('ai_messages.ai_conversation_id', 'ai_conversations.id')
+                                          ->where('ai_messages.created_at', '>=', $desde);
+                                    });
+
+        /*
+         * El origen se lee de la base y no del modelo en memoria: una conversación recién creada con
+         * create() no trae el default de la columna ('usuario') hasta que se la relee.
+         */
+        $origen = AiConversation::where('id', (int) $actual->id)->value('origen');
+
+        if (is_null($origen)) {
+
+            $consulta->whereNull('origen');
+
+        } else {
+
+            $consulta->where('origen', (string) $origen);
+        }
+
+        $ids = array_map('intval', $consulta->orderBy('id', 'DESC')->limit(50)->pluck('id')->all());
+
+        if (!in_array((int) $actual->id, $ids, true)) {
+
+            $ids[] = (int) $actual->id;
+        }
+
+        return $ids;
     }
 
     /**

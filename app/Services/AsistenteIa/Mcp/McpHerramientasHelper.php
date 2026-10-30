@@ -42,12 +42,18 @@ class McpHerramientasHelper
      * WhatsApps a clientes reales sin que una persona lea la tarjeta: eso lo manda una persona, desde
      * el sistema o por WhatsApp. Como cinturón, ConfirmacionPorTextoIaHelper::rechazo() tampoco confirma
      * un envío propuesto por MCP.
+     *
+     * 🔴 Y EL PEDIDO A SOPORTE (misión agente-mejoras-uso-real, 29/10/2026): pedir_ayuda_a_soporte le
+     * escribe al chat de soporte de ComercioCity en nombre de la persona, sin tarjeta. Desde el sistema o
+     * por WhatsApp lo pide la persona misma; un agente externo no tiene por qué abrirle pedidos a soporte
+     * en nombre del dueño.
      */
     const EXCLUIDAS = [
         'proponer_compra_con_factura',
         'proponer_envio_de_comprobante',
         'proponer_recordatorios_de_cobro',
         'proponer_promocion_por_whatsapp',
+        'pedir_ayuda_a_soporte',
     ];
 
     /** Prefijos de las tools que solo leen: van con readOnlyHint = true. */

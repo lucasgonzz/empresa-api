@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ValoracionIaHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
@@ -326,7 +327,8 @@ class AiConversationController extends Controller
          * Los adjuntos se validan ANTES de crear el mensaje: un 422 con el mensaje ya creado dejaría en la
          * conversación algo del dueño que nadie va a contestar (mismo criterio que WhatsApp).
          */
-        $motivo = AsistenteImagenHelper::motivo_de_rechazo($imagenes);
+        /* Con el tope de la app (3), no el de WhatsApp: ver AsistenteImagenHelper::MAX_IMAGENES_DE_LA_APP. */
+        $motivo = AsistenteImagenHelper::motivo_de_rechazo($imagenes, AsistenteImagenHelper::MAX_IMAGENES_DE_LA_APP);
 
         if (is_null($motivo)) {
             $motivo = ArchivosAdjuntosIaHelper::motivo_de_rechazo($archivos);
@@ -770,6 +772,44 @@ class AiConversationController extends Controller
         if ($cambio) {
             $mensaje->save();
         }
+    }
+
+    /**
+     * Me gusta / no me gusta de una respuesta del agente, con el comentario del no me gusta (misión
+     * agente-mejoras-uso-real, 29/10/2026): `PUT api/ai-mensajes/{message_id}/valoracion`.
+     *
+     * Body: `{valoracion: 'me_gusta'|'no_me_gusta'|null, comentario?: string ≤ 1000}`. `null` saca la
+     * valoración (volver a tocar el mismo botón). La usan el chat del sistema y la app ComercioCity IA, y
+     * la lee el análisis diario de las 22 h. Misma tenencia doble que el resto del chat: 404 —no 403—
+     * si el mensaje es de otra persona; 422 si el mensaje es del dueño y no del agente.
+     *
+     * @param  Request  $request
+     * @param  int  $message_id
+     * @return JsonResponse
+     */
+    public function valorar_mensaje(Request $request, $message_id): JsonResponse
+    {
+        $message = $this->mensaje_de_la_persona($message_id);
+
+        if (is_null($message)) {
+            return response()->json(['code' => 'mensaje_inexistente', 'message' => 'Mensaje no encontrado.'], 404);
+        }
+
+        if ($message->rol !== 'assistant') {
+            return response()->json(['code' => 'no_es_del_agente', 'message' => 'Solo se valoran las respuestas del agente.'], 422);
+        }
+
+        $valoracion = $request->input('valoracion');
+        $comentario = $request->input('comentario');
+        $error = ValoracionIaHelper::error_de_validacion($valoracion, $comentario);
+
+        if (!is_null($error)) {
+            return response()->json(['code' => $error, 'message' => 'La valoración no es válida.'], 422);
+        }
+
+        ValoracionIaHelper::valorar($message, $valoracion, $comentario);
+
+        return response()->json(['model' => ValoracionIaHelper::para_respuesta($message)], 200);
     }
 
     /**

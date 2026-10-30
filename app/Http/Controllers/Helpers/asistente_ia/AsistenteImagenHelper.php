@@ -28,11 +28,38 @@ use Intervention\Image\ImageManager;
 class AsistenteImagenHelper
 {
     /**
-     * Fotos por mensaje. Es el mismo tope que usa el recolector de imágenes del soporte en el
-     * admin (SupportAiImageCollector): más de tres fotos en un solo mensaje de WhatsApp no es un
-     * caso real, y cada una que entra viaja a Anthropic en base64.
+     * Fotos por mensaje que el empresa ACEPTA Y GUARDA (todas en `ai_message_imagenes`) por el canal de
+     * WhatsApp (AdminSync\AsistenteController). La app tiene su tope aparte: MAX_IMAGENES_DE_LA_APP.
+     *
+     * 🔴 ERAN 3 HASTA LA MISIÓN agente-mejoras-uso-real (29/10/2026), y el uso real lo desmintió. Era el
+     * tope del recolector de imágenes del soporte en el admin (SupportAiImageCollector), con la idea de
+     * que más de tres fotos en un mensaje de WhatsApp "no es un caso real". En Ferre Total (CONV 15)
+     * Pablo mandó 5 fotos juntas y después 4 para los clavos que faltaban: llegaron 3 y 3, y el resto
+     * se perdió con un aviso al modelo. Ahora el empresa guarda hasta 10, y lo que viaja al modelo tiene
+     * su propio tope (MAX_FOTOS_AL_MODELO): guardar una foto es barato, mandarla en base64 no.
+     *
+     * ⚠️ EL TOPE DEL ADMIN (3) NO SE TOCA EN ESTA MISIÓN. El admin corta antes de reenviar; subirlo allá
+     * antes de que toda la flota tenga este release haría que un empresa viejo devuelva 422 a la cuarta
+     * foto. Queda anotado para después del release (plan de la misión, E1 punto 3).
      */
-    const MAX_IMAGENES = 3;
+    const MAX_IMAGENES = 10;
+
+    /**
+     * Fotos por mensaje desde la app «ComercioCity IA» (AiConversationController). Sigue en 3: es el
+     * tope del cliente (ia-spa, Compositor.vue: «Podés mandar hasta 3 fotos por mensaje») y el contrato
+     * que fija tests/Feature/IaApp/2_Mensajes_desde_la_app_Test. Subirlo es una decisión de la app, que
+     * se toma junto con su cliente; el caso real que motivó los 10 (Ferre Total) es de WhatsApp.
+     */
+    const MAX_IMAGENES_DE_LA_APP = 3;
+
+    /**
+     * Cuántas fotos de UN mensaje viajan al modelo en base64 (misión agente-mejoras-uso-real). Las demás
+     * quedan guardadas igual y el texto del mensaje le dice al modelo sus `imagen_id`, para que las
+     * herramientas las usen (AsistenteIaService::bloques_de_imagen()). Seis es lo que acepta un escaneo
+     * de factura (`services.escaneo_factura_compra.max_imagenes`), el caso más grande que necesita
+     * MIRARLAS todas.
+     */
+    const MAX_FOTOS_AL_MODELO = 6;
 
     /**
      * Formatos aceptados, nombrados para el mensaje de error. La validación NO los mira: mira los
@@ -60,13 +87,17 @@ class AsistenteImagenHelper
      * para descubrir que no entraba.
      *
      * @param  array  $imagenes  UploadedFile[]
+     * @param  int|null  $maximo  El tope del canal (misión agente-mejoras-uso-real): null = MAX_IMAGENES
+     *                            (WhatsApp, por el admin); la app manda MAX_IMAGENES_DE_LA_APP.
      * @return string|null
      */
-    public static function motivo_de_rechazo(array $imagenes)
+    public static function motivo_de_rechazo(array $imagenes, $maximo = null)
     {
-        if (count($imagenes) > self::MAX_IMAGENES) {
+        $maximo = is_null($maximo) ? self::MAX_IMAGENES : (int) $maximo;
 
-            return 'Se pueden mandar hasta ' . self::MAX_IMAGENES . ' fotos por mensaje.';
+        if (count($imagenes) > $maximo) {
+
+            return 'Se pueden mandar hasta ' . $maximo . ' fotos por mensaje.';
         }
 
         $max_mb = self::max_mb();

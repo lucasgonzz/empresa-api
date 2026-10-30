@@ -81,6 +81,10 @@ class Acciones_service_y_job_Test extends TestCase
         'buscar_producto_por_codigo_de_barras',
         // Misión asistente-aviso-escaneo-factura (16/10/2026): lo que leyó el escaneo de una factura, al final.
         'consultar_escaneo_de_factura',
+        // Misión agente-mejoras-uso-real (29/10/2026): el Excel con su link, al final.
+        'exportar_excel',
+        // Misma misión (E2): los artículos sin rotación, atrás del Excel.
+        'consultar_articulos_sin_rotacion',
     ];
 
     /** @var User */
@@ -733,10 +737,12 @@ class Acciones_service_y_job_Test extends TestCase
         // pantalla, que_acciones_de_pantalla_hay, consultar_por_pantalla,
         // proponer_accion_de_pantalla, proponer_borrado_por_pantalla) + las 3 de
         // asistente-envios-a-clientes (16/10/2026: proponer_envio_de_comprobante,
-        // proponer_recordatorios_de_cobro, proponer_promocion_por_whatsapp). El número se toca SOLO
-        // cuando se agrega o se saca una herramienta a propósito: si se mueve sin que nadie lo haya
-        // pedido, es que algo se declaró (o se borró) de más.
-        $this->assertCount(39, HerramientasDeCarga::definiciones());
+        // proponer_recordatorios_de_cobro, proponer_promocion_por_whatsapp) + las de
+        // agente-mejoras-uso-real (29/10/2026: proponer_compra_sin_articulos,
+        // proponer_cambio_de_proveedor_de_compra, proponer_reintento_de_escaneo, pedir_ayuda_a_soporte).
+        // El número se toca SOLO cuando se agrega o se saca una herramienta a propósito: si se mueve
+        // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
+        $this->assertCount(43, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -802,14 +808,25 @@ class Acciones_service_y_job_Test extends TestCase
             array_slice(HerramientasDeCarga::nombres(), 32, 4)
         );
 
-        // ...y los tres envíos a clientes de asistente-envios-a-clientes (16/10/2026) al final de todo.
+        // ...los tres envíos a clientes de asistente-envios-a-clientes (16/10/2026) después de aquéllas...
         $this->assertSame(
             [
                 'proponer_envio_de_comprobante',
                 'proponer_recordatorios_de_cobro',
                 'proponer_promocion_por_whatsapp',
             ],
-            array_slice(HerramientasDeCarga::nombres(), 36)
+            array_slice(HerramientasDeCarga::nombres(), 36, 3)
+        );
+
+        // ...y las compras y el pedido a soporte de agente-mejoras-uso-real (29/10/2026) al final de todo.
+        $this->assertSame(
+            [
+                'proponer_compra_sin_articulos',
+                'proponer_cambio_de_proveedor_de_compra',
+                'proponer_reintento_de_escaneo',
+                'pedir_ayuda_a_soporte',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 39)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

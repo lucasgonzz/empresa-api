@@ -86,7 +86,7 @@ class BusquedaPorPalabrasIaHelper
 
                     foreach ($palabras as $palabra) {
 
-                        $todas->where($nombre, 'LIKE', '%' . addcslashes($palabra, '%_\\') . '%');
+                        $todas->where($nombre, 'LIKE', self::patron_like_de_la_palabra($palabra));
                     }
                 });
             }
@@ -214,26 +214,103 @@ class BusquedaPorPalabrasIaHelper
     /**
      * Minúsculas y sin acentos, como compara la base (collation _ci) y ConsultasSistemaIaHelper::normalize_text.
      *
+     * Misión agente-mejoras-uso-real (E2 punto 6, 29/10/2026): además, los mismos símbolos que
+     * sin_simbolos() (grados, comillas y la "x" entre medidas), con los espacios colapsados. Se aplica
+     * igual a lo que dijo la persona y al nombre cargado, así que "90° 60x60" y "90 º 60 X 60" quedan
+     * iguales de los dos lados.
+     *
      * @param  string  $texto
      * @return string
      */
     protected static function normalizar($texto)
     {
-        return strtr(mb_strtolower(trim((string) $texto)), [
+        $texto = strtr(mb_strtolower(trim((string) $texto)), [
             'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n',
         ]);
+
+        return trim((string) preg_replace('/\s+/u', ' ', self::sin_simbolos($texto)));
+    }
+
+    /**
+     * LOS SÍMBOLOS CON LOS QUE EL AGENTE REESCRIBE UN NOMBRE (misión agente-mejoras-uso-real, E2
+     * punto 6, 29/10/2026). En la CONV 11 de Pablo el agente buscó «tuboforte 1.8 ramal 90° 60x60» y el
+     * artículo se llamaba «TUBOFORTE 1.8 RAMAL 90 º 60 X 60 MH»; y «H° carrocera» por «HºCARROCERA».
+     * Por palabras, "90°" no está en "90 º" y "60x60" no está en "60 X 60": no encontraba la ficha.
+     *
+     *  - Los grados y el ordinal (°, º, ˚) pasan a espacio: "90°" → "90", "Hº" → "h".
+     *  - Las comillas (rectas, tipográficas, el acento suelto) pasan a espacio: 1/2" → 1/2.
+     *  - 🔴 UNA MEDIDA "N x M" ES UNA SOLA PALABRA, COMPACTA (revisión independiente, 30/10/2026): la
+     *    "x" (o el ×) entre dos números se pega, con o sin espacios y en mayúscula o minúscula:
+     *    "60 X 60" → "60x60", "76X5X50MM" → "76x5x50mm". La primera versión la SEPARABA ("60 x 60" y
+     *    la "x" como palabra vacía), y entonces "ramal 60x60" quedaba en las palabras "ramal" y "60",
+     *    que también están en «RAMAL 60X40»: es_seguro() lo daba por bueno y la ficha contestaba sobre
+     *    OTRO artículo. Compacta, la medida se compara entera: "60x60" encuentra "60 X 60" y nunca
+     *    "60X40". Del lado de la base, patron_like_de_la_palabra() la busca con los espacios que
+     *    tenga el nombre cargado.
+     *
+     * Espera el texto ya en minúscula.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function sin_simbolos($texto)
+    {
+        $texto = str_replace(['°', 'º', '˚', '"', '“', '”', '´', '`', '‘', '’', "''"], ' ', (string) $texto);
+
+        return (string) preg_replace('/(\d)\s*[x×]\s*(?=\d)/u', '$1x', $texto);
+    }
+
+    /**
+     * true si la palabra es una medida compacta de sin_simbolos(): números unidos por "x" ("60x60",
+     * "76x5x50mm", "6x1 1/2" no: eso son dos palabras).
+     *
+     * @param  string  $palabra
+     * @return bool
+     */
+    protected static function es_medida($palabra)
+    {
+        return preg_match('/^\d[\d.,\/]*(x\d[\d.,\/]*)+[a-z]*$/u', (string) $palabra) === 1;
+    }
+
+    /**
+     * El patrón LIKE de una palabra para la base: `%palabra%` con los comodines escapados, y una medida
+     * compacta con lugar para los espacios que tenga el nombre cargado ("60x60" → `%60%x%60%`, que
+     * encuentra "60 X 60" y "60x60"). Es un prefiltro: el que decide si un candidato es el artículo
+     * pedido es es_seguro() (o el match de la frase), que compara la medida entera.
+     *
+     * @param  string  $palabra
+     * @return string
+     */
+    protected static function patron_like_de_la_palabra($palabra)
+    {
+        if (!self::es_medida($palabra)) {
+
+            return '%' . addcslashes((string) $palabra, '%_\\') . '%';
+        }
+
+        $partes = [];
+
+        foreach (explode('x', (string) $palabra) as $parte) {
+
+            $partes[] = addcslashes($parte, '%_\\');
+        }
+
+        return '%' . implode('%x%', $partes) . '%';
     }
 
     /**
      * Las palabras que importan de lo que dijo la persona: en minúscula, sin conectores, sin
      * repetidas y con el plural recortado. Vacío si no queda ninguna ("de la").
      *
+     * Misión agente-mejoras-uso-real (E2): antes de cortar, sin_simbolos() (grados, comillas y la "x"
+     * entre medidas), para que "90° 60x60" busque "90" y "60" y encuentre "90 º 60 X 60".
+     *
      * @param  string  $texto
      * @return array<int, string>
      */
     public static function palabras($texto)
     {
-        $partes = preg_split('/[\s,;]+/u', mb_strtolower(trim((string) $texto)), -1, PREG_SPLIT_NO_EMPTY);
+        $partes = preg_split('/[\s,;]+/u', self::sin_simbolos(mb_strtolower(trim((string) $texto))), -1, PREG_SPLIT_NO_EMPTY);
 
         $palabras = [];
 

@@ -54,6 +54,9 @@ class PedidosDeImagenIaHelper
     /** Los estados del bloque que todavía esperan la imagen. */
     const ESTADOS_EN_CURSO = ['pendiente', 'generando'];
 
+    /** El aviso del log cuando a esta instalación le falta la configuración para mandarle pedidos al admin. */
+    const AVISO_SIN_CONEXION = 'esta instalación no tiene la conexión con el admin: ADMIN_API_URL / ADMIN_API_CLIENT_UUID';
+
     /** Lo que ve el dueño cuando su sistema no tiene todavía el circuito de imágenes del otro lado. */
     const NO_DISPONIBLE_PARA_EL_DUENO = 'La generación de imágenes todavía no está disponible para tu sistema.';
 
@@ -127,6 +130,19 @@ class PedidosDeImagenIaHelper
 
         $estilo = trim((string) ($input['estilo'] ?? ''));
 
+        /*
+         * Misión app-ia-imagen-prometida: sin la conexión con el admin no hay a quién mandarle el pedido,
+         * y eso se sabe YA, en este turno. El pedido nace `no_disponible` (queda el rastro y no cuenta para
+         * el tope) y la herramienta se lo dice al modelo, para que el texto no diga «se está generando».
+         */
+        $sin_conexion = self::falta_la_conexion_con_el_admin();
+
+        if ($sin_conexion) {
+            Log::warning('PedidosDeImagenIaHelper: ' . self::AVISO_SIN_CONEXION . '; la imagen queda no_disponible.', [
+                'owner_id' => (int) $owner_id,
+            ]);
+        }
+
         $pedido = IaImagenPedido::create([
             'uuid'          => (string) Str::uuid(),
             'user_id'       => (int) $owner_id,
@@ -134,16 +150,39 @@ class PedidosDeImagenIaHelper
             'prompt'        => mb_substr($prompt, 0, BloquesIaHelper::MAX_PROMPT),
             'tamano'        => $tamano,
             'estilo'        => $estilo === '' ? null : mb_substr($estilo, 0, 200),
-            'estado'        => IaImagenPedido::ESTADO_PENDIENTE,
+            'estado'        => $sin_conexion ? IaImagenPedido::ESTADO_NO_DISPONIBLE : IaImagenPedido::ESTADO_PENDIENTE,
+            'error'         => $sin_conexion ? self::AVISO_SIN_CONEXION : null,
         ]);
+
+        if ($sin_conexion) {
+
+            return [
+                'pedido'   => $pedido,
+                'bloque'   => self::bloque_del_pedido($pedido),
+                'texto'    => 'No se pudo pedir la imagen: la generación de imágenes no está disponible en este sistema. '
+                    . 'Decíselo a la persona en una línea, sin prometer que se va a generar.',
+                'es_error' => false,
+            ];
+        }
 
         return [
             'pedido'   => $pedido,
             'bloque'   => self::bloque_del_pedido($pedido),
-            'texto'    => 'Listo: la imagen se está generando y aparece sola en este mismo mensaje en unos minutos. '
-                . 'Decile a la persona en una línea que la estás haciendo; no digas que ya está ni pongas un link.',
+            'texto'    => 'Listo: la imagen quedó pedida y aparece sola en este mismo mensaje cuando esté lista. '
+                . 'Decile a la persona en una línea «la pedí; aparece acá cuando esté lista»: no prometas tiempos, no digas que ya está ni pongas un link.',
             'es_error' => false,
         ];
+    }
+
+    /**
+     * true si a esta instalación le falta lo que hace falta para mandarle un pedido al admin
+     * (`services.admin_api.url` o `services.admin_api.client_uuid`).
+     *
+     * @return bool
+     */
+    public static function falta_la_conexion_con_el_admin(): bool
+    {
+        return trim((string) config('services.admin_api.url')) === '' || trim((string) config('services.admin_api.client_uuid')) === '';
     }
 
     /**

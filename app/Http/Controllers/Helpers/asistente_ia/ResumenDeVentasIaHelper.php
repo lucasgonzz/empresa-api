@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\CatalogoDeDatosIaHelper;
+use App\Http\Controllers\Helpers\sale\CostoDeVentaHelper;
 use App\Models\Sale;
 use App\Models\User;
 use App\Services\Mostrador\RecolectorBase;
@@ -70,6 +71,15 @@ class ResumenDeVentasIaHelper
     const METODO_CUENTA_CORRIENTE = 'Cuenta corriente';
 
     /**
+     * Por qué se pueden ordenar los grupos (misión agente-mejoras-uso-real, E2 punto 4). Se
+     * interpola en el `enum` de la definición de la tool: lo nuevo, atrás.
+     */
+    const ORDENES = ['total', 'ganancia', 'cantidad'];
+
+    /** Las agrupaciones que tienen costo y ganancia por grupo (los renglones de artículo). */
+    const AGRUPACIONES_CON_GANANCIA = ['articulo', 'rubro', 'proveedor'];
+
+    /**
      * EL RESUMEN.
      *
      * @param  int          $owner_id     Dueño. Nunca Auth: corre en un job sin sesión.
@@ -78,9 +88,14 @@ class ResumenDeVentasIaHelper
      * @param  string|null  $agrupar_por  Una de AGRUPACIONES, o null para los totales solos.
      * @param  string       $moneda       'pesos' (default, el conjunto de Rendimiento) o 'dolares'.
      * @param  string|null  $metodo_de_pago  Nombre del método de pago que ACOTA el conjunto, o null.
+     * @param  string|null  $orden  Misión agente-mejoras-uso-real (E2 punto 4): total | ganancia |
+     *         cantidad, para ordenar los grupos. null = el orden de siempre (total, de mayor a menor).
+     *         Con artículo, rubro o proveedor, pedir un orden suma además costo, ganancia y el id de
+     *         cada grupo (ver por_articulo()).
+     * @param  string|null  $direccion  desc (default) | asc ("los que MENOS").
      * @return array<string, mixed>  Con la clave `error` cuando el pedido no se puede atender
      */
-    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null): array
+    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null, $orden = null, $direccion = null): array
     {
         $owner = User::find($owner_id);
 
@@ -120,6 +135,22 @@ class ResumenDeVentasIaHelper
 
         if ($agrupar_por !== '' && ! in_array($agrupar_por, self::AGRUPACIONES, true)) {
             return ['error' => 'No se puede agrupar por "' . $agrupar_por . '". Las opciones son: ' . implode(', ', self::AGRUPACIONES) . '.'];
+        }
+
+        /*
+         * El orden de los grupos (misión agente-mejoras-uso-real, E2). La ganancia solo existe por
+         * artículo, rubro o proveedor: con otra agrupación se dice en vez de ordenar por un cero.
+         */
+        $orden = is_null($orden) ? null : strtolower(trim((string) $orden));
+        $orden = $orden === '' ? null : $orden;
+        $direccion = strtolower(trim((string) $direccion)) === 'asc' ? 'asc' : 'desc';
+
+        if (! is_null($orden) && ! in_array($orden, self::ORDENES, true)) {
+            return ['error' => 'No se puede ordenar por "' . $orden . '". Las opciones son: ' . implode(', ', self::ORDENES) . '.'];
+        }
+
+        if ($orden === 'ganancia' && ! in_array($agrupar_por, self::AGRUPACIONES_CON_GANANCIA, true)) {
+            return ['error' => 'La ganancia se calcula agrupando por ' . implode(', ', self::AGRUPACIONES_CON_GANANCIA) . ': para "cuál me dejó más margen" va agrupar_por articulo con orden ganancia.'];
         }
 
         $recolector = new RecolectorDia();
@@ -191,7 +222,7 @@ class ResumenDeVentasIaHelper
         }
 
         if ($agrupar_por !== '') {
-            $grupos = self::agrupar($owner, $ventas, $agrupar_por, $totales);
+            $grupos = self::agrupar($owner, $ventas, $agrupar_por, $totales, $orden, $direccion);
 
             $respuesta['agrupado_por'] = $agrupar_por;
             $respuesta['grupos_encontrados'] = $grupos['encontrados'];
@@ -200,6 +231,22 @@ class ResumenDeVentasIaHelper
 
             if (isset($grupos['nota'])) {
                 $respuesta['nota'] = $grupos['nota'];
+            }
+
+            /*
+             * Por artículo, rubro o proveedor (E2): el total del período, lo que no se pudo atribuir a
+             * ningún artículo (combos, servicios, otros conceptos) y la ganancia del período, para que
+             * el modelo diga «sobre $X vendidos» con el número de Rendimiento y no con la suma de una
+             * página de renglones.
+             */
+            foreach (['total_del_periodo', 'sin_desglosar_por_articulo', 'costo_del_periodo', 'ganancia_del_periodo', 'aviso_de_orden', 'renglones_sin_costo_del_periodo', 'vendido_sin_costo_del_periodo'] as $clave) {
+                if (array_key_exists($clave, $grupos)) {
+                    $respuesta[$clave] = $grupos[$clave];
+                }
+            }
+
+            if (! is_null($orden)) {
+                $respuesta['ordenado_por'] = $orden . ' ' . $direccion;
             }
         }
 
@@ -521,13 +568,59 @@ class ResumenDeVentasIaHelper
      * Las agrupaciones. Cada grupo: `etiqueta`, `cantidad` (ventas, o unidades cuando se agrupa
      * por artículo, rubro o proveedor) y `total`, ordenados por total descendente y topeados.
      *
+     * Misión agente-mejoras-uso-real (E2): con `$orden` (total, ganancia, cantidad) y `$direccion`
+     * (desc, asc) los grupos se ordenan por eso; sin `$orden`, como siempre.
+     *
      * @param  User    $owner
      * @param  \Illuminate\Database\Eloquent\Builder  $ventas
      * @param  string  $agrupar_por
      * @param  array   $totales
+     * @param  string|null  $orden
+     * @param  string  $direccion
      * @return array<string, mixed>  ['grupos' => [...], 'encontrados' => n, 'nota' => ?]
      */
-    protected static function agrupar(User $owner, $ventas, string $agrupar_por, array $totales): array
+    protected static function agrupar(User $owner, $ventas, string $agrupar_por, array $totales, $orden = null, $direccion = 'desc'): array
+    {
+        if (in_array($agrupar_por, self::AGRUPACIONES_CON_GANANCIA, true)) {
+            return self::por_articulo($owner, $ventas, $agrupar_por, $totales, $orden, $direccion);
+        }
+
+        $resultado = self::agrupar_sin_ganancia($owner, $ventas, $agrupar_por, $totales);
+
+        /*
+         * Las demás agrupaciones también se pueden ordenar por total o por cantidad (sin ganancia).
+         * Los grupos ya vienen topeados: si quedaron afuera algunos, el orden "de menor a mayor" no
+         * puede saber cuáles son los menores, y se dice en vez de contestar mal.
+         */
+        if (! is_null($orden)) {
+            $nota = isset($resultado['nota']) ? $resultado['nota'] : null;
+            $encontrados = $resultado['encontrados'];
+            $recortado = $encontrados > count($resultado['grupos']);
+
+            $resultado = self::ordenar_y_topear($resultado['grupos'], $orden, $direccion, $encontrados);
+
+            if (! is_null($nota)) {
+                $resultado['nota'] = $nota;
+            }
+
+            if ($recortado && $direccion === 'asc') {
+                $resultado['aviso_de_orden'] = 'Hay ' . $encontrados . ' grupos y viajan los ' . self::TOPE_DE_GRUPOS . ' de mayor total: el orden de menor a mayor es solo entre esos.';
+            }
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Las agrupaciones que no son de artículos (lo que hacía agrupar() antes de E2, tal cual).
+     *
+     * @param  User    $owner
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @param  string  $agrupar_por
+     * @param  array   $totales
+     * @return array<string, mixed>
+     */
+    protected static function agrupar_sin_ganancia(User $owner, $ventas, string $agrupar_por, array $totales): array
     {
         if ($agrupar_por === 'metodo_de_pago') {
             return self::por_metodo_de_pago($ventas, $totales);
@@ -536,10 +629,6 @@ class ResumenDeVentasIaHelper
         if ($agrupar_por === 'facturada') {
 
             return self::con_la_nota(self::por_facturada($ventas), $agrupar_por);
-        }
-
-        if (in_array($agrupar_por, ['articulo', 'rubro', 'proveedor'], true)) {
-            return self::por_articulo($owner, $ventas, $agrupar_por);
         }
 
         $fecha = self::expresion_de_fecha($owner);
@@ -925,17 +1014,54 @@ class ResumenDeVentasIaHelper
 
     /**
      * Por artículo, rubro o proveedor: los renglones (`article_sale`) de las ventas del conjunto,
-     * agrupados por el artículo o por su rubro / proveedor de HOY. `cantidad` son unidades y
-     * `total` es unidades × precio del renglón con su descuento de renglón: los descuentos y
-     * recargos globales de la venta no se prorratean, así que la suma de los grupos puede no dar
-     * el total del período — se dice en `nota`.
+     * agrupados por el artículo o por su rubro / proveedor de HOY. `cantidad` son unidades.
+     *
+     * 🔴 EL TOTAL ESTÁ PRORRATEADO Y CUADRA CON EL DEL PERÍODO (misión agente-mejoras-uso-real, E2
+     * punto 4, 29/10/2026). Pablo (Ferre Total, CONV 11) preguntó «¿cuál me dejó más margen hoy?» y el
+     * agente contestó «$1.663.883 de margen sobre $4.850.756 vendidos» con resumir_datos sobre los
+     * renglones: el total real del día, el de Rendimiento, era $3.626.407. El renglón guarda el precio
+     * BRUTO con su descuento de renglón, sin los descuentos y recargos de la venta entera. Ahora cada
+     * renglón se multiplica por el factor de su venta:
+     *
+     *     factor = sales.total / (renglones de artículo + combos + servicios + promociones de esa venta)
+     *
+     * (con los mismos importes de renglón de siempre: unidades × precio × (1 − descuento %)), así que
+     * la suma de los grupos más `sin_desglosar_por_articulo` da exactamente `total_del_periodo`, que es
+     * el total de Rendimiento. `sin_desglosar_por_articulo` es lo que en cada venta fue a combos,
+     * servicios y promociones de vinoteca (los renglones que no son de un artículo), más las ventas sin
+     * ningún renglón (base 0), que van enteras ahí.
+     *
+     * ⚠️ Lo que está en `sales.total` y NO tiene renglón propio —los descuentos y recargos de la venta
+     * entera, y cualquier otro importe que se le sume a la venta (un envío, un impuesto)— no va a
+     * sin_desglosar: entra en el factor y se reparte entre TODOS los renglones de esa venta, en
+     * proporción. Es lo que dice la nota (revisión independiente, 30/10/2026: la primera versión decía
+     * que "otros conceptos" iban a sin_desglosar, y no era así).
+     *
+     * El costo es el NETO de cada renglón (CostoDeVentaHelper::expresion_costo_neto_de_linea(): unidades
+     * × costo, sin el IVA de compra en las cuentas que lo traen adentro) y no se prorratea: lo que costó
+     * la mercadería no cambia con un descuento. `ganancia = total − costo`.
+     *
+     * 🔴 UN RENGLÓN SIN COSTO NO VALE COSTO 0 (revisión independiente, 30/10/2026). Con
+     * `article_sale.cost` en NULL el costo de ese renglón no se sabe, y contarlo como 0 daba
+     * `ganancia = total`: esos grupos encabezaban "cuál me dejó más margen" sin haber dejado nada
+     * medible. Ahora la ganancia de un grupo es la de sus renglones CON costo (`total_con_costo − costo`),
+     * el grupo dice `sin_costo: true` y `renglones_sin_costo`, y si ningún renglón tiene costo la
+     * ganancia va en null y queda al final de cualquier orden por ganancia.
+     *
+     * Con `$orden` (total, ganancia o cantidad, asc o desc) cada grupo trae además `costo`, `ganancia`
+     * y su id (`article_id`, `category_id` o `provider_id`), para "cuál me dejó más margen" y para
+     * pedir la ficha sin reescribir el nombre. Sin `$orden` los grupos tienen las claves de siempre
+     * (etiqueta, cantidad, total); los totales del período van siempre.
      *
      * @param  User    $owner
      * @param  \Illuminate\Database\Eloquent\Builder  $ventas
      * @param  string  $agrupar_por
+     * @param  array   $totales  Los de totales(): `total` es el del período.
+     * @param  string|null  $orden
+     * @param  string  $direccion
      * @return array<string, mixed>
      */
-    protected static function por_articulo(User $owner, $ventas, string $agrupar_por): array
+    protected static function por_articulo(User $owner, $ventas, string $agrupar_por, array $totales = [], $orden = null, $direccion = 'desc'): array
     {
         $columnas = [
             'articulo'  => 'article_sale.article_id',
@@ -945,12 +1071,46 @@ class ResumenDeVentasIaHelper
 
         $expresion = $columnas[$agrupar_por];
 
-        $filas = DB::table('article_sale')
+        $importe_del_renglon = 'article_sale.amount * COALESCE(article_sale.price, 0) * (1 - COALESCE(article_sale.discount, 0) / 100)';
+
+        /*
+         * La base de cada venta del conjunto: lo que suman sus renglones de artículo, de combo y de
+         * servicio, con el total de la venta al lado. Una subconsulta derivada (una fila por venta) y
+         * subconsultas correlacionadas por tabla: un JOIN de las tres multiplicaría las filas.
+         */
+        $bases = DB::table('sales as venta_base')
+            ->whereIn('venta_base.id', (clone $ventas)->select('sales.id'))
+            ->selectRaw(
+                'venta_base.id as sale_id, COALESCE(venta_base.total, 0) as total_venta, ('
+                . 'COALESCE((SELECT SUM(asb.amount * COALESCE(asb.price, 0) * (1 - COALESCE(asb.discount, 0) / 100)) FROM article_sale asb WHERE asb.sale_id = venta_base.id), 0)'
+                . ' + COALESCE((SELECT SUM(csb.amount * COALESCE(csb.price, 0)) FROM combo_sale csb WHERE csb.sale_id = venta_base.id), 0)'
+                . ' + COALESCE((SELECT SUM(ssb.amount * COALESCE(ssb.price, 0) * (1 - COALESCE(ssb.discount, 0) / 100)) FROM sale_service ssb WHERE ssb.sale_id = venta_base.id), 0)'
+                // Las promociones de vinoteca también son renglones de la venta (revisión, 30/10/2026).
+                . ' + COALESCE((SELECT SUM(psb.amount * COALESCE(psb.price, 0)) FROM promocion_vinoteca_sale psb WHERE psb.sale_id = venta_base.id), 0)'
+                . ') as base'
+            );
+
+        $consulta = DB::table('article_sale')
             ->join('articles', 'articles.id', '=', 'article_sale.article_id')
-            ->whereIn('article_sale.sale_id', (clone $ventas)->select('sales.id'))
-            ->selectRaw($expresion . ' as grupo, COALESCE(SUM(article_sale.amount), 0) as cantidad, COALESCE(SUM(article_sale.amount * COALESCE(article_sale.price, 0) * (1 - COALESCE(article_sale.discount, 0) / 100)), 0) as total')
+            ->joinSub($bases, 'base_de_venta', 'base_de_venta.sale_id', '=', 'article_sale.sale_id');
+
+        // El costo neto del renglón (agrega sus joins con alias propio si la cuenta los necesita).
+        $costo = CostoDeVentaHelper::expresion_costo_neto_de_linea($consulta, 'article_sale', $owner);
+
+        $factor = '(CASE WHEN base_de_venta.base > 0 THEN base_de_venta.total_venta / base_de_venta.base ELSE 0 END)';
+
+        $filas = $consulta
+            ->selectRaw(
+                $expresion . ' as grupo, '
+                . 'COALESCE(SUM(article_sale.amount), 0) as cantidad, '
+                . 'COALESCE(SUM(' . $importe_del_renglon . ' * ' . $factor . '), 0) as total, '
+                . 'COALESCE(SUM(' . $costo . '), 0) as costo, '
+                // Los renglones sin costo cargado y lo vendido en los que SÍ lo tienen (ver el docblock).
+                . 'COUNT(*) as renglones, '
+                . 'COALESCE(SUM(CASE WHEN article_sale.cost IS NULL THEN 1 ELSE 0 END), 0) as renglones_sin_costo, '
+                . 'COALESCE(SUM(CASE WHEN article_sale.cost IS NULL THEN 0 ELSE ' . $importe_del_renglon . ' * ' . $factor . ' END), 0) as total_con_costo'
+            )
             ->groupByRaw($expresion)
-            ->orderByRaw('total DESC, grupo ASC')
             ->get();
 
         $ids = [];
@@ -963,53 +1123,131 @@ class ResumenDeVentasIaHelper
 
         $tablas = ['articulo' => 'articles', 'rubro' => 'categories', 'proveedor' => 'providers'];
         $sin = ['articulo' => 'articulo borrado', 'rubro' => 'Sin rubro', 'proveedor' => 'Sin proveedor'];
+        $claves_de_id = ['articulo' => 'article_id', 'rubro' => 'category_id', 'proveedor' => 'provider_id'];
 
         $nombres = empty($ids) ? [] : DB::table($tablas[$agrupar_por])->whereIn('id', $ids)->pluck('name', 'id')->map(function ($v) {
             return (string) $v;
         })->all();
 
+        $detallado = ! is_null($orden);
+
         $grupos = [];
+        $suma_de_los_grupos = 0.0;
+        $costo_del_periodo = 0.0;
+        $total_con_costo_del_periodo = 0.0;
+        $renglones_sin_costo_del_periodo = 0;
 
         foreach ($filas as $fila) {
             $id = (int) $fila->grupo;
 
-            $grupos[] = [
+            $grupo = [
                 'etiqueta' => $id > 0 && isset($nombres[$id]) ? $nombres[$id] : $sin[$agrupar_por],
                 'cantidad' => (float) $fila->cantidad,
                 'total'    => (float) $fila->total,
             ];
+
+            $suma_de_los_grupos += (float) $fila->total;
+            $costo_del_periodo += (float) $fila->costo;
+            $total_con_costo_del_periodo += (float) $fila->total_con_costo;
+            $renglones_sin_costo_del_periodo += (int) $fila->renglones_sin_costo;
+
+            /*
+             * Con un orden pedido: costo, ganancia y el id del grupo (ver el docblock). La ganancia es
+             * la de los renglones CON costo; sin ninguno, null (no se sabe), nunca el total.
+             */
+            if ($detallado) {
+                $sin_costo = (int) $fila->renglones_sin_costo;
+
+                $grupo[$claves_de_id[$agrupar_por]] = $id > 0 ? $id : null;
+                $grupo['costo'] = (float) $fila->costo;
+                $grupo['ganancia'] = $sin_costo >= (int) $fila->renglones ? null : (float) $fila->total_con_costo - (float) $fila->costo;
+                $grupo['sin_costo'] = $sin_costo > 0;
+
+                if ($sin_costo > 0) {
+                    $grupo['renglones_sin_costo'] = $sin_costo;
+                }
+            }
+
+            $grupos[] = $grupo;
         }
 
-        $resultado = self::ordenar_y_topear($grupos);
+        $resultado = self::ordenar_y_topear($grupos, is_null($orden) ? 'total' : $orden, $direccion);
 
-        $resultado['nota'] = 'cantidad son unidades. total es unidades por precio del renglon (con su descuento de renglon); los descuentos o recargos globales de cada venta no se prorratean, asi que la suma de los grupos puede no coincidir con el total del periodo.';
+        $total_del_periodo = isset($totales['total']) ? (float) $totales['total'] : round($suma_de_los_grupos, 2);
+
+        $resultado['total_del_periodo'] = round($total_del_periodo, 2);
+        $resultado['sin_desglosar_por_articulo'] = round($total_del_periodo - $suma_de_los_grupos, 2);
+        $resultado['costo_del_periodo'] = round($costo_del_periodo, 2);
+        // Solo sobre lo que tiene costo cargado: lo vendido sin costo no deja una ganancia medible.
+        $resultado['ganancia_del_periodo'] = round($total_con_costo_del_periodo - $costo_del_periodo, 2);
+
+        if ($renglones_sin_costo_del_periodo > 0) {
+            $resultado['renglones_sin_costo_del_periodo'] = $renglones_sin_costo_del_periodo;
+            $resultado['vendido_sin_costo_del_periodo'] = round($suma_de_los_grupos - $total_con_costo_del_periodo, 2);
+        }
+
+        $resultado['nota'] = 'cantidad son unidades. total es lo vendido de cada grupo con los descuentos y recargos de cada venta ya repartidos (prorrateados), igual que cualquier otro importe de la venta sin renglon propio (un envio, un impuesto): la suma de los grupos mas sin_desglosar_por_articulo (lo que fue a combos, servicios y promociones, y las ventas sin renglones) da total_del_periodo, que es el total de Rendimiento. '
+            . ($detallado
+                ? 'costo es el costo de la mercaderia (unidades por costo, neto) y ganancia = lo vendido en los renglones CON costo - costo; ganancia_del_periodo es la de todos los grupos, no solo los de la lista. Un grupo con sin_costo true tiene renglones sin costo cargado: su ganancia es solo la de la parte con costo, y si es null no se sabe (no la presentes como la de mas margen, deci que le falta el costo). Para "sobre cuanto vendido" usa total_del_periodo.'
+                : 'Para la ganancia y el costo de cada grupo volve a llamar con orden (ganancia para "cual me dejo mas margen").');
 
         return $resultado;
     }
 
     /**
-     * Ordena por total descendente (desempate por etiqueta), redondea y aplica el tope.
+     * Ordena los grupos, redondea y aplica el tope.
+     *
+     * Sin orden pedido es el de siempre: total descendente, desempate por etiqueta. Misión
+     * agente-mejoras-uso-real (E2): `$campo` (total, ganancia, cantidad) y `$direccion` (desc, asc)
+     * para "cuál me dejó más margen" y "los que menos". Un grupo sin ese campo cuenta como 0.
      *
      * @param  array  $grupos
+     * @param  string  $campo
+     * @param  string  $direccion
+     * @param  int|null  $encontrados  Cuántos grupos hay en total, si ya venían recortados.
      * @return array<string, mixed>
      */
-    protected static function ordenar_y_topear(array $grupos): array
+    protected static function ordenar_y_topear(array $grupos, $campo = 'total', $direccion = 'desc', $encontrados = null): array
     {
-        usort($grupos, function ($a, $b) {
-            if ($a['total'] == $b['total']) {
+        $campo = in_array($campo, self::ORDENES, true) ? $campo : 'total';
+        $ascendente = $direccion === 'asc';
+
+        usort($grupos, function ($a, $b) use ($campo, $ascendente) {
+            /*
+             * Un campo presente pero en null (la ganancia de un grupo sin ningún renglón con costo) no
+             * se sabe: va al final en cualquier dirección, nunca arriba como si fuera el de más margen.
+             */
+            $nulo_a = array_key_exists($campo, $a) && is_null($a[$campo]);
+            $nulo_b = array_key_exists($campo, $b) && is_null($b[$campo]);
+
+            if ($nulo_a !== $nulo_b) {
+                return $nulo_a ? 1 : -1;
+            }
+
+            $valor_a = isset($a[$campo]) ? (float) $a[$campo] : 0.0;
+            $valor_b = isset($b[$campo]) ? (float) $b[$campo] : 0.0;
+
+            if ($valor_a == $valor_b) {
                 return strcmp($a['etiqueta'], $b['etiqueta']);
             }
 
-            return $b['total'] <=> $a['total'];
+            return $ascendente ? ($valor_a <=> $valor_b) : ($valor_b <=> $valor_a);
         });
 
         $lista = [];
 
         foreach (array_slice($grupos, 0, self::TOPE_DE_GRUPOS) as $grupo) {
             $grupo['total'] = round((float) $grupo['total'], 2);
+
+            foreach (['costo', 'ganancia'] as $clave) {
+                if (array_key_exists($clave, $grupo) && ! is_null($grupo[$clave])) {
+                    $grupo[$clave] = round((float) $grupo[$clave], 2);
+                }
+            }
+
             $lista[] = $grupo;
         }
 
-        return ['grupos' => $lista, 'encontrados' => count($grupos)];
+        return ['grupos' => $lista, 'encontrados' => is_null($encontrados) ? count($grupos) : max((int) $encontrados, count($grupos))];
     }
 }

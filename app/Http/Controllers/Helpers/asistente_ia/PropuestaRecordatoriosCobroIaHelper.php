@@ -63,11 +63,15 @@ class PropuestaRecordatoriosCobroIaHelper
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input): array
     {
-        $corte = self::verificar_acceso($contexto);
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026): el corte lleva su código, y suma si el negocio tiene
+         * el WhatsApp con clientes conectado, ANTES de buscar a los deudores (igual que la promoción).
+         */
+        $corte = self::corte_de_acceso($contexto);
 
         if (!is_null($corte)) {
 
-            return RespuestaDeCargaIa::error($corte);
+            return RespuestaDeCargaIa::error_con_codigo($corte['codigo'], $corte['texto']);
         }
 
         $monto_minimo = self::numero_positivo(EntradaDeCargaIa::valor($input, 'monto_minimo'));
@@ -425,14 +429,45 @@ class PropuestaRecordatoriosCobroIaHelper
      */
     protected static function verificar_acceso(ContextoDeCargaIa $contexto)
     {
+        $corte = self::corte_de_acceso($contexto);
+
+        return is_null($corte) ? null : $corte['texto'];
+    }
+
+    /**
+     * El corte de acceso con su código (misión agente-mejoras-uso-real, 29/10/2026): el módulo, el permiso
+     * y —desde esta misión— si el negocio tiene el WhatsApp con clientes conectado, en ese orden. Sin
+     * WhatsApp, hasta acá cada deudor salía salteado con "sin configuración" y el modelo lo contaba como
+     * una lista de clientes a los que no les llegó; ahora es un solo motivo, dicho de entrada.
+     * verificar_acceso() es este mismo corte en texto, para ejecutar().
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return array{codigo: string, texto: string}|null
+     */
+    protected static function corte_de_acceso(ContextoDeCargaIa $contexto)
+    {
         if (!PermisosIaHelper::tiene_extencion($contexto->owner, self::EXTENSION)) {
 
-            return PermisosIaHelper::mensaje_sin_extencion('WhatsApp (incluido en Agentes de IA)') . ' Sin él no se pueden mandar recordatorios de cobro.';
+            return [
+                'codigo' => 'sin_modulo',
+                'texto'  => PermisosIaHelper::mensaje_sin_extencion('WhatsApp (incluido en Agentes de IA)') . ' Sin él no se pueden mandar recordatorios de cobro.',
+            ];
         }
 
         if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
 
-            return 'No tenés permiso para mandar recordatorios de cobro desde tu usuario.';
+            return [
+                'codigo' => 'sin_permiso',
+                'texto'  => 'No tenés permiso para mandar recordatorios de cobro desde tu usuario.',
+            ];
+        }
+
+        if (!WhatsappDeClientesIaHelper::conectado($contexto->owner_id)) {
+
+            return [
+                'codigo' => WhatsappDeClientesIaHelper::CODIGO_SIN_WHATSAPP,
+                'texto'  => WhatsappDeClientesIaHelper::texto_sin_whatsapp('recordatorios de cobro'),
+            ];
         }
 
         return null;

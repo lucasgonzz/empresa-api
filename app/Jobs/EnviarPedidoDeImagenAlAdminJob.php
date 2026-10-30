@@ -89,6 +89,13 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
 
         if ($admin_url === '' || $client_uuid === '') {
 
+            /* Que quede claro en el log por qué ninguna imagen de este cliente llega (misión app-ia-imagen-prometida). */
+            Log::warning('EnviarPedidoDeImagenAlAdminJob: ' . PedidosDeImagenIaHelper::AVISO_SIN_CONEXION . '; el pedido queda no_disponible.', [
+                'ia_imagen_pedido_id' => $pedido->id,
+                'falta_la_url'        => $admin_url === '',
+                'falta_el_uuid'       => $client_uuid === '',
+            ]);
+
             PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'falta ADMIN_API_URL o ADMIN_API_CLIENT_UUID en este cliente');
 
             return;

@@ -701,6 +701,22 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_PROMOCION_WHATSAPP:
                 return PropuestaPromocionWhatsappIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026): la compra sin artículos, por el alta de la
+             * pantalla de Compras con su factura. Nunca llega acá desde la auto-confirmación: su tipo
+             * está en NUNCA_AUTO_CONFIRMABLES.
+             */
+            case AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS:
+                return PropuestaCompraSinArticulosIaHelper::ejecutar($contexto, $accion);
+
+            /* El cambio de proveedor de una compra que creó el agente (misma misión). */
+            case AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA:
+                return CambioDeProveedorDeCompraIaHelper::ejecutar($contexto, $accion);
+
+            /* El reescaneo de una factura que falló, con las fotos guardadas (misma misión). */
+            case AiMessageAction::TIPO_REINTENTO_ESCANEO:
+                return ReintentoDeEscaneoIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');
