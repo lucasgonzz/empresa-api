@@ -1547,6 +1547,13 @@ class AsistenteIaService
      * reglas de qué puede afirmar. Es el prefijo común a TODAS las
      * conversaciones (por eso es el que lleva cache_control).
      *
+     * La regla de pedir JUNTAS las herramientas que no dependen entre sí (misión
+     * agente-memoria-y-sin-techo, 30/10/2026) va en la lista común —sirve para leer y para cargar— y
+     * no en el bloque de carga: Ferre Total pidió un recordatorio por cheque, y buscar el pago, los
+     * cheques y los proponer_tarea de a uno por vuelta (DeepSeek Flash) se comió las 8 vueltas de
+     * entonces. Pedidos juntos, cinco recordatorios son UNA vuelta. El ejemplo no nombra proponer_tarea
+     * porque el prompt de solo lectura no la tiene.
+     *
      * @param AiConversation $conversation
      * @param User|null $owner Dueño de la cuenta, para el nombre del negocio.
      * @param bool $con_acciones true si el mensaje tiene las herramientas de carga.
@@ -1662,6 +1669,10 @@ Qué podés afirmar:
   la misma herramienta, hasta 100. Recién cuando ya no podés traer más, aclará que hay más
   y que es un tope de la consulta, no del negocio: no te disculpes por un límite que podés
   correr vos.
+- Las herramientas que no dependen una de otra pedilas JUNTAS, todas en la misma respuesta, y no
+  de a una por vuelta: cinco recordatorios son cinco llamadas en una sola respuesta, y dos
+  consultas que no se necesitan entre sí van a la vez. De a una solo cuando la segunda necesita
+  lo que devuelve la primera (primero buscar el pago, después los recordatorios de sus cheques).
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
