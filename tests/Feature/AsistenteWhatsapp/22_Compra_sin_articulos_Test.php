@@ -120,6 +120,33 @@ class Compra_sin_articulos_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 5: dos facturas del mismo proveedor en la misma charla
+     * son dos tarjetas, no una que pisa a la otra. La clave lleva el total y el número cuando viene.
+     *
+     * @test
+     */
+    public function dos_facturas_del_mismo_proveedor_no_se_pisan_las_tarjetas()
+    {
+        list($conversation, $assistant) = $this->escena('Cargame dos compras sin artículos sin iva a ferretotal: una de 198.522 y otra de 45.000');
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $una = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 198522, 'iva' => 'sin_iva']);
+        $otra = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 45000, 'iva' => 'sin_iva', 'numero_comprobante' => '0002-00000099']);
+
+        $this->assertTrue($una['ok'], json_encode($una));
+        $this->assertTrue($otra['ok'], json_encode($otra));
+        $this->assertSame([], $otra['reemplazo'], 'La segunda factura no reemplaza a la primera.');
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($una['tarjeta_id'])->estado_guardado());
+
+        $this->assertSame('compra_sin_articulos:' . $this->ferretotal->id . ':198522.00', AiMessageAction::find($una['tarjeta_id'])->clave);
+        $this->assertSame('compra_sin_articulos:' . $this->ferretotal->id . ':45000.00:0002-00000099', AiMessageAction::find($otra['tarjeta_id'])->clave);
+
+        /* La corrección sigue reemplazando, por reemplaza_a. */
+        $corregida = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 200000, 'iva' => 'sin_iva', 'reemplaza_a' => $una['tarjeta_id']]);
+        $this->assertSame([(int) $una['tarjeta_id']], $corregida['reemplazo']);
+    }
+
+    /**
      * Sin cuenta corriente no hay movimiento; sin total o sin IVA, se pregunta.
      *
      * @test

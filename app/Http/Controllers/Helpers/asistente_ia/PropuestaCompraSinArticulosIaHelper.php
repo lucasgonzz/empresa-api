@@ -217,7 +217,7 @@ class PropuestaCompraSinArticulosIaHelper
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS,
-            self::clave(is_null($proveedor_nuevo) ? (int) $proveedor->id : null, $nombre_proveedor),
+            self::clave(is_null($proveedor_nuevo) ? (int) $proveedor->id : null, $nombre_proveedor, $importes['total'], $numero),
             $datos,
             [
                 'titulo'    => 'Compra sin artículos',
@@ -238,21 +238,43 @@ class PropuestaCompraSinArticulosIaHelper
     }
 
     /**
-     * Identidad de la carga para el reemplazo: la corrección de la compra sin artículos del mismo
-     * proveedor ("no, eran 200.000") reemplaza la tarjeta, y la de otro proveedor no la pisa.
+     * Identidad de la carga para el reemplazo: proveedor + total + número de comprobante (si vino).
+     *
+     * 🔴 CON EL TOTAL Y EL NÚMERO (revisión independiente, arreglo 5, 30/10/2026). Con la clave por
+     * proveedor solo, la SEGUNDA factura del mismo proveedor en la misma charla («y otra de 45.000 de
+     * ferretotal») reemplazaba la tarjeta de la primera, que todavía esperaba su sí: el dueño confirmaba
+     * una y la otra desaparecía. Una corrección del total ("no, eran 200.000") la sigue reemplazando por
+     * `reemplaza_a`, que es como se corrige una tarjeta en todo el asistente.
+     *
+     * Entra en los 100 caracteres de la columna (AccionesIaHelper::crear() la corta igual).
      *
      * @param  int|null  $provider_id  Null si el proveedor todavía no existe.
      * @param  string  $nombre  El nombre del proveedor (para el que todavía no existe).
+     * @param  float|null  $total  El total de la factura.
+     * @param  string  $numero  El número de comprobante, si vino.
      * @return string
      */
-    public static function clave($provider_id, $nombre = '')
+    public static function clave($provider_id, $nombre = '', $total = null, $numero = '')
     {
-        if (!is_null($provider_id) && (int) $provider_id > 0) {
+        $de_quien = (!is_null($provider_id) && (int) $provider_id > 0)
+            ? (string) (int) $provider_id
+            : 'nuevo:' . mb_substr(mb_strtolower(trim((string) $nombre)), 0, 40);
 
-            return 'compra_sin_articulos:' . (int) $provider_id;
+        $clave = 'compra_sin_articulos:' . $de_quien;
+
+        if (!is_null($total)) {
+
+            $clave .= ':' . number_format(round((float) $total, 2), 2, '.', '');
         }
 
-        return 'compra_sin_articulos:nuevo:' . mb_strtolower(trim((string) $nombre));
+        $numero = mb_strtolower(trim((string) $numero));
+
+        if ($numero !== '') {
+
+            $clave .= ':' . mb_substr($numero, 0, 30);
+        }
+
+        return $clave;
     }
 
     /**
