@@ -41,6 +41,7 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
+use App\Models\IaImagenPedido;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Log;
@@ -655,9 +656,11 @@ class AsistenteIaService
          * Instagram…» contestó «La imagen la puse en marcha…» y armó una promoción por WhatsApp que nadie
          * pidió, sin llamar nunca a pedir_imagen. Solo en la app (es la única con pedir_imagen). Si el turno
          * no llamó a pedir_imagen y el texto da la imagen por pedida, o la persona pidió claramente generar
-         * una, va el mismo y único reintento del turno; si después sigue prometiéndola sin pedido, el texto
-         * se cambia por el honesto. Ver ImagenPrometidaIaHelper (y sus falsos positivos: las fotos del
-         * catálogo no son pedidos de generar una imagen).
+         * una y el modelo no contestó preguntando lo que falta, va el mismo y único reintento del turno; si
+         * después sigue prometiéndola sin pedido, se cambian SOLO las oraciones que la prometen y se agrega
+         * el aviso honesto (el resto de la respuesta queda). Ver ImagenPrometidaIaHelper (y sus falsos
+         * positivos: las fotos del catálogo, los gráficos, los diseños de PDF y las tarjetas de venta o
+         * presupuesto no son pedidos de generar una imagen; los ofrecimientos no son afirmaciones).
          */
         $guarda_de_imagen = (bool) $es_app;
 
@@ -1311,9 +1314,12 @@ class AsistenteIaService
 
     /**
      * true si el turno prometió (o le pidieron) una imagen nueva y NO la pidió (misión
-     * app-ia-imagen-prometida): no llamó a pedir_imagen ni quedó ningún pedido de este turno, no usó las
-     * herramientas de imágenes del catálogo, y el texto la da por pedida o —con $mirar_el_pedido— la
-     * persona pidió claramente generarla.
+     * app-ia-imagen-prometida): no llamó a pedir_imagen ni quedó ningún pedido de este turno, no usó
+     * herramientas de otra función (las imágenes del catálogo, un gráfico, una tabla, un diseño de PDF,
+     * una venta, un presupuesto, el envío de un comprobante), y el texto la da por pedida o —con
+     * $mirar_el_pedido— la persona pidió claramente generarla y el modelo no contestó preguntando lo que
+     * falta (eso es lo correcto: no se reintenta). Si la vuelta anterior del asistente ya la pidió y la
+     * persona no pide otra, lo que el texto diga de «la imagen» habla de esa: no es una promesa sin pedido.
      *
      * @param  string  $texto
      * @param  array<int, string>  $herramientas_pedidas
@@ -1331,25 +1337,87 @@ class AsistenteIaService
             return false;
         }
 
-        if (ImagenPrometidaIaHelper::hablo_del_catalogo($herramientas_pedidas)) {
+        if (ImagenPrometidaIaHelper::hablo_de_otra_cosa($herramientas_pedidas)) {
 
             return false;
         }
 
-        if (ImagenPrometidaIaHelper::afirma_una_imagen($texto)) {
+        $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
+
+        if ($contexto['ya_estaba_pedida'] && ! $contexto['pidio_ahora']) {
+
+            return false;
+        }
+
+        if (ImagenPrometidaIaHelper::afirma_una_imagen($texto, $contexto['hubo_pedido'])) {
 
             return true;
         }
 
         return $mirar_el_pedido
-            && ImagenPrometidaIaHelper::pide_generar_una_imagen($this->pedido_de_la_persona($conversation, $assistant_message));
+            && $contexto['pidio_ahora']
+            && ! ImagenPrometidaIaHelper::termina_preguntando($texto);
     }
 
     /**
-     * El texto final, coherente con la imagen del turno (misión app-ia-imagen-prometida):
-     *   - si promete una imagen que no se pidió → ImagenPrometidaIaHelper::TEXTO_HONESTO;
-     *   - si la da por pedida o en curso pero su bloque ya quedó `no_disponible` o `fallida` en este mismo
-     *     turno (por ejemplo, la instalación no tiene la conexión con el admin) → el texto del bloque.
+     * Qué se sabe del pedido de imagen alrededor de este turno (misión app-ia-imagen-prometida):
+     *   - `pidio_ahora`: el pedido que se está contestando pide generar una imagen;
+     *   - `hubo_pedido`: ese pedido o el inmediatamente anterior de la persona la pidieron. A «Haceme una
+     *     imagen» el modelo pregunta «¿cuadrada o vertical?», la persona contesta «cuadrada», y ahí «la
+     *     pedí; aparece acá cuando esté lista» solo se entiende por el pedido de antes;
+     *   - `ya_estaba_pedida`: alguna vuelta del asistente posterior a ese pedido anterior sí la pidió (hay
+     *     un IaImagenPedido colgado de ella). Entonces el pedido de antes ya está atendido y no cuenta.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return array{pidio_ahora: bool, hubo_pedido: bool, ya_estaba_pedida: bool}
+     */
+    protected function contexto_de_la_imagen(AiConversation $conversation, AiMessage $assistant_message): array
+    {
+        $pedidos = AiMessage::where('ai_conversation_id', $conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '<', $assistant_message->id)
+                            ->orderBy('id', 'DESC')
+                            ->limit(2)
+                            ->get(['id', 'contenido'])
+                            ->values();
+
+        $actual   = $pedidos->get(0);
+        $anterior = $pedidos->get(1);
+
+        $pidio_ahora = ! is_null($actual) && ImagenPrometidaIaHelper::pide_generar_una_imagen((string) $actual->contenido);
+        $pidio_antes = ! is_null($anterior) && ImagenPrometidaIaHelper::pide_generar_una_imagen((string) $anterior->contenido);
+
+        $ya_estaba_pedida = false;
+
+        if (! is_null($anterior)) {
+
+            $respuestas_desde_entonces = AiMessage::where('ai_conversation_id', $conversation->id)
+                                                  ->where('rol', 'assistant')
+                                                  ->where('id', '>', $anterior->id)
+                                                  ->where('id', '<', $assistant_message->id)
+                                                  ->pluck('id')
+                                                  ->all();
+
+            $ya_estaba_pedida = count($respuestas_desde_entonces) > 0
+                && IaImagenPedido::whereIn('ai_message_id', $respuestas_desde_entonces)->exists();
+        }
+
+        return [
+            'pidio_ahora'      => $pidio_ahora,
+            'hubo_pedido'      => $pidio_ahora || ($pidio_antes && ! $ya_estaba_pedida),
+            'ya_estaba_pedida' => $ya_estaba_pedida,
+        ];
+    }
+
+    /**
+     * El texto final, coherente con la imagen del turno (misión app-ia-imagen-prometida). En los dos
+     * casos se cambian SOLO las oraciones que dan la imagen por pedida o en curso, y se agrega el aviso:
+     * el resto de la respuesta (las ventas del día, la tarjeta que sí se armó) queda tal cual.
+     *   - si promete una imagen que no se pidió → aviso ImagenPrometidaIaHelper::TEXTO_HONESTO;
+     *   - si se pidió en este turno pero su bloque ya quedó `no_disponible` o `fallida` (por ejemplo, la
+     *     instalación no tiene la conexión con el admin) → aviso con el texto del bloque. Como pedir_imagen
+     *     se llamó, «la pedí; aparece acá cuando esté lista» cuenta como afirmación.
      * Si no, el texto tal cual. Cuando el estado se conoce recién después (lo decide el job del envío),
      * el texto queda como está: la herramienta le pide al modelo que diga «la pedí; aparece acá cuando
      * esté lista», que es verdad pase lo que pase.
@@ -1363,22 +1431,34 @@ class AsistenteIaService
      */
     protected function texto_coherente_con_la_imagen($texto, array $herramientas_pedidas, AiConversation $conversation, AiMessage $assistant_message, $hubo_reintento): string
     {
-        if ($this->promete_una_imagen_sin_pedirla($texto, $herramientas_pedidas, $conversation, $assistant_message, false)) {
+        $texto = (string) $texto;
 
-            Log::warning('AsistenteIaService: el texto promete una imagen que no se pidió; se reemplaza por el texto honesto.', [
+        $se_pidio_en_este_turno = in_array(ImagenPrometidaIaHelper::HERRAMIENTA, $herramientas_pedidas, true)
+            || count($this->pedidos_de_imagen) > 0;
+
+        if (! $se_pidio_en_este_turno) {
+
+            if (! $this->promete_una_imagen_sin_pedirla($texto, $herramientas_pedidas, $conversation, $assistant_message, false)) {
+
+                return $texto;
+            }
+
+            $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
+
+            Log::warning('AsistenteIaService: el texto promete una imagen que no se pidió; se cambian las oraciones que la prometen por el aviso honesto.', [
                 'ai_conversation_id'   => $conversation->id,
                 'ai_message_id'        => $assistant_message->id,
                 'herramientas_pedidas' => $herramientas_pedidas,
                 'hubo_reintento'       => (bool) $hubo_reintento,
-                'texto'                => mb_substr((string) $texto, 0, 300),
+                'texto'                => mb_substr($texto, 0, 300),
             ]);
 
-            return ImagenPrometidaIaHelper::TEXTO_HONESTO;
+            return ImagenPrometidaIaHelper::sin_lo_prometido($texto, $contexto['hubo_pedido']);
         }
 
-        if (! ImagenPrometidaIaHelper::afirma_una_imagen($texto)) {
+        if (! ImagenPrometidaIaHelper::afirma_una_imagen($texto, true)) {
 
-            return (string) $texto;
+            return $texto;
         }
 
         foreach ($this->bloques as $bloque) {
@@ -1393,11 +1473,11 @@ class AsistenteIaService
                     'ai_message_id' => $assistant_message->id,
                 ]);
 
-                return $error === '' ? ImagenPrometidaIaHelper::TEXTO_HONESTO : $error;
+                return ImagenPrometidaIaHelper::sin_lo_prometido($texto, true, $error === '' ? ImagenPrometidaIaHelper::TEXTO_HONESTO : $error);
             }
         }
 
-        return (string) $texto;
+        return $texto;
     }
 
     /**
