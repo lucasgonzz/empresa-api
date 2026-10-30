@@ -43,6 +43,19 @@ class AccesoSoporteController extends Controller
     public function canjear(Request $request)
     {
         /**
+         * Sin sesión posible no hay nada que canjear: Sanctum solo arranca la sesión cuando el pedido viene del
+         * SPA (su Origin/Referer está entre los dominios stateful). Un pedido que no viene de ahí (un curl, un
+         * script, otro sitio) no puede recibir una sesión, y NO tiene que quemar el token en el intento: se
+         * contesta el mismo 401 SIN consumirlo, así el navegador legítimo que lo use después todavía puede.
+         * (Sin esta guarda, `$request->session()` tiraría una excepción DESPUÉS de haber consumido el token.)
+         */
+        if (!$request->hasSession()) {
+            Log::info('Acceso de soporte: canje rechazado, el pedido no trae sesion (ip: ' . $request->ip() . ').');
+
+            return response()->json(['error' => 'token_invalido'], 401);
+        }
+
+        /**
          * Token en claro recibido. Solo se acepta un string: un array (`t[]=...`) no es un token, y castearlo
          * a string daría «Array» con un aviso de PHP.
          */

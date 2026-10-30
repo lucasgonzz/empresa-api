@@ -100,6 +100,28 @@ class CanjeDelAccesoDeSoporteTest extends AccesoSoporteTestCase
         $this->assertStringStartsWith('Navegador/1.0', $guardado);
     }
 
+    /**
+     * Un pedido que no viene del SPA (su Referer no es un dominio stateful) no puede recibir una sesión: se
+     * contesta el 401 de siempre y el token NO se quema, así el navegador legítimo todavía lo puede canjear.
+     *
+     * @test
+     */
+    public function un_pedido_sin_sesion_posible_es_401_y_no_quema_el_token()
+    {
+        list($token, $fila) = $this->emitir_token();
+
+        $ajeno = $this->withHeader('Referer', 'https://sitio-ajeno.example/')->postJson(self::URL_CANJE, ['t' => $token]);
+
+        $this->assert_es_el_401_generico($ajeno, 'sin sesión');
+        $this->assertNull($fila->fresh()->usado_en, 'Un pedido sin sesión posible no consume el token.');
+        $this->assertGuest('web');
+
+        // El mismo token, ahora desde el SPA: entra.
+        $this->withHeader('Referer', rtrim((string) config('app.url'), '/') . '/')
+            ->postJson(self::URL_CANJE, ['t' => $token])
+            ->assertStatus(200);
+    }
+
     /** @test */
     public function acepta_el_token_tambien_como_token_y_tolera_espacios_alrededor()
     {
