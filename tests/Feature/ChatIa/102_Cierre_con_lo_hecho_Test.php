@@ -4,12 +4,15 @@ namespace Tests\Feature\ChatIa;
 
 use App\Events\ChatIaMensajeActualizado;
 use App\Exceptions\AsistenteIaException;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Jobs\ResponderMensajeChatIaJob;
+use App\Models\AiAvisoDelAsistente;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiMessageImagen;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
@@ -40,7 +43,10 @@ use Tests\TestCase;
  *   queda tiempo para el cierre, el error de siempre sin llamar;
  * - por WhatsApp cierra pasados los 105 s contados desde que llegó el mensaje (`created_at`), el
  *   sistema no; y la primera vuelta siempre es normal;
- * - si el cierre falla (HTTP, red) o vuelve sin texto, `error` con el texto NUEVO de tiempo agotado;
+ * - si el cierre falla (HTTP, red), vuelve sin texto o no tiene ventana, el mensaje queda `listo` con lo
+ *   hecho armado sin el modelo (ronda de arreglos R1: antes era `error`), las tarjetas siguen y el
+ *   «seguí» las lleva en el historial; el texto de tiempo agotado (sin ninguna ronda) no promete «desde
+ *   donde quedó»;
  * - si el cierre trae un tool_use, no se ejecuta; las cargas del turno quedan en el mensaje `listo`;
  * - después del cierre no hay reintento de guarda, pero las guardas de después del bucle miran su
  *   texto; y con un reintento de guarda en curso no se cierra (vuelve al texto de antes);
@@ -423,12 +429,16 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
     /**
      * Si la vuelta normal que arrancó antes del presupuesto volvió tan tarde que no quedan
-     * SEGUNDOS_MINIMOS_DEL_CIERRE hasta el techo del cierre (270 por el sistema), no se llama: el error
-     * de tiempo agotado de siempre. Con 66 s por llamada, la quinta vuelta arranca a los 264.
+     * SEGUNDOS_MINIMOS_DEL_CIERRE hasta el techo del cierre (270 por el sistema), no se llama. Con 66 s
+     * por llamada, la quinta vuelta arranca a los 264.
+     *
+     * 🔴 Contrato cambiado a propósito (ronda de arreglos R1, 30/10/2026): antes era el error de tiempo
+     * agotado; ahora el turno ya hizo rondas de herramientas, así que cierra con lo hecho armado sin el
+     * modelo (acá solo leyó: queda la última frase).
      *
      * @test
      */
-    public function sin_tiempo_para_el_cierre_es_el_error_de_siempre_sin_llamar()
+    public function sin_tiempo_para_el_cierre_cierra_con_lo_hecho_sin_llamar()
     {
         $servicio = $this->servicio_con_reloj();
 
@@ -436,13 +446,7 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
         list($conversation, $assistant) = $this->conversacion();
 
-        try {
-            $servicio->responder($conversation, $assistant);
-            $this->fail('Sin tiempo para el cierre, el turno termina en tiempo agotado.');
-        } catch (AsistenteIaException $e) {
-            $this->assertSame(AsistenteIaException::MOTIVO_TIEMPO_AGOTADO, $e->motivo());
-            $this->assertStringContainsString('cierre', $e->getMessage());
-        }
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $servicio->responder($conversation, $assistant));
 
         $bodies = $this->bodies_enviados();
 
@@ -561,12 +565,16 @@ class Cierre_con_lo_hecho_Test extends TestCase
     // ---------------------------------------------------------------------
 
     /**
-     * Si la llamada de cierre vuelve con un error, el mensaje queda en `error` con el texto NUEVO de
-     * tiempo agotado (contrato cambiado a propósito: ya no pide «algo más acotado»).
+     * Si la llamada de cierre vuelve con un error, el mensaje queda `listo` con lo hecho armado sin el
+     * modelo (acá el turno solo leyó: la última frase, con el «seguí»).
+     *
+     * 🔴 Contrato cambiado a propósito (ronda de arreglos R1, 30/10/2026): antes quedaba en `error` con el
+     * texto de tiempo agotado. En `error` no viajaba en el historial (el «seguí» no veía lo hecho) y por
+     * WhatsApp el admin mandaba su disculpa en vez del texto, así que el «seguí» no llegaba nunca.
      *
      * @test
      */
-    public function si_el_cierre_vuelve_con_error_el_mensaje_queda_en_error_con_el_texto_de_seguir()
+    public function si_el_cierre_vuelve_con_error_el_mensaje_queda_listo_con_lo_hecho()
     {
         $this->proveedor_que_siempre_pide_herramientas(Http::response([
             'error' => ['type' => 'invalid_request_error', 'message' => 'tool_choice no soportado (P102)'],
@@ -578,53 +586,253 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
         $assistant = $assistant->fresh();
 
-        $this->assertSame('error', $assistant->estado);
-        $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y la retomo desde donde quedó.', $assistant->contenido);
-        $this->assertStringContainsString('cierre', (string) $assistant->error_mensaje);
-        $this->assertStringContainsString('HTTP 400', (string) $assistant->error_mensaje);
+        $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
+        $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que falta.', AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR);
+        $this->assertNull($assistant->error_mensaje);
         $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'Sin vueltas de más después del cierre.');
     }
 
     /**
-     * Si la llamada de cierre se corta por la red (dos veces: también el reintento), tiempo agotado.
+     * Si la llamada de cierre se corta por la red (dos veces: también el reintento), lo hecho armado sin
+     * el modelo (contrato cambiado a propósito, R1: antes era tiempo agotado).
      *
      * @test
      */
-    public function si_el_cierre_se_corta_por_la_red_es_tiempo_agotado()
+    public function si_el_cierre_se_corta_por_la_red_cierra_con_lo_hecho()
     {
         $this->proveedor_que_siempre_pide_herramientas(new ConnectionException('cURL error 28: Operation timed out (P102)'));
 
         list($conversation, $assistant) = $this->conversacion();
 
-        try {
-            (new AsistenteIaService())->responder($conversation, $assistant);
-            $this->fail('Un cierre que se corta termina en tiempo agotado.');
-        } catch (AsistenteIaException $e) {
-            $this->assertSame(AsistenteIaException::MOTIVO_TIEMPO_AGOTADO, $e->motivo());
-            $this->assertStringContainsString('falló la llamada de cierre', $e->getMessage());
-        }
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, (new AsistenteIaService())->responder($conversation, $assistant));
     }
 
     /**
-     * Si el cierre igual pide una herramienta y no escribe nada, no se ejecuta y es tiempo agotado.
+     * Si el cierre igual pide una herramienta y no escribe nada, no se ejecuta y el turno cierra con lo
+     * hecho armado sin el modelo (contrato cambiado a propósito, R1: antes era tiempo agotado).
      *
      * @test
      */
-    public function un_cierre_solo_con_tool_use_no_se_ejecuta_y_es_tiempo_agotado()
+    public function un_cierre_solo_con_tool_use_no_se_ejecuta_y_cierra_con_lo_hecho()
     {
         $this->proveedor_que_siempre_pide_herramientas($this->pide_herramienta(999));
 
         list($conversation, $assistant) = $this->conversacion();
 
-        try {
-            (new AsistenteIaService())->responder($conversation, $assistant);
-            $this->fail('Un cierre sin texto termina en tiempo agotado.');
-        } catch (AsistenteIaException $e) {
-            $this->assertSame(AsistenteIaException::MOTIVO_TIEMPO_AGOTADO, $e->motivo());
-            $this->assertStringContainsString('iteraciones', $e->getMessage());
-        }
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, (new AsistenteIaService())->responder($conversation, $assistant));
 
         $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'El tool_use del cierre no abre otra vuelta.');
+    }
+
+    /**
+     * 🔴 R1, EL CASO QUE DUPLICABA: en "directo" el turno ejecuta una carga (se confirma sola), se queda
+     * sin vueltas y el cierre falla. El mensaje queda `listo` con el renglón de esa carga («Quedó hecho:
+     * …») y el «seguí» de la persona lleva ese renglón en el historial —el texto y la línea de la tarjeta
+     * confirmada—, así el modelo no la vuelve a cargar.
+     *
+     * @test
+     */
+    public function en_directo_una_carga_hecha_queda_en_el_texto_y_el_segui_la_lleva_en_el_historial()
+    {
+        $this->comercio->agente_confianza = ConfianzaDelAgenteIaHelper::DIRECTO;
+        $this->comercio->save();
+
+        $manana = Carbon::tomorrow()->format('Y-m-d');
+
+        $this->proveedor_que_siempre_pide_herramientas(
+            Http::response(['error' => ['type' => 'api_error', 'message' => 'cierre caído (P102)']], 400),
+            null,
+            0,
+            $this->respuesta('tool_use', [[
+                'type'  => 'tool_use',
+                'id'    => 'toolu_p102_tarea_directa',
+                'name'  => 'proponer_tarea',
+                'input' => ['detalle' => 'ZZP102 Cheque 1 de Pinturería Sudamericana se acredita mañana', 'fecha' => $manana],
+            ]])
+        );
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $assistant = $assistant->fresh();
+
+        $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
+
+        $tarjeta = AiMessageAction::where('ai_message_id', $assistant->id)->first();
+
+        $this->assertNotNull($tarjeta, 'La tarea del turno quedó colgada del mensaje.');
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, (string) $tarjeta->estado, 'En directo la tarea se confirma sola.');
+
+        $resultado = trim((string) $tarjeta->resultado->texto);
+        $this->assertNotSame('', $resultado);
+
+        $this->assertStringStartsWith(AvisosDeTurnosIaHelper::ENCABEZADO_HECHO . "\n- " . rtrim($resultado, '. ') . '.', $assistant->contenido);
+        $this->assertStringEndsWith(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
+        $this->assertStringNotContainsString('confirmes', $assistant->contenido, 'No quedó nada esperando el sí.');
+
+        /* El «seguí»: el historial del turno siguiente lleva el texto y la línea de la tarjeta confirmada. */
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'seguí', 'estado' => 'listo']);
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'estado' => 'pendiente', 'acciones_habilitadas' => true]);
+
+        $historial = (new AsistenteIaService())->build_messages_payload($conversation->fresh());
+
+        $del_asistente = '';
+
+        foreach ($historial as $turno) {
+            if ($turno['role'] === 'assistant' && is_string($turno['content'])) {
+                $del_asistente .= $turno['content'] . "\n";
+            }
+        }
+
+        $this->assertStringContainsString(AvisosDeTurnosIaHelper::ENCABEZADO_HECHO, $del_asistente);
+        $this->assertStringContainsString('[Tarjeta #' . $tarjeta->id . ' ·', $del_asistente, 'La línea de la tarjeta viaja en el historial.');
+        $this->assertStringContainsString('estado: confirmada', $del_asistente);
+
+        $ultimo = $historial[count($historial) - 1];
+        $this->assertSame('user', $ultimo['role']);
+        $this->assertStringContainsString('seguí', is_string($ultimo['content']) ? $ultimo['content'] : json_encode($ultimo['content']));
+    }
+
+    /**
+     * R1: lo que quedó esperando el sí (cauteloso) va como «Quedaron para que las confirmes» y las tarjetas
+     * siguen `propuesta`: un mensaje `listo` no las descarta (el error sí las descartaba).
+     *
+     * @test
+     */
+    public function lo_que_espera_el_si_queda_para_confirmar_y_no_se_descarta()
+    {
+        $manana = Carbon::tomorrow()->format('Y-m-d');
+        $bloques = [];
+
+        for ($i = 1; $i <= 2; $i++) {
+            $bloques[] = [
+                'type'  => 'tool_use',
+                'id'    => 'toolu_p102_espera_' . $i,
+                'name'  => 'proponer_tarea',
+                'input' => ['detalle' => 'ZZP102 Cheque ' . $i . ' espera el sí', 'fecha' => $manana],
+            ];
+        }
+
+        $this->proveedor_que_siempre_pide_herramientas(new ConnectionException('cURL error 28 (P102)'), null, 0, $this->respuesta('tool_use', $bloques));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $assistant = $assistant->fresh();
+
+        $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
+        $this->assertStringStartsWith(AvisosDeTurnosIaHelper::ENCABEZADO_PARA_CONFIRMAR_VARIAS . "\n- ", $assistant->contenido);
+        $this->assertStringContainsString('ZZP102 Cheque 1 espera el sí', $assistant->contenido);
+        $this->assertStringContainsString('ZZP102 Cheque 2 espera el sí', $assistant->contenido);
+        $this->assertStringNotContainsString(AvisosDeTurnosIaHelper::ENCABEZADO_HECHO, $assistant->contenido);
+        $this->assertStringEndsWith(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
+
+        foreach (AiMessageAction::where('ai_message_id', $assistant->id)->get() as $tarjeta) {
+            $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, (string) $tarjeta->estado, 'La tarjeta sigue confirmable.');
+        }
+    }
+
+    /**
+     * R1 por WhatsApp: el mensaje queda `listo` (el admin manda el CONTENIDO, no su disculpa) y no deja el
+     * aviso de turno sin terminar, que es solo para los mensajes en error.
+     *
+     * @test
+     */
+    public function por_whatsapp_el_cierre_fallido_queda_listo_y_no_deja_aviso()
+    {
+        $this->proveedor_que_siempre_pide_herramientas(Http::response(['error' => ['type' => 'api_error', 'message' => 'x']], 400));
+
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP, true, 110);
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $assistant = $assistant->fresh();
+
+        $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
+
+        if (AvisosDeTurnosIaHelper::hay_tabla()) {
+            $this->assertSame(0, AiAvisoDelAsistente::where('ai_message_id', $assistant->id)->count());
+        }
+    }
+
+    /**
+     * R1, el texto armado: las fotos del pedido que quedaron sin usar van en una frase neutra (alguna
+     * puede estar en una tarjeta que espera el sí), en singular o plural, antes de la última frase; y la
+     * tarjeta de la confirmación determinista (de un mensaje anterior) va primera entre lo hecho.
+     *
+     * @test
+     */
+    public function el_texto_armado_cuenta_las_fotos_y_la_tarjeta_confirmada_aparte()
+    {
+        list($conversation, $assistant) = $this->conversacion();
+
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'user')->first();
+
+        foreach ([1, 2, 3] as $orden) {
+            AiMessageImagen::create([
+                'ai_message_id' => $pedido->id,
+                'user_id'       => $this->comercio->id,
+                'orden'         => $orden,
+                'path'          => 'asistente_imagenes/p102/' . $orden . '.webp',
+                'mime'          => 'image/webp',
+                'bytes'         => 10,
+            ]);
+        }
+
+        $anterior = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'contenido' => 'Te dejo la tarjeta.', 'estado' => 'listo']);
+
+        $aparte = AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $anterior->id,
+            'user_id'            => $this->comercio->id,
+            'auth_user_id'       => $this->comercio->id,
+            'tipo'               => AiMessageAction::TIPO_GASTO,
+            'clave'              => 'gasto:p102-aparte',
+            'estado'             => AiMessageAction::ESTADO_CONFIRMADA,
+            'datos'              => [],
+            'presentacion'       => ['titulo' => 'Gasto', 'renglones' => [], 'aviso' => null],
+            'resultado'          => ['texto' => 'Gasto N° 88 registrado por $ 207.500'],
+            'resuelta_at'        => now(),
+        ]);
+
+        $propia = AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $assistant->id,
+            'user_id'            => $this->comercio->id,
+            'auth_user_id'       => $this->comercio->id,
+            'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+            'clave'              => 'tarea:p102-propia',
+            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => [],
+            'presentacion'       => ['titulo' => 'Tarea', 'renglones' => [['etiqueta' => 'Detalle', 'valor' => 'Llamar al banco']], 'aviso' => null],
+        ]);
+
+        $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido, $aparte->id);
+
+        $this->assertSame(
+            "Quedó hecho:\n- Gasto N° 88 registrado por $ 207.500.\n\n"
+            . "Quedó para que la confirmes:\n- Tarea (Detalle: Llamar al banco)\n\n"
+            . "Me llegaron 3 fotos y quedaron guardadas.\n\n"
+            . AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR,
+            $texto
+        );
+
+        /* Con una sola foto, en singular; sin nada hecho ni fotos, solo la última frase. */
+        AiMessageImagen::where('ai_message_id', $pedido->id)->where('orden', '>', 1)->delete();
+        $propia->delete();
+
+        $this->assertSame(
+            "Me llegó la foto y quedó guardada.\n\n" . AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR,
+            AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido)
+        );
+
+        AiMessageImagen::where('ai_message_id', $pedido->id)->delete();
+
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido));
     }
 
     /**
@@ -761,6 +969,8 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
     /**
      * El texto de tiempo agotado pide «seguí» y ya no «algo más acotado» (contrato cambiado a propósito).
+     * Y desde la ronda de arreglos (R1) no promete «desde donde quedó»: solo sale sin ninguna ronda hecha,
+     * y un mensaje en error no viaja en el historial (otro cambio de contrato a propósito).
      *
      * @test
      */
@@ -768,8 +978,9 @@ class Cierre_con_lo_hecho_Test extends TestCase
     {
         $texto = AsistenteIaException::tiempo_agotado('detalle')->mensaje_para_la_persona();
 
-        $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y la retomo desde donde quedó.', $texto);
+        $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y lo intento de nuevo.', $texto);
         $this->assertStringNotContainsString('acotad', $texto);
+        $this->assertStringNotContainsString('desde donde quedó', $texto);
     }
 
     /**

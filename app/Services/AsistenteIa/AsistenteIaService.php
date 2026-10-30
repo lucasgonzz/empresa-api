@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
@@ -812,8 +813,10 @@ class AsistenteIaService
              *   - después de él no hay más vueltas: ni normales ni los reintentos de las guardas (cada
              *     guarda lleva `! $cerrando`); las guardas de DESPUÉS del bucle sí corren sobre su texto;
              *   - si igual trae `tool_use`, no se ejecuta: se toma su texto;
-             *   - si vuelve sin texto o la llamada falla, el error de siempre (`tiempo_agotado`, que desde
-             *     esta misión le dice a la persona que escriba «seguí»);
+             *   - si vuelve sin texto, la llamada falla o no queda ventana para hacerla, el turno NO
+             *     termina en error (ronda de arreglos de la revisión independiente, R1): cierra `listo`
+             *     con el texto determinista de respuesta_sin_terminar() —lo hecho, lo que espera el sí y
+             *     el «seguí»—, para que lo hecho viaje en el historial y por WhatsApp llegue;
              *   - si hay un reintento de guarda en curso (`$texto_antes_del_reintento`), no se cierra: se
              *     vuelve a ese texto como siempre (arriba con el presupuesto, abajo con el techo);
              *   - su timeout es lo que queda hasta techo_de_la_llamada_de_cierre(): así no estira la
@@ -851,14 +854,9 @@ class AsistenteIaService
                 $segundos_del_cierre = min(self::TIMEOUT_SEGUNDOS, $this->techo_de_la_llamada_de_cierre($assistant_message) - $transcurrido);
 
                 if ($segundos_del_cierre < self::SEGUNDOS_MINIMOS_DEL_CIERRE) {
-                    Log::warning('AsistenteIaService: no quedó tiempo para la llamada de cierre.', [
-                        'ai_conversation_id' => $conversation->id,
-                        'ai_message_id'      => $assistant_message->id,
-                        'iterations'         => $iterations,
-                        'transcurrido'       => $transcurrido,
-                    ]);
-
-                    throw AsistenteIaException::tiempo_agotado(
+                    /* Sin ventana para el cierre: lo hecho, armado sin el modelo (ver respuesta_sin_terminar()). */
+                    return $this->respuesta_sin_terminar(
+                        $conversation, $assistant_message, $confirmacion_determinista,
                         'no quedó tiempo para la llamada de cierre (' . $transcurrido . 's) tras ' . $iterations . ' iteraciones'
                     );
                 }
@@ -949,16 +947,11 @@ class AsistenteIaService
                     $url, $body, $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message
                 );
             } catch (\Throwable $e) {
-                /* Si falla la llamada de cierre, el error de tiempo agotado de siempre (con el «seguí»). */
+                /* Si falla la llamada de cierre, lo hecho armado sin el modelo (ver respuesta_sin_terminar()). */
                 if ($cerrando) {
-                    Log::warning('AsistenteIaService: falló la llamada de cierre; el turno termina en tiempo agotado.', [
-                        'ai_conversation_id' => $conversation->id,
-                        'ai_message_id'      => $assistant_message->id,
-                        'excepcion'          => get_class($e),
-                        'error'              => $e->getMessage(),
-                    ]);
 
-                    throw AsistenteIaException::tiempo_agotado(
+                    return $this->respuesta_sin_terminar(
+                        $conversation, $assistant_message, $confirmacion_determinista,
                         'falló la llamada de cierre (' . $motivo_del_cierre . ') tras ' . $iterations . ' iteraciones: ' . get_class($e) . ': ' . $e->getMessage()
                     );
                 }
@@ -993,14 +986,9 @@ class AsistenteIaService
             }
 
             if (! $response->successful() && $cerrando) {
-                /* La llamada de cierre volvió con error (ya con su reintento si quedaba tiempo): tiempo agotado. */
-                Log::warning('AsistenteIaService: la llamada de cierre volvió con error; el turno termina en tiempo agotado.', [
-                    'ai_conversation_id' => $conversation->id,
-                    'ai_message_id'      => $assistant_message->id,
-                    'http'               => $response->status(),
-                ]);
-
-                throw AsistenteIaException::tiempo_agotado(
+                /* La llamada de cierre volvió con error (ya con su reintento si quedaba tiempo): lo hecho, sin el modelo. */
+                return $this->respuesta_sin_terminar(
+                    $conversation, $assistant_message, $confirmacion_determinista,
                     'la llamada de cierre (' . $motivo_del_cierre . ') volvió con HTTP ' . $response->status() . ' tras ' . $iterations . ' iteraciones: '
                     . mb_substr((string) $response->body(), 0, 500)
                 );
@@ -1339,7 +1327,8 @@ class AsistenteIaService
          *
          * Salvo después de la llamada de cierre (misión agente-memoria-y-sin-techo): si lo único que
          * escribió fue lo que el saneo saca —la nota de cierre copiada, razonamiento filtrado—, el crudo
-         * le mostraría a la persona la nota interna; queda vacío y va el error de tiempo agotado.
+         * le mostraría a la persona la nota interna; queda vacío y va lo hecho armado sin el modelo
+         * (respuesta_sin_terminar()).
          */
         $crudo = trim($final_text);
         $final_text = trim(TextoFinalIaHelper::limpiar($crudo, $this->nombres_de_herramientas($tools)));
@@ -1360,13 +1349,14 @@ class AsistenteIaService
             ]);
 
             /*
-             * La llamada de cierre volvió sin texto (o solo con un tool_use, que no se ejecuta): el error
-             * de tiempo agotado, que le pide a la persona que escriba «seguí». El detalle dice que fue el
-             * cierre y por qué se cerró (el techo de vueltas o el presupuesto).
+             * La llamada de cierre volvió sin texto (o solo con un tool_use, que no se ejecuta): lo hecho,
+             * armado sin el modelo (respuesta_sin_terminar(), R1 de la ronda de arreglos). El detalle va
+             * al log: fue el cierre y por qué se cerró (el techo de vueltas o el presupuesto).
              */
             if ($cerrando) {
 
-                throw AsistenteIaException::tiempo_agotado(
+                return $this->respuesta_sin_terminar(
+                    $conversation, $assistant_message, $confirmacion_determinista,
                     'la llamada de cierre (' . $motivo_del_cierre . ') volvió sin texto tras ' . $iterations . ' iteraciones (techo ' . $max_iterations . ')'
                 );
             }
@@ -1376,8 +1366,20 @@ class AsistenteIaService
              * encadenando tools y nunca llegó a contestar (desde la misión agente-memoria-y-sin-techo
              * solo pasa con un reintento de guarda en curso: si no, la última vuelta es la de cierre), o
              * cerró antes sin texto, que es otra cosa y se reintenta igual.
+             *
+             * Con al menos una ronda de herramientas hecha, el techo sin texto tampoco es un error: lo
+             * hecho, armado sin el modelo, como cuando falla el cierre. Sin ninguna, nada que contar: el
+             * error de tiempo agotado.
              */
             if ($iterations >= $max_iterations) {
+
+                if ($rondas_de_herramientas > 0) {
+
+                    return $this->respuesta_sin_terminar(
+                        $conversation, $assistant_message, $confirmacion_determinista,
+                        'el loop llegó al techo de ' . $max_iterations . ' iteraciones sin texto final'
+                    );
+                }
 
                 throw AsistenteIaException::tiempo_agotado(
                     'el loop llegó al techo de ' . $max_iterations . ' iteraciones sin texto final'
@@ -4294,6 +4296,58 @@ CONFIRMACION;
         }
 
         return self::PRESUPUESTO_SEGUNDOS + self::TIMEOUT_SEGUNDOS;
+    }
+
+    /**
+     * La respuesta de un turno que se quedó sin vueltas o sin tiempo DESPUÉS de hacer al menos una ronda
+     * de herramientas, cuando la llamada de cierre no pudo escribir nada: falló, volvió con error o sin
+     * texto, o no quedó ventana para hacerla (misión agente-memoria-y-sin-techo, ronda de arreglos de la
+     * revisión independiente, R1, 30/10/2026). El texto lo arma el sistema, sin el modelo
+     * (AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar()): lo hecho, lo que espera el sí, las fotos
+     * que quedaron guardadas y «No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que
+     * falta.». El job lo guarda como cualquier respuesta: el mensaje queda `listo`.
+     *
+     * 🔴 POR QUÉ NO EL ERROR DE TIEMPO AGOTADO DE ANTES. Con el mensaje en `error`: (a) no viaja en el
+     * historial (build_messages_payload() lee solo los `listo`), así que ante el «seguí» el modelo no
+     * veía las cargas que ese turno ya había hecho —en "directo" quedan confirmadas solas— y las podía
+     * DUPLICAR; (b) por WhatsApp el admin no manda el contenido de un mensaje en error, manda su propia
+     * disculpa («Uf, no pude contestarte…»), así que el «seguí» nunca le llegaba al dueño. `listo`, las
+     * tarjetas viajan en el historial con su renglón y el texto llega por los dos canales.
+     *
+     * Sin ninguna ronda hecha (falló la primera llamada) no se llega acá: sigue el error de siempre.
+     *
+     * Las guardas de después del bucle NO corren sobre este texto (lo escribió el sistema con lo que
+     * pasó, no el modelo). Sí se le suman los bloques de los envíos a clientes que quedaron esperando el
+     * sí (con_los_bloques_de_envio()): por texto, el «sí» solo vale si el dueño vio el bloque.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  array|null  $confirmacion_determinista  Lo que devolvió ConfirmacionDeterministaIaHelper::quizas_confirmar():
+     *                                                 su tarjeta (de un mensaje anterior) va entre lo hecho.
+     * @param  string  $detalle  Qué pasó, para el log (el detalle técnico de antes).
+     * @return string
+     */
+    protected function respuesta_sin_terminar(AiConversation $conversation, AiMessage $assistant_message, $confirmacion_determinista, $detalle): string
+    {
+        Log::warning('AsistenteIaService: el turno no terminó y el cierre no escribió nada; se contesta con lo hecho, armado sin el modelo.', [
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => $assistant_message->id,
+            'detalle'            => mb_substr((string) $detalle, 0, 1000),
+        ]);
+
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '<', (int) $assistant_message->id)
+            ->orderBy('id', 'DESC')
+            ->first();
+
+        $tarjeta_aparte = is_array($confirmacion_determinista) && isset($confirmacion_determinista['tarjeta_id'])
+            ? (int) $confirmacion_determinista['tarjeta_id']
+            : null;
+
+        $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant_message, $pedido, $tarjeta_aparte);
+
+        return $this->con_los_bloques_de_envio($texto, $assistant_message);
     }
 
     /**

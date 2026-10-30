@@ -4,6 +4,7 @@ namespace Tests\Feature\ChatIa;
 
 use App\Events\ChatIaMensajeActualizado;
 use App\Exceptions\AsistenteIaException;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -150,6 +151,12 @@ class Errores_distinguibles_Test extends TestCase
      * texto y el final es el mismo motivo. Su texto cambió a propósito: ya no pide «algo más acotado»
      * sino «seguí» (ver AsistenteIaException::MENSAJES). El nombre del test queda por historia.
      *
+     * 🔴 Y DESDE LA RONDA DE ARREGLOS DE LA REVISIÓN INDEPENDIENTE (R1, 30/10/2026; contrato cambiado a
+     * propósito) ya no es un error: el turno hizo rondas de herramientas, así que cierra `listo` con lo
+     * hecho armado sin el modelo (AsistenteIaService::respuesta_sin_terminar(); acá solo leyó: la última
+     * frase, con el «seguí»). En `error` no viajaba en el historial y por WhatsApp el admin mandaba su
+     * disculpa en vez del texto. El motivo tiempo_agotado queda para un turno sin ninguna ronda.
+     *
      * @group chat-ia
      * @test
      */
@@ -172,15 +179,12 @@ class Errores_distinguibles_Test extends TestCase
 
         $assistant = $this->correr_el_job();
 
-        $this->assertEquals('error', $assistant->estado);
-        $this->assertEquals(
-            AsistenteIaException::MENSAJES[AsistenteIaException::MOTIVO_TIEMPO_AGOTADO],
-            $assistant->contenido
-        );
-        $this->assertStringContainsString(
-            'iteraciones',
-            (string) $assistant->error_mensaje,
-            'El detalle técnico tiene que decir que se agotaron las vueltas.'
+        $this->assertEquals('listo', $assistant->estado, (string) $assistant->error_mensaje);
+        $this->assertEquals(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
+        $this->assertNotEquals(
+            ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE,
+            $assistant->contenido,
+            'Un turno que se quedó sin vueltas no sale con el texto genérico.'
         );
     }
 

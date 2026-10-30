@@ -37,8 +37,11 @@ class AsistenteIaException extends RuntimeException
      *
      * Desde la misión agente-memoria-y-sin-techo (30/10/2026) casi nunca llega a la persona: cuando se
      * terminan las vueltas o el tiempo, el loop hace una LLAMADA DE CIERRE que cuenta lo hecho y lo que
-     * falta (AsistenteIaService::responder_con_el_modelo()). Queda para cuando esa llamada falla o vuelve
-     * sin texto.
+     * falta (AsistenteIaService::responder_con_el_modelo()), y si esa llamada falla, vuelve vacía o no
+     * tiene ventana, el turno igual cierra `listo` con lo hecho armado sin el modelo
+     * (AsistenteIaService::respuesta_sin_terminar(), ronda de arreglos R1). Queda solo para un turno que
+     * se quedó sin tiempo o sin vueltas SIN haber hecho ninguna ronda de herramientas: nada hecho que
+     * contar.
      */
     const MOTIVO_TIEMPO_AGOTADO = 'tiempo_agotado';
 
@@ -62,13 +65,17 @@ class AsistenteIaException extends RuntimeException
      * 30/10/2026; cambio de contrato a propósito). Era el texto que leyó Pablo (Ferre Total) por un pedido
      * razonable —un recordatorio por cheque— que solo se había comido el techo de vueltas: acotar no era el
      * remedio, y la persona no tiene por qué saber cómo partir un pedido. Lo que sirve es seguir con un
-     * «seguí». ⚠️ Ojo con lo que promete: un mensaje en `error` no viaja en el historial
+     * «seguí».
+     *
+     * 🔴 Y NO PROMETE «DESDE DONDE QUEDÓ» (ronda de arreglos de la revisión independiente, R1, 30/10/2026;
+     * otro cambio de contrato a propósito). Un mensaje en `error` no viaja en el historial
      * (build_messages_payload() lee solo los `listo`), así que el «seguí» retoma desde el pedido de la
-     * persona, no desde lo que este turno alcanzó a hacer. Por eso el camino normal es la llamada de
-     * cierre, que deja el mensaje `listo` con lo hecho, y este texto queda solo para cuando esa falla.
+     * persona, no desde lo que el turno alcanzó a hacer. Y este texto ya solo sale cuando el turno no hizo
+     * NINGUNA ronda de herramientas (con alguna, cierra `listo` con lo hecho): lo honesto es «lo intento de
+     * nuevo».
      */
     const MENSAJES = [
-        self::MOTIVO_TIEMPO_AGOTADO => 'No llegué a terminar esta respuesta. Escribime «seguí» y la retomo desde donde quedó.',
+        self::MOTIVO_TIEMPO_AGOTADO => 'No llegué a terminar esta respuesta. Escribime «seguí» y lo intento de nuevo.',
         self::MOTIVO_SOBRECARGADO   => 'El servicio de IA está sobrecargado. Probá de nuevo en unos segundos.',
         self::MOTIVO_SIN_RESPUESTA  => 'La IA no llegó a generar una respuesta. Probá mandar el mensaje de nuevo.',
     ];

@@ -34,6 +34,11 @@ use Illuminate\Support\Str;
  *     admin_avisa): un aviso que nadie va a mandar no se promete;
  *   - UNO por mensaje del asistente: si ya hay uno para ese mensaje, no se deja otro.
  *
+ * Desde la misión agente-memoria-y-sin-techo (ronda de arreglos, R1, 30/10/2026) arma también el texto de
+ * un turno que se quedó sin vueltas o sin tiempo DESPUÉS de haber hecho algo (texto_de_turno_sin_terminar(),
+ * en todos los canales): ese turno ya no termina en `error` sino `listo`, con lo hecho, lo que espera el
+ * sí y el «seguí». Las guardas de arriba son solo de dejar() y de los avisos.
+ *
  * PHP 7.4: sin match, sin nullsafe, sin str_contains, sin argumentos nombrados.
  */
 class AvisosDeTurnosIaHelper
@@ -43,6 +48,26 @@ class AvisosDeTurnosIaHelper
 
     /** Cuántos caracteres del pedido del dueño se citan en el aviso de un turno colgado. */
     const LARGO_DE_LA_CITA = 60;
+
+    /**
+     * La última frase del texto de un turno que no terminó (texto_de_turno_sin_terminar()): misión
+     * agente-memoria-y-sin-techo, ronda de arreglos de la revisión independiente (R1, 30/10/2026). Dice
+     * «sigo con lo que falta» y no «desde donde quedó» porque ese mensaje SÍ queda `listo` y viaja en el
+     * historial con lo hecho: el «seguí» ve qué se hizo y qué no.
+     */
+    const CIERRE_SIN_TERMINAR = 'No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que falta.';
+
+    /** Encabezado de las cargas que el turno dejó hechas (confirmadas), en texto_de_turno_sin_terminar(). */
+    const ENCABEZADO_HECHO = 'Quedó hecho:';
+
+    /** Encabezado de UNA carga que quedó esperando el sí, en texto_de_turno_sin_terminar(). */
+    const ENCABEZADO_PARA_CONFIRMAR_UNA = 'Quedó para que la confirmes:';
+
+    /** Encabezado de VARIAS cargas que quedaron esperando el sí, en texto_de_turno_sin_terminar(). */
+    const ENCABEZADO_PARA_CONFIRMAR_VARIAS = 'Quedaron para que las confirmes:';
+
+    /** Techo de caracteres del renglón de cada carga en texto_de_turno_sin_terminar(). */
+    const LARGO_DEL_RENGLON = 300;
 
     /** @var bool|null  Si la tabla existe en esta base (se pregunta una vez por proceso). */
     protected static $hay_tabla = null;
@@ -204,6 +229,179 @@ class AvisosDeTurnosIaHelper
 
             return '';
         }
+    }
+
+    /**
+     * El texto, DETERMINISTA y sin el modelo, de un turno que se quedó sin vueltas o sin tiempo y cuya
+     * llamada de cierre falló, volvió vacía o no tuvo ventana (misión agente-memoria-y-sin-techo, ronda de
+     * arreglos de la revisión independiente, R1, 30/10/2026). Lo usa AsistenteIaService::
+     * respuesta_sin_terminar(), y el mensaje queda `listo` con este texto:
+     *
+     *   Quedó hecho:
+     *   - Pago N° 1706 registrado.
+     *
+     *   Quedaron para que las confirmes:
+     *   - Tarea (Detalle: Cheque 1 se acredita mañana; Fecha: 31/10/2026)
+     *
+     *   Me llegaron 3 fotos y quedaron guardadas.
+     *
+     *   No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que falta.
+     *
+     * 🔴 POR QUÉ `listo` Y NO EL ERROR DE TIEMPO AGOTADO. Con el mensaje en `error`: (a) no viaja en el
+     * historial (build_messages_payload() lee solo los `listo`), así que ante el «seguí» el modelo no veía
+     * las cargas que ese turno YA hizo —en "directo" quedan confirmadas solas— y las podía repetir; (b) por
+     * WhatsApp el admin no manda el contenido de un mensaje en error sino su disculpa fija («Uf, no pude
+     * contestarte…», EnviarMensajeAlAsistenteJob), así que el «seguí» nunca le llegaba al dueño. `listo`,
+     * el texto llega por los dos canales, y las tarjetas viajan en el historial con su renglón
+     * (AccionesIaHelper::linea_de_historial) junto a este texto.
+     *
+     * Las tarjetas que esperan el sí NO se descartan (eso lo hace el job solo con un mensaje en error):
+     * siguen confirmables con el botón o con el «sí» por texto.
+     *
+     * LAS FOTOS. El aviso de fotos sin usar (frase_del_turno(), que el job suma al texto de un error y deja
+     * como aviso por WhatsApp) solo corre con un mensaje en `error`. Con este texto, las fotos van en una
+     * frase propia y neutra («quedaron guardadas»): no dice «no llegué a cargarlas» porque alguna puede
+     * estar en una tarjeta que espera el sí, y el «seguí» las encuentra igual (las fotos sin usar de la
+     * última tanda vuelven a viajar con el mensaje siguiente).
+     *
+     * Nunca lanza: si algo falla, queda solo la última frase.
+     *
+     * @param  \App\Models\AiMessage  $assistant  El mensaje del asistente que no terminó.
+     * @param  \App\Models\AiMessage|null  $pedido  El mensaje del dueño que contestaba.
+     * @param  int|null  $tarjeta_confirmada_aparte  La tarjeta de un mensaje ANTERIOR que este turno confirmó
+     *                                               antes de llamar al modelo (la confirmación determinista
+     *                                               del «sí»), o null. Va primera entre lo hecho.
+     * @return string
+     */
+    public static function texto_de_turno_sin_terminar(AiMessage $assistant, $pedido, $tarjeta_confirmada_aparte = null)
+    {
+        try {
+
+            $hechos = [];
+            $para_confirmar = [];
+
+            if (!is_null($tarjeta_confirmada_aparte) && (int) $tarjeta_confirmada_aparte > 0) {
+
+                $aparte = AiMessageAction::where('id', (int) $tarjeta_confirmada_aparte)
+                                         ->where('ai_conversation_id', (int) $assistant->ai_conversation_id)
+                                         ->first();
+
+                if (!is_null($aparte) && (string) $aparte->estado === AiMessageAction::ESTADO_CONFIRMADA && (int) $aparte->ai_message_id !== (int) $assistant->id) {
+
+                    $hechos[] = self::renglon_para_la_persona($aparte);
+                }
+            }
+
+            foreach (AiMessageAction::where('ai_message_id', (int) $assistant->id)->orderBy('id')->get() as $accion) {
+
+                $estado = (string) $accion->estado;
+
+                if ($estado === AiMessageAction::ESTADO_CONFIRMADA) {
+
+                    $hechos[] = self::renglon_para_la_persona($accion);
+
+                } elseif ($estado === AiMessageAction::ESTADO_PROPUESTA && !$accion->vencio()) {
+
+                    $para_confirmar[] = self::renglon_para_la_persona($accion);
+                }
+            }
+
+            $partes = [];
+
+            if (count($hechos)) {
+
+                $partes[] = self::ENCABEZADO_HECHO . "\n- " . implode("\n- ", $hechos);
+            }
+
+            if (count($para_confirmar)) {
+
+                $partes[] = (count($para_confirmar) === 1 ? self::ENCABEZADO_PARA_CONFIRMAR_UNA : self::ENCABEZADO_PARA_CONFIRMAR_VARIAS)
+                    . "\n- " . implode("\n- ", $para_confirmar);
+            }
+
+            $fotos = $pedido instanceof AiMessage
+                ? AiMessageImagen::where('ai_message_id', (int) $pedido->id)->whereNull('gestionada_at')->count()
+                : 0;
+
+            if ($fotos > 0) {
+
+                $partes[] = $fotos === 1
+                    ? 'Me llegó la foto y quedó guardada.'
+                    : 'Me llegaron ' . $fotos . ' fotos y quedaron guardadas.';
+            }
+
+            $partes[] = self::CIERRE_SIN_TERMINAR;
+
+            return implode("\n\n", $partes);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AvisosDeTurnosIaHelper: no se pudo armar el texto del turno sin terminar; va solo el cierre', [
+                'ai_message_id' => (int) $assistant->id,
+                'error'         => $e->getMessage(),
+            ]);
+
+            return self::CIERRE_SIN_TERMINAR;
+        }
+    }
+
+    /**
+     * El renglón de una carga como lo lee la PERSONA en texto_de_turno_sin_terminar(): si está confirmada
+     * y tiene resultado, el texto del resultado («Pago N° 1706 registrado.»); si no, el título de la
+     * tarjeta con sus renglones entre paréntesis («Tarea (Detalle: …; Fecha: …)»). No es
+     * AccionesIaHelper::linea_de_historial() a propósito: aquélla es para el modelo («[Tarjeta #12 · … ·
+     * estado: …]»), viaja igual en el historial colgada del mensaje, y repetida en el texto la vería dos
+     * veces (y DeepSeek ya copia esas líneas en sus respuestas).
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return string
+     */
+    protected static function renglon_para_la_persona(AiMessageAction $accion)
+    {
+        if ((string) $accion->estado === AiMessageAction::ESTADO_CONFIRMADA && is_object($accion->resultado) && isset($accion->resultado->texto)) {
+
+            $resultado = trim(preg_replace('/\s+/u', ' ', (string) $accion->resultado->texto));
+
+            if ($resultado !== '') {
+
+                return self::recortar_renglon(rtrim($resultado, '. ') . '.');
+            }
+        }
+
+        $presentacion = is_array($accion->presentacion) ? $accion->presentacion : [];
+
+        $titulo = isset($presentacion['titulo']) ? trim((string) $presentacion['titulo']) : '';
+        $titulo = $titulo === '' ? (string) $accion->tipo : $titulo;
+
+        $renglones = [];
+
+        if (isset($presentacion['renglones']) && is_array($presentacion['renglones'])) {
+
+            foreach ($presentacion['renglones'] as $renglon) {
+
+                if (is_array($renglon) && isset($renglon['etiqueta'])) {
+
+                    $valor = isset($renglon['valor']) && is_scalar($renglon['valor']) ? trim((string) $renglon['valor']) : '';
+
+                    $renglones[] = trim((string) $renglon['etiqueta']) . ($valor === '' ? '' : ': ' . $valor);
+                }
+            }
+        }
+
+        return self::recortar_renglon(count($renglones) ? $titulo . ' (' . implode('; ', $renglones) . ')' : $titulo);
+    }
+
+    /**
+     * Un renglón en una sola línea y de LARGO_DEL_RENGLON caracteres como mucho.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function recortar_renglon($texto)
+    {
+        $texto = trim(preg_replace('/\s+/u', ' ', (string) $texto));
+
+        return mb_strlen($texto) > self::LARGO_DEL_RENGLON ? rtrim(mb_substr($texto, 0, self::LARGO_DEL_RENGLON - 1)) . '…' : $texto;
     }
 
     /**
