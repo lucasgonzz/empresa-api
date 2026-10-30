@@ -328,6 +328,16 @@ class AsistenteIaService
     protected $marcar_progreso = false;
 
     /**
+     * Las conversaciones OTRAS que buscar_conversaciones_anteriores / leer_conversacion_anterior le
+     * mostraron al modelo en la respuesta que se está generando (ronda de arreglos de la revisión
+     * independiente de la misión agente-memoria-y-sin-techo, R2). Se juntan en execute_tool_calls() y las
+     * mira la guarda de la carga prometida: ver sin_lo_dicho_de_otras_conversaciones().
+     *
+     * @var array<int, int>
+     */
+    protected $conversaciones_leidas = [];
+
+    /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
      * es un error: sin clave, el job deja el mensaje en error amigable sin salir a la red.
      *
@@ -393,6 +403,7 @@ class AsistenteIaService
         $this->adjuntos = [];
         $this->bloques = [];
         $this->pedidos_de_imagen = [];
+        $this->conversaciones_leidas = [];
         $this->marcar_progreso = true;
 
         $owner = User::find($conversation->user_id);
@@ -3634,6 +3645,10 @@ CONFIRMACION;
      * Lo que pasa cuando dispara —el reintento y, si sigue, el reemplazo sólo en la mentira segura o el
      * aviso en lo demás— está en responder_con_el_modelo().
      *
+     * Ronda de arreglos de la revisión independiente de la misión agente-memoria-y-sin-techo (R2): las
+     * oraciones que cuentan una carga de OTRA conversación que el modelo abrió en este turno no se miran
+     * (sin_lo_dicho_de_otras_conversaciones()).
+     *
      * @param  string  $texto
      * @param  array<int, array<string, mixed>>  $tools
      * @param  AiConversation  $conversation
@@ -3644,6 +3659,8 @@ CONFIRMACION;
     {
         /* sanear() y no limpiar(), por lo mismo que en afirma_una_tarjeta_que_no_existe(). */
         $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+        $saneado = $this->sin_lo_dicho_de_otras_conversaciones($saneado, $conversation);
 
         $tipo = TarjetaPrometidaIaHelper::afirma_una_carga_hecha($saneado);
 
@@ -3704,6 +3721,51 @@ CONFIRMACION;
         }
 
         return '';
+    }
+
+    /**
+     * El texto sin las oraciones que nombran una carga CONFIRMADA de otra conversación que el modelo abrió
+     * o encontró en ESTE turno (ronda de arreglos de la revisión independiente de la misión
+     * agente-memoria-y-sin-techo, R2, 30/10/2026). Lo usa la guarda de la carga prometida.
+     *
+     * 🔴 LO MEDIDO. En el panel, con Http::fake: la persona pide «Seguí con lo del pago de Pinturería
+     * Sudamericana», el modelo abre la conversación de ayer (leer_conversacion_anterior) y contesta «El
+     * Pago N° 1706 a Pinturas Sudamericanas quedó registrado con los 5 e-cheq.». Es verdad —lo está
+     * leyendo—, pero la guarda solo conocía las cargas de ESTE mensaje: disparaba el reintento (una
+     * llamada más, al Profundo, con la nota que le pide llamar a una proponer_ si es una carga nueva) y,
+     * si el modelo lo repetía, el «Ojo: con este mensaje no registré ningún cambio…». Con «Ayer quedó
+     * registrado…» no pasaba (el «ayer» ya es una marca de repaso), pero cualquier otra forma sí.
+     *
+     * Por qué así y no contando esas cargas «de antes»: hay_cargas_confirmadas_de_antes() solo decide la
+     * mentira segura, que ya no corre en un turno que pidió herramientas (y leer es una); un pedido de
+     * clase 'otro' dispara igual. Lo acotado es no mirar las oraciones que nombran el registro
+     * (entidad + número, ConversacionesAnterioresIaHelper::registros_confirmados()): las demás oraciones
+     * se siguen mirando, así que «Ya te agendé los recordatorios» sin herramienta sigue disparando. Solo
+     * con conversaciones vistas en este turno, nunca la actual. Nunca rompe la guarda: si algo falla,
+     * vuelve el texto entero.
+     *
+     * @param  string  $texto  Ya saneado.
+     * @param  AiConversation  $conversation
+     * @return string
+     */
+    protected function sin_lo_dicho_de_otras_conversaciones($texto, AiConversation $conversation): string
+    {
+        if (! count($this->conversaciones_leidas)) {
+            return (string) $texto;
+        }
+
+        try {
+            $registros = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::registros_confirmados($conversation, $this->conversaciones_leidas);
+
+            return \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros((string) $texto, $registros);
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudo sacar lo dicho de otras conversaciones; la guarda mira el texto entero.', [
+                'ai_conversation_id' => $conversation->id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return (string) $texto;
+        }
     }
 
     /**
@@ -5716,6 +5778,11 @@ CONFIRMACION;
                     $resultado_de_conversaciones = HerramientasDeConversaciones::ejecutar($tool_name, $tool_input, $conversation);
                     $content = $resultado_de_conversaciones['content'];
                     $error_de_la_herramienta = (bool) $resultado_de_conversaciones['is_error'];
+
+                    // R2 de la ronda de arreglos: las conversaciones que vio, para la guarda de la carga.
+                    if (isset($resultado_de_conversaciones['conversacion_ids']) && is_array($resultado_de_conversaciones['conversacion_ids'])) {
+                        $this->conversaciones_leidas = array_values(array_unique(array_merge($this->conversaciones_leidas, $resultado_de_conversaciones['conversacion_ids'])));
+                    }
                 } else {
                     $tool_desconocida = true;
                     $content = 'Tool desconocida: ' . $tool_name;

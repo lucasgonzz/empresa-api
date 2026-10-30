@@ -423,6 +423,143 @@ class ConversacionesAnterioresIaHelper
     }
 
     /**
+     * Los registros (entidad + número: «pago» 1706, «gasto» 88) de las cargas CONFIRMADAS de las
+     * conversaciones que el modelo abrió o encontró en este turno (ronda de arreglos de la revisión
+     * independiente, R2, 30/10/2026). Salen del texto del resultado de cada tarjeta («Pago N° 1706
+     * registrado…»); una carga sin número en su resultado (una tarea agendada) no da ninguno.
+     *
+     * 🔴 PARA QUÉ. La guarda de la carga prometida (AsistenteIaService::afirma_una_carga_que_no_se_hizo)
+     * mira si el texto da por hecha una carga que ESTE mensaje no ejecutó. Medido el 30/10 con
+     * Http::fake: después de leer la conversación de ayer, «El Pago N° 1706 a Pinturas Sudamericanas
+     * quedó registrado con los 5 e-cheq.» a un pedido como «Seguí con lo del pago de Pinturería
+     * Sudamericana» disparaba el reintento (una llamada más, al Profundo, con la nota que le pide cargar)
+     * y, si el modelo lo repetía, el «Ojo: con este mensaje no registré ningún cambio…». Es verdad lo que
+     * dice: está contando lo que leyó. Con estos registros, las oraciones que nombran uno se sacan antes
+     * de mirar (sin_oraciones_sobre_registros()).
+     *
+     * Tenencia: solo conversaciones de la misma persona (de_la_misma_persona()), sin la actual (lo de
+     * esta conversación lo cubre su historial, como siempre). Nunca lanza: si algo falla, ninguno.
+     *
+     * @param  \App\Models\AiConversation  $actual
+     * @param  array<int, int>  $conversacion_ids  Las que mostraron leer_ / buscar_ en este turno.
+     * @return array<int, array{entidad: string, numero: string}>
+     */
+    public static function registros_confirmados(AiConversation $actual, array $conversacion_ids)
+    {
+        try {
+            $ids = array_values(array_unique(array_filter(array_map('intval', $conversacion_ids))));
+
+            if (!count($ids)) {
+
+                return [];
+            }
+
+            $visibles = self::de_la_misma_persona($actual)
+                ->whereIn('ai_conversations.id', $ids)
+                ->where('ai_conversations.id', '!=', (int) $actual->id)
+                ->pluck('ai_conversations.id')
+                ->all();
+
+            if (!count($visibles)) {
+
+                return [];
+            }
+
+            $registros = [];
+
+            $acciones = AiMessageAction::whereIn('ai_conversation_id', $visibles)
+                ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                ->get(['id', 'resultado']);
+
+            foreach ($acciones as $accion) {
+                $texto = is_object($accion->resultado) && isset($accion->resultado->texto) ? (string) $accion->resultado->texto : '';
+
+                if (!preg_match_all('/(\p{L}+)\s+(?:N\s*[°º.o]|n[uú]mero|nro\.?|#)\s*(\d[\d.]*)/iu', $texto, $coincidencias, PREG_SET_ORDER)) {
+                    continue;
+                }
+
+                foreach ($coincidencias as $coincidencia) {
+                    $numero = str_replace('.', '', $coincidencia[2]);
+
+                    if ($numero === '') {
+                        continue;
+                    }
+
+                    $entidad = mb_strtolower(self::sin_tildes($coincidencia[1]));
+
+                    $registros[$entidad . '#' . $numero] = ['entidad' => $entidad, 'numero' => $numero];
+                }
+            }
+
+            return array_values($registros);
+
+        } catch (\Throwable $e) {
+            Log::warning('ConversacionesAnterioresIaHelper: no se pudieron leer los registros de las conversaciones leídas; la guarda mira el texto entero.', [
+                'ai_conversation_id' => $actual->id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+    }
+
+    /**
+     * El texto sin las oraciones que nombran alguno de los registros (R2, ver registros_confirmados()):
+     * una oración se saca si tiene la entidad («pago», también «pagos») Y el número («1706», también
+     * «1.706») del mismo registro. Las demás quedan tal cual, una por renglón, así que una mentira en
+     * OTRA oración («Ya te agendé los recordatorios.») la guarda la sigue viendo. Se parte igual que la
+     * guarda (TarjetaPrometidaIaHelper::oraciones(): después de un signo de cierre y un espacio, o en un
+     * salto de línea).
+     *
+     * ⚠️ Lo que no distingue: una oración que cuenta un cambio NUEVO sobre ese mismo registro sin haberlo
+     * hecho («le cargué la fecha a los cheques del Pago N° 1706») también se saca. Es el precio de no
+     * mirar el verbo, y queda acotado a registros de una conversación que el modelo abrió EN ESTE TURNO.
+     *
+     * @param  string  $texto
+     * @param  array<int, array{entidad: string, numero: string}>  $registros
+     * @return string
+     */
+    public static function sin_oraciones_sobre_registros($texto, array $registros)
+    {
+        $texto = (string) $texto;
+
+        if (!count($registros) || trim($texto) === '') {
+
+            return $texto;
+        }
+
+        $oraciones = preg_split('/(?<=[.!?…])\s+|\n+/u', $texto);
+
+        if (!is_array($oraciones)) {
+
+            return $texto;
+        }
+
+        $quedan = [];
+
+        foreach ($oraciones as $oracion) {
+            $normalizada = mb_strtolower(self::sin_tildes((string) $oracion));
+            $normalizada = (string) preg_replace('/(?<=\d)\.(?=\d{3}(?!\d))/u', '', $normalizada);
+
+            $nombra_un_registro = false;
+
+            foreach ($registros as $registro) {
+                if (preg_match('/\b' . preg_quote($registro['entidad'], '/') . '/u', $normalizada)
+                    && preg_match('/(?<!\d)' . preg_quote($registro['numero'], '/') . '(?!\d)/u', $normalizada)) {
+                    $nombra_un_registro = true;
+                    break;
+                }
+            }
+
+            if (!$nombra_un_registro) {
+                $quedan[] = $oracion;
+            }
+        }
+
+        return implode("\n", $quedan);
+    }
+
+    /**
      * Las conversaciones que la persona de la conversación actual puede ver: mismo dueño, misma
      * persona, sin las de MCP. 🔴 Es el ÚNICO punto de entrada de las tres funciones públicas: la
      * tenencia no se arma en otro lado.

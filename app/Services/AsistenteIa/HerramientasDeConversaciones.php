@@ -125,10 +125,14 @@ class HerramientasDeConversaciones
      * como dato con `error`, para que el modelo lo cuente, igual que las demás herramientas. `is_error`
      * queda para lo que de verdad no corrió (y eso lo atrapa execute_tool_calls()).
      *
+     * Devuelve además (clave aditiva, no viaja al modelo) `conversacion_ids`: las conversaciones OTRAS que
+     * la herramienta le mostró al modelo —la que leyó, o las que encontró—. Las usa la guarda de la carga
+     * prometida (ronda de arreglos R2): ver AsistenteIaService::sin_lo_dicho_de_otras_conversaciones().
+     *
      * @param  string  $tool_name
      * @param  array  $input
      * @param  \App\Models\AiConversation  $conversation  La conversación del turno: define la tenencia.
-     * @return array{content: string, is_error: bool}
+     * @return array{content: string, is_error: bool, conversacion_ids: array<int, int>}
      */
     public static function ejecutar($tool_name, array $input, AiConversation $conversation)
     {
@@ -141,17 +145,33 @@ class HerramientasDeConversaciones
     }
 
     /**
-     * El tool_result: JSON con el mismo fallback que el resto del asistente.
+     * El tool_result: JSON con el mismo fallback que el resto del asistente, y las conversaciones OTRAS
+     * que muestra (sin la actual: lo de esta conversación ya viaja en su historial).
      *
      * @param  array  $datos
      * @param  bool  $is_error
-     * @return array{content: string, is_error: bool}
+     * @return array{content: string, is_error: bool, conversacion_ids: array<int, int>}
      */
     protected static function resultado(array $datos, $is_error)
     {
+        $ids = [];
+
+        if (isset($datos['conversacion_id']) && empty($datos['es_esta_conversacion'])) {
+            $ids[] = (int) $datos['conversacion_id'];
+        }
+
+        if (isset($datos['conversaciones']) && is_array($datos['conversaciones'])) {
+            foreach ($datos['conversaciones'] as $encontrada) {
+                if (is_array($encontrada) && isset($encontrada['conversacion_id'])) {
+                    $ids[] = (int) $encontrada['conversacion_id'];
+                }
+            }
+        }
+
         return [
-            'content'  => json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]',
-            'is_error' => (bool) $is_error,
+            'content'          => json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]',
+            'is_error'         => (bool) $is_error,
+            'conversacion_ids' => array_values(array_unique(array_filter($ids))),
         ];
     }
 }

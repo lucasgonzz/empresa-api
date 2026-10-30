@@ -4,6 +4,7 @@ namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
@@ -18,6 +19,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Tests\EmpresaTestCase;
+use Tests\Fakes\HttpFactorySinSalida;
 
 /**
  * Misión agente-memoria-y-sin-techo (30/10/2026, §2.A del plan) — la memoria de las conversaciones
@@ -753,5 +755,181 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
         $this->assertSame($del_pago->id, $resultado['conversacion_id']);
         $this->assertStringContainsString('Cargame el pago a Pinturería Sudamericana', $resultado['mensajes'][0]['texto']);
         $this->assertStringContainsString('Pago N° 1706 registrado a Pinturas Sudamericanas', $resultado['mensajes'][1]['cargas'][0]);
+    }
+
+    // ---------------------------------------------------------------------
+    // R2 de la ronda de arreglos: la guarda de la carga prometida y lo leído de otra conversación
+    // ---------------------------------------------------------------------
+
+    /**
+     * Una conversación de HOY en el panel (canal sistema, con acciones: ahí corre la guarda de la carga
+     * prometida) con el pedido de la persona y el assistant que se está generando.
+     *
+     * @param  string  $pedido
+     * @return array{0: AiConversation, 1: AiMessage}
+     */
+    protected function pedido_en_el_panel($pedido)
+    {
+        list($conversation) = $this->charla('Hoy en el panel', [['user', $pedido]], Carbon::now()->subMinutes(1), ['origen' => 'usuario'], AiMessage::CANAL_SISTEMA);
+
+        $assistant = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => true,
+            'canal'                => AiMessage::CANAL_SISTEMA,
+        ]);
+
+        return [$conversation, $assistant];
+    }
+
+    /**
+     * El doble de Anthropic: con `$leer`, la primera llamada pide leer esa conversación; después contesta
+     * SIEMPRE `$texto` (también en un reintento de la guarda). Devuelve el contador de llamadas.
+     *
+     * @param  int|null  $leer  El conversacion_id a leer, o null para contestar de una.
+     * @param  string  $texto
+     * @return \stdClass  {llamadas: int}
+     */
+    protected function modelo_que_lee_y_contesta($leer, $texto)
+    {
+        $contador = new \stdClass();
+        $contador->llamadas = 0;
+
+        Http::fake(function ($request) use ($contador, $leer, $texto) {
+            $contador->llamadas++;
+
+            if ($contador->llamadas === 1 && !is_null($leer)) {
+                return Http::response([
+                    'model'       => 'claude-modelo-fake',
+                    'stop_reason' => 'tool_use',
+                    'content'     => [[
+                        'type'  => 'tool_use',
+                        'id'    => 'toolu_zz101_r2',
+                        'name'  => HerramientasDeConversaciones::LEER,
+                        'input' => ['conversacion_id' => $leer],
+                    ]],
+                    'usage'       => ['input_tokens' => 10, 'output_tokens' => 5],
+                ], 200);
+            }
+
+            return Http::response([
+                'model'       => 'claude-modelo-fake',
+                'stop_reason' => 'end_turn',
+                'content'     => [['type' => 'text', 'text' => $texto]],
+                'usage'       => ['input_tokens' => 10, 'output_tokens' => 5],
+            ], 200);
+        });
+
+        return $contador;
+    }
+
+    /**
+     * 🔴 R2 (verificado con este mismo test antes del arreglo: el «quedó registrado» disparaba el
+     * reintento —3 llamadas— y el «Ojo: con este mensaje no registré ningún cambio…»): en el panel, el
+     * modelo abre la conversación de ayer y cuenta el pago que se registró AHÍ. No es una carga que este
+     * mensaje prometió: ni reintento ni aviso. Con «Ayer quedó registrado…» (el caso de la revisión) ya
+     * no disparaba antes del arreglo —«ayer» es una marca de repaso de la guarda—: queda como prueba.
+     *
+     * @test
+     */
+    public function una_carga_de_otra_conversacion_leida_no_dispara_la_guarda_de_la_carga()
+    {
+        $textos = [
+            'El Pago N° 1706 a Pinturas Sudamericanas quedó registrado con los 5 e-cheq. ¿Querés que te arme los recordatorios?',
+            'Registré el Pago N° 1706 a Pinturas Sudamericanas con 5 e-cheq.',
+            'Listo, quedó registrado el pago Nº 1.706 con los 5 cheques. Ahora sigo con los recordatorios.',
+            'Ayer quedó registrado el pago N° 1706 a Pinturas Sudamericanas, con los 5 e-cheq del Galicia.',
+        ];
+
+        foreach ($textos as $texto_del_modelo) {
+            list($del_pago) = $this->conversacion_del_pago();
+            list($hoy, $assistant) = $this->pedido_en_el_panel('Seguí con lo del pago de Pinturería Sudamericana');
+
+            $contador = $this->modelo_que_lee_y_contesta($del_pago->id, $texto_del_modelo);
+
+            $texto = (new AsistenteIaService())->responder($hoy, $assistant);
+
+            $this->assertSame($texto_del_modelo, $texto, 'Sin aviso: ' . $texto_del_modelo);
+            $this->assertStringNotContainsString(TarjetaPrometidaIaHelper::AVISO_DE_VERIFICACION, $texto);
+            $this->assertSame(2, $contador->llamadas, 'Leer y contestar, sin reintento: ' . $texto_del_modelo);
+
+            Http::swap(new HttpFactorySinSalida(app('events')));
+        }
+    }
+
+    /**
+     * R2, lo que la guarda sigue viendo: (a) el mismo texto SIN haber abierto la otra conversación en este
+     * turno; (b) una mentira en OTRA oración del mismo texto («Ya te agendé los recordatorios»); (c) un
+     * registro con otro número. En los tres hay reintento y el texto no llega tal cual.
+     *
+     * @test
+     */
+    public function la_guarda_sigue_viendo_lo_que_no_es_de_la_conversacion_leida()
+    {
+        $casos = [
+            'sin leer'        => [false, 'El Pago N° 1706 a Pinturas Sudamericanas quedó registrado con los 5 e-cheq.', 2],
+            'otra oración'    => [true, 'El Pago N° 1706 quedó registrado con los 5 e-cheq. Ya te agendé los recordatorios de los cheques.', 3],
+            'otro número'     => [true, 'Registré el Pago N° 1800 a Pinturas Sudamericanas con 5 e-cheq.', 3],
+        ];
+
+        foreach ($casos as $caso => $datos) {
+            list($del_pago) = $this->conversacion_del_pago();
+            list($hoy, $assistant) = $this->pedido_en_el_panel('Seguí con lo del pago de Pinturería Sudamericana');
+
+            $contador = $this->modelo_que_lee_y_contesta($datos[0] ? $del_pago->id : null, $datos[1]);
+
+            $texto = (new AsistenteIaService())->responder($hoy, $assistant);
+
+            $this->assertNotSame($datos[1], $texto, $caso . ': la guarda tiene que actuar.');
+            $this->assertSame($datos[2], $contador->llamadas, $caso . ': con el reintento de la guarda.');
+
+            Http::swap(new HttpFactorySinSalida(app('events')));
+        }
+    }
+
+    /**
+     * R2, los registros: salen del resultado de las cargas CONFIRMADAS de las conversaciones vistas, con
+     * la tenencia de siempre (la de otra persona y la actual no dan nada); y una oración se saca solo si
+     * nombra la entidad Y el número del mismo registro.
+     *
+     * @test
+     */
+    public function los_registros_de_las_conversaciones_leidas_y_las_oraciones_que_se_sacan()
+    {
+        list($del_pago) = $this->conversacion_del_pago();
+        list($hoy) = $this->conversacion_de_hoy();
+
+        $this->assertSame(
+            [['entidad' => 'pago', 'numero' => '1706']],
+            ConversacionesAnterioresIaHelper::registros_confirmados($hoy, [$del_pago->id, $hoy->id])
+        );
+
+        /* La de otra persona del mismo negocio, y la actual: nada. */
+        $otra_persona = User::create([
+            'name'     => 'Empleado R2',
+            'email'    => 'empleado-r2-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $this->dueno->id,
+        ]);
+
+        list($ajena, $de_la_ajena) = $this->charla('Pago ajeno', [['user', 'Cargá el pago'], ['assistant', 'Listo']], null, ['auth_user_id' => $otra_persona->id]);
+        $this->tarjeta($de_la_ajena[1], AiMessageAction::ESTADO_CONFIRMADA, 'Pago N° 2000 registrado.');
+
+        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_confirmados($hoy, [$ajena->id]));
+        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_confirmados($hoy, [$hoy->id]));
+        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_confirmados($hoy, []));
+
+        $registros = [['entidad' => 'pago', 'numero' => '1706']];
+
+        $this->assertSame(
+            'Ya te agendé los recordatorios.',
+            ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros('El Pago Nº 1.706 quedó registrado. Ya te agendé los recordatorios.', $registros)
+        );
+        $this->assertSame(
+            "Registré el Gasto N° 1706.\nLos pagos 17060 no existen.",
+            ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros("Registré el Gasto N° 1706.\nLos pagos 17060 no existen.", $registros),
+            'Otra entidad con el mismo número, u otro número con la misma entidad, no se sacan.'
+        );
     }
 }
