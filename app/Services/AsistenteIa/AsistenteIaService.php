@@ -348,14 +348,15 @@ class AsistenteIaService
     protected $marcar_progreso = false;
 
     /**
-     * Las conversaciones OTRAS que buscar_conversaciones_anteriores / leer_conversacion_anterior le
-     * mostraron al modelo en la respuesta que se está generando (ronda de arreglos de la revisión
-     * independiente de la misión agente-memoria-y-sin-techo, R2). Se juntan en execute_tool_calls() y las
-     * mira la guarda de la carga prometida: ver sin_lo_dicho_de_otras_conversaciones().
+     * El texto del resultado de las cargas CONFIRMADAS de OTRAS conversaciones que
+     * buscar_conversaciones_anteriores / leer_conversacion_anterior le mostraron al modelo en la respuesta
+     * que se está generando (rondas de arreglos de la revisión independiente de la misión
+     * agente-memoria-y-sin-techo, R2 y F1: solo lo que el modelo VIO). Se juntan en execute_tool_calls() y
+     * las mira la guarda de la carga prometida: ver sin_lo_dicho_de_otras_conversaciones().
      *
-     * @var array<int, int>
+     * @var array<int, string>
      */
-    protected $conversaciones_leidas = [];
+    protected $cargas_vistas_de_otras_conversaciones = [];
 
     /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
@@ -423,7 +424,7 @@ class AsistenteIaService
         $this->adjuntos = [];
         $this->bloques = [];
         $this->pedidos_de_imagen = [];
-        $this->conversaciones_leidas = [];
+        $this->cargas_vistas_de_otras_conversaciones = [];
         $this->marcar_progreso = true;
 
         $owner = User::find($conversation->user_id);
@@ -3796,11 +3797,18 @@ CONFIRMACION;
      *
      * Por qué así y no contando esas cargas «de antes»: hay_cargas_confirmadas_de_antes() solo decide la
      * mentira segura, que ya no corre en un turno que pidió herramientas (y leer es una); un pedido de
-     * clase 'otro' dispara igual. Lo acotado es no mirar las oraciones que nombran el registro
-     * (entidad + número, ConversacionesAnterioresIaHelper::registros_confirmados()): las demás oraciones
-     * se siguen mirando, así que «Ya te agendé los recordatorios» sin herramienta sigue disparando. Solo
-     * con conversaciones vistas en este turno, nunca la actual. Nunca rompe la guarda: si algo falla,
-     * vuelve el texto entero.
+     * clase 'otro' dispara igual. Lo acotado es no mirar las oraciones que CUENTAN el registro
+     * (ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros()): las demás oraciones se siguen
+     * mirando, así que «Ya te agendé los recordatorios» sin herramienta sigue disparando. Nunca la
+     * conversación actual. Nunca rompe la guarda: si algo falla, vuelve el texto entero.
+     *
+     * 🔴 SEGUNDA RONDA DE ARREGLOS (F1, 30/10/2026): la primera versión escondía mentiras de cargas NUEVAS.
+     * Con los registros de TODAS las cargas de las conversaciones que mostró buscar_, y la entidad y el
+     * número buscados por separado, se sacaban «Listo, les cargué la fecha de cobro a los 5 cheques del
+     * Pago N° 1706.» (el caso de Ferre Total), «Cargué el gasto de nafta por $7 mil.» y «Te registré el
+     * pago de 3 cheques a Sudamericana.». Ahora: (a) la entidad y el número JUNTOS; (b) una oración con un
+     * verbo de cambio nuevo («les cargué», «cambié», «actualicé»…) no se saca; (c) los registros salen
+     * solo de las cargas que el modelo VIO (la página de leer_ y las que mostró buscar_).
      *
      * @param  string  $texto  Ya saneado.
      * @param  AiConversation  $conversation
@@ -3808,12 +3816,12 @@ CONFIRMACION;
      */
     protected function sin_lo_dicho_de_otras_conversaciones($texto, AiConversation $conversation): string
     {
-        if (! count($this->conversaciones_leidas)) {
+        if (! count($this->cargas_vistas_de_otras_conversaciones)) {
             return (string) $texto;
         }
 
         try {
-            $registros = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::registros_confirmados($conversation, $this->conversaciones_leidas);
+            $registros = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::registros_de_las_cargas($this->cargas_vistas_de_otras_conversaciones);
 
             return \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros((string) $texto, $registros);
         } catch (\Throwable $e) {
@@ -5864,9 +5872,12 @@ CONFIRMACION;
                     $content = $resultado_de_conversaciones['content'];
                     $error_de_la_herramienta = (bool) $resultado_de_conversaciones['is_error'];
 
-                    // R2 de la ronda de arreglos: las conversaciones que vio, para la guarda de la carga.
-                    if (isset($resultado_de_conversaciones['conversacion_ids']) && is_array($resultado_de_conversaciones['conversacion_ids'])) {
-                        $this->conversaciones_leidas = array_values(array_unique(array_merge($this->conversaciones_leidas, $resultado_de_conversaciones['conversacion_ids'])));
+                    // R2 y F1 de las rondas de arreglos: las cargas de otras conversaciones que vio, para la guarda de la carga.
+                    if (isset($resultado_de_conversaciones['cargas_vistas']) && is_array($resultado_de_conversaciones['cargas_vistas'])) {
+                        $this->cargas_vistas_de_otras_conversaciones = array_values(array_unique(array_merge(
+                            $this->cargas_vistas_de_otras_conversaciones,
+                            $resultado_de_conversaciones['cargas_vistas']
+                        )));
                     }
                 } else {
                     $tool_desconocida = true;

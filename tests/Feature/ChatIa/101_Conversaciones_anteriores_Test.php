@@ -856,25 +856,27 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
      *
      * @param  int|null  $leer  El conversacion_id a leer, o null para contestar de una.
      * @param  string  $texto
+     * @param  array|null  $buscar  Con el input de buscar_conversaciones_anteriores, la primera llamada
+     *                              busca en vez de leer (segunda ronda de arreglos, F1).
      * @return \stdClass  {llamadas: int}
      */
-    protected function modelo_que_lee_y_contesta($leer, $texto)
+    protected function modelo_que_lee_y_contesta($leer, $texto, $buscar = null)
     {
         $contador = new \stdClass();
         $contador->llamadas = 0;
 
-        Http::fake(function ($request) use ($contador, $leer, $texto) {
+        Http::fake(function ($request) use ($contador, $leer, $texto, $buscar) {
             $contador->llamadas++;
 
-            if ($contador->llamadas === 1 && !is_null($leer)) {
+            if ($contador->llamadas === 1 && (!is_null($leer) || !is_null($buscar))) {
                 return Http::response([
                     'model'       => 'claude-modelo-fake',
                     'stop_reason' => 'tool_use',
                     'content'     => [[
                         'type'  => 'tool_use',
                         'id'    => 'toolu_zz101_r2',
-                        'name'  => HerramientasDeConversaciones::LEER,
-                        'input' => ['conversacion_id' => $leer],
+                        'name'  => is_null($buscar) ? HerramientasDeConversaciones::LEER : HerramientasDeConversaciones::BUSCAR,
+                        'input' => is_null($buscar) ? ['conversacion_id' => $leer] : $buscar,
                     ]],
                     'usage'       => ['input_tokens' => 10, 'output_tokens' => 5],
                 ], 200);
@@ -926,25 +928,61 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
     }
 
     /**
+     * Una conversación de ayer con varias cargas confirmadas (cada una en su mensaje del asistente), con
+     * «Sudamericana» en el pedido para que buscar_ la encuentre.
+     *
+     * @param  array<int, string>  $resultados  El texto del resultado de cada carga, de la más vieja a la más nueva.
+     * @return AiConversation
+     */
+    protected function conversacion_con_cargas(array $resultados)
+    {
+        $mensajes = [['user', 'Cargame los pagos a Pinturería Sudamericana']];
+
+        foreach ($resultados as $i => $resultado) {
+            $mensajes[] = ['assistant', 'Listo el ' . ($i + 1) . '.'];
+        }
+
+        list($conversation, $creados) = $this->charla('Pagos a Sudamericana', $mensajes, Carbon::now()->subDay()->setTime(10, 0));
+
+        foreach ($resultados as $i => $resultado) {
+            $this->tarjeta($creados[$i + 1], AiMessageAction::ESTADO_CONFIRMADA, $resultado);
+        }
+
+        return $conversation;
+    }
+
+    /**
      * R2, lo que la guarda sigue viendo: (a) el mismo texto SIN haber abierto la otra conversación en este
      * turno; (b) una mentira en OTRA oración del mismo texto («Ya te agendé los recordatorios»); (c) un
      * registro con otro número. En los tres hay reintento y el texto no llega tal cual.
+     *
+     * 🔴 Y LOS TRES CASOS DE LA SEGUNDA REVISIÓN (F1, 30/10/2026), con la conversación leída trayendo el
+     * Pago N° 1706, el Gasto N° 7 y el Pago N° 3: la primera versión de R2 los escondía (la guarda quedaba
+     * muda) y son mentiras de cargas NUEVAS —la primera es justo el caso de Ferre Total—.
      *
      * @test
      */
     public function la_guarda_sigue_viendo_lo_que_no_es_de_la_conversacion_leida()
     {
         $casos = [
-            'sin leer'        => [false, 'El Pago N° 1706 a Pinturas Sudamericanas quedó registrado con los 5 e-cheq.', 2],
-            'otra oración'    => [true, 'El Pago N° 1706 quedó registrado con los 5 e-cheq. Ya te agendé los recordatorios de los cheques.', 3],
-            'otro número'     => [true, 'Registré el Pago N° 1800 a Pinturas Sudamericanas con 5 e-cheq.', 3],
+            'sin leer'                       => [false, 'El Pago N° 1706 a Pinturas Sudamericanas quedó registrado con los 5 e-cheq.', 2],
+            'otra oración'                   => [true, 'El Pago N° 1706 quedó registrado con los 5 e-cheq. Ya te agendé los recordatorios de los cheques.', 3],
+            'otro número'                    => [true, 'Registré el Pago N° 1800 a Pinturas Sudamericanas con 5 e-cheq.', 3],
+            'F1: cambio nuevo sobre el pago' => [true, 'Listo, les cargué la fecha de cobro a los 5 cheques del Pago N° 1706.', 3],
+            'F1: el número suelto (7 mil)'   => [true, 'Cargué el gasto de nafta por $7 mil.', 3],
+            'F1: el número suelto (3)'       => [true, 'Te registré el pago de 3 cheques a Sudamericana.', 3],
         ];
 
         foreach ($casos as $caso => $datos) {
-            list($del_pago) = $this->conversacion_del_pago();
+            $leida = $this->conversacion_con_cargas([
+                'Pago N° 3 registrado a Pinturas Sudamericanas.',
+                'Gasto N° 7 registrado por $ 7.000.',
+                'Pago N° 1706 registrado a Pinturas Sudamericanas por $1.250.000 con 5 e-cheq.',
+            ]);
+
             list($hoy, $assistant) = $this->pedido_en_el_panel('Seguí con lo del pago de Pinturería Sudamericana');
 
-            $contador = $this->modelo_que_lee_y_contesta($datos[0] ? $del_pago->id : null, $datos[1]);
+            $contador = $this->modelo_que_lee_y_contesta($datos[0] ? $leida->id : null, $datos[1]);
 
             $texto = (new AsistenteIaService())->responder($hoy, $assistant);
 
@@ -956,23 +994,73 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
     }
 
     /**
-     * R2, los registros: salen del resultado de las cargas CONFIRMADAS de las conversaciones vistas, con
-     * la tenencia de siempre (la de otra persona y la actual no dan nada); y una oración se saca solo si
-     * nombra la entidad Y el número del mismo registro.
+     * F1 de la segunda ronda (c): los registros salen solo de lo que el modelo VIO. buscar_ muestra las
+     * últimas 3 cargas de cada conversación: un pago que está en la conversación pero no se mostró (el más
+     * viejo) sigue disparando la guarda; uno de los mostrados, no.
      *
      * @test
      */
-    public function los_registros_de_las_conversaciones_leidas_y_las_oraciones_que_se_sacan()
+    public function solo_cuentan_las_cargas_que_el_modelo_vio()
     {
-        list($del_pago) = $this->conversacion_del_pago();
+        $casos = [
+            'no se mostró' => ['El Pago N° 1500 a Pinturas Sudamericanas quedó registrado.', false],
+            'se mostró'    => ['El Pago N° 1708 a Pinturas Sudamericanas quedó registrado.', true],
+        ];
+
+        foreach ($casos as $caso => $datos) {
+            $this->conversacion_con_cargas([
+                'Pago N° 1500 registrado a Pinturas Sudamericanas.',
+                'Pago N° 1706 registrado a Pinturas Sudamericanas.',
+                'Pago N° 1707 registrado a Pinturas Sudamericanas.',
+                'Pago N° 1708 registrado a Pinturas Sudamericanas.',
+            ]);
+
+            list($hoy, $assistant) = $this->pedido_en_el_panel('Seguí con lo del pago de Pinturería Sudamericana');
+
+            $contador = $this->modelo_que_lee_y_contesta(null, $datos[0], ['texto' => 'Sudamericana']);
+
+            $texto = (new AsistenteIaService())->responder($hoy, $assistant);
+
+            if ($datos[1]) {
+                $this->assertSame($datos[0], $texto, $caso);
+                $this->assertSame(2, $contador->llamadas, $caso . ': buscar y contestar, sin reintento.');
+            } else {
+                $this->assertNotSame($datos[0], $texto, $caso . ': la guarda tiene que actuar.');
+                $this->assertSame(3, $contador->llamadas, $caso . ': con el reintento de la guarda.');
+            }
+
+            Http::swap(new HttpFactorySinSalida(app('events')));
+        }
+    }
+
+    /**
+     * R2 y F1, las piezas: las cargas que vio el modelo (solo las confirmadas, de otra conversación y de la
+     * página leída; nada de una ajena ni de la actual), los registros que salen de sus textos, y las
+     * oraciones que se sacan (entidad y número juntos, sin verbo de cambio nuevo).
+     *
+     * Contrato cambiado a propósito en la segunda ronda (F1): registros_confirmados(), que leía de la base
+     * todas las cargas de las conversaciones mostradas, ya no existe; los registros salen de
+     * `cargas_vistas` (registros_de_las_cargas()).
+     *
+     * @test
+     */
+    public function las_cargas_vistas_los_registros_y_las_oraciones_que_se_sacan()
+    {
+        list($del_pago, $tarjeta) = $this->conversacion_del_pago();
         list($hoy) = $this->conversacion_de_hoy();
 
-        $this->assertSame(
-            [['entidad' => 'pago', 'numero' => '1706']],
-            ConversacionesAnterioresIaHelper::registros_confirmados($hoy, [$del_pago->id, $hoy->id])
-        );
+        /* Una propuesta en la misma conversación: no es una carga hecha. */
+        $propuesta = $this->tarjeta(AiMessage::where('ai_conversation_id', $del_pago->id)->where('rol', 'assistant')->orderBy('id', 'DESC')->first(), AiMessageAction::ESTADO_PROPUESTA);
 
-        /* La de otra persona del mismo negocio, y la actual: nada. */
+        $leida = HerramientasDeConversaciones::ejecutar(HerramientasDeConversaciones::LEER, ['conversacion_id' => $del_pago->id], $hoy);
+
+        $this->assertSame(['Pago N° 1706 registrado a Pinturas Sudamericanas por $1.250.000 con 5 e-cheq.'], $leida['cargas_vistas']);
+        $this->assertNotNull($propuesta->id);
+
+        $buscada = HerramientasDeConversaciones::ejecutar(HerramientasDeConversaciones::BUSCAR, ['texto' => 'Sudamericana'], $hoy);
+        $this->assertSame(['Pago N° 1706 registrado a Pinturas Sudamericanas por $1.250.000 con 5 e-cheq.'], $buscada['cargas_vistas']);
+
+        /* La de otra persona del mismo negocio (no se lee) y la actual: nada. */
         $otra_persona = User::create([
             'name'     => 'Empleado R2',
             'email'    => 'empleado-r2-' . uniqid() . '@test.local',
@@ -983,11 +1071,18 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
         list($ajena, $de_la_ajena) = $this->charla('Pago ajeno', [['user', 'Cargá el pago'], ['assistant', 'Listo']], null, ['auth_user_id' => $otra_persona->id]);
         $this->tarjeta($de_la_ajena[1], AiMessageAction::ESTADO_CONFIRMADA, 'Pago N° 2000 registrado.');
 
-        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_confirmados($hoy, [$ajena->id]));
-        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_confirmados($hoy, [$hoy->id]));
-        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_confirmados($hoy, []));
+        $this->assertSame([], HerramientasDeConversaciones::ejecutar(HerramientasDeConversaciones::LEER, ['conversacion_id' => $ajena->id], $hoy)['cargas_vistas']);
+        $this->assertSame([], HerramientasDeConversaciones::ejecutar(HerramientasDeConversaciones::LEER, [], $del_pago)['cargas_vistas'], 'Releer la actual no suma.');
 
-        $registros = [['entidad' => 'pago', 'numero' => '1706']];
+        /* Los registros, del texto de cada carga. */
+        $this->assertSame(
+            [['entidad' => 'pago', 'numero' => '1706'], ['entidad' => 'gasto', 'numero' => '7']],
+            ConversacionesAnterioresIaHelper::registros_de_las_cargas(['Pago N° 1.706 registrado a Pinturas.', 'Gasto Nº 7 registrado.', 'Tarea agendada para el viernes.'])
+        );
+        $this->assertSame([], ConversacionesAnterioresIaHelper::registros_de_las_cargas([]));
+
+        /* Las oraciones que se sacan. */
+        $registros = [['entidad' => 'pago', 'numero' => '1706'], ['entidad' => 'gasto', 'numero' => '7'], ['entidad' => 'pago', 'numero' => '3']];
 
         $this->assertSame(
             'Ya te agendé los recordatorios.',
@@ -998,5 +1093,29 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
             ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros("Registré el Gasto N° 1706.\nLos pagos 17060 no existen.", $registros),
             'Otra entidad con el mismo número, u otro número con la misma entidad, no se sacan.'
         );
+
+        $quedan = [
+            'Listo, les cargué la fecha de cobro a los 5 cheques del Pago N° 1706.',
+            'Cargué el gasto de nafta por $7 mil.',
+            'Te registré el pago de 3 cheques a Sudamericana.',
+            'Registré los pagos: 1706 y otro.',
+            'Le cargué el gasto 7.000 de luz.',
+        ];
+
+        foreach ($quedan as $oracion) {
+            $this->assertSame($oracion, ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros($oracion, $registros), 'Se queda: ' . $oracion);
+        }
+
+        $salen = [
+            'El Pago N° 1706 a Pinturas Sudamericanas quedó registrado con los 5 e-cheq.',
+            'Registré el Pago N° 1706 a Pinturas Sudamericanas con 5 e-cheq.',
+            'Listo, quedó registrado el pago Nº 1.706 con los 5 cheques.',
+            'Ayer quedó registrado el pago N° 1706 a Pinturas Sudamericanas, con los 5 e-cheq del Galicia.',
+            'El gasto #7 ya estaba.',
+        ];
+
+        foreach ($salen as $oracion) {
+            $this->assertSame('', ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros($oracion, $registros), 'Sale: ' . $oracion);
+        }
     }
 }

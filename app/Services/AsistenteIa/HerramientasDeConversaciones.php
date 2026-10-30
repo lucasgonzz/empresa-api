@@ -125,14 +125,15 @@ class HerramientasDeConversaciones
      * como dato con `error`, para que el modelo lo cuente, igual que las demás herramientas. `is_error`
      * queda para lo que de verdad no corrió (y eso lo atrapa execute_tool_calls()).
      *
-     * Devuelve además (clave aditiva, no viaja al modelo) `conversacion_ids`: las conversaciones OTRAS que
-     * la herramienta le mostró al modelo —la que leyó, o las que encontró—. Las usa la guarda de la carga
-     * prometida (ronda de arreglos R2): ver AsistenteIaService::sin_lo_dicho_de_otras_conversaciones().
+     * Devuelve además (clave aditiva, no viaja al modelo) `cargas_vistas`: el texto del resultado de cada
+     * carga CONFIRMADA de OTRA conversación que la herramienta le mostró al modelo —las de la página que
+     * devolvió leer_, y las (hasta 3 por conversación) que mostró buscar_—. Las usa la guarda de la carga
+     * prometida (rondas de arreglos R2 y F1): ver AsistenteIaService::sin_lo_dicho_de_otras_conversaciones().
      *
      * @param  string  $tool_name
      * @param  array  $input
      * @param  \App\Models\AiConversation  $conversation  La conversación del turno: define la tenencia.
-     * @return array{content: string, is_error: bool, conversacion_ids: array<int, int>}
+     * @return array{content: string, is_error: bool, cargas_vistas: array<int, string>}
      */
     public static function ejecutar($tool_name, array $input, AiConversation $conversation)
     {
@@ -145,33 +146,53 @@ class HerramientasDeConversaciones
     }
 
     /**
-     * El tool_result: JSON con el mismo fallback que el resto del asistente, y las conversaciones OTRAS
-     * que muestra (sin la actual: lo de esta conversación ya viaja en su historial).
+     * El tool_result: JSON con el mismo fallback que el resto del asistente, y las cargas confirmadas de
+     * OTRAS conversaciones que muestra (sin la actual: lo de esta conversación ya viaja en su historial).
+     *
+     * 🔴 SOLO LO QUE EL MODELO VIO (segunda ronda de arreglos, F1, 30/10/2026). La primera versión juntaba
+     * los ids de TODAS las conversaciones que mostraba buscar_ (hasta 20) y la guarda tomaba TODAS sus
+     * cargas confirmadas: con tantos registros, «Cargué el gasto de nafta por $7 mil» se escondía porque
+     * en alguna había un «Gasto N° 7». Ahora son solo los textos que el modelo tuvo delante:
+     *   - leer_: las cargas en «estado: confirmada (…)» de los mensajes de ESA página (el texto entre
+     *     paréntesis es el de su resultado, ver AccionesIaHelper::linea_de_historial());
+     *   - buscar_: las `cargas` de cada conversación encontrada (hasta 3, ya son solo confirmadas).
      *
      * @param  array  $datos
      * @param  bool  $is_error
-     * @return array{content: string, is_error: bool, conversacion_ids: array<int, int>}
+     * @return array{content: string, is_error: bool, cargas_vistas: array<int, string>}
      */
     protected static function resultado(array $datos, $is_error)
     {
-        $ids = [];
+        $vistas = [];
 
-        if (isset($datos['conversacion_id']) && empty($datos['es_esta_conversacion'])) {
-            $ids[] = (int) $datos['conversacion_id'];
+        if (isset($datos['mensajes']) && is_array($datos['mensajes']) && empty($datos['es_esta_conversacion'])) {
+            foreach ($datos['mensajes'] as $mensaje) {
+                if (!is_array($mensaje) || !isset($mensaje['cargas']) || !is_array($mensaje['cargas'])) {
+                    continue;
+                }
+
+                foreach ($mensaje['cargas'] as $linea) {
+                    if (preg_match('/· estado: confirmada \((.+)\)\]\s*$/su', (string) $linea, $coincidencia)) {
+                        $vistas[] = $coincidencia[1];
+                    }
+                }
+            }
         }
 
         if (isset($datos['conversaciones']) && is_array($datos['conversaciones'])) {
             foreach ($datos['conversaciones'] as $encontrada) {
-                if (is_array($encontrada) && isset($encontrada['conversacion_id'])) {
-                    $ids[] = (int) $encontrada['conversacion_id'];
+                if (is_array($encontrada) && isset($encontrada['cargas']) && is_array($encontrada['cargas'])) {
+                    foreach ($encontrada['cargas'] as $carga) {
+                        $vistas[] = (string) $carga;
+                    }
                 }
             }
         }
 
         return [
-            'content'          => json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]',
-            'is_error'         => (bool) $is_error,
-            'conversacion_ids' => array_values(array_unique(array_filter($ids))),
+            'content'       => json_encode($datos, JSON_UNESCAPED_UNICODE) ?: '[]',
+            'is_error'      => (bool) $is_error,
+            'cargas_vistas' => array_values(array_unique(array_filter($vistas, 'strlen'))),
         ];
     }
 }
