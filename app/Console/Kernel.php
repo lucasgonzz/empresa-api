@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Models\AiArchivo;
 use App\Models\AiMessage;
 use App\Models\Combo;
+use App\Models\DimensionSearchRun;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
 use App\Models\MercadoPagoQrCobro;
@@ -477,6 +478,41 @@ class Kernel extends ConsoleKernel
             ->when(function () {
                 return $this->gate_de_datos(function () {
                     return ExportHistory::whereIn('status', ['pending', 'processing'])->exists();
+                });
+            });
+
+        // Vigía de la búsqueda masiva de peso y medidas (misión medidas-vigia-de-corridas, 30/10/2026):
+        // reanuda solo las corridas `en_proceso` que llevan 15 minutos sin señal de vida. La base del VPS
+        // se cae cada noche cerca de las 00:00; si el corte es más largo de lo que el tramo aguanta
+        // esperando, la corrida queda en proceso sin ningún job en la cola y nada la levantaba. El comando
+        // reanuda con el mismo camino del botón de la pantalla, con un tope de 6 reanudaciones por corrida
+        // cada 24 horas, y NUNCA toca una detenida o fallida (esas son una decisión de una persona).
+        //
+        // El when() cumple la regla de arriba: sin ninguna corrida en proceso y sin señal (el estado
+        // normal de TODAS las instancias salvo mientras una busca) no se arranca ningún artisan. Antes de
+        // consultar se mira si la tabla existe, con el resultado cacheado unos minutos, porque un cliente con
+        // una versión vieja no la tiene. Mismo criterio de tiempo que DimensionSearchRun::esta_trabada(); la
+        // decisión final la toma el comando. withoutOverlapping(10) por si reanudar queda esperando un lock.
+        $schedule->command('medidas:reanudar-trabadas')
+            ->everyFiveMinutes()
+            ->withoutOverlapping(10)
+            ->when(function () {
+                if (!$this->tabla_existe_para_el_schedule('dimension_search_runs')) {
+                    return false;
+                }
+
+                return $this->gate_de_datos(function () {
+                    $limite = now()->subMinutes(DimensionSearchRun::MINUTOS_PARA_TRABADA);
+
+                    return DimensionSearchRun::where('status', DimensionSearchRun::STATUS_EN_PROCESO)
+                        ->where(function ($query) use ($limite) {
+                            $query->where('last_progress_at', '<', $limite)
+                                ->orWhere(function ($sin_senal) use ($limite) {
+                                    $sin_senal->whereNull('last_progress_at')
+                                        ->where('started_at', '<', $limite);
+                                });
+                        })
+                        ->exists();
                 });
             });
 
