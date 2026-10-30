@@ -120,6 +120,31 @@ class Compra_sin_articulos_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 12: un total dictado con punto de miles («198.522») es
+     * 198522, no 198,52; «1.500,50» es 1500,5. Y un número con tres decimales no se adivina: vuelve un
+     * error para el modelo.
+     *
+     * @test
+     */
+    public function el_total_dictado_con_punto_de_miles_se_lee_bien()
+    {
+        list($conversation, $assistant) = $this->escena('Cargame una compra sin artículos sin iva de 198.522 a ferretotal');
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $con_miles = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => '198.522', 'iva' => 'sin_iva']);
+        $this->assertTrue($con_miles['ok'], json_encode($con_miles));
+        $this->assertEqualsWithDelta(198522, (float) AiMessageAction::find($con_miles['tarjeta_id'])->datos['total'], 0.001);
+
+        $con_centavos = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => '$ 1.500,50', 'iva' => 'sin_iva']);
+        $this->assertTrue($con_centavos['ok'], json_encode($con_centavos));
+        $this->assertEqualsWithDelta(1500.5, (float) AiMessageAction::find($con_centavos['tarjeta_id'])->datos['total'], 0.001);
+
+        $mal_leido = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 198.522, 'iva' => 'sin_iva']);
+        $this->assertFalse($mal_leido['ok']);
+        $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $mal_leido['error']);
+    }
+
+    /**
      * 🔴 Ronda de arreglos (30/10/2026), arreglo 5: dos facturas del mismo proveedor en la misma charla
      * son dos tarjetas, no una que pisa a la otra. La clave lleva el total y el número cuando viene.
      *

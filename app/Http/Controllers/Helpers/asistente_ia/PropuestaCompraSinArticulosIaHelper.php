@@ -92,6 +92,14 @@ class PropuestaCompraSinArticulosIaHelper
             return RespuestaDeCargaIa::faltan(['el total de la factura']);
         }
 
+        /* «198.522» dictado es ciento noventa y ocho mil: ver monto_dictado(). */
+        $valor_total = self::monto_dictado($valor_total);
+
+        if (RespuestaDeCargaIa::es_negativa($valor_total)) {
+
+            return $valor_total;
+        }
+
         $total = EntradaDeCargaIa::monto_positivo($valor_total, 'El total de la factura tiene que ser un número mayor a 0.');
 
         if (RespuestaDeCargaIa::es_negativa($total)) {
@@ -535,6 +543,43 @@ class PropuestaCompraSinArticulosIaHelper
         }
 
         return RespuestaDeCargaIa::error('El IVA de la factura tiene que ser "sin_iva", 21, 10.5 o 27. Si es otra alícuota, la compra se carga desde Compras.');
+    }
+
+    /**
+     * Un monto como lo dicta una persona en Argentina, pasado a número (revisión independiente, arreglo
+     * 12, 30/10/2026): «198.522» es CIENTO NOVENTA Y OCHO MIL QUINIENTOS VEINTIDÓS (punto de miles), no
+     * 198,52. Con un string, el parser que ya usa el módulo para los márgenes y el stock
+     * (MargenesPorListaIaHelper::numero_escrito_a_punto(): «198.522» → 198522, «1.500,50» → 1500.5,
+     * «30,5» → 30.5), sin el «$» ni los espacios.
+     *
+     * 🔴 Y UN NÚMERO CON MÁS DE DOS DECIMALES NO SE ADIVINA. Un monto en pesos tiene a lo sumo
+     * centavos; si llega 198.522 como número, casi seguro el modelo leyó el punto de miles como coma
+     * decimal. No se lo multiplica por mil a ciegas: vuelve un error para el MODELO (NO_SE_ARMO) que le
+     * pide mandarlo sin separador. La deuda con un proveedor no puede salir de una suposición.
+     *
+     * @param  mixed  $valor
+     * @return mixed  El número (o el valor tal cual, si no es un string ni un número) o la respuesta negativa.
+     */
+    public static function monto_dictado($valor)
+    {
+        if (is_string($valor)) {
+
+            $texto = trim(str_replace(['$', ' ', "\u{00A0}"], '', $valor));
+
+            $texto = MargenesPorListaIaHelper::numero_escrito_a_punto($texto);
+
+            return is_numeric($texto) ? (float) $texto : $valor;
+        }
+
+        if (is_float($valor) && abs(round($valor, 2) - $valor) > 0.0000001) {
+
+            return RespuestaDeCargaIa::error(
+                CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'el total vino con más de dos decimales (' . $valor . '). Si la persona dictó «'
+                . number_format($valor, 3, '.', '') . '» con punto de miles, volvé a llamar con el total sin separadores (por ejemplo 198522).'
+            );
+        }
+
+        return $valor;
     }
 
     /**
