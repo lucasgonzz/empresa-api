@@ -66,6 +66,26 @@ class AvisosDeTurnosIaHelper
     /** Encabezado de VARIAS cargas que quedaron esperando el sí, en texto_de_turno_sin_terminar(). */
     const ENCABEZADO_PARA_CONFIRMAR_VARIAS = 'Quedaron para que las confirmes:';
 
+    /*
+     * Cómo se confirma lo que quedó esperando el sí (segunda ronda de arreglos de la revisión
+     * independiente, F5, 30/10/2026), debajo de esa lista. Sin esto, con tarjetas esperando por WhatsApp
+     * el texto solo pedía «seguí», y la persona no sabía si «seguí» las confirmaba: el «sí» confirma, el
+     * «seguí» sigue con lo que falta. En el panel y en la app se confirman con el botón de la tarjeta, con
+     * las mismas palabras que el resto del sistema («Tocá Confirmar»).
+     */
+
+    /** Por texto (WhatsApp), UNA carga esperando el sí. */
+    const CONFIRMAR_POR_TEXTO_UNA = 'Si está bien, contestame «sí».';
+
+    /** Por texto (WhatsApp), VARIAS cargas esperando el sí. */
+    const CONFIRMAR_POR_TEXTO_VARIAS = 'Si están bien, contestame «sí».';
+
+    /** Con botón (panel, app), UNA tarjeta esperando. */
+    const CONFIRMAR_CON_BOTON_UNA = 'Para que quede registrada, tocá Confirmar en la tarjeta.';
+
+    /** Con botón (panel, app), VARIAS tarjetas esperando. */
+    const CONFIRMAR_CON_BOTON_VARIAS = 'Para que queden registradas, tocá Confirmar en cada tarjeta.';
+
     /** Techo de caracteres del renglón de cada carga en texto_de_turno_sin_terminar(). */
     const LARGO_DEL_RENGLON = 300;
 
@@ -260,6 +280,7 @@ class AvisosDeTurnosIaHelper
      *
      *   Quedaron para que las confirmes:
      *   - Tarea (Detalle: Cheque 1 se acredita mañana; Fecha: 31/10/2026)
+     *   Para que queden registradas, tocá Confirmar en cada tarjeta.   (por WhatsApp: «Si están bien, contestame «sí».»)
      *
      *   Me llegaron 3 fotos y quedaron guardadas.
      *
@@ -336,8 +357,16 @@ class AvisosDeTurnosIaHelper
 
             if (count($para_confirmar)) {
 
-                $partes[] = (count($para_confirmar) === 1 ? self::ENCABEZADO_PARA_CONFIRMAR_UNA : self::ENCABEZADO_PARA_CONFIRMAR_VARIAS)
-                    . self::lista($para_confirmar, $presupuesto);
+                $una = count($para_confirmar) === 1;
+
+                /* F5: cómo se confirman, según el canal (por texto el «sí», con botón la tarjeta). */
+                $como = $assistant->confirma_por_texto()
+                    ? ($una ? self::CONFIRMAR_POR_TEXTO_UNA : self::CONFIRMAR_POR_TEXTO_VARIAS)
+                    : ($una ? self::CONFIRMAR_CON_BOTON_UNA : self::CONFIRMAR_CON_BOTON_VARIAS);
+
+                $partes[] = ($una ? self::ENCABEZADO_PARA_CONFIRMAR_UNA : self::ENCABEZADO_PARA_CONFIRMAR_VARIAS)
+                    . self::lista($para_confirmar, $presupuesto)
+                    . "\n" . $como;
             }
 
             $fotos = $pedido instanceof AiMessage

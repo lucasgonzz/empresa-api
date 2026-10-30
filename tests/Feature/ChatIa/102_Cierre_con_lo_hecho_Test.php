@@ -819,6 +819,52 @@ class Cierre_con_lo_hecho_Test extends TestCase
     }
 
     /**
+     * F5 de la segunda ronda: lo que espera el sí dice cómo se confirma, distinto del «seguí». Por WhatsApp
+     * (se confirma por texto): «Si está/están bien, contestame «sí».»; en el panel y en la app (botón):
+     * «Para que quede(n) registrada(s), tocá Confirmar en la/cada tarjeta.». Y el «seguí» sigue al final,
+     * para lo que falta.
+     *
+     * @test
+     */
+    public function lo_que_espera_el_si_dice_como_se_confirma_segun_el_canal()
+    {
+        $casos = [
+            'whatsapp, una'   => [AiMessage::CANAL_WHATSAPP, 1, AvisosDeTurnosIaHelper::CONFIRMAR_POR_TEXTO_UNA, 'Si está bien, contestame «sí».'],
+            'whatsapp, dos'   => [AiMessage::CANAL_WHATSAPP, 2, AvisosDeTurnosIaHelper::CONFIRMAR_POR_TEXTO_VARIAS, 'Si están bien, contestame «sí».'],
+            'panel, una'      => [null, 1, AvisosDeTurnosIaHelper::CONFIRMAR_CON_BOTON_UNA, 'Para que quede registrada, tocá Confirmar en la tarjeta.'],
+            'app, dos'        => [AiMessage::CANAL_APP, 2, AvisosDeTurnosIaHelper::CONFIRMAR_CON_BOTON_VARIAS, 'Para que queden registradas, tocá Confirmar en cada tarjeta.'],
+        ];
+
+        foreach ($casos as $caso => $datos) {
+            list($conversation, $assistant) = $this->conversacion($datos[0]);
+
+            for ($i = 1; $i <= $datos[1]; $i++) {
+                AiMessageAction::create([
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant->id,
+                    'user_id'            => $this->comercio->id,
+                    'auth_user_id'       => $this->comercio->id,
+                    'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+                    'clave'              => 'tarea:p102-f5-' . $i,
+                    'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+                    'datos'              => [],
+                    'presentacion'       => ['titulo' => 'Tarea ' . $i, 'renglones' => [], 'aviso' => null],
+                ]);
+            }
+
+            $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, null);
+
+            $this->assertSame($datos[3], $datos[2], $caso);
+            $this->assertStringContainsString("- Tarea " . $datos[1] . "\n" . $datos[3] . "\n\n" . AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $texto, $caso);
+            $this->assertStringEndsWith('Escribime «seguí» y sigo con lo que falta.', $texto, $caso);
+        }
+
+        /* Sin nada esperando el sí, no hay frase de confirmar. */
+        list($sin, $sin_tarjetas) = $this->conversacion(AiMessage::CANAL_WHATSAPP);
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($sin_tarjetas, null));
+    }
+
+    /**
      * F4 de la segunda ronda: con muchas cargas de renglones largos el texto armado entra en un WhatsApp
      * (≤ DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE, 3.500): las dos listas comparten
      * LARGO_MAXIMO_DE_LAS_LISTAS (3.000) y lo que no entra va en «- y N más.». Antes, 10 + 10 renglones de
@@ -1092,9 +1138,10 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
         $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido, $aparte->id);
 
+        /* Desde la segunda ronda (F5), debajo de lo que espera el sí va cómo se confirma (en el panel, el botón). */
         $this->assertSame(
             "Quedó hecho:\n- Gasto N° 88 registrado por $ 207.500.\n\n"
-            . "Quedó para que la confirmes:\n- Tarea (Detalle: Llamar al banco)\n\n"
+            . "Quedó para que la confirmes:\n- Tarea (Detalle: Llamar al banco)\nPara que quede registrada, tocá Confirmar en la tarjeta.\n\n"
             . "Me llegaron 3 fotos y quedaron guardadas.\n\n"
             . AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR,
             $texto
