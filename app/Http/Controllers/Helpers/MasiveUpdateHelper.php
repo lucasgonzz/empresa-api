@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
+use App\Http\Controllers\Helpers\article\StockMinimoMaximoEnMasivaHelper;
 use App\Http\Controllers\Helpers\article\precios\PrecioFinalEnMasivaHelper;
 use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
@@ -1104,6 +1105,18 @@ class MasiveUpdateHelper
         }
 
         /*
+         * "Stock mínimo / máximo de la sucursal X" (misión agente-mejoras-uso-real, E2, 29/10/2026): la
+         * clave `stock_min_sucursal_{id}` / `stock_max_sucursal_{id}` es una columna del pivote
+         * `address_article` de ESA sucursal, no de `articles`. Rama propia y antes de las genéricas por
+         * el mismo motivo que la de arriba ("Unknown column"). Escribe solo esa columna, solo sobre una
+         * fila que ya existe, y devuelve el cambio con la forma de siempre para la reversión. Detalle
+         * en StockMinimoMaximoEnMasivaHelper.
+         */
+        if (StockMinimoMaximoEnMasivaHelper::es_clave_de_masiva($form['key'])) {
+            return StockMinimoMaximoEnMasivaHelper::aplicar_en_masiva($model, $form, $owner, $memoria_de_la_corrida);
+        }
+
+        /*
          * "Precio final sube/baja X %" (misión asistente-masiva-precio-manual, 10/10/2026): no es una
          * columna sino el precio que se cobra, así que tiene su propia rama. La palanca se decide por
          * artículo, con el comercio: en uno de precio manual sube ese precio; donde el margen no mueve
@@ -1378,6 +1391,20 @@ class MasiveUpdateHelper
                  */
                 if (CatalogoPorListaHelper::es_clave_de_masiva($prop_key)) {
                     $revertido = CatalogoPorListaHelper::revertir_en_masiva($model, $prop_key, $change['old'], $user_del_comercio, $memoria_de_la_corrida);
+
+                    if (!is_null($revertido)) {
+                        $revert_changes[$prop_key] = $revertido;
+                    }
+                    continue;
+                }
+
+                /*
+                 * Espejo de la rama del mínimo / máximo por sucursal de apply_form_change() (misión
+                 * agente-mejoras-uso-real, E2): vuelve a escribir en el pivote el `old` exacto (NULL
+                 * vuelve a NULL). Sin esta rama, la asignación genérica de abajo reventaría el save().
+                 */
+                if (StockMinimoMaximoEnMasivaHelper::es_clave_de_masiva($prop_key)) {
+                    $revertido = StockMinimoMaximoEnMasivaHelper::revertir_en_masiva($model, $prop_key, $change['old'], $user_del_comercio, $memoria_de_la_corrida);
 
                     if (!is_null($revertido)) {
                         $revert_changes[$prop_key] = $revertido;

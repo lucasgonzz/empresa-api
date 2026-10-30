@@ -374,13 +374,57 @@ class RecolectorStock extends RecolectorBase
      * situación (no solo los 10 listados). Un artículo que nunca se vendió cuenta
      * los días desde que se cargó.
      *
+     * Es lo que usa el informe del Mostrador, con sus defaults de siempre (90 días, 10 artículos,
+     * por valor a costo): desde la misión agente-mejoras-uso-real (E2, 29/10/2026) la consulta vive
+     * en sin_rotacion_con_opciones(), que la herramienta del agente llama con otros parámetros. Con
+     * las opciones vacías la consulta y la respuesta son exactamente las de antes.
+     *
      * @param User $owner
      * @param Carbon $fecha
      * @return array{lista: array, valor_inmovilizado: float}
      */
     protected function sin_rotacion(User $owner, Carbon $fecha): array
     {
-        $desde = $fecha->copy()->subDays(self::DIAS_SIN_ROTACION)->startOfDay();
+        return $this->sin_rotacion_con_opciones($owner, $fecha, []);
+    }
+
+    /**
+     * Los artículos SIN ROTACIÓN con parámetros (misión agente-mejoras-uso-real, E2 punto 5,
+     * 29/10/2026). Hasta acá solo lo usaba el Mostrador, con la ventana y el tope fijos; Pablo (Ferre
+     * Total, CONV 11) pidió «el top ten con menos rotación» y el agente armó un ranking a mano con
+     * resumir_datos sobre los renglones de venta: devolvió seis nombres diciendo que eran cuatro,
+     * reescribió los nombres (y después no encontró sus fichas) y no supo decir si tenían stock ni
+     * si alguna vez se habían comprado. La herramienta consultar_articulos_sin_rotacion
+     * (ArticulosSinRotacionIaHelper) llama esto.
+     *
+     * Opciones (todas opcionales; sin ninguna, lo del Mostrador tal cual):
+     *  - `dias` (int): la ventana sin ventas. Default DIAS_SIN_ROTACION (90).
+     *  - `limite` (int): cuántos se listan. Default TOPE_LISTA (10).
+     *  - `orden`: 'valor' (default: mayor valor a costo primero), 'dias' (los que llevan más días sin
+     *    venderse primero, contando desde la última venta de cualquier fecha o, si nunca se vendió,
+     *    desde el alta) o 'stock' (más stock primero).
+     *  - `solo_comprados` (bool): solo los que tienen alguna compra a proveedor cargada.
+     *  - `con_detalle` (bool): suma a cada fila `ultima_venta`, `nunca_se_vendio`, `ultima_compra` y
+     *    `compras` (dos consultas más, sobre los listados). Sin él, las claves del Mostrador.
+     *  - `con_imagenes` (bool, default true): la `imagen_url` de cada fila, que el Mostrador muestra.
+     *
+     * Devuelve además `cantidad`: cuántos están sin rotación en total (no solo los listados).
+     *
+     * @param User   $owner
+     * @param Carbon $fecha
+     * @param array  $opciones
+     * @return array{lista: array, valor_inmovilizado: float, cantidad: int}
+     */
+    public function sin_rotacion_con_opciones(User $owner, Carbon $fecha, array $opciones): array
+    {
+        $dias = isset($opciones['dias']) && (int) $opciones['dias'] > 0 ? (int) $opciones['dias'] : self::DIAS_SIN_ROTACION;
+        $limite = isset($opciones['limite']) && (int) $opciones['limite'] > 0 ? (int) $opciones['limite'] : self::TOPE_LISTA;
+        $orden = isset($opciones['orden']) && in_array($opciones['orden'], ['valor', 'dias', 'stock'], true) ? $opciones['orden'] : 'valor';
+        $solo_comprados = !empty($opciones['solo_comprados']);
+        $con_detalle = !empty($opciones['con_detalle']);
+        $con_imagenes = !array_key_exists('con_imagenes', $opciones) || !empty($opciones['con_imagenes']);
+
+        $desde = $fecha->copy()->subDays($dias)->startOfDay();
 
         // Valor a costo EN PESOS: stock × costo × cotización, donde la cotización es 1 para
         // un costo en pesos y, para un costo en dólares, el dólar del proveedor titular
@@ -405,6 +449,17 @@ class RecolectorStock extends RecolectorBase
             ->groupBy('articles.id', 'articles.name', 'articles.stock', 'articles.cost', 'articles.cost_in_dollars', 'providers.dolar', 'articles.created_at')
             ->havingRaw('MAX(CASE WHEN sales.deleted_at IS NULL AND (sales.is_consolidacion_facturacion IS NULL OR sales.is_consolidacion_facturacion = 0) THEN article_purchases.created_at ELSE NULL END) IS NULL');
 
+        // "¿Pero son productos que alguna vez compré?" (CONV 11): solo los que tienen una compra.
+        if ($solo_comprados) {
+            $base->whereExists(function ($q) use ($owner) {
+                $q->selectRaw('1')
+                    ->from('article_provider_order')
+                    ->join('provider_orders', 'provider_orders.id', '=', 'article_provider_order.provider_order_id')
+                    ->whereColumn('article_provider_order.article_id', 'articles.id')
+                    ->where('provider_orders.user_id', $owner->id);
+            });
+        }
+
         $totales = DB::query()
             ->fromSub(
                 (clone $base)->selectRaw('articles.id as id, ' . $expresion_valor . ' as valor', [$dollar_cuenta]),
@@ -418,14 +473,37 @@ class RecolectorStock extends RecolectorBase
                 'articles.id as id, articles.name as nombre, articles.stock as stock, articles.cost as cost, articles.created_at as creado, '
                 . $expresion_valor . ' as valor',
                 [$dollar_cuenta]
-            )
-            ->orderByDesc('valor')
-            ->orderBy('articles.id')
-            ->limit(self::TOPE_LISTA)
+            );
+
+        /*
+         * El orden. 'valor' es el de siempre (el del Mostrador). 'dias' necesita la última venta real
+         * de CUALQUIER fecha (la del join es solo de la ventana, y ahí no hay ninguna): va como
+         * subconsulta correlacionada, con el alta del artículo cuando nunca se vendió, de la más vieja
+         * a la más nueva. 'stock', más stock primero.
+         */
+        if ($orden === 'dias') {
+            $filas->orderByRaw(
+                'COALESCE((SELECT MAX(ap_orden.created_at) FROM article_purchases ap_orden'
+                . ' JOIN sales s_orden ON s_orden.id = ap_orden.sale_id'
+                . ' WHERE ap_orden.article_id = articles.id AND s_orden.deleted_at IS NULL'
+                . ' AND (s_orden.is_consolidacion_facturacion IS NULL OR s_orden.is_consolidacion_facturacion = 0)), articles.created_at) ASC'
+            );
+        } elseif ($orden === 'stock') {
+            $filas->orderByDesc('articles.stock');
+        } else {
+            $filas->orderByDesc('valor');
+        }
+
+        $filas = $filas->orderBy('articles.id')
+            ->limit($limite)
             ->get();
 
         if ($filas->isEmpty()) {
-            return ['lista' => [], 'valor_inmovilizado' => (float) $this->monto($totales->valor)];
+            return [
+                'lista'              => [],
+                'valor_inmovilizado' => (float) $this->monto($totales->valor),
+                'cantidad'           => (int) $totales->cantidad,
+            ];
         }
 
         // Última venta real (de cualquier fecha) de los listados, para los días sin venta.
@@ -442,7 +520,8 @@ class RecolectorStock extends RecolectorBase
         }
 
         $hoy = $fecha->copy()->startOfDay();
-        $imagenes = $this->imagenes_de($filas->pluck('id')->all());
+        $imagenes = $con_imagenes ? $this->imagenes_de($filas->pluck('id')->all()) : [];
+        $compras = $con_detalle ? $this->compras_de_los_articulos($owner, $filas->pluck('id')->all()) : [];
         $lista = [];
 
         foreach ($filas as $fila) {
@@ -452,19 +531,146 @@ class RecolectorStock extends RecolectorBase
                 ? $ultima_por_articulo[$article_id]
                 : $fila->creado;
 
-            $lista[] = [
+            $renglon = [
                 'article_id'     => $article_id,
                 'nombre'         => (string) $fila->nombre,
                 'stock_total'    => (float) $fila->stock,
                 'dias_sin_venta' => empty($referencia) ? null : Carbon::parse($referencia)->startOfDay()->diffInDays($hoy),
                 'valor_a_costo'  => $this->monto($fila->valor),
-                'imagen_url'     => isset($imagenes[$article_id]) ? $imagenes[$article_id] : null,
             ];
+
+            // La foto, solo para quien la muestra (el Mostrador): el agente no la necesita.
+            if ($con_imagenes) {
+                $renglon['imagen_url'] = isset($imagenes[$article_id]) ? $imagenes[$article_id] : null;
+            }
+
+            // El detalle que pide la herramienta del agente: cuándo se vendió y cuándo se compró.
+            if ($con_detalle) {
+                $renglon['ultima_venta'] = isset($ultima_por_articulo[$article_id]) ? $this->fecha_ymd($ultima_por_articulo[$article_id]) : null;
+                $renglon['nunca_se_vendio'] = !isset($ultima_por_articulo[$article_id]);
+                $renglon['ultima_compra'] = isset($compras[$article_id]) ? $compras[$article_id]['ultima'] : null;
+                $renglon['compras'] = isset($compras[$article_id]) ? $compras[$article_id]['cantidad'] : 0;
+            }
+
+            $lista[] = $renglon;
         }
 
         return [
             'lista'              => $lista,
             'valor_inmovilizado' => (float) $this->monto($totales->valor),
+            'cantidad'           => (int) $totales->cantidad,
         ];
+    }
+
+    /**
+     * Los artículos CON stock que SÍ se vendieron en la ventana, de los que menos unidades vendieron
+     * a los que más (misión agente-mejoras-uso-real, E2 punto 5). Es el complemento de
+     * sin_rotacion_con_opciones() para "los de menos rotación" cuando los que no se vendieron nada no
+     * llegan al tope pedido. Mismo criterio de "venta real" (sin borradas ni contenedoras de una
+     * consolidación AFIP), mismos artículos (activos, no borrados, stock > 0) y la misma opción
+     * `solo_comprados`.
+     *
+     * Opciones: `dias` (default DIAS_SIN_ROTACION), `limite` (default TOPE_LISTA), `solo_comprados`,
+     * `excluir` (ids que ya se listaron).
+     *
+     * @param User   $owner
+     * @param Carbon $fecha
+     * @param array  $opciones
+     * @return array<int, array<string, mixed>>  {article_id, nombre, stock_total, unidades_vendidas,
+     *         ultima_venta, ultima_compra, compras}
+     */
+    public function menos_vendidos_con_stock(User $owner, Carbon $fecha, array $opciones): array
+    {
+        $dias = isset($opciones['dias']) && (int) $opciones['dias'] > 0 ? (int) $opciones['dias'] : self::DIAS_SIN_ROTACION;
+        $limite = isset($opciones['limite']) && (int) $opciones['limite'] > 0 ? (int) $opciones['limite'] : self::TOPE_LISTA;
+        $excluir = isset($opciones['excluir']) && is_array($opciones['excluir']) ? array_values(array_map('intval', $opciones['excluir'])) : [];
+
+        $desde = $fecha->copy()->subDays($dias)->startOfDay();
+
+        // Las ventas reales de la ventana, por artículo: el join de siempre (RecolectorBase).
+        $consulta = $this->ventas_reales_desde_article_purchases(DB::table('article_purchases'), $owner->id)
+            ->whereNull('articles.deleted_at')
+            ->where('articles.status', 'active')
+            ->where('articles.stock', '>', 0)
+            ->where('article_purchases.created_at', '>=', $desde);
+
+        if (!empty($excluir)) {
+            $consulta->whereNotIn('articles.id', $excluir);
+        }
+
+        if (!empty($opciones['solo_comprados'])) {
+            $consulta->whereExists(function ($q) use ($owner) {
+                $q->selectRaw('1')
+                    ->from('article_provider_order')
+                    ->join('provider_orders', 'provider_orders.id', '=', 'article_provider_order.provider_order_id')
+                    ->whereColumn('article_provider_order.article_id', 'articles.id')
+                    ->where('provider_orders.user_id', $owner->id);
+            });
+        }
+
+        $filas = $consulta
+            ->groupBy('articles.id', 'articles.name', 'articles.stock')
+            ->selectRaw('articles.id as id, articles.name as nombre, articles.stock as stock, COALESCE(SUM(article_purchases.amount), 0) as unidades, MAX(article_purchases.created_at) as ultima')
+            ->orderBy('unidades')
+            ->orderBy('articles.id')
+            ->limit($limite)
+            ->get();
+
+        $compras = $this->compras_de_los_articulos($owner, $filas->pluck('id')->all());
+
+        $lista = [];
+
+        foreach ($filas as $fila) {
+            $article_id = (int) $fila->id;
+
+            $lista[] = [
+                'article_id'        => $article_id,
+                'nombre'            => (string) $fila->nombre,
+                'stock_total'       => (float) $fila->stock,
+                'unidades_vendidas' => round((float) $fila->unidades, 2),
+                'ultima_venta'      => $this->fecha_ymd($fila->ultima),
+                'ultima_compra'     => isset($compras[$article_id]) ? $compras[$article_id]['ultima'] : null,
+                'compras'           => isset($compras[$article_id]) ? $compras[$article_id]['cantidad'] : 0,
+            ];
+        }
+
+        return $lista;
+    }
+
+    /**
+     * Cuántas compras a proveedor tiene cada artículo del lote y la fecha de la última, en UNA
+     * consulta. Las compras son `provider_orders` del dueño (no `article_purchases`, que es lo que le
+     * compró un cliente al comercio).
+     *
+     * @param User  $owner
+     * @param array $article_ids
+     * @return array<int, array{cantidad: int, ultima: string|null}>
+     */
+    protected function compras_de_los_articulos(User $owner, array $article_ids): array
+    {
+        $article_ids = array_values(array_unique(array_filter(array_map('intval', $article_ids))));
+
+        if (empty($article_ids)) {
+            return [];
+        }
+
+        $filas = DB::table('article_provider_order')
+            ->join('provider_orders', 'provider_orders.id', '=', 'article_provider_order.provider_order_id')
+            ->where('provider_orders.user_id', $owner->id)
+            ->whereIn('article_provider_order.article_id', $article_ids)
+            ->groupBy('article_provider_order.article_id')
+            ->selectRaw('article_provider_order.article_id as article_id, COUNT(DISTINCT provider_orders.id) as cantidad, MAX(provider_orders.created_at) as ultima')
+            ->get();
+
+        $mapa = [];
+
+        foreach ($filas as $fila) {
+            $mapa[(int) $fila->article_id] = [
+                'cantidad' => (int) $fila->cantidad,
+                'ultima'   => $this->fecha_ymd($fila->ultima),
+            ];
+        }
+
+        return $mapa;
     }
 }

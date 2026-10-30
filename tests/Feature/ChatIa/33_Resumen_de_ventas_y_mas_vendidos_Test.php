@@ -330,19 +330,19 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
          * hay atrás. Cada tool nueva mueve este offset en uno, y eso es lo que tiene que pasar.
          * La misión asistente-aviso-escaneo-factura (16/10/2026) sumó `consultar_escaneo_de_factura`
          * al final: por eso -8 y -4 (los nombres esperados no cambiaron). La misión
-         * agente-mejoras-uso-real (29/10/2026) sumó `exportar_excel` al final: por eso -9 y -5 (los
-         * nombres esperados tampoco cambiaron).
+         * agente-mejoras-uso-real (29/10/2026) sumó `exportar_excel` y `consultar_articulos_sin_rotacion` al
+         * final: por eso -10 y -6 (los nombres esperados tampoco cambiaron).
          */
         $nombres = $service->nombres_de_lectura();
 
         $this->assertEquals(
             ['resumir_datos', 'consultar_resumen_de_ventas', 'consultar_reporte_contable', 'mostrar_imagenes_de_articulos'],
-            array_slice($nombres, -9, 4)
+            array_slice($nombres, -10, 4)
         );
 
         $this->assertEquals(
             ['consultar_ventas_sin_cobrar', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'],
-            array_slice($nombres, -5, 3)
+            array_slice($nombres, -6, 3)
         );
 
         // Y el handler deja la imagen en adjuntos(), sin cruzarla contra ningún texto.

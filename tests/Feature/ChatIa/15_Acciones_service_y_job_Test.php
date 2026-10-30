@@ -83,6 +83,8 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_escaneo_de_factura',
         // Misión agente-mejoras-uso-real (29/10/2026): el Excel con su link, al final.
         'exportar_excel',
+        // Misma misión (E2): los artículos sin rotación, atrás del Excel.
+        'consultar_articulos_sin_rotacion',
     ];
 
     /** @var User */

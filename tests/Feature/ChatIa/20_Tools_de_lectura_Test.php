@@ -124,6 +124,8 @@ class Tools_de_lectura_Test extends TestCase
             // la validación de la tabla y contesta sin escribir un archivo en el disco de trabajo (el camino
             // entero, con el archivo y el link, lo cubre 95_Exportar_excel_del_agente_Test).
             'exportar_excel'                           => ['titulo' => 'Tools B', 'columnas' => [['clave' => 'nombre', 'etiqueta' => 'Nombre']], 'filas' => []],
+            // Misma misión (E2): los artículos sin rotación (el cálculo lo cubre su propio test).
+            'consultar_articulos_sin_rotacion'         => ['limite' => 10],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

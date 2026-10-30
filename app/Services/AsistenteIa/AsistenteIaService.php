@@ -3738,11 +3738,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Texto a buscar en el nombre o los códigos del artículo. Ejemplo: "coca cola". Mandá cadena vacía para traer los primeros artículos sin filtrar.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3939,11 +3941,13 @@ CONFIRMACION;
                             'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30.',
                             'enum' => [7, 30, 90],
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input));
+                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input), self::articulo_id_del_input($input));
                 },
             ],
             /*
@@ -3997,11 +4001,13 @@ CONFIRMACION;
                             'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia, que es lo que la persona suele querer decir con "quién me compró más".',
                             'enum' => [0, 7, 30, 90, 365],
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -4014,11 +4020,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -4053,11 +4061,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -4089,7 +4099,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_datos',
-                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Los renglones traen `importe` (la plata de ese renglón, unidades x precio o costo con su descuento): se filtra y se ordena como cualquier número. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP.',
+                'description' => 'Lista registros de cualquier entidad de que_puedo_consultar (artículos, ventas y sus renglones, clientes, compras y sus renglones, gastos, cheques, cajas y sus movimientos, presupuestos, pedidos, producción, configuración y más). Usala para lo que no tiene herramienta propia — cuando sí la tiene, la propia contesta mejor y más barato — y para VER filas; para sumar, contar o rankear va resumir_datos, y para cuánto vendí va consultar_resumen_de_ventas. 🔴 Pedí primero que_puedo_consultar con la entidad: un campo o un operador que no existe devuelve error. Un campo _id de relación se filtra por id, o por el NOMBRE de la relación con "contiene" / "igual" (provider_id contiene "mayorista"). Los renglones traen `importe` (la plata de ese renglón, unidades x precio o costo con su descuento): se filtra y se ordena como cualquier número. Devuelve registros_encontrados (cuántos hay en total) y registros_en_esta_lista (cuántos viajan), así que si difieren podés pedir la página siguiente. De artículos devuelve solo los activos; de ventas, sin las consolidaciones AFIP. Con listas de precio, el margen de un artículo EN UNA LISTA no es su percentage_gain: para contar por margen de lista va contar_articulos_por_filtro con margen_en_lista.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4171,7 +4181,7 @@ CONFIRMACION;
              */
             [
                 'name' => 'resumir_datos',
-                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada. Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
+                'description' => 'Suma, cuenta, promedia, mínimo y máximo sobre cualquier entidad de que_puedo_consultar, agrupando por un campo, por una relación (devuelve su etiqueta) o por período (dia, semana, mes, anio) — hasta dos agrupaciones. 🔴 Para totales, sumas, promedios y rankings va ESTA: nunca sumes a mano las filas de consultar_datos, que pagina de a 20. Acepta los mismos filtros que consultar_datos, incluido "contiene" con el nombre de una relación. Ejemplo: qué le compro más a un proveedor = entidad renglon_de_compra, filtro provider_id contiene "nombre", agrupar_por article_id, metricas suma amount (unidades) y suma importe (plata). Ojo: lo que más VENDO de un proveedor (los artículos de ese proveedor que les vendí a mis clientes) NO es eso: va consultar_articulos_mas_vendidos con proveedor. 🔴 LA PLATA DE UN RENGLÓN ES `importe`, NUNCA `price` ni `cost`: esos son de UNA unidad y sumarlos da un número chico y falso. En renglon_de_venta hay además costo_total y ganancia_estimada, pero 🔴 renglon_de_venta no prorratea los descuentos y recargos de la venta ni filtra las ventas sin terminar: no lo uses para el total de un día ni para "cuál me dejó más margen" (eso es consultar_resumen_de_ventas con agrupar_por articulo y orden ganancia, que cuadra con el total del período). Devuelve grupos_encontrados (cuántos grupos hay), total_general (las mismas métricas sin agrupar) y, si hay registros en otra moneda, en_otra_moneda: no sumes pesos con dólares. Para "cuánto vendí" va consultar_resumen_de_ventas.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4246,7 +4256,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -4267,6 +4277,17 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre del método de pago, para dejar SOLO las ventas que lo tocaron (se combina con agrupar_por: metodo_de_pago "Tarjeta" + agrupar_por "cliente" contesta a quién le vendiste con tarjeta). También vale "Cuenta corriente" para quedarte con lo vendido fiado. 🔴 Cada importe sigue siendo el TOTAL de la venta, no la parte pagada con ese método: una venta pagada con dos métodos entra entera en los dos filtros, así que no sumes dos llamadas. Si el nombre no existe o encaja con varios, la respuesta trae "error" con los que hay: preguntá cuál y volvé a llamar.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final, por el prefijo del caché.
+                        'orden' => [
+                            'type'        => 'string',
+                            'description' => 'Por qué ordenar los grupos: total, ganancia (solo con articulo, rubro o proveedor) o cantidad. Con articulo, rubro o proveedor, mandarlo suma costo, ganancia y el id de cada grupo.',
+                            'enum'        => ResumenDeVentasIaHelper::ORDENES,
+                        ],
+                        'direccion' => [
+                            'type'        => 'string',
+                            'description' => 'desc (default: de mayor a menor) o asc (de menor a mayor: "los que menos", "margen negativo").',
+                            'enum'        => ['desc', 'asc'],
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -4277,7 +4298,9 @@ CONFIRMACION;
                         isset($input['hasta']) ? $input['hasta'] : null,
                         isset($input['agrupar_por']) ? (string) $input['agrupar_por'] : null,
                         isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
-                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null
+                        isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null,
+                        isset($input['orden']) ? (string) $input['orden'] : null,
+                        isset($input['direccion']) ? (string) $input['direccion'] : null
                     );
                 },
             ],
@@ -4530,6 +4553,48 @@ CONFIRMACION;
                     );
                 },
             ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (E2 punto 5, 29/10/2026), al final por la regla del
+             * prefijo del caché. Pablo (Ferre Total, CONV 11) pidió «el top ten con menos rotación» y
+             * el agente lo armó a mano con resumir_datos sobre los renglones (que solo ven lo que SÍ se
+             * vendió), nombró seis diciendo cuatro y reescribió los nombres. Es el mismo cálculo del
+             * informe de Stock del Mostrador (RecolectorStock), de lectura y en todos los canales.
+             */
+            [
+                'name' => 'consultar_articulos_sin_rotacion',
+                'description' => 'Los artículos SIN ROTACIÓN: activos, con stock y sin ninguna venta en los últimos N días (30, 60, 90 —el default— o 180), con su article_id, stock, días sin venta, la fecha de la última venta (o nunca_se_vendio), la última compra a un proveedor, cuántas compras tiene y su valor a costo; y en total cuántos son (sin_rotacion_encontrados) y el valor inmovilizado de todos. Es la herramienta de "los que menos rotan", "lo que no se vende", "el top ten con menos rotación" y "mercadería parada": no la armes con resumir_datos ni con los más vendidos, que solo ven lo que SÍ se vendió. solo_comprados deja solo los que alguna vez se compraron ("¿pero son productos que compré?"). Con incluir_poco_vendidos, si los que no se vendieron nada no llegan al límite, se completa con los que MENOS se vendieron (poco_vendidos, aparte: decí que sí se vendieron, poco). Para la ficha, el stock por sucursal o las compras de uno de estos, pasá su article_id (articulo_id) a esa herramienta: no reescribas el nombre.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'dias' => [
+                            'type'        => 'integer',
+                            'description' => 'Ventana sin ventas, en días. Si no la mandás se usan 90.',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::DIAS_VALIDOS,
+                        ],
+                        'limite' => [
+                            'type'        => 'integer',
+                            'description' => 'Cuántos artículos traer ("top ten" = 10, el default). Máximo ' . \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::LIMITE_MAXIMO . '.',
+                        ],
+                        'orden' => [
+                            'type'        => 'string',
+                            'description' => 'valor (default: mayor valor a costo inmovilizado primero), dias (los que llevan más días sin venderse primero) o stock (más stock primero).',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::ORDENES,
+                        ],
+                        'solo_comprados' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para dejar solo los que alguna vez se le compraron a un proveedor.',
+                        ],
+                        'incluir_poco_vendidos' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para completar el límite con los que menos unidades vendieron en la ventana, si los que no vendieron nada no alcanzan.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::consultar((int) $owner_id, $input);
+                },
+            ],
         ];
     }
 
@@ -4654,6 +4719,39 @@ CONFIRMACION;
         }
 
         return $dias;
+    }
+
+    /**
+     * El esquema de `articulo_id`, común a las cinco consultas de UN artículo (misión
+     * agente-mejoras-uso-real, E2 punto 6, 29/10/2026). Pablo (Ferre Total, CONV 11) pidió el stock y
+     * las compras de dos artículos de un ranking y el agente no encontró sus fichas: había reescrito
+     * los nombres («HºCARROCERA» → «H° carrocera», «90 º 60 X 60» → «90° 60x60») y estas consultas
+     * solo aceptaban texto. Con el id no hay nombre que reescribir.
+     *
+     * @return array<string, string>
+     */
+    protected static function esquema_de_articulo_id(): array
+    {
+        return [
+            'type'        => 'integer',
+            'description' => 'El id del artículo si salió de una respuesta anterior (article_id, articulo_id o id de cualquier consulta): pasalo acá y no reescribas el nombre. Manda sobre busqueda y encuentra también los inactivos y los de la papelera (la respuesta lo dice en estado_del_articulo).',
+        ];
+    }
+
+    /**
+     * El `articulo_id` de un input, o null si no vino o no es un entero positivo.
+     *
+     * @param array $input
+     * @return int|null
+     */
+    protected static function articulo_id_del_input(array $input)
+    {
+        if (! isset($input['articulo_id']) || ! is_numeric($input['articulo_id']) || (int) $input['articulo_id'] <= 0) {
+
+            return null;
+        }
+
+        return (int) $input['articulo_id'];
     }
 
     /**

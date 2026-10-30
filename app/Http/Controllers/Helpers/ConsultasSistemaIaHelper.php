@@ -59,12 +59,46 @@ class ConsultasSistemaIaHelper
      * Artículos activos del dueño con precio y stock, filtrados por nombre,
      * código de barras o código de proveedor.
      *
+     * Misión agente-mejoras-uso-real (E2 punto 6, 29/10/2026): con `$articulo_id` (el id que devolvió
+     * otra herramienta) contesta sobre ESE artículo, aunque esté inactivo o en la papelera (lo dice en
+     * `estado`), sin buscar por el texto. Ver resolver_articulo().
+     *
      * @param  int     $owner_id  Id del dueño (articles.user_id).
      * @param  string  $busqueda  Texto ya depurado a buscar; vacío trae los primeros sin filtrar.
+     * @param  int|null  $articulo_id  Opcional: el id del artículo. Manda sobre la búsqueda.
      * @return array<int, array<string, mixed>>
      */
-    public static function stock_de_articulos(int $owner_id, string $busqueda): array
+    public static function stock_de_articulos(int $owner_id, string $busqueda, $articulo_id = null): array
     {
+        // Por id: ese artículo y nada más (si no es del dueño, lista vacía, como una búsqueda sin nada).
+        if (!is_null($articulo_id) && (int) $articulo_id > 0) {
+
+            $articulo = self::articulo_por_id($owner_id, (int) $articulo_id);
+
+            if (is_null($articulo)) {
+                return [];
+            }
+
+            $con_imagen = self::articulos_con_imagen([(int) $articulo->id]);
+
+            $fila = [
+                'id'           => (int) $articulo->id,
+                'nombre'       => (string) $articulo->name,
+                'codigo'       => (string) ($articulo->bar_code ?? $articulo->provider_code ?? ''),
+                'precio'       => $articulo->final_price !== null ? (float) $articulo->final_price : (float) $articulo->price,
+                'stock'        => $articulo->stock !== null ? (float) $articulo->stock : 0,
+                'tiene_imagen' => isset($con_imagen[(int) $articulo->id]),
+            ];
+
+            $estado = self::estado_del_articulo($articulo);
+
+            if (!is_null($estado)) {
+                $fila['estado'] = $estado;
+            }
+
+            return [$fila];
+        }
+
         $busqueda = trim($busqueda);
 
         $articles_query = Article::query()
@@ -1250,18 +1284,20 @@ class ConsultasSistemaIaHelper
      * @param  int     $owner_id  Id del dueño. Nunca Auth: esta tool corre en un job sin sesión.
      * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
      * @param  int     $dias      Ventana hacia atrás; un valor fuera de la lista blanca cae a 30.
+     * @param  int|null  $articulo_id  Misión agente-mejoras-uso-real (E2): el id del artículo, que manda
+     *         sobre la búsqueda (ver resolver_articulo()).
      * @return array<string, mixed> Vacío si la búsqueda no resolvió ningún artículo del dueño
      */
-    public static function interesados_en_un_articulo(int $owner_id, string $busqueda, int $dias): array
+    public static function interesados_en_un_articulo(int $owner_id, string $busqueda, int $dias, $articulo_id = null): array
     {
         $busqueda = trim($busqueda);
 
         /*
-         * Sin búsqueda no hay pregunta que contestar. Traer "el primer artículo del catálogo" y
-         * listar a sus interesados sería una respuesta perfectamente plausible sobre algo que nadie
+         * Sin búsqueda (ni id) no hay pregunta que contestar. Traer "el primer artículo del catálogo"
+         * y listar a sus interesados sería una respuesta perfectamente plausible sobre algo que nadie
          * preguntó, que es la peor forma de estar equivocado.
          */
-        if ($busqueda === '') {
+        if ($busqueda === '' && (is_null($articulo_id) || (int) $articulo_id <= 0)) {
             return [];
         }
 
@@ -1269,7 +1305,7 @@ class ConsultasSistemaIaHelper
             $dias = 30;
         }
 
-        $elegido = self::resolver_articulo($owner_id, $busqueda);
+        $elegido = self::resolver_articulo($owner_id, $busqueda, $articulo_id);
 
         if (is_null($elegido)) {
             return [];
@@ -1309,7 +1345,7 @@ class ConsultasSistemaIaHelper
             ];
         }
 
-        return [
+        return self::con_estado_del_articulo([
             'articulo'                   => (string) $elegido->name,
             'ventana_dias'               => $dias,
             'interesados_encontrados'    => count($interesados),
@@ -1319,7 +1355,7 @@ class ConsultasSistemaIaHelper
             // pero "lo están mirando 15 personas que no puedo nombrar" es un dato del negocio.
             'visitantes_anonimos'        => (int) $anonimos['visitantes'],
             'eventos_de_anonimos'        => (int) $anonimos['eventos'],
-        ];
+        ], $elegido);
     }
 
     /**
@@ -1337,12 +1373,29 @@ class ConsultasSistemaIaHelper
      * no devuelve de menos: devuelve la respuesta de otra cosa, con total seguridad y sin nada
      * que lo denuncie.
      *
+     * 🔴 POR ID PRIMERO (misión agente-mejoras-uso-real, E2 punto 6, 29/10/2026). Pablo (Ferre Total,
+     * CONV 11) preguntó si dos artículos de un ranking tenían stock y compras, y el agente contestó que
+     * no encontraba sus fichas: había reescrito los nombres («HºCARROCERA 76X5X50MM» → «H° carrocera
+     * 76x5x50 mm», «90 º 60 X 60» → «90° 60x60») y la búsqueda solo aceptaba texto. Ahora, si viene
+     * `$articulo_id` (el id que devolvió otra herramienta), se contesta sobre ESE artículo del dueño,
+     * incluidos los inactivos y los de la papelera (la respuesta lo dice en `estado_del_articulo`). Un
+     * id que no es del dueño no se usa: se sigue con el texto, si hay.
+     *
      * @param  int     $owner_id  Id del dueño (articles.user_id).
      * @param  string  $busqueda  Nombre (o parte), código de barras o código de proveedor.
+     * @param  int|null  $articulo_id  Opcional: el id del artículo, que manda sobre el texto.
      * @return Article|null  null cuando la búsqueda viene vacía o no matchea ningún artículo del dueño
      */
-    protected static function resolver_articulo(int $owner_id, string $busqueda)
+    protected static function resolver_articulo(int $owner_id, string $busqueda, $articulo_id = null)
     {
+        if (! is_null($articulo_id) && (int) $articulo_id > 0) {
+            $por_id = self::articulo_por_id($owner_id, (int) $articulo_id);
+
+            if (! is_null($por_id)) {
+                return $por_id;
+            }
+        }
+
         $busqueda = trim($busqueda);
 
         /*
@@ -1356,7 +1409,7 @@ class ConsultasSistemaIaHelper
 
         // Las columnas van fijas acá y no las elige el que llama: así ningún consumidor se lleva
         // un artículo a medio hidratar y después lee null donde hay dato.
-        $columnas = ['id', 'name', 'bar_code', 'provider_code', 'stock', 'price', 'final_price'];
+        $columnas = ['id', 'name', 'bar_code', 'provider_code', 'stock', 'price', 'final_price', 'status'];
 
         $elegido = Article::query()
             ->where('user_id', $owner_id)
@@ -1498,6 +1551,92 @@ class ConsultasSistemaIaHelper
             'error'     => $motivo,
             'como_sigo' => $como_sigo,
         ];
+    }
+
+    /**
+     * El "no lo encontré" de las consultas de UN artículo, con el motivo según cómo se lo pidió: por
+     * id (que no es de este negocio) o por texto (misión agente-mejoras-uso-real, E2).
+     *
+     * @param  string  $busqueda
+     * @param  int|null  $articulo_id
+     * @return array<string, string>
+     */
+    protected static function articulo_no_encontrado(string $busqueda, $articulo_id = null): array
+    {
+        if (! is_null($articulo_id) && (int) $articulo_id > 0 && trim($busqueda) === '') {
+            return self::no_encontrado(
+                'No hay ningun articulo con el id ' . (int) $articulo_id . ' en este negocio.',
+                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el id que devuelva.'
+            );
+        }
+
+        return self::no_encontrado(
+            trim($busqueda) === ''
+                ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
+                : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
+            'Si el articulo salio de una respuesta anterior, volve a llamar con su id en articulo_id. Si no, buscalo con consultar_stock_de_articulos y volve a llamar con el id que devuelva.'
+        );
+    }
+
+    /**
+     * UN artículo del dueño por id, con los inactivos y los de la papelera (misión
+     * agente-mejoras-uso-real, E2). Las mismas columnas que resolver_articulo(), más `status` y
+     * `deleted_at` para decir en qué estado está.
+     *
+     * @param  int  $owner_id
+     * @param  int  $articulo_id
+     * @return Article|null
+     */
+    protected static function articulo_por_id(int $owner_id, int $articulo_id)
+    {
+        return Article::withTrashed()
+            ->where('user_id', $owner_id)
+            ->where('id', $articulo_id)
+            ->first(['id', 'name', 'bar_code', 'provider_code', 'stock', 'price', 'final_price', 'status', 'deleted_at']);
+    }
+
+    /**
+     * Qué tiene de raro el estado de un artículo, en palabras, o null si está activo: "está en la
+     * papelera (borrado)", "está inactivo" o "todavía no se activó". Es lo que el agente le cuenta al
+     * dueño en vez de "no existe".
+     *
+     * @param  Article  $articulo
+     * @return string|null
+     */
+    protected static function estado_del_articulo($articulo)
+    {
+        if (! is_null($articulo->deleted_at)) {
+            return 'Este articulo esta en la papelera (borrado): los datos son de cuando estaba activo.';
+        }
+
+        if (isset($articulo->status) && $articulo->status === 'inactive') {
+            return 'Este articulo esta inactivo: no aparece en el listado ni se puede vender hasta que se active.';
+        }
+
+        if (isset($articulo->status) && ! is_null($articulo->status) && $articulo->status !== 'active') {
+            return 'Este articulo todavia no se activo (nacio de una compra o de un presupuesto).';
+        }
+
+        return null;
+    }
+
+    /**
+     * La respuesta de una consulta de UN artículo con `estado_del_articulo` si el artículo no está
+     * activo (sin la clave si lo está: la respuesta de siempre).
+     *
+     * @param  array  $respuesta
+     * @param  Article  $articulo
+     * @return array
+     */
+    protected static function con_estado_del_articulo(array $respuesta, $articulo): array
+    {
+        $estado = self::estado_del_articulo($articulo);
+
+        if (! is_null($estado)) {
+            $respuesta['estado_del_articulo'] = $estado;
+        }
+
+        return $respuesta;
     }
 
     /**
@@ -1786,21 +1925,16 @@ class ConsultasSistemaIaHelper
      * @param  int     $limite    0 = MAX_RESULTS.
      * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún artículo del dueño
      */
-    public static function quien_compro_un_articulo(int $owner_id, string $busqueda, int $dias = 0, int $limite = 0): array
+    public static function quien_compro_un_articulo(int $owner_id, string $busqueda, int $dias = 0, int $limite = 0, $articulo_id = null): array
     {
         $limite = self::limite_pedido($limite);
 
-        $articulo = self::resolver_articulo($owner_id, $busqueda);
+        $articulo = self::resolver_articulo($owner_id, $busqueda, $articulo_id);
 
         // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
         // distintas, y vacio se lee como la segunda. Ver no_encontrado().
         if (is_null($articulo)) {
-            return self::no_encontrado(
-                trim($busqueda) === ''
-                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
-                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
-                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
-            );
+            return self::articulo_no_encontrado($busqueda, $articulo_id);
         }
 
         $base = Sale::query()
@@ -1887,7 +2021,8 @@ class ConsultasSistemaIaHelper
             ];
         }
 
-        return [
+        // Con el estado del artículo si no está activo (E2): "no existe" no es lo mismo que "está borrado".
+        return self::con_estado_del_articulo([
             'articulo'                      => (string) $articulo->name,
             'articulo_id'                   => (int) $articulo->id,
             'ventana_dias'                  => $dias > 0 ? $dias : null,
@@ -1908,7 +2043,7 @@ class ConsultasSistemaIaHelper
              */
             'unidades_sin_precio_en_pesos'  => (float) $totales->sin_precio,
             'clientes'                      => $lista,
-        ];
+        ], $articulo);
     }
 
     /**
@@ -1931,21 +2066,16 @@ class ConsultasSistemaIaHelper
      * @param  int     $limite    0 = MAX_RESULTS.
      * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún artículo del dueño
      */
-    public static function compras_de_un_articulo(int $owner_id, string $busqueda, int $limite = 0): array
+    public static function compras_de_un_articulo(int $owner_id, string $busqueda, int $limite = 0, $articulo_id = null): array
     {
         $limite = self::limite_pedido($limite);
 
-        $articulo = self::resolver_articulo($owner_id, $busqueda);
+        $articulo = self::resolver_articulo($owner_id, $busqueda, $articulo_id);
 
         // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
         // distintas, y vacio se lee como la segunda. Ver no_encontrado().
         if (is_null($articulo)) {
-            return self::no_encontrado(
-                trim($busqueda) === ''
-                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
-                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
-                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
-            );
+            return self::articulo_no_encontrado($busqueda, $articulo_id);
         }
 
         $base = DB::table('article_provider_order')
@@ -2006,7 +2136,7 @@ class ConsultasSistemaIaHelper
             ];
         }
 
-        return [
+        return self::con_estado_del_articulo([
             'articulo'                     => (string) $articulo->name,
             'articulo_id'                  => (int) $articulo->id,
             'compras_encontradas'          => (int) $totales->compras,
@@ -2017,7 +2147,7 @@ class ConsultasSistemaIaHelper
             // De la más nueva a la más vieja: la primera fila de `compras` es la última compra.
             'orden'                        => 'mas_nuevas_primero',
             'compras'                      => $lista,
-        ];
+        ], $articulo);
     }
 
     /**
@@ -2187,7 +2317,7 @@ class ConsultasSistemaIaHelper
      * @param  int     $limite    0 = MAX_RESULTS.
      * @return array<string, mixed>  Vacío si la búsqueda no resolvió ningún artículo del dueño
      */
-    public static function stock_por_deposito(int $owner_id, string $busqueda, int $limite = 0): array
+    public static function stock_por_deposito(int $owner_id, string $busqueda, int $limite = 0, $articulo_id = null): array
     {
         /*
          * 🔴 ACÁ EL DEFAULT NO ES MAX_RESULTS, Y ES A PROPÓSITO (misión asistente-capacidades-y-hilos,
@@ -2200,17 +2330,12 @@ class ConsultasSistemaIaHelper
          */
         $limite = self::limite_pedido($limite > 0 ? $limite : self::TOPE_DURO_DE_RESULTADOS);
 
-        $articulo = self::resolver_articulo($owner_id, $busqueda);
+        $articulo = self::resolver_articulo($owner_id, $busqueda, $articulo_id);
 
         // "No encontre el articulo" y "nadie lo compro" / "no tiene compras" son dos respuestas muy
         // distintas, y vacio se lee como la segunda. Ver no_encontrado().
         if (is_null($articulo)) {
-            return self::no_encontrado(
-                trim($busqueda) === ''
-                    ? 'Necesito el nombre o el codigo del articulo para poder buscarlo.'
-                    : 'No encontre ningun articulo de este negocio que coincida con "' . trim($busqueda) . '".',
-                'Busca el articulo con consultar_stock_de_articulos y volve a llamar con el nombre exacto que devuelva.'
-            );
+            return self::articulo_no_encontrado($busqueda, $articulo_id);
         }
 
         // Las sucursales del comercio son las addresses del dueño, igual que en AddressController
@@ -2297,7 +2422,8 @@ class ConsultasSistemaIaHelper
                 . '. Si el que buscás no está, decí que la lista está recortada, nunca que el depósito no existe.';
         }
 
-        return $respuesta;
+        // Con el estado del artículo si no está activo (E2).
+        return self::con_estado_del_articulo($respuesta, $articulo);
     }
 
     /**
