@@ -209,8 +209,9 @@ class FotosDeLaConversacionIaHelper
      *     horas (las de internet cuelgan del asistente y se usan solo sin usar, por por_id());
      *   - que ya se haya puesto en un ARTÍCULO de esta conversación: una tarjeta confirmada de foto de
      *     artículo (`datos.imagen_id`) o de alta de artículo con su foto (`datos.extras.imagen_id`);
-     *   - y que no haya entrado en NINGUNA compra con factura: la foto de una factura no se publica en
-     *     la tienda. Una sellada a mano o por otra carga, sin haber ido a un artículo, tampoco sirve.
+     *   - y que no haya entrado en ninguna compra con factura CONFIRMADA: la foto de una factura no se
+     *     publica en la tienda (una tarjeta de compra cancelada, reemplazada o sin confirmar no cuenta).
+     *     Una sellada a mano o por otra carga, sin haber ido a un artículo, tampoco sirve.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  mixed  $imagen_id
@@ -276,8 +277,19 @@ class FotosDeLaConversacionIaHelper
 
             $datos = is_array($accion->datos) ? $accion->datos : [];
 
-            /* 🔴 Si alguna compra con factura la tuvo entre sus fotos (miradas o páginas), nunca. */
+            /*
+             * 🔴 Si una compra con factura CONFIRMADA la tuvo entre sus fotos (miradas o páginas), nunca:
+             * es una factura, y está en un escaneo. Solo la confirmada (revisión independiente, arreglo
+             * 9, 30/10/2026): una tarjeta de compra cancelada, reemplazada, descartada o todavía sin
+             * confirmar no se llevó la foto a ningún lado, y bloquearla dejaba sin foto al artículo por
+             * una compra que no existe.
+             */
             if ($accion->tipo === AiMessageAction::TIPO_COMPRA_CON_FACTURA) {
+
+                if ($accion->estado !== AiMessageAction::ESTADO_CONFIRMADA) {
+
+                    continue;
+                }
 
                 $de_la_compra = array_merge(
                     isset($datos['imagen_ids']) && is_array($datos['imagen_ids']) ? $datos['imagen_ids'] : [],

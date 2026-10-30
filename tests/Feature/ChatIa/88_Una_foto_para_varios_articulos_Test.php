@@ -473,6 +473,44 @@ class Una_foto_para_varios_articulos_Test extends TestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 9: la foto se bloquea solo si la compra con factura
+     * donde aparece se CONFIRMÓ. Una tarjeta de compra cancelada (o reemplazada, o descartada) no se
+     * llevó la foto a ningún lado: la foto que se puso en un artículo se sigue pudiendo reusar.
+     *
+     * @test
+     */
+    public function una_tarjeta_de_compra_cancelada_no_bloquea_el_reuso_de_la_foto()
+    {
+        $a = $this->articulo('Balde 10 L');
+        $b = $this->articulo('Balde 12 L');
+        $conversation = $this->conversacion();
+        list(, $fotos) = $this->del_dueno($conversation, 'Esta al balde de 10');
+        $assistant = $this->del_asistente($conversation);
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        foreach ([AiMessageAction::ESTADO_CANCELADA, AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::ESTADO_DESCARTADA] as $i => $estado) {
+            AiMessageAction::create([
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $assistant->id,
+                'user_id'            => $this->comercio->id,
+                'auth_user_id'       => $this->comercio->id,
+                'tipo'               => AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+                'clave'              => 'compra_con_factura:e1r-' . $i,
+                'estado'             => $estado,
+                'datos'              => ['imagen_ids' => [(int) $fotos[0]->id], 'imagen_ids_miradas' => [(int) $fotos[0]->id]],
+                'presentacion'       => ['titulo' => 'Compra con factura', 'renglones' => [], 'aviso' => null],
+            ]);
+        }
+
+        $primera = PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant, ['articulo_id' => $a->id]);
+        $this->assertSame(200, $this->confirmar($conversation, $primera['tarjeta_id'])['status']);
+
+        $reuso = PropuestaFotoArticuloIaHelper::proponer($contexto, $this->del_asistente($conversation), ['articulo_id' => $b->id, 'imagen_id' => $fotos[0]->id]);
+        $this->assertTrue($reuso['ok'], json_encode($reuso));
+        $this->assertTrue(AiMessageAction::find($reuso['tarjeta_id'])->datos['reusa_usada']);
+    }
+
+    /**
      * El historial le muestra al modelo el id de cada foto de los mensajes anteriores («[Foto adjunta]
      * [imagen_id N]»), y el de las fotos del mensaje actual cuando son varias.
      *
