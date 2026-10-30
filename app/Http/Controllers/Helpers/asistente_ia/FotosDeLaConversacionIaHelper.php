@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
@@ -262,12 +263,19 @@ class FotosDeLaConversacionIaHelper
 
         $mensaje = AiMessage::where('id', (int) $imagen->ai_message_id)->first(['id', 'rol', 'ai_conversation_id']);
 
-        if (is_null($mensaje) || (string) $mensaje->rol !== 'user' || (int) $mensaje->ai_conversation_id !== (int) $contexto->conversation->id) {
+        /*
+         * De ESTA conversación o de una hermana: la misma persona, el mismo canal y las últimas HORAS
+         * horas (revisión independiente, arreglo 11). Por WhatsApp la charla se parte en hilos por tema,
+         * y «la misma para los otros 8» puede llegar en el hilo siguiente al de la foto.
+         */
+        $hermanas = self::conversaciones_del_mismo_canal($contexto);
+
+        if (is_null($mensaje) || (string) $mensaje->rol !== 'user' || !in_array((int) $mensaje->ai_conversation_id, $hermanas, true)) {
 
             return false;
         }
 
-        $acciones = AiMessageAction::where('ai_conversation_id', (int) $contexto->conversation->id)
+        $acciones = AiMessageAction::whereIn('ai_conversation_id', $hermanas)
                                     ->whereIn('tipo', [AiMessageAction::TIPO_FOTO_ARTICULO, AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_COMPRA_CON_FACTURA])
                                     ->get(['id', 'tipo', 'estado', 'datos']);
 
@@ -334,14 +342,15 @@ class FotosDeLaConversacionIaHelper
      */
     public static function la_ultima_reutilizable_para_articulo(ContextoDeCargaIa $contexto, AiMessage $mensaje)
     {
-        $conversation_id = (int) $contexto->conversation->id;
+        /* En esta conversación y en sus hermanas del mismo canal (arreglo 11: ver conversaciones_del_mismo_canal()). */
+        $hermanas = self::conversaciones_del_mismo_canal($contexto);
         $hasta = (int) $mensaje->id;
 
         $usadas = AiMessageImagen::where('user_id', $contexto->owner_id)
                                     ->whereNotNull('gestionada_at')
                                     ->where('created_at', '>=', self::desde())
-                                    ->whereHas('message', function ($q) use ($conversation_id, $hasta) {
-                                        $q->where('ai_conversation_id', $conversation_id)
+                                    ->whereHas('message', function ($q) use ($hermanas, $hasta) {
+                                        $q->whereIn('ai_conversation_id', $hermanas)
                                           ->where('rol', 'user')
                                           ->where('id', '<=', $hasta);
                                     })
@@ -359,6 +368,65 @@ class FotosDeLaConversacionIaHelper
         }
 
         return null;
+    }
+
+    /**
+     * Los ids de las conversaciones HERMANAS de la actual (revisión independiente, arreglo 11,
+     * 30/10/2026): las del mismo dueño, con la MISMA persona (`auth_user_id`) y el mismo canal
+     * (`origen`), con algún mensaje en las últimas HORAS horas. La actual va siempre.
+     *
+     * 🔴 POR QUÉ. Por WhatsApp la charla se parte en hilos por tema (HiloPorTemaIaHelper): en Ferre Total
+     * la CONV 19 y la CONV 20 eran dos hilos del mismo mediodía, y la compra que el agente cargó en uno
+     * se quiso corregir en el otro. Lo que se busca «de recién» —la foto ya usada, la compra que creó el
+     * agente, el escaneo que falló— se busca en estas, no solo en la actual. Nunca en las de otra
+     * persona (un empleado tiene las suyas) ni de otro canal.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @return array<int, int>
+     */
+    public static function conversaciones_del_mismo_canal(ContextoDeCargaIa $contexto)
+    {
+        if (is_null($contexto->conversation)) {
+
+            return [];
+        }
+
+        $actual = $contexto->conversation;
+
+        $desde = self::desde();
+
+        $consulta = AiConversation::where('user_id', (int) $contexto->owner_id)
+                                    ->where('auth_user_id', (int) $actual->auth_user_id)
+                                    ->whereExists(function ($q) use ($desde) {
+                                        $q->selectRaw('1')
+                                          ->from('ai_messages')
+                                          ->whereColumn('ai_messages.ai_conversation_id', 'ai_conversations.id')
+                                          ->where('ai_messages.created_at', '>=', $desde);
+                                    });
+
+        /*
+         * El origen se lee de la base y no del modelo en memoria: una conversación recién creada con
+         * create() no trae el default de la columna ('usuario') hasta que se la relee.
+         */
+        $origen = AiConversation::where('id', (int) $actual->id)->value('origen');
+
+        if (is_null($origen)) {
+
+            $consulta->whereNull('origen');
+
+        } else {
+
+            $consulta->where('origen', (string) $origen);
+        }
+
+        $ids = array_map('intval', $consulta->orderBy('id', 'DESC')->limit(50)->pluck('id')->all());
+
+        if (!in_array((int) $actual->id, $ids, true)) {
+
+            $ids[] = (int) $actual->id;
+        }
+
+        return $ids;
     }
 
     /**

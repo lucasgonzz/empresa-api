@@ -238,8 +238,9 @@ class ReintentoDeEscaneoIaHelper
 
         if (!is_null($contexto->conversation)) {
 
+            /* En esta conversación y en sus hermanas del mismo canal (revisión independiente, arreglo 11). */
             $escaneo = ProviderOrderScan::where('user_id', $contexto->owner_id)
-                                        ->where('ai_conversation_id', (int) $contexto->conversation->id)
+                                        ->whereIn('ai_conversation_id', FotosDeLaConversacionIaHelper::conversaciones_del_mismo_canal($contexto))
                                         ->where('estado', 'error')
                                         ->orderBy('id', 'DESC')
                                         ->first();

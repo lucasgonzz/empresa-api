@@ -473,6 +473,44 @@ class Una_foto_para_varios_articulos_Test extends TestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 11: la foto ya puesta en un artículo se reusa también
+     * desde un hilo HERMANO (misma persona, mismo canal, últimas 24 h): por WhatsApp la charla se parte
+     * por tema. Una foto del hilo de OTRA persona (un empleado), no.
+     *
+     * @test
+     */
+    public function la_foto_ya_usada_se_reusa_desde_un_hilo_hermano_pero_no_desde_el_de_otra_persona()
+    {
+        $a = $this->articulo('Pincel 1"');
+        $b = $this->articulo('Pincel 2"');
+
+        $hilo_de_la_foto = $this->conversacion();
+        list(, $fotos) = $this->del_dueno($hilo_de_la_foto, 'Esta al pincel de 1');
+        $assistant = $this->del_asistente($hilo_de_la_foto);
+        $primera = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($hilo_de_la_foto), $assistant, ['articulo_id' => $a->id]);
+        $this->assertSame(200, $this->confirmar($hilo_de_la_foto, $primera['tarjeta_id'])['status']);
+
+        /* El hilo siguiente (otro tema, mismo canal y misma persona): «la misma para el de 2». */
+        $hilo_siguiente = $this->conversacion();
+        AiMessage::create(['ai_conversation_id' => $hilo_siguiente->id, 'rol' => 'user', 'contenido' => 'La misma para el pincel de 2', 'estado' => 'listo']);
+        $propone = $this->del_asistente($hilo_siguiente);
+
+        $reuso = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($hilo_siguiente), $propone, ['articulo_id' => $b->id, 'imagen_id' => $fotos[0]->id]);
+        $this->assertTrue($reuso['ok'], json_encode($reuso));
+        $this->assertSame(200, $this->confirmar($hilo_siguiente, $reuso['tarjeta_id'])['status']);
+        $this->assertSame(1, $this->fotos_de($b));
+
+        /* El hilo de un empleado del mismo negocio no ve la foto del dueño. */
+        $empleado = User::create(['name' => 'Empleado E1r', 'email' => 'emp-e1r-' . uniqid() . '@test.local', 'password' => Hash::make('x'), 'owner_id' => $this->comercio->id]);
+        $hilo_del_empleado = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $empleado->id]);
+        AiMessage::create(['ai_conversation_id' => $hilo_del_empleado->id, 'rol' => 'user', 'contenido' => 'Ponele la misma', 'estado' => 'listo']);
+        $del_empleado = AiMessage::create(['ai_conversation_id' => $hilo_del_empleado->id, 'rol' => 'assistant', 'contenido' => '.', 'estado' => 'listo', 'acciones_habilitadas' => true]);
+
+        $ajeno = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($hilo_del_empleado), $del_empleado, ['articulo_id' => $b->id, 'imagen_id' => $fotos[0]->id]);
+        $this->assertFalse($ajeno['ok']);
+    }
+
+    /**
      * 🔴 Ronda de arreglos (30/10/2026), arreglo 10: si la ejecución falla A MITAD (acá, el quinto clavo
      * revienta al guardarse), no quedan webp huérfanos en el disco de los cuatro que ya habían pasado, y
      * la foto no queda sellada.

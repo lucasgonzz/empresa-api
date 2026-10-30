@@ -491,9 +491,14 @@ class CambioDeProveedorDeCompraIaHelper
                                     ->where('resuelta_at', '>=', Carbon::now()->subHours(self::HORAS))
                                     ->orderBy('id', 'DESC');
 
+        /*
+         * «La recién hecha» se busca en esta conversación y en sus hermanas del mismo canal (revisión
+         * independiente, arreglo 11): por WhatsApp los hilos se parten por tema y la compra de un hilo
+         * se corrige en el siguiente. Ver FotosDeLaConversacionIaHelper::conversaciones_del_mismo_canal().
+         */
         if ($solo_esta_conversacion && !is_null($contexto->conversation)) {
 
-            $consulta->where('ai_conversation_id', (int) $contexto->conversation->id);
+            $consulta->whereIn('ai_conversation_id', FotosDeLaConversacionIaHelper::conversaciones_del_mismo_canal($contexto));
         }
 
         $acciones = [];

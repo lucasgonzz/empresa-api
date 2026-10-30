@@ -954,9 +954,6 @@ class PropuestaFotoArticuloIaHelper
 
         $imagen = AiMessageImagen::where('user_id', $contexto->owner_id)
                                     ->where('id', $imagen_id)
-                                    ->whereHas('message', function ($query) use ($contexto) {
-                                        $query->where('ai_conversation_id', $contexto->conversation->id);
-                                    })
                                     ->lockForUpdate()
                                     ->first();
 
@@ -965,9 +962,18 @@ class PropuestaFotoArticuloIaHelper
             return null;
         }
 
+        /*
+         * Una foto SIN USAR tiene que ser de esta conversación, como siempre (un id de otro hilo no se
+         * publica en este catálogo). Una YA USADA puede venir de un hilo hermano del mismo canal
+         * (revisión independiente, arreglo 11): lo decide es_reutilizable_para_articulo().
+         */
         if (is_null($imagen->gestionada_at)) {
 
-            return $imagen;
+            $de_esta = AiMessage::where('id', (int) $imagen->ai_message_id)
+                                ->where('ai_conversation_id', (int) $contexto->conversation->id)
+                                ->exists();
+
+            return $de_esta ? $imagen : null;
         }
 
         return FotosDeLaConversacionIaHelper::es_reutilizable_para_articulo($contexto, $imagen) ? $imagen : null;

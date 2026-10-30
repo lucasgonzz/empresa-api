@@ -107,6 +107,26 @@ class Reenvio_tras_escaneo_fallido_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 11: «volvé a escanearla» SIN número en el hilo siguiente
+     * encuentra el escaneo que falló en el hilo anterior del mismo canal.
+     *
+     * @test
+     */
+    public function sin_numero_encuentra_el_escaneo_fallido_del_hilo_anterior()
+    {
+        list(, $compra) = $this->compra_con_factura_del_agente($this->ferretotal);
+        $this->escaneo_fallido($compra);
+
+        list($hilo_siguiente, $assistant) = $this->escena('Volvé a escanearla');
+
+        $resultado = HerramientasDeCarga::ejecutar('proponer_reintento_de_escaneo', [], $hilo_siguiente, $assistant);
+        $datos = json_decode($resultado['content'], true);
+
+        $this->assertTrue($datos['ok'], $resultado['content']);
+        $this->assertSame((int) $compra->id, (int) AiMessageAction::find($datos['tarjeta_id'])->datos['provider_order_id']);
+    }
+
+    /**
      * 🔴 Ronda de arreglos (30/10/2026), arreglo 8: con compra_num, el reescaneo verifica que la compra
      * siga vacía. Una compra a la que le cargaron artículos a mano no se reescanea desde acá.
      *

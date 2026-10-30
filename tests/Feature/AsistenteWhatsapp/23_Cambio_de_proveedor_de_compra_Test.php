@@ -170,6 +170,26 @@ class Cambio_de_proveedor_de_compra_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 11: «volvé a cargarla con…» SIN número en el hilo
+     * siguiente (WhatsApp parte la charla por tema: CONV 19 y 20 de Pablo) encuentra la compra que el
+     * agente creó en el hilo anterior.
+     *
+     * @test
+     */
+    public function sin_numero_encuentra_la_compra_del_hilo_anterior_del_mismo_canal()
+    {
+        list(, $compra) = $this->compra_con_factura_del_agente($this->ferretotal);
+        $this->crear_proveedor('CAVALLFER');
+
+        list($hilo_siguiente, $assistant) = $this->escena('La podés volver a cargar con el proveedor cavallfer');
+
+        $respuesta = json_decode(HerramientasDeCarga::ejecutar('proponer_cambio_de_proveedor_de_compra', ['proveedor' => 'CAVALLFER'], $hilo_siguiente, $assistant)['content'], true);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame((int) $compra->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['provider_order_id']);
+    }
+
+    /**
      * No se toca una compra que no creó el agente, ni una con artículos, ni una con el escaneo
      * confirmado: esas se cambian desde la pantalla.
      *
