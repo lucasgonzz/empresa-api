@@ -67,7 +67,12 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      * solo) + tres llamadas a la IA de 45 s (135 s) = 330 s. Con los 90 s del tramo antes de empezarlo son 420 s: el
      * valor anterior quedaba justo en el límite, así que se subió a 480 para dejar margen. En la práctica un
      * artículo tarda ~12 s. Tiene que quedar por debajo del retry_after de las colas (config/queue.php: 4200 en
-     * database, 9000 en redis), o el mismo tramo se volvería a levantar mientras corre.
+     * database, 9000 en redis).
+     *
+     * 🔴 Las esperas a la base (corte de la conexión) salen de ESTE mismo tiempo: no tienen holgura propia. Por eso
+     * tienen un presupuesto acumulado por tramo (SEGUNDOS_MAXIMOS_DE_ESPERA_POR_TRAMO) y cada espera se acota a lo
+     * que queda del timeout menos un margen (MARGEN_DE_TIMEOUT_PARA_ESPERAR). Una espera que pasara del timeout haría
+     * que el worker matara el tramo en pleno sueño, sin pasar por failed().
      */
     public $timeout = 480;
 
@@ -94,10 +99,20 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      * Cuánto espera un tramo a que vuelva la base cuando se le corta la conexión (misión
      * medidas-vigia-de-corridas, 30/10/2026). La base del VPS la mata el OOM del kernel cada noche y tarda
      * de uno a tres minutos en volver: 150 s cubren casi todos los cortes. Más que eso ya no es un corte corto
-     * y el tramo muere como siempre (lo reanuda el vigía, medidas:reanudar-trabadas). Tiene que quedar
-     * holgado dentro del $timeout del tramo (480 s) junto con el artículo que se estaba procesando.
+     * y el tramo muere como siempre (lo reanuda el vigía, medidas:reanudar-trabadas). Es el tope de UNA espera;
+     * el total de un tramo está acotado aparte (SEGUNDOS_MAXIMOS_DE_ESPERA_POR_TRAMO) y por el $timeout.
      */
     const SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE = 150;
+
+    /**
+     * Total de segundos que un mismo tramo puede pasar esperando a la base, sumando todas sus esperas (reclamar,
+     * el motor y devolver el artículo). Con 480 s de timeout, el artículo en curso y el presupuesto de ~90 s del
+     * tramo, más de ~200 s de espera no entran. Agotado, se relanza la excepción y la recoge failed() y el vigía.
+     */
+    const SEGUNDOS_MAXIMOS_DE_ESPERA_POR_TRAMO = 200;
+
+    /** Segundos que una espera deja libres antes del $timeout del tramo, para poder cerrar bien si algo falla. */
+    const MARGEN_DE_TIMEOUT_PARA_ESPERAR = 30;
 
     /** Cada cuántos segundos se reintenta la conexión mientras se espera a la base. */
     const SEGUNDOS_ENTRE_PINGS_A_LA_BASE = 10;
@@ -118,6 +133,12 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      * corte de la base (ver MAX_CORTES_DE_BASE_SIN_COSTO_POR_ARTICULO). Vive en el tramo: arranca vacío.
      */
     protected $cortes_de_base_por_articulo = [];
+
+    /** @var float Segundos que este tramo ya pasó esperando a la base (se reinicia al empezar handle()). */
+    protected $espera_acumulada = 0.0;
+
+    /** @var float|null Instante (en segundos, ver ahora_en_segundos()) en que arrancó handle(); null = todavía no arrancó. */
+    protected $inicio_del_tramo = null;
 
     /**
      * @var string Ficha de ESTE tramo: se genera al despachar (viaja en el payload, así handle() y failed()
@@ -148,6 +169,8 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      */
     public function handle()
     {
+        $this->iniciar_presupuesto_de_espera();
+
         $this->asegurar_memoria_minima();
 
         $run = DimensionSearchRun::find($this->run_id);
@@ -450,8 +473,17 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                 ->where('tramo', $this->tramo)
                 ->get();
 
+            // Si el tramo murió porque la base no estaba, el artículo no tuvo la culpa: vuelve a la fila sin gastar
+            // el intento (si no, dos noches de corte lo darían por «venenoso»). El fallo seguido de más abajo se
+            // suma igual: es el que frena una corrida que se interrumpe una y otra vez.
+            $murio_por_la_base = !is_null($e) && $this->es_corte_de_base($e);
+
             foreach ($en_curso as $item) {
-                $this->devolver_o_descartar($item, $mensaje);
+                if ($murio_por_la_base) {
+                    $this->devolver_sin_gastar_intento($item);
+                } else {
+                    $this->devolver_o_descartar($item, $mensaje);
+                }
             }
 
             DB::table('dimension_search_runs')
@@ -549,18 +581,33 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      * puede salir gratis, o un proveedor colgado haría reintentar el mismo artículo para siempre.
      *
      * Se reconoce por el código del driver (2002 no se pudo conectar, 2006 la base se fue, 2013 se perdió la
-     * conexión en medio de la consulta) o por el texto del mensaje.
+     * conexión en medio de la consulta, 1053 el servidor se está apagando) o por el texto del mensaje.
+     *
+     * 🔴 El texto se busca SOLO en el mensaje crudo del driver, nunca en el SQL: el mensaje de una QueryException
+     * trae la consulta con sus valores (" (SQL: insert ... values (...))"), y entre esos valores puede haber un
+     * «cURL error 28: Connection timed out» guardado en el diagnóstico del artículo. Un fallo del guardado que no
+     * tiene nada que ver con la conexión pasaría por corte y el artículo se reprocesaría gratis.
      *
      * @param  \Throwable|null $e
      * @return bool
      */
     protected function es_corte_de_base($e)
     {
-        // Códigos de error de MySQL que significan «no hay base del otro lado».
-        $codigos = [2002, 2006, 2013];
+        // Códigos de error de MySQL que significan «no hay base del otro lado» (1053: apagándose/reiniciándose).
+        $codigos = [1053, 2002, 2006, 2013];
 
-        // Fragmentos del mensaje que significan lo mismo (el driver a veces no deja el código a mano).
-        $frases = ['Connection refused', 'server has gone away', 'Lost connection', 'Connection timed out'];
+        // Fragmentos del mensaje del driver que significan lo mismo (a veces el código no queda a mano).
+        $frases = [
+            'Connection refused',
+            'server has gone away',
+            'Lost connection',
+            'Connection timed out',
+            'server closed the connection',
+            'no connection to the server',
+            'Error while sending',
+            'Connection reset by peer',
+            'Server shutdown in progress',
+        ];
 
         $profundidad = 0;
 
@@ -578,8 +625,16 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                     return true;
                 }
 
+                // El mensaje del driver, sin la consulta ni sus valores (que la QueryException pega después).
+                $mensaje = (string) $e->getMessage();
+                $corte   = strpos($mensaje, ' (SQL:');
+
+                if ($corte !== false) {
+                    $mensaje = substr($mensaje, 0, $corte);
+                }
+
                 foreach ($frases as $frase) {
-                    if (stripos($e->getMessage(), $frase) !== false) {
+                    if (stripos($mensaje, $frase) !== false) {
                         return true;
                     }
                 }
@@ -593,13 +648,81 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
     }
 
     /**
-     * Espera a que la base vuelva: reconecta y hace un ping (`select 1`) cada SEGUNDOS_ENTRE_PINGS_A_LA_BASE
-     * segundos, hasta SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE. Es `protected` para que los tests lo reemplacen
-     * (reconectar adentro de la transacción de un test la rompería, y nadie quiere dormir 150 s en una suite).
+     * Arranca el presupuesto de espera del tramo: sin espera acumulada y con el reloj en el instante actual.
+     * Se llama al empezar handle().
      *
+     * @return void
+     */
+    protected function iniciar_presupuesto_de_espera()
+    {
+        $this->espera_acumulada = 0.0;
+        $this->inicio_del_tramo = $this->ahora_en_segundos();
+    }
+
+    /**
+     * El instante actual, en segundos con decimales. Existe aparte para que los tests simulen el paso del tiempo
+     * sin dormir de verdad.
+     *
+     * @return float
+     */
+    protected function ahora_en_segundos()
+    {
+        return microtime(true);
+    }
+
+    /**
+     * Cuántos segundos puede esperar AHORA el tramo a la base: lo menor entre el tope de una espera, lo que queda
+     * del presupuesto acumulado del tramo y lo que queda del $timeout menos un margen (contando lo que ya
+     * transcurrió desde que arrancó handle()).
+     *
+     * @return int  0 o menos = no se puede esperar más.
+     */
+    protected function segundos_de_espera_permitidos()
+    {
+        $transcurrido = is_null($this->inicio_del_tramo) ? 0.0 : $this->ahora_en_segundos() - $this->inicio_del_tramo;
+
+        $del_presupuesto = self::SEGUNDOS_MAXIMOS_DE_ESPERA_POR_TRAMO - $this->espera_acumulada;
+        $del_timeout     = (int) $this->timeout - self::MARGEN_DE_TIMEOUT_PARA_ESPERAR - $transcurrido;
+
+        return (int) floor(min(self::SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE, $del_presupuesto, $del_timeout));
+    }
+
+    /**
+     * Espera a la base dentro del presupuesto del tramo (ver segundos_de_espera_permitidos()) y anota lo que
+     * tardó. Agotado el presupuesto no espera nada y contesta false.
+     *
+     * @return bool  true si la base respondió; false si no volvió a tiempo o no quedaba presupuesto.
+     */
+    protected function esperar_a_la_base_dentro_del_presupuesto()
+    {
+        $permitidos = $this->segundos_de_espera_permitidos();
+
+        if ($permitidos <= 0) {
+            Log::error('[MedidasMasivas] Se agotó el presupuesto de espera a la base de este tramo.', [
+                'run_id'           => $this->run_id,
+                'espera_acumulada' => round($this->espera_acumulada),
+            ]);
+
+            return false;
+        }
+
+        $inicio = $this->ahora_en_segundos();
+        $volvio = $this->esperar_a_la_base($permitidos);
+
+        $this->espera_acumulada += max(0.0, $this->ahora_en_segundos() - $inicio);
+
+        return $volvio;
+    }
+
+    /**
+     * Espera a que la base vuelva: reconecta y hace un ping (`select 1`) cada SEGUNDOS_ENTRE_PINGS_A_LA_BASE
+     * segundos, hasta `$maximo` segundos. Es `protected` para que los tests lo reemplacen (reconectar adentro de
+     * la transacción de un test la rompería, y nadie quiere dormir 150 s en una suite).
+     *
+     * @param  int $maximo  Segundos máximos de esta espera (el que calcula segundos_de_espera_permitidos()).
      * @return bool  true si la base respondió; false si pasó el tiempo y sigue caída.
      */
-    protected function esperar_a_la_base()
+    protected function esperar_a_la_base($maximo = self::SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE)
     {
         $inicio = microtime(true);
 
@@ -610,7 +733,7 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
 
                 return true;
             } catch (\Throwable $error) {
-                $restante = self::SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE - (microtime(true) - $inicio);
+                $restante = $maximo - (microtime(true) - $inicio);
 
                 if ($restante <= 0) {
                     return false;
@@ -652,10 +775,10 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
             'error'   => $e->getMessage(),
         ]);
 
-        if (!$this->esperar_a_la_base()) {
+        if (!$this->esperar_a_la_base_dentro_del_presupuesto()) {
             Log::error('[MedidasMasivas] La base no volvió a tiempo: el tramo se interrumpe y lo levanta el vigía (medidas:reanudar-trabadas).', [
                 'run_id' => $this->run_id,
-                'espera' => self::SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE,
+                'espera_acumulada' => round($this->espera_acumulada),
             ]);
 
             throw $e;
@@ -698,7 +821,7 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                 'error'  => $e->getMessage(),
             ]);
 
-            if (!$this->esperar_a_la_base()) {
+            if (!$this->esperar_a_la_base_dentro_del_presupuesto()) {
                 throw $e;
             }
 
@@ -731,7 +854,7 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                 'error'   => $e->getMessage(),
             ]);
 
-            if (!$this->esperar_a_la_base()) {
+            if (!$this->esperar_a_la_base_dentro_del_presupuesto()) {
                 throw $e;
             }
 
