@@ -153,7 +153,17 @@ class Exportar_excel_del_agente_Test extends EmpresaTestCase
 
         $lectura = $servicio->nombres_de_lectura();
 
-        $this->assertSame('exportar_excel', $lectura[count($lectura) - 1], 'Al final: el prefijo de las de antes no cambia.');
+        /*
+         * 🔴 Lo que cuida el caché es que exportar_excel entró DESPUÉS de todo lo que había (justo detrás de
+         * consultar_escaneo_de_factura, la última de antes) y que nada de lo anterior se movió. Ya NO se
+         * afirma que sea la última: la regla del prefijo manda sumar cada herramienta nueva al final, y la
+         * misma misión (E2, consultar_articulos_sin_rotacion) sumó otra detrás. Mismo criterio que
+         * 36_Guardas_de_las_cargas_genericas desde el 21/9/2026.
+         */
+        $donde = array_search('exportar_excel', $lectura, true);
+
+        $this->assertNotFalse($donde, 'exportar_excel no está en el registro de lectura.');
+        $this->assertSame('consultar_escaneo_de_factura', $lectura[$donde - 1], 'Al final de lo que había: el prefijo de las de antes no cambia.');
 
         $this->assertContains('exportar_excel', array_column($servicio->build_tools(false, false), 'name'), 'Sistema, sin acciones.');
         $this->assertContains('exportar_excel', array_column($servicio->build_tools(true, false, $this->dueno), 'name'), 'Sistema, con acciones.');

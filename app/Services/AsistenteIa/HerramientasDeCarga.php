@@ -2544,7 +2544,7 @@ class HerramientasDeCarga
                         'properties'  => [
                             'numero'        => [
                                 'type'        => 'string',
-                                'description' => 'Número del cheque, tal como está impreso.',
+                                'description' => 'Número del cheque, tal como está impreso en el cheque o en la foto, o como lo dijo la persona. Si no se lee, preguntalo: nunca lo inventes ni numeres los cheques correlativos (1, 2, 3...).',
                             ],
                             'banco'         => [
                                 'type'        => 'string',
@@ -2556,7 +2556,7 @@ class HerramientasDeCarga
                             ],
                             'fecha_emision' => [
                                 'type'        => 'string',
-                                'description' => 'AAAA-MM-DD. Si no la dicen, es hoy.',
+                                'description' => 'AAAA-MM-DD, solo si figura en el cheque o la dice la persona. Si no, no la mandes: se usa la de hoy y la tarjeta lo avisa.',
                             ],
                             'es_echeq'      => [
                                 'type'        => 'boolean',

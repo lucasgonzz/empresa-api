@@ -1617,6 +1617,13 @@ class AsistenteIaService
         $bloque_de_la_app = $es_app ? $this->bloque_de_la_app() : '';
 
         /*
+         * Misión agente-mejoras-uso-real (29/10/2026): fuera de la app no hay pedir_imagen, y el agente
+         * contestaba "no tengo forma de generar una imagen". Va en el lugar del bloque de la app (son
+         * excluyentes): la regla de a dónde mandar a la persona cuando pide una imagen nueva.
+         */
+        $bloque_de_la_imagen = $es_app ? '' : $this->bloque_de_la_imagen_fuera_de_la_app($conversation, $owner);
+
+        /*
          * Misión app-ia-y-memoria (E2, 29/10/2026): las reglas de la memoria del negocio (qué se
          * guarda, qué no, cuándo leerla), para el dueño con Agentes de IA y en TODOS los canales. Son
          * FIJAS, así que van en este bloque, el cacheado; lo que cambia —el contexto maestro y el
@@ -1683,7 +1690,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -1758,6 +1765,61 @@ Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño
   gráficos o con números directos), eso manda sobre estas reglas.
 
 APP;
+    }
+
+    /**
+     * La regla de las IMÁGENES NUEVAS fuera de la app (misión agente-mejoras-uso-real, 29/10/2026,
+     * revisión independiente), con su salto de línea final; '' en la app (ahí está pedir_imagen).
+     *
+     * EL CASO REAL (CONV 24 de Ferre Total): «¿Podés hacerme una imagen de oferta de este producto?» por
+     * WhatsApp, y el agente contestó *"No tengo forma de generar una imagen de oferta: el sistema no crea
+     * gráficos ni banners"*. Generarla sí se puede, desde la app ComercioCity IA (pedir_imagen existe solo
+     * en ese canal). La entrega de la imagen por WhatsApp o en el sistema queda para otra misión: acá solo
+     * se le dice al modelo a dónde mandar a la persona, para que nunca conteste que no se puede.
+     *
+     * 🔴 SOLO SI ESTA INSTALACIÓN TIENE LA APP PARA ESTE NEGOCIO: el token de la app lo emite
+     * admin-sync/ia-app/token únicamente con la extensión Agentes de IA (AsistenteCanalHelper::
+     * tiene_extension) y para el dueño o un administrador (IaAppHelper::puede_usar_el_asistente). Con la
+     * extensión y alguien que puede entrar: la dirección y que entra con su mismo usuario. Con la
+     * extensión y un empleado sin acceso: que la pida el dueño o un administrador. Sin la extensión no se
+     * sabe si la va a tener: se dice condicional, sin prometerla.
+     *
+     * @param  AiConversation  $conversation  Para saber quién escribe.
+     * @param  User|null  $owner
+     * @return string
+     */
+    protected function bloque_de_la_imagen_fuera_de_la_app(AiConversation $conversation, $owner): string
+    {
+        $cierre = '  🔴 Nunca digas que no se puede, que no tenés forma o que el sistema no genera imágenes, y no'
+            . "\n" . '  digas que la pediste: desde acá no hay pedido.' . "\n";
+
+        if (! \App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::tiene_extension($owner)) {
+
+            return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): se hacen desde' . "\n"
+                . '  la app ComercioCity IA (ia.comerciocity.com), que viene con Agentes de IA. Si te piden una,' . "\n"
+                . '  decí en una línea que, si el negocio la tiene activa, la pide desde ahí entrando con su mismo' . "\n"
+                . '  usuario y contraseña del sistema, y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+                . $cierre;
+        }
+
+        $persona = User::find($conversation->auth_user_id);
+
+        $puede_entrar = ($persona instanceof User) && \App\Http\Controllers\Helpers\asistente_ia\IaAppHelper::puede_usar_el_asistente($persona);
+
+        if (! $puede_entrar) {
+
+            return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): desde acá no las' . "\n"
+                . '  generás, pero se hacen desde la app ComercioCity IA (ia.comerciocity.com), que usan el dueño' . "\n"
+                . '  y los administradores. Si te piden una, decí eso en una línea (que se la pida a ellos) y' . "\n"
+                . '  ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+                . $cierre;
+        }
+
+        return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): desde acá no las' . "\n"
+            . '  generás, pero SÍ se hacen: desde la app ComercioCity IA (ia.comerciocity.com), entrando con el' . "\n"
+            . '  mismo usuario y contraseña del sistema; ahí se la pide al agente.' . "\n"
+            . '  Si te piden una, decí eso en una línea y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+            . $cierre;
     }
 
     /**
@@ -1871,33 +1933,42 @@ VERDAD;
   cambios y marcarlas hechas), los combos, las ofertas, la compra con factura, la foto de una
   sucursal y la de un artículo, las búsquedas de imágenes, los diseños de PDF, las altas y las
   ediciones del ABM genérico, las ventas, los presupuestos, los dos movimientos de stock (mover
-  entre depósitos y cargarle a uno) y las acciones de pantalla que no borran
-  (proponer_accion_de_pantalla). En todos esos casos avisá que YA quedó hecho, con lo que te
+  entre depósitos y cargarle a uno), las acciones de pantalla que no borran
+  (proponer_accion_de_pantalla), cambiarle el proveedor a una compra recién cargada a un
+  proveedor que ya existe (proponer_cambio_de_proveedor_de_compra) y volver a escanear una
+  factura cuyo escaneo falló. En todos esos casos avisá que YA quedó hecho, con lo que te
   devolvió el resultado.
-- 🔴 NUEVE cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
+- 🔴 DOCE cosas siguen dejando tarjeta SIEMPRE, incluso en "directo", y no hay forma de
   saltearlas: borrar algo (proponer_baja y proponer_borrado_por_pantalla), la actualización masiva
   de artículos, la unificación de bancos de los cheques, los permisos de un empleado, las
   acciones de pantalla que emiten comprobantes ante ARCA (facturar, consolidar la facturación, una
   devolución con nota de crédito, editar una venta ya cargada —puede emitir una nota de crédito y
   avisarle al cliente—) o tocan muchos artículos de un saque (la respuesta te lo dice con
-  requiere_confirmacion), y los tres ENVÍOS A CLIENTES: mandar un comprobante
+  requiere_confirmacion), los tres ENVÍOS A CLIENTES: mandar un comprobante
   (proponer_envio_de_comprobante), los recordatorios de cobro (proponer_recordatorios_de_cobro) y
-  una promoción por WhatsApp (proponer_promocion_por_whatsapp). En esas nueve decí que queda
+  una promoción por WhatsApp (proponer_promocion_por_whatsapp), y tres que mueven plata o
+  precios con un dato dictado: una compra sin artículos (proponer_compra_sin_articulos), una
+  edición de márgenes por lista que le saca a un artículo su precio fijo o le baja el precio, y el
+  cambio de proveedor de una compra que da de alta un proveedor nuevo (en esas dos la respuesta te
+  lo dice con requiere_confirmacion). En esas doce decí que queda
   esperando su confirmación (en el sistema, la tarjeta; por WhatsApp, su sí), aunque la persona
   te pida que lo hagas sin preguntar: un borrado no se deshace, las masivas tocan cientos de
   registros de un saque, un comprobante emitido ante ARCA no se borra, un permiso mal cambiado
-  deja a alguien sin poder trabajar y nadie se entera hasta que llega, y un mensaje que le llegó a
-  un cliente no se desmanda. Si insisten, explicá eso en una línea y no lo discutas más.
+  deja a alguien sin poder trabajar y nadie se entera hasta que llega, un mensaje que le llegó a
+  un cliente no se desmanda, y un total o un precio mal entendido se paga de más antes de que
+  alguien lo note. Si insisten, explicá eso en una línea y no lo discutas más.
 AUTO_DIRECTO
             : <<<AUTO_RESUELTO
 - Las cargas que con tu confianza en "resuelto" hacés en el acto sin dejar tarjeta son: la
   foto de una sucursal, mandar a buscar imágenes (categorías y artículos), cambiar un
-  diseño de PDF y la compra con factura (con el alta del proveedor si no existía); en ese
+  diseño de PDF, la compra con factura (con el alta del proveedor si no existía) y volver a
+  escanear una factura cuyo escaneo falló; en ese
   caso avisá que ya quedó hecho o mandado, con lo que te devolvió el resultado. Con
   "cauteloso" dejás la tarjeta para confirmar, como todo lo demás. La actualización masiva, la unificación de
   bancos de cheques, los permisos de un empleado, el borrado por pantalla
-  (proponer_borrado_por_pantalla) y los tres envíos a clientes (comprobante, recordatorios de cobro
-  y promoción por WhatsApp) SIEMPRE dejan tarjeta.
+  (proponer_borrado_por_pantalla), los tres envíos a clientes (comprobante, recordatorios de cobro
+  y promoción por WhatsApp) y la compra sin artículos (proponer_compra_sin_articulos) SIEMPRE
+  dejan tarjeta.
 - 🔴 Si la persona te pide que cargues sin preguntar, no podés: en este modo la confirmación la
   da ella con la tarjeta. Decile, en una línea, que puede prender el modo directo desde la
   configuración del asistente y que a partir de ahí las cargas se hacen solas. No vuelvas a
@@ -1957,7 +2028,11 @@ AUTO_RESUELTO;
 - Un cheque se carga como una fila más del PAGO de una cuenta corriente (o de un gasto), con
   su número, su banco y su fecha de vencimiento, y SIN caja: un cheque no entra a ninguna
   caja hasta que lo cobrás. Si no te dijeron el número, el banco o la fecha, preguntalos: un
-  cheque sin eso no lo puede reconocer nadie después. 🔴 En el cobro de una VENTA no: el
+  cheque sin eso no lo puede reconocer nadie después. 🔴 El número, el banco y el vencimiento
+  de un cheque salen SOLO de lo que se lee en la foto o de lo que dice la persona: si en la foto
+  no se lee el número de uno, preguntalo; nunca los numeres correlativos (1, 2, 3…) ni inventes
+  uno. La fecha de emisión va solo si figura o te la dicen; si no, no la mandes (el sistema pone
+  la de hoy y la tarjeta lo avisa). 🔴 En el cobro de una VENTA no: el
   cobro de la venta no lleva esos datos y quedaría un cheque en blanco, así que esa venta se
   hace desde Vender.
 - Mover stock entre depósitos y cargarle stock a un depósito son dos cosas distintas y no se
@@ -2255,7 +2330,9 @@ VARIAS;
             ? <<<GEN_DIRECTO
 - 🔴 Con tu confianza en "directo", un alta y una edición se ejecutan en el acto: no digas que
   dejaste una tarjeta, contá lo que quedó creado o cambiado con lo que devolvió el `resultado`.
-  BORRAR es la excepción: proponer_baja SIEMPRE deja tarjeta, en todos los modos.
+  BORRAR es la excepción: proponer_baja SIEMPRE deja tarjeta, en todos los modos. Y una edición
+  de márgenes por lista que le saca a un artículo su precio fijo o le baja el precio también
+  espera su confirmación (la respuesta te lo dice con requiere_confirmacion): contale el aviso.
 GEN_DIRECTO
             : <<<GEN_CONFIRMA
 - 🔴 Estas cargas NUNCA se hacen solas en este modo: crear, cambiar o borrar datos del negocio y
@@ -2554,7 +2631,9 @@ WHATSAPP;
   registro?" para eso: o lo hacés, o la herramienta te dice por qué no se puede. Preguntá
   solo lo que de verdad falta para cargarlo (lo que la herramienta te devuelve en "faltan").
 - Lo que SIEMPRE espera el sí (borrar, la actualización masiva, unificar bancos, los permisos
-  de un empleado, lo que emite ante ARCA, y mandarle algo a un cliente: un comprobante, los
+  de un empleado, lo que emite ante ARCA, una compra sin artículos, una edición de márgenes que
+  saca un precio fijo o baja un precio, el cambio de proveedor de una compra que da de alta un
+  proveedor nuevo, y mandarle algo a un cliente: un comprobante, los
   recordatorios de cobro o una promoción) se confirma por texto: llamás igual a la
   herramienta, la respuesta te dice que quedó esperando, y vos decís en una línea qué vas a
   hacer, con los datos exactos, y preguntás si lo hacés. Sin la palabra tarjeta. En un envío a
