@@ -62,8 +62,9 @@ class ProgresoIaHelper
         'guardar_en_contexto'                       => 'Anotándolo…',
         'confirmar_carga_pendiente'                 => 'Registrando…',
         'cancelar_carga_pendiente'                  => 'Cancelando…',
-        // Misión agente-mejoras-uso-real (29/10/2026, §4 E3): el Excel.
+        // Misión agente-mejoras-uso-real (29/10/2026, §4 E3): el Excel y el pedido a soporte.
         'exportar_excel'                            => 'Armando el Excel…',
+        'pedir_ayuda_a_soporte'                     => 'Escribiéndole a soporte…',
     ];
 
     /**

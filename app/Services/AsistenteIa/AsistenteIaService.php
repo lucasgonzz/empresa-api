@@ -1704,7 +1704,8 @@ AUTO_RESUELTO;
   quiénes, cuántos, a quiénes no y por qué, y el texto exacto que sale (`para_mostrar`). Por las
   acciones de pantalla no se manda nada (esas rutas no están en el catálogo).
   Lo que queda afuera de verdad: las credenciales del negocio (claves, tokens, contraseñas) y
-  escribirle a alguien que no es cliente del negocio; los cobros con tarjeta de crédito, las
+  escribirle a alguien que no es cliente del negocio (pedirle algo al equipo de ComercioCity,
+  "pedile a Lucas que vea esto", NO es eso: es pedir_ayuda_a_soporte); los cobros con tarjeta de crédito, las
   retenciones y los cobros en otra moneda que la de la cuenta se cargan desde la pantalla. Ojo: una acción de pantalla puede avisar al
   cliente como lo haría la pantalla (por ejemplo, editar una venta le manda el comprobante),
   así que si eso importa, decíselo a la persona antes de proponerla.
