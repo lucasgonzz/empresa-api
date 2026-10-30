@@ -5,6 +5,7 @@ namespace App\Console;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
+use App\Models\AiArchivo;
 use App\Models\Combo;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
@@ -403,6 +404,25 @@ class Kernel extends ConsoleKernel
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');
+
+        // Limpieza de los archivos del agente personal (misión agente-mejoras-uso-real, 29/10/2026):
+        // borra los Excel de exportar_excel cuyo link ya venció (7 días), el binario del disco privado
+        // y su fila de `ai_archivos`.
+        //
+        // 03:45: dentro de la ventana nocturna, después del backup del VPS (03:15). Por la regla del
+        // schedule, el ->when() decide adentro de schedule:run: sin la tabla (la ventana de un
+        // upgrade) o sin ningún archivo vencido, que es lo normal en casi todos los clientes, no se
+        // arranca ningún artisan. Si no se puede decidir, gate_de_datos() devuelve true y el comando
+        // sale solo en su primera línea.
+        $schedule->command('asistente:limpiar-archivos')
+            ->dailyAt('03:45')
+            ->withoutOverlapping(30)
+            ->when(function () {
+                return $this->tabla_existe_para_el_schedule('ai_archivos')
+                    && $this->gate_de_datos(function () {
+                        return AiArchivo::where('expires_at', '<', now())->exists();
+                    });
+            });
 
         // Watchdog de importaciones colgadas: desbloquea imports que murieron sin dejar traza.
         // withoutOverlapping(10) permite reintentos si el comando muere; por default (1440 min = 24 horas)

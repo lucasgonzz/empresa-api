@@ -1512,7 +1512,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_promocion_por_whatsapp',
-                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda (de varios, hasta 5 en article_ids: cada uno sale con su link), o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` lo redactás VOS, sin pedírselo a la persona: qué se ofrece y a qué precio (el de cada artículo como lo devolvió consultar_stock_de_articulos), sin saludo (el saludo con el nombre lo pongo yo) y sin links (los pongo yo). La persona lo ve tal cual sale y lo corrige antes del sí. Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara una PROMOCIÓN por WhatsApp a los clientes del negocio (por defecto a todos los que tienen teléfono), con el link a la tienda: del artículo si es de un artículo publicado en la tienda (de varios, hasta 5 en article_ids: cada uno sale con su link), o de la portada si es de un combo (si el combo no está publicado, se publica al mandar). El `texto` lo redactás VOS, sin pedírselo a la persona: qué se ofrece y a qué precio (el de cada artículo como lo devolvió consultar_stock_de_articulos), sin saludo (el saludo con el nombre lo pongo yo) y sin links (los pongo yo). La persona lo ve tal cual sale y lo corrige antes del sí. Para "armá un combo y mandales una promo", primero proponer_combo y, ya creado, esta con el nombre del combo. Topes: el negocio no manda más de 250 promociones por día y un cliente no recibe más de una cada 7 días; la respuesta dice a cuántos no les llega y por qué. Solo la usa el dueño o un administrador. Si el texto nombra un combo, pasá cuál (combo o combo_id); si el negocio no tiene Combos, ofrecé la promo de los artículos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Nunca inventes un link. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Si la persona pide verla antes ("mandámela a mí primero", "quiero ver cómo queda"), llamala igual: lo que el sistema le muestra antes del sí (el bloque al final de tu mensaje por WhatsApp, o la tarjeta en el sistema) ES la vista previa exacta, palabra por palabra, de lo que le llega a cada cliente; decile que ahí la tiene y que no sale nada hasta su sí, y nunca digas que no se puede. Si la respuesta trae codigo sin_whatsapp_de_clientes, decilo en esa misma respuesta y ofrecé pedírselo a soporte; con sin_direccion_de_tienda, nunca digas que el negocio no tiene tienda ni que el artículo no está publicado: lo que falta es la dirección de la tienda.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1637,6 +1637,28 @@ class HerramientasDeCarga
                         'reemplaza_a' => self::esquema_de_reemplazo(),
                     ],
                     'required'   => [],
+                ],
+            ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (29/10/2026, §4 E3.3), AL FINAL por la regla del prefijo del
+             * caché. En Ferre Total (CONV 24) el dueño escribió «Le pedis a lucas que vea este tema» y el
+             * agente contestó que no podía escribirle a Lucas. El canal existía: el chat de soporte del
+             * negocio con ComercioCity. SIN TARJETA (es un mensaje a ComercioCity que la persona pidió, no a
+             * un tercero) y con tope diario; el MCP no la declara (McpHerramientasHelper::EXCLUIDAS). Todo
+             * vive en PedidoDeAyudaASoporteIaHelper.
+             */
+            [
+                'name'         => 'pedir_ayuda_a_soporte',
+                'description'  => 'Le deja un pedido al equipo de SOPORTE DE COMERCIOCITY (Lucas y el equipo que atiende el sistema) en el chat de soporte del negocio, el mismo de Ayuda del sistema, junto con las últimas vueltas de esta conversación. Usala solo cuando la persona te lo pide o acepta que lo hagas: "pedile a Lucas que vea esto", "avisale a soporte", "que lo revisen los de ComercioCity", o cuando algo no lo podés resolver vos (conectar el WhatsApp con los clientes, cargar la dirección de la tienda, un error del sistema, activar un módulo) y la persona te dice que sí cuando se lo ofrecés. No es escribirle a un tercero: es el canal del propio negocio con ComercioCity. El `detalle` lo redactás VOS, en una o dos oraciones: qué necesita y qué ya probaron. No deja tarjeta: sale en el acto. Tope: 3 por día por persona. Después decí en una oración que quedó pedido y que soporte le contesta por ese chat; no prometas tiempos ni que ya está resuelto. 🔴 Nunca digas que no podés hablar con Lucas o con soporte: con esta herramienta podés. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'detalle' => [
+                            'type'        => 'string',
+                            'description' => 'Qué necesita la persona que vea soporte, redactado por vos en una o dos oraciones (hasta 2000 caracteres). Ejemplo: "Pablo quiere mandar promos por WhatsApp y el sistema dice que el negocio no tiene conectado el WhatsApp con los clientes; él cree que ya lo cargó."',
+                        ],
+                    ],
+                    'required'   => ['detalle'],
                 ],
             ],
         ];
@@ -2266,6 +2288,15 @@ class HerramientasDeCarga
                     $assistant_message,
                     ReintentoDeEscaneoIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
+
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026): el pedido al chat de soporte. Sin tarjeta y sin
+             * pasar por quizas_auto_confirmar(): no es una carga del negocio, es un mensaje a ComercioCity
+             * que la persona pidió (las guardas, el tope y el corte del MCP viven en el helper y en
+             * McpHerramientasHelper::EXCLUIDAS).
+             */
+            case 'pedir_ayuda_a_soporte':
+                return self::resultado(\App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper::pedir($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));

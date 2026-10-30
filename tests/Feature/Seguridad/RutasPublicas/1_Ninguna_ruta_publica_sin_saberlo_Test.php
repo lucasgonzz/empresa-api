@@ -109,6 +109,9 @@ class Ninguna_ruta_publica_sin_saberlo_Test extends RutasPublicasTestCase
         'POST api/admin-sync/ia-app/token'  => 'El admin pide el token de la app del dueño. Clave estricta adentro (ClaveEstrictaDeAdmin); la contraseña se valida antes de revelar nada.',
         'GET api/admin-sync/ia-app/dueno'   => 'El admin arma su directorio con el documento del dueño. Clave estricta adentro (ClaveEstrictaDeAdmin).',
         'POST api/admin-sync/ia-imagenes/{uuid}/resultado' => 'El admin entrega la imagen generada de un pedido del agente. Clave estricta adentro (ClaveEstrictaDeAdmin), idempotente.',
+        // Misión agente-mejoras-uso-real (29/10/2026): el Excel de exportar_excel, que el dueño abre desde WhatsApp sin
+        // sesión. ChatIa/95_Exportar_excel_del_agente_Test prueba el 404 sin token, con token equivocado, vencido y ajeno.
+        'GET asistente/archivo/{uuid}' => 'Excel que armó el agente personal: token aleatorio de 48 caracteres guardado como sha256 (hash_equals), vence a los 7 días, el archivo sale de la fila y de la carpeta de su dueño en el disco privado (ArchivosDelAgenteIaHelper::para_descargar); throttle 60/min.',
     ];
 
     /**
