@@ -435,10 +435,20 @@ class ConversacionesAnterioresIaHelper
     }
 
     /**
-     * Los registros (entidad + número: «pago» 1706, «gasto» 88) de las cargas CONFIRMADAS de las
-     * conversaciones que el modelo abrió o encontró en este turno (ronda de arreglos de la revisión
-     * independiente, R2, 30/10/2026). Salen del texto del resultado de cada tarjeta («Pago N° 1706
-     * registrado…»); una carga sin número en su resultado (una tarea agendada) no da ninguno.
+     * Patrón de un cambio NUEVO en primera persona (segunda ronda de arreglos, F1): «le/les cargué…»,
+     * «les puse…», «le agregué…», «cambié», «actualicé», «modifiqué», «agregué». Sobre el texto ya en
+     * minúscula y sin tildes. Una oración que nombra un registro de otra conversación PERO trae uno de
+     * estos verbos no se saca: es justo la mentira de Ferre Total («Listo, les cargué la fecha de cobro a
+     * los 5 cheques del Pago N° 1706» sin haber llamado a ninguna herramienta).
+     */
+    const CAMBIO_NUEVO = '/\b(?:le|les)\s+(?:cargue|puse|agregue|sume|asigne|cambie|actualice|modifique)\b|\b(?:cambie|actualice|modifique|agregue)\b/u';
+
+    /**
+     * Los registros (entidad + número: «pago» 1706, «gasto» 88) de las cargas CONFIRMADAS de otras
+     * conversaciones que el modelo VIO en este turno (rondas de arreglos de la revisión independiente, R2
+     * y F1, 30/10/2026). Salen del texto del resultado de cada carga («Pago N° 1706 registrado…»), tal
+     * como lo juntó HerramientasDeConversaciones::resultado() (`cargas_vistas`); una carga sin número en
+     * su resultado (una tarea agendada) no da ninguno.
      *
      * 🔴 PARA QUÉ. La guarda de la carga prometida (AsistenteIaService::afirma_una_carga_que_no_se_hizo)
      * mira si el texto da por hecha una carga que ESTE mensaje no ejecutó. Medido el 30/10 con
@@ -446,86 +456,58 @@ class ConversacionesAnterioresIaHelper
      * quedó registrado con los 5 e-cheq.» a un pedido como «Seguí con lo del pago de Pinturería
      * Sudamericana» disparaba el reintento (una llamada más, al Profundo, con la nota que le pide cargar)
      * y, si el modelo lo repetía, el «Ojo: con este mensaje no registré ningún cambio…». Es verdad lo que
-     * dice: está contando lo que leyó. Con estos registros, las oraciones que nombran uno se sacan antes
+     * dice: está contando lo que leyó. Con estos registros, las oraciones que lo cuentan se sacan antes
      * de mirar (sin_oraciones_sobre_registros()).
      *
-     * Tenencia: solo conversaciones de la misma persona (de_la_misma_persona()), sin la actual (lo de
-     * esta conversación lo cubre su historial, como siempre). Nunca lanza: si algo falla, ninguno.
+     * 🔴 SOLO LO VISTO (F1). La primera versión leía de la base TODAS las cargas confirmadas de todas las
+     * conversaciones que mostró buscar_ (hasta 20): con tantos registros se escondían mentiras de cargas
+     * nuevas. Ahora no consulta la base: la tenencia ya la aplicó la herramienta que mostró esos textos.
      *
-     * @param  \App\Models\AiConversation  $actual
-     * @param  array<int, int>  $conversacion_ids  Las que mostraron leer_ / buscar_ en este turno.
+     * @param  array<int, string>  $textos  Los textos de resultado de las cargas que vio el modelo.
      * @return array<int, array{entidad: string, numero: string}>
      */
-    public static function registros_confirmados(AiConversation $actual, array $conversacion_ids)
+    public static function registros_de_las_cargas(array $textos)
     {
-        try {
-            $ids = array_values(array_unique(array_filter(array_map('intval', $conversacion_ids))));
+        $registros = [];
 
-            if (!count($ids)) {
-
-                return [];
+        foreach ($textos as $texto) {
+            if (!preg_match_all('/(\p{L}+)\s+(?:N\s*[°º.o]|n[uú]mero|nro\.?|#)\s*(\d[\d.]*)/iu', (string) $texto, $coincidencias, PREG_SET_ORDER)) {
+                continue;
             }
 
-            $visibles = self::de_la_misma_persona($actual)
-                ->whereIn('ai_conversations.id', $ids)
-                ->where('ai_conversations.id', '!=', (int) $actual->id)
-                ->pluck('ai_conversations.id')
-                ->all();
+            foreach ($coincidencias as $coincidencia) {
+                $numero = str_replace('.', '', $coincidencia[2]);
 
-            if (!count($visibles)) {
-
-                return [];
-            }
-
-            $registros = [];
-
-            $acciones = AiMessageAction::whereIn('ai_conversation_id', $visibles)
-                ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
-                ->get(['id', 'resultado']);
-
-            foreach ($acciones as $accion) {
-                $texto = is_object($accion->resultado) && isset($accion->resultado->texto) ? (string) $accion->resultado->texto : '';
-
-                if (!preg_match_all('/(\p{L}+)\s+(?:N\s*[°º.o]|n[uú]mero|nro\.?|#)\s*(\d[\d.]*)/iu', $texto, $coincidencias, PREG_SET_ORDER)) {
+                if ($numero === '') {
                     continue;
                 }
 
-                foreach ($coincidencias as $coincidencia) {
-                    $numero = str_replace('.', '', $coincidencia[2]);
+                $entidad = mb_strtolower(self::sin_tildes($coincidencia[1]));
 
-                    if ($numero === '') {
-                        continue;
-                    }
-
-                    $entidad = mb_strtolower(self::sin_tildes($coincidencia[1]));
-
-                    $registros[$entidad . '#' . $numero] = ['entidad' => $entidad, 'numero' => $numero];
-                }
+                $registros[$entidad . '#' . $numero] = ['entidad' => $entidad, 'numero' => $numero];
             }
-
-            return array_values($registros);
-
-        } catch (\Throwable $e) {
-            Log::warning('ConversacionesAnterioresIaHelper: no se pudieron leer los registros de las conversaciones leídas; la guarda mira el texto entero.', [
-                'ai_conversation_id' => $actual->id,
-                'error'              => $e->getMessage(),
-            ]);
-
-            return [];
         }
+
+        return array_values($registros);
     }
 
     /**
-     * El texto sin las oraciones que nombran alguno de los registros (R2, ver registros_confirmados()):
-     * una oración se saca si tiene la entidad («pago», también «pagos») Y el número («1706», también
-     * «1.706») del mismo registro. Las demás quedan tal cual, una por renglón, así que una mentira en
-     * OTRA oración («Ya te agendé los recordatorios.») la guarda la sigue viendo. Se parte igual que la
-     * guarda (TarjetaPrometidaIaHelper::oraciones(): después de un signo de cierre y un espacio, o en un
-     * salto de línea).
+     * El texto sin las oraciones que CUENTAN alguno de los registros (R2 y F1, ver
+     * registros_de_las_cargas()). Una oración se saca solo si:
+     *   - nombra el registro con la entidad y el número JUNTOS («Pago N° 1706», «pago 1706», «pagos nº
+     *     1.706», «pago #1706»): «el pago de 3 cheques» o «el gasto de nafta por $7 mil» no nombran el
+     *     Pago N° 3 ni el Gasto N° 7;
+     *   - y no trae un verbo de cambio nuevo (CAMBIO_NUEVO): «les cargué la fecha de cobro a los cheques
+     *     del Pago N° 1706» se queda, y la guarda la mira.
      *
-     * ⚠️ Lo que no distingue: una oración que cuenta un cambio NUEVO sobre ese mismo registro sin haberlo
-     * hecho («le cargué la fecha a los cheques del Pago N° 1706») también se saca. Es el precio de no
-     * mirar el verbo, y queda acotado a registros de una conversación que el modelo abrió EN ESTE TURNO.
+     * Las demás quedan tal cual, una por renglón, así que una mentira en OTRA oración («Ya te agendé los
+     * recordatorios.») la guarda la sigue viendo. Se parte igual que la guarda
+     * (TarjetaPrometidaIaHelper::oraciones(): después de un signo de cierre y un espacio, o en un salto de
+     * línea).
+     *
+     * ⚠️ Lo que sigue sin distinguir: una oración impersonal que nombra el registro («Los cheques del pago
+     * 1706 ya quedaron con su fecha de cobro cargada») se saca aunque el cambio sea nuevo. Queda acotado a
+     * registros que el modelo vio EN ESTE TURNO en otra conversación.
      *
      * @param  string  $texto
      * @param  array<int, array{entidad: string, numero: string}>  $registros
@@ -553,17 +535,21 @@ class ConversacionesAnterioresIaHelper
             $normalizada = mb_strtolower(self::sin_tildes((string) $oracion));
             $normalizada = (string) preg_replace('/(?<=\d)\.(?=\d{3}(?!\d))/u', '', $normalizada);
 
-            $nombra_un_registro = false;
+            $cuenta_un_registro = false;
 
-            foreach ($registros as $registro) {
-                if (preg_match('/\b' . preg_quote($registro['entidad'], '/') . '/u', $normalizada)
-                    && preg_match('/(?<!\d)' . preg_quote($registro['numero'], '/') . '(?!\d)/u', $normalizada)) {
-                    $nombra_un_registro = true;
-                    break;
+            if (!preg_match(self::CAMBIO_NUEVO, $normalizada)) {
+                foreach ($registros as $registro) {
+                    $nombra = '/\b' . preg_quote($registro['entidad'], '/') . 's?\s+(?:n\s*[°º.o]?\s*|nro\.?\s*|numero\s*|#\s*)?'
+                        . preg_quote($registro['numero'], '/') . '(?!\d)/u';
+
+                    if (preg_match($nombra, $normalizada)) {
+                        $cuenta_un_registro = true;
+                        break;
+                    }
                 }
             }
 
-            if (!$nombra_un_registro) {
+            if (!$cuenta_un_registro) {
                 $quedan[] = $oracion;
             }
         }

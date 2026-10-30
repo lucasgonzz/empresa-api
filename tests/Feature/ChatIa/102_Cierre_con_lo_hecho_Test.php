@@ -22,6 +22,8 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Tests\Fakes\HttpFactorySinSalida;
 use Tests\TestCase;
 
 /**
@@ -635,8 +637,83 @@ class Cierre_con_lo_hecho_Test extends TestCase
         $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
         $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido);
         $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que falta.', AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR);
-        $this->assertNull($assistant->error_mensaje);
+
+        /*
+         * Contrato cambiado a propósito en la segunda ronda (F3): el detalle técnico de lo que cortó el
+         * turno queda en `error_mensaje` aunque el mensaje esté `listo` (antes quedaba null). Ninguna SPA
+         * pinta el error_mensaje de un mensaje y el admin solo lo lee con el mensaje en `error`.
+         */
+        $this->assertStringContainsString('cierre', (string) $assistant->error_mensaje);
+        $this->assertStringContainsString('HTTP 400', (string) $assistant->error_mensaje);
         $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'Sin vueltas de más después del cierre.');
+    }
+
+    /**
+     * F3 de la segunda ronda: cuando lo que cortó el turno es una FALLA (acá, la llamada de cierre vuelve
+     * con un 400), va como error al log con la causa, el mensaje y la conversación.
+     *
+     * @test
+     */
+    public function el_turno_cortado_por_una_falla_va_como_error_al_log()
+    {
+        Log::spy();
+
+        $this->proveedor_que_siempre_pide_herramientas(Http::response([
+            'error' => ['type' => 'invalid_request_error', 'message' => 'tool_choice no soportado (P102 F3)'],
+        ], 400));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $servicio = new AsistenteIaService();
+
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $servicio->responder($conversation, $assistant));
+        $this->assertStringContainsString('HTTP 400', (string) $servicio->detalle_tecnico());
+
+        Log::shouldHaveReceived('error')->withArgs(function ($mensaje, $contexto = []) use ($conversation, $assistant) {
+            return strpos((string) $mensaje, 'el turno falló después de hacer algo') !== false
+                && (int) $contexto['ai_conversation_id'] === (int) $conversation->id
+                && (int) $contexto['ai_message_id'] === (int) $assistant->id
+                && strpos((string) $contexto['causa'], 'HTTP 400') !== false;
+        })->once();
+    }
+
+    /**
+     * F3: «no quedó tiempo para el cierre» no es una falla: warning y no error. Y un turno que termina
+     * normal deja `error_mensaje` en null, como siempre.
+     *
+     * @test
+     */
+    public function sin_tiempo_para_el_cierre_no_es_un_error_y_un_turno_normal_no_deja_detalle()
+    {
+        Log::spy();
+
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 66);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $servicio->responder($conversation, $assistant));
+        $this->assertStringContainsString('no quedó tiempo', (string) $servicio->detalle_tecnico());
+
+        Log::shouldNotHaveReceived('error');
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos((string) $mensaje, 'no quedó tiempo para el cierre') !== false;
+        })->once();
+
+        /* Un turno que cierra bien (con la llamada de cierre): sin detalle técnico. */
+        Http::swap(new HttpFactorySinSalida(app('events')));
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE));
+
+        list($otra, $normal) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($normal->id))->handle();
+
+        $normal = $normal->fresh();
+
+        $this->assertSame('listo', $normal->estado);
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $normal->contenido);
+        $this->assertNull($normal->error_mensaje);
     }
 
     /**
@@ -739,6 +816,279 @@ class Cierre_con_lo_hecho_Test extends TestCase
         $ultimo = $historial[count($historial) - 1];
         $this->assertSame('user', $ultimo['role']);
         $this->assertStringContainsString('seguí', is_string($ultimo['content']) ? $ultimo['content'] : json_encode($ultimo['content']));
+    }
+
+    /**
+     * F5 de la segunda ronda: lo que espera el sí dice cómo se confirma, distinto del «seguí». Por WhatsApp
+     * (se confirma por texto): «Si está/están bien, contestame «sí».»; en el panel y en la app (botón):
+     * «Para que quede(n) registrada(s), tocá Confirmar en la/cada tarjeta.». Y el «seguí» sigue al final,
+     * para lo que falta.
+     *
+     * @test
+     */
+    public function lo_que_espera_el_si_dice_como_se_confirma_segun_el_canal()
+    {
+        $casos = [
+            'whatsapp, una'   => [AiMessage::CANAL_WHATSAPP, 1, AvisosDeTurnosIaHelper::CONFIRMAR_POR_TEXTO_UNA, 'Si está bien, contestame «sí».'],
+            'whatsapp, dos'   => [AiMessage::CANAL_WHATSAPP, 2, AvisosDeTurnosIaHelper::CONFIRMAR_POR_TEXTO_VARIAS, 'Si están bien, contestame «sí».'],
+            'panel, una'      => [null, 1, AvisosDeTurnosIaHelper::CONFIRMAR_CON_BOTON_UNA, 'Para que quede registrada, tocá Confirmar en la tarjeta.'],
+            'app, dos'        => [AiMessage::CANAL_APP, 2, AvisosDeTurnosIaHelper::CONFIRMAR_CON_BOTON_VARIAS, 'Para que queden registradas, tocá Confirmar en cada tarjeta.'],
+        ];
+
+        foreach ($casos as $caso => $datos) {
+            list($conversation, $assistant) = $this->conversacion($datos[0]);
+
+            for ($i = 1; $i <= $datos[1]; $i++) {
+                AiMessageAction::create([
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant->id,
+                    'user_id'            => $this->comercio->id,
+                    'auth_user_id'       => $this->comercio->id,
+                    'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+                    'clave'              => 'tarea:p102-f5-' . $i,
+                    'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+                    'datos'              => [],
+                    'presentacion'       => ['titulo' => 'Tarea ' . $i, 'renglones' => [], 'aviso' => null],
+                ]);
+            }
+
+            $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, null);
+
+            $this->assertSame($datos[3], $datos[2], $caso);
+            $this->assertStringContainsString("- Tarea " . $datos[1] . "\n" . $datos[3] . "\n\n" . AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $texto, $caso);
+            $this->assertStringEndsWith('Escribime «seguí» y sigo con lo que falta.', $texto, $caso);
+        }
+
+        /* Sin nada esperando el sí, no hay frase de confirmar. */
+        list($sin, $sin_tarjetas) = $this->conversacion(AiMessage::CANAL_WHATSAPP);
+        $this->assertSame(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($sin_tarjetas, null));
+    }
+
+    /**
+     * F6 de la segunda ronda: (a) una carga que sigue esperando pero cuyo último intento falló (el
+     * "directo" que no se pudo) dice «(no se pudo: …)» corto en su renglón; (b) una tarjeta de un mensaje
+     * ANTERIOR que se confirmó mientras corría este turno (confirmar_carga_pendiente, o el botón) va en
+     * «Quedó hecho», sin repetir la de la confirmación determinista; una confirmada ANTES del turno, no.
+     *
+     * @test
+     */
+    public function lo_que_no_se_pudo_y_lo_confirmado_de_antes_durante_el_turno()
+    {
+        /* Una respuesta anterior (con tres tarjetas: una confirmada ANTES del turno y dos DURANTE) y el turno. */
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+            'origen'       => 'usuario',
+        ]);
+
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Cargame los gastos', 'estado' => 'listo']);
+        $anterior = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'contenido' => 'Te dejo las tarjetas.', 'estado' => 'listo']);
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Dale, y seguí', 'estado' => 'listo']);
+        $assistant = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'estado' => 'pendiente', 'acciones_habilitadas' => true]);
+
+        AiMessage::where('id', $assistant->id)->update(['created_at' => Carbon::now()->subMinutes(2)]);
+        $assistant = $assistant->fresh();
+
+        $vieja_id = $anterior->id;
+
+        $tarjeta = function ($clave, $estado, $texto, $resuelta_at, $mensaje_id, $error = null) use ($conversation) {
+            return AiMessageAction::create([
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $mensaje_id,
+                'user_id'            => $this->comercio->id,
+                'auth_user_id'       => $this->comercio->id,
+                'tipo'               => AiMessageAction::TIPO_GASTO,
+                'clave'              => 'gasto:p102-f6-' . $clave,
+                'estado'             => $estado,
+                'datos'              => [],
+                'presentacion'       => ['titulo' => 'Gasto ' . $clave, 'renglones' => [['etiqueta' => 'Monto', 'valor' => '$ 1.000']], 'aviso' => null],
+                'resultado'          => is_null($texto) ? null : ['texto' => $texto],
+                'resuelta_at'        => $resuelta_at,
+                'error_mensaje'      => $error,
+            ]);
+        };
+
+        $tarjeta('antes', AiMessageAction::ESTADO_CONFIRMADA, 'Gasto N° 10 registrado', Carbon::now()->subHour(), $vieja_id);
+        $determinista = $tarjeta('determinista', AiMessageAction::ESTADO_CONFIRMADA, 'Gasto N° 11 registrado', Carbon::now()->subMinute(), $vieja_id);
+        $tarjeta('durante', AiMessageAction::ESTADO_CONFIRMADA, 'Gasto N° 12 registrado', Carbon::now(), $vieja_id);
+
+        /* Una de este mensaje que el "directo" no pudo ejecutar. */
+        $tarjeta('fallida', AiMessageAction::ESTADO_PROPUESTA, null, null, $assistant->id, 'La caja Efectivo está cerrada.');
+
+        $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, null, $determinista->id);
+
+        $this->assertStringStartsWith(
+            "Quedó hecho:\n- Gasto N° 11 registrado.\n- Gasto N° 12 registrado.\n\n"
+            . "Quedó para que la confirmes:\n- Gasto fallida (Monto: $ 1.000) (no se pudo: La caja Efectivo está cerrada)\n",
+            $texto
+        );
+        $this->assertStringNotContainsString('Gasto N° 10', $texto, 'La confirmada antes del turno no es de este turno.');
+        $this->assertSame(1, substr_count($texto, 'Gasto N° 11'), 'La de la confirmación determinista va una sola vez.');
+
+        /* El motivo largo se recorta, y entra entero aunque el renglón sea largo. */
+        $larga = $tarjeta('larga', AiMessageAction::ESTADO_PROPUESTA, null, null, $assistant->id, str_repeat('No hay saldo en la cuenta del banco. ', 10));
+        $larga->presentacion = ['titulo' => str_repeat('Gasto muy largo ', 30), 'renglones' => [], 'aviso' => null];
+        $larga->save();
+
+        $con_larga = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, null);
+
+        $this->assertMatchesRegularExpression('/\(no se pudo: No hay saldo[^)]{0,120}…\)/u', $con_larga);
+    }
+
+    /**
+     * F4 de la segunda ronda: con muchas cargas de renglones largos el texto armado entra en un WhatsApp
+     * (≤ DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE, 3.500): las dos listas comparten
+     * LARGO_MAXIMO_DE_LAS_LISTAS (3.000) y lo que no entra va en «- y N más.». Antes, 10 + 10 renglones de
+     * 300 pasaban los 6.000 caracteres (Meta rechaza más de 4.096).
+     *
+     * @test
+     */
+    public function el_texto_armado_entra_en_un_whatsapp()
+    {
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP);
+
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'user')->first();
+
+        for ($i = 1; $i <= 10; $i++) {
+            foreach ([AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_PROPUESTA] as $estado) {
+                AiMessageAction::create([
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant->id,
+                    'user_id'            => $this->comercio->id,
+                    'auth_user_id'       => $this->comercio->id,
+                    'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+                    'clave'              => 'tarea:p102-largo-' . $estado . '-' . $i,
+                    'estado'             => $estado,
+                    'datos'              => [],
+                    'presentacion'       => ['titulo' => 'Tarea ' . $i, 'renglones' => [['etiqueta' => 'Detalle', 'valor' => str_repeat('Cheque de Pinturas Sudamericanas ', 12)]], 'aviso' => null],
+                    'resultado'          => $estado === AiMessageAction::ESTADO_CONFIRMADA ? ['texto' => 'Tarea ' . $i . ' agendada: ' . str_repeat('cheque de Pinturas Sudamericanas ', 12)] : null,
+                ]);
+            }
+        }
+
+        $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido);
+
+        $this->assertSame(3000, AvisosDeTurnosIaHelper::LARGO_MAXIMO_DE_LAS_LISTAS);
+        $this->assertLessThanOrEqual(\App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE, mb_strlen($texto), 'Entra en un WhatsApp.');
+        $this->assertStringStartsWith(AvisosDeTurnosIaHelper::ENCABEZADO_HECHO . "\n- Tarea 1 agendada", $texto);
+        $this->assertStringContainsString(AvisosDeTurnosIaHelper::ENCABEZADO_PARA_CONFIRMAR_VARIAS . "\n- Tarea 1 (Detalle:", $texto, 'La segunda sección muestra al menos su primer renglón.');
+        $this->assertSame(2, preg_match_all('/\n- y \d+ más\./u', $texto), 'Las dos secciones cierran con «y N más».');
+        $this->assertStringEndsWith(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $texto);
+    }
+
+    /**
+     * El doble del proveedor de la segunda ronda (F2): la PRIMERA llamada pide una proponer_tarea (en
+     * "directo" se confirma sola) y las siguientes fallan con `$falla` (una respuesta ya armada, un body o
+     * una excepción para tirar). Devuelve el contador de llamadas.
+     *
+     * @param  mixed  $falla
+     * @param  string  $detalle  El detalle de la tarea (distinto por caso: la guarda anti-duplicado mira la clave).
+     * @return \stdClass  {llamadas: int}
+     */
+    protected function proveedor_que_carga_y_despues_falla($falla, $detalle)
+    {
+        $contador = new \stdClass();
+        $contador->llamadas = 0;
+        $manana = Carbon::tomorrow()->format('Y-m-d');
+
+        Http::fake(function ($request) use ($contador, $falla, $detalle, $manana) {
+            if (strpos($request->url(), 'deepseek') === false) {
+                return Http::response(['error' => 'host sin stub'], 500);
+            }
+
+            $contador->llamadas++;
+
+            if ($contador->llamadas === 1) {
+                return Http::response($this->respuesta('tool_use', [[
+                    'type'  => 'tool_use',
+                    'id'    => 'toolu_p102_f2_' . $contador->llamadas,
+                    'name'  => 'proponer_tarea',
+                    'input' => ['detalle' => $detalle, 'fecha' => $manana],
+                ]]), 200);
+            }
+
+            if ($falla instanceof \Throwable) {
+                throw $falla;
+            }
+
+            return is_array($falla) ? Http::response($falla, 200) : $falla;
+        });
+
+        return $contador;
+    }
+
+    /**
+     * 🔴 F2 DE LA SEGUNDA RONDA: LA MISMA CLASE QUE R1, EN UNA VUELTA NORMAL. En "directo" la primera vuelta
+     * carga una tarea (se confirma sola) y la segunda falla: un 503 (sobrecargado, ya con el reintento de
+     * post_al_proveedor), un 400 (falla técnica), la red cortada dos veces, o una vuelta que cierra sin
+     * texto. Antes el mensaje terminaba en `error` —lo confirmado no viajaba en el historial y por WhatsApp
+     * salía la disculpa del admin—; ahora queda `listo` con el renglón de la tarea y el «seguí».
+     *
+     * @test
+     */
+    public function una_vuelta_normal_que_falla_despues_de_una_carga_deja_listo_con_lo_hecho()
+    {
+        $this->comercio->agente_confianza = ConfianzaDelAgenteIaHelper::DIRECTO;
+        $this->comercio->save();
+
+        $casos = [
+            'sobrecargado (503)'   => Http::response(['error' => ['type' => 'api_error', 'message' => 'saturado (P102 F2)']], 503),
+            'falla técnica (400)'  => Http::response(['error' => ['type' => 'invalid_request_error', 'message' => 'rechazado (P102 F2)']], 400),
+            'red cortada'          => new ConnectionException('cURL error 28: Operation timed out (P102 F2)'),
+            'vuelta sin texto'     => $this->respuesta('end_turn', []),
+        ];
+
+        $n = 0;
+
+        foreach ($casos as $caso => $falla) {
+            $n++;
+
+            $contador = $this->proveedor_que_carga_y_despues_falla($falla, 'ZZP102 F2 cheque ' . $n . ' de Sudamericana');
+
+            list($conversation, $assistant) = $this->conversacion();
+
+            (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+            $assistant = $assistant->fresh();
+
+            $this->assertSame('listo', $assistant->estado, $caso . ': ' . (string) $assistant->error_mensaje);
+
+            $tarjeta = AiMessageAction::where('ai_message_id', $assistant->id)->first();
+
+            $this->assertNotNull($tarjeta, $caso);
+            $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, (string) $tarjeta->estado, $caso . ': la tarea quedó hecha y no se descartó.');
+            $this->assertStringStartsWith(
+                AvisosDeTurnosIaHelper::ENCABEZADO_HECHO . "\n- " . rtrim(trim((string) $tarjeta->resultado->texto), '. ') . '.',
+                $assistant->contenido,
+                $caso
+            );
+            $this->assertStringEndsWith(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido, $caso);
+            $this->assertGreaterThanOrEqual(2, $contador->llamadas, $caso);
+
+            Http::swap(new HttpFactorySinSalida(app('events')));
+        }
+    }
+
+    /**
+     * F2: sin ninguna ronda de herramientas hecha (falla la PRIMERA llamada) no hay nada que contar: el
+     * error de siempre, con su motivo.
+     *
+     * @test
+     */
+    public function si_falla_la_primera_vuelta_sigue_el_error_de_siempre()
+    {
+        Http::fake(function ($request) {
+            return Http::response(['error' => ['type' => 'api_error', 'message' => 'saturado (P102 F2)']], 503);
+        });
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+            $this->fail('Sin ninguna ronda, un 503 es el error de siempre.');
+        } catch (AsistenteIaException $e) {
+            $this->assertSame(AsistenteIaException::MOTIVO_SOBRECARGADO, $e->motivo());
+        }
     }
 
     /**
@@ -859,9 +1209,10 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
         $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido, $aparte->id);
 
+        /* Desde la segunda ronda (F5), debajo de lo que espera el sí va cómo se confirma (en el panel, el botón). */
         $this->assertSame(
             "Quedó hecho:\n- Gasto N° 88 registrado por $ 207.500.\n\n"
-            . "Quedó para que la confirmes:\n- Tarea (Detalle: Llamar al banco)\n\n"
+            . "Quedó para que la confirmes:\n- Tarea (Detalle: Llamar al banco)\nPara que quede registrada, tocá Confirmar en la tarjeta.\n\n"
             . "Me llegaron 3 fotos y quedaron guardadas.\n\n"
             . AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR,
             $texto

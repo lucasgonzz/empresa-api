@@ -348,14 +348,27 @@ class AsistenteIaService
     protected $marcar_progreso = false;
 
     /**
-     * Las conversaciones OTRAS que buscar_conversaciones_anteriores / leer_conversacion_anterior le
-     * mostraron al modelo en la respuesta que se está generando (ronda de arreglos de la revisión
-     * independiente de la misión agente-memoria-y-sin-techo, R2). Se juntan en execute_tool_calls() y las
-     * mira la guarda de la carga prometida: ver sin_lo_dicho_de_otras_conversaciones().
+     * El texto del resultado de las cargas CONFIRMADAS de OTRAS conversaciones que
+     * buscar_conversaciones_anteriores / leer_conversacion_anterior le mostraron al modelo en la respuesta
+     * que se está generando (rondas de arreglos de la revisión independiente de la misión
+     * agente-memoria-y-sin-techo, R2 y F1: solo lo que el modelo VIO). Se juntan en execute_tool_calls() y
+     * las mira la guarda de la carga prometida: ver sin_lo_dicho_de_otras_conversaciones().
      *
-     * @var array<int, int>
+     * @var array<int, string>
      */
-    protected $conversaciones_leidas = [];
+    protected $cargas_vistas_de_otras_conversaciones = [];
+
+    /**
+     * El detalle técnico de una respuesta que terminó en respuesta_sin_terminar() (segunda ronda de
+     * arreglos, F3), o null. El job lo guarda en `error_mensaje` del mensaje aunque quede `listo`: el
+     * mensaje no es un error para la persona, pero lo que lo cortó tiene que quedar a la vista para
+     * soporte. Ninguna SPA (empresa-spa, ia-spa) pinta el `error_mensaje` de un MENSAJE (solo el de una
+     * tarjeta), y el admin lo lee solo con el mensaje en `error`: verificado en origin/develop y
+     * origin/master de empresa-spa, origin/master de ia-spa y de admin-api.
+     *
+     * @var string|null
+     */
+    protected $detalle_tecnico = null;
 
     /**
      * true si hay clave del proveedor con el que va a correr el loop. No tener IA contratada no
@@ -423,7 +436,8 @@ class AsistenteIaService
         $this->adjuntos = [];
         $this->bloques = [];
         $this->pedidos_de_imagen = [];
-        $this->conversaciones_leidas = [];
+        $this->cargas_vistas_de_otras_conversaciones = [];
+        $this->detalle_tecnico = null;
         $this->marcar_progreso = true;
 
         $owner = User::find($conversation->user_id);
@@ -910,10 +924,14 @@ class AsistenteIaService
                 $segundos_del_cierre = min(self::TIMEOUT_SEGUNDOS, $this->techo_de_la_llamada_de_cierre($assistant_message) - $transcurrido);
 
                 if ($segundos_del_cierre < self::SEGUNDOS_MINIMOS_DEL_CIERRE) {
-                    /* Sin ventana para el cierre: lo hecho, armado sin el modelo (ver respuesta_sin_terminar()). */
+                    /*
+                     * Sin ventana para el cierre: lo hecho, armado sin el modelo (ver respuesta_sin_terminar()).
+                     * No es una falla (nada se rompió: se terminó el tiempo), así que no va como error al log.
+                     */
                     return $this->respuesta_sin_terminar(
                         $conversation, $assistant_message, $confirmacion_determinista,
-                        'no quedó tiempo para la llamada de cierre (' . $transcurrido . 's) tras ' . $iterations . ' iteraciones'
+                        'no quedó tiempo para la llamada de cierre (' . $transcurrido . 's) tras ' . $iterations . ' iteraciones',
+                        false
                     );
                 }
 
@@ -991,11 +1009,15 @@ class AsistenteIaService
              * tool_choice forzado no aplica — y `none`, además, es de los que Anthropic acepta con
              * thinking. Con DeepSeek va el que decidió thinking_apto_para_historial(), igual que en
              * cualquier vuelta: apagarlo solo para el cierre dejaría un turno que pensó con sus bloques
-             * `thinking` en el historial y el thinking apagado, una combinación que nadie midió. Lo
-             * medido el 30/10 fue con el thinking apagado, que es el caso real de Ferre Total (Flash, o
-             * Pro escalado a mitad de turno, que ese helper apaga); un turno que arranca pensando en Pro
-             * y cierra con `none` queda para la medición contra DeepSeek real. Si esa llamada fallara,
-             * el turno termina en `tiempo_agotado`, que es lo de antes de esta misión.
+             * `thinking` en el historial y el thinking apagado. MEDIDO contra DeepSeek real el 30/10 en
+             * las dos combinaciones: con el thinking apagado (el caso de Ferre Total: Flash, o Pro
+             * escalado a mitad de turno, que ese helper apaga) y con el thinking PRENDIDO —Pro y Flash,
+             * `thinking: enabled` + `tool_choice: none` después de una vuelta real con bloques
+             * [thinking, tool_use] y su tool_result con la nota de cierre—: HTTP 200, `end_turn`, bloques
+             * [thinking, text], y el texto cuenta lo hecho y pide «seguí» (diag/probar-tool-choice-thinking.php,
+             * resultado en diag/resultado-tool-choice-thinking.txt de la misión). Si igual esa llamada
+             * fallara, el turno cierra `listo` con lo hecho armado sin el modelo (respuesta_sin_terminar(),
+             * rondas de arreglos R1 y F3), no en `tiempo_agotado`.
              */
             if ($cerrando) {
                 $body['tool_choice'] = ['type' => 'none'];
@@ -1018,6 +1040,19 @@ class AsistenteIaService
 
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
+                    /*
+                     * Segunda ronda de arreglos (F2): post_al_proveedor() ya reintentó una vez y se rindió.
+                     * Si el turno ya hizo rondas de herramientas, lo hecho no se pierde en un error: misma
+                     * salida que cuando falla el cierre (ver respuesta_sin_terminar()).
+                     */
+                    if ($rondas_de_herramientas > 0) {
+
+                        return $this->respuesta_sin_terminar(
+                            $conversation, $assistant_message, $confirmacion_determinista,
+                            'falló la vuelta ' . $iterations . ' (después de ' . $rondas_de_herramientas . ' rondas de herramientas): ' . get_class($e) . ': ' . $e->getMessage()
+                        );
+                    }
+
                     throw $e;
                 }
 
@@ -1064,19 +1099,35 @@ class AsistenteIaService
                 $error_type = $error_body['error']['type'] ?? null;
 
                 if (ProveedorIaHelper::es_error_transitorio($response)) {
-                    throw AsistenteIaException::sobrecargado(
+                    $falla = AsistenteIaException::sobrecargado(
                         '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
+                    );
+                } else {
+                    /*
+                     * 🔴 El body crudo va al detalle técnico y NO a la pantalla: es justo lo que
+                     * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
+                     */
+                    $falla = AsistenteIaException::falla_tecnica(
+                        'Error al comunicarse con la API de ' . ProveedorIaHelper::nombre_de($proveedor)
+                        . ' (HTTP ' . $response->status() . '): ' . $response->body()
                     );
                 }
 
                 /*
-                 * 🔴 El body crudo va al detalle técnico y NO a la pantalla: es justo lo que
-                 * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
+                 * Segunda ronda de arreglos (F2): un error del proveedor (ya con el reintento de
+                 * post_al_proveedor() si era transitorio) DESPUÉS de rondas de herramientas no tira lo
+                 * hecho: misma salida que cuando falla el cierre. Sin ninguna ronda, el error de siempre.
                  */
-                throw AsistenteIaException::falla_tecnica(
-                    'Error al comunicarse con la API de ' . ProveedorIaHelper::nombre_de($proveedor)
-                    . ' (HTTP ' . $response->status() . '): ' . $response->body()
-                );
+                if ($rondas_de_herramientas > 0) {
+
+                    return $this->respuesta_sin_terminar(
+                        $conversation, $assistant_message, $confirmacion_determinista,
+                        'falló la vuelta ' . $iterations . ' (después de ' . $rondas_de_herramientas . ' rondas de herramientas), motivo ' . $falla->motivo() . ': '
+                        . mb_substr($falla->getMessage(), 0, 1000)
+                    );
+                }
+
+                throw $falla;
             }
 
             $response_body = $response->json();
@@ -1452,6 +1503,18 @@ class AsistenteIaService
 
                 throw AsistenteIaException::tiempo_agotado(
                     'el loop llegó al techo de ' . $max_iterations . ' iteraciones sin texto final'
+                );
+            }
+
+            /*
+             * Segunda ronda de arreglos (F2): una vuelta que cerró sin texto DESPUÉS de rondas de
+             * herramientas tampoco tira lo hecho: misma salida que cuando falla el cierre.
+             */
+            if ($rondas_de_herramientas > 0) {
+
+                return $this->respuesta_sin_terminar(
+                    $conversation, $assistant_message, $confirmacion_determinista,
+                    'el loop terminó sin texto final en la iteración ' . $iterations . ' (después de ' . $rondas_de_herramientas . ' rondas de herramientas)'
                 );
             }
 
@@ -1875,6 +1938,18 @@ class AsistenteIaService
     public function pedidos_de_imagen(): array
     {
         return $this->pedidos_de_imagen;
+    }
+
+    /**
+     * El detalle técnico de la última respuesta si terminó en respuesta_sin_terminar() (qué la cortó), o
+     * null si terminó normal. El job lo guarda en `error_mensaje` del mensaje `listo` (segunda ronda de
+     * arreglos, F3): ver el docblock de la propiedad.
+     *
+     * @return string|null
+     */
+    public function detalle_tecnico()
+    {
+        return $this->detalle_tecnico;
     }
 
     /**
@@ -3796,11 +3871,18 @@ CONFIRMACION;
      *
      * Por qué así y no contando esas cargas «de antes»: hay_cargas_confirmadas_de_antes() solo decide la
      * mentira segura, que ya no corre en un turno que pidió herramientas (y leer es una); un pedido de
-     * clase 'otro' dispara igual. Lo acotado es no mirar las oraciones que nombran el registro
-     * (entidad + número, ConversacionesAnterioresIaHelper::registros_confirmados()): las demás oraciones
-     * se siguen mirando, así que «Ya te agendé los recordatorios» sin herramienta sigue disparando. Solo
-     * con conversaciones vistas en este turno, nunca la actual. Nunca rompe la guarda: si algo falla,
-     * vuelve el texto entero.
+     * clase 'otro' dispara igual. Lo acotado es no mirar las oraciones que CUENTAN el registro
+     * (ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros()): las demás oraciones se siguen
+     * mirando, así que «Ya te agendé los recordatorios» sin herramienta sigue disparando. Nunca la
+     * conversación actual. Nunca rompe la guarda: si algo falla, vuelve el texto entero.
+     *
+     * 🔴 SEGUNDA RONDA DE ARREGLOS (F1, 30/10/2026): la primera versión escondía mentiras de cargas NUEVAS.
+     * Con los registros de TODAS las cargas de las conversaciones que mostró buscar_, y la entidad y el
+     * número buscados por separado, se sacaban «Listo, les cargué la fecha de cobro a los 5 cheques del
+     * Pago N° 1706.» (el caso de Ferre Total), «Cargué el gasto de nafta por $7 mil.» y «Te registré el
+     * pago de 3 cheques a Sudamericana.». Ahora: (a) la entidad y el número JUNTOS; (b) una oración con un
+     * verbo de cambio nuevo («les cargué», «cambié», «actualicé»…) no se saca; (c) los registros salen
+     * solo de las cargas que el modelo VIO (la página de leer_ y las que mostró buscar_).
      *
      * @param  string  $texto  Ya saneado.
      * @param  AiConversation  $conversation
@@ -3808,12 +3890,12 @@ CONFIRMACION;
      */
     protected function sin_lo_dicho_de_otras_conversaciones($texto, AiConversation $conversation): string
     {
-        if (! count($this->conversaciones_leidas)) {
+        if (! count($this->cargas_vistas_de_otras_conversaciones)) {
             return (string) $texto;
         }
 
         try {
-            $registros = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::registros_confirmados($conversation, $this->conversaciones_leidas);
+            $registros = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::registros_de_las_cargas($this->cargas_vistas_de_otras_conversaciones);
 
             return \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros((string) $texto, $registros);
         } catch (\Throwable $e) {
@@ -4449,7 +4531,11 @@ CONFIRMACION;
      * La respuesta de un turno que se quedó sin vueltas o sin tiempo DESPUÉS de hacer al menos una ronda
      * de herramientas, cuando la llamada de cierre no pudo escribir nada: falló, volvió con error o sin
      * texto, o no quedó ventana para hacerla (misión agente-memoria-y-sin-techo, ronda de arreglos de la
-     * revisión independiente, R1, 30/10/2026). El texto lo arma el sistema, sin el modelo
+     * revisión independiente, R1, 30/10/2026). Desde la segunda ronda (F2) también la de una vuelta
+     * NORMAL que falla después de rondas de herramientas: la red se cortó dos veces (post_al_proveedor()
+     * ya reintentó), el proveedor devolvió un error (sobrecargado o falla técnica) o la vuelta cerró sin
+     * texto. Con el techo en 24 vueltas, que algo falle a mitad de turno es más probable, y en `error` lo
+     * hecho se perdía igual que con el cierre. El texto lo arma el sistema, sin el modelo
      * (AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar()): lo hecho, lo que espera el sí, las fotos
      * que quedaron guardadas y «No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que
      * falta.». El job lo guarda como cualquier respuesta: el mensaje queda `listo`.
@@ -4461,7 +4547,8 @@ CONFIRMACION;
      * disculpa («Uf, no pude contestarte…»), así que el «seguí» nunca le llegaba al dueño. `listo`, las
      * tarjetas viajan en el historial con su renglón y el texto llega por los dos canales.
      *
-     * Sin ninguna ronda hecha (falló la primera llamada) no se llega acá: sigue el error de siempre.
+     * Sin ninguna ronda hecha (falló la primera llamada) no se llega acá: sigue el error de siempre (con
+     * su texto propio: tiempo agotado, sobrecargado, sin respuesta o el genérico).
      *
      * Las guardas de después del bucle NO corren sobre este texto (lo escribió el sistema con lo que
      * pasó, no el modelo). Sí se le suman los bloques de los envíos a clientes que quedaron esperando el
@@ -4471,16 +4558,34 @@ CONFIRMACION;
      * @param  AiMessage  $assistant_message
      * @param  array|null  $confirmacion_determinista  Lo que devolvió ConfirmacionDeterministaIaHelper::quizas_confirmar():
      *                                                 su tarjeta (de un mensaje anterior) va entre lo hecho.
-     * @param  string  $detalle  Qué pasó, para el log (el detalle técnico de antes).
+     * @param  string  $detalle  Qué pasó: va al log y al `error_mensaje` del mensaje (detalle_tecnico()).
+     * @param  bool  $por_un_error  true si lo cortó una falla (excepción, HTTP de error, sin texto): log
+     *                              de error. false si solo no quedó tiempo para el cierre: warning.
      * @return string
      */
-    protected function respuesta_sin_terminar(AiConversation $conversation, AiMessage $assistant_message, $confirmacion_determinista, $detalle): string
+    protected function respuesta_sin_terminar(AiConversation $conversation, AiMessage $assistant_message, $confirmacion_determinista, $detalle, $por_un_error = true): string
     {
-        Log::warning('AsistenteIaService: el turno no terminó y el cierre no escribió nada; se contesta con lo hecho, armado sin el modelo.', [
+        /*
+         * Segunda ronda de arreglos (F3): el detalle técnico queda para el job, que lo guarda en
+         * `error_mensaje` del mensaje `listo` (ver detalle_tecnico()). Y cuando lo que cortó el turno fue
+         * una FALLA (una excepción, un HTTP de error, una vuelta sin texto) va como error al log: es lo que
+         * hay que mirar. Con «no quedó tiempo» (nada se rompió) queda en warning.
+         */
+        $this->detalle_tecnico = 'turno sin terminar, se contestó con lo hecho: ' . (string) $detalle;
+
+        $rastro = [
             'ai_conversation_id' => $conversation->id,
             'ai_message_id'      => $assistant_message->id,
-            'detalle'            => mb_substr((string) $detalle, 0, 1000),
-        ]);
+            'user_id'            => $conversation->user_id,
+            'canal'              => (string) $assistant_message->canal,
+            'causa'              => mb_substr((string) $detalle, 0, 1000),
+        ];
+
+        if ($por_un_error) {
+            Log::error('AsistenteIaService: el turno falló después de hacer algo; se contesta con lo hecho, armado sin el modelo.', $rastro);
+        } else {
+            Log::warning('AsistenteIaService: el turno no terminó y no quedó tiempo para el cierre; se contesta con lo hecho, armado sin el modelo.', $rastro);
+        }
 
         $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'user')
@@ -5864,9 +5969,12 @@ CONFIRMACION;
                     $content = $resultado_de_conversaciones['content'];
                     $error_de_la_herramienta = (bool) $resultado_de_conversaciones['is_error'];
 
-                    // R2 de la ronda de arreglos: las conversaciones que vio, para la guarda de la carga.
-                    if (isset($resultado_de_conversaciones['conversacion_ids']) && is_array($resultado_de_conversaciones['conversacion_ids'])) {
-                        $this->conversaciones_leidas = array_values(array_unique(array_merge($this->conversaciones_leidas, $resultado_de_conversaciones['conversacion_ids'])));
+                    // R2 y F1 de las rondas de arreglos: las cargas de otras conversaciones que vio, para la guarda de la carga.
+                    if (isset($resultado_de_conversaciones['cargas_vistas']) && is_array($resultado_de_conversaciones['cargas_vistas'])) {
+                        $this->cargas_vistas_de_otras_conversaciones = array_values(array_unique(array_merge(
+                            $this->cargas_vistas_de_otras_conversaciones,
+                            $resultado_de_conversaciones['cargas_vistas']
+                        )));
                     }
                 } else {
                     $tool_desconocida = true;
