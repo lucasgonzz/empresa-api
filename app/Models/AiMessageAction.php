@@ -210,6 +210,32 @@ class AiMessageAction extends Model
      */
     const TIPO_PROMOCION_WHATSAPP = 'promocion_por_whatsapp';
 
+    /*
+     * Las compras de la misión agente-mejoras-uso-real (29/10/2026, E1 puntos 6 a 8), lo que el agente
+     * no supo hacer en Ferre Total el mediodía del 29/10. Al FINAL, como siempre.
+     */
+
+    /**
+     * Una compra SIN artículos: la factura de un proveedor cargada como deuda, con o sin IVA
+     * (PropuestaCompraSinArticulosIaHelper). 🔴 Está en HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES:
+     * mueve la deuda con el proveedor por un número dictado por la persona.
+     */
+    const TIPO_COMPRA_SIN_ARTICULOS = 'compra_sin_articulos';
+
+    /**
+     * Cambiarle el proveedor a una compra que el agente acaba de crear («volvé a cargarla con otro
+     * proveedor»), en vez de crear otra (CambioDeProveedorDeCompraIaHelper). Mueve el movimiento de
+     * cuenta corriente de un proveedor al otro: se ejecuta solo con el dueño en "directo".
+     */
+    const TIPO_CAMBIO_PROVEEDOR_COMPRA = 'cambio_proveedor_compra';
+
+    /**
+     * Volver a escanear la factura de una compra cuyo escaneo falló, con las fotos que ya están
+     * guardadas (ReintentoDeEscaneoIaHelper). Inocua como la compra con factura: no mueve plata ni
+     * stock, vuelve a correr una lectura sobre la misma compra.
+     */
+    const TIPO_REINTENTO_ESCANEO = 'reintento_escaneo';
+
     protected $guarded = [];
 
     /**

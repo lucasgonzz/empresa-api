@@ -717,13 +717,13 @@ class AsistenteIaService
              * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
              */
             try {
-                $response = $http->post($url, ProveedorIaHelper::agregar_thinking([
+                $response = $this->post_al_proveedor($http, $url, ProveedorIaHelper::agregar_thinking([
                     'model'      => $model,
                     'max_tokens' => self::MAX_TOKENS,
                     'system'     => $system,
                     'tools'      => $tools,
                     'messages'   => $messages,
-                ], $thinking));
+                ], $thinking), $inicio_del_loop, is_null($texto_antes_del_reintento), (int) $conversation->id);
             } catch (\Throwable $e) {
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
@@ -1794,6 +1794,7 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion y descripcion, nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+{$this->reglas_de_varias_fotos_y_compras()}
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
   la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
@@ -1859,6 +1860,50 @@ AUTO_RESUELTO;
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Las reglas de la misión agente-mejoras-uso-real (E1, 29/10/2026) para las fotos de varios
+     * artículos, las tareas de varios ítems y las compras. Van en su propio método, interpolado en
+     * bloque_de_carga() justo después de las reglas de las fotos, para que el bloque grande no cambie
+     * en cada misión y el merge con las que corren en paralelo sea una línea.
+     *
+     * 🔴 CADA REGLA SALE DE UNA CONVERSACIÓN REAL DE FERRE TOTAL (28 y 29/10/2026):
+     *   - CONV 15: una foto para los 10 clavos punta París → el agente la puso en uno y le pidió la foto
+     *     ocho veces más; llegaron más fotos y las contó en vez de usarlas; a los que no recibieron foto
+     *     nunca les avisó.
+     *   - CONV 19: «compra sin artículos con una factura sin IVA de 198.522» → le pidió la foto; y «volvé
+     *     a cargarla con el proveedor mariano limpieza» → creó otra compra.
+     *   - CONV 20: el escaneo falló y el dueño reenvió la foto → otra compra.
+     *
+     * @return string
+     */
+    protected function reglas_de_varias_fotos_y_compras(): string
+    {
+        return <<<VARIAS
+- 🔴 Una foto puede ir a VARIOS artículos: mandalos en UNA sola llamada con articulo_ids
+  (o con articulo y todos_los_que_coinciden: true) a proponer_foto_articulo, cuando la persona
+  pide la misma foto para varios o para todos ("que todos tengan la misma", "la misma para los
+  otros 8"). Nunca le digas que cada foto va a un solo artículo ni le pidas que te la reenvíe:
+  si ya se la pusiste a otro artículo en esta conversación, pasá su imagen_id (el de la línea
+  "[Foto adjunta] [imagen_id N]" del historial).
+- 🔴 Si la persona manda fotos para una tarea que está en curso (las que faltaban, las de los otros
+  artículos), usalas para esa tarea con la herramienta que corresponde: no te limites a contarlas.
+- 🔴 Al cerrar una tarea de varios ítems (fotos a varios artículos, varias cargas), decí
+  cuáles quedaron hechos y cuáles no, por nombre, con lo que dice el resultado (hechos y
+  no_hechos). Nunca digas que quedó todo si quedó alguno sin hacer.
+- 🔴 Una compra SIN artículos (la factura cargada como deuda, sin renglones: "una compra sin
+  artículos", "cargame la factura de X por tanto", el total dictado sin foto) va con
+  proponer_compra_sin_articulos: NO le pidas la foto de la factura. Pasale el total final y si es
+  sin IVA o con qué alícuota (si no lo dijo, preguntalo). Siempre espera su sí, en todos los modos.
+- 🔴 Si la persona pide volver a cargar con OTRO proveedor una compra que acabás de crear ("volvé a
+  cargarla con el proveedor X", "era de X"), se cambia el proveedor de ESA compra con
+  proponer_cambio_de_proveedor_de_compra: no se crea otra compra ni se le pide la foto de nuevo.
+- 🔴 Si el escaneo de una factura falló ("No pude leer la factura de … (compra N° X)") y la persona
+  pide volver a escanearla, usá proponer_reintento_de_escaneo: usa las fotos que ya están guardadas,
+  así que no se las pidas. Si te reenvía la foto, proponer_compra_con_factura la suma sola a esa
+  misma compra: no armes otra.
+VARIAS;
     }
 
     /**
@@ -3230,6 +3275,12 @@ CONFIRMACION;
      * Una foto cuyo archivo ya no está, o que no es de un tipo que Anthropic
      * acepte, se saltea sin voltear nada: el texto del mensaje viaja igual.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): el empresa guarda hasta
+     * AsistenteImagenHelper::MAX_IMAGENES fotos por mensaje, pero al modelo le
+     * viajan como mucho MAX_FOTOS_AL_MODELO (las primeras, en el orden en que
+     * llegaron). Las demás no se pierden: el texto del mensaje lleva el
+     * `imagen_id` de todas (ver marca_de_las_fotos_del_mensaje()).
+     *
      * @param AiMessage $message
      * @return array<int, array<string, mixed>>
      */
@@ -3241,7 +3292,7 @@ CONFIRMACION;
 
         $bloques = [];
 
-        foreach ($message->imagenes as $imagen) {
+        foreach ($message->imagenes->take(AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) as $imagen) {
             $bloque = $this->bloque_de_una_imagen($imagen);
 
             if (! is_null($bloque)) {
@@ -3303,6 +3354,10 @@ CONFIRMACION;
      * que saber que hubo una foto —para poder decir "la que me mandaste
      * recién"— sin que la imagen se vuelva a pagar en cada turno.
      *
+     * Misión agente-mejoras-uso-real (29/10/2026): la marca lleva además el
+     * `imagen_id` de cada foto, y el mensaje actual con varias fotos también
+     * dice sus ids (ver marca_de_las_fotos_del_mensaje()).
+     *
      * @param AiMessage $message Con las relaciones `acciones` e `imagenes` cargadas.
      * @param bool $manda_las_imagenes true si este mensaje manda sus fotos en base64.
      * @return string
@@ -3324,17 +3379,16 @@ CONFIRMACION;
                 $contenido = trim($contenido) === '' ? $de_los_archivos : rtrim($contenido) . "\n\n" . $de_los_archivos;
             }
 
-            if ($manda_las_imagenes || ! $message->relationLoaded('imagenes')) {
+            if (! $message->relationLoaded('imagenes') || $message->imagenes->isEmpty()) {
                 return $contenido;
             }
 
-            $cuantas = $message->imagenes->count();
+            /* Con el imagen_id de cada foto (misión agente-mejoras-uso-real): ver marca_de_las_fotos_del_mensaje(). */
+            $marca = $this->marca_de_las_fotos_del_mensaje($message, (bool) $manda_las_imagenes);
 
-            if ($cuantas === 0) {
+            if ($marca === '') {
                 return $contenido;
             }
-
-            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
 
             return trim($contenido) === '' ? $marca : rtrim($contenido) . "\n" . $marca;
         }
@@ -3368,6 +3422,148 @@ CONFIRMACION;
         }
 
         return rtrim($contenido) . "\n" . implode("\n", $lineas);
+    }
+
+    /**
+     * La llamada al proveedor de IA de cada vuelta del loop, con UN reintento ante un corte de red o un
+     * error transitorio (misión agente-mejoras-uso-real, E1 punto 4, 29/10/2026).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, CONV 15, mensaje 92). Pablo mandó tres fotos para los clavos que
+     * faltaban y la PRIMERA llamada del turno volvió con «cURL error 28: Operation timed out after 60000
+     * milliseconds with 0 bytes received» contra DeepSeek. El turno murió ahí: un solo corte de red,
+     * que la vuelta siguiente casi seguro no tenía, le costó al dueño la tarea entera. Ahora:
+     *   - una ConnectionException (timeout, conexión rechazada) se reintenta UNA vez;
+     *   - una respuesta con error transitorio (ProveedorIaHelper::es_error_transitorio(): 529, 429,
+     *     500, 502, 503, overloaded_error / api_error) también, UNA vez; si el reintento falla de
+     *     cualquier forma, vuelve la respuesta original y el loop la maneja como siempre;
+     *   - y solo si queda presupuesto: el reintento arranca únicamente si (lo ya gastado +
+     *     TIMEOUT_SEGUNDOS) entra en PRESUPUESTO_SEGUNDOS. Así la cadena de techos documentada en
+     *     PRESUPUESTO_SEGUNDOS sigue cerrando (peor caso del turno: 210 + 60 = 270 < 300 del job).
+     *
+     * 🔴 NO SE REINTENTA DENTRO DEL REINTENTO DE LA TARJETA O DE LA CARGA PROMETIDA (`$puede_reintentar`
+     * en false): ahí una falla ya tiene su salida propia (volver al texto de antes, ver el loop), y una
+     * llamada de más cambiaría lo que esa guarda decide.
+     *
+     * Está en un método propio y fuera del loop a propósito: el loop solo cambia en la línea de la
+     * llamada (la zona del reintento de la tarjeta la toca otra misión en paralelo).
+     *
+     * @param  \Illuminate\Http\Client\PendingRequest  $http
+     * @param  string  $url
+     * @param  array  $body  El payload ya armado (con el thinking si corresponde).
+     * @param  int  $inicio_del_loop  time() del arranque del turno (el reloj de PRESUPUESTO_SEGUNDOS).
+     * @param  bool  $puede_reintentar  false durante el reintento de la tarjeta o de la carga.
+     * @param  int  $conversation_id  Solo para el log.
+     * @return \Illuminate\Http\Client\Response
+     *
+     * @throws \Illuminate\Http\Client\ConnectionException  Si se corta dos veces (o una sin presupuesto).
+     */
+    protected function post_al_proveedor($http, $url, array $body, $inicio_del_loop, $puede_reintentar, $conversation_id)
+    {
+        try {
+            $response = $http->post($url, $body);
+        } catch (\Illuminate\Http\Client\ConnectionException $e) {
+            if (! $puede_reintentar || ! $this->queda_tiempo_para_reintentar($inicio_del_loop)) {
+                throw $e;
+            }
+
+            Log::warning('AsistenteIaService: se cortó la llamada al proveedor de IA; se reintenta una vez.', [
+                'ai_conversation_id' => $conversation_id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $http->post($url, $body);
+        }
+
+        if ($response->successful() || ! $puede_reintentar || ! ProveedorIaHelper::es_error_transitorio($response)
+            || ! $this->queda_tiempo_para_reintentar($inicio_del_loop)) {
+            return $response;
+        }
+
+        Log::warning('AsistenteIaService: el proveedor de IA devolvió un error transitorio; se reintenta una vez.', [
+            'ai_conversation_id' => $conversation_id,
+            'http'               => $response->status(),
+        ]);
+
+        try {
+            return $http->post($url, $body);
+        } catch (\Throwable $e) {
+            /* El reintento no puede dejar un error peor que el original: vuelve la respuesta de antes. */
+            Log::warning('AsistenteIaService: falló el reintento ante el error transitorio; se sigue con la respuesta original.', [
+                'ai_conversation_id' => $conversation_id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return $response;
+        }
+    }
+
+    /**
+     * true si un reintento de la llamada al proveedor entra en el presupuesto del turno: lo ya gastado
+     * más una llamada entera (TIMEOUT_SEGUNDOS) no pasa PRESUPUESTO_SEGUNDOS. Ver post_al_proveedor().
+     *
+     * @param  int  $inicio_del_loop
+     * @return bool
+     */
+    protected function queda_tiempo_para_reintentar($inicio_del_loop): bool
+    {
+        return (time() - (int) $inicio_del_loop) + self::TIMEOUT_SEGUNDOS <= self::PRESUPUESTO_SEGUNDOS;
+    }
+
+    /**
+     * La marca con las fotos de un mensaje del dueño, para el texto que viaja al modelo (misión
+     * agente-mejoras-uso-real, E1 punto 2, 29/10/2026). Vacía si no corresponde ninguna.
+     *
+     * 🔴 POR QUÉ LLEVA EL `imagen_id`. Hasta esta misión el modelo nunca veía el id de las fotos del
+     * dueño: las del mensaje actual le llegaban en base64 sin id y las anteriores como "[Foto adjunta]".
+     * Así no podía decir «la misma de antes»: en Ferre Total (CONV 15) Pablo pidió «la misma para los
+     * otros 8» y el agente le pidió que la reenviara. Con el id en el historial, proponer_foto_articulo
+     * recibe esa foto por su imagen_id (FotosDeLaConversacionIaHelper::reutilizable_para_articulo).
+     *
+     * Las tres formas:
+     *   - un mensaje ANTERIOR (sus fotos ya no viajan): "[Foto adjunta] [imagen_id 12]" o
+     *     "[3 fotos adjuntas] [imagen_id 12, 13, 14]". La marca de siempre va primero y entera.
+     *   - el mensaje ACTUAL con UNA foto: nada. La foto la ve el modelo y la herramienta la toma sola
+     *     (es la más nueva sin usar); el payload queda exactamente como antes de esta misión.
+     *   - el mensaje ACTUAL con VARIAS: "[Fotos de este mensaje, en orden: imagen_id 6, 7, 8]", para que
+     *     pueda asignar cada una a su artículo; y si son más que MAX_FOTOS_AL_MODELO, cuántas no se le
+     *     muestran (siguen guardadas y se usan por su id).
+     *
+     * @param  AiMessage  $message  Con la relación `imagenes` cargada y no vacía.
+     * @param  bool  $manda_las_imagenes  true si este mensaje manda sus fotos en base64 (el actual).
+     * @return string
+     */
+    protected function marca_de_las_fotos_del_mensaje(AiMessage $message, $manda_las_imagenes): string
+    {
+        $ids = [];
+
+        foreach ($message->imagenes as $imagen) {
+            $ids[] = (int) $imagen->id;
+        }
+
+        $cuantas = count($ids);
+
+        if ($cuantas === 0) {
+            return '';
+        }
+
+        if (! $manda_las_imagenes) {
+            $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
+
+            return $marca . ' [imagen_id ' . implode(', ', $ids) . ']';
+        }
+
+        if ($cuantas === 1) {
+            return '';
+        }
+
+        $marca = '[Fotos de este mensaje, en orden: imagen_id ' . implode(', ', $ids) . ']';
+
+        if ($cuantas > AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) {
+            $marca .= ' [Te muestro las primeras ' . AsistenteImagenHelper::MAX_FOTOS_AL_MODELO . '; las otras '
+                . ($cuantas - AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) . ' quedaron guardadas y se usan por su imagen_id]';
+        }
+
+        return $marca;
     }
 
     /**

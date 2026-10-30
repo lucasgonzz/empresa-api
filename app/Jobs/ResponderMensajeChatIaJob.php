@@ -229,7 +229,7 @@ class ResponderMensajeChatIaJob implements ShouldQueue
                 'message'            => $e->getMessage(),
             ]);
 
-            $this->marcar_error($message, $this->contenido_para_la_persona($e), $e->getMessage());
+            $this->marcar_error($message, $this->contenido_para_la_persona($e, $message), $e->getMessage());
         }
 
         $this->avisar($conversation, $message);
@@ -389,7 +389,7 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             return;
         }
 
-        $this->marcar_error($message, $this->contenido_para_la_persona($exception), $exception->getMessage());
+        $this->marcar_error($message, $this->contenido_para_la_persona($exception, $message), $exception->getMessage());
 
         $conversation = AiConversation::find($message->ai_conversation_id);
 
@@ -412,21 +412,78 @@ class ResponderMensajeChatIaJob implements ShouldQueue
      * puede traer el body crudo de la respuesta de Anthropic y eso no llega a la pantalla. Va a la
      * columna error_mensaje y al log, como siempre.
      *
+     * 🔴 Y SI EL DUEÑO HABÍA MANDADO FOTOS, SE LO DICE (misión agente-mejoras-uso-real, E1 punto 5,
+     * 29/10/2026). En Ferre Total (CONV 15, mensaje 92) Pablo mandó tres fotos para los clavos que
+     * faltaban, el turno se cortó por un timeout y le llegó «Se me cortó la conexión con el servicio
+     * de IA» y nada más: no supo si las fotos habían llegado ni si se había cargado alguna. Ahora, si el
+     * mensaje que este turno contestaba trae fotos que NINGUNA carga usó, el texto suma, determinista y
+     * sin el modelo, cuántas llegaron, que quedaron guardadas y que con «seguí» continúa. Las fotos sin
+     * usar vuelven a viajar con el mensaje siguiente (AsistenteIaService::con_las_fotos_de_la_ultima_tanda),
+     * así que «seguí» las encuentra.
+     *
      * @param \Throwable $exception
+     * @param \App\Models\AiMessage|null $message  El assistant que falló (para mirar las fotos del pedido).
      * @return string
      */
-    protected function contenido_para_la_persona(\Throwable $exception)
+    protected function contenido_para_la_persona(\Throwable $exception, $message = null)
     {
+        $texto = self::CONTENIDO_ERROR_AMIGABLE;
+
         if ($exception instanceof AsistenteIaException) {
             $propio = $exception->mensaje_para_la_persona();
 
             if (!is_null($propio)) {
 
-                return $propio;
+                $texto = $propio;
             }
         }
 
-        return self::CONTENIDO_ERROR_AMIGABLE;
+        return $texto . $this->aviso_de_fotos_sin_usar($message);
+    }
+
+    /**
+     * La frase de las fotos que llegaron y no se usaron, con un espacio adelante, o vacío. Ver el 🔴 de
+     * contenido_para_la_persona(). Protegido: si la consulta falla, el texto de error sale igual.
+     *
+     * @param \App\Models\AiMessage|null $message  El assistant que falló.
+     * @return string
+     */
+    protected function aviso_de_fotos_sin_usar($message)
+    {
+        if (!($message instanceof AiMessage)) {
+
+            return '';
+        }
+
+        try {
+
+            $pedido = $this->mensaje_del_pedido($message);
+
+            if (is_null($pedido)) {
+
+                return '';
+            }
+
+            $sin_usar = AiMessageImagen::where('ai_message_id', (int) $pedido->id)->whereNull('gestionada_at')->count();
+
+        } catch (\Throwable $e) {
+
+            Log::warning('ResponderMensajeChatIaJob: no se pudieron contar las fotos del pedido para el aviso de error', [
+                'ai_message_id' => $message->id,
+                'error'         => $e->getMessage(),
+            ]);
+
+            return '';
+        }
+
+        if ($sin_usar === 0) {
+
+            return '';
+        }
+
+        return $sin_usar === 1
+            ? ' Me llegó la foto y quedó guardada, pero no llegué a cargarla. Escribime «seguí» y continúo.'
+            : ' Me llegaron ' . $sin_usar . ' fotos y quedaron guardadas, pero no llegué a cargarlas. Escribime «seguí» y continúo.';
     }
 
     /**
