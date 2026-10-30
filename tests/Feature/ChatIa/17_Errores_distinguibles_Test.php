@@ -145,6 +145,11 @@ class Errores_distinguibles_Test extends TestCase
      * (a) El loop se comió todas las vueltas encadenando tools y nunca contestó: hay que pedirle a
      * la persona que acote, no que reintente lo mismo.
      *
+     * Desde la misión agente-memoria-y-sin-techo (30/10/2026) la última vuelta es una llamada de cierre
+     * sin herramientas; este doble contesta tool_use SIEMPRE, también ahí, así que el cierre vuelve sin
+     * texto y el final es el mismo motivo. Su texto cambió a propósito: ya no pide «algo más acotado»
+     * sino «seguí» (ver AsistenteIaException::MENSAJES). El nombre del test queda por historia.
+     *
      * @group chat-ia
      * @test
      */
