@@ -1617,6 +1617,13 @@ class AsistenteIaService
         $bloque_de_la_app = $es_app ? $this->bloque_de_la_app() : '';
 
         /*
+         * Misión agente-mejoras-uso-real (29/10/2026): fuera de la app no hay pedir_imagen, y el agente
+         * contestaba "no tengo forma de generar una imagen". Va en el lugar del bloque de la app (son
+         * excluyentes): la regla de a dónde mandar a la persona cuando pide una imagen nueva.
+         */
+        $bloque_de_la_imagen = $es_app ? '' : $this->bloque_de_la_imagen_fuera_de_la_app($conversation, $owner);
+
+        /*
          * Misión app-ia-y-memoria (E2, 29/10/2026): las reglas de la memoria del negocio (qué se
          * guarda, qué no, cuándo leerla), para el dueño con Agentes de IA y en TODOS los canales. Son
          * FIJAS, así que van en este bloque, el cacheado; lo que cambia —el contexto maestro y el
@@ -1683,7 +1690,7 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
@@ -1758,6 +1765,61 @@ Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño
   gráficos o con números directos), eso manda sobre estas reglas.
 
 APP;
+    }
+
+    /**
+     * La regla de las IMÁGENES NUEVAS fuera de la app (misión agente-mejoras-uso-real, 29/10/2026,
+     * revisión independiente), con su salto de línea final; '' en la app (ahí está pedir_imagen).
+     *
+     * EL CASO REAL (CONV 24 de Ferre Total): «¿Podés hacerme una imagen de oferta de este producto?» por
+     * WhatsApp, y el agente contestó *"No tengo forma de generar una imagen de oferta: el sistema no crea
+     * gráficos ni banners"*. Generarla sí se puede, desde la app ComercioCity IA (pedir_imagen existe solo
+     * en ese canal). La entrega de la imagen por WhatsApp o en el sistema queda para otra misión: acá solo
+     * se le dice al modelo a dónde mandar a la persona, para que nunca conteste que no se puede.
+     *
+     * 🔴 SOLO SI ESTA INSTALACIÓN TIENE LA APP PARA ESTE NEGOCIO: el token de la app lo emite
+     * admin-sync/ia-app/token únicamente con la extensión Agentes de IA (AsistenteCanalHelper::
+     * tiene_extension) y para el dueño o un administrador (IaAppHelper::puede_usar_el_asistente). Con la
+     * extensión y alguien que puede entrar: la dirección y que entra con su mismo usuario. Con la
+     * extensión y un empleado sin acceso: que la pida el dueño o un administrador. Sin la extensión no se
+     * sabe si la va a tener: se dice condicional, sin prometerla.
+     *
+     * @param  AiConversation  $conversation  Para saber quién escribe.
+     * @param  User|null  $owner
+     * @return string
+     */
+    protected function bloque_de_la_imagen_fuera_de_la_app(AiConversation $conversation, $owner): string
+    {
+        $cierre = '  🔴 Nunca digas que no se puede, que no tenés forma o que el sistema no genera imágenes, y no'
+            . "\n" . '  digas que la pediste: desde acá no hay pedido.' . "\n";
+
+        if (! \App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::tiene_extension($owner)) {
+
+            return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): se hacen desde' . "\n"
+                . '  la app ComercioCity IA (ia.comerciocity.com), que viene con Agentes de IA. Si te piden una,' . "\n"
+                . '  decí en una línea que, si el negocio la tiene activa, la pide desde ahí entrando con su mismo' . "\n"
+                . '  usuario y contraseña del sistema, y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+                . $cierre;
+        }
+
+        $persona = User::find($conversation->auth_user_id);
+
+        $puede_entrar = ($persona instanceof User) && \App\Http\Controllers\Helpers\asistente_ia\IaAppHelper::puede_usar_el_asistente($persona);
+
+        if (! $puede_entrar) {
+
+            return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): desde acá no las' . "\n"
+                . '  generás, pero se hacen desde la app ComercioCity IA (ia.comerciocity.com), que usan el dueño' . "\n"
+                . '  y los administradores. Si te piden una, decí eso en una línea (que se la pida a ellos) y' . "\n"
+                . '  ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+                . $cierre;
+        }
+
+        return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, un banner): desde acá no las' . "\n"
+            . '  generás, pero SÍ se hacen: desde la app ComercioCity IA (ia.comerciocity.com), entrando con el' . "\n"
+            . '  mismo usuario y contraseña del sistema; ahí se la pide al agente.' . "\n"
+            . '  Si te piden una, decí eso en una línea y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
+            . $cierre;
     }
 
     /**
