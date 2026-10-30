@@ -466,8 +466,15 @@ class Stock_minimo_en_la_masiva_Test extends TestCase
 
         $renglones = array_column($accion->presentacion['renglones'], 'valor');
 
-        $this->assertContains('1 de los alcanzados no tiene stock repartido en Depósito Central E2: ahí no se le pone', $renglones);
-        $this->assertContains('2 de los alcanzados no tienen stock repartido en Local Centro E2: ahí no se les pone', $renglones);
+        /*
+         * Revisión independiente (30/10/2026): el clavo 2 no reparte el stock en ninguna sucursal, así
+         * que el reporte de Alertas le mira el mínimo GENERAL: ahí se le pone (antes se salteaba y esta
+         * tarjeta lo contaba como "sin stock repartido" en las dos sucursales). El clavo 1 sí reparte,
+         * pero no en el local: ahí no se le pone.
+         */
+        $this->assertContains('1 de los alcanzados no reparte el stock entre sucursales: se le pone el mínimo general del artículo', $renglones);
+        $this->assertContains('1 de los alcanzados no tiene stock repartido en Local Centro E2: ahí no se le pone', $renglones);
+        $this->assertNotContains('1 de los alcanzados no tiene stock repartido en Depósito Central E2: ahí no se le pone', $renglones);
 
         // Confirmar y correr el job.
         $this->dar_extension();
@@ -497,8 +504,13 @@ class Stock_minimo_en_la_masiva_Test extends TestCase
         $this->assertSame(10, (int) $this->pivote($this->clavos[0], $local)->stock_min);
         $this->assertSame(10, (int) $this->pivote($this->clavos[1], $central)->stock_min);
         $this->assertNull($this->pivote($this->clavos[1], $local), 'Sin fila en esa sucursal, no se abre una.');
-        $this->assertSame(0, DB::table('address_article')->where('article_id', $this->clavos[2]->id)->count(), 'El clavo sin reparto sigue sin reparto.');
-        $this->assertNull($this->clavos[2]->fresh()->stock_min);
+        $this->assertSame(0, DB::table('address_article')->where('article_id', $this->clavos[2]->id)->count(), 'El clavo sin reparto sigue sin reparto: no se le abre ninguna fila.');
+        $this->assertSame(10, (int) $this->clavos[2]->fresh()->stock_min, 'Sin reparto, el mínimo va al general del artículo (el que mira Alertas).');
+        $this->assertSame(
+            ['stock_min'],
+            array_keys(json_decode($masiva->articles()->where('articles.id', $this->clavos[2]->id)->first()->pivot->changes_json, true)),
+            'Una sola vez, en la columna del artículo, aunque la tarjeta vaya a las dos sucursales.'
+        );
 
         $this->assertSame(
             [StockMinimoMaximoEnMasivaHelper::clave_minimo($central->id), StockMinimoMaximoEnMasivaHelper::clave_minimo($local->id)],
@@ -514,6 +526,35 @@ class Stock_minimo_en_la_masiva_Test extends TestCase
         $this->assertSame(80, (int) $this->pivote($this->clavos[0], $central)->stock_max);
         $this->assertNull($this->pivote($this->clavos[0], $local)->stock_min);
         $this->assertNull($this->pivote($this->clavos[1], $central)->stock_min);
+        $this->assertNull($this->clavos[2]->fresh()->stock_min, 'El mínimo general vuelve a null.');
+    }
+
+    /**
+     * Con 2+ sucursales, el MÁXIMO no tiene columna general: a los que no reparten no se les pone, y
+     * la tarjeta lo dice.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function con_dos_sucursales_el_maximo_no_se_pone_a_los_que_no_reparten_y_se_dice()
+    {
+        $central = $this->sucursal('Depósito Central E2');
+        $this->sucursal('Local Centro E2');
+
+        $this->clavos[0]->addresses()->attach($central->id, ['amount' => 30]);
+
+        list($conversation, $assistant) = $this->conversacion();
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $respuesta = PropuestaActualizacionMasivaIaHelper::proponer($contexto, $assistant, $this->input([
+            ['campo' => 'stock_maximo', 'operacion' => 'setear', 'valor' => 100, 'sucursal' => 'central'],
+        ]));
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertContains(
+            '2 de los alcanzados no reparten el stock entre sucursales: el máximo no se les pone (no hay un máximo general)',
+            array_column(AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['renglones'], 'valor')
+        );
     }
 
     /**

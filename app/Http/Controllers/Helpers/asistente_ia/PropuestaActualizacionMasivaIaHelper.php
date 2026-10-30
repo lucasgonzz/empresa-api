@@ -1235,8 +1235,8 @@ class PropuestaActualizacionMasivaIaHelper
      * Misión agente-mejoras-uso-real (E2, 29/10/2026): `stock_minimo` y `stock_maximo` (ver
      * cambio_de_minimo_o_maximo()). Con 2 o más sucursales un cambio de esos puede dar VARIOS
      * renglones del update_form (uno por sucursal) y uno solo en los legibles; por eso el resultado
-     * trae además `minimos_y_maximos` (las sucursales de cada uno) y `avisos_de_minimo`. Sin esos dos
-     * campos, el resultado es exactamente el de antes.
+     * trae además `minimos_y_maximos` ([{campo, sucursales}] de cada uno) y `avisos_de_minimo`. Sin
+     * esos dos campos, el resultado es exactamente el de antes.
      *
      * @param  array  $cambios
      * @param  int  $owner_id
@@ -1280,7 +1280,9 @@ class PropuestaActualizacionMasivaIaHelper
                 }
 
                 $legibles[] = $traducido['texto'];
-                $minimos_y_maximos[] = $traducido['sucursales'];
+
+                // Con qué campo va (el mínimo cae al general en los que no reparten; el máximo no).
+                $minimos_y_maximos[] = ['campo' => $campo, 'sucursales' => $traducido['sucursales']];
 
                 foreach ($traducido['avisos'] as $aviso) {
 
@@ -1598,12 +1600,55 @@ class PropuestaActualizacionMasivaIaHelper
             $renglones[] = ['etiqueta' => 'Atención', 'valor' => $aviso];
         }
 
+        /*
+         * Los alcanzados que no reparten el stock en NINGUNA sucursal (revisión independiente,
+         * 30/10/2026): el mínimo se les pone en el general del artículo (`articles.stock_min`, el que
+         * les mira el reporte de Alertas) y el máximo no se les pone, porque no hay un máximo general.
+         * Una consulta, solo si la tarjeta trae un mínimo o un máximo por sucursal.
+         */
+        $hay_sucursales = false;
+        $campos = [];
+
+        foreach ($cambios_traducidos['minimos_y_maximos'] as $minimo_o_maximo) {
+
+            if (count($minimo_o_maximo['sucursales'])) {
+
+                $hay_sucursales = true;
+                $campos[$minimo_o_maximo['campo']] = true;
+            }
+        }
+
+        if ($hay_sucursales) {
+
+            $sin_reparto = StockMinimoMaximoEnMasivaHelper::contar_sin_reparto(
+                FiltroDeArticulosIaHelper::query($contexto->owner_id, $traducido['filter_form'], $traducido['imagen'])
+            );
+
+            if ($sin_reparto > 0 && isset($campos[self::CAMPO_STOCK_MINIMO])) {
+
+                $renglones[] = [
+                    'etiqueta' => 'Atención',
+                    'valor'    => ($sin_reparto === 1 ? '1 de los alcanzados no reparte' : $sin_reparto . ' de los alcanzados no reparten')
+                        . ' el stock entre sucursales: ' . ($sin_reparto === 1 ? 'se le pone' : 'se les pone') . ' el mínimo general del artículo',
+                ];
+            }
+
+            if ($sin_reparto > 0 && isset($campos[self::CAMPO_STOCK_MAXIMO])) {
+
+                $renglones[] = [
+                    'etiqueta' => 'Atención',
+                    'valor'    => ($sin_reparto === 1 ? '1 de los alcanzados no reparte' : $sin_reparto . ' de los alcanzados no reparten')
+                        . ' el stock entre sucursales: el máximo no ' . ($sin_reparto === 1 ? 'se le pone' : 'se les pone') . ' (no hay un máximo general)',
+                ];
+            }
+        }
+
         // Cada sucursal una vez, aunque el mínimo y el máximo vayan a la misma.
         $vistas = [];
 
-        foreach ($cambios_traducidos['minimos_y_maximos'] as $sucursales) {
+        foreach ($cambios_traducidos['minimos_y_maximos'] as $minimo_o_maximo) {
 
-            foreach ($sucursales as $sucursal) {
+            foreach ($minimo_o_maximo['sucursales'] as $sucursal) {
 
                 if (isset($vistas[$sucursal['address_id']])) {
 

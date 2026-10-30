@@ -39,7 +39,9 @@ use Illuminate\Support\Facades\Log;
  *    stock repartido ahí, y abrirle una fila lo pasaría a "repartir por sucursales"
  *    (MasiveUpdateHelper::aplicar_stock_por_movimiento() decide el modo de stock contando esas
  *    filas): un cambio de mínimo no puede cambiar cómo se lleva el stock de un artículo. Esos se
- *    saltean (la tarjeta ya avisó cuántos son, ver contar_sin_fila()).
+ *    saltean (la tarjeta ya avisó cuántos son, ver contar_sin_fila()). Salvo el mínimo de uno que no
+ *    reparte en NINGUNA sucursal: ése va a `articles.stock_min`, que es lo que le mira el reporte
+ *    de Alertas (revisión independiente, 30/10/2026; ver aplicar_minimo_general()).
  *  - La sucursal tiene que ser del dueño de la masiva y estar viva (no borrada): se valida UNA vez por
  *    corrida con la memoria de la corrida (CatalogoPorListaHelper::nueva_memoria_de_corrida()).
  *  - El artículo tiene que ser del dueño: la selección manual de la masiva resuelve por id.
@@ -167,8 +169,19 @@ class StockMinimoMaximoEnMasivaHelper
 
         $fila = self::fila($model->id, $partes['address_id']);
 
-        // Sin fila en esa sucursal no se abre una (ver el docblock de la clase).
+        /*
+         * Sin fila en esa sucursal no se abre una (ver el docblock de la clase). PERO si el artículo
+         * no reparte el stock en NINGUNA sucursal (revisión independiente, 30/10/2026), su stock es
+         * el general y el reporte nocturno de Alertas le mira `articles.stock_min`
+         * (InventoryPerformanceHelper): el mínimo va ahí, que es donde sirve. El máximo no tiene
+         * columna general: se saltea.
+         */
         if (is_null($fila)) {
+
+            if ($partes['columna'] === 'stock_min' && !self::reparte($model->id)) {
+
+                return self::aplicar_minimo_general($model, $nuevo, $form['key']);
+            }
 
             return null;
         }
@@ -249,9 +262,10 @@ class StockMinimoMaximoEnMasivaHelper
     }
 
     /**
-     * Cuántos de los artículos dados NO tienen fila de pivote en esa sucursal: a esos la masiva no
-     * les pone el mínimo ahí (ver el docblock de la clase). Lo usa la tarjeta para avisarlo antes de
-     * confirmar. Una consulta.
+     * Cuántos de los artículos dados reparten el stock en ALGUNA sucursal pero NO tienen fila en ésta:
+     * a esos la masiva no les pone el mínimo ahí (ver el docblock de la clase). Los que no reparten en
+     * ninguna van aparte (contar_sin_reparto()): a esos se les pone el mínimo general. Lo usa la
+     * tarjeta para avisarlo antes de confirmar. Una consulta.
      *
      * @param  \Illuminate\Database\Eloquent\Builder  $articulos  La query de los alcanzados.
      * @param  int  $address_id
@@ -260,6 +274,9 @@ class StockMinimoMaximoEnMasivaHelper
     public static function contar_sin_fila($articulos, $address_id)
     {
         return (int) (clone $articulos)
+            ->whereExists(function ($q) {
+                self::filas_de_sucursales($q);
+            })
             ->whereNotExists(function ($q) use ($address_id) {
                 $q->selectRaw('1')
                     ->from('address_article')
@@ -267,6 +284,89 @@ class StockMinimoMaximoEnMasivaHelper
                     ->where('address_article.address_id', (int) $address_id);
             })
             ->count();
+    }
+
+    /**
+     * Cuántos de los artículos dados NO reparten el stock en ninguna sucursal (revisión independiente,
+     * 30/10/2026): a esos el mínimo se les pone en `articles.stock_min` (ver aplicar_en_masiva()) y el
+     * máximo no se les pone. Una consulta.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $articulos  La query de los alcanzados.
+     * @return int
+     */
+    public static function contar_sin_reparto($articulos)
+    {
+        return (int) (clone $articulos)
+            ->whereNotExists(function ($q) {
+                self::filas_de_sucursales($q);
+            })
+            ->count();
+    }
+
+    /**
+     * La subconsulta "el artículo tiene alguna fila de stock en una sucursal de verdad" (sin los
+     * domicilios de comprador, `buyer_id`), correlacionada con `articles.id`. Es el mismo criterio con
+     * el que MasiveUpdateHelper::aplicar_stock_por_movimiento() decide si el artículo reparte.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $q
+     * @return void
+     */
+    protected static function filas_de_sucursales($q)
+    {
+        $q->selectRaw('1')
+            ->from('address_article')
+            ->join('addresses', 'addresses.id', '=', 'address_article.address_id')
+            ->whereColumn('address_article.article_id', 'articles.id')
+            ->whereNull('addresses.buyer_id');
+    }
+
+    /**
+     * true si el artículo reparte el stock en alguna sucursal de verdad (ver filas_de_sucursales()).
+     *
+     * @param  int  $article_id
+     * @return bool
+     */
+    protected static function reparte($article_id)
+    {
+        return DB::table('address_article')
+            ->join('addresses', 'addresses.id', '=', 'address_article.address_id')
+            ->where('address_article.article_id', (int) $article_id)
+            ->whereNull('addresses.buyer_id')
+            ->exists();
+    }
+
+    /**
+     * El mínimo GENERAL del artículo (`articles.stock_min`) para uno que no reparte el stock (revisión
+     * independiente, 30/10/2026). Devuelve el cambio con `prop_key` = `stock_min`, la columna de
+     * `articles`, así que la reversión de siempre lo restaura por la rama genérica (el `old` exacto,
+     * null incluido). Con "todas", la segunda sucursal encuentra el mismo valor y no registra nada.
+     *
+     * @param  \App\Models\Article  $model
+     * @param  int  $nuevo
+     * @param  string  $form_key
+     * @return array|null
+     */
+    protected static function aplicar_minimo_general($model, $nuevo, $form_key)
+    {
+        // De la fila, no del modelo: una sucursal anterior de la misma masiva pudo haberlo escrito.
+        $viejo = DB::table('articles')->where('id', (int) $model->id)->value('stock_min');
+        $viejo = is_null($viejo) ? null : (int) $viejo;
+
+        if (!is_null($viejo) && $viejo === (int) $nuevo) {
+
+            return null;
+        }
+
+        $model->stock_min = (int) $nuevo;
+        $model->save();
+
+        return [
+            'prop_key'  => 'stock_min',
+            'old_value' => $viejo,
+            'new_value' => (int) $nuevo,
+            'operation' => 'set',
+            'form_key'  => $form_key,
+        ];
     }
 
     /**
