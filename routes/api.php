@@ -1431,6 +1431,13 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         Route::get('ai-mensajes/{message_id}/audio', 'AiConversationController@audio_de_mensaje');
         Route::get('ai-mensajes/{message_id}/archivo/{orden}', 'AiConversationController@archivo_de_mensaje');
 
+        /*
+         * Me gusta / no me gusta de una respuesta del agente, con el comentario del no me gusta (misión
+         * agente-mejoras-uso-real, 29/10/2026). La usan el chat del sistema y la app; la lee el análisis
+         * diario de las 22 h. Misma tenencia doble que el resto del chat.
+         */
+        Route::put('ai-mensajes/{message_id}/valoracion', 'AiConversationController@valorar_mensaje');
+
         // Tarjetas de carga del asistente (misión asistente-ia-acciones): confirmar ejecuta el gasto,
         // el pago o la tarea por el mismo camino que la pantalla, autenticado como la persona y con
         // candado contra el doble clic; cancelar la cierra sin escribir nada. Misma tenencia doble que

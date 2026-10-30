@@ -58,7 +58,7 @@ class IaAppHelper
      * Lo que esta versión sabe hacer para la app (contrato C1.1). La app apaga lo que no esté. `contexto`,
      * `cuestionario` y `preferencias` son de la memoria del negocio (AgenteContextoHelper).
      */
-    const FUNCIONES = ['modelo', 'adjuntos', 'audio', 'bloques', 'imagenes', 'contexto', 'cuestionario', 'preferencias', 'buscar', 'renombrar'];
+    const FUNCIONES = ['modelo', 'adjuntos', 'audio', 'bloques', 'imagenes', 'contexto', 'cuestionario', 'preferencias', 'buscar', 'renombrar', 'valoracion'];
 
     /**
      * Un bcrypt de un texto cualquiera (costo 10, el de Laravel), para que "ese documento no existe"
@@ -103,6 +103,8 @@ class IaAppHelper
         'GET api/ai-mensajes/{message_id}/imagen/{orden}',
         'GET api/ai-mensajes/{message_id}/audio',
         'GET api/ai-mensajes/{message_id}/archivo/{orden}',
+        // Me gusta / no me gusta de cada respuesta (misión agente-mejoras-uso-real).
+        'PUT api/ai-mensajes/{message_id}/valoracion',
         // Lo que abren las menciones.
         'GET api/articles/{id}/ficha-asistente',
         'GET api/clients/{id}/para-cuenta-corriente',

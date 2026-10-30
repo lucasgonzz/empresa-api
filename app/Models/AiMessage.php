@@ -117,6 +117,8 @@ class AiMessage extends Model
         'busquedas_de_productos' => 'array',
         'audio' => 'array',
         'archivos' => 'array',
+        // Cuándo valoró el dueño la respuesta (misión agente-mejoras-uso-real).
+        'valorado_at' => 'datetime',
     ];
 
     /**
