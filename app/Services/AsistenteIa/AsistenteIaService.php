@@ -3526,11 +3526,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Texto a buscar en el nombre o los códigos del artículo. Ejemplo: "coca cola". Mandá cadena vacía para traer los primeros artículos sin filtrar.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3727,11 +3729,13 @@ CONFIRMACION;
                             'description' => 'Ventana de días hacia atrás. Si no la mandás se usan 30.',
                             'enum' => [7, 30, 90],
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input));
+                    return ConsultasSistemaIaHelper::interesados_en_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_del_enum($input), self::articulo_id_del_input($input));
                 },
             ],
             /*
@@ -3785,11 +3789,13 @@ CONFIRMACION;
                             'description' => 'Ventana de días hacia atrás. 0 (el default) es toda la historia, que es lo que la persona suele querer decir con "quién me compró más".',
                             'enum' => [0, 7, 30, 90, 365],
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input));
+                    return ConsultasSistemaIaHelper::quien_compro_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), self::dias_de_historia($input), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3802,11 +3808,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::compras_de_un_articulo($owner_id, (string) ($input['busqueda'] ?? ''), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -3841,11 +3849,13 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre o parte del nombre del artículo, o su código de barras / de proveedor.',
                         ],
+                        // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
+                        'articulo_id' => self::esquema_de_articulo_id(),
                     ],
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''));
+                    return ConsultasSistemaIaHelper::stock_por_deposito($owner_id, (string) ($input['busqueda'] ?? ''), 0, self::articulo_id_del_input($input));
                 },
             ],
             [
@@ -4441,6 +4451,39 @@ CONFIRMACION;
         }
 
         return $dias;
+    }
+
+    /**
+     * El esquema de `articulo_id`, común a las cinco consultas de UN artículo (misión
+     * agente-mejoras-uso-real, E2 punto 6, 29/10/2026). Pablo (Ferre Total, CONV 11) pidió el stock y
+     * las compras de dos artículos de un ranking y el agente no encontró sus fichas: había reescrito
+     * los nombres («HºCARROCERA» → «H° carrocera», «90 º 60 X 60» → «90° 60x60») y estas consultas
+     * solo aceptaban texto. Con el id no hay nombre que reescribir.
+     *
+     * @return array<string, string>
+     */
+    protected static function esquema_de_articulo_id(): array
+    {
+        return [
+            'type'        => 'integer',
+            'description' => 'El id del artículo si salió de una respuesta anterior (article_id, articulo_id o id de cualquier consulta): pasalo acá y no reescribas el nombre. Manda sobre busqueda y encuentra también los inactivos y los de la papelera (la respuesta lo dice en estado_del_articulo).',
+        ];
+    }
+
+    /**
+     * El `articulo_id` de un input, o null si no vino o no es un entero positivo.
+     *
+     * @param array $input
+     * @return int|null
+     */
+    protected static function articulo_id_del_input(array $input)
+    {
+        if (! isset($input['articulo_id']) || ! is_numeric($input['articulo_id']) || (int) $input['articulo_id'] <= 0) {
+
+            return null;
+        }
+
+        return (int) $input['articulo_id'];
     }
 
     /**

@@ -1210,15 +1210,58 @@ class CatalogoDeDatosIaHelper
 
         $mapa = [];
 
+        /*
+         * 🔴 LOS ARTÍCULOS DICEN SI ESTÁN EN LA PAPELERA O INACTIVOS (misión agente-mejoras-uso-real, E2
+         * punto 6, 29/10/2026). Un ranking de renglones de venta etiqueta artículos que se vendieron y
+         * después se borraron o se desactivaron; el agente los nombraba como cualquier otro y, cuando
+         * el dueño pedía la ficha (CONV 11 de Pablo), no la encontraba y decía que "no existe". Con la
+         * marca, el agente sabe por qué y lo puede decir.
+         */
+        $es_de_articulos = $relacion['tabla'] === 'articles';
+
+        $columnas = $es_de_articulos ? ['id', $relacion['campo'], 'deleted_at', 'status'] : ['id', $relacion['campo']];
+
         $filas = DB::table($relacion['tabla'])
             ->whereIn('id', $ids)
-            ->get(['id', $relacion['campo']]);
+            ->get($columnas);
 
         foreach ($filas as $fila) {
-            $mapa[(int) $fila->id] = (string) $fila->{$relacion['campo']};
+            $etiqueta = (string) $fila->{$relacion['campo']};
+
+            if ($es_de_articulos) {
+                $etiqueta .= self::marca_del_estado_del_articulo($fila->deleted_at, $fila->status);
+            }
+
+            $mapa[(int) $fila->id] = $etiqueta;
         }
 
         return $mapa;
+    }
+
+    /**
+     * " (en la papelera)", " (inactivo)", " (sin activar)" o "" según el estado de un artículo (misión
+     * agente-mejoras-uso-real, E2). "Sin activar" son los que nacieron de una compra o un presupuesto
+     * y todavía no se activaron (`from_provider_order`, `from_budget`).
+     *
+     * @param  mixed  $deleted_at
+     * @param  mixed  $status
+     * @return string
+     */
+    public static function marca_del_estado_del_articulo($deleted_at, $status): string
+    {
+        if (! is_null($deleted_at)) {
+            return ' (en la papelera)';
+        }
+
+        if ($status === 'inactive') {
+            return ' (inactivo)';
+        }
+
+        if (! is_null($status) && $status !== 'active') {
+            return ' (sin activar)';
+        }
+
+        return '';
     }
 
     /**
