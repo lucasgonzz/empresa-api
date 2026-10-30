@@ -865,6 +865,77 @@ class Cierre_con_lo_hecho_Test extends TestCase
     }
 
     /**
+     * F6 de la segunda ronda: (a) una carga que sigue esperando pero cuyo último intento falló (el
+     * "directo" que no se pudo) dice «(no se pudo: …)» corto en su renglón; (b) una tarjeta de un mensaje
+     * ANTERIOR que se confirmó mientras corría este turno (confirmar_carga_pendiente, o el botón) va en
+     * «Quedó hecho», sin repetir la de la confirmación determinista; una confirmada ANTES del turno, no.
+     *
+     * @test
+     */
+    public function lo_que_no_se_pudo_y_lo_confirmado_de_antes_durante_el_turno()
+    {
+        /* Una respuesta anterior (con tres tarjetas: una confirmada ANTES del turno y dos DURANTE) y el turno. */
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+            'origen'       => 'usuario',
+        ]);
+
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Cargame los gastos', 'estado' => 'listo']);
+        $anterior = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'contenido' => 'Te dejo las tarjetas.', 'estado' => 'listo']);
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Dale, y seguí', 'estado' => 'listo']);
+        $assistant = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'estado' => 'pendiente', 'acciones_habilitadas' => true]);
+
+        AiMessage::where('id', $assistant->id)->update(['created_at' => Carbon::now()->subMinutes(2)]);
+        $assistant = $assistant->fresh();
+
+        $vieja_id = $anterior->id;
+
+        $tarjeta = function ($clave, $estado, $texto, $resuelta_at, $mensaje_id, $error = null) use ($conversation) {
+            return AiMessageAction::create([
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $mensaje_id,
+                'user_id'            => $this->comercio->id,
+                'auth_user_id'       => $this->comercio->id,
+                'tipo'               => AiMessageAction::TIPO_GASTO,
+                'clave'              => 'gasto:p102-f6-' . $clave,
+                'estado'             => $estado,
+                'datos'              => [],
+                'presentacion'       => ['titulo' => 'Gasto ' . $clave, 'renglones' => [['etiqueta' => 'Monto', 'valor' => '$ 1.000']], 'aviso' => null],
+                'resultado'          => is_null($texto) ? null : ['texto' => $texto],
+                'resuelta_at'        => $resuelta_at,
+                'error_mensaje'      => $error,
+            ]);
+        };
+
+        $tarjeta('antes', AiMessageAction::ESTADO_CONFIRMADA, 'Gasto N° 10 registrado', Carbon::now()->subHour(), $vieja_id);
+        $determinista = $tarjeta('determinista', AiMessageAction::ESTADO_CONFIRMADA, 'Gasto N° 11 registrado', Carbon::now()->subMinute(), $vieja_id);
+        $tarjeta('durante', AiMessageAction::ESTADO_CONFIRMADA, 'Gasto N° 12 registrado', Carbon::now(), $vieja_id);
+
+        /* Una de este mensaje que el "directo" no pudo ejecutar. */
+        $tarjeta('fallida', AiMessageAction::ESTADO_PROPUESTA, null, null, $assistant->id, 'La caja Efectivo está cerrada.');
+
+        $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, null, $determinista->id);
+
+        $this->assertStringStartsWith(
+            "Quedó hecho:\n- Gasto N° 11 registrado.\n- Gasto N° 12 registrado.\n\n"
+            . "Quedó para que la confirmes:\n- Gasto fallida (Monto: $ 1.000) (no se pudo: La caja Efectivo está cerrada)\n",
+            $texto
+        );
+        $this->assertStringNotContainsString('Gasto N° 10', $texto, 'La confirmada antes del turno no es de este turno.');
+        $this->assertSame(1, substr_count($texto, 'Gasto N° 11'), 'La de la confirmación determinista va una sola vez.');
+
+        /* El motivo largo se recorta, y entra entero aunque el renglón sea largo. */
+        $larga = $tarjeta('larga', AiMessageAction::ESTADO_PROPUESTA, null, null, $assistant->id, str_repeat('No hay saldo en la cuenta del banco. ', 10));
+        $larga->presentacion = ['titulo' => str_repeat('Gasto muy largo ', 30), 'renglones' => [], 'aviso' => null];
+        $larga->save();
+
+        $con_larga = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, null);
+
+        $this->assertMatchesRegularExpression('/\(no se pudo: No hay saldo[^)]{0,120}…\)/u', $con_larga);
+    }
+
+    /**
      * F4 de la segunda ronda: con muchas cargas de renglones largos el texto armado entra en un WhatsApp
      * (≤ DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE, 3.500): las dos listas comparten
      * LARGO_MAXIMO_DE_LAS_LISTAS (3.000) y lo que no entra va en «- y N más.». Antes, 10 + 10 renglones de

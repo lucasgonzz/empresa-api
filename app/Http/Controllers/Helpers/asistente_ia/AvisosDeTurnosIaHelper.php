@@ -90,6 +90,12 @@ class AvisosDeTurnosIaHelper
     const LARGO_DEL_RENGLON = 300;
 
     /**
+     * Techo de caracteres del motivo de una carga que no se pudo hacer, en su renglón («(no se pudo: …)»,
+     * segunda ronda de arreglos, F6). El motivo entero viaja en el historial y en la tarjeta.
+     */
+    const LARGO_DEL_MOTIVO = 120;
+
+    /**
      * Cuántas cargas se listan como mucho por sección en texto_de_turno_sin_terminar(); las demás van en
      * un «- y N más.». Con el techo de 24 vueltas un turno puede dejar muchas tarjetas, y el texto sale por
      * WhatsApp (un mensaje de 4.096 caracteres como mucho): 10 renglones de 300 entran con margen. Las que
@@ -319,6 +325,9 @@ class AvisosDeTurnosIaHelper
             $hechos = [];
             $para_confirmar = [];
 
+            /* Las tarjetas de mensajes ANTERIORES que ya van en «Quedó hecho» (para no repetirlas). */
+            $ya_contadas = [];
+
             if (!is_null($tarjeta_confirmada_aparte) && (int) $tarjeta_confirmada_aparte > 0) {
 
                 $aparte = AiMessageAction::where('id', (int) $tarjeta_confirmada_aparte)
@@ -328,6 +337,35 @@ class AvisosDeTurnosIaHelper
                 if (!is_null($aparte) && (string) $aparte->estado === AiMessageAction::ESTADO_CONFIRMADA && (int) $aparte->ai_message_id !== (int) $assistant->id) {
 
                     $hechos[] = self::renglon_para_la_persona($aparte);
+                    $ya_contadas[] = (int) $aparte->id;
+                }
+            }
+
+            /*
+             * Segunda ronda de arreglos (F6): las tarjetas de mensajes ANTERIORES de esta conversación que se
+             * confirmaron mientras corría este turno (confirmar_carga_pendiente sobre una tarjeta que había
+             * dejado otra respuesta, o el botón Confirmar tocado mientras tanto): `resuelta_at` desde el alta
+             * de este mensaje. Están hechas, y si el turno no termina la persona tiene que saberlo igual que
+             * las de este mensaje (en el historial viajan colgadas del mensaje que las propuso).
+             */
+            if (!is_null($assistant->created_at)) {
+
+                $durante_el_turno = AiMessageAction::where('ai_conversation_id', (int) $assistant->ai_conversation_id)
+                                                   ->where('ai_message_id', '<', (int) $assistant->id)
+                                                   ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                                                   ->where('resuelta_at', '>=', Carbon::parse($assistant->created_at))
+                                                   ->orderBy('resuelta_at')
+                                                   ->orderBy('id')
+                                                   ->get();
+
+                foreach ($durante_el_turno as $accion) {
+
+                    if (in_array((int) $accion->id, $ya_contadas, true)) {
+                        continue;
+                    }
+
+                    $hechos[] = self::renglon_para_la_persona($accion);
+                    $ya_contadas[] = (int) $accion->id;
                 }
             }
 
@@ -438,7 +476,51 @@ class AvisosDeTurnosIaHelper
             }
         }
 
-        return self::recortar_renglon(count($renglones) ? $titulo . ' (' . implode('; ', $renglones) . ')' : $titulo);
+        $renglon = count($renglones) ? $titulo . ' (' . implode('; ', $renglones) . ')' : $titulo;
+
+        /*
+         * Segunda ronda de arreglos (F6): una tarjeta que sigue esperando PERO cuyo último intento de
+         * confirmarla falló (en "directo", la ejecución automática que no se pudo) dice por qué, corto: si
+         * no, en la lista de lo que espera el sí parece una más, lista para confirmar, y la persona no
+         * sabe que ya se intentó.
+         */
+        $motivo = (string) $accion->estado === AiMessageAction::ESTADO_PROPUESTA
+            ? trim(preg_replace('/\s+/u', ' ', (string) $accion->error_mensaje))
+            : '';
+
+        if ($motivo !== '') {
+
+            $motivo = rtrim($motivo, '. ');
+            $motivo = mb_strlen($motivo) > self::LARGO_DEL_MOTIVO ? rtrim(mb_substr($motivo, 0, self::LARGO_DEL_MOTIVO - 1)) . '…' : $motivo;
+
+            /* El motivo no se pierde aunque el renglón sea largo: se recorta el renglón, no el motivo. */
+            $sufijo = ' (no se pudo: ' . $motivo . ')';
+
+            return self::recortar_renglon_con_sufijo($renglon, $sufijo);
+        }
+
+        return self::recortar_renglon($renglon);
+    }
+
+    /**
+     * Un renglón con un sufijo que tiene que quedar entero («(no se pudo: …)»): se recorta el renglón para
+     * que los dos juntos entren en LARGO_DEL_RENGLON.
+     *
+     * @param  string  $renglon
+     * @param  string  $sufijo
+     * @return string
+     */
+    protected static function recortar_renglon_con_sufijo($renglon, $sufijo)
+    {
+        $lugar = max(20, self::LARGO_DEL_RENGLON - mb_strlen($sufijo));
+
+        $renglon = trim(preg_replace('/\s+/u', ' ', (string) $renglon));
+
+        if (mb_strlen($renglon) > $lugar) {
+            $renglon = rtrim(mb_substr($renglon, 0, $lugar - 1)) . '…';
+        }
+
+        return $renglon . $sufijo;
     }
 
     /**
