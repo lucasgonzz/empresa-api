@@ -128,8 +128,10 @@ class HerramientasDeLaApp
                 'name'         => self::PEDIR_IMAGEN,
                 'description'  => 'Pide que se GENERE una imagen nueva (una placa para redes, un cartel para el local, una foto de producto ilustrativa, el fondo de una promo). '
                     . 'Usala solo cuando la persona pide una imagen. Escribí el prompt en español, detallado: qué se ve, el texto que tiene que llevar escrito (entre comillas y tal cual), '
-                    . 'los colores, el estilo y para qué es. Si es para el negocio, usá su nombre. La imagen tarda unos minutos y aparece sola en este mismo mensaje: '
-                    . 'decí en una línea que la estás haciendo, sin prometer que ya está. No sirve para editar una foto que mandó la persona.',
+                    . 'los colores, el estilo y para qué es. Si es para el negocio, usá su nombre. La imagen aparece sola en este mismo mensaje cuando esté lista: '
+                    . 'después de llamarla decí en una línea «la pedí; aparece acá cuando esté lista», sin prometer tiempos ni decir que ya está; si la respuesta dice que no se pudo, contalo tal cual. '
+                    . 'Pedir una imagen NO autoriza a preparar promociones, envíos ni mensajes a clientes: si te parece útil, ofrecelo en una línea y no armes la tarjeta hasta que la persona lo pida. '
+                    . 'No sirve para editar una foto que mandó la persona ni para las fotos de los artículos o las categorías del catálogo.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [

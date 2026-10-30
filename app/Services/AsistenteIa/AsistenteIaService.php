@@ -18,6 +18,7 @@ use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EnvioSinPropuestaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ImagenPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
@@ -40,6 +41,7 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
+use App\Models\IaImagenPedido;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
 use Illuminate\Support\Facades\Log;
@@ -648,6 +650,23 @@ class AsistenteIaService
             && $assistant_message->confirma_por_texto()
             && is_null($confirmacion_determinista);
 
+        /*
+         * 🔴 MISIÓN app-ia-imagen-prometida (29/10/2026): LA IMAGEN QUE EL TEXTO PROMETE TIENE QUE ESTAR
+         * PEDIDA. Demo3, conversación 13 (Rápido = DeepSeek Flash): a «Haceme una imagen cuadrada para
+         * Instagram…» contestó «La imagen la puse en marcha…» y armó una promoción por WhatsApp que nadie
+         * pidió, sin llamar nunca a pedir_imagen. Solo en la app (es la única con pedir_imagen). Si el turno
+         * no llamó a pedir_imagen y el texto da la imagen por pedida, o la persona pidió claramente generar
+         * una y el modelo no contestó preguntando lo que falta, va el mismo y único reintento del turno; si
+         * después sigue prometiéndola sin pedido, se cambian SOLO las oraciones que la prometen y se agrega
+         * el aviso honesto (el resto de la respuesta queda). Ver ImagenPrometidaIaHelper (y sus falsos
+         * positivos: las fotos del catálogo, los gráficos, los diseños de PDF y las tarjetas de venta o
+         * presupuesto no son pedidos de generar una imagen; los ofrecimientos no son afirmaciones).
+         */
+        $guarda_de_imagen = (bool) $es_app;
+
+        /* true si el único reintento del turno lo pidió la guarda de la imagen. Solo para el log. */
+        $reintento_de_la_imagen = false;
+
         while ($iterations < $max_iterations) {
             /*
              * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
@@ -660,7 +679,7 @@ class AsistenteIaService
                         'ai_conversation_id' => $conversation->id,
                         'ai_message_id'      => $assistant_message->id,
                         'iterations'         => $iterations,
-                        'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
+                        'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
                     ]);
 
                     $final_text = $texto_antes_del_reintento;
@@ -733,7 +752,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
+                    'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
                     'excepcion'          => get_class($e),
                     'error'              => $e->getMessage(),
                 ]);
@@ -746,7 +765,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'),
+                    'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
                     'http'               => $response->status(),
                 ]);
 
@@ -858,6 +877,45 @@ class AsistenteIaService
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
             $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
+
+            /*
+             * La guarda de la imagen prometida va PRIMERO: es la más segura de las cuatro (o se llamó a
+             * pedir_imagen en este turno o no se llamó) y en el caso real el texto prometía la imagen Y
+             * armaba otra tarjeta: si el reintento se lo llevaba la de la carga, la imagen nunca se pedía.
+             */
+            if ($guarda_de_imagen
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && $this->promete_una_imagen_sin_pedirla($final_text, $herramientas_pedidas, $conversation, $assistant_message, true)) {
+
+                Log::warning('AsistenteIaService: la imagen se prometió (o se pidió) y no se llamó a pedir_imagen; se reintenta una vez.', [
+                    'ai_conversation_id'   => $conversation->id,
+                    'ai_message_id'        => $assistant_message->id,
+                    'iterations'           => $iterations,
+                    'herramientas_pedidas' => $herramientas_pedidas,
+                    'modelo'               => $model,
+                    'texto'                => mb_substr($final_text, 0, 300),
+                ]);
+
+                $texto_antes_del_reintento = $final_text;
+                $reintento_de_la_imagen    = true;
+
+                $messages[] = [
+                    'role'    => 'assistant',
+                    'content' => $final_text,
+                ];
+
+                $messages[] = [
+                    'role'    => 'user',
+                    'content' => ImagenPrometidaIaHelper::nota_para_reintentar(),
+                ];
+
+                $toco_una_carga = true;
+                $final_text = '';
+
+                continue;
+            }
 
             /*
              * (A, C y D) de la misión asistente-tarjeta-sin-accion: el texto afirma una tarjeta y este
@@ -1211,6 +1269,15 @@ class AsistenteIaService
         }
 
         /*
+         * Misión app-ia-imagen-prometida, después del reintento (o sin él, si no quedaba vuelta ni tiempo,
+         * o si el reintento lo usó otra guarda): el texto no puede prometer una imagen que no se pidió, ni
+         * decir que se está generando una cuyo bloque ya quedó no disponible o fallido en este turno.
+         */
+        if ($guarda_de_imagen) {
+            $final_text = $this->texto_coherente_con_la_imagen($final_text, $herramientas_pedidas, $conversation, $assistant_message, ! is_null($texto_antes_del_reintento));
+        }
+
+        /*
          * Misión asistente-envios-a-clientes (corrección 1 del chequeo, 16/10/2026): en los canales sin
          * botones, el bloque de cada envío a clientes que este turno dejó esperando el sí va al final
          * del mensaje, armado por el sistema. Va DESPUÉS de las guardas de arriba (que miran lo que
@@ -1243,6 +1310,181 @@ class AsistenteIaService
         }
 
         return $final_text;
+    }
+
+    /**
+     * true si el turno prometió (o le pidieron) una imagen nueva y NO la pidió (misión
+     * app-ia-imagen-prometida): no llamó a pedir_imagen ni quedó ningún pedido de este turno, no usó
+     * herramientas de otra función (las imágenes del catálogo, un gráfico, una tabla, un diseño de PDF,
+     * una venta, un presupuesto, el envío de un comprobante), y el texto la da por pedida o —con
+     * $mirar_el_pedido— la persona pidió claramente generarla y el modelo no contestó preguntando por un
+     * dato de la imagen (eso es lo correcto: no se reintenta; cualquier otra pregunta final, como «¿La
+     * confirmás?», no alcanza). Si la vuelta anterior del asistente ya la pidió y la persona no pide otra,
+     * las oraciones que solo dicen en qué estado está esa imagen («la pedí; aparece acá…», «se está
+     * generando») no son una promesa sin pedido; todo lo demás se sigue mirando, y si la persona pide otra
+     * («hacé otra igual pero vertical») la guarda actúa entera.
+     *
+     * @param  string  $texto
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  bool  $mirar_el_pedido  true adentro del bucle (dispara el reintento); false después, donde
+     *                                 solo se cambia un texto que AFIRMA la imagen (una pregunta para
+     *                                 completar el pedido se deja).
+     * @return bool
+     */
+    protected function promete_una_imagen_sin_pedirla($texto, array $herramientas_pedidas, AiConversation $conversation, AiMessage $assistant_message, $mirar_el_pedido): bool
+    {
+        if (in_array(ImagenPrometidaIaHelper::HERRAMIENTA, $herramientas_pedidas, true) || count($this->pedidos_de_imagen) > 0) {
+
+            return false;
+        }
+
+        if (ImagenPrometidaIaHelper::hablo_de_otra_cosa($herramientas_pedidas)) {
+
+            return false;
+        }
+
+        $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
+
+        if (ImagenPrometidaIaHelper::afirma_una_imagen($texto, $contexto['hubo_pedido'], $contexto['hay_una_ya_pedida'])) {
+
+            return true;
+        }
+
+        return $mirar_el_pedido
+            && $contexto['pidio_ahora']
+            && ! ImagenPrometidaIaHelper::termina_preguntando_por_la_imagen($texto);
+    }
+
+    /**
+     * Qué se sabe del pedido de imagen alrededor de este turno (misión app-ia-imagen-prometida):
+     *   - `pidio_ahora`: el pedido que se está contestando pide generar una imagen, o —si la vuelta
+     *     anterior pidió una de verdad— otra versión de esa («hacé otra igual pero vertical»);
+     *   - `hubo_pedido`: ese pedido o el inmediatamente anterior de la persona la pidieron. A «Haceme una
+     *     imagen» el modelo pregunta «¿cuadrada o vertical?», la persona contesta «cuadrada», y ahí «la
+     *     pedí; aparece acá cuando esté lista» solo se entiende por el pedido de antes;
+     *   - `ya_estaba_pedida`: alguna vuelta del asistente posterior a ese pedido anterior sí la pidió (hay
+     *     un IaImagenPedido colgado de ella). Entonces el pedido de antes ya está atendido y no cuenta;
+     *   - `hay_una_ya_pedida`: ya_estaba_pedida y la persona no pidió otra: lo que el texto diga del estado
+     *     de «la imagen» habla de esa (ver ImagenPrometidaIaHelper::afirma_una_imagen()).
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return array{pidio_ahora: bool, hubo_pedido: bool, ya_estaba_pedida: bool, hay_una_ya_pedida: bool}
+     */
+    protected function contexto_de_la_imagen(AiConversation $conversation, AiMessage $assistant_message): array
+    {
+        $pedidos = AiMessage::where('ai_conversation_id', $conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '<', $assistant_message->id)
+                            ->orderBy('id', 'DESC')
+                            ->limit(2)
+                            ->get(['id', 'contenido'])
+                            ->values();
+
+        $actual   = $pedidos->get(0);
+        $anterior = $pedidos->get(1);
+
+        $pidio_ahora = ! is_null($actual) && ImagenPrometidaIaHelper::pide_generar_una_imagen((string) $actual->contenido);
+        $pidio_antes = ! is_null($anterior) && ImagenPrometidaIaHelper::pide_generar_una_imagen((string) $anterior->contenido);
+
+        $ya_estaba_pedida = false;
+
+        if (! is_null($anterior)) {
+
+            $respuestas_desde_entonces = AiMessage::where('ai_conversation_id', $conversation->id)
+                                                  ->where('rol', 'assistant')
+                                                  ->where('id', '>', $anterior->id)
+                                                  ->where('id', '<', $assistant_message->id)
+                                                  ->pluck('id')
+                                                  ->all();
+
+            $ya_estaba_pedida = count($respuestas_desde_entonces) > 0
+                && IaImagenPedido::whereIn('ai_message_id', $respuestas_desde_entonces)->exists();
+        }
+
+        /* «Hacé otra igual pero vertical» solo se entiende si la vuelta anterior pidió una imagen. */
+        if (! $pidio_ahora && $ya_estaba_pedida && ! is_null($actual)) {
+            $pidio_ahora = ImagenPrometidaIaHelper::pide_otra_version((string) $actual->contenido);
+        }
+
+        return [
+            'pidio_ahora'       => $pidio_ahora,
+            'hubo_pedido'       => $pidio_ahora || ($pidio_antes && ! $ya_estaba_pedida),
+            'ya_estaba_pedida'  => $ya_estaba_pedida,
+            'hay_una_ya_pedida' => $ya_estaba_pedida && ! $pidio_ahora,
+        ];
+    }
+
+    /**
+     * El texto final, coherente con la imagen del turno (misión app-ia-imagen-prometida). En los dos
+     * casos se cambian SOLO las oraciones que dan la imagen por pedida o en curso, y se agrega el aviso:
+     * el resto de la respuesta (las ventas del día, la tarjeta que sí se armó) queda tal cual.
+     *   - si promete una imagen que no se pidió → aviso ImagenPrometidaIaHelper::TEXTO_HONESTO;
+     *   - si se pidió en este turno pero su bloque ya quedó `no_disponible` o `fallida` (por ejemplo, la
+     *     instalación no tiene la conexión con el admin) → aviso con el texto del bloque. Como pedir_imagen
+     *     se llamó, «la pedí; aparece acá cuando esté lista» cuenta como afirmación.
+     * Si no, el texto tal cual. Cuando el estado se conoce recién después (lo decide el job del envío),
+     * el texto queda como está: la herramienta le pide al modelo que diga «la pedí; aparece acá cuando
+     * esté lista», que es verdad pase lo que pase.
+     *
+     * @param  string  $texto
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  bool  $hubo_reintento
+     * @return string
+     */
+    protected function texto_coherente_con_la_imagen($texto, array $herramientas_pedidas, AiConversation $conversation, AiMessage $assistant_message, $hubo_reintento): string
+    {
+        $texto = (string) $texto;
+
+        $se_pidio_en_este_turno = in_array(ImagenPrometidaIaHelper::HERRAMIENTA, $herramientas_pedidas, true)
+            || count($this->pedidos_de_imagen) > 0;
+
+        if (! $se_pidio_en_este_turno) {
+
+            if (! $this->promete_una_imagen_sin_pedirla($texto, $herramientas_pedidas, $conversation, $assistant_message, false)) {
+
+                return $texto;
+            }
+
+            $contexto = $this->contexto_de_la_imagen($conversation, $assistant_message);
+
+            Log::warning('AsistenteIaService: el texto promete una imagen que no se pidió; se cambian las oraciones que la prometen por el aviso honesto.', [
+                'ai_conversation_id'   => $conversation->id,
+                'ai_message_id'        => $assistant_message->id,
+                'herramientas_pedidas' => $herramientas_pedidas,
+                'hubo_reintento'       => (bool) $hubo_reintento,
+                'texto'                => mb_substr($texto, 0, 300),
+            ]);
+
+            return ImagenPrometidaIaHelper::sin_lo_prometido($texto, $contexto['hubo_pedido'], ImagenPrometidaIaHelper::TEXTO_HONESTO, $contexto['hay_una_ya_pedida']);
+        }
+
+        if (! ImagenPrometidaIaHelper::afirma_una_imagen($texto, true)) {
+
+            return $texto;
+        }
+
+        foreach ($this->bloques as $bloque) {
+
+            if (is_array($bloque)
+                && ($bloque['tipo'] ?? '') === BloquesIaHelper::TIPO_IMAGEN
+                && in_array((string) ($bloque['estado'] ?? ''), ['no_disponible', 'fallida'], true)) {
+
+                $error = trim((string) ($bloque['error'] ?? ''));
+
+                Log::info('AsistenteIaService: el texto daba la imagen por pedida y su bloque quedó ' . $bloque['estado'] . '; se cambia el texto.', [
+                    'ai_message_id' => $assistant_message->id,
+                ]);
+
+                return ImagenPrometidaIaHelper::sin_lo_prometido($texto, true, $error === '' ? ImagenPrometidaIaHelper::TEXTO_HONESTO : $error);
+            }
+        }
+
+        return $texto;
     }
 
     /**
@@ -1507,8 +1749,11 @@ Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño
 - Después de un gráfico o una tabla, en el texto contá lo importante en una o dos
   oraciones; no repitas todos los números.
 - Si te pide una imagen (una placa para redes, un cartel, una promo), llamá a
-  pedir_imagen con un prompt detallado. Tarda unos minutos y aparece sola en este
-  mensaje: decilo en una línea, sin prometer que ya está.
+  pedir_imagen con un prompt detallado. Después decí en una línea que la pediste y que
+  aparece acá cuando esté lista: sin prometer tiempos ni decir que ya está. Nunca digas
+  que la pediste o que se está generando si no llamaste a pedir_imagen en este mensaje.
+- Pedir una imagen no autoriza a preparar promociones, envíos ni mensajes a clientes: si
+  te parece útil, ofrecelo en una línea y no armes la tarjeta hasta que la persona lo pida.
 - Si la persona te dijo cómo prefiere que le respondas (más breve, más explicado, con
   gráficos o con números directos), eso manda sobre estas reglas.
 
