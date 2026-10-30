@@ -819,6 +819,47 @@ class Cierre_con_lo_hecho_Test extends TestCase
     }
 
     /**
+     * F4 de la segunda ronda: con muchas cargas de renglones largos el texto armado entra en un WhatsApp
+     * (≤ DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE, 3.500): las dos listas comparten
+     * LARGO_MAXIMO_DE_LAS_LISTAS (3.000) y lo que no entra va en «- y N más.». Antes, 10 + 10 renglones de
+     * 300 pasaban los 6.000 caracteres (Meta rechaza más de 4.096).
+     *
+     * @test
+     */
+    public function el_texto_armado_entra_en_un_whatsapp()
+    {
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP);
+
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'user')->first();
+
+        for ($i = 1; $i <= 10; $i++) {
+            foreach ([AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_PROPUESTA] as $estado) {
+                AiMessageAction::create([
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant->id,
+                    'user_id'            => $this->comercio->id,
+                    'auth_user_id'       => $this->comercio->id,
+                    'tipo'               => AiMessageAction::TIPO_TAREA_NUEVA,
+                    'clave'              => 'tarea:p102-largo-' . $estado . '-' . $i,
+                    'estado'             => $estado,
+                    'datos'              => [],
+                    'presentacion'       => ['titulo' => 'Tarea ' . $i, 'renglones' => [['etiqueta' => 'Detalle', 'valor' => str_repeat('Cheque de Pinturas Sudamericanas ', 12)]], 'aviso' => null],
+                    'resultado'          => $estado === AiMessageAction::ESTADO_CONFIRMADA ? ['texto' => 'Tarea ' . $i . ' agendada: ' . str_repeat('cheque de Pinturas Sudamericanas ', 12)] : null,
+                ]);
+            }
+        }
+
+        $texto = AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar($assistant, $pedido);
+
+        $this->assertSame(3000, AvisosDeTurnosIaHelper::LARGO_MAXIMO_DE_LAS_LISTAS);
+        $this->assertLessThanOrEqual(\App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE, mb_strlen($texto), 'Entra en un WhatsApp.');
+        $this->assertStringStartsWith(AvisosDeTurnosIaHelper::ENCABEZADO_HECHO . "\n- Tarea 1 agendada", $texto);
+        $this->assertStringContainsString(AvisosDeTurnosIaHelper::ENCABEZADO_PARA_CONFIRMAR_VARIAS . "\n- Tarea 1 (Detalle:", $texto, 'La segunda sección muestra al menos su primer renglón.');
+        $this->assertSame(2, preg_match_all('/\n- y \d+ más\./u', $texto), 'Las dos secciones cierran con «y N más».');
+        $this->assertStringEndsWith(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $texto);
+    }
+
+    /**
      * El doble del proveedor de la segunda ronda (F2): la PRIMERA llamada pide una proponer_tarea (en
      * "directo" se confirma sola) y las siguientes fallan con `$falla` (una respuesta ya armada, un body o
      * una excepción para tirar). Devuelve el contador de llamadas.

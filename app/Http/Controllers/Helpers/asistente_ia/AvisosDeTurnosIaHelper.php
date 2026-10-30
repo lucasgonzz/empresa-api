@@ -77,6 +77,16 @@ class AvisosDeTurnosIaHelper
      */
     const RENGLONES_POR_SECCION = 10;
 
+    /**
+     * Presupuesto de caracteres de las DOS listas juntas de texto_de_turno_sin_terminar() (segunda ronda
+     * de arreglos de la revisión independiente, F4, 30/10/2026). El tope de renglones solo no alcanzaba:
+     * 10 renglones de 300 por sección pasan los 6.000 caracteres, y por WhatsApp Meta rechaza un mensaje de
+     * más de 4.096 (el resto del sistema se queda en DestinatariosIaHelper::LARGO_MAXIMO_DEL_MENSAJE,
+     * 3.500). Con 3.000 para las listas, los encabezados, la frase de las fotos, la del «sí» y la del
+     * «seguí» entran debajo de 3.500. Lo que no entra va en el «- y N más.».
+     */
+    const LARGO_MAXIMO_DE_LAS_LISTAS = 3000;
+
     /** @var bool|null  Si la tabla existe en esta base (se pregunta una vez por proceso). */
     protected static $hay_tabla = null;
 
@@ -316,15 +326,18 @@ class AvisosDeTurnosIaHelper
 
             $partes = [];
 
+            /* F4: lo que les queda a las listas (las dos comparten LARGO_MAXIMO_DE_LAS_LISTAS). */
+            $presupuesto = self::LARGO_MAXIMO_DE_LAS_LISTAS;
+
             if (count($hechos)) {
 
-                $partes[] = self::ENCABEZADO_HECHO . self::lista($hechos);
+                $partes[] = self::ENCABEZADO_HECHO . self::lista($hechos, $presupuesto);
             }
 
             if (count($para_confirmar)) {
 
                 $partes[] = (count($para_confirmar) === 1 ? self::ENCABEZADO_PARA_CONFIRMAR_UNA : self::ENCABEZADO_PARA_CONFIRMAR_VARIAS)
-                    . self::lista($para_confirmar);
+                    . self::lista($para_confirmar, $presupuesto);
             }
 
             $fotos = $pedido instanceof AiMessage
@@ -401,16 +414,35 @@ class AvisosDeTurnosIaHelper
 
     /**
      * Los renglones de una sección, uno por línea con «- » adelante (empieza con el salto de línea), con
-     * RENGLONES_POR_SECCION como mucho y un «- y N más.» si sobran.
+     * RENGLONES_POR_SECCION como mucho, mientras entren en lo que queda del presupuesto de caracteres de
+     * las listas (F4: LARGO_MAXIMO_DE_LAS_LISTAS, que comparten las dos secciones), y un «- y N más.» con
+     * los que no entraron. Siempre va al menos el primero (recortado a LARGO_DEL_RENGLON ya viene): una
+     * sección que solo dijera «y 3 más» no diría nada.
      *
      * @param  array<int, string>  $renglones
+     * @param  int  $presupuesto  Lo que les queda a las listas; se descuenta lo que usa esta.
      * @return string
      */
-    protected static function lista(array $renglones)
+    protected static function lista(array $renglones, &$presupuesto)
     {
-        $sobran = count($renglones) - self::RENGLONES_POR_SECCION;
+        $lista = '';
+        $puestos = 0;
 
-        $lista = "\n- " . implode("\n- ", array_slice($renglones, 0, self::RENGLONES_POR_SECCION));
+        foreach ($renglones as $renglon) {
+
+            $linea = "\n- " . $renglon;
+            $largo = mb_strlen($linea);
+
+            if ($puestos >= self::RENGLONES_POR_SECCION || ($puestos > 0 && $largo > $presupuesto)) {
+                break;
+            }
+
+            $lista .= $linea;
+            $presupuesto -= $largo;
+            $puestos++;
+        }
+
+        $sobran = count($renglones) - $puestos;
 
         return $sobran > 0 ? $lista . "\n- y " . $sobran . ' más.' : $lista;
     }
