@@ -79,6 +79,13 @@ use Carbon\Carbon;
  *   5. EL AVISO DE "TERMINÓ EL ESCANEO" PUEDE LLEGAR POR WHATSAPP, con el link a la revisión, si el
  *      admin del cliente anunció que lo manda (AvisosDelAsistenteHelper). El escaneo nace con su
  *      conversación y con `avisar_por_whatsapp`, y el texto del resultado dice por dónde llega.
+ *
+ * MISIÓN agente-mejoras-uso-real (29/10/2026, E1 puntos 6 a 8): las tres compras hermanas —la compra
+ * sin artículos (PropuestaCompraSinArticulosIaHelper), el cambio de proveedor de una compra recién
+ * creada (CambioDeProveedorDeCompraIaHelper) y el reescaneo de una factura que falló
+ * (ReintentoDeEscaneoIaHelper)— usan las MISMAS piezas de acá (el alta del proveedor nuevo, la
+ * sucursal, el estado "En proceso", el aviso por WhatsApp), por eso esos métodos pasaron a públicos:
+ * una copia en cada helper se iría separando sola.
  */
 class PropuestaCompraConFacturaIaHelper
 {
@@ -877,7 +884,7 @@ class PropuestaCompraConFacturaIaHelper
      * @param  string  $nombre
      * @return array  ['nombre' => string, 'alta' => array] o la respuesta negativa.
      */
-    protected static function alta_del_proveedor(ContextoDeCargaIa $contexto, $nombre)
+    public static function alta_del_proveedor(ContextoDeCargaIa $contexto, $nombre)
     {
         $declaracion = PropuestaGenericaIaHelper::entidad_para($contexto, 'provider', Catalogo::OP_ALTA);
 
@@ -1452,7 +1459,7 @@ class PropuestaCompraConFacturaIaHelper
      *
      * @throws AccionIaException
      */
-    protected static function proveedor_nuevo(ContextoDeCargaIa $contexto, array $datos)
+    public static function proveedor_nuevo(ContextoDeCargaIa $contexto, array $datos)
     {
         $alta = $datos['proveedor_nuevo'];
 
@@ -1501,7 +1508,7 @@ class PropuestaCompraConFacturaIaHelper
      * @param  string  $nombre
      * @return \App\Models\Address|null
      */
-    protected static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre)
+    public static function resolver_sucursal(ContextoDeCargaIa $contexto, $nombre)
     {
         $sucursales = Address::where('user_id', $contexto->owner_id)->orderBy('id')->get();
 
@@ -1592,7 +1599,7 @@ class PropuestaCompraConFacturaIaHelper
      *
      * @return int|null
      */
-    protected static function estado_en_proceso_id()
+    public static function estado_en_proceso_id()
     {
         $estado = ProviderOrderStatus::where('name', self::ESTADO_EN_PROCESO)->orderBy('id')->first();
 
@@ -2048,7 +2055,7 @@ class PropuestaCompraConFacturaIaHelper
      * @param  \App\Models\Address  $sucursal
      * @return string
      */
-    protected static function nombre_de_sucursal(Address $sucursal)
+    public static function nombre_de_sucursal(Address $sucursal)
     {
         $nombre = trim((string) $sucursal->street);
 

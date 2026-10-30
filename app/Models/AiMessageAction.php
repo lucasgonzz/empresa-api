@@ -210,6 +210,18 @@ class AiMessageAction extends Model
      */
     const TIPO_PROMOCION_WHATSAPP = 'promocion_por_whatsapp';
 
+    /*
+     * Las compras de la misión agente-mejoras-uso-real (29/10/2026, E1 puntos 6 a 8), lo que el agente
+     * no supo hacer en Ferre Total el mediodía del 29/10. Al FINAL, como siempre.
+     */
+
+    /**
+     * Una compra SIN artículos: la factura de un proveedor cargada como deuda, con o sin IVA
+     * (PropuestaCompraSinArticulosIaHelper). 🔴 Está en HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES:
+     * mueve la deuda con el proveedor por un número dictado por la persona.
+     */
+    const TIPO_COMPRA_SIN_ARTICULOS = 'compra_sin_articulos';
+
     protected $guarded = [];
 
     /**

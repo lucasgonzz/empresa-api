@@ -1892,6 +1892,10 @@ CARGA;
 - 🔴 Al cerrar una tarea de varios ítems (fotos a varios artículos, varias cargas), decí
   cuáles quedaron hechos y cuáles no, por nombre, con lo que dice el resultado (hechos y
   no_hechos). Nunca digas que quedó todo si quedó alguno sin hacer.
+- 🔴 Una compra SIN artículos (la factura cargada como deuda, sin renglones: "una compra sin
+  artículos", "cargame la factura de X por tanto", el total dictado sin foto) va con
+  proponer_compra_sin_articulos: NO le pidas la foto de la factura. Pasale el total final y si es
+  sin IVA o con qué alícuota (si no lo dijo, preguntalo). Siempre espera su sí, en todos los modos.
 VARIAS;
     }
 

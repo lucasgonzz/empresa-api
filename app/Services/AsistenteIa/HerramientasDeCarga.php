@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelp
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraSinArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaDisenoPdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaEnvioComprobanteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
@@ -245,6 +246,13 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_ENVIO_COMPROBANTE,
         AiMessageAction::TIPO_RECORDATORIOS_COBRO,
         AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+        /*
+         * 🔴 La compra sin artículos (misión agente-mejoras-uso-real, 29/10/2026): mueve la deuda con
+         * el proveedor por un total que la persona DICTÓ (muchas veces por audio), sin una factura
+         * escaneada que lo respalde. Un 198.522 entendido como 198.552 no se nota hasta que se le paga
+         * de más: la persona ve el total, el IVA y la cuenta corriente, y confirma ella.
+         */
+        AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS,
     ];
 
     /**
@@ -1534,6 +1542,51 @@ class HerramientasDeCarga
                     'required'   => ['texto'],
                 ],
             ],
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026, E1), al FINAL de lo que había: el orden del
+             * array es el prefijo del caché de prompt y lo nuevo nunca se intercala. Las compras que el
+             * agente no supo hacer en Ferre Total (CONV 19 y 20). Van en la lista común y no en la de
+             * WhatsApp: ninguna necesita una foto que llegue por ese canal.
+             */
+            [
+                'name'         => 'proponer_compra_sin_articulos',
+                'description'  => 'Arma la tarjeta de una COMPRA SIN ARTÍCULOS: la factura de un proveedor cargada como deuda, sin renglones, como la carga la pantalla de Compras con el total desde la factura. Es lo que va cuando la persona pide "una compra sin artículos", "cargame la factura de X por tanto" o dicta el total de una factura sin mandar la foto: NO le pidas la foto (para escanear una foto está proponer_compra_con_factura). Pasale el total FINAL de la factura y el IVA: "sin_iva" si la factura no discrimina IVA ("sin IVA", una C, un monotributista) o la alícuota (21, 10.5, 27) si lo discrimina; si la persona no lo dijo, preguntalo. Va a la cuenta corriente del proveedor salvo que la persona diga que no. Si el proveedor no existe, lo doy de alta en la misma carga. 🔴 SIEMPRE queda esperando la confirmación de la persona, en todos los modos: mueve la deuda con el proveedor. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'proveedor'          => [
+                            'type'        => 'string',
+                            'description' => 'El proveedor, tal como lo dijo la persona.',
+                        ],
+                        'total'              => [
+                            'type'        => 'number',
+                            'description' => 'El total FINAL de la factura, el que dijo la persona (198.522 = 198522).',
+                        ],
+                        'iva'                => [
+                            'type'        => 'string',
+                            'description' => '"sin_iva" si la factura no discrimina IVA, o la alícuota: "21", "10.5" o "27". Si la persona no lo dijo, no lo mandes: te lo pregunto.',
+                        ],
+                        'numero_comprobante' => [
+                            'type'        => 'string',
+                            'description' => 'El número de la factura, solo si la persona lo dijo (0001-00001234).',
+                        ],
+                        'fecha'              => [
+                            'type'        => 'string',
+                            'description' => 'AAAA-MM-DD de la factura, solo si la persona dijo una. Sin fecha, hoy.',
+                        ],
+                        'sucursal'           => [
+                            'type'        => 'string',
+                            'description' => 'Sucursal, solo si la persona la nombró. Nunca la preguntes.',
+                        ],
+                        'cuenta_corriente'   => [
+                            'type'        => 'boolean',
+                            'description' => 'false solo si la persona pidió que NO vaya a la cuenta corriente del proveedor. Por defecto va.',
+                        ],
+                        'reemplaza_a'        => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['proveedor', 'total'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -2127,6 +2180,14 @@ class HerramientasDeCarga
             // 🔴 SIN la auto-confirmación, a propósito (ver NUNCA_AUTO_CONFIRMABLES).
             case 'proponer_promocion_por_whatsapp':
                 return self::resultado(PropuestaPromocionWhatsappIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * Misión agente-mejoras-uso-real (29/10/2026): la compra sin artículos. 🔴 SIN la puerta de
+             * la auto-confirmación, a propósito: mueve la deuda con el proveedor por un número dictado,
+             * y espera el sí de la persona en todos los modos (ver NUNCA_AUTO_CONFIRMABLES).
+             */
+            case 'proponer_compra_sin_articulos':
+                return self::resultado(PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
