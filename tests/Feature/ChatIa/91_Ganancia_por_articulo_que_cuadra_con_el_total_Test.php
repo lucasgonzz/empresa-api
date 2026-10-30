@@ -207,6 +207,71 @@ class Ganancia_por_articulo_que_cuadra_con_el_total_Test extends TestCase
     }
 
     /**
+     * 🔴 Revisión independiente (30/10/2026): un renglón con `article_sale.cost` en NULL no vale costo 0.
+     * Antes, una lija vendida a $ 100.000 sin costo cargado quedaba con ganancia = $ 100.000 y
+     * encabezaba "cuál me dejó más margen". Ahora: sin ningún renglón con costo, ganancia null, marcada
+     * y al final del ranking; con algunos, la ganancia es solo la de la parte con costo.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function los_renglones_sin_costo_no_cuentan_como_costo_cero_ni_encabezan_el_ranking()
+    {
+        $dia = Carbon::parse($this->fecha)->startOfDay();
+
+        $lija = Article::create(['name' => 'LIJA AL AGUA SIN COSTO E2', 'user_id' => $this->comercio->id, 'aplicar_iva' => 0]);
+        $mecha = Article::create(['name' => 'MECHA ACERO RAPIDO E2', 'user_id' => $this->comercio->id, 'aplicar_iva' => 0]);
+
+        // La lija: un renglón de $ 100.000 SIN costo (NULL).
+        $this->venta($dia->copy()->addHours(14), 100000, [$lija->id => [1, 100000, null]]);
+
+        // La mecha: un renglón con costo (100 a costo 60) y otro sin costo ($ 1.000).
+        $this->venta($dia->copy()->addHours(15), 100, [$mecha->id => [1, 100, 60]]);
+        $this->venta($dia->copy()->addHours(16), 1000, [$mecha->id => [1, 1000, null]]);
+
+        $resumen = ResumenDeVentasIaHelper::resumen($this->comercio->id, $this->fecha, $this->fecha, 'articulo', 'pesos', null, 'ganancia', 'desc');
+
+        $this->assertArrayNotHasKey('error', $resumen, json_encode($resumen));
+
+        // La hidrolavadora (70.000 de ganancia de verdad) encabeza; la lija, nunca.
+        $this->assertSame($this->articulos['hidro']->name, $resumen['grupos'][0]['etiqueta']);
+
+        $grupo_lija = null;
+        $grupo_mecha = null;
+
+        foreach ($resumen['grupos'] as $grupo) {
+            if ($grupo['etiqueta'] === $lija->name) {
+                $grupo_lija = $grupo;
+            }
+            if ($grupo['etiqueta'] === $mecha->name) {
+                $grupo_mecha = $grupo;
+            }
+        }
+
+        $this->assertNull($grupo_lija['ganancia'], 'Sin ningún renglón con costo, la ganancia no se sabe.');
+        $this->assertTrue($grupo_lija['sin_costo']);
+        $this->assertSame(1, $grupo_lija['renglones_sin_costo']);
+        $this->assertSame($lija->name, end($resumen['grupos'])['etiqueta'], 'Sin ganancia conocida, al final.');
+
+        $this->assertEqualsWithDelta(40.0, $grupo_mecha['ganancia'], 0.01, 'Solo la parte con costo: 100 − 60 (no 1.100 − 60).');
+        $this->assertTrue($grupo_mecha['sin_costo']);
+        $this->assertSame(1, $grupo_mecha['renglones_sin_costo']);
+
+        // Los que tienen todo el costo cargado dicen sin_costo false.
+        $this->assertFalse($resumen['grupos'][0]['sin_costo']);
+
+        // Al revés (asc) tampoco: el de ganancia desconocida sigue al final, no arriba.
+        $al_reves = ResumenDeVentasIaHelper::resumen($this->comercio->id, $this->fecha, $this->fecha, 'articulo', 'pesos', null, 'ganancia', 'asc');
+        $this->assertSame($lija->name, end($al_reves['grupos'])['etiqueta']);
+
+        // El período: la ganancia es sobre lo que tiene costo, y lo vendido sin costo se informa aparte.
+        $this->assertSame(2, $resumen['renglones_sin_costo_del_periodo']);
+        $this->assertEqualsWithDelta(101000.0, $resumen['vendido_sin_costo_del_periodo'], 0.01);
+        $this->assertEqualsWithDelta(317933.33 + 100 - (232700.0 + 60), $resumen['ganancia_del_periodo'], 0.02);
+        $this->assertStringContainsString('sin_costo', $resumen['nota']);
+    }
+
+    /**
      * La herramienta declara y pasa orden y direccion.
      *
      * @group chat-ia
@@ -226,6 +291,7 @@ class Ganancia_por_articulo_que_cuadra_con_el_total_Test extends TestCase
 
         $this->assertSame(ResumenDeVentasIaHelper::ORDENES, $definicion['input_schema']['properties']['orden']['enum']);
         $this->assertSame(['desc', 'asc'], $definicion['input_schema']['properties']['direccion']['enum']);
+        $this->assertStringContainsString('SIN costo cargado', $definicion['description']);
 
         $conversation = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $this->comercio->id]);
 
