@@ -165,6 +165,15 @@ class AsistenteIaService
     const PRESUPUESTO_SEGUNDOS = 210;
 
     /**
+     * Techo del reintento de la llamada al proveedor por WhatsApp (misión agente-mejoras-uso-real, ronda
+     * de arreglos, 30/10/2026): el reintento arranca solo si lo transcurrido más una llamada entera
+     * (TIMEOUT_SEGUNDOS) no pasa esto. El admin espera la respuesta 180 s y después manda su disculpa;
+     * 165 deja margen para el texto final. Ver queda_tiempo_para_reintentar(). No es parte de la cadena
+     * de cinco techos de PRESUPUESTO_SEGUNDOS: solo acota cuándo vale la pena reintentar.
+     */
+    const TECHO_DEL_REINTENTO_EN_WHATSAPP = 165;
+
+    /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
      * cruzar todavía contra el texto (misión agente-ia-mano-derecha, §1 del contrato).
      *
@@ -742,7 +751,7 @@ class AsistenteIaService
                     'system'     => $system,
                     'tools'      => $tools,
                     'messages'   => $messages,
-                ], $thinking), $inicio_del_loop, is_null($texto_antes_del_reintento), (int) $conversation->id);
+                ], $thinking), $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message);
             } catch (\Throwable $e) {
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
@@ -3703,6 +3712,11 @@ CONFIRMACION;
      * en false): ahí una falla ya tiene su salida propia (volver al texto de antes, ver el loop), y una
      * llamada de más cambiaría lo que esa guarda decide.
      *
+     * 🔴 Y POR WHATSAPP, CON LA PACIENCIA DEL ADMIN (ronda de arreglos de la revisión independiente,
+     * 30/10/2026): el admin consulta el mensaje durante 180 s (EnviarMensajeAlAsistenteJob,
+     * ESPERAS_DE_POLLING) y después manda su disculpa; un reintento que termina más tarde contesta para
+     * nadie. Ver queda_tiempo_para_reintentar().
+     *
      * Está en un método propio y fuera del loop a propósito: el loop solo cambia en la línea de la
      * llamada (la zona del reintento de la tarjeta la toca otra misión en paralelo).
      *
@@ -3711,17 +3725,20 @@ CONFIRMACION;
      * @param  array  $body  El payload ya armado (con el thinking si corresponde).
      * @param  int  $inicio_del_loop  time() del arranque del turno (el reloj de PRESUPUESTO_SEGUNDOS).
      * @param  bool  $puede_reintentar  false durante el reintento de la tarjeta o de la carga.
-     * @param  int  $conversation_id  Solo para el log.
+     * @param  AiMessage  $assistant_message  El mensaje que se está generando (su canal y su hora de alta
+     *                                        deciden el techo del reintento; su conversación va al log).
      * @return \Illuminate\Http\Client\Response
      *
      * @throws \Illuminate\Http\Client\ConnectionException  Si se corta dos veces (o una sin presupuesto).
      */
-    protected function post_al_proveedor($http, $url, array $body, $inicio_del_loop, $puede_reintentar, $conversation_id)
+    protected function post_al_proveedor($http, $url, array $body, $inicio_del_loop, $puede_reintentar, AiMessage $assistant_message)
     {
+        $conversation_id = (int) $assistant_message->ai_conversation_id;
+
         try {
             $response = $http->post($url, $body);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            if (! $puede_reintentar || ! $this->queda_tiempo_para_reintentar($inicio_del_loop)) {
+            if (! $puede_reintentar || ! $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)) {
                 throw $e;
             }
 
@@ -3734,7 +3751,7 @@ CONFIRMACION;
         }
 
         if ($response->successful() || ! $puede_reintentar || ! ProveedorIaHelper::es_error_transitorio($response)
-            || ! $this->queda_tiempo_para_reintentar($inicio_del_loop)) {
+            || ! $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)) {
             return $response;
         }
 
@@ -3758,14 +3775,31 @@ CONFIRMACION;
 
     /**
      * true si un reintento de la llamada al proveedor entra en el presupuesto del turno: lo ya gastado
-     * más una llamada entera (TIMEOUT_SEGUNDOS) no pasa PRESUPUESTO_SEGUNDOS. Ver post_al_proveedor().
+     * más una llamada entera (TIMEOUT_SEGUNDOS) no pasa el techo del canal. Ver post_al_proveedor().
+     *
+     * - Sistema y app: PRESUPUESTO_SEGUNDOS (210), medido desde el arranque del loop.
+     * - WhatsApp: TECHO_DEL_REINTENTO_EN_WHATSAPP (165), medido desde lo MÁS VIEJO entre el arranque del
+     *   loop y el alta del mensaje (`created_at`, que lo crea el POST del admin): el reloj del admin
+     *   arranca ahí, y la espera en la cola corre solo de su lado. 165 + lo que tarda la vuelta que sigue
+     *   entra en los 180 s que el admin espera.
      *
      * @param  int  $inicio_del_loop
+     * @param  AiMessage|null  $assistant_message
      * @return bool
      */
-    protected function queda_tiempo_para_reintentar($inicio_del_loop): bool
+    protected function queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message = null): bool
     {
-        return (time() - (int) $inicio_del_loop) + self::TIMEOUT_SEGUNDOS <= self::PRESUPUESTO_SEGUNDOS;
+        $transcurrido = time() - (int) $inicio_del_loop;
+
+        if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp()) {
+            if (! is_null($assistant_message->created_at)) {
+                $transcurrido = max($transcurrido, time() - \Carbon\Carbon::parse($assistant_message->created_at)->getTimestamp());
+            }
+
+            return $transcurrido + self::TIMEOUT_SEGUNDOS <= self::TECHO_DEL_REINTENTO_EN_WHATSAPP;
+        }
+
+        return $transcurrido + self::TIMEOUT_SEGUNDOS <= self::PRESUPUESTO_SEGUNDOS;
     }
 
     /**
