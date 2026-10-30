@@ -95,9 +95,15 @@ class Fichas_por_id_y_nombres_reescritos_Test extends TestCase
      */
     public function las_palabras_sacan_grados_comillas_y_separan_la_x_entre_medidas()
     {
-        $this->assertSame(['tuboforte', '1.8', 'ramal', '90', '60'], BusquedaPorPalabrasIaHelper::palabras('tuboforte 1.8 ramal 90° 60x60'));
-        $this->assertSame(['tuboforte', '1.8', 'ramal', '90', '60'], BusquedaPorPalabrasIaHelper::palabras('TUBOFORTE 1.8 RAMAL 90 º 60 X 60'));
-        $this->assertSame(['76', '5', '50mm'], BusquedaPorPalabrasIaHelper::palabras('76x5x50mm'));
+        /*
+         * La medida "N x M" es UNA palabra compacta (revisión independiente, 30/10/2026): la primera
+         * versión de este test pedía "60" suelto, que era justo lo que dejaba pasar «RAMAL 60X40» por
+         * «ramal 60x60» (ver ramal_60x60_nunca_contesta_sobre_el_60x40()).
+         */
+        $this->assertSame(['tuboforte', '1.8', 'ramal', '90', '60x60'], BusquedaPorPalabrasIaHelper::palabras('tuboforte 1.8 ramal 90° 60x60'));
+        $this->assertSame(['tuboforte', '1.8', 'ramal', '90', '60x60'], BusquedaPorPalabrasIaHelper::palabras('TUBOFORTE 1.8 RAMAL 90 º 60 X 60'));
+        $this->assertSame(['76x5x50mm'], BusquedaPorPalabrasIaHelper::palabras('76X5X50MM'));
+        $this->assertSame(['76x5x50mm'], BusquedaPorPalabrasIaHelper::palabras('76 x 5 x 50mm'));
         $this->assertSame(['canilla', '1/2'], BusquedaPorPalabrasIaHelper::palabras('canilla 1/2"'));
 
         // Y el nombre reescrito por el agente es "seguro" contra el cargado: las medidas son las mismas.
@@ -121,6 +127,36 @@ class Fichas_por_id_y_nombres_reescritos_Test extends TestCase
 
         $this->assertArrayNotHasKey('error', $compras, json_encode($compras));
         $this->assertSame((int) $this->articulos['tuboforte']->id, $compras['articulo_id']);
+    }
+
+    /**
+     * 🔴 La revisión independiente (30/10/2026): con la "x" separada, «ramal 60x60» quedaba en las
+     * palabras "ramal" y "60", que también están en «RAMAL 60X40», y la ficha contestaba sobre el
+     * otro. Con la medida como una sola palabra: el 60x60 encuentra el «60 X 60» (con espacios) y nunca
+     * el 60X40, ni por es_seguro() ni por las consultas de ficha.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function ramal_60x60_nunca_contesta_sobre_el_60x40()
+    {
+        $this->assertFalse(BusquedaPorPalabrasIaHelper::es_seguro('RAMAL 60X40', 'ramal 60x60'));
+        $this->assertFalse(BusquedaPorPalabrasIaHelper::es_seguro('RAMAL 60 X 40', 'ramal 60 x 60'));
+        $this->assertTrue(BusquedaPorPalabrasIaHelper::es_seguro('RAMAL 60 X 60', 'ramal 60x60'));
+        $this->assertTrue(BusquedaPorPalabrasIaHelper::es_seguro('RAMAL 60X60', 'Ramal 60 X 60'));
+
+        // Solo el 60X40 cargado: «ramal 60x60» NO lo toma (antes contestaba sobre él).
+        $cuarenta = $this->articulo('RAMAL PVC 60X40 E2', 3);
+
+        $solo_el_otro = ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, 'ramal pvc 60x60');
+        $this->assertArrayHasKey('error', $solo_el_otro, 'Con solo el 60X40 cargado, el 60x60 no existe: ' . json_encode($solo_el_otro));
+
+        // Con los dos: cada medida encuentra el suyo, escrita con o sin espacios.
+        $sesenta = $this->articulo('RAMAL PVC 60 X 60 E2', 8);
+
+        $this->assertSame((int) $sesenta->id, ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, 'ramal pvc 60x60')['articulo_id']);
+        $this->assertSame((int) $cuarenta->id, ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, 'ramal pvc 60 x 40')['articulo_id']);
+        $this->assertSame((int) $cuarenta->id, ConsultasSistemaIaHelper::compras_de_un_articulo($this->comercio->id, 'RAMAL PVC 60X40')['articulo_id']);
     }
 
     /**

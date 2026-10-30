@@ -239,7 +239,7 @@ class ResumenDeVentasIaHelper
              * el modelo diga «sobre $X vendidos» con el número de Rendimiento y no con la suma de una
              * página de renglones.
              */
-            foreach (['total_del_periodo', 'sin_desglosar_por_articulo', 'costo_del_periodo', 'ganancia_del_periodo', 'aviso_de_orden'] as $clave) {
+            foreach (['total_del_periodo', 'sin_desglosar_por_articulo', 'costo_del_periodo', 'ganancia_del_periodo', 'aviso_de_orden', 'renglones_sin_costo_del_periodo', 'vendido_sin_costo_del_periodo'] as $clave) {
                 if (array_key_exists($clave, $grupos)) {
                     $respuesta[$clave] = $grupos[$clave];
                 }
@@ -1023,16 +1023,30 @@ class ResumenDeVentasIaHelper
      * BRUTO con su descuento de renglón, sin los descuentos y recargos de la venta entera. Ahora cada
      * renglón se multiplica por el factor de su venta:
      *
-     *     factor = sales.total / (renglones de artículo + combos + servicios de esa venta)
+     *     factor = sales.total / (renglones de artículo + combos + servicios + promociones de esa venta)
      *
      * (con los mismos importes de renglón de siempre: unidades × precio × (1 − descuento %)), así que
-     * la suma de los grupos más `sin_desglosar_por_articulo` (lo que en cada venta fue a combos,
-     * servicios u otros conceptos sin artículo) da exactamente `total_del_periodo`, que es el total
-     * de Rendimiento. Una venta sin renglones (base 0) va entera a sin_desglosar.
+     * la suma de los grupos más `sin_desglosar_por_articulo` da exactamente `total_del_periodo`, que es
+     * el total de Rendimiento. `sin_desglosar_por_articulo` es lo que en cada venta fue a combos,
+     * servicios y promociones de vinoteca (los renglones que no son de un artículo), más las ventas sin
+     * ningún renglón (base 0), que van enteras ahí.
+     *
+     * ⚠️ Lo que está en `sales.total` y NO tiene renglón propio —los descuentos y recargos de la venta
+     * entera, y cualquier otro importe que se le sume a la venta (un envío, un impuesto)— no va a
+     * sin_desglosar: entra en el factor y se reparte entre TODOS los renglones de esa venta, en
+     * proporción. Es lo que dice la nota (revisión independiente, 30/10/2026: la primera versión decía
+     * que "otros conceptos" iban a sin_desglosar, y no era así).
      *
      * El costo es el NETO de cada renglón (CostoDeVentaHelper::expresion_costo_neto_de_linea(): unidades
      * × costo, sin el IVA de compra en las cuentas que lo traen adentro) y no se prorratea: lo que costó
      * la mercadería no cambia con un descuento. `ganancia = total − costo`.
+     *
+     * 🔴 UN RENGLÓN SIN COSTO NO VALE COSTO 0 (revisión independiente, 30/10/2026). Con
+     * `article_sale.cost` en NULL el costo de ese renglón no se sabe, y contarlo como 0 daba
+     * `ganancia = total`: esos grupos encabezaban "cuál me dejó más margen" sin haber dejado nada
+     * medible. Ahora la ganancia de un grupo es la de sus renglones CON costo (`total_con_costo − costo`),
+     * el grupo dice `sin_costo: true` y `renglones_sin_costo`, y si ningún renglón tiene costo la
+     * ganancia va en null y queda al final de cualquier orden por ganancia.
      *
      * Con `$orden` (total, ganancia o cantidad, asc o desc) cada grupo trae además `costo`, `ganancia`
      * y su id (`article_id`, `category_id` o `provider_id`), para "cuál me dejó más margen" y para
@@ -1071,6 +1085,8 @@ class ResumenDeVentasIaHelper
                 . 'COALESCE((SELECT SUM(asb.amount * COALESCE(asb.price, 0) * (1 - COALESCE(asb.discount, 0) / 100)) FROM article_sale asb WHERE asb.sale_id = venta_base.id), 0)'
                 . ' + COALESCE((SELECT SUM(csb.amount * COALESCE(csb.price, 0)) FROM combo_sale csb WHERE csb.sale_id = venta_base.id), 0)'
                 . ' + COALESCE((SELECT SUM(ssb.amount * COALESCE(ssb.price, 0) * (1 - COALESCE(ssb.discount, 0) / 100)) FROM sale_service ssb WHERE ssb.sale_id = venta_base.id), 0)'
+                // Las promociones de vinoteca también son renglones de la venta (revisión, 30/10/2026).
+                . ' + COALESCE((SELECT SUM(psb.amount * COALESCE(psb.price, 0)) FROM promocion_vinoteca_sale psb WHERE psb.sale_id = venta_base.id), 0)'
                 . ') as base'
             );
 
@@ -1088,7 +1104,11 @@ class ResumenDeVentasIaHelper
                 $expresion . ' as grupo, '
                 . 'COALESCE(SUM(article_sale.amount), 0) as cantidad, '
                 . 'COALESCE(SUM(' . $importe_del_renglon . ' * ' . $factor . '), 0) as total, '
-                . 'COALESCE(SUM(' . $costo . '), 0) as costo'
+                . 'COALESCE(SUM(' . $costo . '), 0) as costo, '
+                // Los renglones sin costo cargado y lo vendido en los que SÍ lo tienen (ver el docblock).
+                . 'COUNT(*) as renglones, '
+                . 'COALESCE(SUM(CASE WHEN article_sale.cost IS NULL THEN 1 ELSE 0 END), 0) as renglones_sin_costo, '
+                . 'COALESCE(SUM(CASE WHEN article_sale.cost IS NULL THEN 0 ELSE ' . $importe_del_renglon . ' * ' . $factor . ' END), 0) as total_con_costo'
             )
             ->groupByRaw($expresion)
             ->get();
@@ -1114,6 +1134,8 @@ class ResumenDeVentasIaHelper
         $grupos = [];
         $suma_de_los_grupos = 0.0;
         $costo_del_periodo = 0.0;
+        $total_con_costo_del_periodo = 0.0;
+        $renglones_sin_costo_del_periodo = 0;
 
         foreach ($filas as $fila) {
             $id = (int) $fila->grupo;
@@ -1126,12 +1148,24 @@ class ResumenDeVentasIaHelper
 
             $suma_de_los_grupos += (float) $fila->total;
             $costo_del_periodo += (float) $fila->costo;
+            $total_con_costo_del_periodo += (float) $fila->total_con_costo;
+            $renglones_sin_costo_del_periodo += (int) $fila->renglones_sin_costo;
 
-            // Con un orden pedido: costo, ganancia y el id del grupo (ver el docblock).
+            /*
+             * Con un orden pedido: costo, ganancia y el id del grupo (ver el docblock). La ganancia es
+             * la de los renglones CON costo; sin ninguno, null (no se sabe), nunca el total.
+             */
             if ($detallado) {
+                $sin_costo = (int) $fila->renglones_sin_costo;
+
                 $grupo[$claves_de_id[$agrupar_por]] = $id > 0 ? $id : null;
                 $grupo['costo'] = (float) $fila->costo;
-                $grupo['ganancia'] = (float) $fila->total - (float) $fila->costo;
+                $grupo['ganancia'] = $sin_costo >= (int) $fila->renglones ? null : (float) $fila->total_con_costo - (float) $fila->costo;
+                $grupo['sin_costo'] = $sin_costo > 0;
+
+                if ($sin_costo > 0) {
+                    $grupo['renglones_sin_costo'] = $sin_costo;
+                }
             }
 
             $grupos[] = $grupo;
@@ -1144,11 +1178,17 @@ class ResumenDeVentasIaHelper
         $resultado['total_del_periodo'] = round($total_del_periodo, 2);
         $resultado['sin_desglosar_por_articulo'] = round($total_del_periodo - $suma_de_los_grupos, 2);
         $resultado['costo_del_periodo'] = round($costo_del_periodo, 2);
-        $resultado['ganancia_del_periodo'] = round($suma_de_los_grupos - $costo_del_periodo, 2);
+        // Solo sobre lo que tiene costo cargado: lo vendido sin costo no deja una ganancia medible.
+        $resultado['ganancia_del_periodo'] = round($total_con_costo_del_periodo - $costo_del_periodo, 2);
 
-        $resultado['nota'] = 'cantidad son unidades. total es lo vendido de cada grupo con los descuentos y recargos de cada venta ya repartidos (prorrateados): la suma de los grupos mas sin_desglosar_por_articulo (combos, servicios u otros conceptos sin articulo) da total_del_periodo, que es el total de Rendimiento. '
+        if ($renglones_sin_costo_del_periodo > 0) {
+            $resultado['renglones_sin_costo_del_periodo'] = $renglones_sin_costo_del_periodo;
+            $resultado['vendido_sin_costo_del_periodo'] = round($suma_de_los_grupos - $total_con_costo_del_periodo, 2);
+        }
+
+        $resultado['nota'] = 'cantidad son unidades. total es lo vendido de cada grupo con los descuentos y recargos de cada venta ya repartidos (prorrateados), igual que cualquier otro importe de la venta sin renglon propio (un envio, un impuesto): la suma de los grupos mas sin_desglosar_por_articulo (lo que fue a combos, servicios y promociones, y las ventas sin renglones) da total_del_periodo, que es el total de Rendimiento. '
             . ($detallado
-                ? 'costo es el costo de la mercaderia (unidades por costo, neto) y ganancia = total - costo; ganancia_del_periodo es la de todos los grupos, no solo los de la lista. Para "sobre cuanto vendido" usa total_del_periodo.'
+                ? 'costo es el costo de la mercaderia (unidades por costo, neto) y ganancia = lo vendido en los renglones CON costo - costo; ganancia_del_periodo es la de todos los grupos, no solo los de la lista. Un grupo con sin_costo true tiene renglones sin costo cargado: su ganancia es solo la de la parte con costo, y si es null no se sabe (no la presentes como la de mas margen, deci que le falta el costo). Para "sobre cuanto vendido" usa total_del_periodo.'
                 : 'Para la ganancia y el costo de cada grupo volve a llamar con orden (ganancia para "cual me dejo mas margen").');
 
         return $resultado;
@@ -1173,6 +1213,17 @@ class ResumenDeVentasIaHelper
         $ascendente = $direccion === 'asc';
 
         usort($grupos, function ($a, $b) use ($campo, $ascendente) {
+            /*
+             * Un campo presente pero en null (la ganancia de un grupo sin ningún renglón con costo) no
+             * se sabe: va al final en cualquier dirección, nunca arriba como si fuera el de más margen.
+             */
+            $nulo_a = array_key_exists($campo, $a) && is_null($a[$campo]);
+            $nulo_b = array_key_exists($campo, $b) && is_null($b[$campo]);
+
+            if ($nulo_a !== $nulo_b) {
+                return $nulo_a ? 1 : -1;
+            }
+
             $valor_a = isset($a[$campo]) ? (float) $a[$campo] : 0.0;
             $valor_b = isset($b[$campo]) ? (float) $b[$campo] : 0.0;
 
@@ -1189,7 +1240,7 @@ class ResumenDeVentasIaHelper
             $grupo['total'] = round((float) $grupo['total'], 2);
 
             foreach (['costo', 'ganancia'] as $clave) {
-                if (array_key_exists($clave, $grupo)) {
+                if (array_key_exists($clave, $grupo) && ! is_null($grupo[$clave])) {
                     $grupo[$clave] = round((float) $grupo[$clave], 2);
                 }
             }

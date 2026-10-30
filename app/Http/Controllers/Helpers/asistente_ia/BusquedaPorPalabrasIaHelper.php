@@ -86,7 +86,7 @@ class BusquedaPorPalabrasIaHelper
 
                     foreach ($palabras as $palabra) {
 
-                        $todas->where($nombre, 'LIKE', '%' . addcslashes($palabra, '%_\\') . '%');
+                        $todas->where($nombre, 'LIKE', self::patron_like_de_la_palabra($palabra));
                     }
                 });
             }
@@ -239,8 +239,14 @@ class BusquedaPorPalabrasIaHelper
      *
      *  - Los grados y el ordinal (°, º, ˚) pasan a espacio: "90°" → "90", "Hº" → "h".
      *  - Las comillas (rectas, tipográficas, el acento suelto) pasan a espacio: 1/2" → 1/2.
-     *  - La "x" (o el ×) entre dos números se separa: "60x60" → "60 x 60", "76x5x50mm" → "76 x 5 x 50mm";
-     *    la "x" suelta es una palabra vacía (PALABRAS_VACIAS), así que quedan las medidas.
+     *  - 🔴 UNA MEDIDA "N x M" ES UNA SOLA PALABRA, COMPACTA (revisión independiente, 30/10/2026): la
+     *    "x" (o el ×) entre dos números se pega, con o sin espacios y en mayúscula o minúscula:
+     *    "60 X 60" → "60x60", "76X5X50MM" → "76x5x50mm". La primera versión la SEPARABA ("60 x 60" y
+     *    la "x" como palabra vacía), y entonces "ramal 60x60" quedaba en las palabras "ramal" y "60",
+     *    que también están en «RAMAL 60X40»: es_seguro() lo daba por bueno y la ficha contestaba sobre
+     *    OTRO artículo. Compacta, la medida se compara entera: "60x60" encuentra "60 X 60" y nunca
+     *    "60X40". Del lado de la base, patron_like_de_la_palabra() la busca con los espacios que
+     *    tenga el nombre cargado.
      *
      * Espera el texto ya en minúscula.
      *
@@ -251,7 +257,45 @@ class BusquedaPorPalabrasIaHelper
     {
         $texto = str_replace(['°', 'º', '˚', '"', '“', '”', '´', '`', '‘', '’', "''"], ' ', (string) $texto);
 
-        return (string) preg_replace('/(\d)\s*[x×]\s*(?=\d)/u', '$1 x ', $texto);
+        return (string) preg_replace('/(\d)\s*[x×]\s*(?=\d)/u', '$1x', $texto);
+    }
+
+    /**
+     * true si la palabra es una medida compacta de sin_simbolos(): números unidos por "x" ("60x60",
+     * "76x5x50mm", "6x1 1/2" no: eso son dos palabras).
+     *
+     * @param  string  $palabra
+     * @return bool
+     */
+    protected static function es_medida($palabra)
+    {
+        return preg_match('/^\d[\d.,\/]*(x\d[\d.,\/]*)+[a-z]*$/u', (string) $palabra) === 1;
+    }
+
+    /**
+     * El patrón LIKE de una palabra para la base: `%palabra%` con los comodines escapados, y una medida
+     * compacta con lugar para los espacios que tenga el nombre cargado ("60x60" → `%60%x%60%`, que
+     * encuentra "60 X 60" y "60x60"). Es un prefiltro: el que decide si un candidato es el artículo
+     * pedido es es_seguro() (o el match de la frase), que compara la medida entera.
+     *
+     * @param  string  $palabra
+     * @return string
+     */
+    protected static function patron_like_de_la_palabra($palabra)
+    {
+        if (!self::es_medida($palabra)) {
+
+            return '%' . addcslashes((string) $palabra, '%_\\') . '%';
+        }
+
+        $partes = [];
+
+        foreach (explode('x', (string) $palabra) as $parte) {
+
+            $partes[] = addcslashes($parte, '%_\\');
+        }
+
+        return '%' . implode('%x%', $partes) . '%';
     }
 
     /**
