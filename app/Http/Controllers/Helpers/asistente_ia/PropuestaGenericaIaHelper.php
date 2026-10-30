@@ -1082,6 +1082,9 @@ class PropuestaGenericaIaHelper
         /** El aviso de la tarjeta de edición (hoy: márgenes heredados de listas borradas), o null. */
         $aviso_de_la_edicion = null;
 
+        /** true si la tarjeta la tiene que confirmar la persona aun en "directo" (E2 punto 7). */
+        $requiere_confirmacion = false;
+
         if ($vinieron_margenes) {
 
             $descartados = [];
@@ -1109,6 +1112,27 @@ class PropuestaGenericaIaHelper
             foreach ($de_la_edicion['renglones'] as $renglon) {
 
                 $renglones[] = $renglon;
+            }
+
+            /*
+             * Misión agente-mejoras-uso-real (E2 punto 7): una lista que tenía precio fijo y deja de
+             * tenerlo, o un precio que baja, va en el aviso de la tarjeta y en la respuesta al modelo,
+             * que se lo tiene que decir a la persona antes de que confirme (CONV 12 de Pablo).
+             */
+            if (isset($de_la_edicion['avisos']) && count($de_la_edicion['avisos'])) {
+
+                $avisos_de_precio = implode(' ', $de_la_edicion['avisos']);
+
+                $aviso_de_la_edicion = is_null($aviso_de_la_edicion) ? $avisos_de_precio : $aviso_de_la_edicion.' '.$avisos_de_precio;
+
+                /*
+                 * 🔴 Y ESA TARJETA LA CONFIRMA LA PERSONA, también con la confianza en "directo". En
+                 * la CONV 12 la edición se ejecutó en el acto (el dueño estaba en "directo") y el
+                 * aviso habría llegado cuando el precio ya había bajado. Es el mismo mecanismo que las
+                 * acciones de pantalla que siempre se confirman: quizas_auto_confirmar() respeta
+                 * `requiere_confirmacion` antes de mirar el modo.
+                 */
+                $requiere_confirmacion = true;
             }
         }
 
@@ -1157,7 +1181,15 @@ class PropuestaGenericaIaHelper
 
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_EDICION, $nombre_actual).self::resumen_de_renglones($renglones, null);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, is_null($aviso_de_la_edicion) ? [] : ['aviso' => $aviso_de_la_edicion]);
+        $extra = is_null($aviso_de_la_edicion) ? [] : ['aviso' => $aviso_de_la_edicion];
+
+        // Un precio fijo que se pierde o un precio que baja: tarjeta para la persona (ver arriba).
+        if (!empty($requiere_confirmacion)) {
+
+            $extra['requiere_confirmacion'] = true;
+        }
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
     }
 
     /**

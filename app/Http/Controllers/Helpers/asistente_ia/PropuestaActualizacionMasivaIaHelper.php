@@ -1108,9 +1108,13 @@ class PropuestaActualizacionMasivaIaHelper
      * El conteo en memoria del lote de auditoría (filas, omitidas, id de la fila truncada), o null
      * si no se puede leer.
      *
+     * Público desde la misión agente-mejoras-uso-real (E2): la estimación del precio de una lista en
+     * la edición de márgenes (MargenesPorListaIaHelper::precios_estimados()) simula con la misma
+     * transacción que se revierte y tiene que devolver el mismo conteo.
+     *
      * @return array|null
      */
-    protected static function conteo_de_auditoria()
+    public static function conteo_de_auditoria()
     {
         try {
 
@@ -1136,7 +1140,7 @@ class PropuestaActualizacionMasivaIaHelper
      * @param  array|null  $conteo
      * @return void
      */
-    protected static function restaurar_conteo_de_auditoria($conteo)
+    public static function restaurar_conteo_de_auditoria($conteo)
     {
         if (!is_array($conteo) || !is_object($conteo['marco'])) {
 

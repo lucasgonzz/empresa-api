@@ -1062,10 +1062,20 @@ class MargenesPorListaIaHelper
      * fijo (con porcentaje vacío, el de la lista); "precio fijo $ X" si el pivote está marcado como
      * precio fijo; y si el artículo no tiene pivote con esa lista, el margen por defecto de la lista.
      *
+     * 🔴 Y EL PRECIO, ANTES Y DESPUÉS (misión agente-mejoras-uso-real, E2 punto 7, 29/10/2026). Pablo
+     * (Ferre Total, CONV 12) pidió «ponele 50 %» a un artículo que en LISTA GENERAL tenía precio FIJO
+     * de $ 5.000: la edición le sacó el precio fijo y el precio BAJÓ a $ 4.682,70 sin que nada se lo
+     * advirtiera (la tarjeta decía "precio fijo $ 5.000 → 50 %"). Ahora, para cada lista que cambia,
+     * la tarjeta suma el renglón "Precio <lista>" con el precio de hoy → el que va a quedar, calculado
+     * con la MISMA cuenta del sistema (precios_estimados()), y un aviso cuando la lista tenía precio
+     * fijo (deja de serlo) o cuando el precio queda más bajo. El sistema no guarda un margen y un
+     * precio fijo a la vez en la misma lista (con precio fijo el margen se deriva del precio): por
+     * eso el aviso dice que para conservar el precio no hay que cambiarle el margen a esa lista.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  int  $article_id
      * @param  array  $margenes
-     * @return array  ['renglones' => [...], 'cambian' => [margenes que cambian]]
+     * @return array  ['renglones' => [...], 'cambian' => [margenes que cambian], 'avisos' => string[]]
      */
     public static function cambios_de_edicion(ContextoDeCargaIa $contexto, $article_id, array $margenes)
     {
@@ -1110,7 +1120,161 @@ class MargenesPorListaIaHelper
             ];
         }
 
-        return ['renglones' => $renglones, 'cambian' => $cambian];
+        /*
+         * El precio de hoy → el que va a quedar, lista por lista, y los avisos (E2 punto 7). Va después
+         * de los renglones de margen, con su propia etiqueta: "Margen <lista>" sigue diciendo lo mismo.
+         */
+        $avisos = [];
+
+        if (count($cambian)) {
+
+            $estimados = self::precios_estimados($contexto, $article_id, $cambian);
+
+            foreach ($cambian as $margen) {
+
+                $id = (int) $margen['price_type_id'];
+
+                if (!isset($estimados[$id])) {
+
+                    continue;
+                }
+
+                $estimado = $estimados[$id];
+                $hoy = $estimado['antes'];
+                $queda = $estimado['despues'];
+
+                if (is_null($queda)) {
+
+                    continue;
+                }
+
+                $renglones[] = [
+                    'etiqueta' => 'Precio ' . $margen['nombre'],
+                    'valor'    => (is_null($hoy) ? '(sin precio)' : FormatoIaHelper::monto($hoy)) . ' → ' . FormatoIaHelper::monto($queda),
+                ];
+
+                $comparacion = '';
+
+                if (!is_null($hoy) && $queda < $hoy - self::TOLERANCIA) {
+
+                    $comparacion = ', más barato';
+
+                } elseif (!is_null($hoy) && $queda > $hoy + self::TOLERANCIA) {
+
+                    $comparacion = ', más caro';
+                }
+
+                if ($estimado['era_fijo']) {
+
+                    $avisos[] = 'Hoy ' . $margen['nombre'] . ' tiene precio fijo' . (is_null($hoy) ? '' : ' de ' . FormatoIaHelper::monto($hoy))
+                        . '; con margen ' . self::porcentaje($margen['margen']) . ' pasa a calcularse y queda en ' . FormatoIaHelper::monto($queda) . $comparacion
+                        . '. Para conservar el precio fijo, no le cambies el margen a esa lista.';
+
+                } elseif ($comparacion === ', más barato') {
+
+                    $avisos[] = 'Con margen ' . self::porcentaje($margen['margen']) . ' el precio de ' . $margen['nombre'] . ' baja de '
+                        . FormatoIaHelper::monto($hoy) . ' a ' . FormatoIaHelper::monto($queda) . '.';
+                }
+            }
+        }
+
+        return ['renglones' => $renglones, 'cambian' => $cambian, 'avisos' => $avisos];
+    }
+
+    /**
+     * El precio de HOY y el que va a quedar en cada lista que cambia, con la MISMA cuenta que la
+     * edición: dentro de una transacción que siempre se revierte se le escribe al pivote lo mismo que
+     * manda price_types_para_el_payload() (margen, sin precio fijo, sin precio final) y se corre
+     * ArticleHelper::setFinalPrice(), que es lo que hace el controller al guardar; se relee el
+     * `final_price` del pivote y se deshace todo. Es el mismo molde que los ejemplos de precio de la
+     * actualización masiva (PropuestaActualizacionMasivaIaHelper::ejemplos_de_precio()), incluido el
+     * conteo de auditoría que el rollback no devuelve solo.
+     *
+     * Protegido: si algo falla, sin estimaciones (la tarjeta se arma igual, sin los renglones de precio).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $article_id
+     * @param  array  $margenes  Los que cambian.
+     * @return array<int, array{antes: float|null, despues: float|null, era_fijo: bool}>  Por price_type_id.
+     */
+    public static function precios_estimados(ContextoDeCargaIa $contexto, $article_id, array $margenes)
+    {
+        $estimados = [];
+
+        try {
+
+            $articulo = \App\Models\Article::where('user_id', (int) $contexto->owner_id)->find((int) $article_id);
+
+            if (is_null($articulo)) {
+
+                return [];
+            }
+
+            $pivotes = self::pivotes($article_id, $margenes);
+
+            foreach ($margenes as $margen) {
+
+                $id = (int) $margen['price_type_id'];
+                $pivote = isset($pivotes[$id]) ? $pivotes[$id] : null;
+
+                $estimados[$id] = [
+                    'antes'    => !is_null($pivote) && !is_null($pivote->final_price) && (float) $pivote->final_price > 0 ? round((float) $pivote->final_price, 2) : null,
+                    'despues'  => null,
+                    'era_fijo' => !is_null($pivote) && !empty($pivote->setear_precio_final),
+                ];
+            }
+
+            $auditoria = PropuestaActualizacionMasivaIaHelper::conteo_de_auditoria();
+
+            DB::beginTransaction();
+
+            try {
+
+                foreach ($margenes as $margen) {
+
+                    $id = (int) $margen['price_type_id'];
+
+                    $articulo->price_types()->syncWithoutDetaching([$id]);
+                    $articulo->price_types()->updateExistingPivot($id, [
+                        'percentage'          => (float) $margen['margen'],
+                        'setear_precio_final' => 0,
+                        'final_price'         => null,
+                    ]);
+                }
+
+                \App\Http\Controllers\Helpers\ArticleHelper::setFinalPrice($articulo, (int) $contexto->owner_id, $contexto->owner);
+
+                $despues = self::pivotes($article_id, $margenes);
+
+                foreach ($margenes as $margen) {
+
+                    $id = (int) $margen['price_type_id'];
+
+                    if (isset($despues[$id]) && !is_null($despues[$id]->final_price) && (float) $despues[$id]->final_price > 0) {
+
+                        $estimados[$id]['despues'] = round((float) $despues[$id]->final_price, 2);
+                    }
+                }
+
+            } finally {
+
+                DB::rollBack();
+
+                PropuestaActualizacionMasivaIaHelper::restaurar_conteo_de_auditoria($auditoria);
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('MargenesPorListaIaHelper: no se pudo estimar el precio de las listas de la edición', [
+                'owner_id'   => $contexto->owner_id,
+                'article_id' => $article_id,
+                'error'      => $e->getMessage(),
+            ]);
+
+            return [];
+        }
+
+        return $estimados;
     }
 
     // =========================================================================================
