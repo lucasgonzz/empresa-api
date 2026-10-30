@@ -1625,6 +1625,15 @@ Route::prefix('admin-sync')
 // Ingreso a la demo con la sesion ya iniciada (token emitido por admin-api).
 Route::post('demo/ingreso', 'DemoIngresoController@store');
 
+// Canje del acceso de soporte de un solo uso (misión acceso-soporte-firmado, 30/10/2026). 🔴 Es PÚBLICA a
+// propósito: la llama el navegador del agente (Playwright) que todavía no tiene sesión, igual que
+// `demo/ingreso`; no puede llevar `auth:sanctum` ni `admin.api.key` (el navegador no tiene la clave del
+// admin). Lo que la protege es el token: se emitió con la clave compartida (`admin-sync/acceso-soporte`, más
+// abajo), vive 2 minutos, se guarda solo su hash y se consume de forma atómica UNA vez. Mismo 401 para
+// cualquier rechazo (no filtra el motivo) y `throttle:10,1` contra quien pruebe tokens. Declarada en el
+// guardián Seguridad/RutasPublicas con este motivo.
+Route::post('acceso-soporte/canjear', 'AccesoSoporteController@canjear')->middleware('throttle:10,1');
+
 // Acceso de un solo uso al configurador de extensiones, pedido por el admin (misión extensiones-desde-el-admin,
 // 15/10/2026). `admin.api.key:siempre`: exige X-Admin-Api-Key aunque la instancia no tenga clave cargada,
 // porque esta ruta EMITE un acceso (el tri-estado de `admin.api.key` a secas dejaría pasar sin clave).
@@ -1640,6 +1649,14 @@ Route::middleware('admin.api.key:siempre')
         // esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
         Route::get('agentes-ia', 'AdminSync\\AgentesIaController@show');
         Route::put('agentes-ia', 'AdminSync\\AgentesIaController@update');
+        // Acceso de soporte de un solo uso (misión acceso-soporte-firmado, 30/10/2026): el admin pide un token que
+        // se canjea por una sesión del dueño en `acceso-soporte/canjear` (pública, más arriba). `siempre` es lo
+        // que firma el pedido: esta ruta ABRE LA PUERTA de un comercio, así que una instancia sin
+        // ADMIN_API_INBOUND_KEY cargada contesta 401 igual (con el `admin.api.key` a secas pasaría libre, como en
+        // las demos). 403 `acceso_soporte_desactivado` si el cliente lo apagó; 409 `dueno_no_resoluble` si no se
+        // puede decidir de qué comercio se habla. Un cliente viejo sin esta ruta responde 404/405 SIN `code` y el
+        // admin lo muestra como «versión vieja».
+        Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
     });
 
 Route::middleware('admin.api.key')
