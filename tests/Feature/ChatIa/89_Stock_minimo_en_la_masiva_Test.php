@@ -337,6 +337,41 @@ class Stock_minimo_en_la_masiva_Test extends TestCase
     }
 
     /**
+     * 🔴 Revisión independiente (30/10/2026): setear el mínimo en 0 sobre un artículo SIN mínimo (NULL)
+     * se guardaba sin registrarse (en PHP null == 0), así que la reversión no lo deshacía. Ahora el
+     * cambio queda en el historial y revertir lo devuelve a NULL; un mínimo que ya era 0 no se registra.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function sin_sucursales_el_minimo_cero_sobre_null_se_registra_y_se_revierte()
+    {
+        // El clavo 1 ya tenía mínimo 0: ese no cambia.
+        $this->clavos[1]->stock_min = 0;
+        $this->clavos[1]->save();
+
+        list(, $masiva) = $this->aplicar_por_la_tarjeta([
+            ['campo' => 'stock_minimo', 'operacion' => 'setear', 'valor' => 0],
+        ]);
+
+        $this->assertSame(0, (int) $this->clavos[0]->fresh()->stock_min);
+        $this->assertNotNull($this->clavos[0]->fresh()->stock_min);
+
+        $cambios = json_decode($masiva->articles()->where('articles.id', $this->clavos[0]->id)->first()->pivot->changes_json, true);
+
+        $this->assertSame(['stock_min'], array_keys($cambios), 'null → 0 es un cambio y queda en el historial.');
+        $this->assertNull($cambios['stock_min']['old']);
+
+        $this->assertNull($masiva->articles()->where('articles.id', $this->clavos[1]->id)->first(), '0 → 0 no es un cambio.');
+
+        $reversion = MasiveUpdateHelper::create_pending_revert($masiva, $this->comercio->id);
+        MasiveUpdateHelper::process_revert($reversion->fresh(), $masiva->fresh());
+
+        $this->assertNull($this->clavos[0]->fresh()->stock_min, 'Revertir lo deja SIN mínimo, como estaba.');
+        $this->assertSame(0, (int) $this->clavos[1]->fresh()->stock_min);
+    }
+
+    /**
      * @group chat-ia
      * @test
      */

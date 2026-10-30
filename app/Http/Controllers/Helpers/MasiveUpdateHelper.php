@@ -761,6 +761,34 @@ class MasiveUpdateHelper
     }
 
     /**
+     * Si un `set_` de la masiva NO cambió nada (y entonces no se registra en el historial).
+     *
+     * Para todas las columnas es la comparación de siempre, `==`. 🔴 SALVO EL STOCK MÍNIMO
+     * (`stock_min`, revisión independiente de la misión agente-mejoras-uso-real, 30/10/2026): ahí NULL
+     * quiere decir "sin mínimo" y 0 quiere decir "avisame cuando se acabe", y con `==` (en PHP null ==
+     * 0) setear 0 sobre un artículo sin mínimo se GUARDABA sin registrarse como cambio, así que la
+     * reversión no lo podía deshacer. Para esa columna la comparación es estricta: null contra null es
+     * igual; null contra un número, distinto; dos números, por su valor. Las demás columnas no cambian.
+     *
+     * @param  string  $prop_key
+     * @param  mixed  $viejo
+     * @param  mixed  $nuevo
+     * @return bool
+     */
+    protected static function set_sin_cambio($prop_key, $viejo, $nuevo)
+    {
+        if ($prop_key !== 'stock_min') {
+            return $viejo == $nuevo;
+        }
+
+        if (is_null($viejo) || is_null($nuevo)) {
+            return is_null($viejo) && is_null($nuevo);
+        }
+
+        return (float) $viejo == (float) $nuevo;
+    }
+
+    /**
      * Indica si un checkbox de actualización masiva debe aplicarse (solo 0 o 1 explícitos).
      *
      * @param mixed $value
@@ -1234,7 +1262,7 @@ class MasiveUpdateHelper
             }
             $model->save();
 
-            if ($old_value == $model->{$prop_key}) {
+            if (self::set_sin_cambio($prop_key, $old_value, $model->{$prop_key})) {
                 return null;
             }
 
