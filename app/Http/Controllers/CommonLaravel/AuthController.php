@@ -291,7 +291,22 @@ class AuthController extends Controller
          * vieja que nunca soltó el candado-. Liberándolo acá, el candado queda libre apenas se
          * decide el cambio de versión, sin depender de que nada más después salga bien.
          */
-        $this->removeUserLastActivity($auth_user);
+        /**
+         * 🔴 Misión acceso-soporte-firmado (30/10/2026): una sesión de acceso de soporte NO libera el candado ni
+         * marca `logout_at`. El candado y `logout_at` son del dueño REAL (la sesión de soporte nunca tomó el
+         * candado, está eximida), y soltárselo desde acá dejaría entrar a otro dispositivo encima de la sesión
+         * que el dueño tiene abierta. Es la misma regla que ya sigue `logout()`.
+         *
+         * Pendiente conocido: la sesión DESTINO de este cambio de versión se abre como un login normal
+         * (el token de transferencia no lleva el marcador de soporte), así que ahí sí tomaría el candado. El
+         * acceso de soporte se emite apuntando al frente correcto, por lo que este cambio de versión no
+         * debería darse; si se diera, el agente reentra con un acceso nuevo.
+         */
+        $es_sesion_de_soporte = $this->es_sesion_de_soporte();
+
+        if (!$es_sesion_de_soporte) {
+            $this->removeUserLastActivity($auth_user);
+        }
 
         /**
          * Estado de login maestro de ESTA sesión (origen), leído antes de vaciarla más abajo.
@@ -337,8 +352,11 @@ class AuthController extends Controller
          * Es un contrato con empresa-spa y un SPA viejo tiene que seguir leyendo `res.data.token`
          * igual; lo único que se agrega es un efecto de lado.
          */
-        $this->set_logout_at($auth_user->id);
+        if (!$es_sesion_de_soporte) {
+            $this->set_logout_at($auth_user->id);
+        }
 
+        session()->forget('acceso_soporte_token_id');
         session()->forget($this->master_login_bypass_activity_key);
         session()->forget('skip_offline_articles_sync');
         session()->forget('session_id');
@@ -443,15 +461,28 @@ class AuthController extends Controller
         $auth_user = Auth::user();
 
         /**
+         * ¿Es un acceso de soporte de un solo uso? Se mira ANTES de vaciar la sesión, más abajo.
+         *
+         * 🔴 El candado de sesión única (`session_id`/`last_activity`) y `logout_at` son del dueño REAL, no
+         * de esta sesión: la de soporte nunca tomó el candado (está eximida, ver
+         * `debe_omitir_candado_de_actividad()`). Si el logout de soporte lo liberara, cerrar la sesión del
+         * agente le soltaría el candado a la sesión que el dueño tiene abierta en su caja, y otro
+         * dispositivo podría entrar encima de él; y `logout_at` le mentiría diciendo que el dueño cerró
+         * sesión a esa hora.
+         */
+        $es_sesion_de_soporte = $this->es_sesion_de_soporte();
+
+        /**
          * Libera el lock de sesión única para que el mismo u otro dispositivo
          * pueda volver a iniciar sesión de inmediato tras cerrar sesión.
          */
-        if ($auth_user) {
+        if ($auth_user && !$es_sesion_de_soporte) {
             $this->removeUserLastActivity($auth_user);
             $this->set_logout_at($auth_user->id);
         }
 
         /** Limpia flags y datos cacheados en sesión PHP. */
+        session()->forget('acceso_soporte_token_id');
         session()->forget($this->master_login_bypass_activity_key);
         session()->forget('skip_offline_articles_sync');
         session()->forget('session_id');
@@ -473,8 +504,9 @@ class AuthController extends Controller
     public function get_user() {
         /**
          * Se evita escribir last_activity/session_id cuando la sesión no tiene que ocupar el
-         * candado de sesión única: el login maestro (acceso de soporte) y el ingreso a la demo
-         * por magic link. Ver `debe_omitir_candado_de_actividad()`.
+         * candado de sesión única: el login maestro (acceso de soporte), el ingreso a la demo
+         * por magic link y el acceso de soporte de un solo uso (token firmado por el admin).
+         * Ver `debe_omitir_candado_de_actividad()`.
          */
         if ($this->debe_omitir_candado_de_actividad()) {
             $user = UserHelper::getFullModel(false);
@@ -486,8 +518,15 @@ class AuthController extends Controller
              */
             $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
             /**
+             * Marcador de acceso de soporte (misión acceso-soporte-firmado). Va en las DOS ramas, y
+             * esta es la que realmente lo recibe: la sesión de soporte está eximida del candado. Clave
+             * nueva y opcional: un SPA viejo la ignora.
+             */
+            $user->es_sesion_soporte = $this->es_sesion_de_soporte();
+            /**
              * Si la sesión entró por el login maestro (misión imagenes-catalogo-completo): con
              * esto la SPA muestra "Buscar imágenes para todo el catálogo". Va en las DOS ramas.
+             * Una sesión de soporte NO es acceso maestro: esto da false para ella.
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
             UserHelper::set_sessions($user);
@@ -512,6 +551,10 @@ class AuthController extends Controller
              * sesion y no una variable de JavaScript.
              */
             $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
+            // Marcador de acceso de soporte (misión acceso-soporte-firmado), en las DOS ramas. Hoy acá
+            // da siempre false (la sesión de soporte entra por la rama eximida de arriba), pero se
+            // calcula igual en vez de fijarlo, por lo mismo que `es_acceso_maestro` más abajo.
+            $user->es_sesion_soporte = $this->es_sesion_de_soporte();
             // Mismo flag que la rama de arriba (misión imagenes-catalogo-completo). Hoy acá da
             // siempre false (el maestro entra por la rama de arriba), pero se calcula igual en vez
             // de fijarlo: si mañana cambia la condición de esa rama, el flag sigue diciendo la verdad.
@@ -637,9 +680,26 @@ class AuthController extends Controller
     }
 
     /**
+     * Informa si la sesión actual es un acceso de soporte de un solo uso (misión acceso-soporte-firmado,
+     * 30/10/2026).
+     *
+     * La fuente es el marcador `acceso_soporte_token_id` que deja `AccesoSoporteController::canjear()` después
+     * de regenerar la sesión, con el mismo patrón que `es_sesion_de_demo()`: vive en la cookie de sesión, así
+     * que sobrevive al F5 y a un `auth/me` posterior.
+     *
+     * 🔴 NO es lo mismo que el login maestro: esta sesión NO lleva la clave
+     * `master_login_bypass_user_last_activity`, y por lo tanto `es_acceso_maestro` da false.
+     *
+     * @return bool
+     */
+    function es_sesion_de_soporte() {
+        return session()->has('acceso_soporte_token_id');
+    }
+
+    /**
      * Informa si esta sesión tiene que OMITIR el candado de sesión única.
      *
-     * Son dos casos, y por motivos distintos:
+     * Son tres casos, y por motivos distintos:
      *
      * 1. **Login maestro.** El acceso de soporte no puede ocupar la sesión única del cliente:
      *    si la ocupara, entrar a mirar un problema dejaría al cliente afuera de su propio sistema.
@@ -659,13 +719,25 @@ class AuthController extends Controller
      *    magic link se robara el candado ("el último que entra manda") porque expulsaría a Lucas
      *    de la demo justo mientras acompaña la llamada del lead.
      *
+     * 3. **Acceso de soporte de un solo uso** (misión acceso-soporte-firmado, 30/10/2026). El agente
+     *    (Claude Code, Codex) entra como el DUEÑO del comercio con un token que emitió el admin. Si esa
+     *    sesión tomara el candado, el dueño real vería «tu cuenta está siendo utilizada en otro
+     *    dispositivo» en su propio sistema mientras el agente mira un problema: es el mismo motivo que
+     *    eximió al login maestro, y el mismo patrón que se le sumó a la demo. Alcanza con NO escribir
+     *    `session_id`/`last_activity` (que es lo que hace `get_user()` en la rama eximida) para que el
+     *    dueño no note nada. Va por su propio marcador (`acceso_soporte_token_id`) y NO por la clave del
+     *    login maestro: así la sesión de soporte no hereda `es_acceso_maestro` (mínimo privilegio) y el
+     *    login maestro queda exactamente como estaba.
+     *
      * 🔴 El candado sigue valiendo IGUAL para el login normal, que es donde protege de verdad:
      * un cliente real con sesiones concurrentes. Esta exención no toca ese camino.
      *
      * @return bool
      */
     function debe_omitir_candado_de_actividad() {
-        return $this->is_master_login_activity_bypass_enabled() || $this->es_sesion_de_demo();
+        return $this->is_master_login_activity_bypass_enabled()
+            || $this->es_sesion_de_demo()
+            || $this->es_sesion_de_soporte();
     }
 
     public function loginLucas($request) {
