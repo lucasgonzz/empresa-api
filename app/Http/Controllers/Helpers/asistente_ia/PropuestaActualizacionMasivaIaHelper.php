@@ -9,7 +9,6 @@ use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Article;
 use App\Models\Iva;
-use App\Models\UnidadMedida;
 use App\Services\AuditLog\AuditContext;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -1529,48 +1528,21 @@ class PropuestaActualizacionMasivaIaHelper
     }
 
     /**
-     * La unidad de medida por nombre, con la misma regla que las relaciones del filtro (única,
-     * exacta entre varias, o `faltan` con opciones).
+     * La unidad de medida por nombre.
+     *
+     * Misión agente-mejoras-uso-real (E2 punto 2, 29/10/2026): hasta acá era un `LIKE '%texto%'`
+     * contra el nombre, y «kilos» no encajaba nunca con «Kilo» (lo buscado era más largo que lo
+     * cargado); sin coincidencias devolvía un error sin opciones y el agente le terminaba preguntando
+     * al dueño cómo estaba cargada (CONV 14 de Pablo). Ahora resuelve UnidadDeMedidaIaHelper, que
+     * comparte con la carga genérica: alias (kg, kilos → Kilo), sin plural, en las dos direcciones, y
+     * sin ninguna coincidencia devuelve `faltan` con TODAS las unidades en `unidades_de_medida`.
      *
      * @param  string  $texto
      * @return \App\Models\UnidadMedida|array
      */
     protected static function resolver_unidad_de_medida($texto)
     {
-        $candidatas = UnidadMedida::where('name', 'LIKE', '%' . addcslashes($texto, '%_\\') . '%')
-                                    ->orderBy('name')
-                                    ->limit(20)
-                                    ->get();
-
-        if (count($candidatas) === 0) {
-
-            return RespuestaDeCargaIa::error('No encontré ninguna unidad de medida que se llame "' . $texto . '".');
-        }
-
-        if (count($candidatas) === 1) {
-
-            return $candidatas[0];
-        }
-
-        foreach ($candidatas as $candidata) {
-
-            if (mb_strtolower(trim((string) $candidata->name)) === mb_strtolower($texto)) {
-
-                return $candidata;
-            }
-        }
-
-        $opciones = [];
-
-        foreach ($candidatas as $candidata) {
-
-            $opciones[] = ['id' => (int) $candidata->id, 'nombre' => (string) $candidata->name];
-        }
-
-        return RespuestaDeCargaIa::faltan(
-            ['cuál unidad de medida: hay varias que encajan con "' . $texto . '"'],
-            ['unidades_de_medida' => $opciones]
-        );
+        return UnidadDeMedidaIaHelper::resolver($texto);
     }
 
     /**

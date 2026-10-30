@@ -1797,6 +1797,31 @@ class PropuestaGenericaIaHelper
             return self::resolver_marca($contexto, $campo, $etiqueta, $texto, $consulta_base);
         }
 
+        /*
+         * 🔴 LA UNIDAD DE MEDIDA TAMBIÉN VA APARTE (misión agente-mejoras-uso-real, E2 punto 2,
+         * 29/10/2026). Con el LIKE de abajo, «kilos» no encajaba con «Kilo» (lo dicho es más largo que
+         * lo cargado) y el agente le contestaba al dueño que no existía (CONV 14 de Pablo). Resuelve
+         * UnidadDeMedidaIaHelper, el mismo que usa la actualización masiva: alias, plural, las dos
+         * direcciones y, sin ninguna coincidencia, `faltan` con TODAS las unidades. Las opciones se
+         * pasan con la clave de la columna, como las del resto de las relaciones.
+         */
+        if ($relacion['tabla'] === 'unidad_medidas') {
+
+            $unidad = UnidadDeMedidaIaHelper::resolver($texto);
+
+            if (RespuestaDeCargaIa::es_negativa($unidad)) {
+
+                $opciones = isset($unidad['opciones']) ? json_decode(json_encode($unidad['opciones']), true) : [];
+
+                return RespuestaDeCargaIa::faltan(
+                    $unidad['faltan'],
+                    [$campo['columna'] => isset($opciones['unidades_de_medida']) ? $opciones['unidades_de_medida'] : []]
+                );
+            }
+
+            return ['valor' => (int) $unidad->id, 'nombre' => (string) $unidad->name];
+        }
+
         $candidatas = $consulta_base()
                         ->where($relacion['campo'], 'LIKE', '%'.self::escapar_like($texto).'%')
                         ->orderBy($relacion['campo'])
