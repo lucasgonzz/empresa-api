@@ -101,14 +101,31 @@ class UnidadDeMedidaIaHelper
             function ($nombre) use ($buscado) {
                 return self::sin_plural($nombre) === self::sin_plural($buscado);
             },
-            // 4. Una contiene a la otra (en las dos direcciones), con al menos dos letras de por medio.
+            /*
+             * 4. Una contiene a la otra (en las dos direcciones), pero solo si lo que SOBRA son palabras
+             * de relleno ("por kilo", "en litros"). 🔴 Revisión independiente (30/10/2026): sin esa
+             * condición, «mililitros» se resolvía a Litro, «milímetros», «kilómetros» y «metros
+             * cuadrados» a Metro y «miligramos» a Gramo: un prefijo pegado (mili, centi, kilo, deci)
+             * o un calificador (cuadrado, cúbico) es OTRA unidad, y va a `faltan` con la lista. Ver
+             * sobra_solo_relleno().
+             */
             function ($nombre) use ($buscado) {
                 if (mb_strlen($nombre) < 2 || mb_strlen($buscado) < 2) {
 
                     return false;
                 }
 
-                return mb_strpos($nombre, $buscado) !== false || mb_strpos($buscado, $nombre) !== false;
+                if (mb_strpos($buscado, $nombre) !== false) {
+
+                    return self::sobra_solo_relleno($nombre, $buscado);
+                }
+
+                if (mb_strpos($nombre, $buscado) !== false) {
+
+                    return self::sobra_solo_relleno($buscado, $nombre);
+                }
+
+                return false;
             },
         ];
 
@@ -163,6 +180,62 @@ class UnidadDeMedidaIaHelper
         $texto = strtr($texto, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n', '.' => '']);
 
         return trim((string) preg_replace('/\s+/u', ' ', $texto));
+    }
+
+    /**
+     * Las palabras que pueden acompañar a una unidad sin cambiarla: "por kilo", "en litros", "x metro".
+     *
+     * @var array<int, string>
+     */
+    const RELLENO = ['por', 'x', 'en', 'de', 'del', 'el', 'la', 'los', 'las', 'a', 'al', 'un', 'una'];
+
+    /**
+     * true si `$largo` contiene a `$corto` y lo único que sobra son palabras de RELLENO (más el plural
+     * pegado al final: "kilo" en "kilos"). Si lo que sobra está PEGADO adelante ("mili" en
+     * "mililitro", "kilo" en "kilómetro") o es cualquier otra palabra ("cuadrados", "cúbicos", otra
+     * unidad), no es la misma unidad: false. Los dos textos, ya normalizados.
+     *
+     * @param  string  $corto
+     * @param  string  $largo
+     * @return bool
+     */
+    protected static function sobra_solo_relleno($corto, $largo)
+    {
+        $posicion = mb_strpos($largo, $corto);
+
+        if ($posicion === false) {
+
+            return false;
+        }
+
+        $antes = mb_substr($largo, 0, $posicion);
+        $despues = mb_substr($largo, $posicion + mb_strlen($corto));
+
+        // Un prefijo pegado adelante (mili-, centi-, kilo-, deci-...): es otra unidad.
+        if ($antes !== '' && preg_match('/\p{L}$/u', $antes)) {
+
+            return false;
+        }
+
+        // El plural pegado atrás se acepta ("kilo" en "kilos", "unidad" en "unidades").
+        $despues = (string) preg_replace('/^(es|s)(?=\s|$)/u', '', $despues);
+
+        // Cualquier otra cosa pegada atrás ("litro" en "litrox"): otra palabra.
+        if ($despues !== '' && preg_match('/^\p{L}/u', $despues)) {
+
+            return false;
+        }
+
+        // Lo que queda suelto, a los costados, tiene que ser relleno ("por kilo", "en litros").
+        foreach (preg_split('/\s+/u', trim($antes . ' ' . $despues), -1, PREG_SPLIT_NO_EMPTY) as $palabra) {
+
+            if (!in_array($palabra, self::RELLENO, true)) {
+
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

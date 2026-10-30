@@ -143,6 +143,34 @@ class Unidad_de_medida_por_nombre_Test extends TestCase
     }
 
     /**
+     * 🔴 Revisión independiente (30/10/2026): «mililitros» no es Litro, «milímetros» ni «kilómetros» ni
+     * «metros cuadrados» son Metro, «miligramos» no es Gramo. Un prefijo pegado o un calificador es
+     * OTRA unidad: va a `faltan` con todas las opciones. Y el relleno ("por kilo") sí se acepta.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function un_prefijo_o_un_calificador_es_otra_unidad_y_se_pregunta_con_la_lista()
+    {
+        foreach (['mililitros', 'milímetros', 'kilómetros', 'metros cuadrados', 'metro cúbico', 'miligramos', 'centímetros cúbicos', 'decilitro'] as $dicho) {
+            $respuesta = UnidadDeMedidaIaHelper::resolver($dicho);
+
+            $this->assertTrue(RespuestaDeCargaIa::es_negativa($respuesta), '"' . $dicho . '" NO es ninguna de las cargadas: ' . json_encode($respuesta));
+            $this->assertNotEmpty($respuesta['faltan']);
+
+            $opciones = json_decode(json_encode($respuesta['opciones']), true);
+            $this->assertCount(UnidadMedida::count(), $opciones['unidades_de_medida'], '"' . $dicho . '": con todas las unidades para elegir.');
+        }
+
+        // El relleno a los costados no cambia la unidad.
+        $this->assertSame((int) $this->unidades['Kilo']->id, (int) UnidadDeMedidaIaHelper::resolver('por kilo')->id);
+        $this->assertSame((int) $this->unidades['Litro']->id, (int) UnidadDeMedidaIaHelper::resolver('en litros')->id);
+
+        // Y kilo/kilos/kg/kilogramo siguen siendo Kilo (alias).
+        $this->assertSame((int) $this->unidades['Kilo']->id, (int) UnidadDeMedidaIaHelper::resolver('kilogramo')->id);
+    }
+
+    /**
      * @group chat-ia
      * @test
      */
