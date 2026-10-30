@@ -628,6 +628,16 @@ class AuthController extends Controller
 
         $auth_user = Auth()->user();
 
+        /**
+         * Una sesión de soporte (acceso-soporte-firmado) NUNCA reclama el candado: este método libera el del
+         * dueño real, lo toma para sí y encima avisa a su pestaña que se cierre. La SPA solo lo ofrece tras el
+         * 403 de `get_user()` que una sesión de soporte jamás recibe (entra por la rama eximida), pero la ruta
+         * existe y alcanza con llamarla a mano. Se contesta como un rechazo normal (`login: false`) sin tocar nada.
+         */
+        if ($auth_user && $this->es_sesion_de_soporte()) {
+            $auth_user = null;
+        }
+
         if ($auth_user) {
             $this->removeUserLastActivity($auth_user);
 

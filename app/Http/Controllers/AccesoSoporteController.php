@@ -72,19 +72,25 @@ class AccesoSoporteController extends Controller
             return response()->json(['error' => 'token_invalido'], 401);
         }
 
+        /**
+         * 🔴 Se VACÍA la sesión entera antes de loguear, mismo patrón que `AuthController::logout()` (invalidate +
+         * regenerateToken). `regenerate()` solo cambia el id: CONSERVA los datos de la sesión anterior, y un
+         * navegador que ya traía una sesión (la extensión de Chrome de Lucas, un storageState viejo) arrastraría:
+         *   - `auth_user` / `owner`: `UserHelper::user()` los lee ANTES que `Auth::user()`, así que el SPA y las
+         *     consultas seguirían mostrando al usuario anterior aunque `Auth::login` ya sea el dueño;
+         *   - `master_login_bypass_user_last_activity`: volvería `es_acceso_maestro` a la sesión de soporte
+         *     (más privilegio del que se quiere dar);
+         *   - `demo_ingreso_token_id`: la volvería `es_sesion_demo`;
+         *   - claves de acceso temporal (mantenimiento, extensiones) que no le tocan a esta sesión.
+         * Lo único que sobrevive es lo que se pone abajo: la sesión de soporte es SOLO «soporte».
+         */
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
         Auth::login($acceso['user'], false);
 
         /** Regenerar la sesión después del login es obligatorio contra fijación de sesión. */
         $request->session()->regenerate();
-
-        /**
-         * `regenerate()` conserva los datos de la sesión anterior. Si ese navegador traía una sesión maestra o
-         * de demo, esos marcadores se colarían en la de soporte: el maestro la volvería `es_acceso_maestro`
-         * (más privilegio del que se quiere dar) y el de demo la volvería `es_sesion_demo`. Se borran
-         * explícitamente; lo que queda marcado es solo «soporte».
-         */
-        $request->session()->forget('master_login_bypass_user_last_activity');
-        $request->session()->forget('demo_ingreso_token_id');
 
         /** Marcador que lee `AuthController::es_sesion_de_soporte()`: exime del candado y blinda el logout. */
         $request->session()->put('acceso_soporte_token_id', $acceso['token_id']);

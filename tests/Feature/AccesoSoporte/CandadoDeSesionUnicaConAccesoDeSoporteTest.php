@@ -226,4 +226,26 @@ class CandadoDeSesionUnicaConAccesoDeSoporteTest extends AccesoSoporteTestCase
         $this->assertNotNull($this->dueno->fresh()->session_id, 'El dueño real tomó el candado normalmente.');
         $this->assertNotNull($this->dueno->fresh()->last_activity);
     }
+
+    /**
+     * 🔴 `POST session-lock/forzar-pestana` libera el candado del dueño, lo toma para quien llama y avisa a su
+     * pestaña que se cierre. Una sesión de soporte NUNCA lo reclama: la SPA no se lo ofrece (no recibe el 403),
+     * pero la ruta existe y alcanza con llamarla a mano. Se contesta `login: false` y no se toca nada.
+     *
+     * @test
+     */
+    public function forzar_pestana_desde_una_sesion_de_soporte_no_toma_el_candado_del_duenio()
+    {
+        list(, $fila) = $this->emitir_token();
+
+        $respuesta = $this->actingAs($this->dueno, 'web')
+            ->withSession(['acceso_soporte_token_id' => $fila->id])
+            ->postJson('/api/session-lock/forzar-pestana');
+
+        $respuesta->assertStatus(200);
+        $this->assertFalse($respuesta->json('login'));
+        $this->assertNull($respuesta->json('user'));
+
+        $this->assert_el_candado_del_duenio_sigue_intacto('forzar-pestana desde soporte');
+    }
 }

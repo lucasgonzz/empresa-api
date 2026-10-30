@@ -442,4 +442,57 @@ class CanjeDelAccesoDeSoporteTest extends AccesoSoporteTestCase
         $this->assertFalse((bool) $respuesta->json('user.es_acceso_maestro'));
         $this->assertFalse((bool) $respuesta->json('user.es_sesion_demo'));
     }
+
+    /**
+     * 🔴 Un navegador que YA traía una sesión (la extensión de Chrome de Lucas, un storageState viejo) no arrastra
+     * su identidad al canje: `UserHelper::user()` lee `auth_user` / `owner` de la sesión ANTES que `Auth::user()`,
+     * así que si sobrevivieran, el SPA seguiría mostrando al usuario anterior aunque `Auth::login` ya sea el dueño.
+     * El canje vacía la sesión entera antes de loguear.
+     *
+     * @test
+     */
+    public function el_canje_descarta_la_identidad_cacheada_de_la_sesion_anterior()
+    {
+        list($token, ) = $this->emitir_token();
+
+        $respuesta = $this->withSession([
+            'auth_user'                  => (object) ['id' => 987654, 'name' => 'Otro usuario'],
+            'owner'                      => (object) ['id' => 987654, 'name' => 'Otro dueño'],
+            'mantenimiento_habilitado_hasta' => Carbon::now()->addHour()->timestamp,
+        ])->postJson(self::URL_CANJE, ['t' => $token]);
+
+        $respuesta->assertStatus(200);
+        $respuesta->assertSessionMissing('auth_user');
+        $respuesta->assertSessionMissing('owner');
+        $respuesta->assertSessionMissing('mantenimiento_habilitado_hasta');
+        $respuesta->assertSessionHas('acceso_soporte_token_id');
+
+        // Y el pedido siguiente es el DUEÑO, no el usuario que había en la sesión.
+        $this->assertSame(
+            $this->dueno->id,
+            $this->getJson('/api/user')->assertStatus(200)->json('user.id')
+        );
+    }
+
+    /**
+     * Base compartida entre frentes: un token emitido para el dueño de OTRO frente (otro USER_ID) no se canjea
+     * acá, y el intento no lo consume (el frente correcto todavía puede usarlo).
+     *
+     * @test
+     */
+    public function un_token_de_otro_frente_de_la_misma_base_es_401_y_no_se_consume()
+    {
+        list($token, $fila) = $this->emitir_token();
+
+        // Este frente es el del dueño 123456; el token se emitió para el 500.
+        config(['app.USER_ID' => 123456]);
+
+        $this->assert_es_el_401_generico($this->postJson(self::URL_CANJE, ['t' => $token]), 'token de otro frente');
+        $this->assertNull($fila->fresh()->usado_en, 'No se consume en el frente equivocado.');
+        $this->assertGuest('web');
+
+        // En el frente correcto sí entra.
+        config(['app.USER_ID' => 500]);
+        $this->postJson(self::URL_CANJE, ['t' => $token])->assertStatus(200);
+    }
 }

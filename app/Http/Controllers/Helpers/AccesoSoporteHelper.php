@@ -193,6 +193,16 @@ class AccesoSoporteHelper
             return null;
         }
 
+        // Base compartida entre frentes: el token solo vale en el frente (USER_ID) del dueño para el que se emitió.
+        // Los frentes de una misma base comparten la tabla, así que sin esto un token emitido para el dueño del
+        // frente A se podría canjear por la API del frente B. No escalaba privilegios (es el dueño correcto), pero
+        // abría una sesión de ese dueño en un dominio que no es el suyo. Va ANTES del consumo para no quemar el token.
+        $user_id_del_frente = config('app.USER_ID');
+
+        if (!empty($user_id_del_frente) && (int) $user_id_del_frente !== (int) $user->id) {
+            return null;
+        }
+
         // El consumo atómico: una sola sentencia que solo cambia la fila si TODAVÍA está libre y vigente.
         $filas_afectadas = AccesoSoporteToken::where('id', $fila->id)
             ->whereNull('usado_en')
