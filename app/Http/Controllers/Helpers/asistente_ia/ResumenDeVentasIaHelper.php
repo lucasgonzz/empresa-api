@@ -1023,12 +1023,19 @@ class ResumenDeVentasIaHelper
      * BRUTO con su descuento de renglón, sin los descuentos y recargos de la venta entera. Ahora cada
      * renglón se multiplica por el factor de su venta:
      *
-     *     factor = sales.total / (renglones de artículo + combos + servicios de esa venta)
+     *     factor = sales.total / (renglones de artículo + combos + servicios + promociones de esa venta)
      *
      * (con los mismos importes de renglón de siempre: unidades × precio × (1 − descuento %)), así que
-     * la suma de los grupos más `sin_desglosar_por_articulo` (lo que en cada venta fue a combos,
-     * servicios u otros conceptos sin artículo) da exactamente `total_del_periodo`, que es el total
-     * de Rendimiento. Una venta sin renglones (base 0) va entera a sin_desglosar.
+     * la suma de los grupos más `sin_desglosar_por_articulo` da exactamente `total_del_periodo`, que es
+     * el total de Rendimiento. `sin_desglosar_por_articulo` es lo que en cada venta fue a combos,
+     * servicios y promociones de vinoteca (los renglones que no son de un artículo), más las ventas sin
+     * ningún renglón (base 0), que van enteras ahí.
+     *
+     * ⚠️ Lo que está en `sales.total` y NO tiene renglón propio —los descuentos y recargos de la venta
+     * entera, y cualquier otro importe que se le sume a la venta (un envío, un impuesto)— no va a
+     * sin_desglosar: entra en el factor y se reparte entre TODOS los renglones de esa venta, en
+     * proporción. Es lo que dice la nota (revisión independiente, 30/10/2026: la primera versión decía
+     * que "otros conceptos" iban a sin_desglosar, y no era así).
      *
      * El costo es el NETO de cada renglón (CostoDeVentaHelper::expresion_costo_neto_de_linea(): unidades
      * × costo, sin el IVA de compra en las cuentas que lo traen adentro) y no se prorratea: lo que costó
@@ -1078,6 +1085,8 @@ class ResumenDeVentasIaHelper
                 . 'COALESCE((SELECT SUM(asb.amount * COALESCE(asb.price, 0) * (1 - COALESCE(asb.discount, 0) / 100)) FROM article_sale asb WHERE asb.sale_id = venta_base.id), 0)'
                 . ' + COALESCE((SELECT SUM(csb.amount * COALESCE(csb.price, 0)) FROM combo_sale csb WHERE csb.sale_id = venta_base.id), 0)'
                 . ' + COALESCE((SELECT SUM(ssb.amount * COALESCE(ssb.price, 0) * (1 - COALESCE(ssb.discount, 0) / 100)) FROM sale_service ssb WHERE ssb.sale_id = venta_base.id), 0)'
+                // Las promociones de vinoteca también son renglones de la venta (revisión, 30/10/2026).
+                . ' + COALESCE((SELECT SUM(psb.amount * COALESCE(psb.price, 0)) FROM promocion_vinoteca_sale psb WHERE psb.sale_id = venta_base.id), 0)'
                 . ') as base'
             );
 
@@ -1177,7 +1186,7 @@ class ResumenDeVentasIaHelper
             $resultado['vendido_sin_costo_del_periodo'] = round($suma_de_los_grupos - $total_con_costo_del_periodo, 2);
         }
 
-        $resultado['nota'] = 'cantidad son unidades. total es lo vendido de cada grupo con los descuentos y recargos de cada venta ya repartidos (prorrateados): la suma de los grupos mas sin_desglosar_por_articulo (combos, servicios u otros conceptos sin articulo) da total_del_periodo, que es el total de Rendimiento. '
+        $resultado['nota'] = 'cantidad son unidades. total es lo vendido de cada grupo con los descuentos y recargos de cada venta ya repartidos (prorrateados), igual que cualquier otro importe de la venta sin renglon propio (un envio, un impuesto): la suma de los grupos mas sin_desglosar_por_articulo (lo que fue a combos, servicios y promociones, y las ventas sin renglones) da total_del_periodo, que es el total de Rendimiento. '
             . ($detallado
                 ? 'costo es el costo de la mercaderia (unidades por costo, neto) y ganancia = lo vendido en los renglones CON costo - costo; ganancia_del_periodo es la de todos los grupos, no solo los de la lista. Un grupo con sin_costo true tiene renglones sin costo cargado: su ganancia es solo la de la parte con costo, y si es null no se sabe (no la presentes como la de mas margen, deci que le falta el costo). Para "sobre cuanto vendido" usa total_del_periodo.'
                 : 'Para la ganancia y el costo de cada grupo volve a llamar con orden (ganancia para "cual me dejo mas margen").');

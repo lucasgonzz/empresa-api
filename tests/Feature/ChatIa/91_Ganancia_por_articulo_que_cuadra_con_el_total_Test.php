@@ -272,6 +272,44 @@ class Ganancia_por_articulo_que_cuadra_con_el_total_Test extends TestCase
     }
 
     /**
+     * Revisión independiente (30/10/2026): una promoción de vinoteca es un renglón de la venta y va a
+     * sin_desglosar_por_articulo (antes no estaba en la base y su plata se le cargaba al artículo); y
+     * lo que la venta suma sin renglón propio (un envío) se reparte entre los renglones, como dice la
+     * nota.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function las_promociones_van_a_sin_desglosar_y_lo_que_no_tiene_renglon_se_reparte()
+    {
+        $dia = Carbon::parse($this->fecha)->copy()->subDay()->startOfDay();
+        $fecha = $dia->format('Y-m-d');
+
+        $vino = Article::create(['name' => 'VINO MALBEC E2', 'user_id' => $this->comercio->id, 'aplicar_iva' => 0]);
+        $copa = Article::create(['name' => 'COPA CRISTAL E2', 'user_id' => $this->comercio->id, 'aplicar_iva' => 0]);
+
+        // El vino (1.000) más una promoción (500) por 1.500.
+        $con_promo = $this->venta($dia->copy()->addHours(9), 1500, [$vino->id => [1, 1000, 600]]);
+        DB::table('promocion_vinoteca_sale')->insert(['promocion_vinoteca_id' => 999002, 'sale_id' => $con_promo->id, 'price' => 500, 'amount' => 1]);
+
+        // La copa (1.000) con un envío que no es renglón: la venta es de 1.100.
+        $this->venta($dia->copy()->addHours(10), 1100, [$copa->id => [1, 1000, 400]]);
+
+        $resumen = ResumenDeVentasIaHelper::resumen($this->comercio->id, $fecha, $fecha, 'articulo');
+
+        $this->assertArrayNotHasKey('error', $resumen, json_encode($resumen));
+        $this->assertEquals(2600.0, $resumen['total_del_periodo']);
+
+        $totales = array_column($resumen['grupos'], 'total', 'etiqueta');
+
+        $this->assertEqualsWithDelta(1000.0, $totales[$vino->name], 0.01, 'La promoción no se le carga al vino.');
+        $this->assertEqualsWithDelta(1100.0, $totales[$copa->name], 0.01, 'El envío, que no tiene renglón, se reparte entre los renglones de su venta.');
+        $this->assertEqualsWithDelta(500.0, $resumen['sin_desglosar_por_articulo'], 0.01, 'La promoción.');
+        $this->assertStringContainsString('promociones', $resumen['nota']);
+        $this->assertStringContainsString('un envio', $resumen['nota']);
+    }
+
+    /**
      * La herramienta declara y pasa orden y direccion.
      *
      * @group chat-ia
