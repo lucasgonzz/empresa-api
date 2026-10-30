@@ -4275,6 +4275,48 @@ CONFIRMACION;
                     );
                 },
             ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (E2 punto 5, 29/10/2026), al final por la regla del
+             * prefijo del caché. Pablo (Ferre Total, CONV 11) pidió «el top ten con menos rotación» y
+             * el agente lo armó a mano con resumir_datos sobre los renglones (que solo ven lo que SÍ se
+             * vendió), nombró seis diciendo cuatro y reescribió los nombres. Es el mismo cálculo del
+             * informe de Stock del Mostrador (RecolectorStock), de lectura y en todos los canales.
+             */
+            [
+                'name' => 'consultar_articulos_sin_rotacion',
+                'description' => 'Los artículos SIN ROTACIÓN: activos, con stock y sin ninguna venta en los últimos N días (30, 60, 90 —el default— o 180), con su article_id, stock, días sin venta, la fecha de la última venta (o nunca_se_vendio), la última compra a un proveedor, cuántas compras tiene y su valor a costo; y en total cuántos son (sin_rotacion_encontrados) y el valor inmovilizado de todos. Es la herramienta de "los que menos rotan", "lo que no se vende", "el top ten con menos rotación" y "mercadería parada": no la armes con resumir_datos ni con los más vendidos, que solo ven lo que SÍ se vendió. solo_comprados deja solo los que alguna vez se compraron ("¿pero son productos que compré?"). Con incluir_poco_vendidos, si los que no se vendieron nada no llegan al límite, se completa con los que MENOS se vendieron (poco_vendidos, aparte: decí que sí se vendieron, poco). Para la ficha, el stock por sucursal o las compras de uno de estos, pasá su article_id (articulo_id) a esa herramienta: no reescribas el nombre.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'dias' => [
+                            'type'        => 'integer',
+                            'description' => 'Ventana sin ventas, en días. Si no la mandás se usan 90.',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::DIAS_VALIDOS,
+                        ],
+                        'limite' => [
+                            'type'        => 'integer',
+                            'description' => 'Cuántos artículos traer ("top ten" = 10, el default). Máximo ' . \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::LIMITE_MAXIMO . '.',
+                        ],
+                        'orden' => [
+                            'type'        => 'string',
+                            'description' => 'valor (default: mayor valor a costo inmovilizado primero), dias (los que llevan más días sin venderse primero) o stock (más stock primero).',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::ORDENES,
+                        ],
+                        'solo_comprados' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para dejar solo los que alguna vez se le compraron a un proveedor.',
+                        ],
+                        'incluir_poco_vendidos' => [
+                            'type'        => 'boolean',
+                            'description' => 'true para completar el límite con los que menos unidades vendieron en la ventana, si los que no vendieron nada no alcanzan.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::consultar((int) $owner_id, $input);
+                },
+            ],
         ];
     }
 
