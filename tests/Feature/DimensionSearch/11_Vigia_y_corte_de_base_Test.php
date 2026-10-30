@@ -46,6 +46,7 @@ class Vigia_y_corte_de_base_Test extends DimensionSearchTestCase
         // Del contador que pudo dejar otra corrida con el mismo id en la caché.
         Cache::forget('medidas-masivas:reanudaciones-automaticas:'.$run->id);
         Cache::forget('medidas-masivas:tope-avisado:'.$run->id);
+        Cache::forget('medidas-masivas:rechazo-avisado:'.$run->id);
 
         return $run->fresh();
     }
@@ -290,10 +291,11 @@ class Vigia_y_corte_de_base_Test extends DimensionSearchTestCase
     }
 
     /**
-     * @group dimension-search
-     * @test
+     * El evento del vigía en el schedule de la aplicación.
+     *
+     * @return \Illuminate\Console\Scheduling\Event|null
      */
-    public function el_comando_esta_agendado_cada_cinco_minutos_sin_superponerse_y_solo_corre_si_hay_una_trabada()
+    protected function evento_del_vigia()
     {
         // Se fuerza el armado del schedule (los comandos del kernel de consola).
         Artisan::call('list');
@@ -306,6 +308,17 @@ class Vigia_y_corte_de_base_Test extends DimensionSearchTestCase
             }
         }
 
+        return $evento;
+    }
+
+    /**
+     * @group dimension-search
+     * @test
+     */
+    public function el_comando_esta_agendado_cada_cinco_minutos_sin_superponerse_y_solo_corre_si_hay_una_trabada()
+    {
+        $evento = $this->evento_del_vigia();
+
         $this->assertNotNull($evento, 'El vigía está en el schedule.');
         $this->assertSame('*/5 * * * *', $evento->expression);
         $this->assertTrue($evento->withoutOverlapping);
@@ -314,6 +327,96 @@ class Vigia_y_corte_de_base_Test extends DimensionSearchTestCase
         $this->corrida_en(DimensionSearchRun::STATUS_EN_PROCESO, 20);
 
         $this->assertTrue($evento->filtersPass($this->app));
+    }
+
+    /**
+     * La regla del schedule: cero procesos de artisan cuando no hay trabajo.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_gate_del_schedule_no_arranca_el_comando_si_no_hay_corridas_trabadas()
+    {
+        $evento = $this->evento_del_vigia();
+
+        // Dentro de la transacción del test: ninguna corrida en proceso de lo que pudiera haber en la base.
+        DB::table('dimension_search_runs')
+            ->where('status', DimensionSearchRun::STATUS_EN_PROCESO)
+            ->update(['status' => DimensionSearchRun::STATUS_DETENIDA]);
+
+        Cache::forget('schedule_tabla_existe_dimension_search_runs');
+
+        $this->assertFalse($evento->filtersPass($this->app), 'Sin ninguna corrida en proceso no se arranca nada.');
+
+        // En proceso, pero avanzando hace poco: tampoco.
+        $reciente = $this->corrida_en(DimensionSearchRun::STATUS_EN_PROCESO, 5);
+
+        $this->assertFalse($evento->filtersPass($this->app), 'Una corrida con avance reciente no dispara el comando.');
+
+        // Una trabada que no está en proceso (detenida): tampoco.
+        $this->corrida_en(DimensionSearchRun::STATUS_DETENIDA, 180);
+
+        $this->assertFalse($evento->filtersPass($this->app));
+
+        // En cuanto una se traba, sí.
+        $this->fijar_senal($reciente, DimensionSearchRun::STATUS_EN_PROCESO, 20);
+
+        $this->assertTrue($evento->filtersPass($this->app));
+
+        // Y una en proceso que nunca dio señal, pero arrancó hace horas, también está trabada.
+        $this->fijar_senal($reciente, DimensionSearchRun::STATUS_EN_PROCESO, null);
+
+        $this->assertTrue($evento->filtersPass($this->app));
+    }
+
+    /**
+     * Un cliente con una versión vieja no tiene la tabla: el gate lo sabe (con el resultado cacheado, ver
+     * Kernel::tabla_existe_para_el_schedule) y no arranca nada aunque haya "trabadas". Se simula el "no existe"
+     * con ese resultado cacheado para no tocar el esquema de la base de pruebas.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_gate_del_schedule_no_arranca_el_comando_si_la_tabla_no_existe()
+    {
+        $evento = $this->evento_del_vigia();
+
+        $this->corrida_en(DimensionSearchRun::STATUS_EN_PROCESO, 20);
+
+        Cache::put('schedule_tabla_existe_dimension_search_runs', false, 300);
+
+        $this->assertFalse($evento->filtersPass($this->app));
+
+        Cache::forget('schedule_tabla_existe_dimension_search_runs');
+    }
+
+    /**
+     * El rechazo de reanudar() (acá, hay otra corrida de catálogo en curso) se avisa en el log una vez por hora.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_rechazo_de_reanudar_se_avisa_en_el_log_una_sola_vez_por_hora()
+    {
+        $trabada = $this->corrida_en(DimensionSearchRun::STATUS_EN_PROCESO, 20);
+        $otra    = $this->corrida_en(DimensionSearchRun::STATUS_EN_PROCESO, 1);
+
+        Queue::fake();
+        Log::spy();
+
+        // Tres pasadas del scheduler (15 minutos): reanudar() la rechaza las tres veces.
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertSame(0, Artisan::call('medidas:reanudar-trabadas'));
+        }
+
+        $this->assertSame(0, $this->tramos_despachados_para($trabada), 'No se reanudó: hay otra de catálogo en curso.');
+        $this->assertSame(DimensionSearchRun::STATUS_EN_PROCESO, $otra->fresh()->status);
+        $this->assertNull(Cache::get('medidas-masivas:reanudaciones-automaticas:'.$trabada->id), 'Un rechazo no cuenta para el tope.');
+
+        Log::shouldHaveReceived('info')->withArgs(function ($mensaje, $contexto = []) use ($trabada) {
+            return $mensaje === '[MedidasMasivas] El vigía no pudo reanudar la corrida.'
+                && isset($contexto['run_id']) && (int) $contexto['run_id'] === (int) $trabada->id;
+        })->once();
     }
 
     /* ------------------------------------------------------------------------------------------
@@ -464,5 +567,282 @@ class Vigia_y_corte_de_base_Test extends DimensionSearchTestCase
         $item = DimensionSearchItem::where('run_id', $run->id)->first();
         $this->assertSame(DimensionSearchItem::STATUS_ERROR_INTERNO, $item->status, 'Pasadas las salidas gratis, cuenta como una falla común.');
         $this->assertSame(DimensionSearchRun::STATUS_TERMINADA, $run->fresh()->status);
+    }
+
+    /**
+     * El mensaje de una QueryException trae el SQL con sus valores: lo que haya guardado adentro (un timeout de
+     * Serper, por ejemplo) no puede hacerla pasar por un corte de la conexión.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_texto_de_los_valores_de_la_consulta_no_hace_pasar_un_error_por_corte_de_base()
+    {
+        $job = new TramoConMotorQueFalla(1);
+
+        $metodo = new \ReflectionMethod($job, 'es_corte_de_base');
+        $metodo->setAccessible(true);
+
+        $error = new QueryException(
+            'update `dimension_search_items` set `diagnostico` = ? where `id` = ?',
+            ['cURL error 28: Connection timed out after 15001 ms | Lost connection | server has gone away', 10],
+            new \PDOException('SQLSTATE[23000]: Integrity constraint violation: 1048 Column cannot be null', 23000)
+        );
+
+        $this->assertStringContainsString('Connection timed out', $error->getMessage(), 'El mensaje completo sí trae el texto.');
+        $this->assertFalse($metodo->invoke($job, $error), 'Pero el mensaje del driver no habla de la conexión.');
+
+        // De punta a punta: el motor revienta así, y el artículo cuenta sus dos intentos como siempre.
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+
+        Queue::fake();
+
+        $tramo                = new TramoConMotorQueFalla($run->id);
+        $tramo->falla_siempre = $error;
+        $tramo->handle();
+
+        $this->assertSame(0, $tramo->esperas);
+        $this->assertSame([1, 2], $tramo->intentos_vistos);
+        $this->assertSame(DimensionSearchItem::STATUS_ERROR_INTERNO, DimensionSearchItem::where('run_id', $run->id)->first()->status);
+    }
+
+    /**
+     * Otros síntomas de conexión perdida (los de DetectsLostConnections de Laravel y el reinicio de MySQL).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function se_reconocen_mas_sintomas_de_conexion_perdida_y_el_codigo_1053()
+    {
+        $job = new TramoConMotorQueFalla(1);
+
+        $metodo = new \ReflectionMethod($job, 'es_corte_de_base');
+        $metodo->setAccessible(true);
+
+        // Por el código del driver.
+        $this->assertTrue($metodo->invoke($job, $this->corte_de_base(1053, 'SQLSTATE[08S01]: Communication link failure: 1053 Server shutdown in progress')));
+
+        // Por el texto, sin código.
+        foreach ([
+            'SQLSTATE[HY000]: General error: server closed the connection unexpectedly',
+            'SQLSTATE[08006] [7] no connection to the server',
+            'SQLSTATE[HY000]: General error: Error while sending QUERY packet. PID=1234',
+            'SQLSTATE[HY000] [2002] Connection reset by peer',
+            'SQLSTATE[HY000]: General error: Server shutdown in progress',
+        ] as $mensaje) {
+            $this->assertTrue($metodo->invoke($job, $this->corte_de_base(0, $mensaje)), $mensaje);
+        }
+
+        // Y el mismo texto metido en los valores de la consulta, no.
+        $en_los_valores = new QueryException('insert into t (a) values (?)', ['Error while sending QUERY packet'], new \PDOException('SQLSTATE[22001]: Data too long', 22001));
+        $this->assertFalse($metodo->invoke($job, $en_los_valores));
+    }
+
+    /**
+     * @group dimension-search
+     * @test
+     */
+    public function las_esperas_de_un_tramo_tienen_un_presupuesto_acumulado_y_agotado_se_relanza()
+    {
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+
+        Queue::fake();
+
+        // Tres cortes seguidos; cada espera "tarda" lo que se le permite, hasta 150 s, y la base siempre vuelve.
+        $job                      = new TramoConMotorQueFalla($run->id);
+        $job->fallas              = [$this->corte_de_base(), $this->corte_de_base(), $this->corte_de_base()];
+        $job->segundos_por_espera = 150;
+
+        try {
+            $job->handle();
+
+            $this->fail('Con el presupuesto agotado el tramo tenía que morir.');
+        } catch (QueryException $e) {
+            $this->assertStringContainsString('Connection refused', $e->getMessage());
+        }
+
+        // La 1ª espera pudo ser de 150 s; a la 2ª le quedaban 50 (200 - 150); a la 3ª, nada: no esperó y relanzó.
+        $this->assertSame(2, $job->esperas);
+        $this->assertSame([150, 50], $job->maximos_pedidos);
+
+        $item = DimensionSearchItem::where('run_id', $run->id)->first();
+        $this->assertNotSame(DimensionSearchItem::STATUS_ERROR_INTERNO, $item->status);
+
+        // Un tramo nuevo (otra ficha, otro handle()) arranca con el presupuesto entero.
+        $siguiente                      = new TramoConMotorQueFalla($run->id);
+        $siguiente->fallas              = [$this->corte_de_base()];
+        $siguiente->segundos_por_espera = 150;
+
+        DB::table('dimension_search_items')->where('id', $item->id)->update(['status' => DimensionSearchItem::STATUS_PENDIENTE, 'intentos' => 0, 'tramo' => null]);
+
+        $siguiente->handle();
+
+        $this->assertSame([150], $siguiente->maximos_pedidos);
+        $this->assertSame(DimensionSearchRun::STATUS_TERMINADA, $run->fresh()->status);
+    }
+
+    /**
+     * Cada espera se acota además a lo que queda del timeout del tramo menos 30 s, contando lo ya transcurrido.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function cada_espera_se_acota_a_lo_que_queda_del_timeout_menos_un_margen()
+    {
+        $job = new TramoConMotorQueFalla(1);
+        $job->iniciar_presupuesto_publico();
+
+        $this->assertSame(150, $job->permitidos_publico(), 'Recién arrancado: el tope de una espera.');
+
+        // 340 s transcurridos: 480 - 30 - 340 = 110.
+        $job->avanzar_reloj(340);
+        $this->assertSame(110, $job->permitidos_publico());
+
+        // 440 s: quedan 10 s antes del margen.
+        $job->avanzar_reloj(100);
+        $this->assertSame(10, $job->permitidos_publico());
+
+        // 460 s: ya no queda nada.
+        $job->avanzar_reloj(20);
+        $this->assertLessThanOrEqual(0, $job->permitidos_publico());
+    }
+
+    /**
+     * @group dimension-search
+     * @test
+     */
+    public function failed_por_un_corte_de_base_devuelve_el_articulo_sin_gastar_el_intento_y_deja_su_linea_de_log()
+    {
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+        $item     = DimensionSearchItem::where('run_id', $run->id)->first();
+
+        Queue::fake();
+        Log::spy();
+
+        $job = new TramoConMotorQueFalla($run->id);
+
+        // El tramo murió con el artículo en su segundo intento: sin el arreglo, quedaba error_interno.
+        $item->update(['status' => DimensionSearchItem::STATUS_PROCESANDO, 'intentos' => 2, 'tramo' => $job->ficha()]);
+
+        $job->failed($this->corte_de_base());
+
+        $item->refresh();
+        $this->assertSame(DimensionSearchItem::STATUS_PENDIENTE, $item->status);
+        $this->assertSame(1, (int) $item->intentos, 'Se le devolvió el intento del tramo que murió.');
+        $this->assertNull($item->tramo);
+
+        $this->assertSame(1, (int) $run->fresh()->fallos_consecutivos, 'El fallo seguido se suma como siempre.');
+        $this->assertTrue($run->fresh()->esta_activa(), 'La corrida sigue activa.');
+        Queue::assertPushed(ProcessDimensionSearchRunJob::class);
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje) {
+            return strpos($mensaje, 'lo reanuda el vigía') !== false;
+        })->once();
+    }
+
+    /**
+     * Si la conexión se pierde DESPUÉS de que la base aplicó el UPDATE del reclamo, el artículo ya es de este tramo.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_corte_justo_despues_de_aplicado_el_reclamo_no_lo_reclama_dos_veces()
+    {
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+
+        Queue::fake();
+
+        $job                    = new TramoConMotorQueFalla($run->id);
+        $job->corte_al_reclamar = 'despues';
+        $job->handle();
+
+        $this->assertSame(1, $job->esperas);
+        $this->assertSame([1], $job->intentos_vistos, 'Un solo reclamo: el intento no se duplicó.');
+
+        $item = DimensionSearchItem::where('run_id', $run->id)->first();
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame(1, (int) $item->intentos);
+        $this->assertSame(DimensionSearchRun::STATUS_TERMINADA, $run->fresh()->status);
+    }
+
+    /**
+     * Y si el corte fue ANTES de aplicarse, al volver la base el reclamo se repite.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_corte_justo_antes_del_reclamo_lo_repite_al_volver_la_base()
+    {
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+
+        Queue::fake();
+
+        $job                    = new TramoConMotorQueFalla($run->id);
+        $job->corte_al_reclamar = 'antes';
+        $job->handle();
+
+        $this->assertSame(1, $job->esperas);
+        $this->assertSame([1], $job->intentos_vistos);
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, DimensionSearchItem::where('run_id', $run->id)->first()->status);
+    }
+
+    /**
+     * Un error común del motor y, mientras se registra, la base se corta: se espera, se repite el registro y el
+     * artículo sigue su camino normal (primer intento gastado, vuelve a la fila y el segundo anda).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_corte_mientras_se_registra_la_falla_de_un_articulo_se_espera_y_se_repite_el_registro()
+    {
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+
+        Queue::fake();
+
+        $job                     = new TramoConMotorQueFalla($run->id);
+        $job->fallas             = [new \RuntimeException('falla común del motor')];
+        $job->fallas_al_devolver = [$this->corte_de_base()];
+        $job->handle();
+
+        $this->assertSame(1, $job->esperas, 'Esperó por el corte de devolver_o_descartar().');
+        $this->assertSame([1, 2], $job->intentos_vistos, 'La falla común sí gastó el primer intento.');
+
+        $item = DimensionSearchItem::where('run_id', $run->id)->first();
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame(DimensionSearchRun::STATUS_TERMINADA, $run->fresh()->status);
+    }
+
+    /**
+     * Si lo que falla al registrar la falla NO es la base, no se espera nada: se propaga (la recoge failed()).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_error_que_no_es_de_la_base_al_registrar_la_falla_se_propaga_sin_esperar()
+    {
+        $articulo = $this->articulo_asignable();
+        $run      = $this->corrida([$articulo]);
+
+        Queue::fake();
+
+        $job                     = new TramoConMotorQueFalla($run->id);
+        $job->fallas             = [new \RuntimeException('falla común del motor')];
+        $job->fallas_al_devolver = [new \LogicException('otra cosa')];
+
+        try {
+            $job->handle();
+
+            $this->fail('Tenía que propagarse.');
+        } catch (\LogicException $e) {
+            $this->assertSame('otra cosa', $e->getMessage());
+        }
+
+        $this->assertSame(0, $job->esperas);
     }
 }
