@@ -326,7 +326,8 @@ class AiConversationController extends Controller
          * Los adjuntos se validan ANTES de crear el mensaje: un 422 con el mensaje ya creado dejaría en la
          * conversación algo del dueño que nadie va a contestar (mismo criterio que WhatsApp).
          */
-        $motivo = AsistenteImagenHelper::motivo_de_rechazo($imagenes);
+        /* Con el tope de la app (3), no el de WhatsApp: ver AsistenteImagenHelper::MAX_IMAGENES_DE_LA_APP. */
+        $motivo = AsistenteImagenHelper::motivo_de_rechazo($imagenes, AsistenteImagenHelper::MAX_IMAGENES_DE_LA_APP);
 
         if (is_null($motivo)) {
             $motivo = ArchivosAdjuntosIaHelper::motivo_de_rechazo($archivos);
