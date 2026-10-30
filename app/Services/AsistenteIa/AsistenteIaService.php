@@ -36,6 +36,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeVentasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TextoFinalIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeFotosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentasSinCobrarIaHelper;
 use App\Models\AiConversation;
@@ -1032,15 +1033,24 @@ class AsistenteIaService
 
             $response_body = $response->json();
 
-            // Cada iteración trae su propio usage: se registra acá y no al final del loop.
+            /*
+             * Cada iteración trae su propio usage: se registra acá y no al final del loop.
+             *
+             * Con `referencia_id` = el mensaje que se está contestando (ronda de arreglos de la revisión
+             * independiente de la misión agente-memoria-y-sin-techo, R3): es la unidad del tope diario de
+             * interacciones (TopeDeTokensHelper::interacciones_del_dia() cuenta los mensajes DISTINTOS de
+             * estas filas). Así una respuesta de muchas vueltas es una interacción, y borrar la
+             * conversación —que borra los mensajes en duro— no baja el contador: estas filas quedan.
+             */
             AiTokenUsageHelper::registrar([
                 'user_id'            => $conversation->user_id,
                 'auth_user_id'       => $conversation->auth_user_id,
-                'proceso'            => 'chat_mensaje',
+                'proceso'            => TopeDeTokensHelper::PROCESO_CHAT,
                 'proveedor'          => $proveedor,
                 'modelo'             => $model,
                 'body'               => is_array($response_body) ? $response_body : [],
                 'ai_conversation_id' => $conversation->id,
+                'referencia_id'      => $assistant_message->id,
             ]);
 
             $stop_reason    = (string) ($response_body['stop_reason'] ?? '');

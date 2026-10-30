@@ -32,6 +32,13 @@ use Tests\TestCase;
  * el corte por interacciones espera MENSAJE_LIMITE_DIARIO. Caso real: Pablo (Ferre Total) leyó «de este
  * mes» por el tope de HOY, con 106 filas `chat_mensaje` (una por vuelta del loop, no por pedido).
  *
+ * 🔴 Ronda de arreglos de la revisión independiente (R3, 30/10/2026), CONTRATO CAMBIADO A PROPÓSITO: la
+ * respuesta se cuenta por sus filas `chat_mensaje` con `referencia_id` (el mensaje), no por el mensaje
+ * en ai_messages, para que borrar la conversación no devuelva interacciones. sembrar_respuestas() siembra
+ * también esas filas; una respuesta pendiente cuenta desde su primera llamada a la IA, no desde que se
+ * crea (el_corte_se_mide_antes_de_crear_la_respuesta); y una fila sin mensaje (las de antes del cambio)
+ * cuenta una.
+ *
  * 🔴 Anthropic con clave nula o Http::fake: los tests jamás salen a la red.
  */
 class Config_y_tope_Test extends TestCase
@@ -152,8 +159,8 @@ class Config_y_tope_Test extends TestCase
         $this->comercio->plan_ia_tope_interacciones_diarias = 20;
         $this->comercio->save();
 
-        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 500, 300, 3);
-        $this->sembrar_respuestas(3);
+        // Tres respuestas de una vuelta cada una, de 500 + 300 tokens (R3: la fila lleva su mensaje).
+        $this->sembrar_respuestas(3, null, 1, 500, 300);
 
         $r = $this->actingAs($this->comercio, 'sanctum')->getJson('api/mi-consumo-ia');
 
@@ -284,6 +291,10 @@ class Config_y_tope_Test extends TestCase
      * el mensaje nuevo se contesta (antes de esta misión la respuesta pendiente recién creada ya contaba
      * y el corte llegaba una respuesta antes).
      *
+     * Contrato cambiado a propósito en la ronda de arreglos (R3, 30/10/2026): la respuesta que se está
+     * generando cuenta desde su PRIMERA llamada a la IA (su primera fila `chat_mensaje` con su mensaje), no
+     * desde que se crea. Antes la pendiente recién creada ya sumaba.
+     *
      * @test
      */
     public function el_corte_se_mide_antes_de_crear_la_respuesta()
@@ -310,7 +321,11 @@ class Config_y_tope_Test extends TestCase
         $this->assertSame('pendiente', $r->json('assistant_message.estado'));
         Queue::assertPushed(ResponderMensajeChatIaJob::class);
 
-        // La que se está generando ya cuenta: la próxima corta.
+        // La que se está generando cuenta con su primera llamada a la IA: ahí la próxima corta.
+        $this->assertSame(1, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones']);
+
+        $this->sembrar_vueltas((int) $r->json('assistant_message.id'), 1);
+
         $this->assertSame(2, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones']);
     }
 
@@ -325,8 +340,8 @@ class Config_y_tope_Test extends TestCase
         $this->comercio->plan_ia_tope_interacciones_diarias = 100;
         $this->comercio->save();
 
-        $this->sembrar_consumo($this->comercio->id, 'chat_mensaje', 10, 10, 8);
-        $this->sembrar_respuestas(1);
+        // Una respuesta con 8 vueltas: 8 filas con el MISMO mensaje (R3).
+        $this->sembrar_respuestas(1, null, 8, 10, 10);
 
         $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
 
@@ -335,10 +350,92 @@ class Config_y_tope_Test extends TestCase
     }
 
     /**
+     * 🔴 R3 de la ronda de arreglos: borrar la conversación (AiConversationController::destroy borra los
+     * mensajes en duro) NO baja el contador del día: las filas de consumo quedan.
+     *
+     * @test
+     */
+    public function borrar_la_conversacion_no_baja_el_contador()
+    {
+        $this->dar_extension();
+
+        $this->comercio->plan_ia_tope_interacciones_diarias = 3;
+        $this->comercio->save();
+
+        $conversation = $this->sembrar_respuestas(3, null, 2);
+
+        $this->assertTrue(TopeDeTokensHelper::estado($this->comercio->fresh())['supero_interacciones']);
+
+        $this->actingAs($this->comercio, 'sanctum')
+             ->deleteJson('api/ai-conversations/' . $conversation->id)
+             ->assertStatus(200);
+
+        $this->assertNull(AiConversation::find($conversation->id), 'La conversación se borró.');
+        $this->assertSame(0, AiMessage::where('ai_conversation_id', $conversation->id)->count(), 'Con sus mensajes.');
+
+        $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
+
+        $this->assertSame(3, $estado['consumo_interacciones'], 'Borrar no devuelve interacciones.');
+        $this->assertTrue($estado['supero_interacciones']);
+    }
+
+    /**
+     * R3: cada vuelta del loop del chat graba su fila `chat_mensaje` con el mensaje que contesta
+     * (`referencia_id`), así una respuesta de dos vueltas es una interacción. Y las filas de antes del
+     * cambio, sin mensaje, cuentan una cada una (como contaban).
+     *
+     * @test
+     */
+    public function cada_vuelta_del_chat_graba_el_mensaje_que_contesta()
+    {
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+
+        Http::fake([
+            'api.anthropic.com/*' => Http::sequence()
+                ->push([
+                    'stop_reason' => 'tool_use',
+                    'content'     => [['type' => 'tool_use', 'id' => 'toolu_p23_r3', 'name' => 'consultar_stock_de_articulos', 'input' => ['busqueda' => '']]],
+                    'usage'       => ['input_tokens' => 1, 'output_tokens' => 1],
+                    'model'       => 'lo-que-sea',
+                ], 200)
+                ->push([
+                    'stop_reason' => 'end_turn',
+                    'content'     => [['type' => 'text', 'text' => 'listo']],
+                    'usage'       => ['input_tokens' => 1, 'output_tokens' => 1],
+                    'model'       => 'lo-que-sea',
+                ], 200),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente();
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $filas = AiTokenUsage::where('user_id', $this->comercio->id)->where('proceso', TopeDeTokensHelper::PROCESO_CHAT)->get();
+
+        $this->assertCount(2, $filas, 'Una fila por vuelta.');
+
+        foreach ($filas as $fila) {
+            $this->assertSame((int) $assistant->id, (int) $fila->referencia_id);
+            $this->assertSame((int) $conversation->id, (int) $fila->ai_conversation_id);
+        }
+
+        $this->assertSame(1, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones']);
+
+        // Dos filas de antes del cambio (sin mensaje): una interacción cada una.
+        $this->sembrar_consumo($this->comercio->id, TopeDeTokensHelper::PROCESO_CHAT, 1, 1, 2);
+
+        $this->assertSame(3, TopeDeTokensHelper::estado($this->comercio->fresh())['consumo_interacciones']);
+    }
+
+    /**
      * Lo que no es una respuesta del agente a la persona no cuenta: los mensajes que escribe el sistema
      * solo (un recordatorio que abre su conversación, un aviso después de una respuesta), las respuestas
      * con el texto del límite, las conversaciones MCP y las respuestas de ayer. Y las de un empleado del
      * negocio sí (el tope es del negocio).
+     *
+     * Desde la ronda de arreglos (R3) la cuenta sale de las filas `chat_mensaje` de cada respuesta: los
+     * que escribe el sistema, los del límite y los del MCP no pasan por el loop y no tienen filas (por eso
+     * acá solo se crean sus mensajes); las respuestas sembradas sí (sembrar_respuestas()).
      *
      * @test
      */
@@ -366,9 +463,10 @@ class Config_y_tope_Test extends TestCase
         AiMessage::create(['ai_conversation_id' => $mcp->id, 'rol' => 'user', 'contenido' => 'proponer_gasto', 'estado' => 'listo']);
         AiMessage::create(['ai_conversation_id' => $mcp->id, 'rol' => 'assistant', 'contenido' => '{}', 'estado' => 'listo']);
 
-        // Una respuesta de ayer.
+        // Una respuesta de ayer (su mensaje y su fila de consumo, que es la que cuenta desde R3).
         $de_ayer = $this->sembrar_respuestas(1);
         AiMessage::where('ai_conversation_id', $de_ayer->id)->update(['created_at' => Carbon::now()->subDay()]);
+        AiTokenUsage::where('ai_conversation_id', $de_ayer->id)->update(['created_at' => Carbon::now()->subDay()]);
 
         // Una respuesta a un empleado del negocio: cuenta.
         $this->sembrar_respuestas(1, $this->empleado->id);
@@ -478,13 +576,18 @@ class Config_y_tope_Test extends TestCase
 
     /**
      * Siembra $veces respuestas del agente de hoy (misión agente-memoria-y-sin-techo: la unidad del tope
-     * de interacciones): una conversación del comercio con $veces pares mensaje de la persona → respuesta.
+     * de interacciones): una conversación del comercio con $veces pares mensaje de la persona → respuesta,
+     * y por cada respuesta $vueltas filas `chat_mensaje` con su mensaje en `referencia_id`, como las graba
+     * el loop desde la ronda de arreglos R3 (son las que cuentan).
      *
      * @param  int  $veces
      * @param  int|null  $auth_user_id  La persona de la conversación (null = el dueño).
+     * @param  int  $vueltas  Filas de consumo por respuesta.
+     * @param  int  $input  Tokens de entrada de cada fila.
+     * @param  int  $output  Tokens de salida de cada fila.
      * @return AiConversation
      */
-    protected function sembrar_respuestas($veces, $auth_user_id = null)
+    protected function sembrar_respuestas($veces, $auth_user_id = null, $vueltas = 1, $input = 1, $output = 1)
     {
         $conversation = AiConversation::create([
             'user_id'      => $this->comercio->id,
@@ -499,15 +602,51 @@ class Config_y_tope_Test extends TestCase
                 'estado'             => 'listo',
             ]);
 
-            AiMessage::create([
+            $respuesta = AiMessage::create([
                 'ai_conversation_id' => $conversation->id,
                 'rol'                => 'assistant',
                 'contenido'          => 'Respuesta ' . $i,
                 'estado'             => 'listo',
             ]);
+
+            $this->sembrar_vueltas($respuesta->id, $vueltas, $input, $output);
         }
 
         return $conversation;
+    }
+
+    /**
+     * Siembra las filas `chat_mensaje` de hoy de una respuesta (una por vuelta del loop), con su mensaje
+     * en `referencia_id` y su conversación, como las graba AsistenteIaService desde la ronda de arreglos R3.
+     *
+     * @param  int  $ai_message_id
+     * @param  int  $vueltas
+     * @param  int  $input
+     * @param  int  $output
+     * @return void
+     */
+    protected function sembrar_vueltas($ai_message_id, $vueltas, $input = 1, $output = 1)
+    {
+        $mensaje = AiMessage::find($ai_message_id);
+        $conversation = AiConversation::find($mensaje->ai_conversation_id);
+
+        for ($v = 0; $v < $vueltas; $v++) {
+            AiTokenUsage::create([
+                'user_id'                     => $conversation->user_id,
+                'auth_user_id'                => $conversation->auth_user_id,
+                'proceso'                     => TopeDeTokensHelper::PROCESO_CHAT,
+                'proveedor'                   => 'anthropic',
+                'modelo'                      => 'claude-sonnet-5',
+                'input_tokens'                => $input,
+                'output_tokens'               => $output,
+                'cache_creation_input_tokens' => 0,
+                'cache_read_input_tokens'     => 0,
+                'ai_conversation_id'          => $conversation->id,
+                'referencia_id'               => $mensaje->id,
+                'created_at'                  => Carbon::now(),
+                'updated_at'                  => Carbon::now(),
+            ]);
+        }
     }
 
     /**

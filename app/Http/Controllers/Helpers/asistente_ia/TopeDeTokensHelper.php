@@ -2,10 +2,8 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
-use App\Models\AiConversation;
 use App\Models\AiTokenUsage;
 use Carbon\Carbon;
-use Illuminate\Support\Facades\DB;
 
 /**
  * El consumo de IA de un negocio contra el tope de su plan (misión
@@ -34,11 +32,22 @@ use Illuminate\Support\Facades\DB;
  * qué no). El admin solo manda el NÚMERO del tope (ClientAiPlanSyncService): qué es una interacción lo
  * decide este helper, sin cambio de contrato.
  *
+ * 🔴 Y SE CUENTAN SOBRE ai_token_usages, NO SOBRE ai_messages (ronda de arreglos de la revisión
+ * independiente, R3, 30/10/2026). La primera versión contaba los `ai_messages` del asistente, y
+ * AiConversationController::destroy borra la conversación con sus mensajes EN DURO: borrar una charla
+ * le devolvía al dueño las interacciones del día. Ahora cada vuelta del loop graba su fila
+ * `chat_mensaje` con `referencia_id` = el mensaje que contesta (AsistenteIaService), y una interacción
+ * es un `referencia_id` distinto de hoy: las filas de consumo no se borran con la conversación.
+ * (Verificado antes de cambiarlo: el admin no lee `referencia_id` de ai_token_usages —ConsumoIaController
+ * le manda totales agrupados por día, proceso, proveedor, modelo y persona— y la única que graba
+ * `chat_mensaje` es la respuesta a la persona en el loop del chat.)
+ *
  * LA TRANSCRIPCIÓN DE FOTOS SUMA TOKENS PERO NO INTERACCIONES (misión asistente-deepseek-pro-razona,
  * 24/9/2026). Un turno de DeepSeek que razona en Pro con fotos hace antes una llamada al modelo con
  * visión que las transcribe, y la graba con el proceso `chat_transcripcion_foto`
- * (TranscripcionDeFotosIaHelper::PROCESO). Desde que las interacciones son respuestas, no es una
- * interacción por construcción (es una llamada más del mismo turno, que tiene UNA respuesta). Pero
+ * (TranscripcionDeFotosIaHelper::PROCESO). No es una interacción por construcción: es otro proceso, y
+ * las interacciones son las filas `chat_mensaje` (una llamada más del mismo turno, que tiene UNA
+ * respuesta). Pero
  * tokens_del_mes() suma TODAS las filas del dueño sin filtrar por proceso, así que esos tokens sí
  * cuentan contra el tope MENSUAL: se pagaron por su turno. No hay que tocar nada acá para que eso pase;
  * si alguien filtra tokens_del_mes() por proceso, tiene que dejar adentro este.
@@ -55,9 +64,9 @@ class TopeDeTokensHelper
     const UMBRAL_CERCA = 0.8;
 
     /**
-     * El proceso de `ai_token_usages` de cada vuelta del loop del chat. Desde la misión
-     * agente-memoria-y-sin-techo ya no es la unidad del tope de interacciones (ver el 🔴 del docblock),
-     * pero sigue siendo el proceso con el que AsistenteIaService graba sus llamadas.
+     * El proceso de `ai_token_usages` de cada vuelta del loop del chat (AsistenteIaService). Desde la
+     * misión agente-memoria-y-sin-techo una FILA ya no es una interacción: lo es cada `referencia_id`
+     * distinto de estas filas (el mensaje que contesta), ver interacciones_del_dia().
      */
     const PROCESO_CHAT = 'chat_mensaje';
 
@@ -168,55 +177,50 @@ class TopeDeTokensHelper
     }
 
     /**
-     * Cuántas respuestas le dio hoy el agente al negocio (ver el 🔴 del docblock): los `ai_messages` con
-     * rol 'assistant' creados hoy en las conversaciones del dueño (`ai_conversations.user_id`, que junta
-     * las del dueño y las de sus empleados, como las filas de tokens de antes).
+     * Cuántas respuestas le dio hoy el agente al negocio (ver los 🔴 del docblock): los mensajes DISTINTOS
+     * (`referencia_id`) de las filas `chat_mensaje` de hoy del dueño (`ai_token_usages.user_id`, que junta
+     * las del dueño y las de sus empleados), más UNA por cada fila de hoy sin `referencia_id` (las que el
+     * loop grabó antes de la ronda de arreglos R3: sin el mensaje, cada vuelta cuenta como antes).
      *
-     * Qué NO cuenta:
-     * - las conversaciones de origen 'mcp': son el registro técnico de cada herramienta que pide un
-     *   cliente MCP externo, no respuestas del agente;
-     * - las respuestas con un texto de límite (MENSAJE_LIMITE, MENSAJE_LIMITE_DIARIO): son el corte
-     *   mismo, no gastaron nada, y contarlas haría que el consumo siga subiendo con el tope ya pasado;
-     * - 🔴 los mensajes del asistente que NO responden a la persona: el recordatorio de una tarea que
-     *   sale por WhatsApp (RecordatoriosDelAsistenteHelper), los avisos (AvisosDelAsistenteHelper), el
-     *   resumen con el que nace la conversación de una sugerencia, el cierre de las imágenes de
-     *   categorías. Los escribe el sistema solo y antes no tenían filas `chat_mensaje`; contarlos le
-     *   comería el tope al dueño que pidió recordatorios — justo el caso de Pablo. Se reconocen sin
-     *   columna nueva: una RESPUESTA es el mensaje del asistente cuyo mensaje anterior en la
-     *   conversación es de la persona (los dos controladores crean la respuesta inmediatamente después
-     *   del mensaje que contesta); los que escribe el sistema van después de otra respuesta o abren su
-     *   conversación.
+     * 🔴 POR QUÉ ACÁ Y NO EN ai_messages. Las filas de consumo no se borran con la conversación
+     * (AiConversationController::destroy borra la conversación y sus mensajes en duro): contando mensajes,
+     * borrar una charla le devolvía al dueño las interacciones del día.
      *
-     * Una respuesta todavía `pendiente` cuenta: la que se está generando ya es una interacción. Por eso
-     * el corte se mide ANTES de crearla (AdminSync\AsistenteController y AiConversationController).
+     * Qué NO cuenta, por construcción (solo el loop del chat graba `chat_mensaje`, y solo corre para
+     * contestarle a la persona: lo despachan send_message y AdminSync\AsistenteController::mensajes):
+     * - las conversaciones de origen 'mcp': el servidor MCP corre las herramientas sin el loop;
+     * - las respuestas con un texto de límite (MENSAJE_LIMITE, MENSAJE_LIMITE_DIARIO): nacen `listo` sin
+     *   despachar el job, no llaman a la IA;
+     * - los mensajes que escribe el sistema solo (el recordatorio de una tarea por WhatsApp, los avisos
+     *   de AvisosDelAsistenteHelper, el resumen con el que nace la conversación de una sugerencia, el
+     *   cierre de las imágenes de categorías): no pasan por el loop;
+     * - las otras llamadas del turno con su propio proceso (la transcripción de fotos, el título, el hilo).
      *
-     * La subconsulta usa el índice (ai_conversation_id, id) de ai_messages, y el universo son las
-     * respuestas de un solo dueño en un solo día.
+     * ⚠️ Una respuesta cuenta desde su PRIMERA llamada a la IA (su primera fila), no desde que se crea:
+     * un mensaje `pendiente` que todavía no volvió de la primera vuelta no cuenta, y uno cuya primera
+     * llamada falla tampoco (no gastó). El corte se mide antes de crear la respuesta, igual que antes.
+     *
+     * La consulta va por el índice (user_id, created_at) de ai_token_usages
+     * (ai_token_usages_user_created_index): un dueño, un día. Es el filtro con índice que pidió la
+     * revisión (R4) en lugar del join de ai_messages con su subconsulta por mensaje.
      *
      * @param  int  $owner_id
      * @return int
      */
     protected static function interacciones_del_dia($owner_id)
     {
-        return (int) DB::table('ai_messages as respuesta')
-            ->join('ai_conversations as conversacion', 'conversacion.id', '=', 'respuesta.ai_conversation_id')
-            ->where('conversacion.user_id', (int) $owner_id)
-            ->where(function ($query) {
-                $query->whereNull('conversacion.origen')
-                      ->orWhere('conversacion.origen', '!=', AiConversation::ORIGEN_MCP);
-            })
-            ->where('respuesta.rol', 'assistant')
-            ->whereBetween('respuesta.created_at', [Carbon::now()->startOfDay(), Carbon::now()->endOfDay()])
-            ->where(function ($query) {
-                $query->whereNull('respuesta.contenido')
-                      ->orWhereNotIn('respuesta.contenido', [self::MENSAJE_LIMITE, self::MENSAJE_LIMITE_DIARIO]);
-            })
-            ->whereRaw(
-                "(select anterior.rol from ai_messages as anterior"
-                . " where anterior.ai_conversation_id = respuesta.ai_conversation_id and anterior.id < respuesta.id"
-                . " order by anterior.id desc limit 1) = 'user'"
-            )
-            ->count();
+        $fila = AiTokenUsage::where('user_id', (int) $owner_id)
+            ->whereBetween('created_at', [Carbon::now()->startOfDay(), Carbon::now()->endOfDay()])
+            ->where('proceso', self::PROCESO_CHAT)
+            ->selectRaw('COUNT(DISTINCT referencia_id) as respuestas, COALESCE(SUM(CASE WHEN referencia_id IS NULL THEN 1 ELSE 0 END), 0) as sin_referencia')
+            ->first();
+
+        if (is_null($fila)) {
+
+            return 0;
+        }
+
+        return (int) $fila->respuestas + (int) $fila->sin_referencia;
     }
 
     /**

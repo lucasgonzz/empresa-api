@@ -480,8 +480,9 @@ class AiConversationController extends Controller
         /*
          * El tope del plan se mide ANTES de crear la respuesta (misión agente-memoria-y-sin-techo,
          * 30/10/2026): desde esa misión una interacción es una respuesta del agente
-         * (TopeDeTokensHelper::interacciones_del_dia()), y medido después la de este turno —que todavía
-         * no se generó— ya contaba: con un tope de 100 cortaba en la respuesta 100 y no en la 101.
+         * (TopeDeTokensHelper::interacciones_del_dia()). Desde la ronda de arreglos (R3) se cuenta por
+         * las filas de consumo de cada respuesta, así que la de este turno recién cuenta con su primera
+         * llamada a la IA; medirlo acá sigue siendo lo correcto (el corte decide si esa llamada se hace).
          */
         $estado_del_tope = TopeDeTokensHelper::estado(User::find($conversation->user_id));
 
