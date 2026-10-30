@@ -1912,6 +1912,19 @@ CARGA;
             }
         }
 
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026, §4 E3.2): con el módulo pero SIN el WhatsApp con los
+         * clientes conectado (ninguna `whatsapp_bot_configs` activa). Es el caso de Ferre Total en la CONV
+         * 24: el agente armó la promo durante diez vueltas y recién al «Mandalo» supo que no podía salir.
+         * Con este renglón lo dice en la primera respuesta y ofrece pedírselo a soporte. Las herramientas
+         * lo chequean igual, primero (WhatsappDeClientesIaHelper).
+         */
+        if (PermisosIaHelper::tiene_extencion($owner, AgentesIaHelper::SLUG)
+            && ! \App\Http\Controllers\Helpers\asistente_ia\WhatsappDeClientesIaHelper::conectado((int) $owner->id)) {
+
+            $apagados[] = \App\Http\Controllers\Helpers\asistente_ia\WhatsappDeClientesIaHelper::linea_para_el_prompt();
+        }
+
         if (! count($apagados)) {
 
             return '';

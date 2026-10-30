@@ -49,6 +49,26 @@ class RespuestaDeCargaIa {
     }
 
     /**
+     * Un `error` con su CÓDIGO (misión agente-mejoras-uso-real, 29/10/2026, §4 E3.2): la misma respuesta
+     * de error() más la clave `codigo`, para los motivos que el modelo tiene que poder distinguir sin
+     * interpretar el texto ("sin_whatsapp_de_clientes", "sin_direccion_de_tienda", "articulo_no_publicado",
+     * "articulo_sin_slug"...). Las cuatro claves de siempre siguen yendo; `codigo` es una quinta.
+     *
+     * @param  string  $codigo
+     * @param  string  $motivo
+     * @param  array  $opciones
+     * @return array
+     */
+    static function error_con_codigo($codigo, $motivo, array $opciones = []) {
+
+        $respuesta = self::error($motivo, $opciones);
+
+        $respuesta['codigo'] = (string) $codigo;
+
+        return $respuesta;
+    }
+
+    /**
      * true si el valor es una de estas respuestas negativas.
      *
      * @param  mixed  $respuesta
