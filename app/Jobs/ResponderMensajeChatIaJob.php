@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
@@ -230,6 +231,8 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             ]);
 
             $this->marcar_error($message, $this->contenido_para_la_persona($e, $message), $e->getMessage());
+
+            $this->avisar_las_fotos_por_whatsapp($message);
         }
 
         $this->avisar($conversation, $message);
@@ -391,6 +394,8 @@ class ResponderMensajeChatIaJob implements ShouldQueue
 
         $this->marcar_error($message, $this->contenido_para_la_persona($exception, $message), $exception->getMessage());
 
+        $this->avisar_las_fotos_por_whatsapp($message);
+
         $conversation = AiConversation::find($message->ai_conversation_id);
 
         if ($conversation) {
@@ -443,7 +448,8 @@ class ResponderMensajeChatIaJob implements ShouldQueue
 
     /**
      * La frase de las fotos que llegaron y no se usaron, con un espacio adelante, o vacío. Ver el 🔴 de
-     * contenido_para_la_persona(). Protegido: si la consulta falla, el texto de error sale igual.
+     * contenido_para_la_persona(). La arma AvisosDeTurnosIaHelper::frase_del_turno() (la misma que
+     * sale por WhatsApp). Protegido: si la consulta falla, el texto de error sale igual.
      *
      * @param \App\Models\AiMessage|null $message  El assistant que falló.
      * @return string
@@ -457,14 +463,7 @@ class ResponderMensajeChatIaJob implements ShouldQueue
 
         try {
 
-            $pedido = $this->mensaje_del_pedido($message);
-
-            if (is_null($pedido)) {
-
-                return '';
-            }
-
-            $sin_usar = AiMessageImagen::where('ai_message_id', (int) $pedido->id)->whereNull('gestionada_at')->count();
+            $frase = AvisosDeTurnosIaHelper::frase_del_turno($message, $this->mensaje_del_pedido($message));
 
         } catch (\Throwable $e) {
 
@@ -476,14 +475,34 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             return '';
         }
 
-        if ($sin_usar === 0) {
+        return $frase === '' ? '' : ' ' . $frase;
+    }
 
-            return '';
+    /**
+     * 🔴 LA MISMA FRASE, POR WHATSAPP (ronda de arreglos de la revisión independiente, 30/10/2026). Con
+     * el mensaje en `error`, el admin NO lee el contenido: manda su disculpa fija («Uf, no pude
+     * contestarte esta vez…», EnviarMensajeAlAsistenteJob del admin-api). La frase de las fotos sin
+     * cargar le quedaba al dueño solo en el sistema. Ahora se deja como aviso por el camino que el admin
+     * ya consulta (AvisosDeTurnosIaHelper, servido por AvisosDelAsistenteHelper::pendientes()): llega
+     * poco después de la disculpa. Uno por mensaje (handle() y failed() pueden pasar los dos por acá) y
+     * solo por WhatsApp con el admin que anunció que avisa. Nunca lanza.
+     *
+     * @param \App\Models\AiMessage $message  El assistant que falló.
+     * @return void
+     */
+    protected function avisar_las_fotos_por_whatsapp($message)
+    {
+        if (!($message instanceof AiMessage) || !$message->es_de_whatsapp()) {
+
+            return;
         }
 
-        return $sin_usar === 1
-            ? ' Me llegó la foto y quedó guardada, pero no llegué a cargarla. Escribime «seguí» y continúo.'
-            : ' Me llegaron ' . $sin_usar . ' fotos y quedaron guardadas, pero no llegué a cargarlas. Escribime «seguí» y continúo.';
+        $frase = trim($this->aviso_de_fotos_sin_usar($message));
+
+        if ($frase !== '') {
+
+            AvisosDeTurnosIaHelper::dejar($message, $frase);
+        }
     }
 
     /**
