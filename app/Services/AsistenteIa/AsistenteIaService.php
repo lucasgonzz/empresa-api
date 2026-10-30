@@ -1019,6 +1019,19 @@ class AsistenteIaService
 
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
+                    /*
+                     * Segunda ronda de arreglos (F2): post_al_proveedor() ya reintentó una vez y se rindió.
+                     * Si el turno ya hizo rondas de herramientas, lo hecho no se pierde en un error: misma
+                     * salida que cuando falla el cierre (ver respuesta_sin_terminar()).
+                     */
+                    if ($rondas_de_herramientas > 0) {
+
+                        return $this->respuesta_sin_terminar(
+                            $conversation, $assistant_message, $confirmacion_determinista,
+                            'falló la vuelta ' . $iterations . ' (después de ' . $rondas_de_herramientas . ' rondas de herramientas): ' . get_class($e) . ': ' . $e->getMessage()
+                        );
+                    }
+
                     throw $e;
                 }
 
@@ -1065,19 +1078,35 @@ class AsistenteIaService
                 $error_type = $error_body['error']['type'] ?? null;
 
                 if (ProveedorIaHelper::es_error_transitorio($response)) {
-                    throw AsistenteIaException::sobrecargado(
+                    $falla = AsistenteIaException::sobrecargado(
                         '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
+                    );
+                } else {
+                    /*
+                     * 🔴 El body crudo va al detalle técnico y NO a la pantalla: es justo lo que
+                     * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
+                     */
+                    $falla = AsistenteIaException::falla_tecnica(
+                        'Error al comunicarse con la API de ' . ProveedorIaHelper::nombre_de($proveedor)
+                        . ' (HTTP ' . $response->status() . '): ' . $response->body()
                     );
                 }
 
                 /*
-                 * 🔴 El body crudo va al detalle técnico y NO a la pantalla: es justo lo que
-                 * AsistenteIaException::MOTIVO_FALLA_TECNICA resuelve, cayendo al genérico del job.
+                 * Segunda ronda de arreglos (F2): un error del proveedor (ya con el reintento de
+                 * post_al_proveedor() si era transitorio) DESPUÉS de rondas de herramientas no tira lo
+                 * hecho: misma salida que cuando falla el cierre. Sin ninguna ronda, el error de siempre.
                  */
-                throw AsistenteIaException::falla_tecnica(
-                    'Error al comunicarse con la API de ' . ProveedorIaHelper::nombre_de($proveedor)
-                    . ' (HTTP ' . $response->status() . '): ' . $response->body()
-                );
+                if ($rondas_de_herramientas > 0) {
+
+                    return $this->respuesta_sin_terminar(
+                        $conversation, $assistant_message, $confirmacion_determinista,
+                        'falló la vuelta ' . $iterations . ' (después de ' . $rondas_de_herramientas . ' rondas de herramientas), motivo ' . $falla->motivo() . ': '
+                        . mb_substr($falla->getMessage(), 0, 1000)
+                    );
+                }
+
+                throw $falla;
             }
 
             $response_body = $response->json();
@@ -1453,6 +1482,18 @@ class AsistenteIaService
 
                 throw AsistenteIaException::tiempo_agotado(
                     'el loop llegó al techo de ' . $max_iterations . ' iteraciones sin texto final'
+                );
+            }
+
+            /*
+             * Segunda ronda de arreglos (F2): una vuelta que cerró sin texto DESPUÉS de rondas de
+             * herramientas tampoco tira lo hecho: misma salida que cuando falla el cierre.
+             */
+            if ($rondas_de_herramientas > 0) {
+
+                return $this->respuesta_sin_terminar(
+                    $conversation, $assistant_message, $confirmacion_determinista,
+                    'el loop terminó sin texto final en la iteración ' . $iterations . ' (después de ' . $rondas_de_herramientas . ' rondas de herramientas)'
                 );
             }
 
@@ -4457,7 +4498,11 @@ CONFIRMACION;
      * La respuesta de un turno que se quedó sin vueltas o sin tiempo DESPUÉS de hacer al menos una ronda
      * de herramientas, cuando la llamada de cierre no pudo escribir nada: falló, volvió con error o sin
      * texto, o no quedó ventana para hacerla (misión agente-memoria-y-sin-techo, ronda de arreglos de la
-     * revisión independiente, R1, 30/10/2026). El texto lo arma el sistema, sin el modelo
+     * revisión independiente, R1, 30/10/2026). Desde la segunda ronda (F2) también la de una vuelta
+     * NORMAL que falla después de rondas de herramientas: la red se cortó dos veces (post_al_proveedor()
+     * ya reintentó), el proveedor devolvió un error (sobrecargado o falla técnica) o la vuelta cerró sin
+     * texto. Con el techo en 24 vueltas, que algo falle a mitad de turno es más probable, y en `error` lo
+     * hecho se perdía igual que con el cierre. El texto lo arma el sistema, sin el modelo
      * (AvisosDeTurnosIaHelper::texto_de_turno_sin_terminar()): lo hecho, lo que espera el sí, las fotos
      * que quedaron guardadas y «No llegué a terminar esta respuesta. Escribime «seguí» y sigo con lo que
      * falta.». El job lo guarda como cualquier respuesta: el mensaje queda `listo`.
@@ -4469,7 +4514,8 @@ CONFIRMACION;
      * disculpa («Uf, no pude contestarte…»), así que el «seguí» nunca le llegaba al dueño. `listo`, las
      * tarjetas viajan en el historial con su renglón y el texto llega por los dos canales.
      *
-     * Sin ninguna ronda hecha (falló la primera llamada) no se llega acá: sigue el error de siempre.
+     * Sin ninguna ronda hecha (falló la primera llamada) no se llega acá: sigue el error de siempre (con
+     * su texto propio: tiempo agotado, sobrecargado, sin respuesta o el genérico).
      *
      * Las guardas de después del bucle NO corren sobre este texto (lo escribió el sistema con lo que
      * pasó, no el modelo). Sí se le suman los bloques de los envíos a clientes que quedaron esperando el

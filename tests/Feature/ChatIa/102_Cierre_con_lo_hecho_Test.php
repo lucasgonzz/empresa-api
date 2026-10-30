@@ -22,6 +22,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Tests\Fakes\HttpFactorySinSalida;
 use Tests\TestCase;
 
 /**
@@ -739,6 +740,121 @@ class Cierre_con_lo_hecho_Test extends TestCase
         $ultimo = $historial[count($historial) - 1];
         $this->assertSame('user', $ultimo['role']);
         $this->assertStringContainsString('seguí', is_string($ultimo['content']) ? $ultimo['content'] : json_encode($ultimo['content']));
+    }
+
+    /**
+     * El doble del proveedor de la segunda ronda (F2): la PRIMERA llamada pide una proponer_tarea (en
+     * "directo" se confirma sola) y las siguientes fallan con `$falla` (una respuesta ya armada, un body o
+     * una excepción para tirar). Devuelve el contador de llamadas.
+     *
+     * @param  mixed  $falla
+     * @param  string  $detalle  El detalle de la tarea (distinto por caso: la guarda anti-duplicado mira la clave).
+     * @return \stdClass  {llamadas: int}
+     */
+    protected function proveedor_que_carga_y_despues_falla($falla, $detalle)
+    {
+        $contador = new \stdClass();
+        $contador->llamadas = 0;
+        $manana = Carbon::tomorrow()->format('Y-m-d');
+
+        Http::fake(function ($request) use ($contador, $falla, $detalle, $manana) {
+            if (strpos($request->url(), 'deepseek') === false) {
+                return Http::response(['error' => 'host sin stub'], 500);
+            }
+
+            $contador->llamadas++;
+
+            if ($contador->llamadas === 1) {
+                return Http::response($this->respuesta('tool_use', [[
+                    'type'  => 'tool_use',
+                    'id'    => 'toolu_p102_f2_' . $contador->llamadas,
+                    'name'  => 'proponer_tarea',
+                    'input' => ['detalle' => $detalle, 'fecha' => $manana],
+                ]]), 200);
+            }
+
+            if ($falla instanceof \Throwable) {
+                throw $falla;
+            }
+
+            return is_array($falla) ? Http::response($falla, 200) : $falla;
+        });
+
+        return $contador;
+    }
+
+    /**
+     * 🔴 F2 DE LA SEGUNDA RONDA: LA MISMA CLASE QUE R1, EN UNA VUELTA NORMAL. En "directo" la primera vuelta
+     * carga una tarea (se confirma sola) y la segunda falla: un 503 (sobrecargado, ya con el reintento de
+     * post_al_proveedor), un 400 (falla técnica), la red cortada dos veces, o una vuelta que cierra sin
+     * texto. Antes el mensaje terminaba en `error` —lo confirmado no viajaba en el historial y por WhatsApp
+     * salía la disculpa del admin—; ahora queda `listo` con el renglón de la tarea y el «seguí».
+     *
+     * @test
+     */
+    public function una_vuelta_normal_que_falla_despues_de_una_carga_deja_listo_con_lo_hecho()
+    {
+        $this->comercio->agente_confianza = ConfianzaDelAgenteIaHelper::DIRECTO;
+        $this->comercio->save();
+
+        $casos = [
+            'sobrecargado (503)'   => Http::response(['error' => ['type' => 'api_error', 'message' => 'saturado (P102 F2)']], 503),
+            'falla técnica (400)'  => Http::response(['error' => ['type' => 'invalid_request_error', 'message' => 'rechazado (P102 F2)']], 400),
+            'red cortada'          => new ConnectionException('cURL error 28: Operation timed out (P102 F2)'),
+            'vuelta sin texto'     => $this->respuesta('end_turn', []),
+        ];
+
+        $n = 0;
+
+        foreach ($casos as $caso => $falla) {
+            $n++;
+
+            $contador = $this->proveedor_que_carga_y_despues_falla($falla, 'ZZP102 F2 cheque ' . $n . ' de Sudamericana');
+
+            list($conversation, $assistant) = $this->conversacion();
+
+            (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+            $assistant = $assistant->fresh();
+
+            $this->assertSame('listo', $assistant->estado, $caso . ': ' . (string) $assistant->error_mensaje);
+
+            $tarjeta = AiMessageAction::where('ai_message_id', $assistant->id)->first();
+
+            $this->assertNotNull($tarjeta, $caso);
+            $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, (string) $tarjeta->estado, $caso . ': la tarea quedó hecha y no se descartó.');
+            $this->assertStringStartsWith(
+                AvisosDeTurnosIaHelper::ENCABEZADO_HECHO . "\n- " . rtrim(trim((string) $tarjeta->resultado->texto), '. ') . '.',
+                $assistant->contenido,
+                $caso
+            );
+            $this->assertStringEndsWith(AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR, $assistant->contenido, $caso);
+            $this->assertGreaterThanOrEqual(2, $contador->llamadas, $caso);
+
+            Http::swap(new HttpFactorySinSalida(app('events')));
+        }
+    }
+
+    /**
+     * F2: sin ninguna ronda de herramientas hecha (falla la PRIMERA llamada) no hay nada que contar: el
+     * error de siempre, con su motivo.
+     *
+     * @test
+     */
+    public function si_falla_la_primera_vuelta_sigue_el_error_de_siempre()
+    {
+        Http::fake(function ($request) {
+            return Http::response(['error' => ['type' => 'api_error', 'message' => 'saturado (P102 F2)']], 503);
+        });
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+            $this->fail('Sin ninguna ronda, un 503 es el error de siempre.');
+        } catch (AsistenteIaException $e) {
+            $this->assertSame(AsistenteIaException::MOTIVO_SOBRECARGADO, $e->motivo());
+        }
     }
 
     /**
