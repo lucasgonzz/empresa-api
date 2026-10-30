@@ -379,37 +379,56 @@ class PropuestaFotoArticuloIaHelper
         $hechos = [];
         $no_hechos = [];
 
-        foreach ($pedidos as $article_id => $nombre_pedido) {
+        /*
+         * Los archivos que esta ejecución ya escribió en storage/app/public. 🔴 Si algo falla A MITAD
+         * (revisión independiente, arreglo 10, 30/10/2026), la transacción del ejecutor se lleva las
+         * filas de `images`, pero los webp del disco no: quedaban huérfanos ocupando lugar, uno por cada
+         * artículo que alcanzó a pasar. El catch los borra antes de volver a lanzar.
+         */
+        $escritos = [];
 
-            if (!isset($existentes[$article_id])) {
+        try {
 
-                $no_hechos[] = ['article_id' => (int) $article_id, 'articulo' => $nombre_pedido, 'motivo' => 'ya no existe entre tus artículos'];
+            foreach ($pedidos as $article_id => $nombre_pedido) {
 
-                continue;
+                if (!isset($existentes[$article_id])) {
+
+                    $no_hechos[] = ['article_id' => (int) $article_id, 'articulo' => $nombre_pedido, 'motivo' => 'ya no existe entre tus artículos'];
+
+                    continue;
+                }
+
+                $articulo = $existentes[$article_id];
+
+                $name = self::escribir_webp($webp, (int) $articulo->id);
+
+                if (is_null($name)) {
+
+                    $no_hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo), 'motivo' => 'no pude guardar el archivo de la foto'];
+
+                    continue;
+                }
+
+                $escritos[] = $name;
+
+                self::colgar_y_sincronizar($contexto, $articulo, $name);
+
+                $hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo)];
             }
 
-            $articulo = $existentes[$article_id];
+            if (!count($hechos)) {
 
-            $name = self::escribir_webp($webp, (int) $articulo->id);
-
-            if (is_null($name)) {
-
-                $no_hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo), 'motivo' => 'no pude guardar el archivo de la foto'];
-
-                continue;
+                throw new AccionIaException(422, 'No pude guardar la foto en ninguno de los artículos. Probá de nuevo en un momento.');
             }
 
-            self::colgar_y_sincronizar($contexto, $articulo, $name);
+            AsistenteImagenHelper::marcar_gestionadas([(int) $imagen->id]);
 
-            $hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo)];
+        } catch (\Throwable $e) {
+
+            self::borrar_archivos($escritos);
+
+            throw $e;
         }
-
-        if (!count($hechos)) {
-
-            throw new AccionIaException(422, 'No pude guardar la foto en ninguno de los artículos. Probá de nuevo en un momento.');
-        }
-
-        AsistenteImagenHelper::marcar_gestionadas([(int) $imagen->id]);
 
         return [
             'texto'     => self::texto_del_resultado($hechos, $no_hechos),
@@ -1039,6 +1058,37 @@ class PropuestaFotoArticuloIaHelper
         }
 
         return $name;
+    }
+
+    /**
+     * Borra de storage/app/public los webp que una ejecución alcanzó a escribir antes de fallar (ver el
+     * 🔴 del catch de ejecutar()). Nunca lanza: está adentro de un catch que vuelve a lanzar el error
+     * original, y ése es el que tiene que llegar.
+     *
+     * @param  array<int, string>  $nombres
+     * @return void
+     */
+    protected static function borrar_archivos(array $nombres)
+    {
+        foreach ($nombres as $nombre) {
+
+            try {
+
+                $ruta = storage_path() . '/app/public/' . $nombre;
+
+                if ($nombre !== '' && is_file($ruta)) {
+
+                    @unlink($ruta);
+                }
+
+            } catch (\Throwable $e) {
+
+                Log::warning('PropuestaFotoArticuloIaHelper: no se pudo borrar un webp de una ejecución que falló', [
+                    'archivo' => $nombre,
+                    'error'   => $e->getMessage(),
+                ]);
+            }
+        }
     }
 
     /**

@@ -473,6 +473,45 @@ class Una_foto_para_varios_articulos_Test extends TestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 10: si la ejecución falla A MITAD (acá, el quinto clavo
+     * revienta al guardarse), no quedan webp huérfanos en el disco de los cuatro que ya habían pasado, y
+     * la foto no queda sellada.
+     *
+     * @test
+     */
+    public function si_falla_a_mitad_no_quedan_archivos_huerfanos()
+    {
+        $clavos = $this->diez_clavos();
+        $conversation = $this->conversacion();
+        list(, $fotos) = $this->del_dueno($conversation, 'Ponele esta a todos los clavos punta París');
+        $assistant = $this->del_asistente($conversation);
+
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, [
+            'articulo'                => self::PREFIJO . ' clavos punta paris',
+            'todos_los_que_coinciden' => true,
+        ]);
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $orden = AiMessageAction::find($respuesta['tarjeta_id'])->datos['article_ids'];
+        $el_quinto = (int) $orden[4];
+
+        Article::saving(function ($articulo) use ($el_quinto) {
+            if ((int) $articulo->id === $el_quinto) {
+                throw new \RuntimeException('falla de prueba al guardar el quinto clavo');
+            }
+        });
+
+        $resultado = $this->confirmar($conversation, $respuesta['tarjeta_id']);
+        $this->assertNotSame(200, $resultado['status']);
+
+        foreach ($clavos as $clavo) {
+            $this->assertSame([], glob(storage_path() . '/app/public/*_' . $clavo->id . '.webp'), 'Quedó un webp huérfano de ' . $clavo->name);
+        }
+
+        $this->assertNull($fotos[0]->fresh()->gestionada_at, 'La foto no se selló.');
+    }
+
+    /**
      * 🔴 Ronda de arreglos (30/10/2026), arreglo 9: la foto se bloquea solo si la compra con factura
      * donde aparece se CONFIRMÓ. Una tarjeta de compra cancelada (o reemplazada, o descartada) no se
      * llevó la foto a ningún lado: la foto que se puso en un artículo se sigue pudiendo reusar.
