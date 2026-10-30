@@ -61,7 +61,10 @@ class Reenvio_tras_escaneo_fallido_Test extends ComprasDelAgenteTestCase
 
         $respuesta = PropuestaCompraConFacturaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, ['proveedor' => 'cavallfer']);
         $this->assertTrue($respuesta['ok'], json_encode($respuesta));
-        $this->assertStringContainsString('Se usa la compra N° ' . $compra->num . ', cuyo escaneo anterior falló', json_encode(AiMessageAction::find($respuesta['tarjeta_id'])->presentacion, JSON_UNESCAPED_UNICODE));
+        /* Ronda de arreglos (arreglo 8): el texto dice lo que se sabe de la compra, sin afirmar que es la misma factura. */
+        $presentacion = json_encode(AiMessageAction::find($respuesta['tarjeta_id'])->presentacion, JSON_UNESCAPED_UNICODE);
+        $this->assertStringContainsString('Se usa la compra N° ' . $compra->num . ', que estaba vacía y su escaneo anterior falló', $presentacion);
+        $this->assertStringNotContainsString('misma factura', $presentacion);
 
         $resultado = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
         $this->assertTrue($resultado['ok'], json_encode($resultado));
@@ -101,6 +104,48 @@ class Reenvio_tras_escaneo_fallido_Test extends ComprasDelAgenteTestCase
         $this->assertSame(1, ProviderOrderScanImage::where('provider_order_scan_id', $nuevo->id)->count());
         Queue::assertPushed(RunProviderOrderScanJob::class);
         $this->assertSame(1, ProviderOrder::where('user_id', $this->comercio->id)->count());
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 11: «volvé a escanearla» SIN número en el hilo siguiente
+     * encuentra el escaneo que falló en el hilo anterior del mismo canal.
+     *
+     * @test
+     */
+    public function sin_numero_encuentra_el_escaneo_fallido_del_hilo_anterior()
+    {
+        list(, $compra) = $this->compra_con_factura_del_agente($this->ferretotal);
+        $this->escaneo_fallido($compra);
+
+        list($hilo_siguiente, $assistant) = $this->escena('Volvé a escanearla');
+
+        $resultado = HerramientasDeCarga::ejecutar('proponer_reintento_de_escaneo', [], $hilo_siguiente, $assistant);
+        $datos = json_decode($resultado['content'], true);
+
+        $this->assertTrue($datos['ok'], $resultado['content']);
+        $this->assertSame((int) $compra->id, (int) AiMessageAction::find($datos['tarjeta_id'])->datos['provider_order_id']);
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 8: con compra_num, el reescaneo verifica que la compra
+     * siga vacía. Una compra a la que le cargaron artículos a mano no se reescanea desde acá.
+     *
+     * @test
+     */
+    public function no_se_reescanea_una_compra_que_ya_tiene_articulos()
+    {
+        list($conversation, $compra) = $this->compra_con_factura_del_agente($this->ferretotal);
+        $this->escaneo_fallido($compra);
+
+        $articulo = Article::create(['user_id' => $this->comercio->id, 'name' => 'Artículo cargado a mano E1r']);
+        $compra->articles()->attach($articulo->id, ['amount' => 1]);
+
+        $resultado = HerramientasDeCarga::ejecutar('proponer_reintento_de_escaneo', ['compra_num' => $compra->num], $conversation, $this->siguiente($conversation, 'Volvé a escanear la compra ' . $compra->num));
+        $datos = json_decode($resultado['content'], true);
+
+        $this->assertFalse($datos['ok']);
+        $this->assertStringContainsString('ya tiene 1 artículo cargado', (string) $datos['error']);
+        $this->assertSame(1, ProviderOrderScan::where('provider_order_id', $compra->id)->count(), 'No se creó otro escaneo.');
     }
 
     /**

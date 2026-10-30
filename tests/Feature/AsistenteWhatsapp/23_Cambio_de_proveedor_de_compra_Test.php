@@ -128,6 +128,68 @@ class Cambio_de_proveedor_de_compra_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 7a: si el proveedor nuevo hay que darlo de alta, la
+     * tarjeta espera el sí aunque el dueño esté en "directo" (como la compra con factura).
+     *
+     * @test
+     */
+    public function con_un_proveedor_que_hay_que_dar_de_alta_espera_el_si_aunque_este_en_directo()
+    {
+        list($conversation, $compra) = $this->compra_con_factura_del_agente($this->ferretotal);
+
+        User::where('id', $this->comercio->id)->update(['agente_confianza' => 'directo']);
+
+        $respuesta = json_decode(HerramientasDeCarga::ejecutar('proponer_cambio_de_proveedor_de_compra', ['proveedor' => 'mariano limpieza'], $conversation, $this->siguiente($conversation, 'La podés volver a cargar con el proveedor mariano limpieza'))['content'], true);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue(!empty($respuesta['requiere_confirmacion']), json_encode($respuesta));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+        $this->assertStringContainsString('mariano limpieza', (string) AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['aviso']);
+        $this->assertSame(0, Provider::where('user_id', $this->comercio->id)->where('name', 'mariano limpieza')->count(), 'Todavía no se dio de alta.');
+        $this->assertSame((int) $this->ferretotal->id, (int) $compra->fresh()->provider_id);
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 7b: con pagos imputados en su cuenta corriente, la compra
+     * no se cambia de proveedor (el pago quedaría a favor en la cuenta del viejo): se manda a la pantalla.
+     *
+     * @test
+     */
+    public function con_pagos_imputados_no_se_cambia_el_proveedor()
+    {
+        list($conversation, $compra) = $this->compra_sin_articulos_confirmada();
+        $this->crear_proveedor('CAVALLFER');
+
+        CurrentAcount::where('provider_order_id', $compra->id)->update(['status' => 'pagandose', 'pagandose' => 50000]);
+
+        $respuesta = json_decode(HerramientasDeCarga::ejecutar('proponer_cambio_de_proveedor_de_compra', ['proveedor' => 'CAVALLFER', 'compra_num' => $compra->num], $conversation, $this->siguiente($conversation, 'Era de cavallfer'))['content'], true);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringContainsString('pagos imputados', (string) $respuesta['error']);
+        $this->assertSame((int) $this->ferretotal->id, (int) $compra->fresh()->provider_id);
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 11: «volvé a cargarla con…» SIN número en el hilo
+     * siguiente (WhatsApp parte la charla por tema: CONV 19 y 20 de Pablo) encuentra la compra que el
+     * agente creó en el hilo anterior.
+     *
+     * @test
+     */
+    public function sin_numero_encuentra_la_compra_del_hilo_anterior_del_mismo_canal()
+    {
+        list(, $compra) = $this->compra_con_factura_del_agente($this->ferretotal);
+        $this->crear_proveedor('CAVALLFER');
+
+        list($hilo_siguiente, $assistant) = $this->escena('La podés volver a cargar con el proveedor cavallfer');
+
+        $respuesta = json_decode(HerramientasDeCarga::ejecutar('proponer_cambio_de_proveedor_de_compra', ['proveedor' => 'CAVALLFER'], $hilo_siguiente, $assistant)['content'], true);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame((int) $compra->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['provider_order_id']);
+    }
+
+    /**
      * No se toca una compra que no creó el agente, ni una con artículos, ni una con el escaneo
      * confirmado: esas se cambian desde la pantalla.
      *

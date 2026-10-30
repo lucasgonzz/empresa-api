@@ -120,6 +120,86 @@ class Compra_sin_articulos_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 6: si el modelo llama a la compra CON factura sin foto
+     * y la persona dictó un total (CONV 19), el error no le pide la foto: lo manda a la compra sin
+     * artículos. Sin monto dictado, sigue pidiendo la foto como siempre.
+     *
+     * @test
+     */
+    public function la_compra_con_factura_sin_foto_y_con_un_total_dictado_deriva_a_la_compra_sin_articulos()
+    {
+        $this->dar_extension(self::SLUG_ESCANEO);
+
+        list($conversation, $assistant) = $this->escena('Me cargas una compra sin artículos con una factura sin iva de 198.522 al proveedor ferretotal. Con movimientos en cuenta corriente.');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, ['proveedor' => 'ferretotal']);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $respuesta['error']);
+        $this->assertStringContainsString('proponer_compra_sin_articulos', (string) $respuesta['error']);
+        $this->assertSame('198.522', $respuesta['opciones']['monto_dictado']);
+
+        list($otra, $sin_monto) = $this->escena('Cargame la compra de ferretotal, la factura del 29/10/2026 N° 0001-00004567');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($otra), $sin_monto, ['proveedor' => 'ferretotal']);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringStartsWith('No tengo ninguna foto de factura sin usar', (string) $respuesta['error'], 'Una fecha o un N° de comprobante no son un monto.');
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 12: un total dictado con punto de miles («198.522») es
+     * 198522, no 198,52; «1.500,50» es 1500,5. Y un número con tres decimales no se adivina: vuelve un
+     * error para el modelo.
+     *
+     * @test
+     */
+    public function el_total_dictado_con_punto_de_miles_se_lee_bien()
+    {
+        list($conversation, $assistant) = $this->escena('Cargame una compra sin artículos sin iva de 198.522 a ferretotal');
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $con_miles = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => '198.522', 'iva' => 'sin_iva']);
+        $this->assertTrue($con_miles['ok'], json_encode($con_miles));
+        $this->assertEqualsWithDelta(198522, (float) AiMessageAction::find($con_miles['tarjeta_id'])->datos['total'], 0.001);
+
+        $con_centavos = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => '$ 1.500,50', 'iva' => 'sin_iva']);
+        $this->assertTrue($con_centavos['ok'], json_encode($con_centavos));
+        $this->assertEqualsWithDelta(1500.5, (float) AiMessageAction::find($con_centavos['tarjeta_id'])->datos['total'], 0.001);
+
+        $mal_leido = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 198.522, 'iva' => 'sin_iva']);
+        $this->assertFalse($mal_leido['ok']);
+        $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $mal_leido['error']);
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 5: dos facturas del mismo proveedor en la misma charla
+     * son dos tarjetas, no una que pisa a la otra. La clave lleva el total y el número cuando viene.
+     *
+     * @test
+     */
+    public function dos_facturas_del_mismo_proveedor_no_se_pisan_las_tarjetas()
+    {
+        list($conversation, $assistant) = $this->escena('Cargame dos compras sin artículos sin iva a ferretotal: una de 198.522 y otra de 45.000');
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        $una = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 198522, 'iva' => 'sin_iva']);
+        $otra = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 45000, 'iva' => 'sin_iva', 'numero_comprobante' => '0002-00000099']);
+
+        $this->assertTrue($una['ok'], json_encode($una));
+        $this->assertTrue($otra['ok'], json_encode($otra));
+        $this->assertSame([], $otra['reemplazo'], 'La segunda factura no reemplaza a la primera.');
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($una['tarjeta_id'])->estado_guardado());
+
+        $this->assertSame('compra_sin_articulos:' . $this->ferretotal->id . ':198522.00', AiMessageAction::find($una['tarjeta_id'])->clave);
+        $this->assertSame('compra_sin_articulos:' . $this->ferretotal->id . ':45000.00:0002-00000099', AiMessageAction::find($otra['tarjeta_id'])->clave);
+
+        /* La corrección sigue reemplazando, por reemplaza_a. */
+        $corregida = PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant, ['proveedor' => 'ferretotal', 'total' => 200000, 'iva' => 'sin_iva', 'reemplaza_a' => $una['tarjeta_id']]);
+        $this->assertSame([(int) $una['tarjeta_id']], $corregida['reemplazo']);
+    }
+
+    /**
      * Sin cuenta corriente no hay movimiento; sin total o sin IVA, se pregunta.
      *
      * @test

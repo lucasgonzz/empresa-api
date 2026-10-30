@@ -197,6 +197,48 @@ class Fotos_tope_reintento_y_conciliacion_Test extends AsistenteWhatsappTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026): por WhatsApp el reintento respeta la paciencia del admin (180 s).
+     * Un mensaje que el admin creó hace 120 s ya no tiene lugar para otra llamada de 60 (120 + 60 > 165):
+     * no se reintenta. El mismo mensaje por el sistema sí (ahí el techo es el presupuesto de 210 desde el
+     * arranque del loop).
+     *
+     * @test
+     */
+    public function por_whatsapp_el_reintento_respeta_la_espera_del_admin()
+    {
+        $llamadas = 0;
+        $fin = $this->end_turn('Te faltan 4 clavos.');
+
+        Http::fake(function ($request) use (&$llamadas, $fin) {
+            $llamadas++;
+
+            if ($llamadas === 1) {
+                throw new ConnectionException('cURL error 28: Operation timed out');
+            }
+
+            return Http::response($fin, 200);
+        });
+
+        list($conversation, $assistant) = $this->turno();
+        AiMessage::where('id', $assistant->id)->update(['created_at' => now()->subSeconds(120)]);
+
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant->fresh());
+            $this->fail('Por WhatsApp, con 120 s ya gastados del lado del admin, no hay reintento.');
+        } catch (ConnectionException $e) {
+            $this->assertSame(1, $llamadas);
+        }
+
+        $llamadas = 0;
+
+        list($del_sistema_conv, $del_sistema) = $this->turno();
+        AiMessage::where('id', $del_sistema->id)->update(['created_at' => now()->subSeconds(120), 'canal' => AiMessage::CANAL_SISTEMA]);
+
+        $this->assertSame('Te faltan 4 clavos.', (new AsistenteIaService())->responder($del_sistema_conv, $del_sistema->fresh()));
+        $this->assertSame(2, $llamadas, 'Por el sistema se reintenta igual.');
+    }
+
+    /**
      * Y es UNO solo: si la segunda también se cae, el turno corta como antes (sin una tercera).
      *
      * @test

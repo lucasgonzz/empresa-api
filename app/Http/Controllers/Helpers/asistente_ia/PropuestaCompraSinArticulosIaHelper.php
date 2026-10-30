@@ -92,6 +92,14 @@ class PropuestaCompraSinArticulosIaHelper
             return RespuestaDeCargaIa::faltan(['el total de la factura']);
         }
 
+        /* «198.522» dictado es ciento noventa y ocho mil: ver monto_dictado(). */
+        $valor_total = self::monto_dictado($valor_total);
+
+        if (RespuestaDeCargaIa::es_negativa($valor_total)) {
+
+            return $valor_total;
+        }
+
         $total = EntradaDeCargaIa::monto_positivo($valor_total, 'El total de la factura tiene que ser un número mayor a 0.');
 
         if (RespuestaDeCargaIa::es_negativa($total)) {
@@ -217,7 +225,7 @@ class PropuestaCompraSinArticulosIaHelper
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS,
-            self::clave(is_null($proveedor_nuevo) ? (int) $proveedor->id : null, $nombre_proveedor),
+            self::clave(is_null($proveedor_nuevo) ? (int) $proveedor->id : null, $nombre_proveedor, $importes['total'], $numero),
             $datos,
             [
                 'titulo'    => 'Compra sin artículos',
@@ -238,21 +246,43 @@ class PropuestaCompraSinArticulosIaHelper
     }
 
     /**
-     * Identidad de la carga para el reemplazo: la corrección de la compra sin artículos del mismo
-     * proveedor ("no, eran 200.000") reemplaza la tarjeta, y la de otro proveedor no la pisa.
+     * Identidad de la carga para el reemplazo: proveedor + total + número de comprobante (si vino).
+     *
+     * 🔴 CON EL TOTAL Y EL NÚMERO (revisión independiente, arreglo 5, 30/10/2026). Con la clave por
+     * proveedor solo, la SEGUNDA factura del mismo proveedor en la misma charla («y otra de 45.000 de
+     * ferretotal») reemplazaba la tarjeta de la primera, que todavía esperaba su sí: el dueño confirmaba
+     * una y la otra desaparecía. Una corrección del total ("no, eran 200.000") la sigue reemplazando por
+     * `reemplaza_a`, que es como se corrige una tarjeta en todo el asistente.
+     *
+     * Entra en los 100 caracteres de la columna (AccionesIaHelper::crear() la corta igual).
      *
      * @param  int|null  $provider_id  Null si el proveedor todavía no existe.
      * @param  string  $nombre  El nombre del proveedor (para el que todavía no existe).
+     * @param  float|null  $total  El total de la factura.
+     * @param  string  $numero  El número de comprobante, si vino.
      * @return string
      */
-    public static function clave($provider_id, $nombre = '')
+    public static function clave($provider_id, $nombre = '', $total = null, $numero = '')
     {
-        if (!is_null($provider_id) && (int) $provider_id > 0) {
+        $de_quien = (!is_null($provider_id) && (int) $provider_id > 0)
+            ? (string) (int) $provider_id
+            : 'nuevo:' . mb_substr(mb_strtolower(trim((string) $nombre)), 0, 40);
 
-            return 'compra_sin_articulos:' . (int) $provider_id;
+        $clave = 'compra_sin_articulos:' . $de_quien;
+
+        if (!is_null($total)) {
+
+            $clave .= ':' . number_format(round((float) $total, 2), 2, '.', '');
         }
 
-        return 'compra_sin_articulos:nuevo:' . mb_strtolower(trim((string) $nombre));
+        $numero = mb_strtolower(trim((string) $numero));
+
+        if ($numero !== '') {
+
+            $clave .= ':' . mb_substr($numero, 0, 30);
+        }
+
+        return $clave;
     }
 
     /**
@@ -513,6 +543,43 @@ class PropuestaCompraSinArticulosIaHelper
         }
 
         return RespuestaDeCargaIa::error('El IVA de la factura tiene que ser "sin_iva", 21, 10.5 o 27. Si es otra alícuota, la compra se carga desde Compras.');
+    }
+
+    /**
+     * Un monto como lo dicta una persona en Argentina, pasado a número (revisión independiente, arreglo
+     * 12, 30/10/2026): «198.522» es CIENTO NOVENTA Y OCHO MIL QUINIENTOS VEINTIDÓS (punto de miles), no
+     * 198,52. Con un string, el parser que ya usa el módulo para los márgenes y el stock
+     * (MargenesPorListaIaHelper::numero_escrito_a_punto(): «198.522» → 198522, «1.500,50» → 1500.5,
+     * «30,5» → 30.5), sin el «$» ni los espacios.
+     *
+     * 🔴 Y UN NÚMERO CON MÁS DE DOS DECIMALES NO SE ADIVINA. Un monto en pesos tiene a lo sumo
+     * centavos; si llega 198.522 como número, casi seguro el modelo leyó el punto de miles como coma
+     * decimal. No se lo multiplica por mil a ciegas: vuelve un error para el MODELO (NO_SE_ARMO) que le
+     * pide mandarlo sin separador. La deuda con un proveedor no puede salir de una suposición.
+     *
+     * @param  mixed  $valor
+     * @return mixed  El número (o el valor tal cual, si no es un string ni un número) o la respuesta negativa.
+     */
+    public static function monto_dictado($valor)
+    {
+        if (is_string($valor)) {
+
+            $texto = trim(str_replace(['$', ' ', "\u{00A0}"], '', $valor));
+
+            $texto = MargenesPorListaIaHelper::numero_escrito_a_punto($texto);
+
+            return is_numeric($texto) ? (float) $texto : $valor;
+        }
+
+        if (is_float($valor) && abs(round($valor, 2) - $valor) > 0.0000001) {
+
+            return RespuestaDeCargaIa::error(
+                CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'el total vino con más de dos decimales (' . $valor . '). Si la persona dictó «'
+                . number_format($valor, 3, '.', '') . '» con punto de miles, volvé a llamar con el total sin separadores (por ejemplo 198522).'
+            );
+        }
+
+        return $valor;
     }
 
     /**

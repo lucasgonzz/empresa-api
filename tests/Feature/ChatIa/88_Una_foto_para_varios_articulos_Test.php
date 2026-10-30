@@ -473,6 +473,121 @@ class Una_foto_para_varios_articulos_Test extends TestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 11: la foto ya puesta en un artículo se reusa también
+     * desde un hilo HERMANO (misma persona, mismo canal, últimas 24 h): por WhatsApp la charla se parte
+     * por tema. Una foto del hilo de OTRA persona (un empleado), no.
+     *
+     * @test
+     */
+    public function la_foto_ya_usada_se_reusa_desde_un_hilo_hermano_pero_no_desde_el_de_otra_persona()
+    {
+        $a = $this->articulo('Pincel 1"');
+        $b = $this->articulo('Pincel 2"');
+
+        $hilo_de_la_foto = $this->conversacion();
+        list(, $fotos) = $this->del_dueno($hilo_de_la_foto, 'Esta al pincel de 1');
+        $assistant = $this->del_asistente($hilo_de_la_foto);
+        $primera = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($hilo_de_la_foto), $assistant, ['articulo_id' => $a->id]);
+        $this->assertSame(200, $this->confirmar($hilo_de_la_foto, $primera['tarjeta_id'])['status']);
+
+        /* El hilo siguiente (otro tema, mismo canal y misma persona): «la misma para el de 2». */
+        $hilo_siguiente = $this->conversacion();
+        AiMessage::create(['ai_conversation_id' => $hilo_siguiente->id, 'rol' => 'user', 'contenido' => 'La misma para el pincel de 2', 'estado' => 'listo']);
+        $propone = $this->del_asistente($hilo_siguiente);
+
+        $reuso = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($hilo_siguiente), $propone, ['articulo_id' => $b->id, 'imagen_id' => $fotos[0]->id]);
+        $this->assertTrue($reuso['ok'], json_encode($reuso));
+        $this->assertSame(200, $this->confirmar($hilo_siguiente, $reuso['tarjeta_id'])['status']);
+        $this->assertSame(1, $this->fotos_de($b));
+
+        /* El hilo de un empleado del mismo negocio no ve la foto del dueño. */
+        $empleado = User::create(['name' => 'Empleado E1r', 'email' => 'emp-e1r-' . uniqid() . '@test.local', 'password' => Hash::make('x'), 'owner_id' => $this->comercio->id]);
+        $hilo_del_empleado = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $empleado->id]);
+        AiMessage::create(['ai_conversation_id' => $hilo_del_empleado->id, 'rol' => 'user', 'contenido' => 'Ponele la misma', 'estado' => 'listo']);
+        $del_empleado = AiMessage::create(['ai_conversation_id' => $hilo_del_empleado->id, 'rol' => 'assistant', 'contenido' => '.', 'estado' => 'listo', 'acciones_habilitadas' => true]);
+
+        $ajeno = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($hilo_del_empleado), $del_empleado, ['articulo_id' => $b->id, 'imagen_id' => $fotos[0]->id]);
+        $this->assertFalse($ajeno['ok']);
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 10: si la ejecución falla A MITAD (acá, el quinto clavo
+     * revienta al guardarse), no quedan webp huérfanos en el disco de los cuatro que ya habían pasado, y
+     * la foto no queda sellada.
+     *
+     * @test
+     */
+    public function si_falla_a_mitad_no_quedan_archivos_huerfanos()
+    {
+        $clavos = $this->diez_clavos();
+        $conversation = $this->conversacion();
+        list(, $fotos) = $this->del_dueno($conversation, 'Ponele esta a todos los clavos punta París');
+        $assistant = $this->del_asistente($conversation);
+
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, [
+            'articulo'                => self::PREFIJO . ' clavos punta paris',
+            'todos_los_que_coinciden' => true,
+        ]);
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        $orden = AiMessageAction::find($respuesta['tarjeta_id'])->datos['article_ids'];
+        $el_quinto = (int) $orden[4];
+
+        Article::saving(function ($articulo) use ($el_quinto) {
+            if ((int) $articulo->id === $el_quinto) {
+                throw new \RuntimeException('falla de prueba al guardar el quinto clavo');
+            }
+        });
+
+        $resultado = $this->confirmar($conversation, $respuesta['tarjeta_id']);
+        $this->assertNotSame(200, $resultado['status']);
+
+        foreach ($clavos as $clavo) {
+            $this->assertSame([], glob(storage_path() . '/app/public/*_' . $clavo->id . '.webp'), 'Quedó un webp huérfano de ' . $clavo->name);
+        }
+
+        $this->assertNull($fotos[0]->fresh()->gestionada_at, 'La foto no se selló.');
+    }
+
+    /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 9: la foto se bloquea solo si la compra con factura
+     * donde aparece se CONFIRMÓ. Una tarjeta de compra cancelada (o reemplazada, o descartada) no se
+     * llevó la foto a ningún lado: la foto que se puso en un artículo se sigue pudiendo reusar.
+     *
+     * @test
+     */
+    public function una_tarjeta_de_compra_cancelada_no_bloquea_el_reuso_de_la_foto()
+    {
+        $a = $this->articulo('Balde 10 L');
+        $b = $this->articulo('Balde 12 L');
+        $conversation = $this->conversacion();
+        list(, $fotos) = $this->del_dueno($conversation, 'Esta al balde de 10');
+        $assistant = $this->del_asistente($conversation);
+        $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+
+        foreach ([AiMessageAction::ESTADO_CANCELADA, AiMessageAction::ESTADO_REEMPLAZADA, AiMessageAction::ESTADO_DESCARTADA] as $i => $estado) {
+            AiMessageAction::create([
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $assistant->id,
+                'user_id'            => $this->comercio->id,
+                'auth_user_id'       => $this->comercio->id,
+                'tipo'               => AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+                'clave'              => 'compra_con_factura:e1r-' . $i,
+                'estado'             => $estado,
+                'datos'              => ['imagen_ids' => [(int) $fotos[0]->id], 'imagen_ids_miradas' => [(int) $fotos[0]->id]],
+                'presentacion'       => ['titulo' => 'Compra con factura', 'renglones' => [], 'aviso' => null],
+            ]);
+        }
+
+        $primera = PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant, ['articulo_id' => $a->id]);
+        $this->assertSame(200, $this->confirmar($conversation, $primera['tarjeta_id'])['status']);
+
+        $reuso = PropuestaFotoArticuloIaHelper::proponer($contexto, $this->del_asistente($conversation), ['articulo_id' => $b->id, 'imagen_id' => $fotos[0]->id]);
+        $this->assertTrue($reuso['ok'], json_encode($reuso));
+        $this->assertTrue(AiMessageAction::find($reuso['tarjeta_id'])->datos['reusa_usada']);
+    }
+
+    /**
      * El historial le muestra al modelo el id de cada foto de los mensajes anteriores («[Foto adjunta]
      * [imagen_id N]»), y el de las fotos del mensaje actual cuando son varias.
      *

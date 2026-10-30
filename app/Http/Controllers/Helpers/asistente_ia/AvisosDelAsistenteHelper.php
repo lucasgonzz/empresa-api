@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\ProviderOrderScanController;
+use App\Models\AiAvisoDelAsistente;
 use App\Models\AiConversation;
 use App\Models\AiEnvioFallido;
 use App\Models\AiMessage;
@@ -36,7 +37,8 @@ use Illuminate\Support\Facades\DB;
  *
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/avisos-pendientes?spa_url=   → 200 {avisos:[{id, tipo, ai_conversation_id, texto, ruta, url|null}]}
- *        (`id` = "escaneo_factura:{uuid}" o "envio_fallido:{uuid}")
+ *        (`id` = "escaneo_factura:{uuid}", "envio_fallido:{uuid}" o, desde el 30/10/2026,
+ *        "turno_sin_terminar:{uuid}": ver TIPO_TURNO_SIN_TERMINAR)
  *   POST admin-sync/asistente/avisos/avisado {id, url?, whatsapp_message_id?} → 200 {ok:true} · 404
  *
  * 🔴 SEGUNDO TIPO DESDE EL 19/10/2026: `envio_fallido` (misión asistente-arreglos-segunda-prueba, N3).
@@ -58,6 +60,12 @@ class AvisosDelAsistenteHelper
 
     /** El aviso de un envío a clientes que falló después del sí (`ai_envios_fallidos`, N3 del 19/10/2026). */
     const TIPO_ENVIO_FALLIDO = 'envio_fallido';
+
+    /**
+     * El aviso de un turno de WhatsApp que no terminó (`ai_avisos_del_asistente`, misión
+     * agente-mejoras-uso-real, ronda de arreglos del 30/10/2026): ver AvisosDeTurnosIaHelper.
+     */
+    const TIPO_TURNO_SIN_TERMINAR = AiAvisoDelAsistente::TIPO_TURNO_SIN_TERMINAR;
 
     /** Cuánto dura el anuncio del admin ("yo consulto los avisos" y su spa_url): 30 días. */
     const DIAS_DEL_ANUNCIO = 30;
@@ -288,6 +296,33 @@ class AvisosDelAsistenteHelper
             // Sin la tabla de envíos fallidos, siguen saliendo los avisos de los escaneos.
         }
 
+        /*
+         * 🔴 TERCER TIPO DESDE EL 30/10/2026: `turno_sin_terminar` (misión agente-mejoras-uso-real, ronda
+         * de arreglos). El turno de WhatsApp que se cortó con fotos sin cargar, o que quedó colgado en
+         * `pendiente` y cerró el vigía (AvisosDeTurnosIaHelper). Con el mensaje en `error` el admin manda
+         * su disculpa fija y no lee el contenido; esto es lo que le dice al dueño qué pasó con su pedido.
+         * Sin link, como el del envío fallido. Misma forma de contrato: el admin no mira el tipo.
+         */
+        try {
+
+            foreach (AvisosDeTurnosIaHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
+
+                $avisos[] = [
+                    'id'                 => self::TIPO_TURNO_SIN_TERMINAR . ':' . (string) $fila->uuid,
+                    'tipo'               => self::TIPO_TURNO_SIN_TERMINAR,
+                    'ai_conversation_id' => empty($fila->ai_conversation_id) ? null : (int) $fila->ai_conversation_id,
+                    'texto'              => (string) $fila->texto,
+                    'ruta'               => '',
+                    'url'                => null,
+                ];
+
+                $orden[] = [self::momento($fila->created_at), 2, (int) $fila->id];
+            }
+
+        } catch (\Throwable $e) {
+            // Sin la tabla de los avisos de turnos, siguen saliendo los demás.
+        }
+
         if (count($orden) > 1) {
 
             $posiciones = array_keys($avisos);
@@ -351,6 +386,14 @@ class AvisosDelAsistenteHelper
         if (!is_null($uuid_de_envio)) {
 
             return self::marcar_envio_fallido_avisado($dueno, $uuid_de_envio, self::url_segura($url), $whatsapp_message_id);
+        }
+
+        /* El turno sin terminar (30/10/2026): mismo molde que el envío fallido. */
+        $uuid_de_turno = self::uuid_del_tipo($id, self::TIPO_TURNO_SIN_TERMINAR);
+
+        if (!is_null($uuid_de_turno)) {
+
+            return self::marcar_turno_avisado($dueno, $uuid_de_turno, self::url_segura($url), $whatsapp_message_id);
         }
 
         $uuid = self::uuid_de_escaneo($id);
@@ -444,6 +487,52 @@ class AvisosDelAsistenteHelper
             self::dejar_en_la_conversacion($dueno, $fila->ai_conversation_id, $texto, $url, $whatsapp_message_id);
 
             Cache::forget($clave);
+
+            return true;
+        });
+    }
+
+    /**
+     * Sella el aviso de un turno que no terminó y lo deja en su conversación como un mensaje del
+     * asistente: así «seguí» o «sí, retomalo» tienen contexto en el turno siguiente. Mismas garantías que
+     * los otros dos tipos: dentro del dueño, la fila bloqueada y el sello mirado adentro de la
+     * transacción (un reintento del admin no deja dos mensajes), idempotente.
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  string  $uuid
+     * @param  string|null  $url  Este aviso no lleva link; si el admin mandara uno, ya pasó por url_segura().
+     * @param  mixed  $whatsapp_message_id
+     * @return bool  false si no existe o no es de este dueño (el 404 del contrato).
+     */
+    protected static function marcar_turno_avisado(User $dueno, $uuid, $url, $whatsapp_message_id): bool
+    {
+        if (!AvisosDeTurnosIaHelper::hay_tabla()) {
+
+            return false;
+        }
+
+        return DB::transaction(function () use ($dueno, $uuid, $url, $whatsapp_message_id) {
+
+            $fila = AiAvisoDelAsistente::where('owner_id', (int) $dueno->id)
+                                        ->where('uuid', $uuid)
+                                        ->lockForUpdate()
+                                        ->first();
+
+            if (is_null($fila)) {
+
+                return false;
+            }
+
+            if (!is_null($fila->avisado_por_whatsapp_at)) {
+
+                return true;
+            }
+
+            $fila->avisado_por_whatsapp_at = Carbon::now();
+            $fila->whatsapp_message_id = is_null($whatsapp_message_id) ? null : mb_substr((string) $whatsapp_message_id, 0, 191);
+            $fila->save();
+
+            self::dejar_en_la_conversacion($dueno, $fila->ai_conversation_id, (string) $fila->texto, $url, $whatsapp_message_id);
 
             return true;
         });
