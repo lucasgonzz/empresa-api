@@ -236,11 +236,19 @@ class BloquesIaHelper
     /**
      * Valida y normaliza una tabla (lo que manda mostrar_tabla, o la `tabla` de un bloque guardado).
      *
+     * Misión agente-mejoras-uso-real (29/10/2026, §4 E3.1): exportar_excel valida su tabla con ESTE
+     * mismo método (una sola definición de qué es una tabla válida), pero con otro techo de filas: un
+     * Excel aguanta las 1000 que la pantalla no. Por eso el techo es un parámetro opcional; sin él es
+     * MAX_FILAS, como siempre, y los llamadores de antes no cambian.
+     *
      * @param  mixed  $entrada
+     * @param  int|null  $max_filas  El techo de filas; null = MAX_FILAS (el de la app).
      * @return array{bloque: array|null, error: string|null}
      */
-    public static function tabla($entrada): array
+    public static function tabla($entrada, $max_filas = null): array
     {
+        $max_filas = is_null($max_filas) ? self::MAX_FILAS : max(1, (int) $max_filas);
+
         if (!is_array($entrada)) {
 
             return self::error('la tabla tiene que ser un objeto');
@@ -301,9 +309,9 @@ class BloquesIaHelper
 
         $filas_crudas = isset($entrada['filas']) && is_array($entrada['filas']) ? array_values($entrada['filas']) : [];
 
-        if (count($filas_crudas) > self::MAX_FILAS) {
+        if (count($filas_crudas) > $max_filas) {
 
-            return self::error('hay más de ' . self::MAX_FILAS . ' filas; mostrá las más importantes');
+            return self::error('hay más de ' . $max_filas . ' filas; mostrá las más importantes');
         }
 
         $filas = [];

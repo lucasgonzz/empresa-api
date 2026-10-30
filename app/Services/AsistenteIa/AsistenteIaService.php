@@ -3489,6 +3489,8 @@ CONFIRMACION;
      * El registro ÚNICO de las tools de LECTURA del asistente: cada entrada lleva JUNTAS su
      * definición para la API de Anthropic (name / description / input_schema) y el `handler` que la
      * resuelve cuando Claude la llama. Ninguna crea, modifica ni borra nada.
+     * (exportar_excel, misión agente-mejoras-uso-real, deja un archivo propio del agente con su link en
+     * el disco privado: tampoco toca ningún dato del negocio.)
      *
      * 🔴 POR QUÉ UN REGISTRO Y NO DOS LISTAS: hasta esta misión toda tool se declaraba en DOS
      * lugares de este archivo —el array de definiciones y su rama del if/elseif de
@@ -4259,6 +4261,62 @@ CONFIRMACION;
                         (int) $owner_id,
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         isset($input['compra_num']) ? $input['compra_num'] : null
+                    );
+                },
+            ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-uso-real (29/10/2026, §4 E3.1), al final por la regla del prefijo
+             * del caché. En Ferre Total (CONV 9) el dueño pidió «¿me lo podés volcar en un archivo
+             * Excel?» y el agente contestó que no podía generar archivos. Va en el registro de LECTURA
+             * para que esté en los tres canales (sistema, WhatsApp y la app) aunque el mensaje no tenga
+             * las herramientas de carga: no toca ningún dato del negocio, solo arma un archivo con lo que
+             * el modelo ya consultó y deja su link (con token y vencimiento) en el disco privado. La
+             * validación de la tabla es la de mostrar_tabla (BloquesIaHelper::tabla) con techo de 1000
+             * filas; todo lo del link vive en ArchivosDelAgenteIaHelper.
+             */
+            [
+                'name' => 'exportar_excel',
+                'description' => 'Arma un archivo EXCEL (.xlsx) con una tabla y devuelve un LINK para bajarlo. Usala cuando la persona pida los datos "en un Excel", "en una planilla" o "en un archivo para bajar" (por ejemplo: "volcame ese ranking en un Excel"). Primero consultá los datos con las herramientas de consulta; después mandá acá las columnas (cada una con una clave corta de letras, números o _, su etiqueta y su formato: texto, numero, moneda, porcentaje o fecha) y las filas (un objeto por fila con esas claves; en las columnas numéricas el valor va como NÚMERO sin formato, y un porcentaje en puntos: 15 = 15 %). Hasta 12 columnas y 1000 filas. La respuesta trae el link: pasáselo TAL CUAL a la persona, sin acortarlo; vence a los 7 días. Anda en todos los canales: por WhatsApp el link se toca y se baja el archivo. 🔴 Nunca digas que no podés generar un Excel o un archivo: con esta herramienta podés. Si la respuesta trae "error", corregí lo que dice y volvé a llamarla, o contá el motivo tal cual.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'titulo' => [
+                            'type'        => 'string',
+                            'description' => 'Título de la tabla (hasta 120 caracteres): es el nombre de la hoja. Ejemplo: "Ranking de ventas, últimos 90 días".',
+                        ],
+                        'columnas' => [
+                            'type'  => 'array',
+                            'items' => [
+                                'type'       => 'object',
+                                'properties' => [
+                                    'clave'    => ['type' => 'string'],
+                                    'etiqueta' => ['type' => 'string'],
+                                    'formato'  => ['type' => 'string', 'enum' => BloquesIaHelper::FORMATOS_DE_COLUMNA],
+                                ],
+                                'required'   => ['clave', 'etiqueta'],
+                            ],
+                        ],
+                        'filas' => [
+                            'type'  => 'array',
+                            'items' => ['type' => 'object'],
+                        ],
+                        'nombre_archivo' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el nombre del archivo, sin la extensión ("ranking-de-ventas"). Sin esto, sale del título.',
+                        ],
+                    ],
+                    'required' => ['titulo', 'columnas', 'filas'],
+                ],
+                /*
+                 * La conversación y el mensaje en curso solo quedan registrados en la fila del archivo
+                 * (quién lo pidió y desde qué respuesta); el MCP llama sin mensaje y anda igual.
+                 */
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ArchivosDelAgenteIaHelper::exportar_excel(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                        $input
                     );
                 },
             ],

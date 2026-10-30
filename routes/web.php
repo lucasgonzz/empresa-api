@@ -176,6 +176,21 @@ Route::get('/exported-files/{path}', function ($path) use ($servir_archivo_confi
     });
 })->where('path', '.*');
 
+/*
+ * El Excel que arma el agente personal (misión agente-mejoras-uso-real, 29/10/2026, herramienta
+ * exportar_excel): el link que el agente le pasa al dueño por WhatsApp, el sistema o la app.
+ *
+ * PÚBLICA a propósito (el dueño lo abre desde el teléfono, sin sesión) y declarada con su motivo en
+ * Seguridad/RutasPublicas/1_Ninguna_ruta_publica_sin_saberlo_Test. La protege el token del link
+ * (`?t=`, comparado con hash_equals contra su sha256), el vencimiento de 7 días y que el archivo sale
+ * de la fila y de la carpeta de su dueño en el disco PRIVADO: ArchivosDelAgenteIaHelper::para_descargar().
+ * El throttle es una capa extra contra el barrido, no la protección.
+ *
+ * 🔴 El nombre no lleva "excel" ni "export" a propósito: no es un export de una pantalla (que va detrás de
+ * descarga.comercio, PdfDeVentaPublico/2), es un link con token propio, como el informe compartido.
+ */
+Route::get('asistente/archivo/{uuid}', 'ArchivoDelAgenteController@descargar')->middleware('throttle:60,1');
+
 
 
 // Reportes
