@@ -98,6 +98,7 @@ class Ninguna_ruta_publica_sin_saberlo_Test extends RutasPublicasTestCase
         'GET api/plan-feature'             => 'Catálogo público de features de los planes.',
         'POST api/internal/report-front-error' => 'Errores del SPA, que pueden pasar antes del login; con throttle por firma del error.',
         'POST api/demo/ingreso'            => 'Ingreso a una demo por magic link: busca el sha256 del token (vigente, no revocado).',
+        'POST api/acceso-soporte/canjear'  => 'Canje del acceso de soporte (misión acceso-soporte-firmado, 30/10/2026): lo llama el navegador del agente, que todavía no tiene sesión ni la clave del admin. Lo protege el token: lo emite admin-sync/acceso-soporte con la clave compartida (admin.api.key:siempre), vive 2 minutos, se guarda solo su sha256 y se consume UNA vez de forma atómica; mismo 401 para cualquier rechazo; throttle 10/min. Lo prueban AccesoSoporte/CanjeDelAccesoDeSoporteTest y CandadoDeSesionUnicaConAccesoDeSoporteTest.',
         'GET api/informe-compartido/{token}' => 'Un informe del mostrador por token de 64 caracteres guardado como hash; vence a los 7 días.',
         'GET api/integraciones/articulos/{export_key}' => 'Catálogo para n8n por la export_key (>= 20 caracteres) del dueño; throttle 120/min. Es el reemplazo de n8n/productos-disponibles.',
         'POST api/print-agent/vincular'    => 'El agente de impresión canjea un código de vinculación (sha256, un solo uso, con vencimiento) por su token; throttle 20/min.',
