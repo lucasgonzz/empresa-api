@@ -21,7 +21,15 @@ use Illuminate\Support\Facades\Schema;
  *     `motivo`, `ip_solicitud`), cuándo (`created_at`) y quién lo canjeó y desde dónde (`usado_en`,
  *     `ip_canje`, `user_agent_canje`).
  *
- * Sin claves foráneas (regla del repo): `user_id` apunta a `users.id` por convención, nada lo impone en la base.
+ * Sin claves foráneas (regla del repo): `owner_id` apunta a `users.id` por convención, nada lo impone en la base.
+ *
+ * 🔴 `owner_id` y NO `user_id`, a propósito. `EsquemaDeDatosIaHelper` deriva como entidad consultable por el
+ * asistente toda tabla con columna `user_id` que no esté en su lista negra (medido el 30/10/2026: con `user_id`
+ * esta tabla aparecía como la entidad `acceso_soporte_token`, con quién entró, desde qué IP y navegador, a
+ * disposición de `consultar_datos`). Es el mismo motivo por el que `ai_avisos_del_asistente` y
+ * `ai_envios_fallidos` usan `owner_id`: el rastro de los accesos de soporte es del sistema, no un dato del
+ * negocio que se lee desde el chat.
+ *
  * `vence_en` es NULLABLE a propósito: en MySQL, un `timestamp` NOT NULL sin default toma `CURRENT_TIMESTAMP` y
  * hasta se auto-actualiza en cada UPDATE según la configuración del servidor, y un vencimiento que se mueve
  * solo es exactamente lo que no se quiere acá. Con NULL, una fila sin vencimiento no se puede canjear nunca
@@ -48,8 +56,8 @@ class CreateAccesoSoporteTokensTable extends Migration
             // sha256 del token en hexadecimal (64 caracteres). Es por donde se busca al canjear.
             $table->char('token_hash', 64)->default('');
 
-            // El dueño al que da acceso este token (sin FK).
-            $table->unsignedBigInteger('user_id')->default(0);
+            // El dueño al que da acceso este token (sin FK). `owner_id` y no `user_id`: ver el docblock.
+            $table->unsignedBigInteger('owner_id')->default(0);
 
             // Quién pidió el acceso ("claude", "codex", un nombre) y por qué. Saneados al emitir.
             $table->string('solicitante', 60)->nullable();
@@ -69,7 +77,7 @@ class CreateAccesoSoporteTokensTable extends Migration
             $table->timestamps();
 
             $table->index('token_hash', 'ast_hash_idx');
-            $table->index('user_id', 'ast_user_idx');
+            $table->index('owner_id', 'ast_owner_idx');
         });
     }
 

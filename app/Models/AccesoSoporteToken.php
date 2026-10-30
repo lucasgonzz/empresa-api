@@ -31,7 +31,7 @@ class AccesoSoporteToken extends Model
      */
     protected $fillable = [
         'token_hash',
-        'user_id',
+        'owner_id',
         'solicitante',
         'motivo',
         'ip_solicitud',
@@ -47,7 +47,7 @@ class AccesoSoporteToken extends Model
      * @var array<string, string>
      */
     protected $casts = [
-        'user_id'  => 'integer',
+        'owner_id' => 'integer',
         'vence_en' => 'datetime',
         'usado_en' => 'datetime',
     ];

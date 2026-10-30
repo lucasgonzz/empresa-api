@@ -112,7 +112,7 @@ class AccesoSoporteHelper
         $fila = AccesoSoporteToken::create([
             // Solo el hash: si la base se filtra, esto no sirve para entrar.
             'token_hash'   => hash('sha256', $token),
-            'user_id'      => $user->id,
+            'owner_id'     => $user->id,
             'solicitante'  => $solicitante,
             'motivo'       => $motivo,
             'ip_solicitud' => $ip,
@@ -185,7 +185,7 @@ class AccesoSoporteHelper
         }
 
         /** El dueño al que da acceso. */
-        $user = User::find($fila->user_id);
+        $user = User::find($fila->owner_id);
 
         // Tiene que seguir existiendo y seguir siendo DUEÑO: si entre la emisión y el canje alguien lo volvió
         // empleado, el acceso de soporte no le sirve de puerta a una cuenta que no es la del comercio.
