@@ -41,6 +41,10 @@ use Illuminate\Support\Str;
  * revocada) o sin IA (clave vencida, sin saldo) dejan la corrida `fallida`; seguir sería pagar para no
  * conseguir nada. Una demo sin búsquedas la termina con el motivo de la demo.
  *
+ * Un corte corto de la base (misión medidas-vigia-de-corridas, 30/10/2026) no es una falla del artículo: el
+ * tramo espera hasta 150 s a que vuelva, devuelve el artículo a la fila sin gastar el intento y sigue. Si no
+ * vuelve, muere como siempre y lo levanta el vigía (comando medidas:reanudar-trabadas).
+ *
  * La cola: `excel` en el shared hosting (ese worker corre con --memory=512 --max-time=1200 y no retiene
  * al del asistente), la default en el VPS. Mismo criterio que ProcessImageAssignmentRunJob.
  *
@@ -86,8 +90,34 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
     /** Minutos que se recuerda que el failed() de una ficha de tramo ya corrió (ver failed()). */
     const MINUTOS_DE_MEMORIA_DEL_FAILED = 1440;
 
+    /**
+     * Cuánto espera un tramo a que vuelva la base cuando se le corta la conexión (misión
+     * medidas-vigia-de-corridas, 30/10/2026). La base del VPS la mata el OOM del kernel cada noche y tarda
+     * de uno a tres minutos en volver: 150 s cubren casi todos los cortes. Más que eso ya no es un corte corto
+     * y el tramo muere como siempre (lo reanuda el vigía, medidas:reanudar-trabadas). Tiene que quedar
+     * holgado dentro del $timeout del tramo (480 s) junto con el artículo que se estaba procesando.
+     */
+    const SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE = 150;
+
+    /** Cada cuántos segundos se reintenta la conexión mientras se espera a la base. */
+    const SEGUNDOS_ENTRE_PINGS_A_LA_BASE = 10;
+
+    /**
+     * Veces que UN mismo artículo puede salir «gratis» (sin gastar intento) por un corte de la base dentro
+     * de un tramo. Es la red de seguridad de un falso positivo: un artículo que por sí mismo hace caer la
+     * conexión (un paquete que supera max_allowed_packet responde «server has gone away» con la base viva)
+     * se reintentaría para siempre. Pasadas estas veces, se lo cuenta como una falla normal.
+     */
+    const MAX_CORTES_DE_BASE_SIN_COSTO_POR_ARTICULO = 3;
+
     /** @var int La corrida a procesar. */
     protected $run_id;
+
+    /**
+     * @var array id del artículo => veces que este tramo lo devolvió a la fila sin gastar intento por un
+     * corte de la base (ver MAX_CORTES_DE_BASE_SIN_COSTO_POR_ARTICULO). Vive en el tramo: arranca vacío.
+     */
+    protected $cortes_de_base_por_articulo = [];
 
     /**
      * @var string Ficha de ESTE tramo: se genera al despachar (viaja en el payload, así handle() y failed()
@@ -152,7 +182,7 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
 
         $this->pasar_a_en_proceso($run);
 
-        $motor = new ArticleDimensionSearchEngine($run, $owner);
+        $motor = $this->crear_motor($run, $owner);
 
         $inicio      = microtime(true);
         $presupuesto = $this->segundos_por_tramo();
@@ -203,7 +233,8 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                 return;
             }
 
-            if (!$this->reclamar($item)) {
+            // El reclamo también necesita la base: si se corta justo acá, se espera a que vuelva en vez de matar el tramo.
+            if (!$this->reclamar_aguantando_un_corte($item)) {
                 continue;
             }
 
@@ -220,6 +251,13 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
             try {
                 $resultado = $motor->procesar($item);
             } catch (\Throwable $e) {
+                // Un corte de la base NO es culpa del artículo: se espera a que vuelva y el artículo reclamado vuelve
+                // a la fila sin gastar el intento. Si la base no vuelve a tiempo, esto relanza la excepción y el tramo
+                // muere como antes (failed() y el vigía hacen el resto).
+                if ($this->aguantar_corte_de_base($e, $item)) {
+                    continue;
+                }
+
                 Log::error('[MedidasMasivas] El motor falló con un artículo.', [
                     'run_id'     => $run->id,
                     'item_id'    => $item->id,
@@ -229,7 +267,13 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                     'archivo'    => $e->getFile().':'.$e->getLine(),
                 ]);
 
-                $this->devolver_o_descartar($item->fresh(), $e->getMessage());
+                // Si la base se corta justo mientras se registra el fallo, se espera y se reintenta una vez.
+                $mensaje_del_motor = $e->getMessage();
+
+                $this->aguantando_un_corte_de_base(function () use ($item, $mensaje_del_motor) {
+                    $this->devolver_o_descartar($item->fresh(), $mensaje_del_motor);
+                });
+
                 continue;
             }
 
@@ -339,6 +383,15 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      */
     public function failed($e)
     {
+        // Si el tramo murió porque la base no estaba, se deja dicho claro: lo que viene en el log (esta
+        // función misma puede no poder escribir nada) tiene que apuntar al vigía y no a un error del artículo.
+        if (!is_null($e) && $this->es_corte_de_base($e)) {
+            Log::warning('[MedidasMasivas] El tramo murió porque la base no estaba; lo reanuda el vigía (medidas:reanudar-trabadas).', [
+                'run_id' => $this->run_id,
+                'tramo'  => $this->tramo,
+            ]);
+        }
+
         try {
             // Si el tramo murió adentro de una transacción, la conexión puede seguir con ella abierta: lo
             // que se escriba acá quedaría adentro y se perdería con ella. Se deshacen TODOS los niveles.
@@ -474,6 +527,246 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
             ]);
 
         return $afectadas > 0;
+    }
+
+    /**
+     * Arma el motor de búsqueda del tramo. Existe como método aparte para que los tests puedan reemplazarlo
+     * por uno que falla a pedido (la base cortada se simula sin tocar la conexión real).
+     *
+     * @param  \App\Models\DimensionSearchRun $run
+     * @param  \App\Models\User $owner
+     * @return \App\Services\DimensionSearch\ArticleDimensionSearchEngine
+     */
+    protected function crear_motor(DimensionSearchRun $run, User $owner)
+    {
+        return new ArticleDimensionSearchEngine($run, $owner);
+    }
+
+    /**
+     * ¿La excepción es un corte de la conexión con la base de datos (la base se cayó, la reiniciaron o la
+     * mató el sistema operativo)? Mira la excepción y toda su cadena de causas, y SOLO cuenta las de la base
+     * (QueryException / PDOException): un «Connection timed out» de Serper o de una página no es la base y no
+     * puede salir gratis, o un proveedor colgado haría reintentar el mismo artículo para siempre.
+     *
+     * Se reconoce por el código del driver (2002 no se pudo conectar, 2006 la base se fue, 2013 se perdió la
+     * conexión en medio de la consulta) o por el texto del mensaje.
+     *
+     * @param  \Throwable|null $e
+     * @return bool
+     */
+    protected function es_corte_de_base($e)
+    {
+        // Códigos de error de MySQL que significan «no hay base del otro lado».
+        $codigos = [2002, 2006, 2013];
+
+        // Fragmentos del mensaje que significan lo mismo (el driver a veces no deja el código a mano).
+        $frases = ['Connection refused', 'server has gone away', 'Lost connection', 'Connection timed out'];
+
+        $profundidad = 0;
+
+        while (!is_null($e) && $profundidad < 10) {
+            if ($e instanceof \Illuminate\Database\QueryException || $e instanceof \PDOException) {
+                // El código de la excepción (PDOException lo deja entero en los errores de conexión)...
+                if (is_numeric($e->getCode()) && in_array((int) $e->getCode(), $codigos, true)) {
+                    return true;
+                }
+
+                // ...o el del driver, que viaja en errorInfo[1] cuando el código es el SQLSTATE.
+                $info = isset($e->errorInfo) && is_array($e->errorInfo) ? $e->errorInfo : [];
+
+                if (isset($info[1]) && in_array((int) $info[1], $codigos, true)) {
+                    return true;
+                }
+
+                foreach ($frases as $frase) {
+                    if (stripos($e->getMessage(), $frase) !== false) {
+                        return true;
+                    }
+                }
+            }
+
+            $e = $e->getPrevious();
+            $profundidad++;
+        }
+
+        return false;
+    }
+
+    /**
+     * Espera a que la base vuelva: reconecta y hace un ping (`select 1`) cada SEGUNDOS_ENTRE_PINGS_A_LA_BASE
+     * segundos, hasta SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE. Es `protected` para que los tests lo reemplacen
+     * (reconectar adentro de la transacción de un test la rompería, y nadie quiere dormir 150 s en una suite).
+     *
+     * @return bool  true si la base respondió; false si pasó el tiempo y sigue caída.
+     */
+    protected function esperar_a_la_base()
+    {
+        $inicio = microtime(true);
+
+        while (true) {
+            try {
+                DB::reconnect();
+                DB::select('select 1');
+
+                return true;
+            } catch (\Throwable $error) {
+                $restante = self::SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE - (microtime(true) - $inicio);
+
+                if ($restante <= 0) {
+                    return false;
+                }
+
+                // No se duerme más de lo que queda de la espera.
+                sleep((int) max(1, min(self::SEGUNDOS_ENTRE_PINGS_A_LA_BASE, ceil($restante))));
+            }
+        }
+    }
+
+    /**
+     * Un artículo cuyo procesamiento reventó con un corte de la base: espera a que vuelva y, si vuelve, lo
+     * devuelve a `pendiente` SIN gastar el intento (el corte no fue culpa del artículo).
+     *
+     * @param  \Throwable $e     Lo que reventó adentro del motor.
+     * @param  \App\Models\DimensionSearchItem $item  El artículo que este tramo tenía reclamado.
+     * @return bool  true = era un corte, la base volvió y el artículo está de vuelta en la fila (hay que seguir
+     *               con el próximo); false = no era un corte (o ya salió gratis demasiadas veces): se maneja
+     *               como cualquier otra falla. Si era un corte y la base NO volvió, relanza la excepción.
+     * @throws \Throwable
+     */
+    protected function aguantar_corte_de_base(\Throwable $e, DimensionSearchItem $item)
+    {
+        if (!$this->es_corte_de_base($e)) {
+            return false;
+        }
+
+        $veces = isset($this->cortes_de_base_por_articulo[$item->id]) ? $this->cortes_de_base_por_articulo[$item->id] : 0;
+
+        // Falsa alarma: un artículo que ya salió gratis varias veces es el que rompe la conexión, no la base.
+        if ($veces >= self::MAX_CORTES_DE_BASE_SIN_COSTO_POR_ARTICULO) {
+            return false;
+        }
+
+        Log::warning('[MedidasMasivas] Se cortó la conexión con la base en medio de un artículo: se espera a que vuelva.', [
+            'run_id'  => $this->run_id,
+            'item_id' => $item->id,
+            'error'   => $e->getMessage(),
+        ]);
+
+        if (!$this->esperar_a_la_base()) {
+            Log::error('[MedidasMasivas] La base no volvió a tiempo: el tramo se interrumpe y lo levanta el vigía (medidas:reanudar-trabadas).', [
+                'run_id' => $this->run_id,
+                'espera' => self::SEGUNDOS_MAXIMOS_DE_ESPERA_DE_LA_BASE,
+            ]);
+
+            throw $e;
+        }
+
+        $this->cortes_de_base_por_articulo[$item->id] = $veces + 1;
+
+        // La escritura que devuelve el artículo también puede toparse con otro corte: se espera y se reintenta una vez.
+        $this->aguantando_un_corte_de_base(function () use ($item) {
+            $this->devolver_sin_gastar_intento($item);
+        });
+
+        Log::info('[MedidasMasivas] La base volvió: el artículo quedó en la fila sin gastar el intento y el tramo sigue.', [
+            'run_id'  => $this->run_id,
+            'item_id' => $item->id,
+        ]);
+
+        return true;
+    }
+
+    /**
+     * Corre una operación contra la base y, si se corta la conexión justo ahí, espera a que vuelva y la repite
+     * UNA vez. Sirve solo para operaciones que se pueden repetir sin efecto doble.
+     *
+     * @param  \Closure $operacion
+     * @return mixed  Lo que devuelva la operación.
+     * @throws \Throwable Si falla por otra causa, o si la base no vuelve, o si vuelve a cortarse al repetir.
+     */
+    protected function aguantando_un_corte_de_base(\Closure $operacion)
+    {
+        try {
+            return $operacion();
+        } catch (\Throwable $e) {
+            if (!$this->es_corte_de_base($e)) {
+                throw $e;
+            }
+
+            Log::warning('[MedidasMasivas] Se cortó la conexión con la base: se espera a que vuelva para repetir la operación.', [
+                'run_id' => $this->run_id,
+                'error'  => $e->getMessage(),
+            ]);
+
+            if (!$this->esperar_a_la_base()) {
+                throw $e;
+            }
+
+            return $operacion();
+        }
+    }
+
+    /**
+     * Reclama un artículo (ver reclamar()) aguantando un corte de la base.
+     *
+     * Si la conexión se pierde DESPUÉS de que la base aplicó el UPDATE, la respuesta nunca llega y el reclamo
+     * parece haber fallado: al volver se mira de quién quedó el artículo antes de repetirlo, para no dejarlo
+     * «procesando» a nombre de este tramo sin que nadie lo trabaje.
+     *
+     * @param  \App\Models\DimensionSearchItem $item
+     * @return bool  true si este tramo se quedó con el artículo.
+     */
+    protected function reclamar_aguantando_un_corte(DimensionSearchItem $item)
+    {
+        try {
+            return $this->reclamar($item);
+        } catch (\Throwable $e) {
+            if (!$this->es_corte_de_base($e)) {
+                throw $e;
+            }
+
+            Log::warning('[MedidasMasivas] Se cortó la conexión con la base al reclamar un artículo: se espera a que vuelva.', [
+                'run_id'  => $this->run_id,
+                'item_id' => $item->id,
+                'error'   => $e->getMessage(),
+            ]);
+
+            if (!$this->esperar_a_la_base()) {
+                throw $e;
+            }
+
+            // ¿Llegó a aplicarse el reclamo antes del corte?
+            $ya_es_de_este_tramo = DB::table('dimension_search_items')
+                ->where('id', $item->id)
+                ->where('status', DimensionSearchItem::STATUS_PROCESANDO)
+                ->where('tramo', $this->tramo)
+                ->exists();
+
+            return $ya_es_de_este_tramo ? true : $this->reclamar($item);
+        }
+    }
+
+    /**
+     * Devuelve a `pendiente` el artículo que este tramo tenía reclamado, SIN gastar el intento: el reclamo
+     * había sumado uno (`intentos`) y se lo resta, y se suelta la ficha del tramo. Solo toca al que sigue
+     * `procesando` con la ficha de este tramo.
+     *
+     * @param  \App\Models\DimensionSearchItem $item
+     * @return void
+     */
+    protected function devolver_sin_gastar_intento(DimensionSearchItem $item)
+    {
+        DB::table('dimension_search_items')
+            ->where('id', $item->id)
+            ->where('status', DimensionSearchItem::STATUS_PROCESANDO)
+            ->where('tramo', $this->tramo)
+            ->update([
+                'status'     => DimensionSearchItem::STATUS_PENDIENTE,
+                // `intentos` es unsigned: nunca se baja de cero.
+                'intentos'   => DB::raw('CASE WHEN intentos > 0 THEN intentos - 1 ELSE 0 END'),
+                'tramo'      => null,
+                'updated_at' => Carbon::now(),
+            ]);
     }
 
     /**
