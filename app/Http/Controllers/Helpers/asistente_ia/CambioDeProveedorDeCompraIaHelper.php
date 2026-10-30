@@ -8,11 +8,13 @@ use App\Http\Controllers\ProviderOrderScanController;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\CreditAccount;
+use App\Models\CurrentAcount;
 use App\Models\Provider;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderAfipTicket;
 use App\Models\ProviderOrderScan;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * «VOLVÉ A CARGARLA CON OTRO PROVEEDOR»: cambiarle el proveedor a una compra que el agente acaba de
@@ -35,6 +37,8 @@ use Carbon\Carbon;
  *   3. SIN FACTURA A MANO: ninguna factura (`provider_order_afip_tickets`) que no haya cargado el
  *      propio agente, sin `numero_comprobante` ni fecha de comprobante escritos en la pantalla.
  *   4. SU ESCANEO NO ESTÁ CONFIRMADO. Uno confirmado ya asentó renglones con este proveedor.
+ *   5. SIN PAGOS IMPUTADOS (ronda de arreglos, 30/10/2026): el pago quedaría a favor en la cuenta del
+ *      proveedor viejo. Y si el proveedor nuevo hay que darlo de alta, la tarjeta espera el sí siempre.
  *
  * ⚠️ UN ESCANEO EN CURSO NO BLOQUEA, a propósito. En la CONV 19 el pedido llegó nueve minutos después
  * de la compra, con el escaneo quizás todavía corriendo (la ventana de "en curso" es de una hora), y
@@ -163,15 +167,34 @@ class CambioDeProveedorDeCompraIaHelper
             [
                 'titulo'    => 'Cambiar el proveedor de una compra',
                 'renglones' => $renglones,
-                'aviso'     => null,
+                'aviso'     => is_null($proveedor_nuevo)
+                    ? null
+                    : 'No tenés ningún proveedor "' . $nombre_nuevo . '": confirmá que sea ése antes de que lo dé de alta y le pase la compra.',
             ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
+        /*
+         * 🔴 UN PROVEEDOR QUE HAY QUE DAR DE ALTA NO SE CREA SOLO (revisión independiente, arreglo 7a,
+         * 30/10/2026), como en la compra con factura: con el dueño en "directo" este cambio se ejecuta en
+         * el acto, y un nombre mal entendido («mariano limpieza» por audio) dejaría un proveedor nuevo con
+         * la deuda encima. `requiere_confirmacion` hace que la puerta de la auto-confirmación deje la
+         * tarjeta esperando el sí, en todos los modos.
+         */
+        $extra = [];
+
+        if (!is_null($proveedor_nuevo)) {
+
+            $extra['proveedor_nuevo'] = $nombre_nuevo;
+            $extra['requiere_confirmacion'] = true;
+            $extra['nota'] = 'El proveedor "' . $nombre_nuevo . '" no existe: quedó esperando el sí de la persona para darlo de alta y pasarle la compra. '
+                . 'Decile eso y preguntale si es ése; no digas que ya está cambiado.';
+        }
+
         return AccionesIaHelper::respuesta_de_propuesta(
             $creada,
             'Compra N° ' . $compra->num . ': de ' . $nombre_anterior . ' a ' . $nombre_nuevo,
-            is_null($proveedor_nuevo) ? [] : ['proveedor_nuevo' => $nombre_nuevo]
+            $extra
         );
     }
 
@@ -388,6 +411,18 @@ class CambioDeProveedorDeCompraIaHelper
             return 'La Compra N° ' . $compra->num . ' tiene una factura cargada a mano: cambiale el proveedor desde la pantalla de la compra en Compras.';
         }
 
+        /*
+         * 🔴 CON PAGOS IMPUTADOS NO SE CAMBIA (revisión independiente, arreglo 7b, 30/10/2026). Se eligió lo
+         * más seguro: el movimiento de la compra pasaría a la cuenta del proveedor nuevo y el pago que la
+         * cubría quedaría A FAVOR en la cuenta del proveedor viejo, sin que nadie lo vea. Eso se arregla a
+         * mano desde la pantalla, mirando las dos cuentas.
+         */
+        if (self::tiene_pagos_imputados($compra)) {
+
+            return 'La Compra N° ' . $compra->num . ' ya tiene pagos imputados en la cuenta corriente: si le cambio el proveedor, ese pago quedaría a favor '
+                . 'en la cuenta del proveedor de antes. Cambiáselo desde la pantalla de la compra en Compras, mirando las dos cuentas.';
+        }
+
         $confirmado = ProviderOrderScan::where('provider_order_id', $compra->id)
                                         ->where('resultado_gestion', 'confirmado')
                                         ->exists();
@@ -497,6 +532,32 @@ class CambioDeProveedorDeCompraIaHelper
         return ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
                                         ->where('id', '!=', $del_agente)
                                         ->exists();
+    }
+
+    /**
+     * true si el movimiento de cuenta corriente de la compra ya tiene algún pago imputado: está
+     * `pagandose` o `pagado`, o tiene filas en `pagado_por` (la imputación de CurrentAcountHelper).
+     *
+     * @param  \App\Models\ProviderOrder  $compra
+     * @return bool
+     */
+    protected static function tiene_pagos_imputados(ProviderOrder $compra)
+    {
+        foreach (CurrentAcount::where('provider_order_id', (int) $compra->id)->get() as $movimiento) {
+
+            if (in_array((string) $movimiento->status, ['pagandose', 'pagado'], true)) {
+
+                return true;
+            }
+
+            /* La pivote directa: la relación pagado_por() trae un orderBy que choca con el exists(). */
+            if (DB::table('pagado_por')->where('debe_id', (int) $movimiento->id)->exists()) {
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
