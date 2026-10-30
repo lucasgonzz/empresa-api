@@ -33,8 +33,10 @@ use Tests\Fakes\HttpFactorySinSalida;
  *  - buscar_conversaciones_anteriores encuentra la charla por palabras (en los mensajes, en el título y
  *    en el resultado de una carga confirmada, con y sin tildes) y por fechas, sin la conversación actual;
  *  - leer_conversacion_anterior trae los mensajes con las tarjetas (el mismo renglón del historial), las
- *    fotos con su imagen_id y la respuesta que falló marcada; lee también la conversación ACTUAL; pagina
- *    hacia atrás con un techo de caracteres;
+ *    fotos (con su imagen_id solo en la actual; de otra, la nota dice que se pidan de nuevo, y una tarjeta
+ *    que ahí espera el sí se arma de nuevo: ronda de arreglos R5) y la respuesta que falló marcada; lee
+ *    también la conversación ACTUAL; pagina hacia atrás con un techo de caracteres;
+ *  - la guarda de la carga prometida no dispara por una carga de otra conversación leída (R2);
  *  - 🔴 la tenencia: otra persona del mismo negocio, otro negocio y las de MCP son invisibles, y una
  *    ajena contesta lo mismo que una que no existe;
  *  - el bloque del system con las últimas conversaciones (sin la actual, sin cache_control) y la regla
@@ -432,7 +434,7 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
 
     /**
      * La lectura: en orden, quién dijo qué, las tarjetas con el MISMO renglón del historial (sin las
-     * descartadas), las fotos con su imagen_id y la respuesta que falló marcada.
+     * descartadas), las fotos (de otra conversación, sin imagen_id: R5) y la respuesta que falló marcada.
      *
      * @test
      */
@@ -468,7 +470,16 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
 
         $primero = $leida['mensajes'][0];
         $this->assertSame('Te mando los cheques del pago a Sudamericana', $primero['texto']);
-        $this->assertSame('[2 fotos adjuntas] [imagen_id ' . $fotos[0]->id . ', ' . $fotos[1]->id . ']', $primero['fotos'], 'La misma marca que el historial: se reusan por su id.');
+
+        /*
+         * Contrato cambiado a propósito (ronda de arreglos R5, 30/10/2026): las fotos de OTRA conversación
+         * van sin su imagen_id —las herramientas que usan una foto por su id la buscan en la conversación
+         * actual— y la nota dice que se pida de nuevo.
+         */
+        $this->assertSame('[2 fotos adjuntas]', $primero['fotos'], 'Sin imagen_id: desde acá no se pueden usar.');
+        $this->assertStringNotContainsString((string) $fotos[0]->id . ', ' . $fotos[1]->id, json_encode($leida));
+        $this->assertStringContainsString('Las fotos de esa conversación no se pueden usar desde acá: si la persona quiere usar una, pedile que te la mande de nuevo.', $leida['nota']);
+        $this->assertStringNotContainsString('armala de nuevo', $leida['nota'], 'No hay ninguna tarjeta esperando el sí.');
         $this->assertSame(AiMessage::CANAL_WHATSAPP, $primero['canal']);
         $this->assertSame(Carbon::now()->subDay()->format('d/m/Y') . ' 23:40', $primero['fecha']);
 
@@ -486,11 +497,53 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
         $this->assertSame($conversation->id, $this->leer($hoy, ['conversacion_id' => (string) $conversation->id])['conversacion_id']);
         $this->assertArrayHasKey('error', $this->leer($hoy, ['conversacion_id' => 'la de ayer']));
 
-        // Una sola foto: «[Foto adjunta]».
+        // Una sola foto: «[Foto adjunta]» (de otra conversación, sin imagen_id).
         list($con_una, $de_con_una) = $this->charla('Una foto', [['user', 'Mirá esta']]);
-        $una = $this->foto($de_con_una[0], 1);
+        $this->foto($de_con_una[0], 1);
 
-        $this->assertSame('[Foto adjunta] [imagen_id ' . $una->id . ']', $this->leer($hoy, ['conversacion_id' => $con_una->id])['mensajes'][0]['fotos']);
+        $this->assertSame('[Foto adjunta]', $this->leer($hoy, ['conversacion_id' => $con_una->id])['mensajes'][0]['fotos']);
+    }
+
+    /**
+     * R5 de la ronda de arreglos: releer ESTA conversación trae las fotos con su imagen_id (se pueden usar
+     * por su id) y sin las notas de otra conversación; una tarjeta que en OTRA quedó esperando el sí no se
+     * confirma desde acá, y la nota lo dice (si la persona la quiere, se arma de nuevo).
+     *
+     * @test
+     */
+    public function la_actual_trae_el_imagen_id_y_una_tarjeta_de_otra_se_arma_de_nuevo()
+    {
+        list($hoy, $assistant) = $this->conversacion_de_hoy();
+
+        $pedido = AiMessage::where('ai_conversation_id', $hoy->id)->where('rol', 'user')->first();
+        $foto = $this->foto($pedido, 1);
+
+        $actual = $this->herramienta_de_conversaciones($hoy, HerramientasDeConversaciones::LEER, [], $assistant);
+
+        $this->assertSame('[Foto adjunta] [imagen_id ' . $foto->id . ']', $actual['mensajes'][0]['fotos'], 'En esta conversación la foto se usa por su id.');
+        $this->assertStringNotContainsString('pedile que te la mande de nuevo', $actual['nota']);
+
+        list($con_tarjeta, $mensajes) = $this->charla('Gasto sin confirmar', [
+            ['user', 'Cargame la luz de 12000'],
+            ['assistant', 'Te dejo el gasto para que lo confirmes.'],
+        ], Carbon::now()->subDay());
+
+        $this->tarjeta($mensajes[1], AiMessageAction::ESTADO_PROPUESTA, null, AiMessageAction::TIPO_GASTO);
+
+        $leida = $this->leer($hoy, ['conversacion_id' => $con_tarjeta->id]);
+
+        $this->assertStringContainsString('estado: propuesta', $leida['mensajes'][1]['cargas'][0]);
+        $this->assertStringContainsString(
+            'Las cargas que ahí quedaron esperando el sí (estado: propuesta) no se pueden confirmar desde esta conversación: si la persona quiere alguna, armala de nuevo con los datos actuales.',
+            $leida['nota']
+        );
+        $this->assertStringNotContainsString('pedile que te la mande de nuevo', $leida['nota'], 'Sin fotos, sin esa nota.');
+
+        // La descripción de la herramienta también lo dice.
+        $leer = HerramientasDeConversaciones::definiciones()[1];
+        $this->assertSame(HerramientasDeConversaciones::LEER, $leer['name']);
+        $this->assertStringContainsString('solo si es ESTA conversación', $leer['description']);
+        $this->assertStringContainsString('no se confirma desde acá', $leer['description']);
     }
 
     /**

@@ -295,6 +295,8 @@ class ConversacionesAnterioresIaHelper
         $antes_de = self::entero($input, 'antes_de_mensaje');
         $antes_de = $antes_de > 0 ? $antes_de : null;
 
+        $es_la_actual = (int) $conversacion->id === (int) $actual->id;
+
         $query = AiMessage::where('ai_conversation_id', $conversacion->id)
             ->whereIn('estado', ['listo', 'error'])
             ->with(['acciones', 'imagenes'])
@@ -308,8 +310,15 @@ class ConversacionesAnterioresIaHelper
         $seleccionados = [];
         $acumulado = 0;
 
+        /*
+         * Ronda de arreglos R5: si lo leído de OTRA conversación trae fotos o tarjetas esperando el sí, la
+         * nota dice que desde acá no se usan ni se confirman (ver nota_de_la_lectura()).
+         */
+        $con_fotos = false;
+        $con_propuestas = false;
+
         foreach ($query->get() as $mensaje) {
-            $leido = self::mensaje_para_leer($mensaje);
+            $leido = self::mensaje_para_leer($mensaje, $es_la_actual);
 
             if (is_null($leido)) {
                 continue;
@@ -327,6 +336,11 @@ class ConversacionesAnterioresIaHelper
 
             $acumulado += $largo;
             $seleccionados[] = $leido;
+
+            $con_fotos = $con_fotos || !is_null($leido['fotos']);
+            $con_propuestas = $con_propuestas || $mensaje->acciones->contains(function ($accion) {
+                return (string) $accion->estado === AiMessageAction::ESTADO_PROPUESTA;
+            });
         }
 
         // Venían del más nuevo al más viejo: se dan vuelta para leerlos en orden.
@@ -346,8 +360,6 @@ class ConversacionesAnterioresIaHelper
             $para_seguir = $hay_anteriores ? $mas_viejo : null;
         }
 
-        $es_la_actual = (int) $conversacion->id === (int) $actual->id;
-
         return [
             'conversacion_id'              => (int) $conversacion->id,
             'titulo'                       => self::titulo_de($conversacion),
@@ -357,7 +369,7 @@ class ConversacionesAnterioresIaHelper
             'mensajes'                     => $seleccionados,
             'hay_anteriores'               => $hay_anteriores,
             'antes_de_mensaje_para_seguir' => $para_seguir,
-            'nota'                         => self::nota_de_la_lectura(count($seleccionados), $hay_anteriores, $para_seguir, $es_la_actual, !is_null($antes_de)),
+            'nota'                         => self::nota_de_la_lectura(count($seleccionados), $hay_anteriores, $para_seguir, $es_la_actual, !is_null($antes_de), $con_fotos, $con_propuestas),
         ];
     }
 
@@ -950,17 +962,20 @@ class ConversacionesAnterioresIaHelper
      * contenido_para_el_historial) sin cambiarlo: las tarjetas con AccionesIaHelper::linea_de_historial,
      * los avisos de la guarda de cargas fuera (TarjetaPrometidaIaHelper::sin_avisos: son para la
      * persona y, leídos, el modelo los copia), los gráficos y tablas de la app en una línea
-     * (BloquesIaHelper), el extracto de los archivos del dueño y las fotos con su imagen_id, igual que
-     * la marca de un mensaje anterior del historial (para poder usarlas por su id).
+     * (BloquesIaHelper), el extracto de los archivos del dueño y las fotos, igual que la marca de un
+     * mensaje anterior del historial (con su imagen_id, para usarlas por su id, solo en la actual).
      *
      * 🔴 Una respuesta del asistente en `error` va MARCADA: su texto es el aviso que vio la persona
      * («La consulta se hizo larga…»), y sin la marca el modelo lo leería como algo que sí se hizo. Las
      * tarjetas `descartada` (las de un mensaje que falló) no van: la persona nunca las vio.
      *
+     * Las fotos de OTRA conversación van sin su imagen_id (ronda de arreglos R5): ver marca_de_fotos().
+     *
      * @param  \App\Models\AiMessage  $mensaje  Con `acciones` e `imagenes` cargadas.
+     * @param  bool  $es_la_actual  true si el mensaje es de la conversación del turno.
      * @return array|null
      */
-    protected static function mensaje_para_leer(AiMessage $mensaje)
+    protected static function mensaje_para_leer(AiMessage $mensaje, $es_la_actual = true)
     {
         $es_persona = $mensaje->rol === 'user';
         $texto = (string) $mensaje->contenido;
@@ -987,7 +1002,7 @@ class ConversacionesAnterioresIaHelper
             $texto = '[Esta respuesta falló: la persona vio este aviso y lo que pidió no se hizo en ese mensaje] ' . $texto;
         }
 
-        $fotos = $es_persona ? self::marca_de_fotos($mensaje) : '';
+        $fotos = $es_persona ? self::marca_de_fotos($mensaje, (bool) $es_la_actual) : '';
 
         $cargas = [];
 
@@ -1021,10 +1036,18 @@ class ConversacionesAnterioresIaHelper
      * (AsistenteIaService::marca_de_las_fotos_del_mensaje(), que no se toca): el modelo la reconoce y
      * puede reusar la foto por su imagen_id. '' si no mandó ninguna.
      *
+     * 🔴 SIN EL imagen_id SI LA FOTO ES DE OTRA CONVERSACIÓN (ronda de arreglos de la revisión
+     * independiente, R5, 30/10/2026): «[Foto adjunta]» o «[3 fotos adjuntas]» a secas. Las herramientas
+     * que usan una foto por su id (FotosDeLaConversacionIaHelper::por_id() y reutilizable_para_articulo())
+     * la buscan en la conversación ACTUAL: con el id a la vista, el modelo la mandaba y la carga
+     * contestaba que la foto no existe. La nota de la lectura le dice que, si la persona la quiere usar,
+     * se la pida de nuevo (nota_de_la_lectura()).
+     *
      * @param  \App\Models\AiMessage  $mensaje  Con `imagenes` cargada.
+     * @param  bool  $con_ids  false para una foto de otra conversación.
      * @return string
      */
-    protected static function marca_de_fotos(AiMessage $mensaje)
+    protected static function marca_de_fotos(AiMessage $mensaje, $con_ids = true)
     {
         $ids = [];
 
@@ -1040,6 +1063,11 @@ class ConversacionesAnterioresIaHelper
         }
 
         $marca = $cuantas === 1 ? '[Foto adjunta]' : '[' . $cuantas . ' fotos adjuntas]';
+
+        if (!$con_ids) {
+
+            return $marca;
+        }
 
         return $marca . ' [imagen_id ' . implode(', ', $ids) . ']';
     }
@@ -1065,14 +1093,24 @@ class ConversacionesAnterioresIaHelper
     /**
      * La nota de la lectura: cómo seguir si hay anteriores y la regla de qué hacer con lo leído.
      *
+     * Ronda de arreglos de la revisión independiente (R5, 30/10/2026), solo para OTRA conversación y solo
+     * si lo leído lo trae:
+     *   - con fotos: van sin imagen_id (marca_de_fotos()) porque desde acá no se pueden usar; si la persona
+     *     quiere usar una, que la mande de nuevo;
+     *   - con tarjetas esperando el sí (estado: propuesta): no se pueden confirmar desde esta conversación
+     *     (EjecutorAccionesIaHelper y la confirmación por texto buscan la tarjeta en la conversación del
+     *     turno); si la persona quiere alguna, se arma de nuevo con los datos actuales.
+     *
      * @param  int  $cuantos
      * @param  bool  $hay_anteriores
      * @param  int|null  $para_seguir
      * @param  bool  $es_la_actual
      * @param  bool  $con_antes_de  true si se pidió seguir hacia atrás desde un mensaje.
+     * @param  bool  $con_fotos  true si algún mensaje leído trae fotos.
+     * @param  bool  $con_propuestas  true si algún mensaje leído trae una tarjeta esperando el sí.
      * @return string
      */
-    protected static function nota_de_la_lectura($cuantos, $hay_anteriores, $para_seguir, $es_la_actual, $con_antes_de = false)
+    protected static function nota_de_la_lectura($cuantos, $hay_anteriores, $para_seguir, $es_la_actual, $con_antes_de = false, $con_fotos = false, $con_propuestas = false)
     {
         if ($cuantos === 0) {
 
@@ -1090,7 +1128,17 @@ class ConversacionesAnterioresIaHelper
             return $nota . 'Es ESTA conversación.';
         }
 
-        return $nota . 'Es lo que se habló en otra conversación: los datos del negocio (saldos, stock, cheques, precios) pueden haber cambiado, volvé a consultarlos con las herramientas antes de afirmarlos; y lo que ahí ya se cargó (las cargas en estado confirmada) ya está hecho: no lo vuelvas a proponer salvo que te lo pidan.';
+        $nota .= 'Es lo que se habló en otra conversación: los datos del negocio (saldos, stock, cheques, precios) pueden haber cambiado, volvé a consultarlos con las herramientas antes de afirmarlos; y lo que ahí ya se cargó (las cargas en estado confirmada) ya está hecho: no lo vuelvas a proponer salvo que te lo pidan.';
+
+        if ($con_propuestas) {
+            $nota .= ' Las cargas que ahí quedaron esperando el sí (estado: propuesta) no se pueden confirmar desde esta conversación: si la persona quiere alguna, armala de nuevo con los datos actuales.';
+        }
+
+        if ($con_fotos) {
+            $nota .= ' Las fotos de esa conversación no se pueden usar desde acá: si la persona quiere usar una, pedile que te la mande de nuevo.';
+        }
+
+        return $nota;
     }
 
     /**
