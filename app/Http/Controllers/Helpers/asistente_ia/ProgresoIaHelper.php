@@ -65,6 +65,9 @@ class ProgresoIaHelper
         // Misión agente-mejoras-uso-real (29/10/2026, §4 E3): el Excel y el pedido a soporte.
         'exportar_excel'                            => 'Armando el Excel…',
         'pedir_ayuda_a_soporte'                     => 'Escribiéndole a soporte…',
+        // Misión agente-memoria-y-sin-techo (30/10/2026, ronda de arreglos R7): las conversaciones anteriores.
+        'buscar_conversaciones_anteriores'          => 'Buscando en conversaciones anteriores…',
+        'leer_conversacion_anterior'                => 'Leyendo una conversación anterior…',
     ];
 
     /**

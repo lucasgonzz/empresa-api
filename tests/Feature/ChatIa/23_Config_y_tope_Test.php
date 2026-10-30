@@ -179,6 +179,38 @@ class Config_y_tope_Test extends TestCase
         // (500+300)*3 = 2400 tokens; 3 respuestas del agente = 3 interacciones.
         $this->assertSame(2400, $r->json('consumo_mes.tokens'));
         $this->assertSame(3, $r->json('consumo_mes.interacciones'));
+
+        // Ronda de arreglos R7: cuál tope se pasó, aditivo (acá ninguno).
+        $this->assertFalse($r->json('supero_tokens'));
+        $this->assertFalse($r->json('supero_interacciones'));
+    }
+
+    /**
+     * R7 de la ronda de arreglos: mi-consumo-ia suma `supero_tokens` y `supero_interacciones` (aditivo),
+     * para que las SPA digan «hoy» o «este mes»; `supero` sigue siendo el O de los dos.
+     *
+     * @test
+     */
+    public function mi_consumo_dice_cual_tope_se_paso()
+    {
+        $this->dar_extension();
+        $this->comercio->plan_ia_tope_tokens_mensual = 1000000;
+        $this->comercio->plan_ia_tope_interacciones_diarias = 2;
+        $this->comercio->save();
+
+        $this->sembrar_respuestas(2);
+
+        $r = $this->actingAs($this->comercio, 'sanctum')->getJson('api/mi-consumo-ia');
+
+        $r->assertStatus(200)->assertJson(['supero' => true, 'supero_interacciones' => true, 'supero_tokens' => false]);
+
+        $this->comercio->plan_ia_tope_tokens_mensual = 3;
+        $this->comercio->plan_ia_tope_interacciones_diarias = 100;
+        $this->comercio->save();
+
+        $this->actingAs($this->comercio, 'sanctum')->getJson('api/mi-consumo-ia')
+             ->assertStatus(200)
+             ->assertJson(['supero' => true, 'supero_interacciones' => false, 'supero_tokens' => true]);
     }
 
     /** @test */

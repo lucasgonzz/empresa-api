@@ -4,6 +4,7 @@ namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -808,6 +809,19 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
         $this->assertSame($del_pago->id, $resultado['conversacion_id']);
         $this->assertStringContainsString('Cargame el pago a Pinturería Sudamericana', $resultado['mensajes'][0]['texto']);
         $this->assertStringContainsString('Pago N° 1706 registrado a Pinturas Sudamericanas', $resultado['mensajes'][1]['cargas'][0]);
+    }
+
+    /**
+     * R7 de la ronda de arreglos: las dos herramientas tienen su línea de progreso propia (y no el
+     * «Consultando el sistema…» genérico).
+     *
+     * @test
+     */
+    public function las_dos_herramientas_tienen_su_linea_de_progreso()
+    {
+        $this->assertSame('Buscando en conversaciones anteriores…', ProgresoIaHelper::etiqueta(HerramientasDeConversaciones::BUSCAR));
+        $this->assertSame('Leyendo una conversación anterior…', ProgresoIaHelper::etiqueta(HerramientasDeConversaciones::LEER));
+        $this->assertNotSame(ProgresoIaHelper::POR_DEFECTO, ProgresoIaHelper::etiqueta(HerramientasDeConversaciones::LEER));
     }
 
     // ---------------------------------------------------------------------

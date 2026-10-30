@@ -140,6 +140,9 @@ class AsistenteConfigController extends Controller
      * GET api/mi-consumo-ia → lo que muestra el footer del panel: consumo del mes contra el tope del
      * plan, más el modo activo del agente (proveedor, pensamiento y el id del modelo efectivo).
      *
+     * Desde la misión agente-memoria-y-sin-techo (ronda de arreglos R7) suma, de forma aditiva,
+     * `supero_tokens` y `supero_interacciones` (cuál de los dos topes se pasó).
+     *
      * @return JsonResponse
      */
     public function mi_consumo(): JsonResponse
@@ -166,6 +169,13 @@ class AsistenteConfigController extends Controller
             ],
             'cerca'       => $estado['cerca'],
             'supero'      => $estado['supero'],
+            /*
+             * Misión agente-memoria-y-sin-techo (ronda de arreglos R7, 30/10/2026): CUÁL tope se pasó,
+             * aditivo, para que las SPA puedan decir «hoy» (interacciones, se renueva mañana) o «este mes»
+             * (tokens). `supero` sigue siendo el O de los dos; una SPA vieja no las lee.
+             */
+            'supero_tokens'        => $estado['supero_tokens'],
+            'supero_interacciones' => $estado['supero_interacciones'],
             /*
              * Misión proveedores-ia-deepseek: el footer describe con qué CORRE el asistente, así que
              * los tres salen de modelo_del_asistente(): el proveedor efectivo (con el fallback de
