@@ -332,9 +332,15 @@ class PropuestaCompraConFacturaIaHelper
 
         $renglones[] = ['etiqueta' => 'Fotos de la factura', 'valor' => $cuantas];
 
+        /*
+         * Misión agente-mejoras-uso-real (E1 punto 8): si la compra que se reusa tuvo un escaneo que
+         * FALLÓ sin leer nada (CONV 20 de Ferre Total, la Compra 1358), la tarjeta lo dice: es la
+         * compra de esta misma factura, que vuelve a escanearse.
+         */
         $que_pasa = is_null($a_reusar)
             ? 'Se crea una compra nueva'
-            : 'Se usa la compra N° ' . $a_reusar->num . ', que está vacía';
+            : ('Se usa la compra N° ' . $a_reusar->num
+                . (self::tiene_algun_escaneo($a_reusar) ? ', cuyo escaneo anterior falló' : ', que está vacía'));
 
         if (!is_null($proveedor_nuevo)) {
 
@@ -1022,6 +1028,13 @@ class PropuestaCompraConFacturaIaHelper
          */
         $otra_factura = $destino['adjuntada'] ? self::otra_factura_escaneada($orden) : null;
 
+        /*
+         * Misión agente-mejoras-uso-real (E1 punto 8): si la compra a la que va la factura solo tuvo
+         * escaneos que FALLARON sin leer nada, el resultado lo dice («su escaneo anterior falló»). Se
+         * mira antes de crear el escaneo nuevo, por el mismo motivo que la otra factura.
+         */
+        $escaneo_fallido = $destino['adjuntada'] && self::solo_tiene_escaneos_fallidos($orden);
+
         $paginas = [];
 
         foreach ($imagenes as $imagen) {
@@ -1094,22 +1107,11 @@ class PropuestaCompraConFacturaIaHelper
          * compra_reciente_en_curso() para no crear una segunda compra con la página 2 de la misma
          * factura.
          */
-        /*
-         * «Con el link» se promete solo si hay con qué armarlo (la spa_url que anunció el admin o la
-         * SPA_URL del .env): el admin igual puede armarlo con la suya, pero lo que se promete tiene
-         * que poder cumplirse desde acá.
-         */
-        $con_link = $avisa_por_whatsapp && !is_null(AvisosDelAsistenteHelper::base_del_link($contexto->owner_id));
-
-        $cierre = $avisa_por_whatsapp
-            ? ($con_link
-                ? ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá con el link para revisarla en Compras.'
-                : ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá para que la revises en Compras.')
-            : ' Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
-                . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.';
+        /* Por dónde llega el aviso, sin prometer lo que no va a venir: ver cierre_del_escaneo(). */
+        $cierre = self::cierre_del_escaneo($contexto, $avisa_por_whatsapp);
 
         return [
-            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado, $otra_factura, $destino['descartada_num']) . $cierre,
+            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado, $otra_factura, $destino['descartada_num'], $escaneo_fallido) . $cierre,
             /*
              * Compras es la solapa 'compras' de la ruta 'provider' de la SPA (/proveedores/compras).
              * Hasta el 10/10/2026 iba name 'proveedores', que no existe en router/index.js y dejaba
@@ -1306,9 +1308,11 @@ class PropuestaCompraConFacturaIaHelper
      * @param  bool  $proveedor_creado  El proveedor se dio de alta en esta misma carga.
      * @param  array|null  $otra_factura  otra_factura_escaneada() de la compra ANTES de este escaneo, o null.
      * @param  int|null  $descartada_num  N° de la compra que la tarjeta prometió y ya no servía, o null.
+     * @param  bool  $escaneo_fallido  La compra solo tuvo escaneos que fallaron sin leer nada (misión
+     *                                 agente-mejoras-uso-real): la frase lo dice.
      * @return string
      */
-    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado, $otra_factura = null, $descartada_num = null)
+    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado, $otra_factura = null, $descartada_num = null, $escaneo_fallido = false)
     {
         if (!$adjuntada) {
 
@@ -1333,6 +1337,11 @@ class PropuestaCompraConFacturaIaHelper
         $como_estaba = $articulos > 0
             ? 'ya estaba cargada, con ' . ($articulos === 1 ? '1 artículo' : $articulos . ' artículos')
             : 'ya estaba creada y sin artículos';
+
+        if ($escaneo_fallido) {
+
+            $como_estaba .= ', y su escaneo anterior falló: vuelvo a leer la factura en esta misma compra';
+        }
 
         /*
          * El comprobante va después de una coma y no entre paréntesis: la frase entera ya está adentro
@@ -1364,7 +1373,7 @@ class PropuestaCompraConFacturaIaHelper
      * @param  \App\Models\AiMessageAction  $accion
      * @return bool
      */
-    protected static function avisa_por_whatsapp(ContextoDeCargaIa $contexto, AiMessageAction $accion)
+    public static function avisa_por_whatsapp(ContextoDeCargaIa $contexto, AiMessageAction $accion)
     {
         $propuso = AiMessage::find((int) $accion->ai_message_id);
 
@@ -1374,6 +1383,32 @@ class PropuestaCompraConFacturaIaHelper
         }
 
         return AvisosDelAsistenteHelper::admin_avisa($contexto->owner_id);
+    }
+
+    /**
+     * El cierre del resultado: que el escaneo corre en segundo plano y POR DÓNDE llega el aviso cuando
+     * termina, sin prometer lo que no va a venir (ver el 🔴 de ejecutar()). Separado en la misión
+     * agente-mejoras-uso-real para que el reescaneo de una factura que falló
+     * (ReintentoDeEscaneoIaHelper) diga exactamente lo mismo.
+     *
+     * «Con el link» se promete solo si hay con qué armarlo (la spa_url que anunció el admin o la
+     * SPA_URL del .env): el admin igual puede armarlo con la suya, pero lo que se promete tiene que
+     * poder cumplirse desde acá.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  bool  $avisa_por_whatsapp  avisa_por_whatsapp() de la tarjeta.
+     * @return string  Con un espacio adelante.
+     */
+    public static function cierre_del_escaneo(ContextoDeCargaIa $contexto, $avisa_por_whatsapp)
+    {
+        $con_link = $avisa_por_whatsapp && !is_null(AvisosDelAsistenteHelper::base_del_link($contexto->owner_id));
+
+        return $avisa_por_whatsapp
+            ? ($con_link
+                ? ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá con el link para revisarla en Compras.'
+                : ' Estoy escaneando la factura en segundo plano: cuando termine de leerla te aviso por acá para que la revises en Compras.')
+            : ' Estoy escaneando la factura en segundo plano: cuando termine te aparece el aviso en el sistema '
+                . '(en la pantalla, no por WhatsApp) y ahí revisás los artículos desde Compras.';
     }
 
     /**
@@ -1888,7 +1923,11 @@ class PropuestaCompraConFacturaIaHelper
      *   3. SIN NINGÚN ESCANEO, en cualquier estado: un escaneo `listo` sin revisar deja la compra sin
      *      artículos pero CON una factura. Es exactamente la Compra 13 de demo3, que ya tenía la
      *      0003-00012345 y recibió la 0003-00012398 del 19/10. Hasta ese día solo se miraba el escaneo
-     *      EN CURSO.
+     *      EN CURSO. ⚠️ Salvo los que FALLARON SIN LEER NADA (misión agente-mejoras-uso-real, E1 punto
+     *      8, 29/10/2026): en error y sin resultado, o abandonados en curso sin resultado
+     *      (ReintentoDeEscaneoIaHelper::fallo_sin_leer()). Ese escaneo no leyó ninguna factura: en
+     *      Ferre Total (CONV 20) el de la Compra 1358 falló, Pablo reenvió la foto y la condición de
+     *      antes armó la 1361, dejando la 1358 vacía y colgada. La reenviada es la MISMA factura.
      *   4. SIN FACTURA CARGADA A MANO: una fila en `provider_order_afip_tickets`, la fecha del
      *      comprobante o el número de comprobante escrito en la pantalla de la compra son otra
      *      factura, aunque nadie la escaneó (ver tiene_factura_cargada()).
@@ -1911,7 +1950,7 @@ class PropuestaCompraConFacturaIaHelper
             return false;
         }
 
-        return self::es_de_hoy($orden, $desde) && self::esta_limpia($orden);
+        return self::es_de_hoy($orden, $desde) && self::esta_limpia($orden, true);
     }
 
     /**
@@ -1919,14 +1958,19 @@ class PropuestaCompraConFacturaIaHelper
      * 2 a 4 de es_reusable_sin_nombrarla(), que comparte con la pregunta por la compra vacía de otro
      * día (compra_vacia_de_dias_atras()). Van de la más barata a la más cara de consultar.
      *
+     * `$ignora_fallidos` (misión agente-mejoras-uso-real): un escaneo que falló sin leer nada no cuenta
+     * (ver la condición 3 de es_reusable_sin_nombrarla()). Solo lo usa el reuso de la compra de HOY; la
+     * pregunta por la compra vacía de otro día sigue contando cualquier escaneo, como antes.
+     *
      * @param  \App\Models\ProviderOrder  $orden
+     * @param  bool  $ignora_fallidos
      * @return bool
      */
-    protected static function esta_limpia(ProviderOrder $orden)
+    protected static function esta_limpia(ProviderOrder $orden, $ignora_fallidos = false)
     {
         return !self::tiene_factura_cargada($orden)
             && self::esta_vacia($orden)
-            && !self::tiene_algun_escaneo($orden);
+            && !self::tiene_algun_escaneo($orden, $ignora_fallidos);
     }
 
     /**
@@ -1956,12 +2000,41 @@ class PropuestaCompraConFacturaIaHelper
      * procesando, listo sin revisar, revisado, con error o abandonado). Ver la condición 3 de
      * es_reusable_sin_nombrarla(): no alcanza con mirar el escaneo en curso.
      *
+     * Con `$ignora_fallidos`, los que fallaron sin leer nada no cuentan
+     * (ReintentoDeEscaneoIaHelper::fallo_sin_leer(), misión agente-mejoras-uso-real).
+     *
+     * @param  \App\Models\ProviderOrder  $orden
+     * @param  bool  $ignora_fallidos
+     * @return bool
+     */
+    protected static function tiene_algun_escaneo(ProviderOrder $orden, $ignora_fallidos = false)
+    {
+        if (!$ignora_fallidos) {
+
+            return ProviderOrderScan::where('provider_order_id', $orden->id)->exists();
+        }
+
+        foreach (ProviderOrderScan::where('provider_order_id', $orden->id)->get() as $escaneo) {
+
+            if (!ReintentoDeEscaneoIaHelper::fallo_sin_leer($escaneo)) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * true si la compra tuvo escaneos y TODOS fallaron sin leer nada: es la compra de una factura que
+     * se vuelve a mandar (misión agente-mejoras-uso-real, E1 punto 8). El resultado lo dice.
+     *
      * @param  \App\Models\ProviderOrder  $orden
      * @return bool
      */
-    protected static function tiene_algun_escaneo(ProviderOrder $orden)
+    protected static function solo_tiene_escaneos_fallidos(ProviderOrder $orden)
     {
-        return ProviderOrderScan::where('provider_order_id', $orden->id)->exists();
+        return self::tiene_algun_escaneo($orden) && !self::tiene_algun_escaneo($orden, true);
     }
 
     /**
@@ -2001,14 +2074,26 @@ class PropuestaCompraConFacturaIaHelper
      * el escaneo, con el mismo formato que usa consultar_escaneo_de_factura; si el escaneo no
      * terminó bien o no leyó el número, va null y el texto dice solo "otra factura".
      *
+     * ⚠️ Los escaneos que FALLARON SIN LEER NADA no son "otra factura" (misión agente-mejoras-uso-real,
+     * E1 punto 8): no leyeron ninguna, y decir "ya tenía escaneada otra factura" sobre la compra cuya
+     * factura se está reenviando confundía justo al dueño que la reenvía.
+     *
      * @param  \App\Models\ProviderOrder  $orden
      * @return array|null  ['comprobante' => string|null] o null.
      */
     protected static function otra_factura_escaneada(ProviderOrder $orden)
     {
-        $scan = ProviderOrderScan::where('provider_order_id', $orden->id)
-                                    ->orderBy('id', 'DESC')
-                                    ->first();
+        $scan = null;
+
+        foreach (ProviderOrderScan::where('provider_order_id', $orden->id)->orderBy('id', 'DESC')->get() as $candidato) {
+
+            if (!ReintentoDeEscaneoIaHelper::fallo_sin_leer($candidato)) {
+
+                $scan = $candidato;
+
+                break;
+            }
+        }
 
         if (is_null($scan)) {
 

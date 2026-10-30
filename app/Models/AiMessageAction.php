@@ -229,6 +229,13 @@ class AiMessageAction extends Model
      */
     const TIPO_CAMBIO_PROVEEDOR_COMPRA = 'cambio_proveedor_compra';
 
+    /**
+     * Volver a escanear la factura de una compra cuyo escaneo falló, con las fotos que ya están
+     * guardadas (ReintentoDeEscaneoIaHelper). Inocua como la compra con factura: no mueve plata ni
+     * stock, vuelve a correr una lectura sobre la misma compra.
+     */
+    const TIPO_REINTENTO_ESCANEO = 'reintento_escaneo';
+
     protected $guarded = [];
 
     /**

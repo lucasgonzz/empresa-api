@@ -1899,6 +1899,10 @@ CARGA;
 - 🔴 Si la persona pide volver a cargar con OTRO proveedor una compra que acabás de crear ("volvé a
   cargarla con el proveedor X", "era de X"), se cambia el proveedor de ESA compra con
   proponer_cambio_de_proveedor_de_compra: no se crea otra compra ni se le pide la foto de nuevo.
+- 🔴 Si el escaneo de una factura falló ("No pude leer la factura de … (compra N° X)") y la persona
+  pide volver a escanearla, usá proponer_reintento_de_escaneo: usa las fotos que ya están guardadas,
+  así que no se las pidas. Si te reenvía la foto, proponer_compra_con_factura la suma sola a esa
+  misma compra: no armes otra.
 VARIAS;
     }
 

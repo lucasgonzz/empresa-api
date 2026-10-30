@@ -34,6 +34,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelpe
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ReintentoDeEscaneoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaAccionDePantallaIaHelper;
@@ -134,6 +135,13 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_DISENO_PDF,
         /* Al final, por la regla de siempre. Ver el 🔴 de la compra con factura en el docblock. */
         AiMessageAction::TIPO_COMPRA_CON_FACTURA,
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026): volver a escanear la factura de una compra cuyo
+         * escaneo falló, con las fotos ya guardadas. Cumple las dos condiciones de arriba —no mueve
+         * plata ni stock (la compra sigue vacía y la revisión del escaneo sigue siendo de la persona)—,
+         * y es la hermana de la compra con factura, que ya se ejecuta sola en este modo.
+         */
+        AiMessageAction::TIPO_REINTENTO_ESCANEO,
     ];
 
     /**
@@ -204,6 +212,8 @@ class HerramientasDeCarga
          * "resuelto" NO entra (ahí solo lo inocuo).
          */
         AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA,
+        /* El reescaneo de una factura que falló: en "directo" también (está en los de "resuelto"). */
+        AiMessageAction::TIPO_REINTENTO_ESCANEO,
     ];
 
     /**
@@ -1614,6 +1624,21 @@ class HerramientasDeCarga
                     'required'   => ['proveedor'],
                 ],
             ],
+            [
+                'name'         => 'proponer_reintento_de_escaneo',
+                'description'  => 'Vuelve a escanear la factura de una compra cuyo escaneo FALLÓ ("no pude leer la factura"), con las mismas fotos que ya están guardadas: es lo que va cuando la persona dice "volvé a escanearla", "probá de nuevo con la factura" o "volvé a leerla". 🔴 No le pidas la foto de nuevo ni armes otra compra. Sin compra_num uso la compra del último escaneo que falló en esta conversación. Si el escaneo terminó bien o sigue en curso, o las fotos ya no están, la respuesta trae el motivo (si las fotos no están, ahí sí pedile que te mande la factura: la compra con factura la suma sola a esa compra). Con la confianza en "resuelto" o "directo" se hace en el acto. Contá por dónde llega el aviso tal como lo dice el resultado. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'compra_num'  => [
+                            'type'        => 'integer',
+                            'description' => 'El N° de la compra cuya factura se vuelve a escanear (el del aviso "No pude leer la factura de … (compra N° X)"). Si es la de un escaneo que falló en esta conversación, podés no mandarlo.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => [],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -2227,6 +2252,19 @@ class HerramientasDeCarga
                     $conversation,
                     $assistant_message,
                     CambioDeProveedorDeCompraIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            /*
+             * El reescaneo de una factura que falló: inocuo como la compra con factura (vuelve a correr
+             * una lectura sobre la misma compra), así que pasa por la puerta y en "resuelto" y
+             * "directo" se hace en el acto.
+             */
+            case 'proponer_reintento_de_escaneo':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    ReintentoDeEscaneoIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
 
             case 'confirmar_carga_pendiente':
