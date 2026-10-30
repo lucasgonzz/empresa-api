@@ -133,10 +133,13 @@ class MedidasReanudarTrabadas extends Command
 
         if ($resultado['status'] !== 200) {
             // Por ejemplo, hay otra corrida de catálogo en curso o la demo se quedó sin búsquedas: no cuenta para el tope.
-            Log::info('[MedidasMasivas] El vigía no pudo reanudar la corrida.', [
-                'run_id' => $run->id,
-                'motivo' => $resultado['message'],
-            ]);
+            // El vigía vuelve a intentarlo cada 5 minutos, pero el log lo dice a lo sumo una vez por hora y por corrida.
+            if ($this->primera_vez_en_la_hora('medidas-masivas:rechazo-avisado:'.$run->id)) {
+                Log::info('[MedidasMasivas] El vigía no pudo reanudar la corrida.', [
+                    'run_id' => $run->id,
+                    'motivo' => $resultado['message'],
+                ]);
+            }
 
             return;
         }
@@ -207,18 +210,7 @@ class MedidasReanudarTrabadas extends Command
      */
     protected function avisar_tope(DimensionSearchRun $run, $hechas)
     {
-        try {
-            $primera_vez = Cache::add(
-                'medidas-masivas:tope-avisado:'.$run->id,
-                true,
-                Carbon::now()->addMinutes(self::MINUTOS_ENTRE_AVISOS_DE_TOPE)
-            );
-        } catch (\Throwable $e) {
-            // Sin caché no hay memoria del aviso: mejor repetirlo que callarlo.
-            $primera_vez = true;
-        }
-
-        if (!$primera_vez) {
+        if (!$this->primera_vez_en_la_hora('medidas-masivas:tope-avisado:'.$run->id)) {
             return;
         }
 
@@ -226,5 +218,22 @@ class MedidasReanudarTrabadas extends Command
             'run_id'     => $run->id,
             'reanudadas' => $hechas,
         ]);
+    }
+
+    /**
+     * ¿Es la primera vez en MINUTOS_ENTRE_AVISOS_DE_TOPE minutos que se pregunta por esta clave? Sirve para no
+     * repetir cada 5 minutos la misma línea de log. Si la caché falla se contesta que sí: mejor repetir un aviso
+     * que callarlo.
+     *
+     * @param  string $clave  Clave de la caché del aviso.
+     * @return bool
+     */
+    protected function primera_vez_en_la_hora($clave)
+    {
+        try {
+            return (bool) Cache::add($clave, true, Carbon::now()->addMinutes(self::MINUTOS_ENTRE_AVISOS_DE_TOPE));
+        } catch (\Throwable $e) {
+            return true;
+        }
     }
 }
