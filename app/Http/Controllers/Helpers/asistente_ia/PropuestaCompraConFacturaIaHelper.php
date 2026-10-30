@@ -239,9 +239,7 @@ class PropuestaCompraConFacturaIaHelper
 
         if (!count($fotos['paginas'])) {
 
-            return RespuestaDeCargaIa::error(
-                'No tengo ninguna foto de factura sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la cargo.'
-            );
+            return self::sin_foto_de_la_factura($contexto, $mensaje);
         }
 
         /*
@@ -416,6 +414,85 @@ class PropuestaCompraConFacturaIaHelper
     }
 
     /**
+     * La respuesta cuando no hay ninguna foto de factura sin usar: «mandámela y te la cargo», salvo que
+     * la persona haya DICTADO un monto (revisión independiente, arreglo 6, 30/10/2026).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, CONV 19). Pablo escribió «me cargás una compra sin artículos con una
+     * factura sin IVA de 198.522 al proveedor ferretotal» y el agente llamó a esta herramienta, que le
+     * contestó «mandámela y te la cargo»: le pidió una foto que no hacía falta. Si en lo que la persona
+     * mandó desde la última respuesta del asistente hay un monto, el error es para el MODELO (prefijo
+     * NO_SE_ARMO): que use proponer_compra_sin_articulos con ese total, o que pida la foto si lo que
+     * quiere es escanear la factura.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
+     * @return array  RespuestaDeCargaIa::error(...)
+     */
+    protected static function sin_foto_de_la_factura(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        $monto = self::monto_dictado_por_la_persona($contexto, $mensaje);
+
+        if (!is_null($monto)) {
+
+            return RespuestaDeCargaIa::error(
+                CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'no hay ninguna foto de factura sin usar, y la persona dictó un monto (' . $monto . '). '
+                . 'Si pidió cargar la factura por ese total sin mandar la foto ("una compra sin artículos", "cargame la factura de X por tanto"), '
+                . 'usá proponer_compra_sin_articulos con ese total y el IVA que dijo (si no lo dijo, preguntalo). '
+                . 'Solo si quiere que se escanee la factura, pedile la foto.',
+                ['monto_dictado' => $monto]
+            );
+        }
+
+        return RespuestaDeCargaIa::error(
+            'No tengo ninguna foto de factura sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la cargo.'
+        );
+    }
+
+    /**
+     * El primer monto que la persona escribió desde la última respuesta del asistente («198.522»,
+     * «$ 45.000», «207500»), tal como lo escribió, o null. Lo de antes de esa respuesta no cuenta (es de
+     * otro pedido), y lo que escribió el asistente tampoco.
+     *
+     * Cuenta como monto: un número con punto de miles (1.234 / 198.522 / 1.500,50) o uno de 4 dígitos
+     * o más. No cuenta lo que está pegado a «/», «-» o «:» (fechas, horas, números de comprobante
+     * como 0001-00001234).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @return string|null
+     */
+    protected static function monto_dictado_por_la_persona(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        $conversation_id = (int) $contexto->conversation->id;
+
+        $ultima_respuesta = AiMessage::where('ai_conversation_id', $conversation_id)
+                                        ->where('rol', 'assistant')
+                                        ->where('id', '<', (int) $mensaje->id)
+                                        ->max('id');
+
+        $consulta = AiMessage::where('ai_conversation_id', $conversation_id)
+                                ->where('rol', 'user')
+                                ->where('id', '<', (int) $mensaje->id);
+
+        if (!is_null($ultima_respuesta)) {
+
+            $consulta->where('id', '>', (int) $ultima_respuesta);
+        }
+
+        $patron = '/(?<![\d\/\-:.,])(\d{1,3}(?:\.\d{3})+(?:,\d{1,2})?|\d{4,}(?:,\d{1,2})?)(?![\d\/\-:]|[.,]\d)/u';
+
+        foreach ($consulta->orderBy('id')->pluck('contenido') as $texto) {
+
+            if (preg_match($patron, (string) $texto, $encontrado)) {
+
+                return $encontrado[1];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * La compra del dueño con ese número (el N° que ve en Compras), o la respuesta negativa.
      *
      * Se busca por `num` del DUEÑO, sin filtro de días ni de artículos: la nombró él, y puede ser de
@@ -509,9 +586,7 @@ class PropuestaCompraConFacturaIaHelper
 
         if (!count($fotos['paginas'])) {
 
-            return RespuestaDeCargaIa::error(
-                'No tengo ninguna foto de factura sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y te la cargo.'
-            );
+            return self::sin_foto_de_la_factura($contexto, $mensaje);
         }
 
         $imagen_ids = self::ids_de($fotos['paginas']);

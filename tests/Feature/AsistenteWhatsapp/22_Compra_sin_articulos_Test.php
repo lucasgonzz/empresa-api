@@ -120,6 +120,34 @@ class Compra_sin_articulos_Test extends ComprasDelAgenteTestCase
     }
 
     /**
+     * 🔴 Ronda de arreglos (30/10/2026), arreglo 6: si el modelo llama a la compra CON factura sin foto
+     * y la persona dictó un total (CONV 19), el error no le pide la foto: lo manda a la compra sin
+     * artículos. Sin monto dictado, sigue pidiendo la foto como siempre.
+     *
+     * @test
+     */
+    public function la_compra_con_factura_sin_foto_y_con_un_total_dictado_deriva_a_la_compra_sin_articulos()
+    {
+        $this->dar_extension(self::SLUG_ESCANEO);
+
+        list($conversation, $assistant) = $this->escena('Me cargas una compra sin artículos con una factura sin iva de 198.522 al proveedor ferretotal. Con movimientos en cuenta corriente.');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, ['proveedor' => 'ferretotal']);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringStartsWith('No se armó ninguna tarjeta', (string) $respuesta['error']);
+        $this->assertStringContainsString('proponer_compra_sin_articulos', (string) $respuesta['error']);
+        $this->assertSame('198.522', $respuesta['opciones']['monto_dictado']);
+
+        list($otra, $sin_monto) = $this->escena('Cargame la compra de ferretotal, la factura del 29/10/2026 N° 0001-00004567');
+
+        $respuesta = PropuestaCompraConFacturaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($otra), $sin_monto, ['proveedor' => 'ferretotal']);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertStringStartsWith('No tengo ninguna foto de factura sin usar', (string) $respuesta['error'], 'Una fecha o un N° de comprobante no son un monto.');
+    }
+
+    /**
      * 🔴 Ronda de arreglos (30/10/2026), arreglo 12: un total dictado con punto de miles («198.522») es
      * 198522, no 198,52; «1.500,50» es 1500,5. Y un número con tres decimales no se adivina: vuelve un
      * error para el modelo.
