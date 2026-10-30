@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Models\AiArchivo;
+use App\Models\AiMessage;
 use App\Models\Combo;
 use App\Models\ExportHistory;
 use App\Models\ImportHistory;
@@ -422,6 +423,26 @@ class Kernel extends ConsoleKernel
                     && $this->gate_de_datos(function () {
                         return AiArchivo::where('expires_at', '<', now())->exists();
                     });
+            });
+
+        // Vigía de los turnos colgados del asistente (misión agente-mejoras-uso-real, ronda de arreglos,
+        // 30/10/2026): cierra los mensajes del asistente que siguen en 'pendiente' después de 10 minutos
+        // (la cola sin consumidor o el worker caído; el admin deja de esperar a los 180 s) con el texto
+        // de siempre y, si eran de WhatsApp, le deja al dueño un aviso citando su pedido. Ver
+        // VigiaDeTurnosIaHelper. withoutOverlapping(10) por lo mismo que los watchdogs de abajo.
+        //
+        // El when() mira solo si hay alguno colgado (el mismo umbral del comando): lo normal es que no
+        // haya ninguno, y entonces no se arranca ningún artisan (regla del schedule).
+        $schedule->command('asistente:vigilar-turnos')
+            ->everyFiveMinutes()
+            ->withoutOverlapping(10)
+            ->when(function () {
+                return $this->gate_de_datos(function () {
+                    return AiMessage::where('rol', 'assistant')
+                        ->where('estado', 'pendiente')
+                        ->where('created_at', '<', now()->subMinutes(\App\Http\Controllers\AiConversationController::MINUTOS_VENCIMIENTO_PENDIENTE))
+                        ->exists();
+                });
             });
 
         // Watchdog de importaciones colgadas: desbloquea imports que murieron sin dejar traza.

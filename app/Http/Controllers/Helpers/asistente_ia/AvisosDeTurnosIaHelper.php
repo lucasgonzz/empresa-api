@@ -206,9 +206,16 @@ class AvisosDeTurnosIaHelper
             return 'No te pude contestar ' . $que . $cuando . '. ¿Lo retomo?';
         }
 
-        $cita = mb_strlen($texto) > self::LARGO_DE_LA_CITA
-            ? rtrim(mb_substr($texto, 0, self::LARGO_DE_LA_CITA)) . '…'
-            : $texto;
+        /* Cortada en la última palabra entera que entra: «cuota re…» no se lee. */
+        $cita = $texto;
+
+        if (mb_strlen($texto) > self::LARGO_DE_LA_CITA) {
+
+            $corte = mb_substr($texto, 0, self::LARGO_DE_LA_CITA);
+            $espacio = mb_strrpos($corte, ' ');
+
+            $cita = rtrim(($espacio !== false && $espacio > self::LARGO_DE_LA_CITA / 2) ? mb_substr($corte, 0, $espacio) : $corte, ' ,.;:') . '…';
+        }
 
         $sin_usar = AiMessageImagen::where('ai_message_id', (int) $pedido->id)->whereNull('gestionada_at')->count();
 
