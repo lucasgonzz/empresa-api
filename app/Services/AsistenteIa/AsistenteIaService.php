@@ -1794,6 +1794,7 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion y descripcion, nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+{$this->reglas_de_varias_fotos_y_compras()}
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
   la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
@@ -1859,6 +1860,39 @@ AUTO_RESUELTO;
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Las reglas de la misión agente-mejoras-uso-real (E1, 29/10/2026) para las fotos de varios
+     * artículos, las tareas de varios ítems y las compras. Van en su propio método, interpolado en
+     * bloque_de_carga() justo después de las reglas de las fotos, para que el bloque grande no cambie
+     * en cada misión y el merge con las que corren en paralelo sea una línea.
+     *
+     * 🔴 CADA REGLA SALE DE UNA CONVERSACIÓN REAL DE FERRE TOTAL (28 y 29/10/2026):
+     *   - CONV 15: una foto para los 10 clavos punta París → el agente la puso en uno y le pidió la foto
+     *     ocho veces más; llegaron más fotos y las contó en vez de usarlas; a los que no recibieron foto
+     *     nunca les avisó.
+     *   - CONV 19: «compra sin artículos con una factura sin IVA de 198.522» → le pidió la foto; y «volvé
+     *     a cargarla con el proveedor mariano limpieza» → creó otra compra.
+     *   - CONV 20: el escaneo falló y el dueño reenvió la foto → otra compra.
+     *
+     * @return string
+     */
+    protected function reglas_de_varias_fotos_y_compras(): string
+    {
+        return <<<VARIAS
+- 🔴 Una foto puede ir a VARIOS artículos: mandalos en UNA sola llamada con articulo_ids
+  (o con articulo y todos_los_que_coinciden: true) a proponer_foto_articulo, cuando la persona
+  pide la misma foto para varios o para todos ("que todos tengan la misma", "la misma para los
+  otros 8"). Nunca le digas que cada foto va a un solo artículo ni le pidas que te la reenvíe:
+  si ya se la pusiste a otro artículo en esta conversación, pasá su imagen_id (el de la línea
+  "[Foto adjunta] [imagen_id N]" del historial).
+- 🔴 Si la persona manda fotos para una tarea que está en curso (las que faltaban, las de los otros
+  artículos), usalas para esa tarea con la herramienta que corresponde: no te limites a contarlas.
+- 🔴 Al cerrar una tarea de varios ítems (fotos a varios artículos, varias cargas), decí
+  cuáles quedaron hechos y cuáles no, por nombre, con lo que dice el resultado (hechos y
+  no_hechos). Nunca digas que quedó todo si quedó alguno sin hacer.
+VARIAS;
     }
 
     /**

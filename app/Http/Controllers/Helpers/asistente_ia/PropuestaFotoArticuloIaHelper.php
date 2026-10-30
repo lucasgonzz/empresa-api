@@ -54,6 +54,26 @@ use Intervention\Image\ImageManager;
  * La foto se resuelve entre las imágenes sin gestionar de la conversación. Sin imagen_id conserva
  * la última enviada por el dueño; con imagen_id permite la foto profesional de una búsqueda previa.
  * Un id explícito inválido jamás cae en otra foto: eso publicaría un contenido distinto del elegido.
+ *
+ * 🔴 UNA FOTO, N ARTÍCULOS (misión agente-mejoras-uso-real, E1 puntos 1 y 2, 29/10/2026). En Ferre
+ * Total (CONV 15) Pablo mandó UNA foto: «ponele esta imagen a los clavos punta París, que todos tengan
+ * la misma». Eran 10 clavos; el agente se la puso a uno solo, le dijo que «la foto ya quedó usada» y le
+ * pidió que se la reenviara una vez por cada tamaño. Desde esta misión:
+ *   - La herramienta acepta `articulo_ids` (hasta TOPE_ARTICULOS) o `todos_los_que_coinciden` (todos
+ *     los que encuentra la búsqueda por palabras, en vez de preguntar cuál), y arma UNA tarjeta que
+ *     lista los N. `datos` lleva `article_ids` + `articulos` (y `article_id` + `articulo` cuando es uno
+ *     solo, el formato de siempre). ejecutar() lee `article_ids` y, si no está, `[article_id]`: las
+ *     tarjetas viejas ya guardadas en `ai_message_actions` se siguen ejecutando igual.
+ *   - Al ejecutar se escribe UN ARCHIVO POR ARTÍCULO, con nombre propio: ImageController::deleteImage
+ *     (ImageController.php:303) borra el archivo del disco al sacarle la foto a un artículo, y un
+ *     archivo compartido se la borraría a todos los demás. El webp se codifica una sola vez.
+ *   - Un artículo que se borró entre la tarjeta y el sí se SALTEA y se informa (`no_hechos`): no
+ *     voltea la transacción de los demás. El resultado trae `hechos` y `no_hechos` por nombre, y el
+ *     texto los dice, para que el agente no cierre la tarea diciendo que quedó todo.
+ *   - LA MISMA FOTO SE PUEDE VOLVER A USAR por su `imagen_id` si ya se puso en un artículo de esta
+ *     conversación (FotosDeLaConversacionIaHelper::reutilizable_para_articulo): «la misma para los
+ *     otros 8» ya no exige reenviarla. Una foto que entró en una compra con factura, o una sellada que
+ *     no fue a ningún artículo, no.
  */
 class PropuestaFotoArticuloIaHelper
 {
@@ -76,6 +96,14 @@ class PropuestaFotoArticuloIaHelper
     const TOPE_CANDIDATOS = 10;
 
     /**
+     * Cuántos artículos entran en UNA tarjeta de foto (misión agente-mejoras-uso-real, 29/10/2026).
+     * Treinta cubren una familia entera de medidas (los 10 clavos de Ferre Total, las 20 mechas de un
+     * juego) sin que la tarjeta sea una lista que nadie lee antes de confirmar; más que eso es una
+     * búsqueda de imágenes por filtro (proponer_imagenes_para_articulos), no una foto del dueño.
+     */
+    const TOPE_ARTICULOS = 30;
+
+    /**
      * Columnas que alcanzan para RESOLVER y para nombrar el artículo en la tarjeta. Al ejecutar se
      * lee el modelo entero (ver ejecutar()): ahí hacen falta los campos de sincronización.
      */
@@ -86,7 +114,9 @@ class PropuestaFotoArticuloIaHelper
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessage  $mensaje  El assistant que propone.
-     * @param  array  $input  articulo (texto), articulo_id, imagen_id opcional, reemplaza_a
+     * @param  array  $input  articulo (texto), articulo_id, imagen_id opcional, reemplaza_a, y desde la
+     *                        misión agente-mejoras-uso-real articulo_ids (int[], hasta TOPE_ARTICULOS) y
+     *                        todos_los_que_coinciden (bool)
      * @return array  Respuesta de la herramienta (propuesta creada o respuesta de negocio).
      */
     public static function proponer(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)
@@ -96,20 +126,32 @@ class PropuestaFotoArticuloIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('fotos de artículos'));
         }
 
-        $articulo = self::resolver_articulo($contexto, $input);
+        $articulos = self::resolver_articulos($contexto, $input);
 
-        if (RespuestaDeCargaIa::es_negativa($articulo)) {
+        if (RespuestaDeCargaIa::es_negativa($articulos)) {
 
-            return $articulo;
+            return $articulos;
         }
 
         $explicita = array_key_exists('imagen_id', $input);
         $foto = null;
+        $reusa_usada = false;
+
         if ($explicita) {
             $id = $input['imagen_id'];
             if ((is_int($id) || is_string($id)) && preg_match('/^[1-9][0-9]*$/D', (string) $id)
                 && filter_var($id, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) !== false) {
                 $foto = FotosDeLaConversacionIaHelper::por_id($contexto, $id);
+
+                /*
+                 * Misión agente-mejoras-uso-real: si no está sin usar, puede ser la que YA se puso en
+                 * otro artículo de esta conversación («la misma para los otros 8»). Sólo esa: nunca la
+                 * de una factura ni una sellada que no fue a ningún artículo.
+                 */
+                if (is_null($foto)) {
+                    $foto = FotosDeLaConversacionIaHelper::reutilizable_para_articulo($contexto, $id);
+                    $reusa_usada = !is_null($foto);
+                }
             }
             if (is_null($foto)) {
                 return RespuestaDeCargaIa::error('Esa imagen_id no está disponible en esta conversación o ya se usó. Usá el id del hallazgo elegido; no se reemplazó por otra foto.');
@@ -120,23 +162,67 @@ class PropuestaFotoArticuloIaHelper
 
         if (is_null($foto)) {
 
+            /*
+             * 🔴 Sin foto nueva pero con una que ya se puso en un artículo de esta charla: NO se toma
+             * sola (el dueño puede estar por mandar otra), se le dice al MODELO con qué id volver a
+             * llamar si la persona pidió «la misma». Es el «no se armó ninguna tarjeta» que el prompt
+             * dice que es para él: en la CONV 15 de Ferre Total el agente le pidió a Pablo que
+             * reenviara una foto que ya tenía.
+             */
+            $usada = FotosDeLaConversacionIaHelper::la_ultima_reutilizable_para_articulo($contexto, $mensaje);
+
+            if (!is_null($usada)) {
+
+                return RespuestaDeCargaIa::error(
+                    CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'no hay ninguna foto nueva sin usar. Si la persona pidió la MISMA foto que ya le pusiste a otro artículo, '
+                    . 'volvé a llamar en este mismo mensaje con imagen_id ' . (int) $usada->id . ' (la que mandó ' . FotosDeLaConversacionIaHelper::cuando_llego($usada) . '). '
+                    . 'Si pidió otra foto, decile que te la mande.',
+                    ['imagen_id' => (int) $usada->id]
+                );
+            }
+
             return RespuestaDeCargaIa::error(
                 'No tengo ninguna foto tuya sin usar de las últimas ' . FotosDeLaConversacionIaHelper::HORAS . ' horas. Mandámela y se la pongo al artículo.'
             );
         }
 
-        $nombre = self::nombre_de_articulo($articulo);
+        $ids = [];
+        $nombres = [];
 
-        $datos = [
-            'article_id' => (int) $articulo->id,
-            'articulo'   => $nombre,
-            'imagen_id'  => (int) $foto->id,
-        ];
+        foreach ($articulos as $articulo) {
 
-        $renglones = [
-            ['etiqueta' => 'Artículo', 'valor' => $nombre],
-            ['etiqueta' => 'Qué se hace', 'valor' => 'La foto se suma a las imágenes del artículo'],
-        ];
+            $ids[] = (int) $articulo->id;
+            $nombres[] = self::nombre_de_articulo($articulo);
+        }
+
+        $uno_solo = count($ids) === 1;
+
+        /*
+         * `article_ids` + `articulos` siempre; `article_id` + `articulo` cuando es uno solo, que es el
+         * formato de siempre (lo leen los tests y las tarjetas de antes de esta misión).
+         */
+        $datos = [];
+
+        if ($uno_solo) {
+
+            $datos['article_id'] = $ids[0];
+            $datos['articulo'] = $nombres[0];
+        }
+
+        $datos['imagen_id'] = (int) $foto->id;
+        $datos['article_ids'] = $ids;
+        $datos['articulos'] = $nombres;
+        $datos['reusa_usada'] = $reusa_usada;
+
+        $renglones = $uno_solo
+            ? [
+                ['etiqueta' => 'Artículo', 'valor' => $nombres[0]],
+                ['etiqueta' => 'Qué se hace', 'valor' => 'La foto se suma a las imágenes del artículo'],
+            ]
+            : [
+                ['etiqueta' => 'Artículos (' . count($ids) . ')', 'valor' => implode(', ', $nombres)],
+                ['etiqueta' => 'Qué se hace', 'valor' => 'La misma foto se suma a las imágenes de cada uno'],
+            ];
 
         /*
          * Cuándo llegó la foto (misión asistente-fotos-barras-y-compras): con la ventana de 24 horas
@@ -149,6 +235,10 @@ class PropuestaFotoArticuloIaHelper
 
             $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'Foto encontrada en internet'];
 
+        } elseif ($reusa_usada) {
+
+            $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'La misma que ya usaste' . ($cuando === '' ? '' : ' (la que mandaste ' . $cuando . ')')];
+
         } elseif ($cuando !== '') {
 
             $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'La que mandaste ' . $cuando];
@@ -158,10 +248,10 @@ class PropuestaFotoArticuloIaHelper
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_FOTO_ARTICULO,
-            self::clave($articulo->id),
+            self::clave($ids),
             $datos,
             [
-                'titulo'    => 'Foto del artículo',
+                'titulo'    => $uno_solo ? 'Foto del artículo' : 'Foto de ' . count($ids) . ' artículos',
                 'renglones' => $renglones,
                 /*
                  * El aviso es la contracara de que esto NO se auto-confirme: la persona tiene que
@@ -174,39 +264,61 @@ class PropuestaFotoArticuloIaHelper
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, 'Foto del artículo ' . $nombre);
+        $resumen = $uno_solo
+            ? 'Foto del artículo ' . $nombres[0]
+            : 'Foto de ' . count($ids) . ' artículos: ' . implode(', ', $nombres);
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
     }
 
     /**
-     * Identidad de la carga para el reemplazo: una foto nueva para el mismo artículo reemplaza la
-     * tarjeta, y la de otro artículo no la pisa.
+     * Identidad de la carga para el reemplazo: una foto nueva para el mismo artículo (o el mismo
+     * grupo de artículos) reemplaza la tarjeta, y la de otro artículo no la pisa.
      *
-     * @param  int  $article_id
+     * Un solo artículo conserva la clave de siempre (`foto_articulo:{id}`), así una corrección sigue
+     * reemplazando a una tarjeta vieja. Varios: `foto_articulo:` + sha1 de los ids ORDENADOS, para que
+     * el mismo grupo dé la misma clave sin importar en qué orden lo mandó el modelo (y para que entre
+     * en los 100 caracteres de la columna).
+     *
+     * @param  int|array<int, int>  $article_ids
      * @return string
      */
-    public static function clave($article_id)
+    public static function clave($article_ids)
     {
-        return 'foto_articulo:' . (int) $article_id;
+        $ids = is_array($article_ids) ? array_values(array_map('intval', $article_ids)) : [(int) $article_ids];
+
+        if (count($ids) === 1) {
+
+            return 'foto_articulo:' . $ids[0];
+        }
+
+        sort($ids);
+
+        return 'foto_articulo:' . sha1(implode(',', $ids));
     }
 
     /**
-     * Guarda la foto como webp, la cuelga del artículo y sella la foto. Corre adentro de la
+     * Guarda la foto como webp, la cuelga de cada artículo y sella la foto. Corre adentro de la
      * transacción de EjecutorAccionesIaHelper y con la persona ya autenticada.
      *
-     * 🔴 TODO SE RE-VERIFICA ACÁ. Entre la propuesta y la confirmación pueden pasar horas: el
-     * artículo pudo borrarse y la foto pudo usarla otra tarjeta. La foto se relee con
-     * `lockForUpdate` (mismo motivo que la compra con factura: dos tarjetas no pueden llevarse la
-     * misma foto).
+     * 🔴 TODO SE RE-VERIFICA ACÁ. Entre la propuesta y la confirmación pueden pasar horas: un artículo
+     * pudo borrarse y la foto pudo usarla otra tarjeta. La foto se relee con `lockForUpdate` (mismo
+     * motivo que la compra con factura: dos tarjetas no pueden llevarse la misma foto a una factura);
+     * si ya se usó, sólo sirve si fue para un artículo de esta conversación (ver foto_bloqueada()).
      *
      * 🔴 LOS CUATRO EFECTOS DE ABAJO SON LOS DE LA PANTALLA (ImageController.php:171-189) Y VAN
-     * COMPLETOS. Se copian y no se llama al controller porque `setImage()` es un método de request
-     * (lee `$request->image_url`, baja la imagen por HTTP y responde un JSON), y acá la imagen ya
-     * está en el disco privado del asistente. Lo que no se puede es quedarse con la fila de `images`
-     * y saltear el resto.
+     * COMPLETOS, POR CADA ARTÍCULO. Se copian y no se llama al controller porque `setImage()` es un
+     * método de request (lee `$request->image_url`, baja la imagen por HTTP y responde un JSON), y acá
+     * la imagen ya está en el disco privado del asistente. Lo que no se puede es quedarse con la fila
+     * de `images` y saltear el resto.
+     *
+     * Misión agente-mejoras-uso-real (29/10/2026): con N artículos, el que ya no existe se saltea y
+     * queda en `no_hechos` con su nombre, sin voltear a los demás; si no queda NINGUNO, sí corta (no
+     * hay nada que hacer y la persona tiene que saberlo). La foto se sella al final, una vez.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  \App\Models\AiMessageAction  $accion
-     * @return array  resultado {texto, ruta}
+     * @return array  resultado {texto, ruta, hechos: [{article_id, articulo}], no_hechos: [{article_id, articulo, motivo}]}
      *
      * @throws AccionIaException  422 si la carga ya no se puede hacer.
      */
@@ -219,19 +331,27 @@ class PropuestaFotoArticuloIaHelper
 
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
+        $pedidos = self::articulos_de_la_tarjeta($datos);
+
         /*
          * El modelo ENTERO y no las columnas de resolver_articulo(): acá se lo guarda y se lo pasa
          * a los tres servicios de sincronización, que leen campos suyos (mercado_libre,
          * meli_category_id, stock, tiendanube_product_id, disponible_tienda_nube). Es lo mismo que
          * hace la pantalla, que trabaja sobre `$model_name::find($request->model_id)`.
          */
-        $articulo = Article::where('user_id', $contexto->owner_id)
-                            ->where('id', isset($datos['article_id']) ? (int) $datos['article_id'] : 0)
-                            ->first();
+        $existentes = Article::where('user_id', $contexto->owner_id)
+                                ->whereIn('id', array_keys($pedidos))
+                                ->get()
+                                ->keyBy('id');
 
-        if (is_null($articulo)) {
+        if (!count($existentes)) {
 
-            throw new AccionIaException(422, 'Ese artículo ya no existe entre los tuyos. Pedímelo de nuevo.');
+            throw new AccionIaException(
+                422,
+                count($pedidos) > 1
+                    ? 'Ninguno de esos artículos existe ya entre los tuyos. Pedímelo de nuevo.'
+                    : 'Ese artículo ya no existe entre los tuyos. Pedímelo de nuevo.'
+            );
         }
 
         $imagen = self::foto_bloqueada($contexto, isset($datos['imagen_id']) ? (int) $datos['imagen_id'] : 0);
@@ -241,28 +361,78 @@ class PropuestaFotoArticuloIaHelper
             throw new AccionIaException(422, 'Esa foto ya se usó o no está disponible. Mandámela de nuevo.');
         }
 
-        self::asignar_imagen($contexto, $articulo, $imagen);
+        $binario = AsistenteImagenHelper::binario($imagen);
+
+        if (is_null($binario)) {
+
+            throw new AccionIaException(422, 'No pude leer esa foto. Mandámela de nuevo.');
+        }
+
+        /* El webp se codifica UNA vez; después se escribe un archivo por artículo (ver el docblock de la clase). */
+        $webp = self::codificar_webp($binario);
+
+        if (is_null($webp)) {
+
+            throw new AccionIaException(422, 'No pude guardar la foto. Probá de nuevo en un momento.');
+        }
+
+        $hechos = [];
+        $no_hechos = [];
+
+        foreach ($pedidos as $article_id => $nombre_pedido) {
+
+            if (!isset($existentes[$article_id])) {
+
+                $no_hechos[] = ['article_id' => (int) $article_id, 'articulo' => $nombre_pedido, 'motivo' => 'ya no existe entre tus artículos'];
+
+                continue;
+            }
+
+            $articulo = $existentes[$article_id];
+
+            $name = self::escribir_webp($webp, (int) $articulo->id);
+
+            if (is_null($name)) {
+
+                $no_hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo), 'motivo' => 'no pude guardar el archivo de la foto'];
+
+                continue;
+            }
+
+            self::colgar_y_sincronizar($contexto, $articulo, $name);
+
+            $hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo)];
+        }
+
+        if (!count($hechos)) {
+
+            throw new AccionIaException(422, 'No pude guardar la foto en ninguno de los artículos. Probá de nuevo en un momento.');
+        }
+
+        AsistenteImagenHelper::marcar_gestionadas([(int) $imagen->id]);
 
         return [
-            'texto' => 'Foto agregada al artículo ' . self::nombre_de_articulo($articulo),
+            'texto'     => self::texto_del_resultado($hechos, $no_hechos),
             /*
              * El listado de artículos, que es de donde se cargan y se sacan las fotos. Misma ruta
              * que usa la búsqueda de imágenes por filtro (PropuestaImagenesArticulosIaHelper). En
              * WhatsApp esta ruta no se usa: no hay navegación.
              */
-            'ruta'  => [
+            'ruta'      => [
                 'name'   => 'article',
                 'params' => new \stdClass(),
                 'texto'  => 'Ver el listado',
             ],
+            'hechos'    => $hechos,
+            'no_hechos' => $no_hechos,
         ];
     }
 
     /**
      * Cuelga una foto del asistente de un artículo con los CUATRO EFECTOS DE LA PANTALLA y la sella.
-     * Es el cuerpo de ejecutar(), separado en la misión asistente-fotos-barras-y-compras (24/9/2026)
-     * para que el alta de un artículo con su foto (AltaDeArticuloConFotoIaHelper) asigne la foto por
-     * el MISMO camino y no por una copia que un día se olvide uno de los cuatro efectos.
+     * Separado de ejecutar() en la misión asistente-fotos-barras-y-compras (24/9/2026) para que el
+     * alta de un artículo con su foto (AltaDeArticuloConFotoIaHelper) asigne la foto por el MISMO
+     * camino y no por una copia que un día se olvide uno de los cuatro efectos.
      *
      * La foto tiene que venir ya bloqueada por quien llama (lockForUpdate adentro de su
      * transacción): acá no se relee.
@@ -290,6 +460,26 @@ class PropuestaFotoArticuloIaHelper
             throw new AccionIaException(422, 'No pude guardar la foto. Probá de nuevo en un momento.');
         }
 
+        $image = self::colgar_y_sincronizar($contexto, $articulo, $name);
+
+        AsistenteImagenHelper::marcar_gestionadas([(int) $imagen->id]);
+
+        return $image;
+    }
+
+    /**
+     * La fila de `images` del artículo con un archivo ya guardado en storage/app/public, y los CUATRO
+     * EFECTOS de la pantalla (ImageController.php:171-189). Es lo común entre asignar_imagen() (una
+     * foto, un artículo) y ejecutar() (una foto, N artículos, un archivo por cada uno), separado en la
+     * misión agente-mejoras-uso-real para que los dos caminos no se separen nunca.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $articulo  El modelo ENTERO.
+     * @param  string  $name  Nombre del archivo en storage/app/public.
+     * @return \App\Models\Image
+     */
+    protected static function colgar_y_sincronizar(ContextoDeCargaIa $contexto, Article $articulo, $name)
+    {
         /*
          * 🔴 `imageable_type` es el string 'article' EN MINÚSCULA y no la clase con namespace: el
          * morph map de AppServiceProvider.php:55-56 mapea 'article' => App\Models\Article, y todas
@@ -327,9 +517,262 @@ class PropuestaFotoArticuloIaHelper
         ProductService::add_article_to_sync($articulo);
         TiendaNubeSyncArticleService::add_article_to_sync($articulo);
 
-        AsistenteImagenHelper::marcar_gestionadas([(int) $imagen->id]);
-
         return $image;
+    }
+
+    /**
+     * Los artículos de la tarjeta, `[article_id => nombre]`, en el orden de la tarjeta: `article_ids`
+     * (+ `articulos`) de las tarjetas nuevas o `article_id` (+ `articulo`) de las de antes de la misión
+     * agente-mejoras-uso-real. Una tarjeta sin ninguno de los dos da la lista vacía, y ejecutar() la
+     * corta como "ya no existe".
+     *
+     * @param  array  $datos
+     * @return array<int, string>
+     */
+    protected static function articulos_de_la_tarjeta(array $datos)
+    {
+        $pedidos = [];
+
+        if (isset($datos['article_ids']) && is_array($datos['article_ids']) && count($datos['article_ids'])) {
+
+            $nombres = isset($datos['articulos']) && is_array($datos['articulos']) ? array_values($datos['articulos']) : [];
+
+            foreach (array_values($datos['article_ids']) as $i => $id) {
+
+                if ((int) $id > 0) {
+
+                    $pedidos[(int) $id] = isset($nombres[$i]) ? (string) $nombres[$i] : 'Artículo ' . (int) $id;
+                }
+            }
+
+            return $pedidos;
+        }
+
+        if (isset($datos['article_id']) && (int) $datos['article_id'] > 0) {
+
+            $pedidos[(int) $datos['article_id']] = isset($datos['articulo']) ? (string) $datos['articulo'] : 'Artículo ' . (int) $datos['article_id'];
+        }
+
+        return $pedidos;
+    }
+
+    /**
+     * El texto del resultado: con uno solo, el de siempre («Foto agregada al artículo X»); con varios,
+     * a cuántos se les puso y, por nombre, a cuáles NO y por qué. El agente lo cuenta tal cual, y por
+     * eso el «a cuáles no» va acá y no queda librado a que el modelo se acuerde (CONV 15: a los clavos
+     * que no recibieron la foto nunca se les avisó).
+     *
+     * @param  array  $hechos
+     * @param  array  $no_hechos
+     * @return string
+     */
+    protected static function texto_del_resultado(array $hechos, array $no_hechos)
+    {
+        if (count($hechos) === 1 && !count($no_hechos)) {
+
+            return 'Foto agregada al artículo ' . $hechos[0]['articulo'];
+        }
+
+        $nombres = [];
+
+        foreach ($hechos as $hecho) {
+
+            $nombres[] = $hecho['articulo'];
+        }
+
+        $texto = 'Foto agregada a ' . (count($hechos) === 1 ? '1 artículo' : count($hechos) . ' artículos') . ': ' . implode(', ', $nombres) . '.';
+
+        if (count($no_hechos)) {
+
+            $faltan = [];
+
+            foreach ($no_hechos as $no_hecho) {
+
+                $faltan[] = $no_hecho['articulo'] . ' (' . $no_hecho['motivo'] . ')';
+            }
+
+            $texto .= ' NO se la pude poner a ' . (count($no_hechos) === 1 ? '1' : count($no_hechos)) . ': ' . implode(', ', $faltan) . '.';
+        }
+
+        return $texto;
+    }
+
+    /**
+     * Los artículos a los que va la foto, o la respuesta de negocio (falta, ambigüedad, tope).
+     *
+     * Tres caminos, en este orden (misión agente-mejoras-uso-real, 29/10/2026):
+     *   1. `articulo_ids` (más `articulo_id` si vino): esos y solo esos, del dueño. Un id que no es
+     *      suyo corta SIN tarjeta con el prefijo NO_SE_ARMO (es para el modelo: casi siempre un id mal
+     *      copiado), y más de TOPE_ARTICULOS también.
+     *   2. `todos_los_que_coinciden` con `articulo`: TODOS los que encuentra la búsqueda por palabras
+     *      (la misma de resolver_articulo()) en vez de preguntar cuál. Más de TOPE_ARTICULOS se pide
+     *      acotar.
+     *   3. Lo de siempre: UN artículo (resolver_articulo()).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $input
+     * @return array<int, \App\Models\Article>|array  Lista de artículos, o la respuesta negativa.
+     */
+    protected static function resolver_articulos(ContextoDeCargaIa $contexto, array $input)
+    {
+        $ids = self::ids_del_input(EntradaDeCargaIa::valor($input, 'articulo_ids'));
+
+        if (count($ids)) {
+
+            $articulo_id = EntradaDeCargaIa::valor($input, 'articulo_id');
+
+            if (is_numeric($articulo_id) && (int) $articulo_id > 0 && !in_array((int) $articulo_id, $ids, true)) {
+
+                array_unshift($ids, (int) $articulo_id);
+            }
+
+            if (count($ids) > self::TOPE_ARTICULOS) {
+
+                return RespuestaDeCargaIa::error(
+                    'En una tarjeta entra la misma foto para hasta ' . self::TOPE_ARTICULOS . ' artículos, y me pasaste ' . count($ids) . '. '
+                    . 'Decime cuáles van primero y armo las tarjetas de a ' . self::TOPE_ARTICULOS . '.'
+                );
+            }
+
+            $encontrados = Article::query()
+                                    ->where('user_id', $contexto->owner_id)
+                                    ->whereIn('id', $ids)
+                                    ->get(self::COLUMNAS)
+                                    ->keyBy('id');
+
+            $articulos = [];
+            $ajenos = [];
+
+            foreach ($ids as $id) {
+
+                if (isset($encontrados[$id])) {
+
+                    $articulos[] = $encontrados[$id];
+
+                } else {
+
+                    $ajenos[] = $id;
+                }
+            }
+
+            if (count($ajenos)) {
+
+                return RespuestaDeCargaIa::error(
+                    CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'estos articulo_ids no son artículos del negocio: ' . implode(', ', $ajenos) . '. '
+                    . 'Usá solo los ids que te devolvió una herramienta, o buscalos de nuevo por nombre (articulo con todos_los_que_coinciden).'
+                );
+            }
+
+            return $articulos;
+        }
+
+        $texto = EntradaDeCargaIa::texto($input, 'articulo');
+
+        if ($texto !== '' && self::es_si(EntradaDeCargaIa::valor($input, 'todos_los_que_coinciden'))) {
+
+            return self::todos_los_que_coinciden($contexto, $texto);
+        }
+
+        $articulo = self::resolver_articulo($contexto, $input);
+
+        if (RespuestaDeCargaIa::es_negativa($articulo)) {
+
+            return $articulo;
+        }
+
+        return [$articulo];
+    }
+
+    /**
+     * Todos los artículos del dueño que encuentra la búsqueda por palabras para `$texto` (frase entera
+     * en nombre o códigos, o cada palabra en el nombre: BusquedaPorPalabrasIaHelper::filtrar), hasta
+     * TOPE_ARTICULOS, en orden de nombre. Para «a todos los clavos punta París». Si son más, se pide
+     * acotar; si no hay ninguno, el mismo error que con un solo artículo.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $texto
+     * @return array<int, \App\Models\Article>|array
+     */
+    protected static function todos_los_que_coinciden(ContextoDeCargaIa $contexto, $texto)
+    {
+        $columnas = ['name', 'bar_code', 'provider_code'];
+
+        $consulta = Article::query()
+                            ->where('user_id', $contexto->owner_id)
+                            ->where(function ($sub) use ($texto, $columnas) {
+                                BusquedaPorPalabrasIaHelper::filtrar($sub, $texto, $columnas);
+                            });
+
+        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($consulta, $texto, $columnas)
+                                                ->orderBy('name')
+                                                ->limit(self::TOPE_ARTICULOS + 1)
+                                                ->get(self::COLUMNAS);
+
+        if (count($candidatos) === 0) {
+
+            return RespuestaDeCargaIa::error(
+                'No encontré ningún artículo que se llame "' . $texto . '" ni con ese código. Buscalo con otra palabra o decime el código.'
+            );
+        }
+
+        if (count($candidatos) > self::TOPE_ARTICULOS) {
+
+            return RespuestaDeCargaIa::error(
+                'Hay más de ' . self::TOPE_ARTICULOS . ' artículos que encajan con "' . $texto . '". Decime una palabra más (una medida, una marca) '
+                . 'para acotar: en una tarjeta entran hasta ' . self::TOPE_ARTICULOS . '.'
+            );
+        }
+
+        return $candidatos->all();
+    }
+
+    /**
+     * Los `articulo_ids` del input como enteros positivos, sin repetidos y en el orden en que vinieron.
+     * Cualquier cosa que no sea una lista (un número suelto, un texto) cuenta como que no vino.
+     *
+     * @param  mixed  $valor
+     * @return array<int, int>
+     */
+    protected static function ids_del_input($valor)
+    {
+        if (!is_array($valor)) {
+
+            return [];
+        }
+
+        $ids = [];
+
+        foreach ($valor as $id) {
+
+            if (is_numeric($id) && (int) $id > 0 && !in_array((int) $id, $ids, true)) {
+
+                $ids[] = (int) $id;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * true solo con un sí explícito (true, 1, "true", "1", "si", "sí"): DeepSeek rellena los booleanos
+     * opcionales con false o "", y eso es como si no hubiera venido.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected static function es_si($valor)
+    {
+        if (is_bool($valor)) {
+
+            return $valor;
+        }
+
+        if (is_int($valor) || is_float($valor)) {
+
+            return (int) $valor === 1;
+        }
+
+        return is_string($valor) && in_array(mb_strtolower(trim($valor)), ['true', '1', 'si', 'sí'], true);
     }
 
     /**
@@ -446,7 +889,16 @@ class PropuestaFotoArticuloIaHelper
             ];
         }
 
-        return RespuestaDeCargaIa::faltan(['a cuál de estos artículos le pongo la foto'], ['articulos' => $opciones]);
+        /*
+         * Misión agente-mejoras-uso-real: si la persona pidió la foto para TODOS ellos («que todos
+         * tengan la misma»), no se pregunta cuál: se vuelve a llamar con todos_los_que_coinciden o con
+         * los articulo_ids. La pista va en `opciones` y no en `faltan` (que el modelo le pregunta a la
+         * persona tal cual).
+         */
+        return RespuestaDeCargaIa::faltan(['a cuál de estos artículos le pongo la foto'], [
+            'articulos'   => $opciones,
+            'como_seguir' => 'Si la persona pidió la misma foto para varios o para todos, no preguntes: volvé a llamar con articulo_ids (los de estas opciones que correspondan) o con todos_los_que_coinciden: true.',
+        ]);
     }
 
     /**
@@ -464,9 +916,11 @@ class PropuestaFotoArticuloIaHelper
     }
 
     /**
-     * La foto de la tarjeta si sigue sin gestionar, CON LA FILA BLOQUEADA hasta el commit. El
-     * candado es lo que evita que dos tarjetas se lleven la misma foto (mismo patrón que
-     * PropuestaFotoSucursalIaHelper::foto_bloqueada y PropuestaCompraConFacturaIaHelper).
+     * La foto de la tarjeta CON LA FILA BLOQUEADA hasta el commit, si se puede usar: sin gestionar, o
+     * ya usada pero en un artículo de esta conversación (misión agente-mejoras-uso-real: la misma foto
+     * para varios artículos). El candado es lo que evita que dos tarjetas se lleven la misma foto a
+     * destinos incompatibles (mismo patrón que PropuestaFotoSucursalIaHelper::foto_bloqueada y
+     * PropuestaCompraConFacturaIaHelper): una foto que se fue a una factura nunca vuelve a un artículo.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  int  $imagen_id
@@ -479,14 +933,25 @@ class PropuestaFotoArticuloIaHelper
             return null;
         }
 
-        return AiMessageImagen::where('user_id', $contexto->owner_id)
-                                ->where('id', $imagen_id)
-                                ->whereHas('message', function ($query) use ($contexto) {
-                                    $query->where('ai_conversation_id', $contexto->conversation->id);
-                                })
-                                ->sinGestionar()
-                                ->lockForUpdate()
-                                ->first();
+        $imagen = AiMessageImagen::where('user_id', $contexto->owner_id)
+                                    ->where('id', $imagen_id)
+                                    ->whereHas('message', function ($query) use ($contexto) {
+                                        $query->where('ai_conversation_id', $contexto->conversation->id);
+                                    })
+                                    ->lockForUpdate()
+                                    ->first();
+
+        if (is_null($imagen)) {
+
+            return null;
+        }
+
+        if (is_null($imagen->gestionada_at)) {
+
+            return $imagen;
+        }
+
+        return FotosDeLaConversacionIaHelper::es_reutilizable_para_articulo($contexto, $imagen) ? $imagen : null;
     }
 
     /**
@@ -511,6 +976,63 @@ class PropuestaFotoArticuloIaHelper
 
             Log::warning('PropuestaFotoArticuloIaHelper: no se pudo guardar la foto del artículo como webp', [
                 'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+
+        return $name;
+    }
+
+    /**
+     * El binario codificado como WEBP, una sola vez para todos los artículos de la tarjeta, o null si
+     * Intervention no lo pudo leer.
+     *
+     * @param  string  $binario
+     * @return string|null
+     */
+    protected static function codificar_webp($binario)
+    {
+        try {
+
+            return (string) (new ImageManager())->make($binario)->encode('webp');
+
+        } catch (\Throwable $e) {
+
+            Log::warning('PropuestaFotoArticuloIaHelper: no se pudo codificar la foto como webp', [
+                'error' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Escribe el webp ya codificado en storage/app/public con un nombre PROPIO del artículo y devuelve
+     * ese nombre, o null si no se pudo. El nombre lleva el id del artículo: diez archivos escritos en
+     * el mismo segundo no pueden chocar (con `time().rand()` solo, sí podían), y cada uno se puede
+     * borrar sin tocar a los demás (ver el docblock de la clase).
+     *
+     * @param  string  $webp
+     * @param  int  $article_id
+     * @return string|null
+     */
+    protected static function escribir_webp($webp, $article_id)
+    {
+        $name = time() . rand(1, 100000) . '_' . (int) $article_id . '.webp';
+
+        try {
+
+            if (file_put_contents(storage_path() . '/app/public/' . $name, $webp) === false) {
+
+                return null;
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('PropuestaFotoArticuloIaHelper: no se pudo escribir la foto de un artículo', [
+                'article_id' => (int) $article_id,
+                'error'      => $e->getMessage(),
             ]);
 
             return null;

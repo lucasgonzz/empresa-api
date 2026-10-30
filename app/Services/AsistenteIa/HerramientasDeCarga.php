@@ -1115,7 +1115,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'proponer_foto_articulo',
-                'description'  => 'Arma la tarjeta para ponerle una foto a un ARTÍCULO QUE YA EXISTE. Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál. La foto se suma a las imágenes del artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para ponerle una foto a uno o a VARIOS ARTÍCULOS QUE YA EXISTEN. 🔴 Una misma foto puede ir a muchos artículos: si la persona pide la misma foto para varios ("que todos tengan la misma", "a los 10 clavos", "la misma para los otros 8"), mandalos en UNA sola llamada, con articulo_ids (hasta 30) o con articulo + todos_los_que_coinciden: true; nunca le digas que una foto va a un solo artículo ni le pidas que te la reenvíe. Para volver a usar una foto que ya le pusiste a otro artículo en esta conversación, mandá su imagen_id (el de la línea "[Foto adjunta] [imagen_id N]" del historial). Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál (salvo que la persona haya pedido la foto para todos: ahí volvé a llamar con todos_los_que_coinciden). La foto se suma a las imágenes de cada artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Al confirmar, el resultado trae hechos y no_hechos: contá a cuáles se les puso y a cuáles NO, por nombre. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1129,9 +1129,23 @@ class HerramientasDeCarga
                         ],
                         'imagen_id' => [
                             'type' => 'integer',
-                            'description' => 'Id exacto de la foto elegida en el hallazgo de búsqueda. Si falta, se usa la última foto enviada por la persona; no lo omitas para una foto de internet.',
+                            'description' => 'Id exacto de la foto: la del hallazgo de búsqueda, o una que la persona ya mandó en esta conversación (el imagen_id del historial), aunque ya se la hayas puesto a otro artículo. Si falta, se usa la última foto enviada por la persona y todavía sin usar; no lo omitas para una foto de internet.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión agente-mejoras-uso-real (29/10/2026, E1 punto 1), AL FINAL de las
+                         * propiedades por la regla del prefijo del caché: UNA foto para N artículos
+                         * (Ferre Total, CONV 15: «que todos los clavos punta París tengan la misma»).
+                         */
+                        'articulo_ids' => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Si la misma foto va a VARIOS artículos: sus ids (hasta 30), de una herramienta o de las opciones de un "faltan". Va en UNA sola llamada: nunca una llamada por artículo.',
+                        ],
+                        'todos_los_que_coinciden' => [
+                            'type'        => 'boolean',
+                            'description' => 'true solo si la persona pidió la foto para TODOS los artículos que encajan con articulo ("a todos los clavos punta París"): la tarjeta los lleva a todos (hasta 30) en vez de preguntarte cuál.',
+                        ],
                     ],
                     'required'   => [],
                 ],

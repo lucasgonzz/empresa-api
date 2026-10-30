@@ -195,6 +195,161 @@ class FotosDeLaConversacionIaHelper
     }
 
     /**
+     * Una foto YA USADA que se puede volver a poner en otro artículo, por su id, o null (misión
+     * agente-mejoras-uso-real, E1 punto 2, 29/10/2026).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, CONV 15). Pablo mandó una foto para los clavos punta París, el agente
+     * se la puso a uno y la foto quedó sellada (`gestionada_at`); a «la misma para los otros 8» le
+     * contestó que la foto «ya quedó usada» y que la mandara de nuevo, ocho veces. Sellar la foto sigue
+     * siendo correcto —es lo que impide que una factura termine en dos compras—, pero una foto de
+     * PRODUCTO puesta en un artículo puede ir a otros.
+     *
+     * Las condiciones, todas juntas (es_reutilizable_para_articulo()):
+     *   - del dueño de la cuenta, de un mensaje `rol = user` de ESTA conversación y de las últimas HORAS
+     *     horas (las de internet cuelgan del asistente y se usan solo sin usar, por por_id());
+     *   - que ya se haya puesto en un ARTÍCULO de esta conversación: una tarjeta confirmada de foto de
+     *     artículo (`datos.imagen_id`) o de alta de artículo con su foto (`datos.extras.imagen_id`);
+     *   - y que no haya entrado en NINGUNA compra con factura: la foto de una factura no se publica en
+     *     la tienda. Una sellada a mano o por otra carga, sin haber ido a un artículo, tampoco sirve.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $imagen_id
+     * @return \App\Models\AiMessageImagen|null
+     */
+    public static function reutilizable_para_articulo(ContextoDeCargaIa $contexto, $imagen_id)
+    {
+        $imagen_id = is_numeric($imagen_id) ? (int) $imagen_id : 0;
+
+        if ($imagen_id <= 0) {
+
+            return null;
+        }
+
+        $imagen = AiMessageImagen::where('id', $imagen_id)
+                                    ->where('user_id', $contexto->owner_id)
+                                    ->whereNotNull('gestionada_at')
+                                    ->first();
+
+        if (is_null($imagen)) {
+
+            return null;
+        }
+
+        return self::es_reutilizable_para_articulo($contexto, $imagen) ? $imagen : null;
+    }
+
+    /**
+     * true si esta foto, ya usada, se puede volver a poner en un artículo. Ver las condiciones en
+     * reutilizable_para_articulo(); acá se evalúan sobre una foto ya leída (la que ejecutar() tiene
+     * bloqueada con lockForUpdate).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return bool
+     */
+    public static function es_reutilizable_para_articulo(ContextoDeCargaIa $contexto, AiMessageImagen $imagen)
+    {
+        if ((int) $imagen->user_id !== (int) $contexto->owner_id || is_null($contexto->conversation)) {
+
+            return false;
+        }
+
+        if (!is_null($imagen->created_at) && Carbon::parse($imagen->created_at)->lt(self::desde())) {
+
+            return false;
+        }
+
+        $mensaje = AiMessage::where('id', (int) $imagen->ai_message_id)->first(['id', 'rol', 'ai_conversation_id']);
+
+        if (is_null($mensaje) || (string) $mensaje->rol !== 'user' || (int) $mensaje->ai_conversation_id !== (int) $contexto->conversation->id) {
+
+            return false;
+        }
+
+        $acciones = AiMessageAction::where('ai_conversation_id', (int) $contexto->conversation->id)
+                                    ->whereIn('tipo', [AiMessageAction::TIPO_FOTO_ARTICULO, AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_COMPRA_CON_FACTURA])
+                                    ->get(['id', 'tipo', 'estado', 'datos']);
+
+        $en_un_articulo = false;
+
+        foreach ($acciones as $accion) {
+
+            $datos = is_array($accion->datos) ? $accion->datos : [];
+
+            /* 🔴 Si alguna compra con factura la tuvo entre sus fotos (miradas o páginas), nunca. */
+            if ($accion->tipo === AiMessageAction::TIPO_COMPRA_CON_FACTURA) {
+
+                $de_la_compra = array_merge(
+                    isset($datos['imagen_ids']) && is_array($datos['imagen_ids']) ? $datos['imagen_ids'] : [],
+                    isset($datos['imagen_ids_miradas']) && is_array($datos['imagen_ids_miradas']) ? $datos['imagen_ids_miradas'] : []
+                );
+
+                if (in_array((int) $imagen->id, array_map('intval', $de_la_compra), true)) {
+
+                    return false;
+                }
+
+                continue;
+            }
+
+            if ($accion->estado !== AiMessageAction::ESTADO_CONFIRMADA) {
+
+                continue;
+            }
+
+            $usada = $accion->tipo === AiMessageAction::TIPO_FOTO_ARTICULO
+                ? (isset($datos['imagen_id']) ? (int) $datos['imagen_id'] : 0)
+                : (isset($datos['extras']['imagen_id']) ? (int) $datos['extras']['imagen_id'] : 0);
+
+            if ($usada === (int) $imagen->id) {
+
+                $en_un_articulo = true;
+            }
+        }
+
+        return $en_un_articulo;
+    }
+
+    /**
+     * La foto más nueva del dueño en esta conversación que ya se puso en un artículo y se puede volver a
+     * usar (reutilizable_para_articulo()), o null. NO se usa sola: es la pista que proponer_foto_articulo
+     * le da al MODELO cuando no hay ninguna foto nueva, para que vuelva a llamar con ese imagen_id si la
+     * persona pidió «la misma».
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje  El assistant que está proponiendo.
+     * @return \App\Models\AiMessageImagen|null
+     */
+    public static function la_ultima_reutilizable_para_articulo(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        $conversation_id = (int) $contexto->conversation->id;
+        $hasta = (int) $mensaje->id;
+
+        $usadas = AiMessageImagen::where('user_id', $contexto->owner_id)
+                                    ->whereNotNull('gestionada_at')
+                                    ->where('created_at', '>=', self::desde())
+                                    ->whereHas('message', function ($q) use ($conversation_id, $hasta) {
+                                        $q->where('ai_conversation_id', $conversation_id)
+                                          ->where('rol', 'user')
+                                          ->where('id', '<=', $hasta);
+                                    })
+                                    ->orderBy('ai_message_id', 'DESC')
+                                    ->orderBy('orden', 'DESC')
+                                    ->limit(10)
+                                    ->get();
+
+        foreach ($usadas as $usada) {
+
+            if (self::es_reutilizable_para_articulo($contexto, $usada)) {
+
+                return $usada;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * true si la foto la mandó el dueño (un mensaje `user`); false si la dejó el asistente (la
      * encontrada en internet por la búsqueda por código de barras). Es lo que la tarjeta dice para
      * que el dueño sepa qué foto va a quedar publicada.
