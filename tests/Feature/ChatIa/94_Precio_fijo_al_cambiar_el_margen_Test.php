@@ -192,9 +192,16 @@ class Precio_fijo_al_cambiar_el_margen_Test extends EmpresaTestCase
     {
         list($conversation, $assistant) = $this->conversacion('Dame de alta ' . $nombre);
 
+        /*
+         * Con categoría propia: si el dueño del fixture ya tiene categorías en la base del slot (pasa en
+         * las bases que se usaron para probar a mano), el alta pide una y no arma la tarjeta. El test no
+         * es sobre la categoría, así que se la da (dentro de la transacción del test).
+         */
+        $categoria = \App\Models\Category::create(['name' => 'Categoría zz-e2 ' . uniqid(), 'user_id' => $this->dueno->id]);
+
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
             'entidad'            => 'article',
-            'datos'              => ['name' => $nombre, 'cost' => 1000],
+            'datos'              => ['name' => $nombre, 'cost' => 1000, 'category_id' => $categoria->id],
             'margenes_por_lista' => [['lista' => 'Minorista', 'margen' => 30]],
         ]);
 
