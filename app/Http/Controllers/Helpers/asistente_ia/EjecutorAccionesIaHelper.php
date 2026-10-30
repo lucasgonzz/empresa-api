@@ -709,6 +709,10 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS:
                 return PropuestaCompraSinArticulosIaHelper::ejecutar($contexto, $accion);
+
+            /* El cambio de proveedor de una compra que creó el agente (misma misión). */
+            case AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA:
+                return CambioDeProveedorDeCompraIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

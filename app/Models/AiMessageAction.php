@@ -222,6 +222,13 @@ class AiMessageAction extends Model
      */
     const TIPO_COMPRA_SIN_ARTICULOS = 'compra_sin_articulos';
 
+    /**
+     * Cambiarle el proveedor a una compra que el agente acaba de crear («volvé a cargarla con otro
+     * proveedor»), en vez de crear otra (CambioDeProveedorDeCompraIaHelper). Mueve el movimiento de
+     * cuenta corriente de un proveedor al otro: se ejecuta solo con el dueño en "directo".
+     */
+    const TIPO_CAMBIO_PROVEEDOR_COMPRA = 'cambio_proveedor_compra';
+
     protected $guarded = [];
 
     /**

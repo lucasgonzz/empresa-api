@@ -4,6 +4,7 @@ namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AltaDeArticuloConFotoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CambioDeProveedorDeCompraIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionPorTextoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConsultasDeCargaIaHelper;
@@ -196,6 +197,13 @@ class HerramientasDeCarga
          * 🔴 TIPO_BORRADO_PANTALLA NO ESTÁ ACÁ, y está en NUNCA_AUTO_CONFIRMABLES: ver ahí.
          */
         AiMessageAction::TIPO_ACCION_PANTALLA,
+        /*
+         * Misión agente-mejoras-uso-real (29/10/2026), atrás de lo que había: el cambio de proveedor
+         * de una compra que creó el agente. Corrige una carga del propio agente (la compra vacía que
+         * acaba de crear) y la deuda que mueve pasa de una cuenta del negocio a otra, como un pago; en
+         * "resuelto" NO entra (ahí solo lo inocuo).
+         */
+        AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA,
     ];
 
     /**
@@ -1587,6 +1595,25 @@ class HerramientasDeCarga
                     'required'   => ['proveedor', 'total'],
                 ],
             ],
+            [
+                'name'         => 'proponer_cambio_de_proveedor_de_compra',
+                'description'  => 'Le cambia el PROVEEDOR a una compra que vos (el agente) creaste hace poco, en vez de crear otra: es lo que va cuando la persona dice "volvé a cargarla con el proveedor X", "era de X, no de Y" o "cambiale el proveedor" sobre la compra recién hecha. 🔴 NUNCA armes una compra nueva para eso ni le pidas la foto de nuevo: la compra, su factura y su escaneo se conservan y solo cambia el proveedor (y su deuda pasa a la cuenta corriente del proveedor nuevo). Sin compra_num uso la última compra que creaste en esta conversación. Solo sirve si la compra la creaste vos en las últimas 24 horas, sigue sin artículos y su escaneo no está confirmado; si no, la respuesta trae el motivo. Si el proveedor no existe, lo doy de alta en la misma carga. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'proveedor'   => [
+                            'type'        => 'string',
+                            'description' => 'El proveedor NUEVO, tal como lo dijo la persona.',
+                        ],
+                        'compra_num'  => [
+                            'type'        => 'integer',
+                            'description' => 'El N° de la compra a corregir (el de "Creé la Compra N° X"). Si es la que acabás de crear en esta conversación, podés no mandarlo.',
+                        ],
+                        'reemplaza_a' => self::esquema_de_reemplazo(),
+                    ],
+                    'required'   => ['proveedor'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -2188,6 +2215,19 @@ class HerramientasDeCarga
              */
             case 'proponer_compra_sin_articulos':
                 return self::resultado(PropuestaCompraSinArticulosIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * El cambio de proveedor de una compra del agente pasa por la puerta única: con el dueño
+             * en "directo" se hace en el acto (como un pago, mueve plata entre cuentas corrientes y el
+             * dueño pidió que todo se haga solo); en "resuelto" y "cauteloso" deja tarjeta.
+             */
+            case 'proponer_cambio_de_proveedor_de_compra':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    CambioDeProveedorDeCompraIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));

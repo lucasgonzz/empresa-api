@@ -1896,6 +1896,9 @@ CARGA;
   artículos", "cargame la factura de X por tanto", el total dictado sin foto) va con
   proponer_compra_sin_articulos: NO le pidas la foto de la factura. Pasale el total final y si es
   sin IVA o con qué alícuota (si no lo dijo, preguntalo). Siempre espera su sí, en todos los modos.
+- 🔴 Si la persona pide volver a cargar con OTRO proveedor una compra que acabás de crear ("volvé a
+  cargarla con el proveedor X", "era de X"), se cambia el proveedor de ESA compra con
+  proponer_cambio_de_proveedor_de_compra: no se crea otra compra ni se le pide la foto de nuevo.
 VARIAS;
     }
 

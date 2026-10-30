@@ -50,6 +50,13 @@ abstract class ComprasDelAgenteTestCase extends AsistenteWhatsappTestCase
         Storage::fake('local');
 
         $this->ferretotal = $this->crear_proveedor('FERRETOTAL');
+
+        /*
+         * "cauteloso" para que cada test diga el modo que prueba: el default de la columna es
+         * "directo" (migración cambiar_defaults_agente_ia_deepseek_directo) y ahí algunas de estas
+         * cargas se ejecutan en el acto.
+         */
+        User::where('id', $this->comercio->id)->update(['agente_confianza' => 'cauteloso']);
     }
 
     // --------------------------------------------------------------------------- fixtures
