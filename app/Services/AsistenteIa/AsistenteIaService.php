@@ -80,19 +80,33 @@ class AsistenteIaService
 {
     use TonoDeRedaccionIa;
 
-    /** Máximo de iteraciones del loop de tool use, para evitar bucles infinitos. */
-    const MAX_TOOL_ITERATIONS = 5;
+    /**
+     * Techo de vueltas del loop de tool use sin las herramientas de carga, CONTADA la llamada de cierre
+     * (ver MAX_TOOL_ITERATIONS_CON_ACCIONES, que cuenta el porqué de los dos).
+     */
+    const MAX_TOOL_ITERATIONS = 12;
 
     /**
-     * Techo de iteraciones cuando el mensaje tiene las herramientas de carga. Armar una carga
-     * encadena más llamadas que una consulta (buscar el cliente → sus cuentas → las opciones de
-     * carga → proponer), y con 5 una carga completa quedaba al borde del corte.
+     * Techo de vueltas cuando el mensaje tiene las herramientas de carga, CONTADA la llamada de cierre.
+     * Armar una carga encadena más llamadas que una consulta (buscar el cliente → sus cuentas → las
+     * opciones de carga → proponer).
      *
-     * Cuando se subió a 8 (misión asistente-ia-acciones) NO se subió el presupuesto, y así el techo
-     * de vueltas quedó más alto que el tiempo para gastarlas: el que cortaba era el reloj, no las
-     * iteraciones. PRESUPUESTO_SEGUNDOS lo alinea (ver la cuenta ahí).
+     * 🔴 DESDE LA MISIÓN agente-memoria-y-sin-techo (30/10/2026) ES LA RED CONTRA UN MODELO EN BUCLE, NO EL
+     * LÍMITE DE LO QUE SE PUEDE PEDIR. El caso real: Ferre Total por WhatsApp (DeepSeek Flash), Pablo
+     * pidió «…sobre ese detalle de cheques, de la fecha de pago de cada uno, me hagas un recordatorio para
+     * un día antes de su acreditación». Buscar el pago, sus cinco cheques y cinco proponer_tarea de a uno
+     * no entraba en las 8 vueltas de entonces: 8 llamadas en 13 segundos (2 s cada una, medido en
+     * ai_token_usages), el loop tocó el techo, TIRÓ la excepción y se perdió todo lo hecho — Pablo leyó
+     * «La consulta se hizo larga…» después de un pedido perfectamente razonable. No fue el tiempo: fue el
+     * techo de vueltas.
+     *
+     * Ahora: 24 con acciones y 12 sin (eran 8 y 5), el techo real del turno es el TIEMPO
+     * (PRESUPUESTO_SEGUNDOS, o PRESUPUESTO_SEGUNDOS_WHATSAPP por WhatsApp), y cuando cualquiera de los dos
+     * llega el turno ya no tira un error: la última vuelta es una LLAMADA DE CIERRE sin herramientas que le
+     * cuenta a la persona lo hecho y lo que falta (ver responder_con_el_modelo()). Por eso el número
+     * INCLUYE esa llamada: un turno que se come el techo hace 23 vueltas normales y 1 de cierre.
      */
-    const MAX_TOOL_ITERATIONS_CON_ACCIONES = 8;
+    const MAX_TOOL_ITERATIONS_CON_ACCIONES = 24;
 
     /** Techo de mensajes del historial que viajan a la API. */
     const MAX_MENSAJES_HISTORIAL = 30;
@@ -126,8 +140,9 @@ class AsistenteIaService
 
     /**
      * Presupuesto acumulado del loop completo, en segundos: al inicio de cada
-     * iteración, si ya pasó este techo desde el arranque, se corta con el
-     * error amigable en vez de pedir otra llamada.
+     * iteración, si ya pasó este techo desde el arranque, no se pide otra vuelta
+     * normal: va la llamada de cierre con lo hecho (desde la misión
+     * agente-memoria-y-sin-techo; antes se cortaba con el error amigable).
      *
      * Existe porque en WAMP/Windows sin pcntl el $timeout del job NO se
      * aplica (Laravel lo implementa con pcntl_alarm): sin este techo, un
@@ -136,20 +151,29 @@ class AsistenteIaService
      * enteras como iteraciones tenga el techo. 🔴 ES EL ÚNICO TECHO DE TIEMPO
      * QUE RIGE DE VERDAD EN ESTA MÁQUINA.
      *
-     * LA CUENTA DE LOS 210 (misión agente-ia-mano-derecha). El chequeo va ANTES de cada llamada,
-     * así que el presupuesto tiene que alcanzar para las 7 vueltas previas a la última:
+     * LA CUENTA DE LOS 210 (misión agente-ia-mano-derecha; rehecha por la misión
+     * agente-memoria-y-sin-techo, 30/10/2026). Hasta esa misión la cuenta iba al revés: el presupuesto
+     * tenía que alcanzar para las vueltas del techo (210 / 7 = 30 s por vuelta, con 8 vueltas). Ahora
+     * EL TIEMPO ES EL TECHO REAL y el de vueltas (MAX_TOOL_ITERATIONS_CON_ACCIONES = 24, 12 sin
+     * acciones) es solo la red contra un modelo en bucle. Una vuelta del chat son 2-20 s (DeepSeek
+     * Flash, 2 s, medido en Ferre Total; un Profundo pensando, 15-20 s), así que en 210 s entran entre
+     * 10 y 100 vueltas: con un modelo rápido llega antes el techo de vueltas, con uno lento el reloj.
+     * Llegue el que llegue, el turno NO tira un error: la vuelta que sigue es la LLAMADA DE CIERRE (sin
+     * herramientas, con lo que queda hasta el escalón 3 como timeout, ver
+     * techo_de_la_llamada_de_cierre()), que le cuenta a la persona lo hecho y lo que falta.
      *
-     *   210 / (MAX_TOOL_ITERATIONS_CON_ACCIONES - 1) = 30s por vuelta (llamada + tools)
-     *
-     * Una vuelta del chat son 5-20s, así que las 8 entran cómodas y el corte por presupuesto queda
-     * para el caso patológico, que es para lo que se escribió. Con 150 daban 21s por vuelta: el
-     * reloj cortaba antes que el techo de iteraciones que se había subido a 8.
+     * Por WhatsApp el reloj del presupuesto es otro y más corto (PRESUPUESTO_SEGUNDOS_WHATSAPP, por la
+     * paciencia del admin); esta cadena es la del sistema y la app, que es la que choca con el job.
      *
      * Y LA CADENA COMPLETA, que tiene que quedar coherente en los cinco escalones:
      *
      *   1. TIMEOUT_SEGUNDOS = 60      una llamada HTTP, lo único que corta al proveedor
-     *   2. PRESUPUESTO_SEGUNDOS = 210 el loop no arranca una vuelta nueva pasado esto
-     *   3. peor caso = 210 + 60 = 270 el presupuesto más la llamada en vuelo, que no se corta
+     *   2. PRESUPUESTO_SEGUNDOS = 210 el loop no arranca una vuelta NORMAL pasado esto (la que sigue
+     *                                 es la de cierre)
+     *   3. peor caso = 210 + 60 = 270 el presupuesto más la llamada en vuelo, que no se corta. La de
+     *                                 cierre NO lo estira: su timeout es lo que queda hasta 270 (y si
+     *                                 quedan menos de SEGUNDOS_MINIMOS_DEL_CIERRE no se hace, error
+     *                                 como antes)
      *   4. $timeout del job = 300     tiene que ser MAYOR que 270 (donde hay pcntl, si no mataría
      *                                 al worker antes del corte prolijo) más el margen de las
      *                                 tools, los saves y el broadcast
@@ -170,8 +194,60 @@ class AsistenteIaService
      * (TIMEOUT_SEGUNDOS) no pasa esto. El admin espera la respuesta 180 s y después manda su disculpa;
      * 165 deja margen para el texto final. Ver queda_tiempo_para_reintentar(). No es parte de la cadena
      * de cinco techos de PRESUPUESTO_SEGUNDOS: solo acota cuándo vale la pena reintentar.
+     *
+     * Desde la misión agente-memoria-y-sin-techo (30/10/2026) acota también la LLAMADA DE CIERRE por
+     * WhatsApp: su timeout es lo que queda hasta 165 (ver techo_de_la_llamada_de_cierre()), así que la
+     * respuesta que cuenta lo hecho siempre llega antes de que el admin se rinda.
      */
     const TECHO_DEL_REINTENTO_EN_WHATSAPP = 165;
+
+    /**
+     * Presupuesto del loop por WhatsApp, en segundos (misión agente-memoria-y-sin-techo, 30/10/2026): pasado
+     * esto, con al menos una ronda de herramientas hecha, no se pide otra vuelta normal y va la llamada de
+     * cierre con lo hecho. Se mide como queda_tiempo_para_reintentar(): desde lo MÁS VIEJO entre el
+     * arranque del loop y el alta del mensaje (`created_at`, que lo crea el POST del admin), porque el
+     * reloj del admin arranca ahí y la espera en la cola corre solo de su lado.
+     *
+     * 🔴 POR QUÉ NO LOS 210 DEL SISTEMA. El admin consulta el mensaje durante 180 s
+     * (EnviarMensajeAlAsistenteJob, ESPERAS_DE_POLLING) y después manda su disculpa: una respuesta que
+     * termina más tarde no le llega a nadie, por más que cuente bien lo hecho. Con 105, la vuelta normal
+     * que arrancó justo antes suele volver en 2-20 s y la de cierre tiene hasta 165
+     * (TECHO_DEL_REINTENTO_EN_WHATSAPP) para escribir. Sistema y app siguen con PRESUPUESTO_SEGUNDOS: ahí
+     * la persona mira la pantalla y el que espera es el job.
+     *
+     * La PRIMERA vuelta siempre es una llamada normal, aunque el mensaje haya esperado en la cola más que
+     * esto: sin ninguna ronda hecha no hay nada que contar en un cierre.
+     */
+    const PRESUPUESTO_SEGUNDOS_WHATSAPP = 105;
+
+    /**
+     * Lo mínimo que tiene que quedar hasta el techo de la llamada de cierre para hacerla (misión
+     * agente-memoria-y-sin-techo). Con menos, la llamada no alcanza ni para un texto corto de Flash y el
+     * turno termina en el error de tiempo agotado, como antes. Ver techo_de_la_llamada_de_cierre().
+     */
+    const SEGUNDOS_MINIMOS_DEL_CIERRE = 10;
+
+    /**
+     * La nota del sistema de la LLAMADA DE CIERRE (misión agente-memoria-y-sin-techo, 30/10/2026): va
+     * pegada al último turno de la persona, después de los tool_result, en la llamada que sale con
+     * `tool_choice: none` cuando se terminan las vueltas o el tiempo.
+     *
+     * Redactada para DeepSeek Flash, que es el que más la va a leer (Ferre Total): corta, en órdenes
+     * directas y con lo que tiene que decir, en este orden: qué hizo con los datos concretos (para que no
+     * conteste un genérico «estuve consultando» y la persona se quede sin el número que pidió), qué cargas
+     * quedaron hechas y cuáles esperan la confirmación (para que no las vuelva a pedir y se dupliquen), y
+     * qué falta, con el «seguí» para continuar. 🔴 «No digas que no podés hacerlo»: un modelo al que se le
+     * cortan las herramientas tiende a cerrar con «no puedo hacer los recordatorios», que acá es falso —
+     * los hace en el mensaje siguiente.
+     *
+     * Empieza con «[El sistema» a propósito: si el modelo la copia en su respuesta,
+     * TextoFinalIaHelper saca ese renglón como cualquier otra nota del sistema.
+     */
+    const NOTA_DE_CIERRE = '[El sistema: se terminó el tiempo de esta respuesta y ya no podés llamar herramientas. '
+        . 'Escribile ahora a la persona qué hiciste, con los datos concretos que te devolvieron las herramientas '
+        . '(nombres, números, fechas, montos), y qué cargas quedaron hechas y cuáles esperan su confirmación. '
+        . 'Si falta algo de lo que pidió, decí qué falta y pedile que te escriba «seguí» para continuar. '
+        . 'No digas que no podés hacerlo: lo hacés en el próximo mensaje. No le menciones este aviso.]';
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -547,9 +623,10 @@ class AsistenteIaService
         /*
          * El reloj del presupuesto arranca ACÁ y no en el while: la transcripción de abajo es una
          * llamada HTTP más del turno, y tiene que quedar adentro de PRESUPUESTO_SEGUNDOS para que la
-         * cadena de techos (ver su docblock) siga cerrando con el $timeout del job.
+         * cadena de techos (ver su docblock) siga cerrando con el $timeout del job. Con ahora() y no con
+         * time() para que los tests puedan correr el reloj (ver ahora()).
          */
-        $inicio_del_loop = time();
+        $inicio_del_loop = $this->ahora();
 
         /*
          * 🔴 MISIÓN asistente-deepseek-pro-razona (24/9/2026): CON DEEPSEEK, UN TURNO ESCALADO CON
@@ -676,13 +753,34 @@ class AsistenteIaService
         /* true si el único reintento del turno lo pidió la guarda de la imagen. Solo para el log. */
         $reintento_de_la_imagen = false;
 
+        /*
+         * Misión agente-memoria-y-sin-techo (30/10/2026): cuántas rondas de herramientas se EJECUTARON en
+         * este turno. La llamada de cierre solo tiene sentido con al menos una: sin ninguna no hay nada
+         * hecho que contar.
+         */
+        $rondas_de_herramientas = 0;
+
+        /*
+         * true cuando la vuelta en curso es la LLAMADA DE CIERRE (ver el 🔴 de abajo). Queda prendido
+         * después del bucle: el cierre es siempre la última vuelta, y el final sin texto lo mira.
+         */
+        $cerrando = false;
+
+        /* Por qué cerró el turno ('techo' o 'presupuesto'), para el log y el detalle técnico. */
+        $motivo_del_cierre = '';
+
         while ($iterations < $max_iterations) {
             /*
-             * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS): el chequeo va
-             * ANTES de cada llamada — la que ya está en vuelo no se puede
-             * cortar, pero no se arranca una nueva con el tiempo vencido.
+             * Presupuesto acumulado (ver PRESUPUESTO_SEGUNDOS, y PRESUPUESTO_SEGUNDOS_WHATSAPP por
+             * WhatsApp): el chequeo va ANTES de cada llamada — la que ya está en vuelo no se puede
+             * cortar, pero no se arranca una normal con el tiempo vencido. La PRIMERA vuelta nunca mira
+             * el reloj: siempre es una llamada normal (por WhatsApp el mensaje pudo esperar en la cola
+             * más que el presupuesto, y sin ninguna ronda hecha no hay nada que cerrar).
              */
-            if ((time() - $inicio_del_loop) > self::PRESUPUESTO_SEGUNDOS) {
+            $transcurrido          = $this->segundos_del_turno($inicio_del_loop, $assistant_message);
+            $vencio_el_presupuesto = $iterations > 0 && $transcurrido > $this->presupuesto_del_canal($assistant_message);
+
+            if ($vencio_el_presupuesto) {
                 if (! is_null($texto_antes_del_reintento)) {
                     Log::warning('AsistenteIaService: el presupuesto cortó el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
                         'ai_conversation_id' => $conversation->id,
@@ -694,15 +792,87 @@ class AsistenteIaService
                     $final_text = $texto_antes_del_reintento;
                     break;
                 }
+            }
 
+            /*
+             * 🔴 MISIÓN agente-memoria-y-sin-techo (30/10/2026): CIERRE CON LO HECHO, NO UN ERROR. Ferre
+             * Total, 30/10 11:44: el pedido de Pablo (un recordatorio un día antes de cada cheque de un
+             * pago) se comió las 8 vueltas de entonces en 13 segundos, el loop tiró `tiempo_agotado` y se
+             * perdió todo lo hecho: Pablo leyó «la consulta se hizo larga» y tuvo que volver a empezar.
+             *
+             * Ahora, cuando esta vuelta sería la ÚLTIMA del techo o ya se pasó el presupuesto del canal,
+             * y el turno ya ejecutó al menos una ronda de herramientas, esta vuelta es la LLAMADA DE
+             * CIERRE: sale con `tool_choice: {type: none}` (el modelo solo puede escribir) y con
+             * NOTA_DE_CIERRE pegada después de los tool_result, para que cuente lo que hizo con los datos
+             * concretos, las cargas hechas o esperando la confirmación, y qué falta («seguí»). Probado
+             * contra DeepSeek real el 30/10 (Flash y Pro, thinking apagado, con tool_use previos): 200,
+             * `end_turn`, solo texto. Anthropic lo soporta nativo.
+             *
+             * Reglas del cierre:
+             *   - después de él no hay más vueltas: ni normales ni los reintentos de las guardas (cada
+             *     guarda lleva `! $cerrando`); las guardas de DESPUÉS del bucle sí corren sobre su texto;
+             *   - si igual trae `tool_use`, no se ejecuta: se toma su texto;
+             *   - si vuelve sin texto o la llamada falla, el error de siempre (`tiempo_agotado`, que desde
+             *     esta misión le dice a la persona que escriba «seguí»);
+             *   - si hay un reintento de guarda en curso (`$texto_antes_del_reintento`), no se cierra: se
+             *     vuelve a ese texto como siempre (arriba con el presupuesto, abajo con el techo);
+             *   - su timeout es lo que queda hasta techo_de_la_llamada_de_cierre(): así no estira la
+             *     cadena de techos de PRESUPUESTO_SEGUNDOS ni la paciencia del admin por WhatsApp.
+             *
+             * Las cargas confirmadas en el turno cuelgan del mensaje, que queda `listo` con el texto del
+             * cierre: viajan en el historial con su renglón de tarjeta y el «seguí» no las duplica.
+             */
+            $cerrando = $iterations > 0
+                && $rondas_de_herramientas > 0
+                && is_null($texto_antes_del_reintento)
+                && ($iterations + 1 >= $max_iterations || $vencio_el_presupuesto);
+
+            if ($vencio_el_presupuesto && ! $cerrando) {
+                /*
+                 * Red: con el presupuesto vencido, sin reintento en curso y sin ninguna ronda hecha no se
+                 * llega acá (la primera vuelta no mira el reloj y una vuelta sin herramientas termina el
+                 * turno o abre un reintento). Si alguna vez pasa, el corte de siempre.
+                 */
                 Log::warning('AsistenteIaService: presupuesto de tiempo del loop agotado.', [
                     'ai_conversation_id' => $conversation->id,
                     'iterations'         => $iterations,
                 ]);
 
                 throw AsistenteIaException::tiempo_agotado(
-                    'presupuesto de tiempo del loop agotado (' . self::PRESUPUESTO_SEGUNDOS . 's) tras ' . $iterations . ' iteraciones'
+                    'presupuesto de tiempo del loop agotado (' . $this->presupuesto_del_canal($assistant_message) . 's) tras ' . $iterations . ' iteraciones'
                 );
+            }
+
+            /* El timeout de la llamada de cierre: lo que queda hasta su techo, con 60 como máximo. */
+            $segundos_del_cierre = 0;
+
+            if ($cerrando) {
+                $motivo_del_cierre   = $vencio_el_presupuesto ? 'presupuesto' : 'techo';
+                $segundos_del_cierre = min(self::TIMEOUT_SEGUNDOS, $this->techo_de_la_llamada_de_cierre($assistant_message) - $transcurrido);
+
+                if ($segundos_del_cierre < self::SEGUNDOS_MINIMOS_DEL_CIERRE) {
+                    Log::warning('AsistenteIaService: no quedó tiempo para la llamada de cierre.', [
+                        'ai_conversation_id' => $conversation->id,
+                        'ai_message_id'      => $assistant_message->id,
+                        'iterations'         => $iterations,
+                        'transcurrido'       => $transcurrido,
+                    ]);
+
+                    throw AsistenteIaException::tiempo_agotado(
+                        'no quedó tiempo para la llamada de cierre (' . $transcurrido . 's) tras ' . $iterations . ' iteraciones'
+                    );
+                }
+
+                Log::info('AsistenteIaService: el turno cierra con lo hecho (llamada sin herramientas).', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'motivo'             => $motivo_del_cierre,
+                    'iterations'         => $iterations,
+                    'transcurrido'       => $transcurrido,
+                    'herramientas'       => count($herramientas_pedidas),
+                ]);
+
+                $messages = $this->con_nota_en_el_ultimo_user($messages, self::NOTA_DE_CIERRE);
             }
 
             $iterations++;
@@ -744,15 +914,55 @@ class AsistenteIaService
              * El mismo payload para los dos proveedores; `agregar_thinking` solo suma la clave
              * cuando el proveedor la necesita (DeepSeek), con Anthropic el body queda como siempre.
              */
+            $body = ProveedorIaHelper::agregar_thinking([
+                'model'      => $model,
+                'max_tokens' => self::MAX_TOKENS,
+                'system'     => $system,
+                'tools'      => $tools,
+                'messages'   => $messages,
+            ], $thinking);
+
+            /*
+             * La llamada de cierre (ver el 🔴 de arriba) sale SIN poder pedir herramientas. Se suma
+             * DESPUÉS de agregar_thinking(), que solo toca `thinking` y `max_tokens`: no lo puede pisar.
+             * Las `tools` viajan igual: el historial trae tool_use/tool_result y la API exige que estén
+             * definidas (y así el prefijo cacheado del system y las tools no cambia).
+             *
+             * 🔴 Y EL THINKING. Con Anthropic este servicio nunca lo prende (modelo_del_asistente()
+             * devuelve `thinking` null), así que la incompatibilidad de extended thinking con un
+             * tool_choice forzado no aplica — y `none`, además, es de los que Anthropic acepta con
+             * thinking. Con DeepSeek va el que decidió thinking_apto_para_historial(), igual que en
+             * cualquier vuelta: apagarlo solo para el cierre dejaría un turno que pensó con sus bloques
+             * `thinking` en el historial y el thinking apagado, una combinación que nadie midió. Lo
+             * medido el 30/10 fue con el thinking apagado, que es el caso real de Ferre Total (Flash, o
+             * Pro escalado a mitad de turno, que ese helper apaga); un turno que arranca pensando en Pro
+             * y cierra con `none` queda para la medición contra DeepSeek real. Si esa llamada fallara,
+             * el turno termina en `tiempo_agotado`, que es lo de antes de esta misión.
+             */
+            if ($cerrando) {
+                $body['tool_choice'] = ['type' => 'none'];
+            }
+
             try {
-                $response = $this->post_al_proveedor($http, $url, ProveedorIaHelper::agregar_thinking([
-                    'model'      => $model,
-                    'max_tokens' => self::MAX_TOKENS,
-                    'system'     => $system,
-                    'tools'      => $tools,
-                    'messages'   => $messages,
-                ], $thinking), $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message);
+                $response = $this->post_al_proveedor(
+                    $cerrando ? ProveedorIaHelper::cliente_http($proveedor, $segundos_del_cierre) : $http,
+                    $url, $body, $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message
+                );
             } catch (\Throwable $e) {
+                /* Si falla la llamada de cierre, el error de tiempo agotado de siempre (con el «seguí»). */
+                if ($cerrando) {
+                    Log::warning('AsistenteIaService: falló la llamada de cierre; el turno termina en tiempo agotado.', [
+                        'ai_conversation_id' => $conversation->id,
+                        'ai_message_id'      => $assistant_message->id,
+                        'excepcion'          => get_class($e),
+                        'error'              => $e->getMessage(),
+                    ]);
+
+                    throw AsistenteIaException::tiempo_agotado(
+                        'falló la llamada de cierre (' . $motivo_del_cierre . ') tras ' . $iterations . ' iteraciones: ' . get_class($e) . ': ' . $e->getMessage()
+                    );
+                }
+
                 /* En el reintento de la tarjeta, una falla de red vuelve al texto de antes (ver arriba). */
                 if (is_null($texto_antes_del_reintento)) {
                     throw $e;
@@ -780,6 +990,20 @@ class AsistenteIaService
 
                 $final_text = $texto_antes_del_reintento;
                 break;
+            }
+
+            if (! $response->successful() && $cerrando) {
+                /* La llamada de cierre volvió con error (ya con su reintento si quedaba tiempo): tiempo agotado. */
+                Log::warning('AsistenteIaService: la llamada de cierre volvió con error; el turno termina en tiempo agotado.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'http'               => $response->status(),
+                ]);
+
+                throw AsistenteIaException::tiempo_agotado(
+                    'la llamada de cierre (' . $motivo_del_cierre . ') volvió con HTTP ' . $response->status() . ' tras ' . $iterations . ' iteraciones: '
+                    . mb_substr((string) $response->body(), 0, 500)
+                );
             }
 
             if (! $response->successful()) {
@@ -836,12 +1060,25 @@ class AsistenteIaService
              * medias (ahí entra la guarda). Y tampoco en la última vuelta o con el tiempo vencido: ahí
              * ejecutar dejaría el turno sin texto y el mensaje en error con la carga hecha —la persona
              * la repetiría—, mientras que el texto, si afirma una tarjeta, lo resuelve la guarda.
+             *
+             * Y NUNCA EN LA LLAMADA DE CIERRE (misión agente-memoria-y-sin-techo): salió con
+             * `tool_choice: none`, y si el proveedor igual devuelve un `tool_use`, no se ejecuta —
+             * después del cierre no hay vuelta que lleve su tool_result—: se toma el texto que trae.
              */
-            $pide_herramientas = $stop_reason === 'tool_use'
+            $pide_herramientas = ! $cerrando && ($stop_reason === 'tool_use'
                 || (! in_array($stop_reason, ['max_tokens', 'refusal', 'model_context_window_exceeded'], true)
                     && $this->tiene_tool_use($content_blocks)
                     && $iterations < $max_iterations
-                    && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS);
+                    && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS));
+
+            if ($cerrando && $this->tiene_tool_use($content_blocks)) {
+                Log::warning('AsistenteIaService: la llamada de cierre pidió herramientas igual; no se ejecutan y se toma su texto.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'stop_reason'        => $stop_reason,
+                    'modelo'             => $model,
+                ]);
+            }
 
             if ($pide_herramientas && $stop_reason !== 'tool_use') {
                 Log::warning('AsistenteIaService: el modelo pidió herramientas sin stop_reason tool_use; se ejecutan igual.', [
@@ -868,6 +1105,9 @@ class AsistenteIaService
                  */
                 $toco_una_carga = $toco_una_carga || $this->toca_una_carga($content_blocks);
 
+                /* Una ronda más ejecutada: habilita la llamada de cierre (ver el 🔴 del arranque de la vuelta). */
+                $rondas_de_herramientas++;
+
                 // Normalizar bloques antes de reenviarlos: PHP decodifica input:{} como [] y Anthropic exige object.
                 $messages[] = [
                     'role'    => 'assistant',
@@ -891,11 +1131,15 @@ class AsistenteIaService
              * La guarda de la imagen prometida va PRIMERO: es la más segura de las cuatro (o se llamó a
              * pedir_imagen en este turno o no se llamó) y en el caso real el texto prometía la imagen Y
              * armaba otra tarjeta: si el reintento se lo llevaba la de la carga, la imagen nunca se pedía.
+             *
+             * Ninguna de las cuatro guardas reintenta después de la llamada de cierre (`! $cerrando`):
+             * el cierre es la última vuelta. Su texto lo revisan las guardas de después del bucle.
              */
             if ($guarda_de_imagen
+                && ! $cerrando
                 && is_null($texto_antes_del_reintento)
                 && $iterations < $max_iterations
-                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
                 && $this->promete_una_imagen_sin_pedirla($final_text, $herramientas_pedidas, $conversation, $assistant_message, true)) {
 
                 Log::warning('AsistenteIaService: la imagen se prometió (o se pidió) y no se llamó a pedir_imagen; se reintenta una vez.', [
@@ -937,9 +1181,10 @@ class AsistenteIaService
              * cortado por `max_tokens`, la API exigiría su `tool_result`.
              */
             if ($guarda_de_tarjeta
+                && ! $cerrando
                 && is_null($texto_antes_del_reintento)
                 && $iterations < $max_iterations
-                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
                 && $this->afirma_una_tarjeta_que_no_existe($final_text, $tools, $assistant_message)) {
 
                 Log::warning('AsistenteIaService: el texto afirma una tarjeta que no se creó; se reintenta una vez.', $this->rastro_de_la_tarjeta_prometida(
@@ -984,9 +1229,10 @@ class AsistenteIaService
              * y el reintento va al Profundo, como cualquier turno que toca una carga.
              */
             if ($guarda_de_tarjeta
+                && ! $cerrando
                 && is_null($texto_antes_del_reintento)
                 && $iterations < $max_iterations
-                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
 
                 $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
 
@@ -1033,9 +1279,10 @@ class AsistenteIaService
              * de después del bucle cambia el texto), con la nota que le pide llamar a la herramienta ahora.
              */
             if ($guarda_de_envio
+                && ! $cerrando
                 && is_null($texto_antes_del_reintento)
                 && $iterations < $max_iterations
-                && (time() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS
                 && $this->pide_confirmar_un_envio_sin_propuesta($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas)) {
 
                 Log::warning('AsistenteIaService: el texto pide confirmar un envío que no se propuso; se reintenta una vez.', [
@@ -1089,6 +1336,10 @@ class AsistenteIaService
          * Si limpiar deja el texto VACÍO: con una confirmación determinista hecha, la respuesta es su
          * resultado (el modelo no escribió nada que sirva, y la carga sí se hizo); si no, vuelve el
          * original — un mensaje vacío no se puede mandar (segundo chequeo adversarial, 24/9/2026).
+         *
+         * Salvo después de la llamada de cierre (misión agente-memoria-y-sin-techo): si lo único que
+         * escribió fue lo que el saneo saca —la nota de cierre copiada, razonamiento filtrado—, el crudo
+         * le mostraría a la persona la nota interna; queda vacío y va el error de tiempo agotado.
          */
         $crudo = trim($final_text);
         $final_text = trim(TextoFinalIaHelper::limpiar($crudo, $this->nombres_de_herramientas($tools)));
@@ -1098,20 +1349,33 @@ class AsistenteIaService
                 ? null
                 : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
 
-            $final_text = is_null($respaldo) ? $crudo : $respaldo;
+            $final_text = is_null($respaldo) ? ($cerrando ? '' : $crudo) : $respaldo;
         }
 
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [
                 'ai_conversation_id' => $conversation->id,
                 'iterations'         => $iterations,
+                'cierre'             => $motivo_del_cierre,
             ]);
 
             /*
+             * La llamada de cierre volvió sin texto (o solo con un tool_use, que no se ejecuta): el error
+             * de tiempo agotado, que le pide a la persona que escriba «seguí». El detalle dice que fue el
+             * cierre y por qué se cerró (el techo de vueltas o el presupuesto).
+             */
+            if ($cerrando) {
+
+                throw AsistenteIaException::tiempo_agotado(
+                    'la llamada de cierre (' . $motivo_del_cierre . ') volvió sin texto tras ' . $iterations . ' iteraciones (techo ' . $max_iterations . ')'
+                );
+            }
+
+            /*
              * Dos finales distintos con el mismo síntoma: el loop se comió TODAS las vueltas
-             * encadenando tools y nunca llegó a contestar (a la persona hay que decirle que acote
-             * la consulta: repetirla tal cual va a volver a chocar con el mismo techo), o cerró
-             * antes sin texto, que es otra cosa y se reintenta igual.
+             * encadenando tools y nunca llegó a contestar (desde la misión agente-memoria-y-sin-techo
+             * solo pasa con un reintento de guarda en curso: si no, la última vuelta es la de cierre), o
+             * cerró antes sin texto, que es otra cosa y se reintenta igual.
              */
             if ($iterations >= $max_iterations) {
 
@@ -3879,17 +4143,101 @@ CONFIRMACION;
      */
     protected function queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message = null): bool
     {
-        $transcurrido = time() - (int) $inicio_del_loop;
+        /* Lo transcurrido se mide igual que el presupuesto del loop: ver segundos_del_turno(). */
+        $transcurrido = $this->segundos_del_turno($inicio_del_loop, $assistant_message);
 
         if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp()) {
-            if (! is_null($assistant_message->created_at)) {
-                $transcurrido = max($transcurrido, time() - \Carbon\Carbon::parse($assistant_message->created_at)->getTimestamp());
-            }
 
             return $transcurrido + self::TIMEOUT_SEGUNDOS <= self::TECHO_DEL_REINTENTO_EN_WHATSAPP;
         }
 
         return $transcurrido + self::TIMEOUT_SEGUNDOS <= self::PRESUPUESTO_SEGUNDOS;
+    }
+
+    /**
+     * La hora actual en segundos (time()), en un método propio para que los tests puedan correr el reloj
+     * sin esperar (misión agente-memoria-y-sin-techo, 30/10/2026). Es la ÚNICA costura: el loop, el
+     * presupuesto, la llamada de cierre y queda_tiempo_para_reintentar() leen la hora por acá, y un test
+     * la pisa con una subclase anónima que suma segundos en cada llamada al proveedor. En producción es
+     * exactamente time().
+     *
+     * @return int
+     */
+    protected function ahora(): int
+    {
+        return time();
+    }
+
+    /**
+     * Cuántos segundos lleva el turno, para el presupuesto, el reintento y la llamada de cierre (misión
+     * agente-memoria-y-sin-techo; antes vivía adentro de queda_tiempo_para_reintentar()).
+     *
+     * - Sistema y app: desde el arranque del loop.
+     * - WhatsApp: desde lo MÁS VIEJO entre el arranque del loop y el alta del mensaje (`created_at`, que
+     *   lo crea el POST del admin): el reloj del admin arranca ahí, y la espera en la cola corre solo de
+     *   su lado. Sin `created_at`, desde el arranque del loop.
+     *
+     * @param  int  $inicio_del_loop
+     * @param  AiMessage|null  $assistant_message
+     * @return int
+     */
+    protected function segundos_del_turno($inicio_del_loop, $assistant_message = null): int
+    {
+        $ahora        = $this->ahora();
+        $transcurrido = $ahora - (int) $inicio_del_loop;
+
+        if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp() && ! is_null($assistant_message->created_at)) {
+            $transcurrido = max($transcurrido, $ahora - \Carbon\Carbon::parse($assistant_message->created_at)->getTimestamp());
+        }
+
+        return $transcurrido;
+    }
+
+    /**
+     * El presupuesto del loop del canal del mensaje: pasado esto (y con al menos una ronda de
+     * herramientas hecha) la vuelta que sigue es la llamada de cierre. WhatsApp tiene el suyo, más corto,
+     * por la paciencia del admin (PRESUPUESTO_SEGUNDOS_WHATSAPP); sistema y app, PRESUPUESTO_SEGUNDOS.
+     *
+     * @param  AiMessage|null  $assistant_message
+     * @return int
+     */
+    protected function presupuesto_del_canal($assistant_message = null): int
+    {
+        if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp()) {
+
+            return self::PRESUPUESTO_SEGUNDOS_WHATSAPP;
+        }
+
+        return self::PRESUPUESTO_SEGUNDOS;
+    }
+
+    /**
+     * Hasta qué segundo del turno puede durar la LLAMADA DE CIERRE (misión agente-memoria-y-sin-techo): su
+     * timeout es lo que queda hasta acá, con TIMEOUT_SEGUNDOS como máximo (y si quedan menos de
+     * SEGUNDOS_MINIMOS_DEL_CIERRE no se hace).
+     *
+     * 🔴 POR QUÉ NO UN TIMEOUT FIJO DE 60. El presupuesto se mira ANTES de cada vuelta, así que la vuelta
+     * normal que arrancó justo antes de vencerlo puede volver hasta 60 s después; si la de cierre tuviera
+     * otros 60, el turno del sistema podía terminar a los 210 + 60 + 60 = 330 s, por encima del $timeout
+     * de 300 del job (donde hay pcntl, mataría al worker con el mensaje a medias), y el de WhatsApp
+     * después de los 180 s que espera el admin. Con este techo la cadena de PRESUPUESTO_SEGUNDOS no se
+     * mueve:
+     *
+     * - Sistema y app: PRESUPUESTO_SEGUNDOS + TIMEOUT_SEGUNDOS = 270, el escalón 3 de la cadena.
+     * - WhatsApp: TECHO_DEL_REINTENTO_EN_WHATSAPP = 165, el mismo margen que el reintento deja antes de
+     *   que el admin se rinda a los 180.
+     *
+     * @param  AiMessage|null  $assistant_message
+     * @return int
+     */
+    protected function techo_de_la_llamada_de_cierre($assistant_message = null): int
+    {
+        if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp()) {
+
+            return self::TECHO_DEL_REINTENTO_EN_WHATSAPP;
+        }
+
+        return self::PRESUPUESTO_SEGUNDOS + self::TIMEOUT_SEGUNDOS;
     }
 
     /**

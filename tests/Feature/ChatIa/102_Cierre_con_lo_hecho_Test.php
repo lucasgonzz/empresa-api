@@ -1,0 +1,799 @@
+<?php
+
+namespace Tests\Feature\ChatIa;
+
+use App\Events\ChatIaMensajeActualizado;
+use App\Exceptions\AsistenteIaException;
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
+use App\Jobs\ResponderMensajeChatIaJob;
+use App\Models\AiConversation;
+use App\Models\AiMessage;
+use App\Models\AiMessageAction;
+use App\Models\ExtencionEmpresa;
+use App\Models\User;
+use App\Services\AsistenteIa\AsistenteIaService;
+use Carbon\Carbon;
+use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Http;
+use Tests\TestCase;
+
+/**
+ * Misión agente-memoria-y-sin-techo (30/10/2026) — el turno que se queda sin vueltas o sin tiempo
+ * CIERRA CON LO HECHO en vez de tirar un error.
+ *
+ * 🔴 EL CASO REAL. Ferre Total por WhatsApp (DeepSeek Flash), 30/10 11:44: «…sobre ese detalle de
+ * cheques, de la fecha de pago de cada uno, me hagas un recordatorio para un día antes de su
+ * acreditación». 8 llamadas en 13 segundos (2 s cada una): el loop tocó el techo de 8 vueltas, tiró
+ * `tiempo_agotado` y Pablo leyó «La consulta se hizo larga y no llegué a terminarla. Probá pidiéndome
+ * algo más acotado.», con todo lo hecho perdido.
+ *
+ * Lo que protege este archivo, con un doble del proveedor que SIEMPRE pide una herramienta (menos
+ * cuando la llamada sale con `tool_choice`, que es la de cierre):
+ *
+ * - al tocar el techo, la última vuelta es la llamada de cierre (`tool_choice: none` + la nota), el
+ *   mensaje queda `listo` con su texto y hubo exactamente MAX_… llamadas; con y sin acciones;
+ * - el presupuesto vencido también cierra (con el reloj corrido por la costura ahora()), y si no
+ *   queda tiempo para el cierre, el error de siempre sin llamar;
+ * - por WhatsApp cierra pasados los 105 s contados desde que llegó el mensaje (`created_at`), el
+ *   sistema no; y la primera vuelta siempre es normal;
+ * - si el cierre falla (HTTP, red) o vuelve sin texto, `error` con el texto NUEVO de tiempo agotado;
+ * - si el cierre trae un tool_use, no se ejecuta; las cargas del turno quedan en el mensaje `listo`;
+ * - después del cierre no hay reintento de guarda, pero las guardas de después del bucle miran su
+ *   texto; y con un reintento de guarda en curso no se cierra (vuelve al texto de antes);
+ * - la regla del prompt de pedir juntas las herramientas que no dependen entre sí.
+ *
+ * 🔴 Ningún test sale a la red: Http::fake en todos, con claves e ids de modelo inventados.
+ *
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types,
+ * promoción de constructor, readonly, enum ni #[...].
+ *
+ * @group chat-ia
+ */
+class Cierre_con_lo_hecho_Test extends TestCase
+{
+    use DatabaseTransactions;
+
+    /** El texto que devuelve el doble en la llamada de cierre. */
+    const TEXTO_DEL_CIERRE = 'Encontré el pago 1706 y sus cinco cheques. Me faltan los recordatorios: escribime «seguí» y sigo.';
+
+    /** @var User */
+    protected $comercio;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        config([
+            'services.anthropic.api_key'       => null,
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-p102',
+            'services.deepseek.model'          => 'deepseek-general-p102',
+            'services.deepseek.model_agil'     => 'deepseek-flash-p102',
+            'services.deepseek.model_profundo' => 'deepseek-pro-p102',
+            'services.deepseek.model_vision'   => 'deepseek-vision-p102',
+        ]);
+
+        $this->comercio = User::create([
+            'name'         => 'Comercio cierre P102',
+            'company_name' => 'Ferreteria P102',
+            'email'        => 'cierre-p102-' . uniqid() . '@test.local',
+            'password'     => Hash::make('secret'),
+        ]);
+
+        /* La configuración del caso real: DeepSeek ágil. Cauteloso: una propuesta deja tarjeta, no se ejecuta. */
+        $this->comercio->agente_proveedor   = 'deepseek';
+        $this->comercio->agente_pensamiento = 'agil';
+        $this->comercio->agente_confianza   = ConfianzaDelAgenteIaHelper::CAUTELOSO;
+        $this->comercio->save();
+
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
+
+        if (! $extencion) {
+            $extencion = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Agentes de IA']);
+        }
+
+        $this->comercio->extencions()->attach($extencion->id);
+        $this->comercio->load('extencions');
+
+        Event::fake([ChatIaMensajeActualizado::class]);
+    }
+
+    // ---------------------------------------------------------------------
+    // Fixture
+    // ---------------------------------------------------------------------
+
+    /**
+     * Conversación con el pedido de la persona y el assistant pendiente.
+     *
+     * @param  string|null  $canal  null = el panel del sistema.
+     * @param  bool  $con_acciones
+     * @param  int  $hace_segundos  Cuántos segundos atrás se creó el mensaje (el reloj del admin).
+     * @param  string  $pedido
+     * @return array{0: AiConversation, 1: AiMessage}
+     */
+    protected function conversacion($canal = null, $con_acciones = true, $hace_segundos = 0, $pedido = 'Haceme un recordatorio un día antes de cada cheque del pago a Pinturería Sudamericana')
+    {
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+            'origen'       => $canal === AiMessage::CANAL_WHATSAPP ? AiConversation::ORIGEN_WHATSAPP : 'usuario',
+        ]);
+
+        $user = [
+            'ai_conversation_id' => $conversation->id,
+            'rol'                => 'user',
+            'contenido'          => $pedido,
+            'estado'             => 'listo',
+        ];
+
+        $assistant = [
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => $con_acciones,
+        ];
+
+        if (! is_null($canal)) {
+            $user['canal']      = $canal;
+            $assistant['canal'] = $canal;
+        }
+
+        AiMessage::create($user);
+
+        $mensaje = AiMessage::create($assistant);
+
+        if ($hace_segundos > 0) {
+            AiMessage::where('id', $mensaje->id)->update(['created_at' => Carbon::now()->subSeconds($hace_segundos)]);
+            $mensaje = $mensaje->fresh();
+        }
+
+        return [$conversation, $mensaje];
+    }
+
+    /**
+     * El servicio con el reloj corrible: ahora() devuelve time() más $desfase, y el doble del proveedor
+     * le suma segundos en cada llamada (cada llamada "tarda" eso).
+     *
+     * @return AsistenteIaService
+     */
+    protected function servicio_con_reloj()
+    {
+        return new class extends AsistenteIaService {
+            /** @var int Segundos que se le suman a time(). */
+            public $desfase = 0;
+
+            /**
+             * @return int
+             */
+            protected function ahora(): int
+            {
+                return time() + $this->desfase;
+            }
+        };
+    }
+
+    /**
+     * Respuesta del proveedor que pide una herramienta de lectura.
+     *
+     * @param  int  $n  Para que cada tool_use tenga su id.
+     * @return array
+     */
+    protected function pide_herramienta($n)
+    {
+        return $this->respuesta('tool_use', [[
+            'type'  => 'tool_use',
+            'id'    => 'toolu_p102_' . $n,
+            'name'  => 'consultar_stock_de_articulos',
+            'input' => ['busqueda' => ''],
+        ]]);
+    }
+
+    /**
+     * @param  string  $stop_reason
+     * @param  array  $bloques
+     * @return array
+     */
+    protected function respuesta($stop_reason, array $bloques)
+    {
+        return [
+            'model'       => 'lo-que-diga-el-proveedor',
+            'stop_reason' => $stop_reason,
+            'content'     => $bloques,
+            'usage'       => ['input_tokens' => 11, 'output_tokens' => 7],
+        ];
+    }
+
+    /**
+     * @param  string  $texto
+     * @return array
+     */
+    protected function end_turn($texto)
+    {
+        return $this->respuesta('end_turn', [['type' => 'text', 'text' => $texto]]);
+    }
+
+    /**
+     * El doble del proveedor: SIEMPRE pide una herramienta, salvo en la llamada que sale con
+     * `tool_choice` (la de cierre), que contesta `$cierre`. Con `$servicio`, cada llamada le corre el
+     * reloj `$segundos_por_llamada`. Un host que no es DeepSeek contesta 500.
+     *
+     * @param  mixed  $cierre  Un body (array, 200), una respuesta ya armada (Http::response) o una excepción para tirar.
+     * @param  AsistenteIaService|null  $servicio
+     * @param  int  $segundos_por_llamada
+     * @param  array|null  $primera  Lo que contesta la PRIMERA llamada (null = pedir una herramienta).
+     * @return void
+     */
+    protected function proveedor_que_siempre_pide_herramientas($cierre, $servicio = null, $segundos_por_llamada = 0, $primera = null)
+    {
+        $llamadas = 0;
+
+        Http::fake(function ($request) use (&$llamadas, $cierre, $servicio, $segundos_por_llamada, $primera) {
+            if (strpos($request->url(), 'deepseek') === false) {
+                return Http::response(['error' => 'host sin stub'], 500);
+            }
+
+            $llamadas++;
+
+            if (! is_null($servicio)) {
+                $servicio->desfase += $segundos_por_llamada;
+            }
+
+            $body = json_decode($request->body(), true);
+
+            if (isset($body['tool_choice'])) {
+                if ($cierre instanceof \Throwable) {
+                    throw $cierre;
+                }
+
+                return is_array($cierre) ? Http::response($cierre, 200) : $cierre;
+            }
+
+            if ($llamadas === 1 && ! is_null($primera)) {
+                return Http::response($primera, 200);
+            }
+
+            return Http::response($this->pide_herramienta($llamadas), 200);
+        });
+    }
+
+    /**
+     * Los bodies de los requests a DeepSeek, en orden.
+     *
+     * @return array<int, array>
+     */
+    protected function bodies_enviados()
+    {
+        $bodies = [];
+
+        foreach (Http::recorded() as $par) {
+            if (strpos($par[0]->url(), 'deepseek') !== false) {
+                $bodies[] = json_decode($par[0]->body(), true);
+            }
+        }
+
+        return $bodies;
+    }
+
+    /**
+     * El texto del último turno de un body (string o bloques `text`).
+     *
+     * @param  array  $body
+     * @return string
+     */
+    protected function ultimo_turno_como_texto(array $body)
+    {
+        $ultimo = $body['messages'][count($body['messages']) - 1];
+
+        if (is_string($ultimo['content'])) {
+            return $ultimo['content'];
+        }
+
+        $textos = [];
+
+        foreach ($ultimo['content'] as $bloque) {
+            if (($bloque['type'] ?? '') === 'text') {
+                $textos[] = $bloque['text'];
+            }
+        }
+
+        return implode("\n", $textos);
+    }
+
+    /**
+     * Cuántos de los bodies salieron con `tool_choice`.
+     *
+     * @param  array<int, array>  $bodies
+     * @return int
+     */
+    protected function con_tool_choice(array $bodies)
+    {
+        $cuantos = 0;
+
+        foreach ($bodies as $body) {
+            if (isset($body['tool_choice'])) {
+                $cuantos++;
+            }
+        }
+
+        return $cuantos;
+    }
+
+    /**
+     * Comprueba que la ÚLTIMA llamada sea la de cierre: `tool_choice: none`, la nota después de los
+     * tool_result, las herramientas igual definidas, y ninguna otra llamada con `tool_choice`.
+     *
+     * @param  array<int, array>  $bodies
+     * @return void
+     */
+    protected function assertLaUltimaEsElCierre(array $bodies)
+    {
+        $ultima = $bodies[count($bodies) - 1];
+
+        $this->assertSame(['type' => 'none'], isset($ultima['tool_choice']) ? $ultima['tool_choice'] : null, 'La llamada de cierre no puede pedir herramientas.');
+        $this->assertSame(1, $this->con_tool_choice($bodies), 'Solo la de cierre lleva tool_choice.');
+        $this->assertStringContainsString(AsistenteIaService::NOTA_DE_CIERRE, $this->ultimo_turno_como_texto($ultima));
+        $this->assertArrayHasKey('tools', $ultima, 'Las tools viajan igual: el historial trae tool_use y tool_result.');
+
+        $ultimo_turno = $ultima['messages'][count($ultima['messages']) - 1];
+        $this->assertSame('user', $ultimo_turno['role']);
+        $this->assertSame('tool_result', $ultimo_turno['content'][0]['type'], 'La nota va DESPUÉS de los tool_result, en el mismo turno.');
+    }
+
+    // ---------------------------------------------------------------------
+    // El techo de vueltas
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 El caso de Pablo: el modelo encadena herramientas hasta el techo. El mensaje queda `listo` con el
+     * texto de la llamada de cierre, y hubo exactamente MAX_TOOL_ITERATIONS_CON_ACCIONES llamadas (la
+     * última, la de cierre).
+     *
+     * @test
+     */
+    public function al_tocar_el_techo_el_turno_cierra_con_lo_hecho_en_vez_de_un_error()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $assistant = $assistant->fresh();
+
+        $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $assistant->contenido);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $bodies, 'El techo cuenta la llamada de cierre.');
+        $this->assertSame(24, AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES);
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * Sin las herramientas de carga, el techo de lectura (12), con el mismo cierre.
+     *
+     * @test
+     */
+    public function sin_acciones_cierra_al_techo_de_lectura()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE));
+
+        list($conversation, $assistant) = $this->conversacion(null, false);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $texto);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS, $bodies);
+        $this->assertSame(12, AsistenteIaService::MAX_TOOL_ITERATIONS);
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    // ---------------------------------------------------------------------
+    // El presupuesto de tiempo
+    // ---------------------------------------------------------------------
+
+    /**
+     * Por el sistema, cada llamada "tarda" 50 s: a los 250 ya pasó el presupuesto de 210 y la vuelta 6
+     * es la de cierre, aunque queden vueltas del techo.
+     *
+     * @test
+     */
+    public function el_presupuesto_vencido_cierra_aunque_queden_vueltas()
+    {
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 50);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $servicio->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(6, $bodies, '5 vueltas normales (hasta los 250 s) y la de cierre.');
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * Si la vuelta normal que arrancó antes del presupuesto volvió tan tarde que no quedan
+     * SEGUNDOS_MINIMOS_DEL_CIERRE hasta el techo del cierre (270 por el sistema), no se llama: el error
+     * de tiempo agotado de siempre. Con 66 s por llamada, la quinta vuelta arranca a los 264.
+     *
+     * @test
+     */
+    public function sin_tiempo_para_el_cierre_es_el_error_de_siempre_sin_llamar()
+    {
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 66);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        try {
+            $servicio->responder($conversation, $assistant);
+            $this->fail('Sin tiempo para el cierre, el turno termina en tiempo agotado.');
+        } catch (AsistenteIaException $e) {
+            $this->assertSame(AsistenteIaException::MOTIVO_TIEMPO_AGOTADO, $e->motivo());
+            $this->assertStringContainsString('cierre', $e->getMessage());
+        }
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(4, $bodies);
+        $this->assertSame(0, $this->con_tool_choice($bodies), 'No se hizo ninguna llamada de cierre.');
+    }
+
+    /**
+     * Por WhatsApp el presupuesto es de 105 s: con 40 s por llamada cierra en la vuelta 4 (a los 120 s).
+     * El mismo reloj por el sistema cierra recién en la 7 (ver el test que sigue).
+     *
+     * 🔴 Un escenario por test a propósito: un segundo Http::fake() en el mismo test SUMA su callback
+     * detrás del primero, y el primero seguiría contestando (con su reloj).
+     *
+     * @test
+     */
+    public function por_whatsapp_el_presupuesto_es_de_105_segundos()
+    {
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 40);
+
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP);
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $servicio->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(4, $bodies, 'Por WhatsApp: 3 vueltas (120 s > 105) y la de cierre.');
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * Por el sistema sigue el presupuesto de 210: con 40 s por llamada cierra en la vuelta 7 (a los 240 s).
+     *
+     * @test
+     */
+    public function por_el_sistema_el_presupuesto_sigue_en_210_segundos()
+    {
+        $servicio = $this->servicio_con_reloj();
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), $servicio, 40);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, $servicio->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(7, $bodies, 'Por el sistema: 6 vueltas (240 s > 210) y la de cierre.');
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * 🔴 Por WhatsApp el reloj es el del admin: un mensaje que llegó hace 110 s (esperó en la cola) cierra
+     * en la segunda vuelta, sin correr el reloj del servicio.
+     *
+     * @test
+     */
+    public function por_whatsapp_cierra_pasados_los_105_segundos_desde_que_llego_el_mensaje()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE));
+
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP, true, 110);
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, (new AsistenteIaService())->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies, 'La primera vuelta es normal; la segunda, el cierre.');
+        $this->assertArrayNotHasKey('tool_choice', $bodies[0], 'La primera vuelta siempre es una llamada normal.');
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * El mismo mensaje viejo por el sistema: `created_at` no cuenta y el turno llega hasta el techo.
+     *
+     * @test
+     */
+    public function por_el_sistema_el_alta_del_mensaje_no_cuenta_para_el_presupuesto()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE));
+
+        list($conversation, $assistant) = $this->conversacion(null, true, 110);
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, (new AsistenteIaService())->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $bodies);
+        $this->assertLaUltimaEsElCierre($bodies);
+    }
+
+    /**
+     * La primera vuelta siempre es normal, aunque el mensaje de WhatsApp haya esperado más que todo el
+     * presupuesto: si contesta de una, no hay cierre.
+     *
+     * @test
+     */
+    public function por_whatsapp_la_primera_vuelta_siempre_es_normal()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), null, 0, $this->end_turn('Tenés 5 cheques de ese pago.'));
+
+        list($conversation, $assistant) = $this->conversacion(AiMessage::CANAL_WHATSAPP, true, 150);
+
+        $this->assertSame('Tenés 5 cheques de ese pago.', (new AsistenteIaService())->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(1, $bodies);
+        $this->assertSame(0, $this->con_tool_choice($bodies));
+    }
+
+    // ---------------------------------------------------------------------
+    // Cuando el cierre falla
+    // ---------------------------------------------------------------------
+
+    /**
+     * Si la llamada de cierre vuelve con un error, el mensaje queda en `error` con el texto NUEVO de
+     * tiempo agotado (contrato cambiado a propósito: ya no pide «algo más acotado»).
+     *
+     * @test
+     */
+    public function si_el_cierre_vuelve_con_error_el_mensaje_queda_en_error_con_el_texto_de_seguir()
+    {
+        $this->proveedor_que_siempre_pide_herramientas(Http::response([
+            'error' => ['type' => 'invalid_request_error', 'message' => 'tool_choice no soportado (P102)'],
+        ], 400));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $assistant = $assistant->fresh();
+
+        $this->assertSame('error', $assistant->estado);
+        $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y la retomo desde donde quedó.', $assistant->contenido);
+        $this->assertStringContainsString('cierre', (string) $assistant->error_mensaje);
+        $this->assertStringContainsString('HTTP 400', (string) $assistant->error_mensaje);
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'Sin vueltas de más después del cierre.');
+    }
+
+    /**
+     * Si la llamada de cierre se corta por la red (dos veces: también el reintento), tiempo agotado.
+     *
+     * @test
+     */
+    public function si_el_cierre_se_corta_por_la_red_es_tiempo_agotado()
+    {
+        $this->proveedor_que_siempre_pide_herramientas(new ConnectionException('cURL error 28: Operation timed out (P102)'));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+            $this->fail('Un cierre que se corta termina en tiempo agotado.');
+        } catch (AsistenteIaException $e) {
+            $this->assertSame(AsistenteIaException::MOTIVO_TIEMPO_AGOTADO, $e->motivo());
+            $this->assertStringContainsString('falló la llamada de cierre', $e->getMessage());
+        }
+    }
+
+    /**
+     * Si el cierre igual pide una herramienta y no escribe nada, no se ejecuta y es tiempo agotado.
+     *
+     * @test
+     */
+    public function un_cierre_solo_con_tool_use_no_se_ejecuta_y_es_tiempo_agotado()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->pide_herramienta(999));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+            $this->fail('Un cierre sin texto termina en tiempo agotado.');
+        } catch (AsistenteIaException $e) {
+            $this->assertSame(AsistenteIaException::MOTIVO_TIEMPO_AGOTADO, $e->motivo());
+            $this->assertStringContainsString('iteraciones', $e->getMessage());
+        }
+
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'El tool_use del cierre no abre otra vuelta.');
+    }
+
+    /**
+     * Si el cierre trae texto Y un tool_use (una propuesta), se toma el texto y la propuesta NO se
+     * ejecuta: no queda ninguna tarjeta.
+     *
+     * @test
+     */
+    public function el_tool_use_del_cierre_no_se_ejecuta_y_se_toma_su_texto()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->respuesta('tool_use', [
+            ['type' => 'text', 'text' => self::TEXTO_DEL_CIERRE],
+            [
+                'type'  => 'tool_use',
+                'id'    => 'toolu_p102_cierre',
+                'name'  => 'proponer_tarea',
+                'input' => ['detalle' => 'ZZP102 recordatorio que no se tiene que armar', 'fecha' => Carbon::tomorrow()->format('Y-m-d')],
+            ],
+        ]));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $this->assertSame(self::TEXTO_DEL_CIERRE, (new AsistenteIaService())->responder($conversation, $assistant));
+        $this->assertSame(0, AiMessageAction::where('ai_message_id', $assistant->id)->count(), 'El tool_use del cierre no deja tarjeta.');
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados());
+    }
+
+    // ---------------------------------------------------------------------
+    // Lo hecho queda
+    // ---------------------------------------------------------------------
+
+    /**
+     * Las cargas que el turno dejó antes del cierre quedan colgadas del mensaje, que termina `listo`:
+     * viajan en el historial y el «seguí» no las duplica. Las tres propuestas van JUNTAS en la primera
+     * respuesta (la regla nueva del prompt).
+     *
+     * @test
+     */
+    public function las_cargas_del_turno_quedan_en_el_mensaje_listo()
+    {
+        $manana = Carbon::tomorrow()->format('Y-m-d');
+        $bloques = [];
+
+        for ($i = 1; $i <= 3; $i++) {
+            $bloques[] = [
+                'type'  => 'tool_use',
+                'id'    => 'toolu_p102_tarea_' . $i,
+                'name'  => 'proponer_tarea',
+                'input' => ['detalle' => 'ZZP102 Cheque ' . $i . ' de Pinturería Sudamericana se acredita mañana', 'fecha' => $manana],
+            ];
+        }
+
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn(self::TEXTO_DEL_CIERRE), null, 0, $this->respuesta('tool_use', $bloques));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $assistant = $assistant->fresh();
+
+        $this->assertSame('listo', $assistant->estado, (string) $assistant->error_mensaje);
+
+        $tarjetas = AiMessageAction::where('ai_message_id', $assistant->id)->get();
+
+        $this->assertCount(3, $tarjetas, 'Las tres propuestas del turno quedan en el mensaje.');
+
+        foreach ($tarjetas as $tarjeta) {
+            $this->assertSame('propuesta', (string) $tarjeta->estado);
+        }
+
+        $this->assertLaUltimaEsElCierre($this->bodies_enviados());
+    }
+
+    // ---------------------------------------------------------------------
+    // Las guardas
+    // ---------------------------------------------------------------------
+
+    /**
+     * Después del cierre no hay reintento de guarda (sería una vuelta de más), pero la guarda de después
+     * del bucle mira su texto: si afirma una tarjeta que no existe, la persona lee el texto honesto.
+     *
+     * @test
+     */
+    public function el_texto_del_cierre_pasa_por_las_guardas_de_despues_del_bucle_sin_reintento()
+    {
+        $this->proveedor_que_siempre_pide_herramientas($this->end_turn('Dejé la tarjeta del alquiler para confirmar.'));
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO, $texto);
+        $this->assertCount(AsistenteIaService::MAX_TOOL_ITERATIONS_CON_ACCIONES, $this->bodies_enviados(), 'Ni una vuelta después del cierre.');
+    }
+
+    /**
+     * Con un reintento de guarda en curso no hay cierre: si se vence el tiempo, vuelve al texto de antes
+     * (lo de siempre) y la guarda de después del bucle decide con él.
+     *
+     * @test
+     */
+    public function con_un_reintento_de_guarda_en_curso_no_se_cierra_y_vuelve_al_texto_de_antes()
+    {
+        $servicio = $this->servicio_con_reloj();
+
+        /* 1ª: afirma una tarjeta sin herramienta (reintento); 2ª, el reintento, pide una herramienta y "tarda" 250 s. */
+        $llamadas = 0;
+
+        Http::fake(function ($request) use (&$llamadas, $servicio) {
+            $llamadas++;
+
+            if ($llamadas === 1) {
+                return Http::response($this->end_turn('Encontré la subcategoría Alquiler. Dejo la tarjeta para agendar el pago del 15/10 por 400.000.'), 200);
+            }
+
+            $servicio->desfase += 250;
+
+            return Http::response($this->pide_herramienta($llamadas), 200);
+        });
+
+        list($conversation, $assistant) = $this->conversacion(null, true, 0, 'El alquiler de 400000 se paga el 15');
+
+        $this->assertSame(TarjetaPrometidaIaHelper::TEXTO_HONESTO, $servicio->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies);
+        $this->assertSame(0, $this->con_tool_choice($bodies), 'Con un reintento en curso no hay llamada de cierre.');
+    }
+
+    // ---------------------------------------------------------------------
+    // El texto de tiempo agotado y la regla del prompt
+    // ---------------------------------------------------------------------
+
+    /**
+     * El texto de tiempo agotado pide «seguí» y ya no «algo más acotado» (contrato cambiado a propósito).
+     *
+     * @test
+     */
+    public function el_texto_de_tiempo_agotado_pide_seguir_y_no_acotar()
+    {
+        $texto = AsistenteIaException::tiempo_agotado('detalle')->mensaje_para_la_persona();
+
+        $this->assertSame('No llegué a terminar esta respuesta. Escribime «seguí» y la retomo desde donde quedó.', $texto);
+        $this->assertStringNotContainsString('acotad', $texto);
+    }
+
+    /**
+     * La regla de pedir JUNTAS las herramientas que no dependen entre sí está una sola vez, con y sin
+     * acciones y por WhatsApp.
+     *
+     * @test
+     */
+    public function el_prompt_pide_juntas_las_herramientas_que_no_dependen_entre_si()
+    {
+        $servicio = new AsistenteIaService();
+        $conversation = AiConversation::create([
+            'user_id'      => $this->comercio->id,
+            'auth_user_id' => $this->comercio->id,
+        ]);
+
+        $dueno = $this->comercio->fresh();
+
+        foreach ([[false, false], [true, false], [true, true]] as $variante) {
+            $prompt = $servicio->build_system_prompt($conversation, $dueno, $variante[0], $variante[1]);
+
+            $this->assertSame(1, substr_count($prompt, 'pedilas JUNTAS, todas en la misma respuesta'), 'Variante ' . json_encode($variante));
+            $this->assertStringContainsString('cinco recordatorios son cinco llamadas en una sola respuesta', $prompt);
+            $this->assertStringContainsString('De a una solo cuando la segunda necesita', $prompt);
+        }
+    }
+}
