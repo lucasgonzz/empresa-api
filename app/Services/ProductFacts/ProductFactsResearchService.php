@@ -49,30 +49,47 @@ class ProductFactsResearchService extends BusquedaPorCodigoDeBarrasService
         if (!$response->successful() || !is_array($body) || !isset($body['organic']) || !is_array($body['organic'])) {
             throw new ProductFactsException('El buscador devolvió una respuesta incompleta. Podés continuar manualmente.');
         }
-        $pages = [];
-        foreach (array_slice($body['organic'], 0, 4) as $result) {
-            $url = isset($result['link']) && is_string($result['link']) ? $result['link'] : '';
-            if ($url === '' || isset($pages[$url])) {
-                continue;
+        $results = array_slice($body['organic'], 0, 4);
+        $pages = $this->leer_fuentes(SerperLinkResolver::directos($results), $gtin);
+        if (!empty($pages)) {
+            $product = $this->extraer_ficha($gtin, $pages);
+            if (!is_null($product)) {
+                return $product;
             }
-            $html = $this->descargar($url, 'pagina', 6);
-            if (!$html || !$this->containsGtin($html, $gtin)) {
-                continue;
-            }
-            // JSON-LD puede contener el código y las unidades: conservarlo como datos, jamás ejecutarlo.
-            preg_match_all('#<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>#is', $html, $jsonLd);
-            $text = html_entity_decode(strip_tags(preg_replace('#<(script|style)\b[^>]*>.*?</\1>#is', ' ', $html)), ENT_QUOTES, 'UTF-8');
-            $text = preg_replace('/\s+/u', ' ', $text);
-            $pages[$url] = ['url' => $url, 'title' => mb_substr((string) ($result['title'] ?? ''), 0, 200),
-                'text' => mb_substr(implode("\n", $jsonLd[1]) . "\n" . $text, 0, 20000)];
         }
-        if (empty($pages)) {
-            // Resultados presentes pero inaccesibles no prueban ausencia del producto.
-            if (count($body['organic']) > 0) {
-                throw new ProductFactsException('No se pudieron verificar las fuentes del producto. Podés continuar manualmente.');
+        // Una ficha directa comprobada evita resolver; una coincidencia descartada todavía puede tener
+        // respaldo en la cuarta fuente. Nunca se repite la búsqueda paga para resolver sus enlaces.
+        $resolver = app(SerperLinkResolver::class);
+        if ($resolver->hay_pendientes(['organic' => $results])) {
+            $resolved = $resolver->resolver($body, $key, $this->context(SerperLinkResolver::PROCESO),
+                min(microtime(true) + SerperLinkResolver::PRESUPUESTO_SEGUNDOS, $this->vence_en - 35));
+            $pending = [];
+            foreach ($results as $index => $result) {
+                if (is_array($result) && SerperLinkResolver::pendiente($result['link'] ?? null)
+                    && isset($resolved['organic'][$index])) {
+                    $pending[] = $resolved['organic'][$index];
+                }
             }
-            return null;
+            $newPages = $this->leer_fuentes(SerperLinkResolver::directos($pending), $gtin);
+            if (!empty($newPages)) {
+                $product = $this->extraer_ficha($gtin, array_merge($pages, $newPages));
+                if (!is_null($product)) {
+                    return $product;
+                }
+            }
+            if (empty($newPages) || $resolver->hay_pendientes(['organic' => $pending])) {
+                throw new ProductFactsException('El buscador dejó fuentes pendientes de resolver. Podés reintentar o continuar manualmente.');
+            }
+            $pages = array_merge($pages, $newPages);
         }
+        if (empty($pages) && count($body['organic']) > 0) {
+            throw new ProductFactsException('No se pudieron verificar las fuentes del producto. Podés continuar manualmente.');
+        }
+        return null;
+    }
+
+    protected function extraer_ficha($gtin, array $pages)
+    {
         $data = $this->ask('ficha_producto_extraccion', $this->prompt_de_extraccion(),
             ['gtin' => $gtin, 'documents' => array_values($pages)], 1800);
         if (!array_key_exists('matched_gtin', $data) || !array_key_exists('name', $data) || !isset($data['sources']) || !is_array($data['sources'])) {
@@ -106,6 +123,29 @@ class ProductFactsResearchService extends BusquedaPorCodigoDeBarrasService
             $product[$field] = $this->shippingValue($data[$field] ?? null, $field, $pages);
         }
         return $product;
+    }
+
+    /** Las fuentes resueltas pasan por el mismo descargador con DNS público y límite de bytes. */
+    protected function leer_fuentes(array $results, $gtin)
+    {
+        $pages = [];
+        foreach ($results as $result) {
+            $url = isset($result['link']) && is_string($result['link']) ? $result['link'] : '';
+            if ($url === '' || isset($pages[$url])) {
+                continue;
+            }
+            $html = $this->descargar($url, 'pagina', 6);
+            if (!$html || !$this->containsGtin($html, $gtin)) {
+                continue;
+            }
+            // JSON-LD puede contener el código y las unidades: conservarlo como datos, jamás ejecutarlo.
+            preg_match_all('#<script[^>]*type=["\']application/ld\+json["\'][^>]*>(.*?)</script>#is', $html, $jsonLd);
+            $text = html_entity_decode(strip_tags(preg_replace('#<(script|style)\b[^>]*>.*?</\1>#is', ' ', $html)), ENT_QUOTES, 'UTF-8');
+            $text = preg_replace('/\s+/u', ' ', $text);
+            $pages[$url] = ['url' => $url, 'title' => mb_substr((string) ($result['title'] ?? ''), 0, 200),
+                'text' => mb_substr(implode("\n", $jsonLd[1]) . "\n" . $text, 0, 20000)];
+        }
+        return $pages;
     }
 
     /**
