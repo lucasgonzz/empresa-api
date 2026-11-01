@@ -60,7 +60,7 @@ class DeleteController extends Controller
              * Eliminación por selección manual: si no vienen IDs, no se debe hacer nada.
              * Esto evita que un payload inconsistente termine en un comportamiento inesperado.
              */
-            if (!isset($request->models_id) || count($request->models_id) == 0) {
+            if (!isset($request->models_id) || !is_array($request->models_id) || count($request->models_id) == 0) {
                 Log::info('Se interrumpio eliminado: seleccion manual sin models_id.');
                 return response()->json([
                     'message' => 'No se permite eliminar sin selección de registros.',

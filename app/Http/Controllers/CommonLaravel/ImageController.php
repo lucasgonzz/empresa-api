@@ -308,9 +308,18 @@ class ImageController extends Controller
 
     static function deleteModelImages($model) {
         if (!is_null($model)) {
-            foreach ($model->getAttributes() as $prop => $_prop) {
-                if (substr($prop, 0, 4) == 'foto' || substr($model->{$prop}, 0, 5) == 'image') {
-                    Self::deleteImage($model->{$prop});
+            foreach ($model->getAttributes() as $prop => $valor) {
+                /*
+                 * 🔴 Se mira el valor CRUDO de la columna. `$model->{$prop}` pasa por los casts: un
+                 * atributo `array`/`json` (p. ej. en `orders`) llega como array, y `substr()` con un
+                 * array es TypeError en PHP 8 — el pedido se borraba y la respuesta era un 500. Solo
+                 * un string puede ser el nombre de un archivo.
+                 */
+                if (!is_string($valor) || $valor === '') {
+                    continue;
+                }
+                if (substr($prop, 0, 4) == 'foto' || substr($valor, 0, 5) == 'image') {
+                    Self::deleteImage($valor);
                 }
             }
         }
