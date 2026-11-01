@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\MercadoPagoQrCobro;
 use App\Services\MercadoPago\MercadoPagoQrException;
 use App\Services\MercadoPago\MercadoPagoQrService;
+use App\Services\MercadoPago\MercadoPagoQrUbicacionService;
 use Illuminate\Http\Request;
 
 /**
@@ -23,6 +24,24 @@ use Illuminate\Http\Request;
  */
 class MercadoPagoQrController extends Controller
 {
+    public function provincias()
+    {
+        try {
+            return response()->json(['provincias' => (new MercadoPagoQrUbicacionService())->provincias()]);
+        } catch (MercadoPagoQrException $e) {
+            return response()->json($e->payload(), $e->http_status());
+        }
+    }
+
+    public function localidades($provincia)
+    {
+        try {
+            return response()->json((new MercadoPagoQrUbicacionService())->localidades($provincia));
+        } catch (MercadoPagoQrException $e) {
+            return response()->json($e->payload(), $e->http_status());
+        }
+    }
+
     /**
      * `GET /api/mercado-pago/qr`: estado de la conexión, método de pago del QR y la lista de QR.
      *
@@ -80,7 +99,7 @@ class MercadoPagoQrController extends Controller
         try {
             $qr = $service->crear_qr($owner_id, $request->only([
                 'name', 'caja_id', 'address_id', 'street_name', 'street_number',
-                'city_name', 'state_name', 'latitude', 'longitude', 'reference',
+                'city_name', 'state_name', 'city_id', 'state_id', 'latitude', 'longitude', 'reference',
             ]));
         } catch (MercadoPagoQrException $e) {
             return response()->json($e->payload(), $e->http_status());

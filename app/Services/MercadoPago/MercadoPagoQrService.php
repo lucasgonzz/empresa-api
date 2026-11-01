@@ -406,6 +406,11 @@ class MercadoPagoQrService
     {
         $owner_id = (int) $owner_id;
         $conexion = $this->conexion_o_falla($owner_id);
+        // Los nombres siguen para el SPA anterior. Con IDs, los nombres los decide el catálogo,
+        // no el navegador: así no se puede mandar una ciudad de otra provincia ni texto libre.
+        if (array_key_exists('state_id', $datos) || array_key_exists('city_id', $datos)) {
+            $datos = array_merge($datos, (new MercadoPagoQrUbicacionService())->nombres($datos['state_id'] ?? null, $datos['city_id'] ?? null));
+        }
         $datos    = $this->validar_datos_del_qr($owner_id, $datos);
 
         $this->verificar_que_no_haya_otro_qr($owner_id, $conexion['mp_user_id'], $datos['caja_id'], $datos['address_id']);

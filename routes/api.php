@@ -802,6 +802,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     // contrato con el SPA está fijado en el plan de la misión. Sin extensión: alcanza con tener
     // Mercado Pago conectado. Las de `cobros` con id van después del listado para que quede a la
     // vista que `cobros` a secas es el listado (los verbos y segmentos no colisionan igual).
+    Route::get('/mercado-pago/qr/provincias', 'MercadoPagoQrController@provincias');
+    Route::get('/mercado-pago/qr/provincias/{provincia}/localidades', 'MercadoPagoQrController@localidades');
     Route::get('/mercado-pago/qr', 'MercadoPagoQrController@index');
     Route::put('/mercado-pago/qr/config', 'MercadoPagoQrController@update_config');
     Route::post('/mercado-pago/qr/cajas', 'MercadoPagoQrController@store_qr');
