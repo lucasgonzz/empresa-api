@@ -61,27 +61,22 @@ class CuitIaHelper
      *   - cualquier otro largo: no sirve.
      *
      * Un valor vacío no se juzga acá (null): lo resuelve quien llama, como resuelve cualquier campo
-     * vacío.
+     * vacío. Desde la ronda de arreglos de la misión (F5, 31/10/2026) también un `0` (o `'0'`, `'00'`…:
+     * sólo ceros): DeepSeek rellena los opcionales con 0, y un «CUIT 0» es «no vino», no un CUIT mal
+     * escrito que haya que pedirle a la persona. Ver es_vacio().
      *
      * @param  mixed  $valor
      * @return string|null
      */
     public static function motivo_si_no_sirve($valor)
     {
-        if (is_null($valor) || is_array($valor) || is_object($valor) || is_bool($valor)) {
-
-            return null;
-        }
-
-        $texto = trim((string) $valor);
-
-        if ($texto === '') {
+        if (self::es_vacio($valor)) {
 
             return null;
         }
 
         // Sólo los dígitos: los separadores con que se escribe un CUIT no cuentan.
-        $digitos = preg_replace('/\D+/', '', $texto);
+        $digitos = preg_replace('/\D+/', '', trim((string) $valor));
 
         $largo = strlen($digitos);
 
@@ -115,5 +110,64 @@ class CuitIaHelper
         }
 
         return null;
+    }
+
+    /**
+     * true si el valor cuenta como «no vino» para la validación (ronda de arreglos de la misión, F5,
+     * 31/10/2026): null, un booleano, una lista o un objeto (eso lo rechaza quien llama con su propio
+     * mensaje), un texto vacío, o un valor que tiene dígitos y son todos ceros (`0`, `'0'`, `'00-0'`).
+     *
+     * Un texto sin ningún dígito («sin CUIT») NO es vacío: sigue siendo un CUIT que no sirve.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    public static function es_vacio($valor)
+    {
+        if (is_null($valor) || is_array($valor) || is_object($valor) || is_bool($valor)) {
+
+            return true;
+        }
+
+        $texto = trim((string) $valor);
+
+        if ($texto === '') {
+
+            return true;
+        }
+
+        return (bool) preg_match('/^0+$/', (string) preg_replace('/\D+/', '', $texto));
+    }
+
+    /**
+     * true si `$nuevo` es el MISMO CUIT/CUIL que `$actual`, el que ya tiene guardado la fila que se edita
+     * (ronda de arreglos de la misión, F5, 31/10/2026). Se comparan sólo los dígitos: «20-16603682-3» y
+     * «20166036823» son el mismo número escrito distinto. Sin dígitos en alguno de los dos, se comparan
+     * los textos recortados. Un `$actual` vacío nunca es el mismo que un `$nuevo` con datos.
+     *
+     * 🔴 PARA QUÉ. En una EDICIÓN la validación corre solo si el CUIT cambia: un cliente con un CUIT
+     * inválido YA guardado (lo cargó la pantalla, o es de antes de esta validación) no tiene que quedar sin
+     * poder editarse el teléfono porque el modelo, al mandar los cambios, repitió el CUIT que ya estaba.
+     *
+     * @param  mixed  $nuevo
+     * @param  mixed  $actual
+     * @return bool
+     */
+    public static function es_el_mismo($nuevo, $actual)
+    {
+        if (self::es_vacio($actual) || is_array($nuevo) || is_object($nuevo) || is_bool($nuevo) || is_null($nuevo)) {
+
+            return false;
+        }
+
+        $digitos_nuevo = (string) preg_replace('/\D+/', '', (string) $nuevo);
+        $digitos_actual = (string) preg_replace('/\D+/', '', (string) $actual);
+
+        if ($digitos_nuevo !== '' && $digitos_actual !== '') {
+
+            return $digitos_nuevo === $digitos_actual;
+        }
+
+        return trim((string) $nuevo) === trim((string) $actual);
     }
 }

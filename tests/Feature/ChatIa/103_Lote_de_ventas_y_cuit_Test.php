@@ -637,6 +637,75 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
         $this->assertTrue(!empty($bien['ok']), json_encode($bien));
     }
 
+    /**
+     * F5 de la ronda de arreglos (31/10/2026): un CUIT `0` (DeepSeek rellena los opcionales con 0) cuenta
+     * como vacío y no se rechaza como «dígito verificador».
+     *
+     * @test
+     */
+    public function un_cuit_cero_cuenta_como_vacio_y_no_se_valida()
+    {
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('0'));
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve(0));
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('00-0'));
+        $this->assertNotNull(CuitIaHelper::motivo_si_no_sirve('sin cuit'), 'Un texto sin dígitos no es vacío: sigue sin servir.');
+
+        foreach (['0', 0] as $indice => $cero) {
+
+            list($conversation, $assistant) = $this->conversacion();
+
+            $alta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+                'entidad' => 'client',
+                'datos'   => ['name' => 'zz-c103 Cliente con cuit cero ' . $indice, 'cuit' => $cero],
+            ]);
+
+            $this->assertTrue(!empty($alta['ok']), 'cuit = ' . json_encode($cero) . ': ' . json_encode($alta));
+        }
+    }
+
+    /**
+     * 🔴 F5: en una EDICIÓN el CUIT se valida solo si CAMBIA. Un cliente con un CUIT inválido ya guardado
+     * (lo cargó la pantalla, o es de antes de la validación) se puede editar en otro campo aunque el modelo
+     * repita el CUIT que ya estaba (igual o con otros separadores); cambiarlo por otro inválido sigue
+     * cortando.
+     *
+     * @test
+     */
+    public function en_una_edicion_el_cuit_invalido_ya_guardado_no_bloquea_otro_campo()
+    {
+        $cliente = Client::create(['name' => 'zz-c103 Cliente con cuit viejo', 'user_id' => $this->dueno->id]);
+
+        Client::where('id', $cliente->id)->update(['cuit' => '20166036823']);
+
+        foreach (['20166036823', '20-16603682-3'] as $indice => $el_mismo) {
+
+            list($conversation, $assistant) = $this->conversacion();
+
+            $edicion = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+                'entidad'  => 'client',
+                'registro' => 'zz-c103 Cliente con cuit viejo',
+                'cambios'  => ['phone' => '351 444 000' . $indice, 'cuit' => $el_mismo],
+            ]);
+
+            $this->assertTrue(!empty($edicion['ok']), 'El CUIT ya guardado (' . $el_mismo . ') no tenía que bloquear la edición: ' . json_encode($edicion));
+            $this->assertSame(1, $this->tarjetas_de($assistant));
+            $this->assertSame('351 444 000' . $indice, AiMessageAction::find($edicion['tarjeta_id'])->datos['pedidos']['phone']);
+        }
+
+        // Cambiarlo por OTRO inválido sí corta.
+        list($conversation, $assistant) = $this->conversacion();
+
+        $otro = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'client',
+            'registro' => 'zz-c103 Cliente con cuit viejo',
+            'cambios'  => ['phone' => '351 444 0009', 'cuit' => '20166036824'],
+        ]);
+
+        $this->assertFalse($otro['ok'], json_encode($otro));
+        $this->assertStringContainsString('El CUIT 20166036824 no es válido: el dígito verificador no da', $otro['error']);
+        $this->assertSame(0, $this->tarjetas_de($assistant));
+    }
+
     // ---------------------------------------------------------------------
     // A4 — la regla del lote desde una planilla
     // ---------------------------------------------------------------------
