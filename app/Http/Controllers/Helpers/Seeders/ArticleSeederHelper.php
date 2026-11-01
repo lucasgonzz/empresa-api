@@ -39,7 +39,7 @@ class ArticleSeederHelper {
                                         ->get();
     }
 	   
-    function set_provider($created_article, $article) {
+    static function set_provider($created_article, $article) {
 
         if (isset($article['provider_id'])) {
             $created_article->providers()->attach($article['provider_id'], [
@@ -49,7 +49,7 @@ class ArticleSeederHelper {
         }
     }
 
-    function set_images($created_article, $article, $rubro, $formato = 'jpg') {
+    static function set_images($created_article, $article, $rubro, $formato = 'jpg') {
         $category_name = strtolower($created_article->category->name);
         Image::create([
             'imageable_type'                            => 'article',

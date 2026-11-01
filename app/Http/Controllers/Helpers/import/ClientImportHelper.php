@@ -19,7 +19,7 @@ class ClientImportHelper {
 
 	}
 
-    function separar_localidad_de_direccion($direccion) {
+    static function separar_localidad_de_direccion($direccion) {
 
         $localidades = ["Esperanza", "Wanda", "Libertad", "Iguazu"];
         
