@@ -71,6 +71,11 @@ class McpHerramientasHelper
         'buscar_producto_por_codigo_de_barras',
         // Misión app-ia-y-memoria (E2): abrir un archivo de la memoria del negocio no escribe nada.
         'leer_contexto',
+        /*
+         * Misión agente-mejoras-diario-30-10 (B2, 31/10/2026): armar el texto de una promo para que la persona lo
+         * reenvíe ella no manda nada ni escribe en el negocio (no crea tarjeta): devuelve un texto con links.
+         */
+        'armar_texto_de_promocion',
     ];
 
     /**

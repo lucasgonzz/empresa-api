@@ -511,16 +511,19 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
          * La misión agente-mejoras-uso-real (29/10/2026) sumó pedir_ayuda_a_soporte al final, por la
          * misma regla, y antes las tres compras del agente (E1 de la misma misión): por eso -11 y -7 (los
          * nombres esperados no cambiaron), y pedir_ayuda_a_soporte es la última.
+         *
+         * La misión agente-mejoras-diario-30-10 (31/10/2026, B2) sumó armar_texto_de_promocion detrás de
+         * pedir_ayuda_a_soporte, por la misma regla: por eso -12, -8 y -2 (los nombres esperados no cambiaron).
          */
         $this->assertSame(
             ['que_acciones_de_pantalla_hay', 'consultar_por_pantalla', 'proponer_accion_de_pantalla', 'proponer_borrado_por_pantalla'],
-            array_slice($nombres, -11, 4)
+            array_slice($nombres, -12, 4)
         );
         $this->assertSame(
             ['proponer_envio_de_comprobante', 'proponer_recordatorios_de_cobro', 'proponer_promocion_por_whatsapp'],
-            array_slice($nombres, -7, 3)
+            array_slice($nombres, -8, 3)
         );
-        $this->assertSame(['pedir_ayuda_a_soporte'], array_slice($nombres, -1));
+        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion'], array_slice($nombres, -2));
 
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 

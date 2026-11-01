@@ -35,6 +35,19 @@ class WhatsappDeClientesIaHelper
     const CODIGO_SIN_WHATSAPP = 'sin_whatsapp_de_clientes';
 
     /**
+     * 🔴 LO QUE SÍ SE PUEDE HACER PARA LA PERSONA (misión agente-mejoras-diario-30-10, B2, 31/10/2026). Va en
+     * texto_sin_whatsapp() y en linea_para_el_prompt(), con el mismo texto. Los análisis diarios lo mostraron
+     * dos veces: el 30/10 (#4, con 👎) el dueño pidió el texto de una promo para mandarlo él y el agente no se lo
+     * dio («No armes el texto…» decía este helper); el 31/10 (#7) pidió un comprobante «a mi WhatsApp» y el
+     * agente le habló de la línea de clientes. Lo que falta es el WhatsApp hacia los CLIENTES: el texto para
+     * reenviar lo arma armar_texto_de_promocion y el comprobante para la persona es el link de
+     * consultar_link_de_pdf (el chat no adjunta archivos). La conexión se ofrece aparte, nunca como condición.
+     */
+    const REGLA_PARA_LA_PERSONA = 'Eso es solo hacia los CLIENTES. Si la persona pide el texto para mandarlo ella, usá armar_texto_de_promocion. '
+        . 'Si pide un comprobante para ella ("a mí", "a mi WhatsApp"), pasale el link con consultar_link_de_pdf en esta misma respuesta '
+        . '(este chat no adjunta archivos) y no nombres la línea de clientes. La conexión del WhatsApp ofrecela aparte, nunca como condición.';
+
+    /**
      * true si el negocio tiene una configuración de WhatsApp con clientes ACTIVA (la misma condición que
      * usan los envíos: WhatsappBotConfig::getForUser).
      *
@@ -70,6 +83,10 @@ class WhatsappDeClientesIaHelper
     /**
      * El motivo exacto, para el modelo, cuando no hay WhatsApp con clientes.
      *
+     * Desde la misión agente-mejoras-diario-30-10 (B2, 31/10/2026) ya no dice «No armes el texto»: el envío a
+     * los clientes no puede salir, pero el texto para que la persona lo mande ella sí (REGLA_PARA_LA_PERSONA).
+     * Lo que sigue sin tener sentido es buscar clientes para este envío.
+     *
      * @param  string  $que  Lo que no se puede mandar ("promociones", "recordatorios de cobro").
      * @return string
      */
@@ -79,11 +96,17 @@ class WhatsappDeClientesIaHelper
             . 'les escribe a los clientes; no es el WhatsApp por el que la persona habla con vos), así que no se pueden mandar '
             . (string) $que . ' por WhatsApp. No se arregla desde la configuración del sistema ni lo podés hacer vos: lo conecta el '
             . 'equipo de ComercioCity. Decíselo así, en esta misma respuesta, y ofrecele pedírselo a soporte (pedir_ayuda_a_soporte). '
-            . 'No armes el texto ni busques clientes o artículos para este envío: no va a poder salir.';
+            . 'No busques clientes para este envío: no va a poder salir. '
+            . self::REGLA_PARA_LA_PERSONA;
     }
 
     /**
      * El renglón del bloque de módulos apagados del prompt, sin el punto final (lo une el llamador).
+     *
+     * 🔴 Vive en el bloque de módulos apagados (AsistenteIaService::bloque_de_modulos_apagados), que va adentro
+     * del bloque de carga del system de ESTE negocio (cacheado por negocio y por día), y solo cuando el negocio
+     * no tiene el WhatsApp con clientes: no toca las tools ni lo común a todos los negocios. Desde la misión
+     * agente-mejoras-diario-30-10 (B2) suma REGLA_PARA_LA_PERSONA adentro del paréntesis.
      *
      * @return string
      */
@@ -91,7 +114,8 @@ class WhatsappDeClientesIaHelper
     {
         return 'WhatsApp con los clientes sin conectar (el negocio no tiene conectada su línea de WhatsApp Business: no podés '
             . 'mandarles promociones, recordatorios de cobro ni comprobantes por WhatsApp a los clientes; si te lo piden, decilo en la '
-            . 'primera respuesta y ofrecé pedírselo a soporte con pedir_ayuda_a_soporte)';
+            . 'primera respuesta y ofrecé pedírselo a soporte con pedir_ayuda_a_soporte. '
+            . rtrim(self::REGLA_PARA_LA_PERSONA, '.') . ')';
     }
 
     /**
