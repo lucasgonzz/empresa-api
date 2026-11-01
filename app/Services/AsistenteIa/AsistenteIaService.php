@@ -2465,6 +2465,16 @@ AUTO_RESUELTO;
          * dijo la persona y lo que se ve en la foto, sin inventar datos técnicos. Salvo en una
          * corrección con reemplaza_a (revisión independiente): ahí se hereda, y mandarla de nuevo
          * pisaría la que trajo la búsqueda por código de barras con una escrita de memoria.
+         *
+         * Misión agente-mejoras-diario (análisis del 31/10/2026, #1 y #3): la regla de las VARIAS
+         * VENTAS DESDE UNA PLANILLA, después de la de "faltan"/"error". Por WhatsApp no hay tarjeta:
+         * el dueño sólo lee el texto del modelo, y en Ferre Total el modelo cambió cantidades ya
+         * acordadas releyendo la planilla, dijo que había llegado «una planilla nueva» que nadie mandó
+         * y volvió a armar una venta ya registrada (59542 = 59466). La lista renglón por renglón, que
+         * sólo cambia con lo que diga la persona y se muestra entera antes del sí, es lo que el dueño
+         * puede controlar. Va acá, en el bloque 1 del system (caché por negocio y por día porque lleva
+         * el nombre del negocio y la fecha), y no en las herramientas: no toca el caché compartido de
+         * las tools.
          */
         return <<<CARGA
 {$titulo_de_carga}
@@ -2568,6 +2578,11 @@ AUTO_RESUELTO;
   y trae opciones: ese es para vos, no para la persona — elegí de las opciones y volvé a llamar
   en el mismo mensaje. Si devuelve "confirmada_parecida", avisá que hace un momento
   se confirmó una carga parecida y que confirme esta solo si es otra carga.
+- 🔴 Varias ventas desde una planilla: armá una lista renglón → cliente → artículo → cantidad →
+  importe y cambiala solo con lo que diga la persona; sacá los renglones ya registrados (decí con
+  qué N°); antes del sí mostrá la lista final con cantidades y total; nunca digas que llegó una
+  planilla nueva si este mensaje no trae un adjunto nuevo; si una foto no se lee, decilo y pedí el
+  texto o el archivo en vez de afirmar que un dato no está.
 {$reglas_contra_lo_inventado}
 - Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
   asociado. Un pago futuro, como tarea para cobrar o pagar ese día. Para una tarea con gasto

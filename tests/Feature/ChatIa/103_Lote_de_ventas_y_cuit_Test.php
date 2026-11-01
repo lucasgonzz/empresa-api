@@ -466,4 +466,35 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
 
         $this->assertTrue(!empty($bien['ok']), json_encode($bien));
     }
+
+    // ---------------------------------------------------------------------
+    // A4 — la regla del lote desde una planilla
+    // ---------------------------------------------------------------------
+
+    /**
+     * La regla de las varias ventas desde una planilla está en el system con las herramientas de carga
+     * (en WhatsApp y en el sistema), y no en el de solo lectura.
+     *
+     * @test
+     */
+    public function la_regla_del_lote_desde_una_planilla_esta_en_el_bloque_de_carga()
+    {
+        list($conversation) = $this->conversacion();
+
+        $servicio = new AsistenteIaService();
+
+        $whatsapp = $servicio->build_system_prompt($conversation, $this->dueno->fresh(), true, true);
+        $sistema = $servicio->build_system_prompt($conversation, $this->dueno->fresh(), true, false);
+        $solo_lectura = $servicio->build_system_prompt($conversation, $this->dueno->fresh(), false, false);
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('Varias ventas desde una planilla: armá una lista renglón → cliente → artículo → cantidad →', $prompt);
+            $this->assertStringContainsString('sacá los renglones ya registrados (decí con', $prompt);
+            $this->assertStringContainsString('nunca digas que llegó una', $prompt);
+            $this->assertStringContainsString('planilla nueva si este mensaje no trae un adjunto nuevo', $prompt);
+            $this->assertStringContainsString('si una foto no se lee, decilo y pedí el', $prompt);
+        }
+
+        $this->assertStringNotContainsString('Varias ventas desde una planilla', $solo_lectura);
+    }
 }
