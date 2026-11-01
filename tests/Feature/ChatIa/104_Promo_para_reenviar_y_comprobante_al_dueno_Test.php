@@ -259,6 +259,95 @@ class Promo_para_reenviar_y_comprobante_al_dueno_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 F6 de la ronda de arreglos (31/10/2026), el caso real de Pablo (9 clavos): con más artículos que
+     * MAXIMO_DE_ARTICULOS el texto para reenviar NO es un error: sale con el link a la portada de la tienda,
+     * como una promo general, y la nota lo dice. La promo por WhatsApp (el envío masivo) mantiene su tope.
+     *
+     * @test
+     */
+    public function con_mas_articulos_que_el_tope_el_texto_sale_con_el_link_de_la_tienda()
+    {
+        $this->sin_whatsapp_de_clientes();
+
+        $ids = [];
+
+        for ($i = 1; $i <= 9; $i++) {
+            $ids[] = $this->articulo_de_la_promo('ZZE Clavo punta París ' . $i . '"', 1, 'zze-clavo-' . $i)->id;
+        }
+
+        $this->assertGreaterThan(PropuestaPromocionWhatsappIaHelper::MAXIMO_DE_ARTICULOS, count($ids));
+
+        list($conversation, $assistant) = $this->vuelta('pasame el texto de la promo de los clavos así lo mando yo');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'armar_texto_de_promocion', [
+            'texto'       => 'Clavos punta París de todas las medidas con 15% off',
+            'article_ids' => $ids,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertNull($respuesta['sin_link']);
+        $this->assertSame("Clavos punta París de todas las medidas con 15% off\nhttps://tienda-zze.test", $respuesta['texto_para_reenviar']);
+        $this->assertSame([['nombre' => 'Tienda', 'link' => 'https://tienda-zze.test']], $respuesta['links']);
+        $this->assertStringStartsWith('Son 9 artículos: va el link a la tienda, no uno por artículo.', $respuesta['nota']);
+        $this->assertStringContainsString('TAL CUAL', $respuesta['nota'], 'La nota de siempre sigue.');
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+
+        // La promo por WhatsApp (envío masivo) con el WhatsApp conectado sigue con su tope de artículos.
+        $this->config->is_active = true;
+        $this->config->save();
+
+        list($conversation_2, $assistant_2) = $this->vuelta('mandales la promo de los clavos');
+
+        $promo = $this->herramienta($conversation_2, $assistant_2, 'proponer_promocion_por_whatsapp', [
+            'texto'       => 'Clavos punta París de todas las medidas con 15% off',
+            'article_ids' => $ids,
+        ]);
+
+        $this->assertFalse($promo['ok'], json_encode($promo, JSON_UNESCAPED_UNICODE));
+        $this->assertStringContainsString('Una promo lleva hasta ' . PropuestaPromocionWhatsappIaHelper::MAXIMO_DE_ARTICULOS . ' artículos', $promo['error']);
+    }
+
+    /**
+     * F6: un combo sin publicar y SIN precio no corta el texto para reenviar (acá no se publica nada): sale sin
+     * link y con el motivo. El combo sigue sin publicar.
+     *
+     * @test
+     */
+    public function un_combo_sin_publicar_y_sin_precio_no_corta_el_texto_para_reenviar()
+    {
+        Combo::create(['num' => 1, 'name' => 'ZZE Combo sin precio', 'price' => 0, 'cost' => 0, 'online' => 0, 'user_id' => $this->dueno->id]);
+
+        list($conversation, $assistant) = $this->vuelta('armame el texto del combo para reenviarlo');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'armar_texto_de_promocion', ['texto' => 'Combo parrillero a precio especial', 'combo' => 'ZZE Combo sin precio']);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(PropuestaPromocionWhatsappIaHelper::CODIGO_COMBO_SIN_PRECIO, $respuesta['sin_link']);
+        $this->assertSame('Combo parrillero a precio especial', $respuesta['texto_para_reenviar'], 'El texto, sin link.');
+        $this->assertSame([], $respuesta['links']);
+        $this->assertStringContainsString('El combo "ZZE Combo sin precio" no está publicado en la tienda y no tiene precio cargado', $respuesta['motivo_sin_link']);
+        $this->assertStringContainsString('el texto va sin link', $respuesta['motivo_sin_link']);
+        $this->assertSame(0, (int) Combo::where('user_id', $this->dueno->id)->value('online'), 'No se publica nada.');
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->count());
+    }
+
+    /**
+     * F6 (c): la descripción de proponer_promocion_por_whatsapp, después de lo de «mandámela a mí primero», manda
+     * el «pasame el texto y lo mando yo» a armar_texto_de_promocion.
+     *
+     * @test
+     */
+    public function la_promo_por_whatsapp_manda_el_texto_para_mandarlo_ella_a_armar_texto_de_promocion()
+    {
+        $descripcion = $this->definicion('proponer_promocion_por_whatsapp')['description'];
+
+        $frase = 'Si en cambio pide el texto para mandarlo ELLA ("pasame el texto y lo mando yo"), no es un envío: usá armar_texto_de_promocion.';
+
+        $this->assertStringContainsString($frase, $descripcion);
+        $this->assertGreaterThan(mb_strpos($descripcion, 'mandámela a mí primero'), mb_strpos($descripcion, $frase), 'Va después de lo de «mandámela a mí primero».');
+    }
+
+    /**
      * Un link escrito por el modelo es un error (los arma el sistema), y sin texto también.
      *
      * @test
@@ -298,7 +387,18 @@ class Promo_para_reenviar_y_comprobante_al_dueno_Test extends EmpresaTestCase
             $texto = WhatsappDeClientesIaHelper::texto_sin_whatsapp($que);
 
             $this->assertStringNotContainsString('No armes el texto', $texto, $que);
-            $this->assertStringContainsString('armar_texto_de_promocion', $texto, $que);
+
+            /*
+             * Ronda de arreglos (F6, 31/10/2026): el texto para reenviar es de una PROMO; en el corte de los
+             * recordatorios de cobro no se nombra armar_texto_de_promocion (sí el link del comprobante y la
+             * conexión ofrecida aparte).
+             */
+            if ($que === 'promociones') {
+                $this->assertStringContainsString('armar_texto_de_promocion', $texto, $que);
+            } else {
+                $this->assertStringNotContainsString('armar_texto_de_promocion', $texto, $que);
+            }
+
             $this->assertStringContainsString('consultar_link_de_pdf', $texto, $que);
             $this->assertStringContainsString('Eso es solo hacia los CLIENTES', $texto, $que);
             $this->assertStringContainsString('nunca como condición', $texto, $que);

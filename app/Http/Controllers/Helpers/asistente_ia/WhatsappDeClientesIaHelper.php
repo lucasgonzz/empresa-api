@@ -42,9 +42,23 @@ class WhatsappDeClientesIaHelper
      * agente le habló de la línea de clientes. Lo que falta es el WhatsApp hacia los CLIENTES: el texto para
      * reenviar lo arma armar_texto_de_promocion y el comprobante para la persona es el link de
      * consultar_link_de_pdf (el chat no adjunta archivos). La conexión se ofrece aparte, nunca como condición.
+     *
+     * Ronda de arreglos de la misión (F6, 31/10/2026): se arma con las tres partes de abajo. El renglón del prompt
+     * (linea_para_el_prompt()) y el corte de las PROMOCIONES llevan las tres; el corte de los RECORDATORIOS DE
+     * COBRO no lleva la del texto para reenviar: armar_texto_de_promocion arma el texto de una promo, no el de un
+     * recordatorio, y nombrárselo ahí era empujar al modelo a usar una herramienta que no corresponde.
      */
-    const REGLA_PARA_LA_PERSONA = 'Eso es solo hacia los CLIENTES. Si la persona pide el texto para mandarlo ella, usá armar_texto_de_promocion. '
-        . 'Si pide un comprobante para ella ("a mí", "a mi WhatsApp"), pasale el link con consultar_link_de_pdf en esta misma respuesta '
+    const REGLA_PARA_LA_PERSONA = self::REGLA_SOLO_HACIA_LOS_CLIENTES . ' ' . self::REGLA_DEL_TEXTO_PARA_REENVIAR . ' '
+        . self::REGLA_DEL_COMPROBANTE_Y_LA_CONEXION;
+
+    /** La primera parte de REGLA_PARA_LA_PERSONA: lo que falta es solo el WhatsApp hacia los clientes (F6). */
+    const REGLA_SOLO_HACIA_LOS_CLIENTES = 'Eso es solo hacia los CLIENTES.';
+
+    /** La parte de REGLA_PARA_LA_PERSONA que manda al texto para reenviar: solo con las promociones (F6). */
+    const REGLA_DEL_TEXTO_PARA_REENVIAR = 'Si la persona pide el texto para mandarlo ella, usá armar_texto_de_promocion.';
+
+    /** La parte de REGLA_PARA_LA_PERSONA del comprobante para la persona y de la conexión ofrecida aparte (F6). */
+    const REGLA_DEL_COMPROBANTE_Y_LA_CONEXION = 'Si pide un comprobante para ella ("a mí", "a mi WhatsApp"), pasale el link con consultar_link_de_pdf en esta misma respuesta '
         . '(este chat no adjunta archivos) y no nombres la línea de clientes. La conexión del WhatsApp ofrecela aparte, nunca como condición.';
 
     /**
@@ -87,17 +101,25 @@ class WhatsappDeClientesIaHelper
      * los clientes no puede salir, pero el texto para que la persona lo mande ella sí (REGLA_PARA_LA_PERSONA).
      * Lo que sigue sin tener sentido es buscar clientes para este envío.
      *
+     * Ronda de arreglos de la misión (F6, 31/10/2026): la parte del texto para reenviar
+     * (REGLA_DEL_TEXTO_PARA_REENVIAR) va solo con las «promociones»; con los «recordatorios de cobro» va lo del
+     * comprobante con consultar_link_de_pdf y lo de ofrecer la conexión aparte, sin nombrar armar_texto_de_promocion.
+     *
      * @param  string  $que  Lo que no se puede mandar ("promociones", "recordatorios de cobro").
      * @return string
      */
     public static function texto_sin_whatsapp($que): string
     {
+        $es_una_promocion = mb_strtolower(trim((string) $que)) === 'promociones';
+
         return 'El negocio no tiene conectado el WhatsApp con sus clientes (la línea de WhatsApp Business del negocio por la que el sistema '
             . 'les escribe a los clientes; no es el WhatsApp por el que la persona habla con vos), así que no se pueden mandar '
             . (string) $que . ' por WhatsApp. No se arregla desde la configuración del sistema ni lo podés hacer vos: lo conecta el '
             . 'equipo de ComercioCity. Decíselo así, en esta misma respuesta, y ofrecele pedírselo a soporte (pedir_ayuda_a_soporte). '
             . 'No busques clientes para este envío: no va a poder salir. '
-            . self::REGLA_PARA_LA_PERSONA;
+            . ($es_una_promocion
+                ? self::REGLA_PARA_LA_PERSONA
+                : self::REGLA_SOLO_HACIA_LOS_CLIENTES . ' ' . self::REGLA_DEL_COMPROBANTE_Y_LA_CONEXION);
     }
 
     /**

@@ -175,6 +175,13 @@ class PropuestaPromocionWhatsappIaHelper
     /** El combo existe pero no está publicado: su link (la portada) no lo mostraría. Solo lo usa texto_para_reenviar(). */
     const CODIGO_COMBO_NO_PUBLICADO = 'combo_no_publicado';
 
+    /**
+     * El combo no está publicado y no tiene precio (ronda de arreglos de la misión, F6, 31/10/2026). Lo pone
+     * resolver_destino() en su error: la promo no lo publica (sería regalarlo) y corta; texto_para_reenviar(),
+     * que no publica nada, lo toma como «el texto va sin link».
+     */
+    const CODIGO_COMBO_SIN_PRECIO = 'combo_sin_precio';
+
     /** Lo que se le contesta AL MODELO cuando pide el texto para reenviar sin mandar el texto: que lo redacte él. */
     const MENSAJE_SIN_TEXTO_PARA_REENVIAR = 'Falta el texto de la promo. Redactalo vos con lo que se ofrece y el precio de cada artículo '
         . 'como lo devolvió consultar_stock_de_articulos (sin saludo y sin links: los pone el sistema) y volvé a llamar. No le pidas a '
@@ -492,8 +499,16 @@ class PropuestaPromocionWhatsappIaHelper
      * 🔴 SI NO SE PUEDE ARMAR EL LINK, EL TEXTO SALE IGUAL, SIN LINK, Y CON EL MOTIVO (`sin_link` con el código y
      * `motivo_sin_link`): sin la dirección de la tienda, con un artículo sin publicar o sin su dirección propia,
      * o con un combo sin publicar. El dueño pidió un texto para reenviar: negárselo por el link es el defecto del
-     * 30/10 con otra excusa. Lo que no se resuelve (un artículo que no existe, uno ambiguo, más de cinco) vuelve
-     * como `error`/`faltan`, como en la promo.
+     * 30/10 con otra excusa. Lo que no se resuelve (un artículo que no existe, uno ambiguo) vuelve como
+     * `error`/`faltan`, como en la promo.
+     *
+     * Ronda de arreglos de la misión (F6, 31/10/2026), dos casos que ya no cortan el texto:
+     *   - MÁS ARTÍCULOS QUE MAXIMO_DE_ARTICULOS (el caso real de Pablo fueron 9 clavos): el tope es del envío
+     *     masivo (con más de cinco renglones de links el WhatsApp deja de ser una promo). Para un texto que
+     *     la persona reenvía ella, el texto sale con el link a la PORTADA de la tienda, como una promo general,
+     *     y la nota lo dice: «Son N artículos: va el link a la tienda, no uno por artículo.»
+     *   - UN COMBO SIN PUBLICAR Y SIN PRECIO: la promo no lo publica (sería regalarlo), pero acá no se publica
+     *     nada. El texto sale sin link (CODIGO_COMBO_SIN_PRECIO) y con el motivo.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $input  texto*, article_id, articulo, article_ids, combo_id, combo, vigencia
@@ -534,7 +549,18 @@ class PropuestaPromocionWhatsappIaHelper
             return $combo_sin_decir_cual;
         }
 
-        $destino = self::resolver_destino($contexto, $input);
+        /*
+         * F6 (31/10/2026): con más artículos que MAXIMO_DE_ARTICULOS no es un error: es una promo general con el
+         * link a la portada de la tienda (si el sistema tiene su dirección). Con un combo nombrado al lado, sigue
+         * por resolver_destino(), que lo resuelve como siempre (una sola cosa por promo).
+         */
+        $cuantos_articulos = self::cuantos_articulos_del_input($input);
+
+        $son_muchos_articulos = $cuantos_articulos > self::MAXIMO_DE_ARTICULOS && !self::nombra_un_combo($input);
+
+        $destino = $son_muchos_articulos
+            ? ['link' => TiendaDelNegocioIaHelper::url($contexto->owner)]
+            : self::resolver_destino($contexto, $input);
 
         // El código del motivo por el que el texto sale sin link (null = con link), y el motivo para el modelo.
         $sin_link = null;
@@ -555,15 +581,28 @@ class PropuestaPromocionWhatsappIaHelper
              * Los motivos que solo afectan al LINK: el texto sale igual, sin link. Los demás (no existe, es
              * ambiguo, son muchos, el combo sin precio) vuelven tal cual: el modelo los tiene que resolver.
              */
-            if (!in_array($codigo, [self::CODIGO_SIN_DIRECCION_DE_TIENDA, self::CODIGO_ARTICULO_NO_PUBLICADO, self::CODIGO_ARTICULO_SIN_SLUG], true)) {
+            if (!in_array($codigo, [self::CODIGO_SIN_DIRECCION_DE_TIENDA, self::CODIGO_ARTICULO_NO_PUBLICADO, self::CODIGO_ARTICULO_SIN_SLUG, self::CODIGO_COMBO_SIN_PRECIO], true)) {
 
                 return $destino;
             }
 
             $sin_link = $codigo;
-            $motivo_sin_link = $codigo === self::CODIGO_SIN_DIRECCION_DE_TIENDA
-                ? self::motivo_sin_direccion_para_reenviar()
-                : 'El texto va sin link. ' . (string) $destino['error'];
+
+            if ($codigo === self::CODIGO_SIN_DIRECCION_DE_TIENDA) {
+
+                $motivo_sin_link = self::motivo_sin_direccion_para_reenviar();
+
+            } elseif ($codigo === self::CODIGO_COMBO_SIN_PRECIO) {
+
+                // F6: acá no se publica nada, así que no corta; la portada no lo mostraría, y eso se dice.
+                $motivo_sin_link = 'El combo "' . (isset($destino['nombre']) ? (string) $destino['nombre'] : '') . '" no está publicado en la tienda y no '
+                    . 'tiene precio cargado, así que la portada no lo mostraría: el texto va sin link. Si lo quiere con link, que le cargue el precio, '
+                    . 'lo publique en la tienda (desde Combos) y volvé a llamar.';
+
+            } else {
+
+                $motivo_sin_link = 'El texto va sin link. ' . (string) $destino['error'];
+            }
 
         } elseif (!empty($destino['publicar_combo'])) {
 
@@ -598,14 +637,62 @@ class PropuestaPromocionWhatsappIaHelper
             }
         }
 
+        /*
+         * F6: con muchos artículos la nota empieza diciéndolo, para que el modelo no le prometa a la persona un
+         * link por artículo (ni le diga que no se pudo). Sin la dirección de la tienda el texto va sin ningún
+         * link, y el motivo ya lo explica.
+         */
+        $nota = self::NOTA_TEXTO_PARA_REENVIAR;
+
+        if ($son_muchos_articulos) {
+
+            $nota = (is_null($link)
+                    ? 'Son ' . $cuantos_articulos . ' artículos: no va un link por artículo. '
+                    : 'Son ' . $cuantos_articulos . ' artículos: va el link a la tienda, no uno por artículo. ')
+                . $nota;
+        }
+
         return [
             'ok'                  => true,
             'texto_para_reenviar' => self::cuerpo_del_mensaje($texto, $vigencia, $link, $links_de_los_articulos),
             'links'               => $links,
             'sin_link'            => $sin_link,
             'motivo_sin_link'     => $motivo_sin_link,
-            'nota'                => self::NOTA_TEXTO_PARA_REENVIAR,
+            'nota'                => $nota,
         ];
+    }
+
+    /**
+     * Cuántos artículos nombra el input por id (`article_ids` más el `article_id` suelto, sin repetir), con la
+     * misma cuenta que resolver_destino() (F6 de la ronda de arreglos, 31/10/2026).
+     *
+     * @param  array  $input
+     * @return int
+     */
+    protected static function cuantos_articulos_del_input(array $input)
+    {
+        $article_ids = self::ids(EntradaDeCargaIa::valor($input, 'article_ids'));
+
+        $article_id = EntradaDeCargaIa::valor($input, 'article_id');
+
+        if (is_numeric($article_id) && (int) $article_id > 0 && !in_array((int) $article_id, $article_ids, true)) {
+            $article_ids[] = (int) $article_id;
+        }
+
+        return count($article_ids);
+    }
+
+    /**
+     * true si el input nombra un combo (`combo_id` o `combo`), con el mismo criterio que resolver_destino() (F6).
+     *
+     * @param  array  $input
+     * @return bool
+     */
+    protected static function nombra_un_combo(array $input)
+    {
+        $combo_id = EntradaDeCargaIa::valor($input, 'combo_id');
+
+        return (is_numeric($combo_id) && (int) $combo_id > 0) || EntradaDeCargaIa::texto($input, 'combo') !== '';
     }
 
     /**
@@ -1485,7 +1572,18 @@ class PropuestaPromocionWhatsappIaHelper
         // Publicar un combo con precio cero es regalarlo (la guarda F3 de ComboAltaHelper): no se publica.
         if ($publicar && (is_null($modelo->price) || (float) $modelo->price <= 0)) {
 
-            return RespuestaDeCargaIa::error('El combo "' . $modelo->name . '" no tiene precio cargado, así que no lo publico en la tienda (sería regalarlo). Cargale el precio primero.');
+            /*
+             * Con código y nombre desde la ronda de arreglos de la misión agente-mejoras-diario (F6, 31/10/2026):
+             * texto_para_reenviar() no publica nada y lo toma como «sin link»; la promo lo devuelve tal cual.
+             */
+            $sin_precio = RespuestaDeCargaIa::error_con_codigo(
+                self::CODIGO_COMBO_SIN_PRECIO,
+                'El combo "' . $modelo->name . '" no tiene precio cargado, así que no lo publico en la tienda (sería regalarlo). Cargale el precio primero.'
+            );
+
+            $sin_precio['nombre'] = (string) $modelo->name;
+
+            return $sin_precio;
         }
 
         return [
