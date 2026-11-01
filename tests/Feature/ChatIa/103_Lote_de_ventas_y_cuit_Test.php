@@ -348,4 +348,122 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
         $this->assertSame('es_otra_venta', end($propiedades));
         $this->assertSame('boolean', $definiciones['proponer_venta']['input_schema']['properties']['es_otra_venta']['type']);
     }
+
+    // ---------------------------------------------------------------------
+    // A3 — CUIT y CUIL con el dígito verificador
+    // ---------------------------------------------------------------------
+
+    /**
+     * El cálculo: los dos casos conocidos válidos, uno con el verificador cambiado, un DNI y un largo
+     * que no es ni CUIT ni DNI.
+     *
+     * @test
+     */
+    public function el_digito_verificador_se_calcula_como_arca()
+    {
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('30523505668'));
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('20166036829'));
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('20-16603682-9'));
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('14.409.964'), 'Un DNI pasa.');
+        $this->assertNull(CuitIaHelper::motivo_si_no_sirve('1440996'), 'Un DNI de 7 dígitos también.');
+
+        $this->assertStringContainsString('dígito verificador', (string) CuitIaHelper::motivo_si_no_sirve('20166036823'));
+        $this->assertStringContainsString('11', (string) CuitIaHelper::motivo_si_no_sirve('2016603682'));
+    }
+
+    /**
+     * 🔴 El alta de un cliente con un CUIT inválido → error y ninguna tarjeta; con uno válido o con un
+     * DNI → tarjeta.
+     *
+     * @test
+     */
+    public function el_alta_con_un_cuit_invalido_no_arma_tarjeta()
+    {
+        list($conversation, $assistant) = $this->conversacion();
+
+        $mal = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'client',
+            'datos'   => ['name' => 'zz-c103 Cliente con cuit', 'cuit' => '20166036823'],
+        ]);
+
+        $this->assertFalse($mal['ok'], json_encode($mal));
+        $this->assertStringContainsString('El CUIT 20166036823 no es válido: el dígito verificador no da', $mal['error']);
+        $this->assertStringContainsString('pedile el número a la persona', $mal['error']);
+        $this->assertSame(0, $this->tarjetas_de($assistant));
+
+        $bien = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'client',
+            'datos'   => ['name' => 'zz-c103 Cliente con cuit', 'cuit' => '20166036829'],
+        ]);
+
+        $this->assertTrue(!empty($bien['ok']), json_encode($bien));
+        $this->assertSame('20166036829', AiMessageAction::find($bien['tarjeta_id'])->datos['pedidos']['cuit']);
+
+        list($conversation_2, $assistant_2) = $this->conversacion();
+
+        $dni = $this->herramienta($conversation_2, $assistant_2, 'proponer_alta', [
+            'entidad' => 'client',
+            'datos'   => ['name' => 'zz-c103 Cliente con dni', 'cuit' => '14.409.964'],
+        ]);
+
+        $this->assertTrue(!empty($dni['ok']), json_encode($dni));
+        $this->assertSame('14.409.964', AiMessageAction::find($dni['tarjeta_id'])->datos['pedidos']['cuit']);
+    }
+
+    /**
+     * Lo mismo en la edición de un cliente que ya existe.
+     *
+     * @test
+     */
+    public function la_edicion_con_un_cuit_invalido_no_arma_tarjeta()
+    {
+        Client::create(['name' => 'zz-c103 Cliente a editar', 'user_id' => $this->dueno->id]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $mal = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'client',
+            'registro' => 'zz-c103 Cliente a editar',
+            'cambios'  => ['cuit' => '30-52350566-1'],
+        ]);
+
+        $this->assertFalse($mal['ok'], json_encode($mal));
+        $this->assertStringContainsString('no es válido: el dígito verificador no da', $mal['error']);
+        $this->assertSame(0, $this->tarjetas_de($assistant));
+
+        $bien = $this->herramienta($conversation, $assistant, 'proponer_edicion', [
+            'entidad'  => 'client',
+            'registro' => 'zz-c103 Cliente a editar',
+            'cambios'  => ['cuit' => '30-52350566-8'],
+        ]);
+
+        $this->assertTrue(!empty($bien['ok']), json_encode($bien));
+        $this->assertSame(1, $this->tarjetas_de($assistant));
+    }
+
+    /**
+     * El CUIL de un cliente pasa por la misma validación.
+     *
+     * @test
+     */
+    public function el_cuil_tambien_se_valida()
+    {
+        list($conversation, $assistant) = $this->conversacion();
+
+        $mal = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'client',
+            'datos'   => ['name' => 'zz-c103 Cliente con cuil', 'cuil' => '20166036823'],
+        ]);
+
+        $this->assertFalse($mal['ok'], json_encode($mal));
+        $this->assertStringContainsString('El CUIL 20166036823 no es válido', $mal['error']);
+        $this->assertSame(0, $this->tarjetas_de($assistant));
+
+        $bien = $this->herramienta($conversation, $assistant, 'proponer_alta', [
+            'entidad' => 'client',
+            'datos'   => ['name' => 'zz-c103 Cliente con cuil', 'cuil' => '20-16603682-9'],
+        ]);
+
+        $this->assertTrue(!empty($bien['ok']), json_encode($bien));
+    }
 }

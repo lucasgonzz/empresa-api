@@ -1716,6 +1716,25 @@ class PropuestaGenericaIaHelper
             return self::resolver_relacion($contexto, $declaracion, $campo, $valor);
         }
 
+        /*
+         * 🔴 CUIT y CUIL con el dígito verificador (misión agente-mejoras-diario, análisis del
+         * 31/10/2026, #2): el modelo "corrigió" CUIT válidos leídos de una foto y propuso números que
+         * no existen, y acá caían en el `trim` del final como cualquier texto. Va antes del switch para
+         * que valga sea cual sea el tipo de la columna, en el alta y en la edición. Un DNI (7 u 8
+         * dígitos) pasa: ver CuitIaHelper.
+         */
+        if (isset($campo['columna']) && CuitIaHelper::es_columna_de_cuit($campo['columna'])) {
+
+            $motivo = CuitIaHelper::motivo_si_no_sirve($valor);
+
+            if (!is_null($motivo)) {
+
+                return RespuestaDeCargaIa::error(
+                    'El '.$etiqueta.' '.trim((string) $valor).' no es válido: '.$motivo.'. No lo propongas; si lo leíste de una foto, pedile el número a la persona.'
+                );
+            }
+        }
+
         switch ($campo['tipo']) {
 
             case 'number':
