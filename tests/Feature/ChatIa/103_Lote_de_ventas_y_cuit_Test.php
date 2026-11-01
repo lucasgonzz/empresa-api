@@ -732,6 +732,11 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
             $this->assertStringContainsString('nunca digas que llegó una', $prompt);
             $this->assertStringContainsString('planilla nueva si este mensaje no trae un adjunto nuevo', $prompt);
             $this->assertStringContainsString('si una foto no se lee, decilo y pedí el', $prompt);
+
+            // F9 de la ronda de arreglos (31/10/2026): el CUIT de una foto no pisa el cargado ni el escrito.
+            $this->assertStringContainsString('Un CUIT o CUIL leído de una foto no', $prompt);
+            $this->assertStringContainsString('reemplaza al que ya está cargado ni al que escribió la persona: si no coinciden, preguntá cuál es,', $prompt);
+            $this->assertStringContainsString('sin proponer el cambio; el sistema rechaza los CUIT con el dígito verificador mal.', $prompt);
         }
 
         $this->assertStringNotContainsString('Varias ventas desde una planilla', $solo_lectura);

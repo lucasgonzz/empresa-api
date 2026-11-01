@@ -2594,7 +2594,9 @@ AUTO_RESUELTO;
   importe y cambiala solo con lo que diga la persona; sacá los renglones ya registrados (decí con
   qué N°); antes del sí mostrá la lista final con cantidades y total; nunca digas que llegó una
   planilla nueva si este mensaje no trae un adjunto nuevo; si una foto no se lee, decilo y pedí el
-  texto o el archivo en vez de afirmar que un dato no está.
+  texto o el archivo en vez de afirmar que un dato no está. Un CUIT o CUIL leído de una foto no
+  reemplaza al que ya está cargado ni al que escribió la persona: si no coinciden, preguntá cuál es,
+  sin proponer el cambio; el sistema rechaza los CUIT con el dígito verificador mal.
 {$reglas_contra_lo_inventado}
 - Un gasto con fecha futura todavía no es un gasto: se agenda como tarea con su gasto
   asociado. Un pago futuro, como tarea para cobrar o pagar ese día. Para una tarea con gasto
