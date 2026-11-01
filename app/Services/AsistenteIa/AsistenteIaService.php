@@ -46,6 +46,7 @@ use App\Models\AiMessageImagen;
 use App\Models\IaImagenPedido;
 use App\Models\User;
 use App\Services\Traits\TonoDeRedaccionIa;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -128,6 +129,16 @@ class AsistenteIaService
     const MAX_FOTOS_DE_LA_TANDA = 3;
 
     const MAX_MENSAJES_HASTA_LA_TANDA = 3;
+
+    /**
+     * Cuántos minutos puede haber, como mucho, entre el último mensaje con fotos de la tanda y el
+     * último mensaje del dueño para que esas fotos vuelvan a viajar en base64 (misión
+     * agente-mejoras-diario, análisis del 31/10/2026, #4). Más tarde ya es otro tema: la foto del QR de
+     * la mañana viajaba con la planilla pegada a la tarde y el modelo contestaba otra vez lo del QR. Es
+     * sólo el reenvío al modelo: las herramientas siguen viendo la foto 24 horas
+     * (FotosDeLaConversacionIaHelper::tanda_de no cambia).
+     */
+    const MINUTOS_HASTA_LA_TANDA = 30;
 
     /** Techo de tokens de la respuesta. */
     const MAX_TOKENS = 1500;
@@ -3368,6 +3379,15 @@ CONFIRMACION;
      *   - y sólo si esa tanda está a MAX_MENSAJES_HASTA_LA_TANDA mensajes del dueño o menos: más
      *     atrás ya es otra charla, y la herramienta que la necesite la encuentra sola igual.
      *
+     * 🔴 Y UN CUARTO TOPE, DE TIEMPO (misión agente-mejoras-diario, análisis del 31/10/2026, #4 y
+     * parte del #1). La distancia en mensajes no alcanzaba: el dueño mandó la foto del QR, se le
+     * contestó, y dos horas y media después pegó una planilla de ventas — un solo mensaje suyo de
+     * distancia, la foto todavía «sin gestionar», y volvía a viajar con la planilla y la nota de antes
+     * («Van de nuevo las fotos que mandó hace un momento…»). El modelo contestó otra vez lo del QR, y
+     * en otra charla tomó la foto releída como «una planilla nueva». Ahora, si entre el último mensaje
+     * con fotos de la tanda y el último mensaje del dueño pasaron más de MINUTOS_HASTA_LA_TANDA, la
+     * foto no viaja. Y cuando viaja, la nota aclara que son las MISMAS fotos de antes, como referencia.
+     *
      * @param  AiConversation  $conversation
      * @param  array<int, array{role: string, texto: string, imagenes: array}>  $turns
      * @param  int  $id_ultimo_user
@@ -3403,6 +3423,10 @@ CONFIRMACION;
             return $turns;
         }
 
+        if ($this->la_tanda_quedo_lejos_en_el_tiempo($mensaje_de_la_tanda, (int) $id_ultimo_user)) {
+            return $turns;
+        }
+
         $bloques = [];
 
         foreach (array_slice($tanda, -self::MAX_FOTOS_DE_LA_TANDA) as $imagen) {
@@ -3417,11 +3441,45 @@ CONFIRMACION;
             return $turns;
         }
 
+        /*
+         * La nota dice que son las MISMAS fotos de antes y que van como referencia (análisis del
+         * 31/10/2026, #1): con la nota vieja («Van de nuevo las fotos que mandó hace un momento…») el
+         * modelo tomó una planilla releída como «una planilla nueva» y cambió cantidades ya acordadas.
+         */
         $turns[$ultimo]['imagenes'] = $bloques;
         $turns[$ultimo]['texto'] = trim($turns[$ultimo]['texto'] . "\n"
-            . '[Van de nuevo las fotos que mandó hace un momento y todavía no se usaron.]');
+            . '[Van de nuevo, como referencia, las MISMAS fotos que mandó antes; no son nuevas: no digas que llegó otra planilla ni cambies lo ya acordado por releerlas.]');
 
         return $turns;
+    }
+
+    /**
+     * Si entre el último mensaje con fotos de la tanda y el último mensaje del dueño pasaron más de
+     * MINUTOS_HASTA_LA_TANDA minutos (ver el cuarto tope de con_las_fotos_de_la_ultima_tanda()).
+     *
+     * Se comparan los `created_at` de los dos mensajes, no el de la foto: la foto nace con su mensaje,
+     * y el mensaje es lo que el dueño ve en la charla. Si a alguno le falta la fecha (no debería), no
+     * se corta: se queda en el comportamiento de antes, que es el que ya sostienen los otros topes.
+     *
+     * @param  int  $mensaje_de_la_tanda  Id del último mensaje del dueño con fotos de la tanda.
+     * @param  int  $id_ultimo_user  Id del último mensaje del dueño que viaja al modelo.
+     * @return bool
+     */
+    protected function la_tanda_quedo_lejos_en_el_tiempo($mensaje_de_la_tanda, $id_ultimo_user): bool
+    {
+        // Las dos fechas en una sola consulta, indexadas por id del mensaje.
+        $fechas = AiMessage::whereIn('id', [(int) $mensaje_de_la_tanda, (int) $id_ultimo_user])
+                            ->get(['id', 'created_at'])
+                            ->keyBy('id');
+
+        $de_la_tanda = $fechas->get((int) $mensaje_de_la_tanda);
+        $del_ultimo = $fechas->get((int) $id_ultimo_user);
+
+        if (is_null($de_la_tanda) || is_null($del_ultimo) || is_null($de_la_tanda->created_at) || is_null($del_ultimo->created_at)) {
+            return false;
+        }
+
+        return Carbon::parse($de_la_tanda->created_at)->diffInMinutes(Carbon::parse($del_ultimo->created_at)) > self::MINUTOS_HASTA_LA_TANDA;
     }
 
     /**
