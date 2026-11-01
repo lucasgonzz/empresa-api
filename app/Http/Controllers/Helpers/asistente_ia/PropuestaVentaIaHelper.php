@@ -354,6 +354,11 @@ class PropuestaVentaIaHelper
      * una ya registrada (ver venta_repetida()). Acepta el booleano y las formas de texto que entiende
      * filter_var (true, 1, on, yes), como las otras herramientas que reciben un booleano.
      *
+     * Ronda de arreglos de la misión agente-mejoras-diario (F7, 31/10/2026): también «sí» y «si», y el 1
+     * numérico, como PropuestaFotoArticuloIaHelper::es_si(). filter_var() no conoce «sí»: un modelo que lo
+     * mandaba así (lo copia de lo que dijo la persona) se quedaba en el error venta_repetida aunque la
+     * persona hubiera confirmado que era otra venta. Un 0, «no», "" o false siguen siendo «no vino».
+     *
      * @param  array  $input
      * @return bool
      */
@@ -364,6 +369,16 @@ class PropuestaVentaIaHelper
         if (is_bool($valor)) {
 
             return $valor;
+        }
+
+        if (is_int($valor) || is_float($valor)) {
+
+            return (int) $valor === 1;
+        }
+
+        if (is_string($valor) && in_array(mb_strtolower(trim($valor)), ['si', 'sí'], true)) {
+
+            return true;
         }
 
         return !EntradaDeCargaIa::vacio($valor) && filter_var($valor, FILTER_VALIDATE_BOOLEAN);

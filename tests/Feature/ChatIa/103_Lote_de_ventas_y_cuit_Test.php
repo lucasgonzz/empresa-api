@@ -335,6 +335,35 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
     }
 
     /**
+     * F7 de la ronda de arreglos (31/10/2026): `es_otra_venta` también se entiende como «sí», «si», «true» y
+     * el 1 numérico (el modelo copia lo que dijo la persona). Un «no» o un 0 siguen siendo «no vino».
+     *
+     * @test
+     */
+    public function es_otra_venta_acepta_si_con_y_sin_tilde_true_y_uno()
+    {
+        $this->venta_registrada();
+
+        foreach (['sí', 'si', 'Sí', 'true', 1, '1'] as $valor) {
+
+            list($conversation, $assistant) = $this->conversacion();
+
+            $otra = $this->proponer_venta($conversation, $assistant, $this->input_a_cuenta_corriente(2, ['es_otra_venta' => $valor]));
+
+            $this->assertTrue(!empty($otra['ok']), 'es_otra_venta = ' . json_encode($valor) . ' tenía que dejarla pasar: ' . json_encode($otra));
+        }
+
+        foreach (['no', 0, '0', false, ''] as $valor) {
+
+            list($conversation, $assistant) = $this->conversacion();
+
+            $repetida = $this->proponer_venta($conversation, $assistant, $this->input_a_cuenta_corriente(2, ['es_otra_venta' => $valor]));
+
+            $this->assertSame('venta_repetida', isset($repetida['codigo']) ? $repetida['codigo'] : null, 'es_otra_venta = ' . json_encode($valor) . ' no confirma nada: ' . json_encode($repetida));
+        }
+    }
+
+    /**
      * Configura al dueño con DeepSeek ágil (claves e ids inventados) para correr el turno entero con el
      * modelo simulado.
      *
