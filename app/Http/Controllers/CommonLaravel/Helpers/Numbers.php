@@ -15,19 +15,7 @@ class Numbers {
     }
 
 	static function price($price) {
-		$pos = strpos($price, '.');
-		if ($pos != false) {
-			$centavos = explode('.', $price)[1];
-			$new_price = explode('.', $price)[0];
-			if ($centavos != '00') {
-				$new_price += ".$centavos";
-				$resutl = number_format($price, 2, ',', '.');
-			} else {
-				$resutl = number_format($new_price, 0, '', '.');			
-			}
-		} else {
-			$resutl = number_format($price, 0, '', '.');
-		}
-		return $resutl;
+		/* Mismo formato de siempre; la versión de App tolera lo que no es un número (PHP 8: TypeError). */
+		return \App\Http\Controllers\Helpers\Numbers::price($price);
 	}
 }

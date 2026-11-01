@@ -2,6 +2,8 @@
 
 namespace Tests\Unit\Php84;
 
+use App\Http\Controllers\CommonLaravel\Helpers\Numbers as NumbersComun;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use PHPUnit\Framework\TestCase;
 
@@ -84,5 +86,16 @@ class NumbersTextoConFormatoTest extends TestCase
         $this->assertSame('0', Numbers::price('abc'));
         $this->assertSame('0', Numbers::price([]));
         $this->assertSame('$0', Numbers::price(null, true));
+    }
+
+    /** @test */
+    public function las_otras_dos_copias_de_price_dan_lo_mismo_y_tampoco_tiran_typeerror()
+    {
+        $this->assertSame('$88.782,50', ArticleHelper::price(88782.5));
+        $this->assertSame('$88.782,13', ArticleHelper::price('$88.782,13'));
+        $this->assertSame('$1.000', ArticleHelper::price('1000.00'));
+        $this->assertSame('1.000', NumbersComun::price(1000));
+        $this->assertSame('1.000,50', NumbersComun::price('1000.5'));
+        $this->assertSame('88.782,13', NumbersComun::price('$88.782,13'));
     }
 }
