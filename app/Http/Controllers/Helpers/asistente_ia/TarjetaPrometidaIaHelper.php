@@ -145,6 +145,16 @@ class TarjetaPrometidaIaHelper
     const AVISO_CORRECCION = 'Ojo: la tarjeta de antes todavía tiene el dato anterior: no la confirmes así; pedime que la corrija.';
 
     /**
+     * Lo último que pide CADA rama de nota_para_reintentar_carga(), antes del cierre «No le menciones este
+     * aviso a la persona.]» (misión agente-mejoras-diario-30-10, B1, 31/10/2026). El reintento no es para
+     * contestarle a la nota: es para volver a contestarle a la PERSONA. Sin esto, a un balance con una
+     * oración que la guarda leyó como carga hecha el modelo le contestaba con una disculpa y el balance se
+     * perdía (análisis diario del 30/10, problema #8). Termina con un espacio porque la sigue el cierre.
+     */
+    const FRASE_DE_LA_RESPUESTA_COMPLETA = 'Volvé a escribir la respuesta COMPLETA a lo que pidió la persona, con los datos que ya tenés, '
+        . 'sacando solo lo que daba por hecha una carga. No te disculpes ni expliques la corrección. ';
+
+    /**
      * Lo que AccionesIaHelper le escribe al aviso de una tarjeta cuando hace un momento se confirmó una
      * carga parecida ("Ojo: hace un momento confirmaste una carga parecida (…)"). Con esa tarjeta en el
      * mensaje, la guarda de la carga no dispara: la tarjeta ya muestra el aviso y el texto que lo cuenta
@@ -935,6 +945,15 @@ class TarjetaPrometidaIaHelper
      * consulta y trabaje sobre ése; y recién al final, que si es una carga nueva llame a la proponer_. La
      * de la corrección y la de la tarjeta de este mensaje quedan como estaban.
      *
+     * 🔴 LA RESPUESTA COMPLETA, NO UNA DISCULPA (misión agente-mejoras-diario-30-10, B1, 31/10/2026). Análisis
+     * diario del 30/10, problema #8: a «¿me hacés un balance…?» el modelo contestó el balance, y una oración
+     * en prosa («Los gastos cargados son pocos…») hizo disparar esta guarda (`quedo`, con un pedido de clase
+     * `otro`). El modelo le contestó A LA NOTA —una disculpa por haber dicho que algo se registró— y el
+     * balance se perdió: AsistenteIaService solo vuelve al texto original si el reintento viene vacío. Desde
+     * esta misión, cada rama termina con FRASE_DE_LA_RESPUESTA_COMPLETA, justo antes del cierre «No le
+     * menciones este aviso a la persona.]» (que sigue siendo lo último). La nota viaja como el último turno
+     * de `messages`: no toca el system ni las tools, así que no mueve el caché.
+     *
      * @param  array<int, string>  $herramientas_de_carga  Las de carga que el modelo pidió en el turno.
      * @param  bool  $hay_tarjeta_propuesta  true si ESTE mensaje tiene una tarjeta `propuesta`.
      * @param  bool  $hay_tarjeta_pendiente_de_antes  true si la respuesta anterior dejó una tarjeta que sigue `propuesta`.
@@ -947,6 +966,7 @@ class TarjetaPrometidaIaHelper
 
             return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero NO se ejecutó: quedó como tarjeta para que la persona la confirme. '
                 . 'Volvé a contestar diciendo que dejaste la tarjeta para confirmar, sin decir que ya está hecho ni registrado. '
+                . self::FRASE_DE_LA_RESPUESTA_COMPLETA
                 . 'No le menciones este aviso a la persona.]';
         }
 
@@ -965,6 +985,7 @@ class TarjetaPrometidaIaHelper
                 . 'Si la persona pidió una carga o un cambio, llamá AHORA a la herramienta proponer_ que corresponde con los datos que ya tenés; '
                 . 'si te contesta que faltan datos, pedíselos a la persona. '
                 . 'La persona está corrigiendo la tarjeta que dejaste antes: armá una tarjeta NUEVA con el dato corregido (con reemplaza_a); no la mandes a confirmar la vieja. '
+                . self::FRASE_DE_LA_RESPUESTA_COMPLETA
                 . 'No le menciones este aviso a la persona.]';
         }
 
@@ -979,6 +1000,7 @@ class TarjetaPrometidaIaHelper
             . 'Si es un cambio sobre algo que ya existe (una tarea, un gasto, un cliente que se nombró antes), buscalo primero con la consulta que corresponde (consultar_tareas, consultar_proveedores…) y trabajá sobre ése: no crees uno nuevo. '
             . 'Si es una carga nueva, llamá ahora a la herramienta proponer_ que corresponde; si te contesta que faltan datos, pedíselos a la persona. '
             . $pedidas
+            . self::FRASE_DE_LA_RESPUESTA_COMPLETA
             . 'No le menciones este aviso a la persona.]';
     }
 

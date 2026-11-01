@@ -1158,7 +1158,7 @@ class HerramientasDeCarga
              */
             [
                 'name'         => 'proponer_foto_articulo',
-                'description'  => 'Arma la tarjeta para ponerle una foto a uno o a VARIOS ARTÍCULOS QUE YA EXISTEN. 🔴 Una misma foto puede ir a muchos artículos: si la persona pide la misma foto para varios ("que todos tengan la misma", "a los 10 clavos", "la misma para los otros 8"), mandalos en UNA sola llamada, con articulo_ids (hasta 30) o con articulo + todos_los_que_coinciden: true; nunca le digas que una foto va a un solo artículo ni le pidas que te la reenvíe. Para volver a usar una foto que ya le pusiste a otro artículo en esta conversación, mandá su imagen_id (el de la línea "[Foto adjunta] [imagen_id N]" del historial). Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál (salvo que la persona haya pedido la foto para todos: ahí volvé a llamar con todos_los_que_coinciden). La foto se suma a las imágenes de cada artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Al confirmar, el resultado trae hechos y no_hechos: contá a cuáles se les puso y a cuáles NO, por nombre. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para ponerle una foto a uno o a VARIOS ARTÍCULOS QUE YA EXISTEN. 🔴 Una misma foto puede ir a muchos artículos: si la persona pide la misma foto para varios ("que todos tengan la misma", "a los 10 clavos", "la misma para los otros 8"), mandalos en UNA sola llamada, con articulo_ids (hasta 30) o con articulo + todos_los_que_coinciden: true; nunca le digas que una foto va a un solo artículo ni le pidas que te la reenvíe. Para volver a usar una foto que ya le pusiste a otro artículo en esta conversación, mandá su imagen_id (el de la línea "[Foto adjunta] [imagen_id N]" del historial). Si la persona pide la foto de un producto encontrado en internet, mandá el imagen_id de ese hallazgo: NO uses la foto de la etiqueta con el código de barras. Sin imagen_id se toma la última foto que la persona mandó y todavía no se usó. Para usar la foto que YA TIENE otro artículo ("usá la foto del clavo de 1 1/2 para todos"), mandá de_articulo_id (o de_articulo): se copia su foto principal a los demás y no le pidas ninguna foto a la persona; con solo_sin_foto: true va solo a los que todavía no tienen ninguna. Para un artículo NUEVO no va esta: proponer_alta de article con imagen_id del hallazgo (o con_foto_de_la_conversacion si pidió usar su propia foto) lo crea con la foto en una sola tarjeta. El artículo va por su nombre o su código, como lo dijo la persona (o por su id si otra herramienta te lo devolvió); si el nombre encaja con varios, la respuesta trae "faltan" con los candidatos para que preguntes cuál (salvo que la persona haya pedido la foto para todos: ahí volvé a llamar con todos_los_que_coinciden). La foto se suma a las imágenes de cada artículo y se publica en la tienda online del negocio. 🔴 NUNCA se asigna sola, ni con la confianza en "resuelto": siempre queda una tarjeta para que la persona confirme, porque una foto en el artículo equivocado se publica. Al confirmar, el resultado trae hechos y no_hechos: contá a cuáles se les puso y a cuáles NO, por nombre. Si la respuesta trae "faltan", preguntá eso; si trae codigo foto_por_llegar, decile a la persona la frase que trae, con la lista (nunca digas que no te llegó la foto); si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1188,6 +1188,24 @@ class HerramientasDeCarga
                         'todos_los_que_coinciden' => [
                             'type'        => 'boolean',
                             'description' => 'true solo si la persona pidió la foto para TODOS los artículos que encajan con articulo ("a todos los clavos punta París"): la tarjeta los lleva a todos (hasta 30) en vez de preguntarte cuál.',
+                        ],
+                        /*
+                         * Misión agente-mejoras-diario-30-10 (B3, 31/10/2026), AL FINAL de las propiedades por
+                         * la regla del prefijo del caché: la foto que YA TIENE otro artículo («tomá la imagen
+                         * del clavo de 1 1/2" y usala para todos», análisis diario del 30/10, #5), y solo para
+                         * los que todavía no tienen foto.
+                         */
+                        'de_articulo_id' => [
+                            'type'        => 'integer',
+                            'description' => 'Si la persona pidió usar la foto que YA TIENE otro artículo ("usá la foto del clavo de 1 1/2 para todos"): el id de ese artículo. Se copia su foto principal a los artículos de destino (él queda afuera de la lista) y no hace falta ninguna foto del chat: no se la pidas a la persona.',
+                        ],
+                        'de_articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Lo mismo que de_articulo_id, por el nombre o el código del artículo de donde sale la foto, como lo dijo la persona. Si mandás de_articulo_id no hace falta.',
+                        ],
+                        'solo_sin_foto'  => [
+                            'type'        => 'boolean',
+                            'description' => 'true si la persona pidió la foto solo para los que todavía NO tienen ninguna ("a los que no tienen foto"): la tarjeta deja afuera a los que ya tienen alguna.',
                         ],
                     ],
                     'required'   => [],
@@ -1676,6 +1694,54 @@ class HerramientasDeCarga
                         ],
                     ],
                     'required'   => ['detalle'],
+                ],
+            ],
+            /*
+             * 🔴 MISIÓN agente-mejoras-diario-30-10 (B2, 31/10/2026), AL FINAL por la regla del prefijo del caché.
+             * Análisis diario del 30/10, problema #4 (con 👎): el dueño pidió el texto de una promo para mandarlo
+             * él y el agente no se lo dio, porque la promo solo existía como envío masivo y sin el WhatsApp con
+             * clientes conectado el sistema le decía «No armes el texto». SIN TARJETA y sin el corte del WhatsApp:
+             * no manda nada, devuelve el texto con los links reales (PropuestaPromocionWhatsappIaHelper::
+             * texto_para_reenviar). No empieza con proponer_, así que no es «de carga» (es_de_carga) ni escala al
+             * modelo Profundo.
+             */
+            [
+                'name'         => 'armar_texto_de_promocion',
+                'description'  => 'Arma el TEXTO de una promoción para que la PERSONA lo copie y lo mande ella (a sus grupos, a sus estados, a un cliente desde su propio teléfono): "pasame el texto de la promo", "armame el mensaje así lo reenvío", "dame la promo para mandarla yo". NO manda nada ni deja tarjeta: devuelve texto_para_reenviar, listo para copiar, con el link a la tienda que arma el sistema (el del artículo si está publicado, uno por artículo con varios, o la portada para un combo o una promo general). Funciona aunque el negocio no tenga conectado el WhatsApp con sus clientes. El `texto` lo redactás VOS, sin pedírselo a la persona: qué se ofrece y a qué precio (el de cada artículo como lo devolvió consultar_stock_de_articulos), sin saludo y sin links (los pone el sistema: un link escrito por vos es un error). Pasale texto_para_reenviar TAL CUAL en tu respuesta y decile que lo puede copiar y reenviar; no digas que lo mandaste. Si viene sin_link, el texto salió sin link: contá motivo_sin_link (con sin_direccion_de_tienda, nunca digas que el negocio no tiene tienda ni que el artículo no está publicado). 🔴 Si la persona quiere que el SISTEMA se la mande a sus clientes ("mandales la promo a todos") y el negocio tiene el WhatsApp con clientes conectado, la que va es proponer_promocion_por_whatsapp, no esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'texto'       => [
+                            'type'        => 'string',
+                            'description' => 'El texto de la promo, REDACTADO POR VOS: qué se ofrece y a qué precio, sin saludo y sin links. "Bomba presurizadora Pluvius a $61.891,50". Con varios artículos, nombrá cada uno con su precio.',
+                        ],
+                        'article_id'  => [
+                            'type'        => 'integer',
+                            'description' => 'Si la promo es de un artículo y tenés su id.',
+                        ],
+                        'articulo'    => [
+                            'type'        => 'string',
+                            'description' => 'Si la promo es de un artículo y no tenés su id: su nombre o código.',
+                        ],
+                        'article_ids' => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'integer'],
+                            'description' => 'Si la promo es de VARIOS artículos: sus ids (hasta 5, de consultar_stock_de_articulos). Cada uno va con su link.',
+                        ],
+                        'combo_id'    => [
+                            'type'        => 'integer',
+                            'description' => 'Si la promo es de un combo y tenés su id.',
+                        ],
+                        'combo'       => [
+                            'type'        => 'string',
+                            'description' => 'Si la promo es de un combo: su nombre, como quedó creado.',
+                        ],
+                        'vigencia'    => [
+                            'type'        => 'string',
+                            'description' => 'Hasta cuándo vale, si la persona lo dijo ("domingo 20/10", "fin de mes"): va como "Válida hasta el ...". Si no lo dijo, no lo mandes.',
+                        ],
+                    ],
+                    'required'   => ['texto'],
                 ],
             ],
         ];
@@ -2314,6 +2380,14 @@ class HerramientasDeCarga
              */
             case 'pedir_ayuda_a_soporte':
                 return self::resultado(\App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper::pedir($contexto, $assistant_message, $input));
+
+            /*
+             * Misión agente-mejoras-diario-30-10 (B2, 31/10/2026): el texto de la promo para que la persona lo
+             * mande ella. Sin tarjeta, sin pasar por quizas_auto_confirmar() y sin el corte del WhatsApp con
+             * clientes: no manda nada (ver PropuestaPromocionWhatsappIaHelper::texto_para_reenviar).
+             */
+            case 'armar_texto_de_promocion':
+                return self::resultado(PropuestaPromocionWhatsappIaHelper::texto_para_reenviar($contexto, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
