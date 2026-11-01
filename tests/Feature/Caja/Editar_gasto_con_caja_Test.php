@@ -74,19 +74,22 @@ class Editar_gasto_con_caja_Test extends EmpresaTestCase
     }
 
     /** @test */
-    public function editar_un_gasto_cuya_caja_ya_no_tiene_apertura_no_tira_error_ni_deja_el_saldo_en_null()
+    public function editar_un_gasto_cuya_caja_ya_se_cerro_responde_422_y_no_cambia_nada()
     {
         $gasto = $this->gasto_pagado_desde_la_caja(100);
 
         $this->assertEquals(900, $this->caja->fresh()->saldo);
 
-        // La caja queda sin apertura abierta (p. ej. otro turno la cerró y la reabrió después de cargado el gasto).
-        Caja::where('id', $this->caja->id)->update(['current_apertura_caja_id' => null]);
+        $this->putJson('api/cerrar-caja/'.$this->caja->id)->assertStatus(200);
+        $this->assertNull($this->caja->fresh()->current_apertura_caja_id);
 
-        $this->editar($gasto, 250)->assertStatus(200);
+        $respuesta = $this->editar($gasto, 250);
 
-        $this->assertEquals(250, $gasto->fresh()->amount);
-        $this->assertNotNull($this->caja->fresh()->saldo, 'sin apertura no hay nada que recalcular: el saldo no se pisa con null');
+        // Antes: error fatal en PHP 8 ("Attempt to assign property on null"), 500. Ahora: rechazo claro.
+        $respuesta->assertStatus(422);
+        $this->assertStringContainsString($this->caja->name, $respuesta->json('message'));
+        $this->assertEquals(100, $gasto->fresh()->amount);
+        $this->assertEquals(100, MovimientoCaja::where('expense_id', $gasto->id)->firstOrFail()->egreso);
         $this->assertEquals(900, $this->caja->fresh()->saldo);
     }
 

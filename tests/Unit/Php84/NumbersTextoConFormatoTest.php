@@ -41,6 +41,24 @@ class NumbersTextoConFormatoTest extends TestCase
             'sin dígitos'                            => ['abc', null],
             'solo el signo'                          => ['$', null],
             'un array'                               => [[1, 2], null],
+            'espacio final (7.4 y 8 igual)'          => ['1.234 ', 1.234],
+            'espacio duro alrededor'                 => ["\u{00A0}\$1.234,5\u{00A0}", 1234.5],
+            'menos tipográfico'                      => ["\u{2212}5", -5.0],
+            'cero punto tres dígitos es decimal'     => ['$0.125', 0.125],
+            'notación científica con coma: rechazo'  => ['1,5e3', null],
+            'letras en el medio: rechazo'            => ['12abc3', null],
+            'unidades en el medio: rechazo'          => ['5 x 10', null],
+            'hexadecimal: rechazo'                   => ['0x1A', null],
+            'menos al final: rechazo'                => ['5-', null],
+            'negativo contable: rechazo'             => ['(5)', null],
+            'menos dos veces: rechazo'               => ['-5-', null],
+            'puntos que no agrupan: rechazo'         => ['1.2.3', null],
+            'comas dobles: rechazo'                  => ['1,,5', null],
+            'miles mal agrupados con decimal: rechazo' => ['1.2,3', null],
+            'fecha: rechazo'                         => ['2024-01-05', null],
+            'cientos de dígitos: no es finito'       => ['$'.str_repeat('9', 400), null],
+            'INF'                                    => [INF, null],
+            'NAN'                                    => [NAN, null],
         ];
     }
 
@@ -76,6 +94,8 @@ class NumbersTextoConFormatoTest extends TestCase
         $this->assertSame('$1.000,50', Numbers::price(1000.5, true));
         $this->assertSame('USD 12,00', Numbers::price(12, false, 2));
         $this->assertSame('$12', Numbers::price(12, false, 1));
+        $this->assertSame('inf', Numbers::price(INF));
+        $this->assertSame('1', Numbers::price(true));
     }
 
     /** @test */

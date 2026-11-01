@@ -169,6 +169,13 @@ class ExpenseCajaHelper {
 
             if (isset($movimientos_por_caja[$caja_id])) {
 
+                /*
+                 * 🔴 Caja cerrada (sin apertura vigente): no hay saldo que recalcular. Antes esto
+                 * tumbaba el guardado con un error fatal (PHP 8) / ErrorException (PHP 7.4); ahora
+                 * es un 422 que el DB::transaction del update revierte entero, igual que el alta.
+                 */
+                MovimientoCajaHelper::validar_cajas_para_operacion([$caja_id]);
+
                 /** El movimiento ya existe: se actualiza el egreso con el monto nuevo del método. */
                 $movimiento = $movimientos_por_caja[$caja_id];
 
