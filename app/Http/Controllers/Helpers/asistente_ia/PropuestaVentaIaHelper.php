@@ -16,10 +16,12 @@ use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\Discount;
 use App\Models\PriceType;
+use App\Models\Sale;
 use App\Models\SaleType;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 
 /**
  * La venta propuesta por el asistente (misión asistente-omnisciente, §4 del contrato, 21/9/2026):
@@ -112,6 +114,26 @@ class PropuestaVentaIaHelper
     /** Lo que se le contesta cuando `SaleController::store()` devolvió el 200 vacío del guard anti-duplicado. */
     const MENSAJE_DUPLICADA = 'El sistema encontró una venta igual creada hace segundos y no la duplicó. '
         . 'Mirá la pantalla de ventas antes de volver a intentar.';
+
+    /**
+     * Cuántos días hacia atrás (contando desde el inicio de hoy) se busca una venta ya registrada
+     * igual a la que se está por proponer (misión agente-mejoras-diario, análisis del 31/10/2026, #1).
+     * Con 1 la ventana arranca a las 00:00 de ayer: la venta duplicada de Ferre Total (59542 = 59466)
+     * se armó al día siguiente de la original, releyendo la misma planilla.
+     */
+    const DIAS_VENTA_REPETIDA = 1;
+
+    /**
+     * Diferencia de total (en pesos) que todavía se considera "el mismo total" al comparar con una
+     * venta ya registrada: absorbe el redondeo de centavos entre la tarjeta y lo que guardó el store.
+     */
+    const TOLERANCIA_TOTAL_REPETIDA = 0.5;
+
+    /**
+     * Cuántas ventas candidatas (mismo dueño, mismo cliente, mismo total, desde ayer) se comparan
+     * renglón por renglón como mucho: alcanza de sobra para un cliente y deja la consulta acotada.
+     */
+    const TOPE_VENTAS_A_COMPARAR = 20;
 
     /**
      * Herramienta proponer_venta.
@@ -255,6 +277,26 @@ class PropuestaVentaIaHelper
         // ------------------------------------------------------------------ totales, como vender_set_total.js
         $totales = self::totales($renglones, $descuento);
 
+        // ------------------------------------------------------------------ venta ya registrada
+        /*
+         * 🔴 Misión agente-mejoras-diario (análisis del 31/10/2026, #1): en Ferre Total el asistente
+         * volvió a armar, al día siguiente y releyendo la misma planilla, una venta que ya estaba
+         * registrada (59542 = 59466), y el dueño la confirmó. Las guardas de antes no la veían:
+         * `SaleController::venta_ya_creada` mira sólo ±5 segundos y `AccionesIaHelper::confirmada_parecida`
+         * sólo lo confirmado después del último mensaje del dueño, y apenas avisa. Va ANTES del stock:
+         * si la venta ya se hizo, el stock que falta es justamente el que se llevó la primera, y lo que
+         * hay que decir es que ya está registrada.
+         */
+        if (!self::pidio_otra_venta($input)) {
+
+            $repetida = self::venta_repetida($contexto, $cliente, $renglones, $totales);
+
+            if (!is_null($repetida)) {
+
+                return $repetida;
+            }
+        }
+
         // ------------------------------------------------------------------ stock
         $stock = self::revisar_stock($contexto, $renglones);
 
@@ -305,6 +347,157 @@ class PropuestaVentaIaHelper
         $firma = implode(',', $ids) . '|' . (is_null($cliente) ? 0 : (int) $cliente->id);
 
         return 'venta:' . substr(md5($firma), 0, 16);
+    }
+
+    /**
+     * true si el modelo mandó `es_otra_venta: true`: la persona confirmó que es OTRA venta igual a
+     * una ya registrada (ver venta_repetida()). Acepta el booleano y las formas de texto que entiende
+     * filter_var (true, 1, on, yes), como las otras herramientas que reciben un booleano.
+     *
+     * @param  array  $input
+     * @return bool
+     */
+    protected static function pidio_otra_venta(array $input)
+    {
+        $valor = EntradaDeCargaIa::valor($input, 'es_otra_venta');
+
+        if (is_bool($valor)) {
+
+            return $valor;
+        }
+
+        return !EntradaDeCargaIa::vacio($valor) && filter_var($valor, FILTER_VALIDATE_BOOLEAN);
+    }
+
+    /**
+     * La respuesta de error `venta_repetida` si el dueño ya tiene registrada, desde el inicio de ayer,
+     * una venta al MISMO cliente con el mismo total (± TOLERANCIA_TOTAL_REPETIDA) y los mismos pares
+     * artículo:cantidad; null si no hay ninguna (misión agente-mejoras-diario, análisis del
+     * 31/10/2026, #1).
+     *
+     * 🔴 POR QUÉ ACÁ Y NO EN LA CONFIRMACIÓN. Por WhatsApp no hay tarjeta: el dueño lee el texto del
+     * modelo y contesta "sí". Si la tarjeta se arma, el "sí" la registra. Cortar al proponer hace que
+     * el modelo le diga primero que esa venta ya está, con su número, y que sólo vuelva a llamar con
+     * `es_otra_venta: true` si la persona confirma que es otra.
+     *
+     * Lo que NO se mira, a propósito:
+     *   - Las ventas SIN cliente: en un mostrador dos ventas iguales en el día son lo normal (dos
+     *     clientes que llevan la misma yerba); el 39_Venta_por_asistente_Test arma dos ventas iguales
+     *     sin cliente para probar el anti-duplicado de 5 segundos del controller, y tiene que llegar.
+     *   - Las anuladas: `Sale` usa SoftDeletes y la consulta ya las deja afuera.
+     *   - Las variantes: este helper no vende variantes (ver resolver_renglones()), así que un renglón
+     *     registrado con `article_variant_id` es otra venta; la clave lo lleva para no confundirlos.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Client|null  $cliente
+     * @param  array  $renglones  Los de resolver_renglones().
+     * @param  array  $totales  Los de totales().
+     * @return array|null
+     */
+    protected static function venta_repetida(ContextoDeCargaIa $contexto, $cliente, array $renglones, array $totales)
+    {
+        if (is_null($cliente) || !count($renglones)) {
+
+            return null;
+        }
+
+        $total = (float) $totales['total'];
+
+        // Las candidatas: mismo dueño, mismo cliente, mismo total, creadas desde las 00:00 de ayer.
+        $candidatas = Sale::select('id', 'num', 'total', 'created_at')
+                            ->where('user_id', (int) $contexto->owner_id)
+                            ->where('client_id', (int) $cliente->id)
+                            ->where('created_at', '>=', Carbon::today()->subDays(self::DIAS_VENTA_REPETIDA))
+                            ->whereBetween('total', [$total - self::TOLERANCIA_TOTAL_REPETIDA, $total + self::TOLERANCIA_TOTAL_REPETIDA])
+                            ->orderBy('id', 'DESC')
+                            ->limit(self::TOPE_VENTAS_A_COMPARAR)
+                            ->get();
+
+        if (!count($candidatas)) {
+
+            return null;
+        }
+
+        // La firma de la propuesta: los renglones ya vienen juntados por artículo y sin variante.
+        $firma_propuesta = [];
+
+        foreach ($renglones as $renglon) {
+
+            $firma_propuesta[(int) $renglon['article']->id . ':0'] = (float) $renglon['cantidad'];
+        }
+
+        $firma_propuesta = self::firma_de_renglones($firma_propuesta);
+
+        // Los renglones de las candidatas en una sola consulta, sumados por artículo y variante.
+        $por_venta = [];
+
+        $filas = DB::table('article_sale')
+                    ->whereIn('sale_id', $candidatas->pluck('id')->all())
+                    ->get(['sale_id', 'article_id', 'article_variant_id', 'amount']);
+
+        foreach ($filas as $fila) {
+
+            $venta_id = (int) $fila->sale_id;
+            $llave = (int) $fila->article_id . ':' . (int) $fila->article_variant_id;
+
+            if (!isset($por_venta[$venta_id])) {
+                $por_venta[$venta_id] = [];
+            }
+
+            $por_venta[$venta_id][$llave] = (isset($por_venta[$venta_id][$llave]) ? $por_venta[$venta_id][$llave] : 0) + (float) $fila->amount;
+        }
+
+        foreach ($candidatas as $venta) {
+
+            if (!isset($por_venta[(int) $venta->id])) {
+                continue;
+            }
+
+            if (self::firma_de_renglones($por_venta[(int) $venta->id]) !== $firma_propuesta) {
+                continue;
+            }
+
+            $cuando = is_null($venta->created_at) ? '' : ' (' . Carbon::parse($venta->created_at)->format('d/m H:i') . ')';
+
+            $respuesta = RespuestaDeCargaIa::error_con_codigo(
+                'venta_repetida',
+                'Ya está registrada la venta N° ' . (int) $venta->num . $cuando . ' a ' . $cliente->name
+                    . ' con los mismos artículos, cantidades y total. No armé otra tarjeta. Decíselo; si confirma que es OTRA venta, volvé a llamar con es_otra_venta: true.'
+            );
+
+            // Los datos de la venta encontrada, para que el modelo no tenga que sacarlos del texto.
+            $respuesta['venta'] = [
+                'venta_id' => (int) $venta->id,
+                'numero'   => (int) $venta->num,
+                'total'    => round((float) $venta->total, 2),
+            ];
+
+            return $respuesta;
+        }
+
+        return null;
+    }
+
+    /**
+     * Firma comparable de un conjunto de renglones `['article_id:variant_id' => cantidad]`: los pares
+     * `article_id:variant_id:cantidad` (cantidad con dos decimales) ordenados y unidos. Dos ventas con
+     * la misma firma llevan exactamente los mismos artículos en las mismas cantidades.
+     *
+     * @param  array<string, float>  $cantidades
+     * @return string
+     */
+    protected static function firma_de_renglones(array $cantidades)
+    {
+        $pares = [];
+
+        foreach ($cantidades as $llave => $cantidad) {
+
+            $pares[] = $llave . ':' . number_format(round((float) $cantidad, 2), 2, '.', '');
+        }
+
+        sort($pares);
+
+        return implode('|', $pares);
     }
 
     /**

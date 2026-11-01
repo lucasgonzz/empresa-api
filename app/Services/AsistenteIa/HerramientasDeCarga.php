@@ -1138,6 +1138,16 @@ class HerramientasDeCarga
                             'description' => 'AAAA-MM-DD, solo si la persona dijo una fecha de entrega.',
                         ],
                         'reemplaza_a'          => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión agente-mejoras-diario (análisis del 31/10/2026, #1), AL FINAL de las
+                         * propiedades: con cliente, si ya hay una venta registrada desde ayer al mismo
+                         * cliente con los mismos artículos, cantidades y total, la herramienta contesta
+                         * error `venta_repetida` y no arma la tarjeta (PropuestaVentaIaHelper::venta_repetida).
+                         */
+                        'es_otra_venta'        => [
+                            'type'        => 'boolean',
+                            'description' => 'Solo si la respuesta anterior trajo el error venta_repetida y la persona confirmó que es OTRA venta, distinta de la ya registrada. Nunca lo mandes de entrada.',
+                        ],
                     ],
                     'required'   => ['items'],
                 ],
