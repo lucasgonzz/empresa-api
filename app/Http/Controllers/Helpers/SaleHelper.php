@@ -1428,20 +1428,27 @@ class SaleHelper extends Controller {
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
 
+                /*
+                    🔴 Las filas sin precio (mision panchito-venta-price-vender, 1/11/2026): una fila sin
+                    `price_vender` ni `price_vender_con_recargos` hacia reventar la venta entera con un
+                    500 (`Undefined array key "price_vender"`). Ver filas_validas_de_varios_precios():
+                    devuelve null si el renglon trae una fila vacia, y entonces el renglon se guarda como
+                    uno normal (el precio y la cantidad del padre), que es lo que la SPA cobro: la fila
+                    sin precio le deja `calculated_price_vender` en NaN, y getTotalItem() cae al precio
+                    del padre. El stock sale de las MISMAS filas (mas abajo), asi que se reemplaza aca.
+                */
                 if (Self::tiene_varios_precios($article)) {
 
-                    /*
-                        🔴 Solo las filas que traen un precio (mision panchito-venta-price-vender,
-                        1/11/2026): una fila sin `price_vender` ni `price_vender_con_recargos` hacia
-                        reventar la venta entera con un 500 (`Undefined array key "price_vender"`). El
-                        stock sale de las MISMAS filas (mas abajo), asi que se reemplaza aca y no se
-                        filtra solo en el foreach. Si ninguna sirve, el renglon no entra a la venta.
-                    */
-                    $article['varios_precios'] = Self::filas_validas_de_varios_precios($article, $sale);
+                    $filas_validas = Self::filas_validas_de_varios_precios($article, $sale);
 
-                    if (count($article['varios_precios']) == 0) {
-                        continue;
+                    if (is_null($filas_validas)) {
+                        unset($article['varios_precios']);
+                    } else {
+                        $article['varios_precios'] = $filas_validas;
                     }
+                }
+
+                if (Self::tiene_varios_precios($article)) {
 
                     foreach ($article['varios_precios'] as $otro_precio) {
 
@@ -1708,27 +1715,30 @@ class SaleHelper extends Controller {
      *
      * Hasta esta mision una fila sin `price_vender` tiraba `Undefined array key` y la venta daba 500.
      * La SPA puede mandarla asi: `JSON.stringify` descarta las claves `undefined` (Enter en el input
-     * "Personalizado" de un renglon que todavia no tiene precio tipeado). Dos casos:
+     * "Personalizado" de un renglon que todavia no tiene precio tipeado). Tres casos:
      *
-     *  - Fila sin precio y SIN cantidad: es una fila vacia, no aporta plata ni stock. Se descarta y se
-     *    deja en el log (con el usuario y el articulo).
-     *  - Fila sin precio y CON cantidad: alguien tipeo cuanto llevaba y no a cuanto. No se inventa un
-     *    precio (ni 0, ni el del padre): 422 con un mensaje que dice cual es el renglon. Es un
-     *    rechazo definitivo para la SPA, que deja la venta guardada en el equipo.
+     *  - Todas las filas traen precio: se devuelven tal cual (el caso de siempre).
+     *  - Una fila sin precio y SIN cantidad (fila vacia): se devuelve null, que significa "guardar el
+     *    renglon como uno normal, con el precio y la cantidad del padre". Es lo que la SPA cobro: con
+     *    esa fila `Number(undefined)` da NaN, `calculated_price_vender` queda en NaN (falso) y
+     *    `getTotalItem()` toma `price_vender × amount` del padre. Descartar solo la fila dejaba las
+     *    lineas guardadas desparejas con `sales.total`. Queda en el log, con la venta y el articulo.
+     *  - Una fila sin precio y CON cantidad: alguien tipeo cuanto llevaba y no a cuanto. No se inventa
+     *    un precio: 422 con un mensaje que dice cual es el renglon. Es un rechazo definitivo para la
+     *    SPA, que deja la venta guardada en el equipo.
      *
      * @param  array  $article  El renglon padre, con su `varios_precios`.
      * @param  \App\Models\Sale  $sale
-     * @return array  Las filas con precio, en el mismo orden.
+     * @return array|null  Las filas, o null si hay que guardar el renglon como uno normal.
      * @throws \Illuminate\Validation\ValidationException
      */
     static function filas_validas_de_varios_precios($article, $sale = null) {
 
-        $validas = [];
+        $hay_fila_vacia = false;
 
         foreach ($article['varios_precios'] as $otro_precio) {
 
             if (!is_array($otro_precio) || !is_null(Self::precio_de_fila_de_varios_precios($otro_precio))) {
-                $validas[] = $otro_precio;
                 continue;
             }
 
@@ -1743,10 +1753,17 @@ class SaleHelper extends Controller {
                 ]);
             }
 
-            Log::warning('Venta'.($sale ? ' n° '.$sale->num : '').': se descartó una fila de varios_precios sin precio ni cantidad del article_id '.($article['id'] ?? '?'));
+            $hay_fila_vacia = true;
         }
 
-        return $validas;
+        if ($hay_fila_vacia) {
+
+            Log::warning('Venta'.($sale ? ' n° '.$sale->num : '').': el article_id '.($article['id'] ?? '?').' trajo una fila de varios_precios sin precio ni cantidad; se guarda como renglon normal con el precio del padre ('.($article['price_vender'] ?? 'sin precio').' x '.($article['amount'] ?? 'sin cantidad').').');
+
+            return null;
+        }
+
+        return $article['varios_precios'];
     }
 
     /**
