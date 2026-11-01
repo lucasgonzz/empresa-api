@@ -304,6 +304,36 @@ class Imagen_prometida_Test extends IaAppTestCase
     }
 
     /**
+     * Ronda de arreglos de la misión agente-mejoras-diario (F8, 31/10/2026): el aviso del job dice qué falta
+     * DE VERDAD. Un pedido que nació pendiente y después se quedó sin la clave de salida no sale sin header
+     * (el admin lo rechazaría con 401): queda no_disponible y el log y el motivo nombran solo la clave.
+     */
+    public function test_el_job_dice_que_falta_solo_la_clave_de_salida()
+    {
+        $mensaje = $this->mensaje_para_la_imagen('Job sin clave');
+
+        $pedido = IaImagenPedido::create([
+            'uuid' => (string) Str::uuid(), 'user_id' => $this->dueno->id, 'ai_message_id' => $mensaje->id,
+            'prompt' => 'Una placa', 'tamano' => 'cuadrada', 'estado' => 'pendiente',
+        ]);
+
+        config(['services.admin_api.inbound_key' => '']);
+
+        Log::spy();
+        Http::fake();
+
+        (new EnviarPedidoDeImagenAlAdminJob($pedido->id))->handle();
+
+        Http::assertNothingSent();
+        $this->assertSame('no_disponible', $pedido->fresh()->estado);
+        $this->assertSame('falta ADMIN_API_OUTBOUND_KEY en este cliente', $pedido->fresh()->error);
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje) {
+            return strpos((string) $mensaje, 'EnviarPedidoDeImagenAlAdminJob: ' . PedidosDeImagenIaHelper::AVISO_SIN_CONEXION . ' (falta ADMIN_API_OUTBOUND_KEY);') === 0;
+        });
+    }
+
+    /**
      * El assistant 'listo' de la app donde se cuelga un pedido de imagen armado a mano.
      *
      * @param  string  $titulo
