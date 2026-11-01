@@ -370,6 +370,17 @@ class AsistenteIaService
     protected $cargas_vistas_de_otras_conversaciones = [];
 
     /**
+     * Las ventas YA REGISTRADAS que proponer_venta le devolvió al modelo con el error `venta_repetida` en la
+     * respuesta que se está generando, como texto «Venta N° 59466» (ronda de arreglos de la misión
+     * agente-mejoras-diario, F1, 31/10/2026). Se juntan en execute_tool_calls() y las mira la guarda de la
+     * carga prometida, igual que las cargas vistas de otras conversaciones (R2): ver
+     * sin_lo_dicho_de_ventas_ya_registradas().
+     *
+     * @var array<int, string>
+     */
+    protected $ventas_repetidas_del_turno = [];
+
+    /**
      * El detalle técnico de una respuesta que terminó en respuesta_sin_terminar() (segunda ronda de
      * arreglos, F3), o null. El job lo guarda en `error_mensaje` del mensaje aunque quede `listo`: el
      * mensaje no es un error para la persona, pero lo que lo cortó tiene que quedar a la vista para
@@ -448,6 +459,7 @@ class AsistenteIaService
         $this->bloques = [];
         $this->pedidos_de_imagen = [];
         $this->cargas_vistas_de_otras_conversaciones = [];
+        $this->ventas_repetidas_del_turno = [];
         $this->detalle_tecnico = null;
         $this->marcar_progreso = true;
 
@@ -3855,6 +3867,10 @@ CONFIRMACION;
      * oraciones que cuentan una carga de OTRA conversación que el modelo abrió en este turno no se miran
      * (sin_lo_dicho_de_otras_conversaciones()).
      *
+     * Ronda de arreglos de la misión agente-mejoras-diario (F1, 31/10/2026): tampoco las que cuentan la venta
+     * YA REGISTRADA que proponer_venta le devolvió en este turno con el error venta_repetida
+     * (sin_lo_dicho_de_ventas_ya_registradas()).
+     *
      * @param  string  $texto
      * @param  array<int, array<string, mixed>>  $tools
      * @param  AiConversation  $conversation
@@ -3867,6 +3883,8 @@ CONFIRMACION;
         $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
 
         $saneado = $this->sin_lo_dicho_de_otras_conversaciones($saneado, $conversation);
+
+        $saneado = $this->sin_lo_dicho_de_ventas_ya_registradas($saneado, $conversation);
 
         $tipo = TarjetaPrometidaIaHelper::afirma_una_carga_hecha($saneado);
 
@@ -3979,6 +3997,87 @@ CONFIRMACION;
 
             return (string) $texto;
         }
+    }
+
+    /**
+     * El texto sin las oraciones que nombran una venta YA REGISTRADA que proponer_venta le devolvió al
+     * modelo en ESTE turno con el error `venta_repetida` (ronda de arreglos de la misión
+     * agente-mejoras-diario, F1, 31/10/2026). Lo usa la guarda de la carga prometida, después de
+     * sin_lo_dicho_de_otras_conversaciones() y con la misma mecánica.
+     *
+     * 🔴 EL CRUCE QUE LO PIDE (A2 × B1, medido por la revisión independiente). A2 hizo que proponer_venta,
+     * ante la misma venta al mismo cliente, conteste «Ya está registrada la venta N° 59466 … Decíselo». El
+     * modelo lo repite («Ya está registrada la venta N° 59466 a Juan…»), la guarda lo leía como una carga
+     * de este mensaje (`quedo`) y reintentaba; la nota de B1 le pedía sacar lo que daba por hecha una
+     * carga, el modelo borraba justo el aviso del duplicado y preguntaba «¿la armo?»; con el sí de la
+     * persona, la venta salía duplicada igual: lo que A2 venía a evitar. Es verdad lo que dice el texto: la
+     * venta está registrada, y el número se lo dio el sistema en este mismo turno.
+     *
+     * Lo que se saca, lo mismo que en R2 (ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros()):
+     * solo las oraciones que nombran «venta» y el número JUNTOS («la venta N° 59466», «venta 59.466»), y
+     * nunca una que traiga un verbo de cambio nuevo. Las demás oraciones se siguen mirando: «Ya te cargué
+     * la otra venta» sin herramienta sigue disparando. Solo los números de ESTE turno (la propiedad se limpia
+     * en responder()). Nunca rompe la guarda: si algo falla, vuelve el texto entero.
+     *
+     * @param  string  $texto  Ya saneado.
+     * @param  AiConversation  $conversation
+     * @return string
+     */
+    protected function sin_lo_dicho_de_ventas_ya_registradas($texto, AiConversation $conversation): string
+    {
+        if (! count($this->ventas_repetidas_del_turno)) {
+            return (string) $texto;
+        }
+
+        try {
+            $registros = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::registros_de_las_cargas($this->ventas_repetidas_del_turno);
+
+            return \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::sin_oraciones_sobre_registros((string) $texto, $registros);
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudo sacar lo dicho de las ventas ya registradas; la guarda mira el texto entero.', [
+                'ai_conversation_id' => $conversation->id,
+                'error'              => $e->getMessage(),
+            ]);
+
+            return (string) $texto;
+        }
+    }
+
+    /**
+     * Si el resultado de proponer_venta es el error `venta_repetida`, suma «Venta N° {numero}» a
+     * $ventas_repetidas_del_turno (F1 de la ronda de arreglos de la misión agente-mejoras-diario,
+     * 31/10/2026). El número sale de `venta.numero`, el dato que PropuestaVentaIaHelper::venta_repetida()
+     * pone al lado del texto justamente para no tener que leerlo de la prosa.
+     *
+     * Protegido: si el contenido no es el JSON esperado, no junta nada y el loop sigue (la guarda queda
+     * como antes).
+     *
+     * @param  string  $tool_name
+     * @param  mixed  $content  El contenido del tool_result (JSON de la respuesta de la herramienta).
+     * @return void
+     */
+    protected function juntar_venta_repetida($tool_name, $content)
+    {
+        if ($tool_name !== 'proponer_venta' || ! is_string($content)) {
+            return;
+        }
+
+        $datos = json_decode($content, true);
+
+        if (! is_array($datos) || ! isset($datos['codigo']) || $datos['codigo'] !== 'venta_repetida') {
+            return;
+        }
+
+        $numero = isset($datos['venta']['numero']) ? (int) $datos['venta']['numero'] : 0;
+
+        if ($numero <= 0) {
+            return;
+        }
+
+        $this->ventas_repetidas_del_turno = array_values(array_unique(array_merge(
+            $this->ventas_repetidas_del_turno,
+            ['Venta N° ' . $numero]
+        )));
     }
 
     /**
@@ -6034,6 +6133,9 @@ CONFIRMACION;
                     $resultado_de_carga = HerramientasDeCarga::ejecutar($tool_name, $tool_input, $conversation, $assistant_message);
                     $content = $resultado_de_carga['content'];
                     $error_de_la_herramienta = (bool) $resultado_de_carga['is_error'];
+
+                    // F1 de la ronda de arreglos (31/10/2026): la venta ya registrada que vio, para la guarda de la carga.
+                    $this->juntar_venta_repetida($tool_name, $content);
                 } elseif (HerramientasDeConversaciones::maneja($tool_name)) {
                     // Misión agente-memoria-y-sin-techo (30/10/2026): buscar y leer las conversaciones
                     // anteriores de la persona. La tenencia (mismo dueño Y misma persona) sale de la

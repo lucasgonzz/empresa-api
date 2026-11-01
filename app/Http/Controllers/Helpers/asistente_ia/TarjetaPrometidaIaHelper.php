@@ -150,9 +150,17 @@ class TarjetaPrometidaIaHelper
      * contestarle a la nota: es para volver a contestarle a la PERSONA. Sin esto, a un balance con una
      * oración que la guarda leyó como carga hecha el modelo le contestaba con una disculpa y el balance se
      * perdía (análisis diario del 30/10, problema #8). Termina con un espacio porque la sigue el cierre.
+     *
+     * 🔴 «DE ESTE MENSAJE» y «lo que ya figuraba registrado de antes» (ronda de arreglos de la misma misión,
+     * F1, 31/10/2026). Con «sacando solo lo que daba por hecha una carga» a secas, el modelo sacaba también
+     * lo que era VERDAD de antes: a «Ya está registrada la venta N° 59466 …» (el aviso del duplicado de
+     * proponer_venta, venta_repetida) lo borraba, preguntaba «¿la armo?» y con el sí la venta salía
+     * duplicada. Ahora la nota distingue lo de este mensaje (que no se hizo) de lo ya registrado (que se
+     * dice con su N° y su fecha: esa forma es la que REPASO_DE_UNA_CARGA reconoce como repaso).
      */
     const FRASE_DE_LA_RESPUESTA_COMPLETA = 'Volvé a escribir la respuesta COMPLETA a lo que pidió la persona, con los datos que ya tenés, '
-        . 'sacando solo lo que daba por hecha una carga. No te disculpes ni expliques la corrección. ';
+        . 'sacando solo lo que daba por hecha una carga de ESTE mensaje; lo que ya figuraba registrado de antes, decilo con su N° y su fecha. '
+        . 'No te disculpes ni expliques la corrección. ';
 
     /**
      * Lo que AccionesIaHelper le escribe al aviso de una tarjeta cuando hace un momento se confirmó una

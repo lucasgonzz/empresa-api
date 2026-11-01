@@ -335,6 +335,147 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
     }
 
     /**
+     * Configura al dueño con DeepSeek ágil (claves e ids inventados) para correr el turno entero con el
+     * modelo simulado.
+     *
+     * @return void
+     */
+    protected function con_el_modelo_simulado()
+    {
+        config([
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-p103',
+            'services.deepseek.model'          => 'deepseek-general-p103',
+            'services.deepseek.model_agil'     => 'deepseek-flash-p103',
+            'services.deepseek.model_profundo' => 'deepseek-pro-p103',
+            'services.deepseek.model_vision'   => 'deepseek-vision-p103',
+        ]);
+
+        $this->dueno->agente_proveedor   = 'deepseek';
+        $this->dueno->agente_pensamiento = 'agil';
+        $this->dueno->save();
+    }
+
+    /**
+     * Una respuesta del proveedor (formato compatible con Anthropic) con los bloques y el stop_reason pedidos.
+     *
+     * @param  string  $stop_reason
+     * @param  array  $bloques
+     * @return array
+     */
+    protected function respuesta_del_modelo($stop_reason, array $bloques)
+    {
+        return [
+            'model'       => 'lo-que-diga-el-proveedor',
+            'stop_reason' => $stop_reason,
+            'content'     => $bloques,
+            'usage'       => ['input_tokens' => 11, 'output_tokens' => 7],
+        ];
+    }
+
+    /**
+     * El turno entero: el modelo llama a proponer_venta con la misma venta, recibe venta_repetida y contesta
+     * `$texto`. Devuelve el texto final y los bodies que salieron al proveedor.
+     *
+     * @param  string  $texto  Lo que contesta el modelo después del tool_result.
+     * @return array{0: string, 1: array<int, array>, 2: AiMessage}
+     */
+    protected function turno_con_la_venta_repetida($texto)
+    {
+        list($conversation, $assistant) = $this->conversacion();
+
+        $secuencia = \Illuminate\Support\Facades\Http::sequence()
+            ->push($this->respuesta_del_modelo('tool_use', [[
+                'type'  => 'tool_use',
+                'id'    => 'toolu_p103_venta',
+                'name'  => 'proponer_venta',
+                'input' => $this->input_a_cuenta_corriente(2),
+            ]]), 200)
+            ->push($this->respuesta_del_modelo('end_turn', [['type' => 'text', 'text' => $texto]]), 200)
+            // Si hubiera un reintento, contestaría esto (y el conteo lo vería).
+            ->push($this->respuesta_del_modelo('end_turn', [['type' => 'text', 'text' => '¿Querés que la arme igual?']]), 200)
+            ->whenEmpty(\Illuminate\Support\Facades\Http::response(['error' => ['type' => 'api_error', 'message' => 'la secuencia se agotó (P103)']], 500));
+
+        \Illuminate\Support\Facades\Http::fake([
+            'api.deepseek.com/*' => $secuencia,
+            '*'                  => \Illuminate\Support\Facades\Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        $final = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = [];
+
+        foreach (\Illuminate\Support\Facades\Http::recorded() as $par) {
+
+            if (strpos($par[0]->url(), 'api.deepseek.com') !== false) {
+
+                $bodies[] = json_decode($par[0]->body(), true);
+            }
+        }
+
+        return [$final, $bodies, $assistant];
+    }
+
+    /**
+     * 🔴 F1 de la ronda de arreglos (cruce A2 × B1, 31/10/2026): el modelo recibe venta_repetida y lo dice
+     * con el N° y la fecha («Ya está registrada la venta N° X del dd/mm a las HH:ii…»). La guarda de la carga
+     * dada por hecha NO reintenta (antes lo leía como `quedo`, la nota le hacía borrar el aviso y preguntar
+     * «¿la armo?»): una sola llamada después de la herramienta, y la persona lee el N°.
+     *
+     * @test
+     */
+    public function el_aviso_de_la_venta_repetida_no_dispara_el_reintento_y_conserva_el_numero()
+    {
+        $venta = $this->venta_registrada();
+
+        $this->con_el_modelo_simulado();
+
+        $cuando = Carbon::parse($venta->created_at);
+
+        $texto = 'Ya está registrada la venta N° ' . (int) $venta->num . ' del ' . $cuando->format('d/m') . ' a las ' . $cuando->format('H:i')
+            . ' a ' . TestingFerreteriaSeeder::CLIENTE_CC . ' con los mismos artículos, cantidades y total. No armé otra. Si es otra venta distinta, decime y la armo.';
+
+        list($final, $bodies, $assistant) = $this->turno_con_la_venta_repetida($texto);
+
+        $this->assertCount(2, $bodies, 'La llamada a proponer_venta y el texto final, sin reintento: ' . json_encode(array_map(function ($b) {
+            return end($b['messages']);
+        }, $bodies), JSON_UNESCAPED_UNICODE));
+
+        // El tool_result que vio el modelo trae el N° con «del dd/mm a las HH:ii».
+        $turno = end($bodies[1]['messages']);
+        $resultado = json_decode($turno['content'][0]['content'], true);
+        $this->assertSame('venta_repetida', $resultado['codigo']);
+        $this->assertStringContainsString('Ya está registrada la venta N° ' . (int) $venta->num . ' del ' . $cuando->format('d/m') . ' a las ' . $cuando->format('H:i'), $resultado['error']);
+
+        $this->assertStringContainsString('venta N° ' . (int) $venta->num, $final, 'La persona lee el N° de la venta ya registrada.');
+        $this->assertStringNotContainsString('Ojo: con este mensaje no registré', $final);
+        $this->assertSame(0, $this->tarjetas_de($assistant), 'No se armó ninguna tarjeta.');
+    }
+
+    /**
+     * F1 (b): aunque el modelo lo diga SIN la fecha («La venta N° X ya está registrada…», que la guarda sola
+     * lee como `quedo`), el N° que venta_repetida devolvió en ESTE turno queda eximido, como las cargas vistas
+     * de otras conversaciones (R2): sin reintento.
+     *
+     * @test
+     */
+    public function el_numero_de_venta_repetida_de_este_turno_queda_eximido_de_la_guarda()
+    {
+        $venta = $this->venta_registrada();
+
+        $this->con_el_modelo_simulado();
+
+        $texto = 'La venta N° ' . (int) $venta->num . ' ya está registrada a ' . TestingFerreteriaSeeder::CLIENTE_CC . '. Si es otra venta distinta, decime y la armo.';
+
+        // La oración sola, sin la exención, sí la lee como carga hecha (si no, este test no probaría nada).
+        $this->assertSame('quedo', \App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper::afirma_una_carga_hecha($texto));
+
+        list($final, $bodies) = $this->turno_con_la_venta_repetida($texto);
+
+        $this->assertCount(2, $bodies, 'Sin reintento.');
+        $this->assertStringContainsString('venta N° ' . (int) $venta->num, $final);
+    }
+
+    /**
      * La propiedad nueva va AL FINAL de las de proponer_venta (el orden es el prefijo del caché).
      *
      * @test

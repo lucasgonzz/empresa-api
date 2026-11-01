@@ -457,7 +457,21 @@ class PropuestaVentaIaHelper
                 continue;
             }
 
-            $cuando = is_null($venta->created_at) ? '' : ' (' . Carbon::parse($venta->created_at)->format('d/m H:i') . ')';
+            /*
+             * 🔴 «del dd/mm a las HH:ii» y no «(dd/mm HH:ii)» (ronda de arreglos de la misión agente-mejoras-diario,
+             * F1, 31/10/2026). El modelo repite este texto casi tal cual, y la guarda de la carga dada por hecha
+             * (TarjetaPrometidaIaHelper::afirma_una_carga_hecha) leía «Ya está registrada la venta N° 59466 (30/10
+             * 14:22)…» como una carga de ESTE mensaje (`quedo`): disparaba el reintento, la nota le pedía sacar
+             * lo que daba por hecha una carga, el modelo borraba el aviso del duplicado y preguntaba «¿la armo?»;
+             * con el sí, salía duplicada igual. Con «N° 59466 del 30/10» la oración entra en
+             * TarjetaPrometidaIaHelper::REPASO_DE_UNA_CARGA (un número de registro y una fecha con «del»: el
+             * repaso de algo ya registrado) y no dispara. Medido con afirma_una_carga_hecha(): '' contra 'quedo'.
+             * La otra mitad del arreglo exime los N° de venta_repetida de este turno en la guarda
+             * (AsistenteIaService::sin_lo_dicho_de_ventas_ya_registradas), para cuando el modelo lo dice de otra forma.
+             */
+            $cuando = is_null($venta->created_at)
+                ? ''
+                : ' del ' . Carbon::parse($venta->created_at)->format('d/m') . ' a las ' . Carbon::parse($venta->created_at)->format('H:i');
 
             $respuesta = RespuestaDeCargaIa::error_con_codigo(
                 'venta_repetida',

@@ -26,8 +26,8 @@ use Tests\TestCase;
  * balance se perdía: el servicio solo vuelve al texto original si el reintento viene vacío.
  *
  * El arreglo, y lo que protege este archivo: cada rama de la nota termina pidiendo que vuelva a escribir
- * la respuesta COMPLETA a lo que pidió la persona, sacando solo lo que daba por hecha una carga, sin
- * disculparse ni explicar la corrección. La nota viaja al final de `messages` (después del turno del
+ * la respuesta COMPLETA a lo que pidió la persona, sacando solo lo que daba por hecha una carga de ESTE
+ * mensaje (lo ya registrado de antes, con su N° y su fecha), sin disculparse ni explicar la corrección. La nota viaja al final de `messages` (después del turno del
  * asistente): no toca el system ni las tools, así que no mueve ningún caché.
  *
  * 🔴 Ningún test sale a la red: Http::fake con claves e ids de modelo inventados, y una secuencia que al
@@ -42,8 +42,12 @@ class Respuesta_completa_despues_del_reintento_Test extends TestCase
 {
     use DatabaseTransactions;
 
-    /** La frase que la nota suma al final de cada rama (B1). */
-    const FRASE_COMPLETA = 'Volvé a escribir la respuesta COMPLETA a lo que pidió la persona, con los datos que ya tenés, sacando solo lo que daba por hecha una carga.';
+    /**
+     * La frase que la nota suma al final de cada rama (B1). Desde la ronda de arreglos de la misión (F1,
+     * 31/10/2026) distingue la carga de ESTE mensaje de lo que ya figuraba registrado de antes (el aviso de
+     * venta_repetida), que se dice con su N° y su fecha.
+     */
+    const FRASE_COMPLETA = 'Volvé a escribir la respuesta COMPLETA a lo que pidió la persona, con los datos que ya tenés, sacando solo lo que daba por hecha una carga de ESTE mensaje; lo que ya figuraba registrado de antes, decilo con su N° y su fecha.';
 
     /** La segunda mitad de la frase: que no le conteste a la nota. */
     const FRASE_SIN_DISCULPAS = 'No te disculpes ni expliques la corrección.';
