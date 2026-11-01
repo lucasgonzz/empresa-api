@@ -95,6 +95,16 @@ use Intervention\Image\ImageManager;
  *     `ya_tiene_foto`, `cuantos` y `sin_foto`, de una consulta a `images` (resumen_de_los_destinos()).
  *   - El error de «no hay foto» pasa a CODIGO_FOTO_POR_LLEGAR y le da al modelo la frase para la persona
  *     («mandame la foto y se la pongo a estos N: …»), sin «no me llegó» ni «de nuevo».
+ *
+ * 🔴 RONDA DE ARREGLOS DE LA REVISIÓN INDEPENDIENTE (F2, F3 y F4, 31/10/2026):
+ *   - F2: el origen y `solo_sin_foto` se aplican EN LA CONSULTA de los destinos, antes del tope de
+ *     TOPE_ARTICULOS. Antes, «la del clavo de 1 1/2" a los que no tienen foto» con 45 clavos cortaba con «Hay
+ *     más de 30 artículos…» aunque sin foto quedaran 8, y el origen contaba para el tope. Por eso el origen se
+ *     resuelve PRIMERO (resolver_origen()) y resolver_articulos() recibe el origen y el filtro.
+ *   - F3: el resumen de los destinos (`articulos`, `cuantos`, `sin_foto`) se arma con los destinos YA
+ *     filtrados: lo que la respuesta cuenta es lo que va en la tarjeta (y en la lista de foto_por_llegar).
+ *   - F4: `solo_sin_foto` viaja en `datos` y ejecutar() saltea los destinos que recibieron una foto entre la
+ *     tarjeta y el sí; el resultado los nombra con MOTIVO_YA_TENIA_FOTO.
  */
 class PropuestaFotoArticuloIaHelper
 {
@@ -143,6 +153,12 @@ class PropuestaFotoArticuloIaHelper
     const TOPE_NOMBRES_EN_EL_TEXTO = 30;
 
     /**
+     * El motivo de `no_hechos` para un destino que, con `solo_sin_foto`, recibió una foto entre la tarjeta y el sí
+     * (ronda de arreglos, F4, 31/10/2026): se saltea, no se le suma otra.
+     */
+    const MOTIVO_YA_TENIA_FOTO = 'ya tenía foto';
+
+    /**
      * Herramienta proponer_foto_articulo.
      *
      * @param  ContextoDeCargaIa  $contexto
@@ -160,16 +176,10 @@ class PropuestaFotoArticuloIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('fotos de artículos'));
         }
 
-        $articulos = self::resolver_articulos($contexto, $input);
-
-        if (RespuestaDeCargaIa::es_negativa($articulos)) {
-
-            return $articulos;
-        }
-
         /*
-         * B3 (31/10/2026): la foto de OTRO artículo. Primero el artículo de origen (del negocio), y se lo saca
-         * de los destinos: «usala para todos» con todos_los_que_coinciden lo encuentra también a él.
+         * B3 (31/10/2026): la foto de OTRO artículo. El artículo de origen (del negocio) se resuelve PRIMERO
+         * (ronda de arreglos, F2): «usala para todos» con todos_los_que_coinciden lo encuentra también a él, y
+         * se lo saca de los destinos en la consulta, antes del tope.
          */
         $origen = null;
 
@@ -181,37 +191,27 @@ class PropuestaFotoArticuloIaHelper
 
                 return $origen;
             }
-
-            $articulos = self::sin_el_articulo($articulos, (int) $origen->id);
-
-            if (!count($articulos)) {
-
-                return RespuestaDeCargaIa::error(
-                    CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'el único artículo de la lista es el mismo de donde sale la foto ("'
-                    . self::nombre_de_articulo($origen) . '"). Decime a qué otros artículos se la pongo.'
-                );
-            }
         }
 
-        /* Lo que la respuesta cuenta de los destinos (también en los errores de acá en adelante). */
+        $solo_sin_foto = self::es_si(EntradaDeCargaIa::valor($input, 'solo_sin_foto'));
+
+        // F2: sin el origen y, con solo_sin_foto, sin los que ya tienen foto, ANTES del tope de TOPE_ARTICULOS.
+        $articulos = self::resolver_articulos($contexto, $input, $origen, $solo_sin_foto);
+
+        if (RespuestaDeCargaIa::es_negativa($articulos)) {
+
+            return $articulos;
+        }
+
+        /*
+         * Lo que la respuesta cuenta de los destinos (también en los errores de acá en adelante). F3: con los
+         * destinos YA filtrados, así `cuantos` y `articulos` son los de la tarjeta.
+         */
         $resumen = self::resumen_de_los_destinos($articulos);
-
-        if (self::es_si(EntradaDeCargaIa::valor($input, 'solo_sin_foto'))) {
-
-            $articulos = self::solo_los_sin_foto($articulos, $resumen);
-
-            if (!count($articulos)) {
-
-                return self::con_el_resumen(RespuestaDeCargaIa::error(
-                    CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'todos esos artículos ya tienen al menos una foto, así que con solo_sin_foto no queda ninguno. '
-                    . 'Si la persona quiere sumarles la foto igual, volvé a llamar sin solo_sin_foto.'
-                ), $resumen);
-            }
-        }
 
         if (!is_null($origen)) {
 
-            return self::proponer_con_la_foto_de_otro_articulo($contexto, $mensaje, $input, $articulos, $origen, $resumen);
+            return self::proponer_con_la_foto_de_otro_articulo($contexto, $mensaje, $input, $articulos, $origen, $resumen, $solo_sin_foto);
         }
 
         $explicita = array_key_exists('imagen_id', $input);
@@ -303,6 +303,12 @@ class PropuestaFotoArticuloIaHelper
         $datos['articulos'] = $nombres;
         $datos['reusa_usada'] = $reusa_usada;
 
+        // F4: con solo_sin_foto, ejecutar() saltea a los que reciban una foto entre la tarjeta y el sí.
+        if ($solo_sin_foto) {
+
+            $datos['solo_sin_foto'] = true;
+        }
+
         $renglones = $uno_solo
             ? [
                 ['etiqueta' => 'Artículo', 'valor' => $nombres[0]],
@@ -371,9 +377,10 @@ class PropuestaFotoArticuloIaHelper
      * @param  array<int, \App\Models\Article>  $articulos  Los destinos, sin el origen.
      * @param  \App\Models\Article  $origen
      * @param  array  $resumen  resumen_de_los_destinos(), para la respuesta.
+     * @param  bool  $solo_sin_foto  F4: viaja en `datos` para que ejecutar() saltee a los que ya tengan foto.
      * @return array
      */
-    protected static function proponer_con_la_foto_de_otro_articulo(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input, array $articulos, Article $origen, array $resumen)
+    protected static function proponer_con_la_foto_de_otro_articulo(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input, array $articulos, Article $origen, array $resumen, $solo_sin_foto = false)
     {
         $nombre_del_origen = self::nombre_de_articulo($origen);
 
@@ -431,6 +438,12 @@ class PropuestaFotoArticuloIaHelper
         $datos['de_articulo'] = $nombre_del_origen;
         $datos['article_ids'] = $ids;
         $datos['articulos'] = $nombres;
+
+        // F4: con solo_sin_foto, ejecutar() saltea a los que reciban una foto entre la tarjeta y el sí.
+        if ($solo_sin_foto) {
+
+            $datos['solo_sin_foto'] = true;
+        }
 
         $renglones = $uno_solo
             ? [
@@ -544,25 +557,51 @@ class PropuestaFotoArticuloIaHelper
     }
 
     /**
-     * Los artículos sin el de id `$article_id` (el origen), en el mismo orden.
+     * El error cuando, sacando el origen, no queda ningún destino (B3; desde la ronda de arreglos, F2, lo arma
+     * resolver_articulos(), que es donde se saca el origen).
      *
-     * @param  array<int, \App\Models\Article>  $articulos
-     * @param  int  $article_id
-     * @return array<int, \App\Models\Article>
+     * @param  \App\Models\Article  $origen
+     * @return array
      */
-    protected static function sin_el_articulo(array $articulos, $article_id)
+    protected static function error_el_unico_es_el_origen(Article $origen)
     {
-        $quedan = [];
+        return RespuestaDeCargaIa::error(
+            CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'el único artículo de la lista es el mismo de donde sale la foto ("'
+            . self::nombre_de_articulo($origen) . '"). Decime a qué otros artículos se la pongo.'
+        );
+    }
 
-        foreach ($articulos as $articulo) {
+    /**
+     * El error cuando, con `solo_sin_foto`, todos los destinos ya tienen alguna foto (B3; desde la ronda de
+     * arreglos, F2, lo arma resolver_articulos()). Lleva el resumen de ESOS destinos (todos con
+     * `ya_tiene_foto`), para que el modelo pueda decir cuáles son.
+     *
+     * @param  array  $resumen  resumen_de_los_destinos() de los destinos que ya tienen foto.
+     * @return array
+     */
+    protected static function error_todos_tienen_foto(array $resumen)
+    {
+        return self::con_el_resumen(RespuestaDeCargaIa::error(
+            CategoriasDelNegocioIaHelper::NO_SE_ARMO . 'todos esos artículos ya tienen al menos una foto, así que con solo_sin_foto no queda ninguno. '
+            . 'Si la persona quiere sumarles la foto igual, volvé a llamar sin solo_sin_foto.'
+        ), $resumen);
+    }
 
-            if ((int) $articulo->id !== (int) $article_id) {
-
-                $quedan[] = $articulo;
-            }
-        }
-
-        return $quedan;
+    /**
+     * El error del tope de TOPE_ARTICULOS cuando los destinos vienen por id (misión agente-mejoras-uso-real).
+     * Desde la ronda de arreglos (F2) se cuenta sin el origen y, con `solo_sin_foto`, sin los que ya tienen foto.
+     *
+     * @param  int  $cuantos
+     * @param  bool  $solo_sin_foto
+     * @return array
+     */
+    protected static function error_de_mas_ids($cuantos, $solo_sin_foto)
+    {
+        return RespuestaDeCargaIa::error(
+            'En una tarjeta entra la misma foto para hasta ' . self::TOPE_ARTICULOS . ' artículos, y '
+            . ($solo_sin_foto ? 'sin foto quedan ' : 'me pasaste ') . (int) $cuantos . '. '
+            . 'Decime cuáles van primero y armo las tarjetas de a ' . self::TOPE_ARTICULOS . '.'
+        );
     }
 
     /**
@@ -839,6 +878,36 @@ class PropuestaFotoArticuloIaHelper
         }
 
         /*
+         * F4 de la ronda de arreglos (31/10/2026): con `solo_sin_foto`, los destinos que recibieron una foto
+         * entre la tarjeta y el sí (la pantalla, otra tarjeta) se saltean: la persona pidió la foto para los que
+         * NO tenían, y sumarles otra sería justo lo contrario. Se informan en `no_hechos` con
+         * MOTIVO_YA_TENIA_FOTO. Si ya la tienen todos, no hay nada que hacer: corta antes de leer la foto.
+         */
+        $ya_con_foto = [];
+
+        if (!empty($datos['solo_sin_foto'])) {
+
+            $ya_con_foto = Image::where('imageable_type', 'article')
+                                ->whereIn('imageable_id', $existentes->keys()->all())
+                                ->distinct()
+                                ->pluck('imageable_id')
+                                ->map(function ($id) {
+                                    return (int) $id;
+                                })
+                                ->all();
+
+            if (count($ya_con_foto) >= count($existentes)) {
+
+                throw new AccionIaException(
+                    422,
+                    count($existentes) > 1
+                        ? 'Esos artículos ya tienen foto (se la pusieron después de armar la tarjeta), así que no les puse otra.'
+                        : 'Ese artículo ya tiene foto (se la pusieron después de armar la tarjeta), así que no le puse otra.'
+                );
+            }
+        }
+
+        /*
          * B3 (31/10/2026): con la foto de OTRO artículo el binario sale del disco público de este frente (se
          * revalida: entre la tarjeta y el sí la foto del origen pudo borrarse) y no hay foto del chat que
          * bloquear ni sellar. Con la del chat, todo como siempre.
@@ -897,6 +966,14 @@ class PropuestaFotoArticuloIaHelper
                 }
 
                 $articulo = $existentes[$article_id];
+
+                // F4: con solo_sin_foto, el que ya recibió una foto se saltea (ver arriba).
+                if (in_array((int) $article_id, $ya_con_foto, true)) {
+
+                    $no_hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo), 'motivo' => self::MOTIVO_YA_TENIA_FOTO];
+
+                    continue;
+                }
 
                 $name = self::escribir_webp($webp, (int) $articulo->id);
 
@@ -1146,16 +1223,33 @@ class PropuestaFotoArticuloIaHelper
 
         $texto = 'Foto agregada a ' . (count($hechos) === 1 ? '1 artículo' : count($hechos) . ' artículos') . ': ' . implode(', ', $nombres) . '.';
 
-        if (count($no_hechos)) {
+        /*
+         * F4 de la ronda de arreglos (31/10/2026): los que se saltearon porque ya tenían foto (solo_sin_foto) no
+         * son una falla: van en su propia oración, para que el agente no le diga a la persona que «no se pudo».
+         */
+        $faltan = [];
+        $ya_tenian = [];
 
-            $faltan = [];
+        foreach ($no_hechos as $no_hecho) {
 
-            foreach ($no_hechos as $no_hecho) {
+            if ($no_hecho['motivo'] === self::MOTIVO_YA_TENIA_FOTO) {
 
-                $faltan[] = $no_hecho['articulo'] . ' (' . $no_hecho['motivo'] . ')';
+                $ya_tenian[] = $no_hecho['articulo'];
+
+                continue;
             }
 
-            $texto .= ' NO se la pude poner a ' . (count($no_hechos) === 1 ? '1' : count($no_hechos)) . ': ' . implode(', ', $faltan) . '.';
+            $faltan[] = $no_hecho['articulo'] . ' (' . $no_hecho['motivo'] . ')';
+        }
+
+        if (count($faltan)) {
+
+            $texto .= ' NO se la pude poner a ' . (count($faltan) === 1 ? '1' : count($faltan)) . ': ' . implode(', ', $faltan) . '.';
+        }
+
+        if (count($ya_tenian)) {
+
+            $texto .= ' No se la puse a ' . (count($ya_tenian) === 1 ? '1 porque ya tenía foto' : count($ya_tenian) . ' porque ya tenían foto') . ': ' . implode(', ', $ya_tenian) . '.';
         }
 
         return $texto;
@@ -1173,11 +1267,19 @@ class PropuestaFotoArticuloIaHelper
      *      acotar.
      *   3. Lo de siempre: UN artículo (resolver_articulo()).
      *
+     * 🔴 Ronda de arreglos (F2, 31/10/2026): el artículo de ORIGEN (la foto de otro artículo) y `solo_sin_foto` se
+     * aplican acá, ANTES del tope. Con `todos_los_que_coinciden` van en la consulta (`id <>` y `whereNotExists`
+     * de `images`); con ids, el origen se saca de la lista antes de contar y los que tienen foto se filtran antes
+     * del tope. Los dos casos en que no queda nadie tienen su error (error_el_unico_es_el_origen(),
+     * error_todos_tienen_foto()).
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $input
+     * @param  \App\Models\Article|null  $origen  El artículo de donde sale la foto (B3), que no es destino.
+     * @param  bool  $solo_sin_foto  Solo los destinos que todavía no tienen ninguna foto.
      * @return array<int, \App\Models\Article>|array  Lista de artículos, o la respuesta negativa.
      */
-    protected static function resolver_articulos(ContextoDeCargaIa $contexto, array $input)
+    protected static function resolver_articulos(ContextoDeCargaIa $contexto, array $input, $origen = null, $solo_sin_foto = false)
     {
         $ids = self::ids_del_input(EntradaDeCargaIa::valor($input, 'articulo_ids'));
 
@@ -1190,12 +1292,23 @@ class PropuestaFotoArticuloIaHelper
                 array_unshift($ids, (int) $articulo_id);
             }
 
-            if (count($ids) > self::TOPE_ARTICULOS) {
+            // F2: el origen no es destino ni cuenta para el tope.
+            if (!is_null($origen)) {
 
-                return RespuestaDeCargaIa::error(
-                    'En una tarjeta entra la misma foto para hasta ' . self::TOPE_ARTICULOS . ' artículos, y me pasaste ' . count($ids) . '. '
-                    . 'Decime cuáles van primero y armo las tarjetas de a ' . self::TOPE_ARTICULOS . '.'
-                );
+                $ids = array_values(array_filter($ids, function ($id) use ($origen) {
+                    return (int) $id !== (int) $origen->id;
+                }));
+
+                if (!count($ids)) {
+
+                    return self::error_el_unico_es_el_origen($origen);
+                }
+            }
+
+            // Con solo_sin_foto el tope se mira DESPUÉS de filtrar (abajo): los que tienen foto no cuentan.
+            if (!$solo_sin_foto && count($ids) > self::TOPE_ARTICULOS) {
+
+                return self::error_de_mas_ids(count($ids), false);
             }
 
             $encontrados = Article::query()
@@ -1227,6 +1340,21 @@ class PropuestaFotoArticuloIaHelper
                 );
             }
 
+            if ($solo_sin_foto) {
+
+                $articulos = self::filtrar_los_sin_foto($articulos);
+
+                if (RespuestaDeCargaIa::es_negativa($articulos)) {
+
+                    return $articulos;
+                }
+
+                if (count($articulos) > self::TOPE_ARTICULOS) {
+
+                    return self::error_de_mas_ids(count($articulos), true);
+                }
+            }
+
             return $articulos;
         }
 
@@ -1234,7 +1362,7 @@ class PropuestaFotoArticuloIaHelper
 
         if ($texto !== '' && self::es_si(EntradaDeCargaIa::valor($input, 'todos_los_que_coinciden'))) {
 
-            return self::todos_los_que_coinciden($contexto, $texto);
+            return self::todos_los_que_coinciden($contexto, $texto, $origen, $solo_sin_foto);
         }
 
         $articulo = self::resolver_articulo($contexto, $input);
@@ -1244,7 +1372,39 @@ class PropuestaFotoArticuloIaHelper
             return $articulo;
         }
 
+        // F2: un solo destino que es el mismo origen, o que ya tiene foto con solo_sin_foto, no deja a nadie.
+        if (!is_null($origen) && (int) $articulo->id === (int) $origen->id) {
+
+            return self::error_el_unico_es_el_origen($origen);
+        }
+
+        if ($solo_sin_foto) {
+
+            return self::filtrar_los_sin_foto([$articulo]);
+        }
+
         return [$articulo];
+    }
+
+    /**
+     * Los destinos sin ninguna foto, o el error de que todos ya tienen (solo_sin_foto; ronda de arreglos, F2).
+     * Para las listas que ya se resolvieron (por ids o un solo artículo): una consulta a `images`.
+     *
+     * @param  array<int, \App\Models\Article>  $articulos
+     * @return array<int, \App\Models\Article>|array  Los que no tienen foto, o la respuesta negativa.
+     */
+    protected static function filtrar_los_sin_foto(array $articulos)
+    {
+        $resumen = self::resumen_de_los_destinos($articulos);
+
+        $quedan = self::solo_los_sin_foto($articulos, $resumen);
+
+        if (!count($quedan)) {
+
+            return self::error_todos_tienen_foto($resumen);
+        }
+
+        return $quedan;
     }
 
     /**
@@ -1253,11 +1413,18 @@ class PropuestaFotoArticuloIaHelper
      * TOPE_ARTICULOS, en orden de nombre. Para «a todos los clavos punta París». Si son más, se pide
      * acotar; si no hay ninguno, el mismo error que con un solo artículo.
      *
+     * 🔴 Ronda de arreglos (F2, 31/10/2026): el origen (`id <>`) y `solo_sin_foto` (`whereNotExists` de una
+     * fila en `images`) van EN LA CONSULTA, antes del límite: con 45 clavos de los que 8 no tienen foto, la
+     * tarjeta lleva los 8 en vez de cortar con «Hay más de 30». Si con los filtros no queda ninguno, se mira por
+     * qué (ninguno encaja, solo encaja el origen, o todos los demás ya tienen foto) para dar el error justo.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $texto
+     * @param  \App\Models\Article|null  $origen  El artículo de donde sale la foto (no es destino).
+     * @param  bool  $solo_sin_foto
      * @return array<int, \App\Models\Article>|array
      */
-    protected static function todos_los_que_coinciden(ContextoDeCargaIa $contexto, $texto)
+    protected static function todos_los_que_coinciden(ContextoDeCargaIa $contexto, $texto, $origen = null, $solo_sin_foto = false)
     {
         $columnas = ['name', 'bar_code', 'provider_code'];
 
@@ -1267,22 +1434,60 @@ class PropuestaFotoArticuloIaHelper
                                 BusquedaPorPalabrasIaHelper::filtrar($sub, $texto, $columnas);
                             });
 
-        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($consulta, $texto, $columnas)
+        // Sin el origen: no es destino ni cuenta para el tope.
+        $sin_el_origen = clone $consulta;
+
+        if (!is_null($origen)) {
+
+            $sin_el_origen->where('articles.id', '<>', (int) $origen->id);
+        }
+
+        // Con solo_sin_foto, sin los que ya tienen alguna fila en `images` (el mismo criterio que resumen_de_los_destinos()).
+        $filtrada = clone $sin_el_origen;
+
+        if ($solo_sin_foto) {
+
+            $filtrada->whereNotExists(function ($con_foto) {
+                $con_foto->selectRaw('1')
+                         ->from('images')
+                         ->where('images.imageable_type', 'article')
+                         ->whereColumn('images.imageable_id', 'articles.id');
+            });
+        }
+
+        $candidatos = BusquedaPorPalabrasIaHelper::ordenar_por_frase($filtrada, $texto, $columnas)
                                                 ->orderBy('name')
                                                 ->limit(self::TOPE_ARTICULOS + 1)
                                                 ->get(self::COLUMNAS);
 
         if (count($candidatos) === 0) {
 
-            return RespuestaDeCargaIa::error(
-                'No encontré ningún artículo que se llame "' . $texto . '" ni con ese código. Buscalo con otra palabra o decime el código.'
-            );
+            if (!(clone $consulta)->exists()) {
+
+                return RespuestaDeCargaIa::error(
+                    'No encontré ningún artículo que se llame "' . $texto . '" ni con ese código. Buscalo con otra palabra o decime el código.'
+                );
+            }
+
+            if (!is_null($origen) && !(clone $sin_el_origen)->exists()) {
+
+                return self::error_el_unico_es_el_origen($origen);
+            }
+
+            // Encajan otros, pero con solo_sin_foto no queda ninguno: todos ya tienen foto (el resumen, hasta el tope).
+            $con_foto = BusquedaPorPalabrasIaHelper::ordenar_por_frase(clone $sin_el_origen, $texto, $columnas)
+                                                   ->orderBy('name')
+                                                   ->limit(self::TOPE_ARTICULOS)
+                                                   ->get(self::COLUMNAS)
+                                                   ->all();
+
+            return self::error_todos_tienen_foto(self::resumen_de_los_destinos($con_foto));
         }
 
         if (count($candidatos) > self::TOPE_ARTICULOS) {
 
             return RespuestaDeCargaIa::error(
-                'Hay más de ' . self::TOPE_ARTICULOS . ' artículos que encajan con "' . $texto . '". Decime una palabra más (una medida, una marca) '
+                'Hay más de ' . self::TOPE_ARTICULOS . ' artículos ' . ($solo_sin_foto ? 'sin foto ' : '') . 'que encajan con "' . $texto . '". Decime una palabra más (una medida, una marca) '
                 . 'para acotar: en una tarjeta entran hasta ' . self::TOPE_ARTICULOS . '.'
             );
         }

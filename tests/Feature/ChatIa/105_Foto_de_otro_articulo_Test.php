@@ -462,9 +462,14 @@ class Foto_de_otro_articulo_Test extends TestCase
             $this->assertNotContains((int) $afuera->id, $ids, $afuera->name . ' no va.');
         }
 
-        // La respuesta cuenta sobre los ocho destinos pedidos: tres ya tenían foto.
-        $this->assertSame(8, $respuesta['cuantos']);
+        /*
+         * La respuesta cuenta lo que va en la tarjeta. Ronda de arreglos (F3, 31/10/2026): antes contaba los ocho
+         * destinos pedidos (`cuantos` 8) aunque la tarjeta llevara cinco; ahora el resumen se arma después del
+         * filtro (este test es de la misma misión y no salió: se ajusta porque el diseño cambió).
+         */
+        $this->assertSame(5, $respuesta['cuantos']);
         $this->assertSame(5, $respuesta['sin_foto']);
+        $this->assertCount(5, $respuesta['articulos']);
 
         // Sin solo_sin_foto, van los ocho.
         list($conversation2, $assistant2) = $this->conversacion('Usá la del clavo de 1 1/2 para todos');
@@ -544,6 +549,242 @@ class Foto_de_otro_articulo_Test extends TestCase
         $this->assertSame(7, $solo['sin_foto']);
         $this->assertStringContainsString('a estos 7:', mb_strtolower($solo['error']));
         $this->assertStringNotContainsString($clavos[0]->name, $solo['error']);
+    }
+
+    /**
+     * `$cuantos` artículos «zz-b3 CLAVO n mm» del comercio del test, en orden.
+     *
+     * @param  int  $cuantos
+     * @return array<int, Article>
+     */
+    protected function muchos_clavos($cuantos)
+    {
+        $clavos = [];
+
+        for ($i = 1; $i <= $cuantos; $i++) {
+            $clavos[] = Article::create([
+                'name'    => self::PREFIJO . ' CLAVO ' . str_pad((string) $i, 2, '0', STR_PAD_LEFT) . ' mm',
+                'user_id' => $this->comercio->id,
+                'status'  => 'active',
+            ]);
+        }
+
+        return $clavos;
+    }
+
+    /**
+     * 🔴 F2 de la ronda de arreglos (31/10/2026): 45 «clavo», el origen con foto y solo 8 sin foto. Con
+     * todos_los_que_coinciden + solo_sin_foto, el filtro va en la consulta ANTES del tope: la tarjeta lleva los 8
+     * (antes cortaba con «Hay más de 30 artículos…»). Y sin solo_sin_foto, el origen no cuenta para el tope: con
+     * 31 que encajan, origen incluido, van los otros 30.
+     *
+     * @test
+     */
+    public function solo_sin_foto_filtra_en_la_consulta_antes_del_tope_y_el_origen_no_cuenta()
+    {
+        $clavos = $this->muchos_clavos(45);
+        $origen = $clavos[0];
+        $this->foto_real($origen);
+
+        // Del 2 al 37 ya tienen foto (36); del 38 al 45 no (8).
+        for ($i = 1; $i <= 36; $i++) {
+            $this->ya_tiene_foto($clavos[$i]);
+        }
+
+        list($conversation, $assistant) = $this->conversacion('Usá la del clavo de 1 mm para todos los clavos que no tienen foto');
+
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, [
+            'articulo'                => self::PREFIJO . ' clavo',
+            'todos_los_que_coinciden' => true,
+            'de_articulo_id'          => $origen->id,
+            'solo_sin_foto'           => true,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+
+        $datos = AiMessageAction::find($respuesta['tarjeta_id'])->datos;
+
+        $this->assertCount(8, $datos['article_ids']);
+        $this->assertSame(array_map(function ($clavo) {
+            return (int) $clavo->id;
+        }, array_slice($clavos, 37)), array_map('intval', $datos['article_ids']), 'Los 8 sin foto, en orden de nombre.');
+        $this->assertSame(8, $respuesta['cuantos']);
+        $this->assertSame(8, $respuesta['sin_foto']);
+        $this->assertTrue($datos['solo_sin_foto'], 'F4: viaja en datos.');
+
+        // Sin solo_sin_foto, 31 que encajan con el origen adentro: van los otros 30, sin cortar por el tope.
+        list($conversation2, $assistant2) = $this->conversacion('Usá la del clavo de 1 mm para todos');
+
+        Article::whereIn('id', array_map(function ($clavo) {
+            return (int) $clavo->id;
+        }, array_slice($clavos, 31)))->delete();
+
+        $treinta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation2), $assistant2, [
+            'articulo'                => self::PREFIJO . ' clavo',
+            'todos_los_que_coinciden' => true,
+            'de_articulo_id'          => $origen->id,
+        ]);
+
+        $this->assertTrue($treinta['ok'], json_encode($treinta, JSON_UNESCAPED_UNICODE));
+        $this->assertCount(30, AiMessageAction::find($treinta['tarjeta_id'])->datos['article_ids']);
+        $this->assertNotContains((int) $origen->id, AiMessageAction::find($treinta['tarjeta_id'])->datos['article_ids']);
+    }
+
+    /**
+     * F2: por ids, el origen tampoco cuenta para el tope y con solo_sin_foto el tope se mira después de filtrar.
+     *
+     * @test
+     */
+    public function por_ids_el_origen_y_los_que_tienen_foto_no_cuentan_para_el_tope()
+    {
+        $clavos = $this->muchos_clavos(35);
+        $origen = $clavos[0];
+        $this->foto_real($origen);
+
+        for ($i = 1; $i <= 10; $i++) {
+            $this->ya_tiene_foto($clavos[$i]);
+        }
+
+        $ids = array_map(function ($clavo) {
+            return (int) $clavo->id;
+        }, $clavos);
+
+        list($conversation, $assistant) = $this->conversacion('La del 1 mm para los que no tienen foto');
+
+        // 35 ids: el origen + 10 con foto + 24 sin foto → 24 en la tarjeta.
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, [
+            'articulo_ids'   => $ids,
+            'de_articulo_id' => $origen->id,
+            'solo_sin_foto'  => true,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertCount(24, AiMessageAction::find($respuesta['tarjeta_id'])->datos['article_ids']);
+        $this->assertSame(24, $respuesta['cuantos']);
+
+        // 31 ids con el origen adentro, sin solo_sin_foto: van 30.
+        list($conversation2, $assistant2) = $this->conversacion('La del 1 mm para estos 30');
+
+        $treinta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation2), $assistant2, [
+            'articulo_ids'   => array_slice($ids, 0, 31),
+            'de_articulo_id' => $origen->id,
+        ]);
+
+        $this->assertTrue($treinta['ok'], json_encode($treinta, JSON_UNESCAPED_UNICODE));
+        $this->assertCount(30, AiMessageAction::find($treinta['tarjeta_id'])->datos['article_ids']);
+    }
+
+    /**
+     * 🔴 F3 de la ronda de arreglos (31/10/2026): 12 destinos, 7 con foto, solo_sin_foto → la respuesta cuenta
+     * los 5 de la tarjeta (`cuantos` 5), y lo mismo la lista de foto_por_llegar.
+     *
+     * @test
+     */
+    public function el_resumen_cuenta_lo_que_va_en_la_tarjeta_despues_del_filtro()
+    {
+        $clavos = $this->muchos_clavos(13);
+        $origen = $clavos[0];
+        $this->foto_real($origen);
+
+        $destinos = array_slice($clavos, 1);
+
+        for ($i = 0; $i < 7; $i++) {
+            $this->ya_tiene_foto($destinos[$i]);
+        }
+
+        $ids = array_map(function ($clavo) {
+            return (int) $clavo->id;
+        }, $destinos);
+
+        list($conversation, $assistant) = $this->conversacion('La del 1 mm para estos, solo a los que no tienen foto');
+
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, [
+            'articulo_ids'   => $ids,
+            'de_articulo_id' => $origen->id,
+            'solo_sin_foto'  => true,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(5, $respuesta['cuantos']);
+        $this->assertSame(5, $respuesta['sin_foto']);
+        $this->assertCount(5, $respuesta['articulos']);
+        $this->assertSame(array_map('intval', AiMessageAction::find($respuesta['tarjeta_id'])->datos['article_ids']), array_map(function ($fila) {
+            return (int) $fila['article_id'];
+        }, $respuesta['articulos']), 'Los mismos que la tarjeta.');
+
+        // Sin origen ni foto del chat: foto_por_llegar con los 5.
+        list($conversation2, $assistant2) = $this->conversacion('Ponele foto a estos, solo a los que no tienen');
+
+        $por_llegar = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation2), $assistant2, [
+            'articulo_ids'  => $ids,
+            'solo_sin_foto' => true,
+        ]);
+
+        $this->assertSame('foto_por_llegar', $por_llegar['codigo']);
+        $this->assertSame(5, $por_llegar['cuantos']);
+        $this->assertCount(5, $por_llegar['articulos']);
+        $this->assertStringContainsString('a estos 5:', mb_strtolower($por_llegar['error']));
+    }
+
+    /**
+     * 🔴 F4 de la ronda de arreglos (31/10/2026): con solo_sin_foto, el destino que recibió una foto entre la
+     * tarjeta y el sí se saltea (no se le suma otra) y el resultado lo dice «ya tenía foto»; si ya la tienen
+     * todos, la confirmación corta sin escribir nada.
+     *
+     * @test
+     */
+    public function al_confirmar_se_saltea_el_que_recibio_foto_despues_de_la_tarjeta()
+    {
+        $clavos = $this->nueve_clavos();
+        $this->foto_real($clavos[1]);
+
+        list($conversation, $assistant) = $this->conversacion('La del 1 1/2 para el de 2, el de 3 y el de 4, solo si no tienen foto');
+
+        $respuesta = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, [
+            'articulo_ids'   => [$clavos[2]->id, $clavos[4]->id, $clavos[6]->id],
+            'de_articulo_id' => $clavos[1]->id,
+            'solo_sin_foto'  => true,
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertTrue(AiMessageAction::find($respuesta['tarjeta_id'])->datos['solo_sin_foto']);
+
+        // Entre la tarjeta y el sí, la pantalla le pone una foto al de 3.
+        $this->ya_tiene_foto($clavos[4]);
+
+        $resultado = $this->confirmar($conversation, $respuesta['tarjeta_id']);
+
+        $this->assertSame(200, $resultado['status'], json_encode($resultado['body'], JSON_UNESCAPED_UNICODE));
+        $this->assertCount(1, $this->fotos_de($clavos[2]));
+        $this->assertCount(1, $this->fotos_de($clavos[4]), 'El que ya tenía foto se saltea: sigue con la suya sola.');
+        $this->assertCount(1, $this->fotos_de($clavos[6]));
+
+        $res = AiMessageAction::find($respuesta['tarjeta_id'])->resultado;
+
+        $this->assertCount(2, $res->hechos);
+        $this->assertCount(1, $res->no_hechos);
+        $this->assertSame(PropuestaFotoArticuloIaHelper::MOTIVO_YA_TENIA_FOTO, $res->no_hechos[0]->motivo);
+        $this->assertStringContainsString('No se la puse a 1 porque ya tenía foto: ' . $clavos[4]->name, $res->texto);
+        $this->assertStringNotContainsString('NO se la pude poner', $res->texto, 'No es una falla.');
+
+        // Si ya la tienen todos: corta sin escribir nada.
+        list($conversation2, $assistant2) = $this->conversacion('La del 1 1/2 para el de 5, si no tiene');
+
+        $otra = PropuestaFotoArticuloIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation2), $assistant2, [
+            'articulo_ids'   => [$clavos[7]->id],
+            'de_articulo_id' => $clavos[1]->id,
+            'solo_sin_foto'  => true,
+        ]);
+
+        $this->assertTrue($otra['ok'], json_encode($otra, JSON_UNESCAPED_UNICODE));
+
+        $this->ya_tiene_foto($clavos[7]);
+
+        $corte = $this->confirmar($conversation2, $otra['tarjeta_id']);
+
+        $this->assertSame(422, $corte['status'], json_encode($corte['body'], JSON_UNESCAPED_UNICODE));
+        $this->assertCount(1, $this->fotos_de($clavos[7]));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($otra['tarjeta_id'])->estado_guardado());
     }
 
     /**
