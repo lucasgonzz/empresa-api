@@ -891,6 +891,64 @@ class Endpoints_y_confirmacion_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Una línea del pie leída como percepción termina en el total que se guarda, con desglose y sin él,
+     * y ese total es el impreso (misión escaneo-factura-haiku). Es lo que justifica mandar cualquier línea
+     * que sume al total a `percepcion_iibb`: "Regímenes Especiales", "Imp. Internos" y parecidas no tienen
+     * campo propio, y es el campo que el servidor ya suma. Si la lectura la pierde, la deuda queda corta.
+     *
+     * @group escaneo-factura-compra
+     * @test
+     * @dataProvider desgloses_con_una_linea_del_pie
+     * @param  bool   $con_desglose
+     * @param  float  $total_impreso
+     * @param  float  $total_iva_esperado
+     * @return void
+     */
+    public function una_linea_del_pie_leida_como_percepcion_suma_al_total_que_se_guarda($con_desglose, $total_impreso, $total_iva_esperado)
+    {
+        $this->dar_extension($this->comercio());
+
+        $compra   = $this->crear_compra(['modo_facturacion' => 'manual']);
+        $articulo = $this->crear_articulo('ART LINEA DEL PIE ESCANEO');
+        $scan     = $this->crear_escaneo($compra);
+
+        $iva = Iva::first();
+
+        $this->postJson('api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [$this->item_existente($articulo, 1, 1000)],
+            'factura'   => [
+                'guardar'         => true,
+                'pasar_a_manual'  => false,
+                'code'            => '0003-00099002',
+                'issued_at'       => '2026-08-14',
+                'total'           => $total_impreso,
+                'percepcion_iibb' => 40,
+                'percepcion_iva'  => null,
+                'ivas'            => $con_desglose ? [['iva_id' => $iva->id, 'neto' => 1000, 'iva_importe' => 210]] : [],
+            ],
+        ])->assertStatus(200);
+
+        $ticket = ProviderOrderAfipTicket::where('provider_order_id', $compra->id)
+                                            ->whereNull('provider_order_extra_cost_id')
+                                            ->first();
+
+        $this->assertEquals(40, (float) $ticket->percepcion_iibb);
+        $this->assertEquals($total_impreso, (float) $ticket->total, 'El total guardado tiene que ser el impreso, con la línea del pie adentro.');
+        $this->assertEquals($total_iva_esperado, (float) $ticket->total_iva, 'La línea del pie no es crédito fiscal de IVA.');
+    }
+
+    /**
+     * @return array
+     */
+    public function desgloses_con_una_linea_del_pie(): array
+    {
+        return [
+            'con desglose: 1000 + 210 + 40' => [true, 1250, 210],
+            'sin desglose: factura C'       => [false, 1040, 0],
+        ];
+    }
+
+    /**
      * 🔴 Confirmar un escaneo no escribe retenciones, y sobre todo no borra las que ya estaban
      * (misión `compras-factura-manual-alicuotas`, 17/9/2026).
      *

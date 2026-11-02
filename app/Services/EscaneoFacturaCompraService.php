@@ -1478,7 +1478,7 @@ class EscaneoFacturaCompraService
 
     /**
      * System prompt: rol, tratamiento de las páginas como un solo documento, formato de
-     * salida y las nueve reglas (§3.3). El párrafo anti-complacencia del final es el
+     * salida y las diez reglas (§3.3). El párrafo anti-complacencia del final es el
      * núcleo de la funcionalidad: sin él, el modelo inventa un código o un precio
      * verosímil, el usuario lo confirma sin darse cuenta, y le entra basura al catálogo y a
      * la cuenta corriente del proveedor.
@@ -1585,7 +1585,35 @@ class EscaneoFacturaCompraService
             '8. NO devuelvas como artículos: encabezados de columna, subtotales, totales, líneas de',
             '   "SON PESOS...", leyendas de AFIP, condiciones de pago, ni el pie del comprobante.',
             '',
-            '9. REGLA ANTI-COMPLACENCIA (la más importante, no la relajes): si un dato no se lee con',
+            /*
+             * 🔴 Regla medida (misión escaneo-factura-haiku, 2/11/2026). Una percepción de pie con otro
+             * nombre ("Regímenes Especiales") se perdía en 15 de las 16 lecturas cuyo total no cuadraba,
+             * incluidas todas las de Sonnet 5.5 sobre esas facturas, y el total que se guarda sale de lo
+             * leído: la deuda con el proveedor quedaba un 3,2 % corta.
+             *
+             * Va a `percepcion_iibb` lo que no sea de IVA porque el contrato no tiene otro campo y es el
+             * que el servidor ya suma (FacturaDeCompraHelper::percepciones()). Tiene un costo: ese campo
+             * también entra a la posición fiscal como percepción de IIBB sufrida (PosicionFiscalHelper),
+             * por eso se le pide que avise cuando la línea no dice IIBB, para que se corrija al revisar.
+             *
+             * "Ret." no contradice que las retenciones no se pidan (ver CAMPOS_NUMERICOS_FACTURA): acá
+             * entra solo la línea que SUMA al total impreso, no un campo de retenciones.
+             *
+             * La salvedad del neto hace falta: sin ella, "toda línea que suma al total" también es el
+             * neto. La anti-complacencia queda última a propósito: pedirle que la cuenta cierre invita a
+             * ajustar un importe para que cierre.
+             */
+            '9. PERCEPCIONES Y OTROS CONCEPTOS DEL PIE: toda línea del pie de la factura que sume al total y',
+            '   no sea el neto (gravado, exento o no gravado) ni el IVA va en un campo de percepciones, aunque',
+            '   tenga otro nombre: "Regímenes Especiales", "Perc. IIBB", "Percepción IVA", "Imp. Internos",',
+            '   "Ret." y parecidas. No puede quedar afuera. Lo que sea percepción de IVA va en "percepcion_iva";',
+            '   todo lo demás, en "percepcion_iibb". Si varias líneas van al mismo campo, poné la suma. Si pusiste',
+            '   en "percepcion_iibb" una línea que no dice IIBB, anotá en "avisos" cuál fue.',
+            '   Control: la suma de "neto" e "importe" de "ivas" más "percepcion_iibb" y "percepcion_iva" tiene que dar el "total" impreso.',
+            '   Si no da, NO inventes ni ajustes ningún valor para que cierre: dejá lo que leíste y anotá en',
+            '   "avisos" que no cierra.',
+            '',
+            '10. REGLA ANTI-COMPLACENCIA (la más importante, no la relajes): si un dato no se lee con',
             '   claridad, poné null y marcalo en "campos_dudosos". Decir "no pude leerlo" es una respuesta',
             '   correcta y esperada. Inventar un código de artículo o un precio verosímil es el peor error',
             '   posible: el usuario lo va a confirmar sin darse cuenta y le va a entrar basura al catálogo',

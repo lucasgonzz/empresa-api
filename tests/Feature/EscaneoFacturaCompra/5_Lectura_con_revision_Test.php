@@ -1060,6 +1060,47 @@ class Lectura_con_revision_Test extends EmpresaTestCase
         ];
     }
 
+    /**
+     * 🔴 El prompt pide que ninguna línea del pie quede afuera. La causa medida de los totales que no
+     * cuadran es una percepción rotulada "Regímenes Especiales" que tanto Haiku como Sonnet 5.5 pierden:
+     * el modelo no la reconoce como percepción, y el total que se guarda sale de lo que leyó.
+     *
+     * También que el control pida no inventar, y que la regla anti-complacencia siga siendo la última:
+     * un modelo al que se le pide que la cuenta cierre puede inflar un importe para que cierre.
+     *
+     * @test
+     * @return void
+     */
+    public function el_prompt_pide_que_ninguna_linea_del_pie_quede_afuera()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(1, 100, null, 100)])),
+        ]);
+
+        $this->correr_el_job($this->escaneo_con_foto());
+
+        $prompt = Http::recorded()->first()[0]->data()['system'];
+
+        foreach (['Regímenes Especiales', 'Perc. IIBB', 'Percepción IVA', 'Imp. Internos', '"Ret."'] as $rotulo) {
+            $this->assertStringContainsString($rotulo, $prompt);
+        }
+
+        $this->assertStringContainsString('No puede quedar afuera', $prompt);
+        $this->assertStringContainsString('todo lo demás, en "percepcion_iibb"', $prompt);
+        $this->assertStringContainsString('tiene que dar el "total" impreso', $prompt);
+        $this->assertStringContainsString('NO inventes ni ajustes ningún valor para que cierre', $prompt);
+        $this->assertStringContainsString('"avisos" que no cierra', $prompt);
+
+        /* El neto no es una percepción: sin esta salvedad, "toda línea que suma" también lo incluye. */
+        $this->assertStringContainsString('no sea el neto (gravado, exento o no gravado) ni el IVA', $prompt);
+
+        $this->assertGreaterThan(
+            strpos($prompt, 'No puede quedar afuera'),
+            strpos($prompt, 'REGLA ANTI-COMPLACENCIA'),
+            'La regla anti-complacencia tiene que seguir siendo la última.'
+        );
+    }
+
     /* ------------------------------------------------------------------ *
      *  El rastro en el log
      * ------------------------------------------------------------------ */
