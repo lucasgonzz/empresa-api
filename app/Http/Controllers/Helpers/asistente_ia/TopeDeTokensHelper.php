@@ -127,6 +127,20 @@ class TopeDeTokensHelper
     ];
 
     /**
+     * Cómo nombra la tabla de precios a los modelos de cada proveedor: de la columna `proveedor` de
+     * `ai_token_usages` a los prefijos de config/ia_precios.php del admin. Sirve para cobrarle a un modelo sin
+     * tarifa la más cara DE SU PROVEEDOR (ver tarifa_de_reemplazo()). La columna es confiable: los llamadores de
+     * AiTokenUsageHelper::registrar() que no la mandan solo usan Anthropic, y ese es su default.
+     *
+     * @var array<string, array<int, string>>
+     */
+    const PREFIJOS_POR_PROVEEDOR = [
+        'anthropic' => ['claude'],
+        'deepseek'  => ['deepseek'],
+        'openai'    => ['gpt', 'text-embedding'],
+    ];
+
+    /**
      * Lo que ya se avisó al log en este proceso: un modelo sin tarifa cae en cada mensaje del dueño y un
      * worker vive días; sin esto el warning taparía el log.
      *
@@ -222,9 +236,9 @@ class TopeDeTokensHelper
      * La consulta va por el índice (user_id, created_at) de ai_token_usages: un dueño, un mes, y agrupa en
      * la base y no en PHP. No se cachea: un corte con un número viejo deja pasar lo que ya no debe.
      *
-     * 🔴 UN MODELO SIN TARIFA NUNCA ES GRATIS: se cobra a la más cara de la tabla (tarifa_mas_cara()) y queda
-     * un warning en el log. Es lo contrario de lo que hace el admin en su pantalla, que lo deja afuera y lo
-     * dice, y está bien que difieran: allá un total inventado engaña a quien lo lee, y acá un modelo nuevo
+     * 🔴 UN MODELO SIN TARIFA NUNCA ES GRATIS: se cobra a la más cara DE SU PROVEEDOR (tarifa_de_reemplazo()) y
+     * queda un warning en el log. Es lo contrario de lo que hace el admin en su pantalla, que lo deja afuera y
+     * lo dice, y está bien que difieran: allá un total inventado engaña a quien lo lee, y acá un modelo nuevo
      * que no cuente deja a un negocio gastar sin techo.
      *
      * @param  \App\Models\User|null  $owner
@@ -239,7 +253,8 @@ class TopeDeTokensHelper
             return 0.0;
         }
 
-        $seleccion = 'modelo';
+        /* `proveedor` va en el agrupado porque de él sale la tarifa de un modelo que no está en la tabla. */
+        $seleccion = 'modelo, proveedor';
 
         foreach (array_keys(self::PUNTAS) as $columna) {
             $seleccion .= ', COALESCE(SUM(' . $columna . '), 0) as ' . $columna;
@@ -247,7 +262,7 @@ class TopeDeTokensHelper
 
         $filas = AiTokenUsage::where('user_id', $owner_id)
             ->whereBetween('created_at', [Carbon::now()->startOfMonth(), Carbon::now()->endOfMonth()])
-            ->groupBy('modelo')
+            ->groupBy('modelo', 'proveedor')
             ->selectRaw($seleccion)
             ->get();
 
@@ -285,9 +300,10 @@ class TopeDeTokensHelper
         $tarifa = self::tarifa_de($fila->modelo, $precios);
 
         if (is_null($tarifa)) {
-            $tarifa = self::tarifa_mas_cara($precios);
-            self::avisar_una_vez('modelo:' . (string) $fila->modelo, 'TopeDeTokensHelper: modelo sin tarifa en plan_ia_precios, se cobra a la más cara de la tabla.', [
-                'modelo' => (string) $fila->modelo,
+            $tarifa = self::tarifa_de_reemplazo($fila, $precios);
+            self::avisar_una_vez('modelo:' . (string) $fila->modelo, 'TopeDeTokensHelper: modelo sin tarifa en plan_ia_precios, se cobra a la más cara de su proveedor.', [
+                'modelo'    => (string) $fila->modelo,
+                'proveedor' => (string) $fila->proveedor,
             ]);
         }
 
@@ -350,11 +366,75 @@ class TopeDeTokensHelper
     }
 
     /**
-     * La tarifa más cara de la tabla: la de mayor suma de las cuatro puntas. Se compara la fila entera y no
+     * La tarifa con la que se cobra un modelo que no está en la tabla: la más cara de SU proveedor, y si la
+     * tabla no tiene ninguno, o la de su proveedor no le sirve, la más cara de todas.
+     *
+     * 🔴 POR QUÉ NO LA MÁS CARA DE TODA LA TABLA (revisión del contrato, 2/11/2026). DEEPSEEK_MODEL permite un id
+     * que la tabla no tenga, y a precio de Opus 5 el volumen de Ferre Total (614 mil de entrada, 27 mil de
+     * salida, 11,3 millones de caché) daba US$ 9,40 en vez de US$ 0,28: con un tope de US$ 5 el negocio se
+     * quedaba sin agente y el único rastro era un warning.
+     *
+     * 🔴 Y LA DE SU PROVEEDOR TIENE QUE COBRAR LO QUE LA FILA USÓ. El único modelo de OpenAI de la tabla es un
+     * embedding, con la salida en cero: a esa tarifa, un `gpt-*` desconocido saldría gratis (hoy es el caso de
+     * `gpt-4o-mini-transcribe`, que la tabla no trae). Se mira solo entrada y salida: que DeepSeek no cobre la
+     * escritura en caché es su precio real, no una tarifa que no sirve.
+     *
+     * @param  \App\Models\AiTokenUsage  $fila
+     * @param  array  $precios  Lo que devolvió precios_de().
+     * @return array
+     */
+    protected static function tarifa_de_reemplazo($fila, array $precios)
+    {
+        $tarifa = self::tarifa_mas_cara(self::precios_del_proveedor($fila->proveedor, $precios));
+
+        foreach (['input_tokens' => 'input', 'output_tokens' => 'output'] as $columna => $punta) {
+            $precio = isset($tarifa[$punta]) ? (float) $tarifa[$punta] : 0.0;
+
+            if ((int) $fila->{$columna} > 0 && $precio <= 0) {
+
+                return self::tarifa_mas_cara($precios);
+            }
+        }
+
+        return empty($tarifa) ? self::tarifa_mas_cara($precios) : $tarifa;
+    }
+
+    /**
+     * Las filas de la tabla que son de un proveedor, por el prefijo del nombre. El prefijo corta en un guion,
+     * igual que en tarifa_de(): `claude-opus-5` es de Claude y `claudette-x` no.
+     *
+     * @param  string|null  $proveedor  La columna `proveedor` de ai_token_usages.
+     * @param  array  $precios  Lo que devolvió precios_de().
+     * @return array<string, array>
+     */
+    protected static function precios_del_proveedor($proveedor, array $precios)
+    {
+        $proveedor = strtolower(trim((string) $proveedor));
+
+        if (! isset(self::PREFIJOS_POR_PROVEEDOR[$proveedor])) {
+
+            return [];
+        }
+
+        $del_proveedor = [];
+
+        foreach ($precios as $nombre => $tarifa) {
+            foreach (self::PREFIJOS_POR_PROVEEDOR[$proveedor] as $prefijo) {
+                if (strpos((string) $nombre, $prefijo . '-') === 0) {
+                    $del_proveedor[$nombre] = $tarifa;
+                }
+            }
+        }
+
+        return $del_proveedor;
+    }
+
+    /**
+     * La tarifa más cara de una lista: la de mayor suma de las cuatro puntas. Se compara la fila entera y no
      * punta por punta para no armar una tarifa que ningún modelo tiene.
      *
-     * @param  array  $precios  Lo que devolvió precios_de(). Si un tope de gasto rige, no está vacía
-     *                          (tope_de_gasto_vigente()).
+     * @param  array  $precios  Si es la tabla entera y un tope de gasto rige, no está vacía
+     *                          (tope_de_gasto_vigente()). Una lista vacía devuelve [].
      * @return array
      */
     protected static function tarifa_mas_cara(array $precios)
