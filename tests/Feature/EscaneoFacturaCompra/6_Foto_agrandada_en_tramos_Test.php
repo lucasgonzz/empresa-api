@@ -20,7 +20,7 @@ use Tests\Feature\AgentesIa\OtorgaAgentesIa;
  * Agrandar es lo que arregló los códigos mal leídos del modelo económico (de 17 a 0 en la medición).
  * Lo que protege este archivo:
  *
- * - Que la geometría sea la medida: ancho hasta 1560, escala hasta ×3, tramos de 1100 con 80 de
+ * - Que la geometría sea la decidida: ancho hasta 1560, escala hasta ×3, tramos de 1100 con 165 de
  *   solape. Con otra, los números de la misión dejan de valer sin que nada se rompa.
  * - 🔴 Que sin memoria la foto salga como siempre. Un error fatal de memoria no se atrapa: tumba el
  *   worker, y el escaneo queda colgado junto con todo lo que hubiera en la cola.
@@ -300,14 +300,15 @@ class Foto_agrandada_en_tramos_Test extends EmpresaTestCase
         $this->assertSame(900, $imagenes[0]['ancho']);
         $this->assertSame(1100, $imagenes[0]['alto']);
         $this->assertSame(900, $imagenes[1]['ancho']);
-        $this->assertSame(480, $imagenes[1]['alto'], '1500 de alto: el segundo tramo arranca en 1020.');
+        $this->assertSame(565, $imagenes[1]['alto'], '1500 de alto: el segundo tramo arranca en 935.');
     }
 
     /**
      * El ancho llega a 1560 como máximo: 600 de ancho van ×2,6, no ×3.
      *
-     * Y el solape es real: las últimas 80 filas del primer tramo son las primeras 80 del segundo, pixel
-     * por pixel. Sin solape, un renglón que cae justo en el corte queda partido en dos imágenes.
+     * Y el solape es real: las últimas 165 filas de un tramo (el 15 % de su alto) son las primeras 165
+     * del siguiente, pixel por pixel. Sin solape, un renglón que cae justo en el corte queda partido en
+     * dos imágenes.
      *
      * @test
      * @return void
@@ -323,24 +324,26 @@ class Foto_agrandada_en_tramos_Test extends EmpresaTestCase
 
         $imagenes = $this->imagenes_mandadas();
 
-        $this->assertCount(2, $imagenes);
+        $this->assertCount(3, $imagenes, '2080 de alto: los tramos arrancan en 0, 935 y 1870.');
         $this->assertSame(1560, $imagenes[0]['ancho']);
         $this->assertSame(1100, $imagenes[0]['alto']);
         $this->assertSame(1560, $imagenes[1]['ancho']);
-        $this->assertSame(1060, $imagenes[1]['alto'], '2080 de alto: el segundo tramo arranca en 1020.');
+        $this->assertSame(1100, $imagenes[1]['alto']);
+        $this->assertSame(210, $imagenes[2]['alto']);
 
         $this->assertSame('image/png', $imagenes[0]['media_type']);
-        $this->assertSame('PÁGINA 1 de 1, TRAMO 1 de 2', $imagenes[0]['rotulo']);
-        $this->assertSame('PÁGINA 1 de 1, TRAMO 2 de 2', $imagenes[1]['rotulo']);
+        $this->assertSame('PÁGINA 1 de 1, TRAMO 1 de 3', $imagenes[0]['rotulo']);
+        $this->assertSame('PÁGINA 1 de 1, TRAMO 2 de 3', $imagenes[1]['rotulo']);
+        $this->assertSame('PÁGINA 1 de 1, TRAMO 3 de 3', $imagenes[2]['rotulo']);
 
         $primero = imagecreatefromstring($imagenes[0]['binario']);
         $segundo = imagecreatefromstring($imagenes[1]['binario']);
 
-        foreach ([0, 40, 79] as $fila) {
+        foreach ([0, 80, 164] as $fila) {
             $this->assertSame(
-                imagecolorat($primero, 700, 1020 + $fila),
+                imagecolorat($primero, 700, 935 + $fila),
                 imagecolorat($segundo, 700, $fila),
-                'La fila ' . $fila . ' del segundo tramo tiene que ser la ' . (1020 + $fila) . ' del primero.'
+                'La fila ' . $fila . ' del segundo tramo tiene que ser la ' . (935 + $fila) . ' del primero.'
             );
         }
 
@@ -394,7 +397,7 @@ class Foto_agrandada_en_tramos_Test extends EmpresaTestCase
         $this->assertSame(1500, $imagenes[0]['ancho']);
         $this->assertSame(1100, $imagenes[0]['alto']);
         $this->assertSame(1500, $imagenes[1]['ancho']);
-        $this->assertSame(380, $imagenes[1]['alto']);
+        $this->assertSame(465, $imagenes[1]['alto'], '1400 de alto: el segundo tramo arranca en 935.');
     }
 
     /* ------------------------------------------------------------------ *
@@ -544,10 +547,11 @@ class Foto_agrandada_en_tramos_Test extends EmpresaTestCase
 
         $imagenes = $this->imagenes_mandadas();
 
-        $this->assertCount(3, $imagenes);
-        $this->assertSame('PÁGINA 1 de 2, TRAMO 1 de 2', $imagenes[0]['rotulo']);
-        $this->assertSame('PÁGINA 1 de 2, TRAMO 2 de 2', $imagenes[1]['rotulo']);
-        $this->assertSame('PÁGINA 2 de 2', $imagenes[2]['rotulo']);
+        $this->assertCount(4, $imagenes);
+        $this->assertSame('PÁGINA 1 de 2, TRAMO 1 de 3', $imagenes[0]['rotulo']);
+        $this->assertSame('PÁGINA 1 de 2, TRAMO 2 de 3', $imagenes[1]['rotulo']);
+        $this->assertSame('PÁGINA 1 de 2, TRAMO 3 de 3', $imagenes[2]['rotulo']);
+        $this->assertSame('PÁGINA 2 de 2', $imagenes[3]['rotulo']);
 
         $this->assertSame(2, $resultado['paginas_procesadas']);
         $this->assertStringContainsString('Páginas del comprobante que te mandé: 2.', $this->instrucciones_mandadas());

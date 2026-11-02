@@ -179,11 +179,17 @@ class EscaneoFacturaCompraService
 
     /**
      * Filas que comparten dos tramos seguidos, para que un renglón que cae justo en el corte se lea
-     * entero en alguno de los dos.
+     * entero en alguno de los dos: el 15 % del alto del tramo.
+     *
+     * 🔴 No alcanza con la altura de un renglón, por la deriva de la inclinación. El corte es horizontal
+     * y una foto de celular nunca está derecha, así que un mismo renglón cae más arriba en un borde
+     * que en el otro. A este ancho, 2° de inclinación son 54 px de deriva y 3° son 82, más los 40 o 50
+     * px que ocupa un renglón agrandado: con 80 de solape, un renglón inclinado podía quedar partido en
+     * los dos tramos. Con 165 entra hasta unos 4°.
      *
      * @var int
      */
-    const SOLAPE_TRAMO = 80;
+    const SOLAPE_TRAMO = 165;
 
     /**
      * Margen sobre el tamaño de un bitmap decodificado (4 bytes por pixel) que se exige tener libre,
