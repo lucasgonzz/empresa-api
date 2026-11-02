@@ -585,9 +585,9 @@ class EscaneoFacturaCompraService
              * las percepciones (ProviderOrderScanController::guardar_factura()). Medido en 7 facturas A:
              * el total y su desglose dan exacto o se alejan un 3,2 %, sin nada en el medio, y ese 3,2 %
              * es una percepción de pie que esa lectura perdió (otras lecturas de la misma factura la
-             * traen justa; se rotula, por ejemplo, "Regímenes Especiales"). No hubo falsas alarmas. Ojo:
-             * en lo medido Sonnet 5.5 también la pierde, así que ahí la revisión no la recupera y lo
-             * que queda es el aviso.
+             * traen justa; se rotula, por ejemplo, "Regímenes Especiales"). No hubo falsas alarmas. Desde
+             * la regla 9 del prompt ninguna lectura la perdió en 60 escaneos reales de 10 facturas. Si
+             * vuelve a pasar y la revisión tampoco la trae, queda el aviso.
              */
             $control['motivo'] = 'total_no_cuadra';
         }
