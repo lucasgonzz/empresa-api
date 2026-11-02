@@ -569,6 +569,11 @@ class EscaneoFacturaCompraService
      * error (ahí no hay `resultado` donde quede). Es lo que permite medir después cuántas facturas
      * se revisan. Ningún dato de la factura: solo ids, modelos, un motivo y tokens.
      *
+     * 🔴 En `warning` si hubo revisión o error, y no es por la gravedad: el piso de log de casi todas
+     * las instalaciones es `warning` (ver config/logging.php), así que en `info` este rastro no se
+     * escribe justo donde hace falta medirlo. La lectura que pasó de una queda en `info`: sería una
+     * línea por escaneo y no agrega nada.
+     *
      * @param  \App\Models\ProviderOrderScan  $scan
      * @param  array                          $primera   Salida de leer_factura()
      * @param  array                          $ganadora  Salida de leer_factura()
@@ -577,7 +582,7 @@ class EscaneoFacturaCompraService
      */
     protected function dejar_rastro_de_la_lectura(ProviderOrderScan $scan, array $primera, array $ganadora, $motivo)
     {
-        Log::info('EscaneoFacturaCompraService: lectura terminada', [
+        $contexto = [
             'provider_order_scan_id' => $scan->id,
             'primer_modelo'          => $primera['modelo'],
             'modelo'                 => $ganadora['modelo'],
@@ -587,7 +592,15 @@ class EscaneoFacturaCompraService
             'motivo_del_error'       => $ganadora['motivo_falla'],
             'tokens_primera'         => $primera['tokens'],
             'tokens_ganadora'        => $ganadora['tokens'],
-        ]);
+        ];
+
+        if (!is_null($motivo) || !is_null($ganadora['error'])) {
+            Log::warning('EscaneoFacturaCompraService: lectura terminada', $contexto);
+
+            return;
+        }
+
+        Log::info('EscaneoFacturaCompraService: lectura terminada', $contexto);
     }
 
     /**
@@ -654,7 +667,7 @@ class EscaneoFacturaCompraService
             $tramos = $this->tramos_de_la_foto($binario, $max_side, $scan, (int) $image->orden);
 
             if (count($tramos) > 0 && !$this->alcanza_para_enviar($tramos, $bytes_acumulados)) {
-                Log::info('EscaneoFacturaCompraService: los tramos de una foto no entran en el pedido; va como siempre', [
+                Log::warning('EscaneoFacturaCompraService: los tramos de una foto no entran en el pedido; va como siempre', [
                     'provider_order_scan_id' => $scan->id,
                     'orden'                  => $image->orden,
                 ]);
@@ -801,7 +814,7 @@ class EscaneoFacturaCompraService
             $bytes_tramo  = $medidas['ancho'] * min($medidas['alto'], self::ALTO_TRAMO) * 4;
 
             if (!$this->hay_memoria_para(($bytes_bitmap + $bytes_tramo + self::MAX_BYTES_POR_TRAMO) * self::FACTOR_MEMORIA)) {
-                Log::info('EscaneoFacturaCompraService: sin memoria para agrandar una foto; va como siempre', [
+                Log::warning('EscaneoFacturaCompraService: sin memoria para agrandar una foto; va como siempre', [
                     'provider_order_scan_id' => $scan->id,
                     'orden'                  => $orden,
                 ]);
@@ -815,7 +828,7 @@ class EscaneoFacturaCompraService
 
             return $this->cortar_en_tramos($img->getCore());
         } catch (\Throwable $e) {
-            Log::info('EscaneoFacturaCompraService: no se pudo agrandar una foto; va como siempre', [
+            Log::warning('EscaneoFacturaCompraService: no se pudo agrandar una foto; va como siempre', [
                 'provider_order_scan_id' => $scan->id,
                 'orden'                  => $orden,
                 'error'                  => $e->getMessage(),
@@ -1365,8 +1378,9 @@ class EscaneoFacturaCompraService
         $fin    = strrpos($texto, '}');
 
         if ($inicio === false || $fin === false || $fin <= $inicio) {
+            /* Sin la respuesta: trae datos de la factura de un cliente, y el log no es lugar para eso. */
             Log::error('EscaneoFacturaCompraService: la respuesta de la IA no contiene un objeto JSON', [
-                'respuesta_cruda' => mb_substr($texto, 0, 2000),
+                'largo' => mb_strlen($texto),
             ]);
 
             throw new \RuntimeException('La IA no devolvió un JSON válido con los datos de la factura.');
@@ -1376,7 +1390,8 @@ class EscaneoFacturaCompraService
         $decoded  = json_decode($json, true);
 
         /*
-         * Paso 4: si no decodifica, se loguea la respuesta cruda y se corta con mensaje legible.
+         * Paso 4: si no decodifica, se loguea el error y el largo, y se corta con mensaje legible. La
+         * respuesta cruda no se loguea: trae datos de la factura de un cliente.
          *
          * 🔴 El mensaje de error se guarda en una variable ANTES de loguear: Log::error() termina
          * serializando el contexto con json_encode() (vía el formatter de Monolog), y ese
@@ -1388,8 +1403,8 @@ class EscaneoFacturaCompraService
             $mensaje_error = json_last_error_msg();
 
             Log::error('EscaneoFacturaCompraService: JSON inválido en la respuesta de la IA', [
-                'respuesta_cruda' => mb_substr($texto, 0, 2000),
-                'json_error'      => $mensaje_error,
+                'largo'      => mb_strlen($texto),
+                'json_error' => $mensaje_error,
             ]);
 
             throw new \RuntimeException('La IA no devolvió un JSON válido con los datos de la factura: ' . $mensaje_error);
