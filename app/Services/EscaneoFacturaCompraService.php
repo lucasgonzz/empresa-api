@@ -147,6 +147,72 @@ class EscaneoFacturaCompraService
     const BETA_FALLBACK_DE_SERVIDOR = 'server-side-fallback-2026-07-01';
 
     /**
+     * Ancho al que se agranda la foto, como máximo. Junto con la escala y los tramos de abajo es la
+     * geometría medida (misión escaneo-factura-haiku): con ella el modelo económico pasó de 17 códigos
+     * mal leídos a ninguno. No son números de ajuste fino: si cambian, hay que volver a medir.
+     *
+     * @var int
+     */
+    const ANCHO_MAXIMO_AGRANDADA = 1560;
+
+    /**
+     * Escala máxima del agrandado: más allá de ×3 una foto muy chica no gana detalle, solo tokens.
+     *
+     * @var int
+     */
+    const ESCALA_MAXIMA = 3;
+
+    /**
+     * Debajo de esta escala no se agranda: una foto que ya casi llega al ancho no gana nada, y
+     * remuestrearla la deja apenas más borrosa y ocupa más memoria.
+     *
+     * @var float
+     */
+    const ESCALA_MINIMA_QUE_SUMA = 1.1;
+
+    /**
+     * Alto de cada tramo, en píxeles.
+     *
+     * @var int
+     */
+    const ALTO_TRAMO = 1100;
+
+    /**
+     * Filas que comparten dos tramos seguidos, para que un renglón que cae justo en el corte se lea
+     * entero en alguno de los dos.
+     *
+     * @var int
+     */
+    const SOLAPE_TRAMO = 80;
+
+    /**
+     * Margen sobre el tamaño de un bitmap decodificado (4 bytes por pixel) que se exige tener libre,
+     * el mismo criterio de ImageCropHelper::has_memory_to_copy(). El 30 % cubre el resto de lo que el
+     * proceso tiene en vuelo.
+     *
+     * @var float
+     */
+    const FACTOR_MEMORIA = 1.3;
+
+    /**
+     * Peso máximo de un tramo en PNG, en bytes. La API acepta 10 MB por imagen medidos en base64, que
+     * son 7,5 MB crudos: se deja margen. Con el `max_side` por defecto un tramo no llega ni cerca
+     * (medido: 1,1 MB); solo importa si alguien lo sube por .env.
+     *
+     * @var int
+     */
+    const MAX_BYTES_POR_TRAMO = 7340032;
+
+    /**
+     * Peso máximo del total de imágenes de un escaneo, en bytes crudos. Son unos 85 MB en base64 contra
+     * los 128 MB que la API acepta por pedido. Lo normal son 3 MB por página. Se lee con `static::`
+     * para poder probarlo.
+     *
+     * @var int
+     */
+    const MAX_BYTES_POR_ESCANEO = 67108864;
+
+    /**
      * Memoria de la resolución de alícuotas dentro de un mismo escaneo: texto del porcentaje
      * ('21', '10.5') → id de `ivas`, o null si esa alícuota no existe en la tabla.
      *
@@ -229,6 +295,9 @@ class EscaneoFacturaCompraService
         /* Los avisos de la preparación (fotos salteadas) se suman a los que dio la IA. */
         $parseado['avisos'] = array_merge($avisos, $parseado['avisos']);
 
+        /* `pagina` es de la hoja real: un número de tramo que se haya colado no puede pasar de acá. */
+        $parseado['articulos'] = $this->acotar_paginas($parseado['articulos'], $preparacion['paginas']);
+
         /* Lo que agrega el backend: match contra el catálogo e iva_id de cada alícuota. */
         $parseado['articulos'] = $this->matchear_articulos($parseado['articulos'], $scan);
         $parseado['articulos'] = $this->resolver_iva_id_de_articulos($parseado['articulos']);
@@ -236,7 +305,7 @@ class EscaneoFacturaCompraService
 
         return [
             'version'             => self::VERSION_CONTRATO,
-            'paginas_procesadas'  => count($imagenes),
+            'paginas_procesadas'  => $preparacion['paginas'],
             'columnas_detectadas' => $parseado['columnas_detectadas'],
             'articulos'           => $parseado['articulos'],
             'factura'             => $parseado['factura'],
@@ -522,13 +591,17 @@ class EscaneoFacturaCompraService
     }
 
     /**
-     * Lee las fotos del escaneo de disco y las deja listas para mandar: redimensionadas al
-     * lado mayor configurado y en base64.
+     * Lee las fotos del escaneo de disco y las deja listas para mandar, en base64.
+     *
+     * Primero intenta agrandarla y cortarla en tramos (ver tramos_de_la_foto()), que es lo que
+     * le permite al modelo económico leer bien los códigos. Si eso no suma, no entra en memoria
+     * o falla por cualquier motivo, la foto va como siempre fue: redimensionada al lado mayor
+     * configurado y en webp.
      *
      * Las fotos ya se guardaron redimensionadas y en webp cuando el usuario las subió, así
-     * que este paso normalmente no cambia nada (el `upsize` del constraint impide agrandar).
-     * Se hace igual porque el servicio no puede confiar en cómo quedó el archivo en disco:
-     * una foto guardada por una versión anterior, o un archivo tocado a mano, tiene que
+     * que el camino de siempre normalmente no cambia nada (el `upsize` del constraint impide
+     * agrandar). Se hace igual porque el servicio no puede confiar en cómo quedó el archivo en
+     * disco: una foto guardada por una versión anterior, o un archivo tocado a mano, tiene que
      * llegar igual a la API con un media_type que Anthropic acepte.
      *
      * Camino de respaldo: si Intervention no puede procesar el archivo (GD sin soporte de
@@ -537,16 +610,23 @@ class EscaneoFacturaCompraService
      * con un aviso, no tumba el escaneo entero: cinco páginas buenas y una borrosa siguen
      * valiendo la pena.
      *
+     * Cada elemento de `imagenes` es una imagen a mandar, que puede ser una foto entera o un tramo.
+     * `pagina` es la posición de la foto entre las que se pudieron leer, que es lo que dice el rótulo;
+     * `paginas` cuenta hojas, no imágenes.
+     *
      * @param  \App\Models\ProviderOrderScan  $scan
-     * @return array  ['imagenes' => [['orden'=>int,'media_type'=>string,'base64'=>string], ...], 'avisos' => string[]]
+     * @return array  ['imagenes' => [['orden'=>int,'pagina'=>int,'tramo'=>int,'tramos'=>int,'media_type'=>string,'base64'=>string], ...],
+     *                 'avisos' => string[], 'paginas' => int]
      */
     protected function preparar_imagenes(ProviderOrderScan $scan): array
     {
         $max_side = (int) config('services.escaneo_factura_compra.max_side');
         $max_side = $max_side > 0 ? $max_side : 1568;
 
-        $imagenes = [];
-        $avisos   = [];
+        $imagenes         = [];
+        $avisos           = [];
+        $paginas          = 0;
+        $bytes_acumulados = 0;
 
         $filas = $scan->images()->orderBy('orden')->get();
 
@@ -568,6 +648,36 @@ class EscaneoFacturaCompraService
 
             if ($binario === false || $binario === '') {
                 $avisos[] = 'No se pudo leer la página ' . $image->orden . '; se analizó el resto.';
+                continue;
+            }
+
+            $tramos = $this->tramos_de_la_foto($binario, $max_side, $scan, (int) $image->orden);
+
+            if (count($tramos) > 0 && !$this->alcanza_para_enviar($tramos, $bytes_acumulados)) {
+                Log::info('EscaneoFacturaCompraService: los tramos de una foto no entran en el pedido; va como siempre', [
+                    'provider_order_scan_id' => $scan->id,
+                    'orden'                  => $image->orden,
+                ]);
+
+                $tramos = [];
+            }
+
+            if (count($tramos) > 0) {
+                $paginas++;
+
+                foreach ($tramos as $indice => $png) {
+                    $bytes_acumulados += strlen($png);
+
+                    $imagenes[] = [
+                        'orden'      => (int) $image->orden,
+                        'pagina'     => $paginas,
+                        'tramo'      => $indice + 1,
+                        'tramos'     => count($tramos),
+                        'media_type' => 'image/png',
+                        'base64'     => base64_encode($png),
+                    ];
+                }
+
                 continue;
             }
 
@@ -617,14 +727,311 @@ class EscaneoFacturaCompraService
                 $media_type = $mime_guardado;
             }
 
+            $paginas++;
+            $bytes_acumulados += strlen($encodeada);
+
             $imagenes[] = [
                 'orden'      => (int) $image->orden,
+                'pagina'     => $paginas,
+                'tramo'      => 1,
+                'tramos'     => 1,
                 'media_type' => $media_type,
                 'base64'     => base64_encode($encodeada),
             ];
         }
 
-        return ['imagenes' => $imagenes, 'avisos' => $avisos];
+        return ['imagenes' => $imagenes, 'avisos' => $avisos, 'paginas' => $paginas];
+    }
+
+    /**
+     * Agranda una foto y la corta en tramos, y devuelve el PNG de cada uno, de arriba hacia abajo.
+     * Vacío significa "mandala como siempre": no hacía falta, no entra en memoria o algo falló.
+     *
+     * Medido con facturas reales: el modelo económico lee mal los códigos impresos chicos en la foto
+     * tal cual (un dígito de menos, un 5 leído como 6), y agrandada deja de hacerlo. Se corta porque
+     * la API achica por su cuenta las imágenes demasiado grandes: sin tramos, una hoja agrandada
+     * volvería a achicarse y el agrandado se perdería.
+     *
+     * PNG y no webp porque es con lo que se midió, y no agrega pérdida sobre una foto que ya la tiene.
+     *
+     * Se agranda con el resize de Intervention (imagecopyresampled) y no con imagescale() bicúbico,
+     * aunque la medición se hizo con el bicúbico de otra librería: comparado contra ese, el resize de
+     * GD queda más cerca (30 a 41 dB, contra 16 a 35 del bicúbico de GD) y pesa menos de la mitad.
+     *
+     * 🔴 LA MEMORIA MANDA ACÁ. Un error fatal por memoria no se atrapa con ningún catch: tumba el
+     * worker con el escaneo colgado y lo que hubiera en la cola. Por eso se calcula ANTES de agrandar,
+     * y por eso se recorta con imagecrop(), que copia solo ese pedazo, y no clonando el bitmap entero
+     * por tramo. Cada bitmap se libera apenas deja de hacer falta. Una foto ancha no se agranda.
+     *
+     * Trabaja con GD directo porque `new ImageManager()` sin configuración usa siempre ese driver, y
+     * porque Intervention recorta en el lugar: cortar ahí perdería el resto de la imagen.
+     *
+     * @param  string                         $binario   Contenido del archivo
+     * @param  int                            $max_side  Lado mayor configurado
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @param  int                            $orden     Orden de la foto, solo para el log
+     * @return string[]
+     */
+    protected function tramos_de_la_foto(string $binario, int $max_side, ProviderOrderScan $scan, int $orden): array
+    {
+        $img = null;
+
+        try {
+            $manager = new ImageManager();
+            $img     = $manager->make($binario);
+
+            /* El mismo tope de siempre: una foto más grande que el configurado baja primero. */
+            $img->resize($max_side, $max_side, function ($constraint) {
+                $constraint->aspectRatio();
+                $constraint->upsize();
+            });
+
+            $medidas = $this->medidas_agrandadas($img->width(), $img->height());
+
+            /* Ni suma agrandarla ni hay nada que cortar: es una foto para mandar como siempre. */
+            if (!$medidas['agrandar'] && $medidas['alto'] <= self::ALTO_TRAMO) {
+                return [];
+            }
+
+            /*
+             * El bitmap final, un tramo y su PNG conviven con la imagen que ya está en memoria,
+             * contada dentro de memory_get_usage().
+             */
+            $bytes_bitmap = $medidas['ancho'] * $medidas['alto'] * 4;
+            $bytes_tramo  = $medidas['ancho'] * min($medidas['alto'], self::ALTO_TRAMO) * 4;
+
+            if (!$this->hay_memoria_para(($bytes_bitmap + $bytes_tramo + self::MAX_BYTES_POR_TRAMO) * self::FACTOR_MEMORIA)) {
+                Log::info('EscaneoFacturaCompraService: sin memoria para agrandar una foto; va como siempre', [
+                    'provider_order_scan_id' => $scan->id,
+                    'orden'                  => $orden,
+                ]);
+
+                return [];
+            }
+
+            if ($medidas['agrandar']) {
+                $img->resize($medidas['ancho'], $medidas['alto']);
+            }
+
+            return $this->cortar_en_tramos($img->getCore());
+        } catch (\Throwable $e) {
+            Log::info('EscaneoFacturaCompraService: no se pudo agrandar una foto; va como siempre', [
+                'provider_order_scan_id' => $scan->id,
+                'orden'                  => $orden,
+                'error'                  => $e->getMessage(),
+            ]);
+
+            return [];
+        } finally {
+            if (!is_null($img)) {
+                $img->destroy();
+            }
+        }
+    }
+
+    /**
+     * Medidas a las que hay que llevar una foto: el ancho llega a ANCHO_MAXIMO_AGRANDADA con una escala
+     * de hasta ESCALA_MAXIMA. Si la escala no suma, la foto queda como está.
+     *
+     * @param  int  $ancho
+     * @param  int  $alto
+     * @return array  ['ancho'=>int,'alto'=>int,'agrandar'=>bool]
+     */
+    protected function medidas_agrandadas(int $ancho, int $alto): array
+    {
+        $escala = min(self::ESCALA_MAXIMA, self::ANCHO_MAXIMO_AGRANDADA / $ancho);
+
+        if ($escala < self::ESCALA_MINIMA_QUE_SUMA) {
+            return ['ancho' => $ancho, 'alto' => $alto, 'agrandar' => false];
+        }
+
+        return [
+            'ancho'    => (int) round($ancho * $escala),
+            'alto'     => (int) round($alto * $escala),
+            'agrandar' => true,
+        ];
+    }
+
+    /**
+     * Corta un bitmap en tramos solapados y devuelve el PNG de cada uno. Vacío si en algún momento no
+     * hay memoria o un tramo pesa más de lo que la API acepta: una página con tramos faltantes
+     * perdería renglones sin que nadie se entere, así que es todo o nada.
+     *
+     * El último tramo es lo que quede, aunque sea bajo: el criterio es el medido.
+     *
+     * @param  resource|\GdImage  $bitmap
+     * @return string[]
+     */
+    protected function cortar_en_tramos($bitmap): array
+    {
+        $ancho = imagesx($bitmap);
+        $alto  = imagesy($bitmap);
+
+        $bytes_tramo = $ancho * min($alto, self::ALTO_TRAMO) * 4;
+
+        $tramos = [];
+        $desde  = 0;
+
+        while (true) {
+            /* El bitmap del tramo y dos PNG de los grandes: el que se arma y su paso a base64. */
+            if (!$this->hay_memoria_para($bytes_tramo * self::FACTOR_MEMORIA + 2 * self::MAX_BYTES_POR_TRAMO)) {
+                return [];
+            }
+
+            $hasta = min($desde + self::ALTO_TRAMO, $alto);
+
+            $tramo = imagecrop($bitmap, ['x' => 0, 'y' => $desde, 'width' => $ancho, 'height' => $hasta - $desde]);
+
+            if ($tramo === false) {
+                return [];
+            }
+
+            $png = $this->png_de($tramo);
+
+            /* El unset es lo que lo libera en PHP 8, donde ya no es un recurso. */
+            $this->liberar_bitmap($tramo);
+            unset($tramo);
+
+            if ($png === '' || strlen($png) > self::MAX_BYTES_POR_TRAMO) {
+                return [];
+            }
+
+            $tramos[] = $png;
+
+            if ($hasta >= $alto) {
+                return $tramos;
+            }
+
+            $desde = $hasta - self::SOLAPE_TRAMO;
+        }
+    }
+
+    /**
+     * PNG de un bitmap. imagepng() escribe en la salida estándar, así que se captura con un buffer, que
+     * se cierra aunque GD lance: un buffer abierto de más se tragaría todo lo que el worker imprima
+     * después.
+     *
+     * @param  resource|\GdImage  $bitmap
+     * @return string
+     */
+    protected function png_de($bitmap): string
+    {
+        $nivel = ob_get_level();
+
+        ob_start();
+
+        try {
+            imagepng($bitmap);
+
+            return (string) ob_get_contents();
+        } finally {
+            while (ob_get_level() > $nivel) {
+                ob_end_clean();
+            }
+        }
+    }
+
+    /**
+     * Libera un bitmap de GD. En PHP 7.4 es un recurso y hay que destruirlo; desde PHP 8 es un objeto
+     * que se libera solo al perder la referencia, y a imagedestroy() lo deprecan más adelante.
+     *
+     * @param  resource|\GdImage  $bitmap
+     * @return void
+     */
+    protected function liberar_bitmap($bitmap)
+    {
+        if (is_resource($bitmap)) {
+            imagedestroy($bitmap);
+        }
+    }
+
+    /**
+     * ¿Entran estos tramos en el pedido a la API y en la memoria que hace falta para mandarlo?
+     *
+     * Al enviar, el base64 de todas las imágenes convive con dos copias más: el JSON del cuerpo y lo que
+     * arma el cliente HTTP. Una factura de seis páginas son unos 25 MB de base64: en un worker de 128 MB
+     * ya no es un detalle.
+     *
+     * @param  string[]  $tramos            PNG de esta foto
+     * @param  int       $bytes_acumulados  Bytes crudos de las imágenes anteriores
+     * @return bool
+     */
+    protected function alcanza_para_enviar(array $tramos, int $bytes_acumulados): bool
+    {
+        $total = $bytes_acumulados;
+
+        foreach ($tramos as $png) {
+            $total += strlen($png);
+        }
+
+        if ($total > static::MAX_BYTES_POR_ESCANEO) {
+            return false;
+        }
+
+        return $this->hay_memoria_para(2 * $total * 4 / 3);
+    }
+
+    /**
+     * ¿Se pueden pedir estos bytes sin pasarse del memory_limit? Mismo criterio que
+     * ImageCropHelper::has_memory_to_copy(), que es privado y recibe una imagen ya abierta.
+     *
+     * @param  int|float  $bytes
+     * @return bool
+     */
+    protected function hay_memoria_para($bytes): bool
+    {
+        $limite = $this->limite_de_memoria();
+
+        if ($limite < 0) {
+            return true;
+        }
+
+        return memory_get_usage(true) + $bytes <= $limite;
+    }
+
+    /**
+     * memory_limit de PHP en bytes.
+     *
+     * @return int  Bytes; -1 si no hay límite ("-1", "0" o vacío).
+     */
+    protected function limite_de_memoria(): int
+    {
+        $crudo = trim((string) ini_get('memory_limit'));
+
+        if ($crudo === '' || $crudo === '-1') {
+            return -1;
+        }
+
+        $numero = (float) $crudo;
+        $unidad = strtolower(substr($crudo, -1));
+
+        if ($unidad === 'g') {
+            $numero *= 1024 * 1024 * 1024;
+        } elseif ($unidad === 'm') {
+            $numero *= 1024 * 1024;
+        } elseif ($unidad === 'k') {
+            $numero *= 1024;
+        }
+
+        return $numero > 0 ? (int) $numero : -1;
+    }
+
+    /**
+     * Deja el `pagina` de cada renglón dentro de las hojas que se mandaron. El rótulo y las
+     * instrucciones ya le piden al modelo la página y no el tramo; esto cubre el caso en que igual
+     * escriba el número de un tramo, para que la pantalla de revisión nunca vea la página 3 de 2.
+     *
+     * @param  array  $articulos
+     * @param  int    $total_paginas
+     * @return array
+     */
+    protected function acotar_paginas(array $articulos, int $total_paginas): array
+    {
+        foreach ($articulos as $indice => $articulo) {
+            $articulos[$indice]['pagina'] = max(1, min($total_paginas, (int) $articulo['pagina']));
+        }
+
+        return $articulos;
     }
 
     /**
@@ -635,6 +1042,10 @@ class EscaneoFacturaCompraService
      * Las instrucciones van al final, después de TODAS las imágenes, que es lo que
      * recomienda Anthropic para visión multi-imagen y lo que ya hace
      * ArticleImageValidationService::validate() (imagen primero, texto después).
+     *
+     * Una página cortada lleva un rótulo por tramo: "PÁGINA 1 de 3, TRAMO 2 de 3". La página va
+     * primero y es la misma en todos sus tramos, porque ese número es el que el modelo tiene que
+     * devolver en `pagina`.
      *
      * Sin `temperature`, `thinking` ni `tool_choice`, y a propósito: Haiku 5.5 y Sonnet 5.5 rechazan
      * con un 400 los valores no default de los parámetros de muestreo y el `tool_choice` forzado, y
@@ -657,17 +1068,24 @@ class EscaneoFacturaCompraService
         $timeout    = $timeout > 0 ? $timeout : 180;
         $max_tokens = $max_tokens > 0 ? $max_tokens : 8000;
 
-        $total   = count($imagenes);
-        $content = [];
+        $total      = count(array_unique(array_column($imagenes, 'pagina')));
+        $hay_tramos = max(array_column($imagenes, 'tramos')) > 1;
+        $content    = [];
 
-        foreach ($imagenes as $indice => $imagen) {
+        foreach ($imagenes as $imagen) {
             /*
              * El rótulo antes de cada imagen es lo que le permite a la IA decir en qué
              * página estaba cada renglón y unificar una fila cortada entre dos páginas.
              */
+            $rotulo = 'PÁGINA ' . $imagen['pagina'] . ' de ' . $total;
+
+            if ($imagen['tramos'] > 1) {
+                $rotulo .= ', TRAMO ' . $imagen['tramo'] . ' de ' . $imagen['tramos'];
+            }
+
             $content[] = [
                 'type' => 'text',
-                'text' => 'PÁGINA ' . ($indice + 1) . ' de ' . $total,
+                'text' => $rotulo,
             ];
 
             $content[] = [
@@ -683,7 +1101,7 @@ class EscaneoFacturaCompraService
         /* Las instrucciones, recién ahora, después de todas las páginas. */
         $content[] = [
             'type' => 'text',
-            'text' => $this->build_user_prompt($scan, $total),
+            'text' => $this->build_user_prompt($scan, $total, $hay_tramos),
         ];
 
         $cuerpo = [
@@ -865,13 +1283,25 @@ class EscaneoFacturaCompraService
      * El contexto es barato y sirve de ancla: saber qué proveedor se espera ayuda a la IA a
      * no confundir el CUIT del emisor con el del receptor.
      *
+     * El aviso de los tramos va solo si alguna página se cortó: sin él, el renglón que aparece en dos
+     * imágenes por el solape saldría dos veces y el modelo podría escribir el tramo como página.
+     *
      * @param  \App\Models\ProviderOrderScan  $scan
      * @param  int                            $total_paginas
+     * @param  bool                           $hay_tramos
      * @return string
      */
-    protected function build_user_prompt(ProviderOrderScan $scan, int $total_paginas): string
+    protected function build_user_prompt(ProviderOrderScan $scan, int $total_paginas, bool $hay_tramos = false): string
     {
-        $lineas   = [];
+        $lineas = [];
+
+        if ($hay_tramos) {
+            $lineas[] = 'Algunas páginas te las mandé cortadas en TRAMOS: son pedazos de la misma hoja, de arriba hacia';
+            $lineas[] = 'abajo y con solape. Un renglón repetido por el solape va UNA sola vez. En "pagina" poné el';
+            $lineas[] = 'número de la PÁGINA, nunca el del tramo.';
+            $lineas[] = '';
+        }
+
         $lineas[] = 'CONTEXTO DE LA COMPRA (para orientarte, no lo copies a la respuesta):';
 
         $provider_order = $scan->provider_order;
