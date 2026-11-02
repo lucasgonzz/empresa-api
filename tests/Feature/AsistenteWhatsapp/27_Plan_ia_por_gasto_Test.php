@@ -11,6 +11,7 @@ use App\Models\AuditLog;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -28,7 +29,9 @@ use Tests\Concerns\EscondeColumnas;
  *   - el gasto: las cuatro puntas, varios modelos, y la misma cantidad de tokens da plata distinta;
  *   - el caso real de Ferre Total;
  *   - el corte por gasto aunque los tokens no lleguen, y que con tope de gasto los tokens no corten;
- *   - la tarifa: exacta, por prefijo con fecha, y un modelo sin tarifa se cobra a la más cara;
+ *   - la tarifa: exacta, por prefijo con fecha, y un modelo sin tarifa se cobra a la más cara de su proveedor
+ *     (revisión del contrato, 2/11/2026: a la más cara de toda la tabla, un id nuevo de DeepSeek dejaba a un
+ *     negocio sin agente), con un warning por modelo y por día;
  *   - sin tope de gasto, todo igual que antes;
  *   - el contrato con el admin: con y sin las dos claves nuevas, y lo que se rechaza;
  *   - 🔴 el dueño no ve dólares ni precios: mi-consumo-ia, get_user del dueño y del empleado, el modelo
@@ -398,6 +401,240 @@ class Plan_ia_por_gasto_Test extends AsistenteWhatsappTestCase
         $this->assertSame(0.0, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()));
 
         Log::shouldNotHaveReceived('warning');
+    }
+
+    /**
+     * 🔴 El caso que encontró la revisión: un id de DeepSeek que no está en la tabla (lo permite
+     * DEEPSEEK_MODEL). Con el volumen de Ferre Total y la más cara de TODA la tabla, Opus 5, daba US$ 9,40 en
+     * vez de US$ 0,28, y un tope de US$ 5 dejaba al negocio sin agente con un warning como único rastro. A la
+     * más cara de DeepSeek, que es Pro: 0,81048 + 0,10692 + 0,4972.
+     *
+     * @test
+     */
+    public function un_id_de_deepseek_que_no_esta_en_la_tabla_se_cobra_a_la_mas_cara_de_deepseek()
+    {
+        $this->con_tope_de_gasto(5);
+
+        $this->consumo_de('deepseek', 'deepseek-v5-que-no-esta', 614000, 27000, 0, 11300000);
+
+        $estado = TopeDeTokensHelper::estado($this->comercio->fresh());
+
+        $this->assertEqualsWithDelta(1.4146, $estado['consumo_usd'], 0.000001);
+        $this->assertFalse($estado['supero'], 'Un id nuevo de DeepSeek no puede dejar al negocio sin agente.');
+    }
+
+    /**
+     * Lo mismo para Claude: la más cara de sus modelos, aunque otro proveedor tenga una más cara. El prefijo
+     * corta en un guion: `claudette-carisimo` no es un modelo de Claude.
+     *
+     * @test
+     */
+    public function un_id_de_claude_que_no_esta_en_la_tabla_se_cobra_a_la_mas_cara_de_claude()
+    {
+        $this->con_tope_de_gasto(1000, [
+            'claude-chico'       => ['input' => 1, 'output' => 2, 'cache_write' => 1, 'cache_read' => 0.1],
+            'claude-mediano'     => ['input' => 3, 'output' => 15, 'cache_write' => 3.75, 'cache_read' => 0.3],
+            'claudette-carisimo' => ['input' => 80, 'output' => 90, 'cache_write' => 80, 'cache_read' => 80],
+            'deepseek-carisimo'  => ['input' => 100, 'output' => 200, 'cache_write' => 100, 'cache_read' => 100],
+        ]);
+
+        $this->consumo_de('anthropic', 'claude-que-no-esta', 0, 1000000);
+
+        $this->assertEqualsWithDelta(15.00, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /**
+     * Sin ningún modelo de su proveedor en la tabla, recién ahí la más cara de todas: sigue sin ser gratis.
+     *
+     * @test
+     */
+    public function sin_modelos_de_su_proveedor_en_la_tabla_va_a_la_mas_cara_de_todas()
+    {
+        $this->con_tope_de_gasto(1000, [
+            'claude-opus-5' => self::PRECIOS['claude-opus-5'],
+        ]);
+
+        $this->consumo_de('deepseek', 'deepseek-que-no-esta', 0, 1000000);
+
+        $this->assertEqualsWithDelta(25.00, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /** @test */
+    public function un_proveedor_que_no_se_conoce_va_a_la_mas_cara_de_todas()
+    {
+        $this->con_tope_de_gasto(1000);
+
+        $this->consumo_de('google', 'gemini-que-no-esta', 0, 1000000);
+
+        $this->assertEqualsWithDelta(25.00, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /**
+     * 🔴 El único modelo de OpenAI de la tabla es un embedding, con la salida en cero. Un `gpt-*` desconocido
+     * que genera salida no se puede cobrar a esa tarifa: saldría gratis, que es justo lo que no puede pasar.
+     * `gpt-4o-mini-transcribe` está en este caso hasta que la tabla tenga su precio.
+     *
+     * @test
+     */
+    public function un_gpt_con_salida_no_sale_gratis_por_la_tarifa_del_embedding()
+    {
+        $this->con_tope_de_gasto(1000, array_merge(self::PRECIOS, [
+            'text-embedding-3-small' => ['input' => 0.02, 'output' => 0, 'cache_write' => 0, 'cache_read' => 0],
+        ]));
+
+        $this->consumo_de('openai', 'gpt-4o-mini-transcribe', 0, 1000000);
+
+        $this->assertEqualsWithDelta(25.00, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /**
+     * Un embedding nuevo no genera salida: la tarifa de OpenAI le sirve, y no se lo cobra como a Opus.
+     *
+     * @test
+     */
+    public function un_embedding_que_no_esta_en_la_tabla_usa_la_tarifa_de_openai()
+    {
+        $this->con_tope_de_gasto(1000, array_merge(self::PRECIOS, [
+            'text-embedding-3-small' => ['input' => 0.02, 'output' => 0, 'cache_write' => 0, 'cache_read' => 0],
+        ]));
+
+        $this->consumo_de('openai', 'text-embedding-3-large', 1000000, 0);
+
+        $this->assertEqualsWithDelta(0.02, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /**
+     * El día que la tabla tenga un `gpt-*`, un `gpt-*` desconocido se cobra a ése.
+     *
+     * @test
+     */
+    public function con_un_gpt_en_la_tabla_un_gpt_que_no_esta_usa_esa_tarifa()
+    {
+        $this->con_tope_de_gasto(1000, array_merge(self::PRECIOS, [
+            'text-embedding-3-small' => ['input' => 0.02, 'output' => 0, 'cache_write' => 0, 'cache_read' => 0],
+            'gpt-4o-mini'            => ['input' => 0.15, 'output' => 0.60, 'cache_write' => 0, 'cache_read' => 0.075],
+        ]));
+
+        $this->consumo_de('openai', 'gpt-que-no-esta', 0, 1000000);
+
+        $this->assertEqualsWithDelta(0.60, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /**
+     * `proveedor` está en el agrupado: el mismo nombre de modelo con dos proveedores se cobra por separado.
+     *
+     * @test
+     */
+    public function el_mismo_modelo_con_dos_proveedores_se_cobra_por_separado()
+    {
+        $this->con_tope_de_gasto(1000);
+
+        $this->consumo_de('anthropic', 'modelo-raro', 0, 1000000);
+        $this->consumo_de('deepseek', 'modelo-raro', 0, 1000000);
+
+        $this->assertEqualsWithDelta(25.00 + 3.96, TopeDeTokensHelper::gasto_del_mes($this->comercio->fresh()), 0.000001);
+    }
+
+    /**
+     * 🔴 Bajo PHP-FPM el `static` dura un request: cada request web repetía el warning. Uno por modelo y por
+     * día, aunque cada request arranque de cero.
+     *
+     * @test
+     */
+    public function el_warning_sale_una_vez_por_dia_aunque_cada_request_arranque_de_cero()
+    {
+        Log::spy();
+
+        $this->con_tope_de_gasto(100);
+
+        $modelo = 'modelo-por-dia-' . uniqid();
+
+        $this->consumo($modelo, 0, 1000000);
+
+        $dueno = $this->comercio->fresh();
+
+        TopeDeTokensHelper::estado($dueno);
+        $this->como_en_un_request_nuevo();
+        TopeDeTokensHelper::estado($dueno);
+        $this->como_en_un_request_nuevo();
+        TopeDeTokensHelper::estado($dueno);
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje, $contexto = []) use ($modelo) {
+                return isset($contexto['modelo']) && $contexto['modelo'] === $modelo;
+            })
+            ->once();
+    }
+
+    /**
+     * Al otro día vuelve a avisar: el modelo sigue sin tarifa y alguien lo tiene que ver. Va con una fecha fija
+     * a mitad de mes, para que el día siguiente caiga en el mismo mes y la fila siga contando.
+     *
+     * @test
+     */
+    public function al_otro_dia_el_warning_vuelve_a_salir()
+    {
+        Log::spy();
+
+        Carbon::setTestNow(Carbon::create(2026, 11, 10, 12, 0, 0));
+
+        try {
+
+            $this->con_tope_de_gasto(100);
+
+            $modelo = 'modelo-al-otro-dia-' . uniqid();
+
+            $this->consumo($modelo, 0, 1000000);
+
+            $dueno = $this->comercio->fresh();
+
+            TopeDeTokensHelper::estado($dueno);
+
+            Carbon::setTestNow(Carbon::create(2026, 11, 11, 12, 0, 0));
+            $this->como_en_un_request_nuevo();
+
+            TopeDeTokensHelper::estado($dueno);
+
+            Log::shouldHaveReceived('warning')
+                ->withArgs(function ($mensaje, $contexto = []) use ($modelo) {
+                    return isset($contexto['modelo']) && $contexto['modelo'] === $modelo;
+                })
+                ->twice();
+
+        } finally {
+
+            Carbon::setTestNow();
+        }
+    }
+
+    /**
+     * Si el caché se cae, el corte no se cae con él: se mide igual y el warning sale, una vez por proceso.
+     * Mejor un aviso de más que ninguno.
+     *
+     * @test
+     */
+    public function con_el_cache_caido_mide_igual_y_el_warning_sale()
+    {
+        Log::spy();
+
+        $this->con_tope_de_gasto(100);
+
+        $modelo = 'modelo-sin-cache-' . uniqid();
+
+        $this->consumo($modelo, 0, 1000000);
+
+        $dueno = $this->comercio->fresh();
+
+        Cache::shouldReceive('add')->andThrow(new \RuntimeException('El caché está caído.'));
+
+        $this->assertEqualsWithDelta(25.00, TopeDeTokensHelper::estado($dueno)['consumo_usd'], 0.000001);
+        $this->assertEqualsWithDelta(25.00, TopeDeTokensHelper::estado($dueno)['consumo_usd'], 0.000001);
+
+        Log::shouldHaveReceived('warning')
+            ->withArgs(function ($mensaje, $contexto = []) use ($modelo) {
+                return isset($contexto['modelo']) && $contexto['modelo'] === $modelo;
+            })
+            ->once();
     }
 
     /**
@@ -1023,6 +1260,37 @@ class Plan_ia_por_gasto_Test extends AsistenteWhatsappTestCase
     protected function consumo($modelo, $input, $output, $cache_write = 0, $cache_read = 0, $proceso = 'chat_mensaje', $owner_id = null, $cuando = null)
     {
         AiTokenUsage::create($this->fila($modelo, $input, $output, $cache_write, $cache_read, $proceso, $owner_id, $cuando));
+    }
+
+    /**
+     * Graba una fila de consumo de un proveedor dado (consumo() las graba de `anthropic`).
+     *
+     * @param  string  $proveedor
+     * @param  string  $modelo
+     * @param  int  $input
+     * @param  int  $output
+     * @param  int  $cache_write
+     * @param  int  $cache_read
+     * @return void
+     */
+    protected function consumo_de($proveedor, $modelo, $input, $output, $cache_write = 0, $cache_read = 0)
+    {
+        AiTokenUsage::create(array_merge($this->fila($modelo, $input, $output, $cache_write, $cache_read), [
+            'proveedor' => $proveedor,
+        ]));
+    }
+
+    /**
+     * Vacía lo que el helper recuerda en memoria, que es lo que le pasa a cada request bajo PHP-FPM: los
+     * `static` no sobreviven entre uno y otro. Lo que sobrevive es el caché.
+     *
+     * @return void
+     */
+    protected function como_en_un_request_nuevo()
+    {
+        $memoria = new \ReflectionProperty(TopeDeTokensHelper::class, 'ya_avisado');
+        $memoria->setAccessible(true);
+        $memoria->setValue(null, []);
     }
 
     /**
