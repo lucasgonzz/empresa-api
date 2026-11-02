@@ -640,6 +640,9 @@ class EjecutorAccionesIaHelper {
                 return PropuestaVentaIaHelper::ejecutar($contexto, $accion);
 
             // Misión cheques-endoso-y-bancos (21/9/2026).
+            case AiMessageAction::TIPO_CUOTAS_TIENDA:
+                return PropuestaCuotasTiendaIaHelper::ejecutar($contexto, $accion);
+
             case AiMessageAction::TIPO_UNIFICAR_BANCOS:
                 return PropuestaBancosChequesIaHelper::ejecutar($contexto, $accion);
 
