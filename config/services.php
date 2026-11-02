@@ -329,8 +329,14 @@ return [
      */
     'escaneo_factura_compra' => [
         /*
-         * Modelo de Claude. Acá NO se usa uno económico: leer una tabla impresa chica y sacar
-         * códigos exactos es la parte cara de la funcionalidad.
+         * Modelo de la PRIMERA lectura (misión escaneo-factura-haiku, 2/11/2026). Es el económico
+         * y alcanza porque no trabaja solo: lee la foto agrandada, y si la cuenta de los renglones
+         * no da, `model_revision` relee la factura entera. Ver necesita_revision() en
+         * EscaneoFacturaCompraService.
+         *
+         * 🔴 Solo no alcanza, y está medido (10 facturas reales, 30 lecturas): con la foto tal
+         * cual leyó mal 17 códigos, y aun agrandada se equivoca al interpretar bonificaciones
+         * dobles (50 % + 15 % tomado como 50 %). No lo dejes sin la revisión para ahorrar más.
          *
          * ⚠️ El id va SIN sufijo de fecha, y no es un descuido: los ids vigentes de Anthropic
          * son completos así como están. Los otros dos bloques de este archivo
@@ -340,8 +346,15 @@ return [
          * Se puede cambiar por .env sin tocar código (ESCANEO_FACTURA_MODEL), que es la salida
          * si algún cliente necesita otro modelo o si aparece uno mejor para leer facturas.
          */
-        'model'         => env('ESCANEO_FACTURA_MODEL', 'claude-sonnet-5'),
-        // Timeout en segundos de la request a Anthropic. Varias páginas tardan.
+        'model'         => env('ESCANEO_FACTURA_MODEL', 'claude-haiku-5-5'),
+        /*
+         * Modelo que RELEE la factura cuando la primera lectura no pasa el control, o falló. Gana
+         * su lectura entera, sin mezclar campos con la anterior: en la medición no equivocó ningún
+         * renglón en 20 lecturas, pero cuesta unas 15 veces más, por eso no lee todas.
+         */
+        'model_revision' => env('ESCANEO_FACTURA_MODEL_REVISION', 'claude-sonnet-5-5'),
+        // Timeout en segundos de CADA request a Anthropic (una factura revisada hace dos seguidas,
+        // y RunProviderOrderScanJob tiene que tolerar las dos). Varias páginas tardan.
         'timeout'       => (int) env('ESCANEO_FACTURA_TIMEOUT', 180),
         // Lado mayor (px) al que se redimensiona cada foto. 1568 es el máximo que Anthropic
         // procesa sin downsamplear; con 512 (el de la validación de imágenes de producto) los

@@ -238,7 +238,13 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
                 'emisor_cuit'         => '30-71234567-8',
                 'emisor_razon_social' => 'DISTRIBUIDORA DEL SUR S.A.',
                 'receptor_cuit'       => null,
-                'neto_gravado'        => 100000,
+                /*
+                 * El neto es el del único renglón de arriba para que esta lectura pase el control
+                 * de EscaneoFacturaCompraService::necesita_revision(): con un neto más alto que la
+                 * suma de los renglones, faltan renglones y se pide una segunda lectura. Los otros
+                 * importes siguen como estaban: el total y su desglose no cuadran a propósito.
+                 */
+                'neto_gravado'        => 26465.4,
                 'total_iva'           => 21000,
                 'total'               => '$ 124.300,00',
                 'ivas'                => [

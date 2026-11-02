@@ -27,16 +27,22 @@ use Intervention\Image\ImageManager;
  *    devuelven null (o el usuario equivocado) y el matcheo terminaría corriendo contra el
  *    catálogo de otro comercio.
  *
- * 2. UNA SOLA LLAMADA CON TODAS LAS PÁGINAS. Las N fotos de un escaneo son páginas
- *    consecutivas del MISMO comprobante y viajan juntas en un único `messages[0].content`,
- *    con un bloque de texto "PÁGINA N de M" antes de cada imagen y las instrucciones al
- *    final. Una tabla que arranca en la página 1 y sigue en la 2 solo se puede reconstruir
- *    viendo las dos a la vez; partir esto en N llamadas rompe la funcionalidad.
+ * 2. CADA LECTURA ES UNA SOLA LLAMADA CON TODAS LAS PÁGINAS. Las N fotos de un escaneo son
+ *    páginas consecutivas del MISMO comprobante y viajan juntas en un único
+ *    `messages[0].content`, con un bloque de texto "PÁGINA N de M" antes de cada imagen y las
+ *    instrucciones al final. Una tabla que arranca en la página 1 y sigue en la 2 solo se puede
+ *    reconstruir viendo las dos a la vez; partir esto en N llamadas rompe la funcionalidad.
  *
  * 3. NUNCA SE CREA UN ARTÍCULO. El matcheo marca `sin_match` y deja `crear_en_catalogo` en
  *    false; la creación la decide el usuario después, en el modal de revisión. Un código
  *    mal leído por OCR que crea un artículo fantasma en el catálogo del cliente es el peor
  *    resultado posible de esta funcionalidad.
+ *
+ * Quién lee (misión escaneo-factura-haiku, 2/11/2026): la primera lectura la hace un modelo
+ * económico (`model`, Haiku 5.5) y uno más caro (`model_revision`, Sonnet 5.5) relee la factura
+ * ENTERA solo cuando la primera no pasa el control de necesita_revision(). Gana la segunda
+ * completa, sin mezclar campos: dos lecturas distintas pueden numerar o partir los renglones
+ * distinto, y una mezcla daría una fila que nadie leyó. El usuario no se entera de cuál leyó.
  *
  * Constraint del repo: PHP 7.4 (nada de `?->`, `match`, `str_contains`, union types, etc).
  */
@@ -119,6 +125,28 @@ class EscaneoFacturaCompraService
     ];
 
     /**
+     * Modelos a los que se les pide `fallbacks: "default"`: si el clasificador de seguridad declina
+     * la lectura, la API la reintenta sola con otro modelo dentro de la misma llamada.
+     *
+     * Es una lista y no "la llamada de revisión" porque depende del modelo, no del orden: a Haiku
+     * 5.5 no hay que mandárselo (no tiene fallback de servidor: declinado queda declinado) y un
+     * `.env` puede poner cualquier modelo en cualquiera de las dos posiciones.
+     *
+     * @var array
+     */
+    const MODELOS_CON_FALLBACK_DE_SERVIDOR = [
+        'claude-sonnet-5-5',
+    ];
+
+    /**
+     * Header beta que habilita `fallbacks: "default"`. Es propio de esa forma: la forma con lista de
+     * modelos usa `server-side-fallback-2026-06-01`, y cruzarlas devuelve un 400.
+     *
+     * @var string
+     */
+    const BETA_FALLBACK_DE_SERVIDOR = 'server-side-fallback-2026-07-01';
+
+    /**
      * Memoria de la resolución de alícuotas dentro de un mismo escaneo: texto del porcentaje
      * ('21', '10.5') → id de `ivas`, o null si esa alícuota no existe en la tabla.
      *
@@ -165,27 +193,38 @@ class EscaneoFacturaCompraService
             );
         }
 
-        $response = $this->llamar_a_claude($scan, $imagenes);
+        /*
+         * La primera lectura con el modelo económico. Una lectura que falla (error de la API, JSON
+         * roto, respuesta cortada) no corta el escaneo acá: es un motivo más para revisar.
+         */
+        $primera = $this->leer_factura($scan, $imagenes, $this->modelo_de_lectura());
+        $motivo  = $this->necesita_revision($primera);
 
-        $body = $response->json();
+        /* Si la primera pasó el control, es la que vale. Si no, gana la revisión entera. */
+        $ganadora = $primera;
+        $tokens   = $primera['tokens'];
 
-        if (!is_array($body)) {
-            throw new \RuntimeException('La IA devolvió una respuesta que no se pudo interpretar.');
+        if (!is_null($motivo)) {
+            $ganadora = $this->leer_factura($scan, $imagenes, $this->modelo_de_revision());
+
+            /* Se pagaron las dos: lo que queda en el resultado es lo que costó el escaneo. */
+            $tokens['input']  += $ganadora['tokens']['input'];
+            $tokens['output'] += $ganadora['tokens']['output'];
         }
 
-        /*
-         * Registro de consumo (§3.5). registrar() nunca lanza: es contabilidad de fondo y
-         * no puede voltear un escaneo que ya está hecho.
-         */
-        AiTokenUsageHelper::registrar([
-            'user_id'       => $scan->user_id,
-            'auth_user_id'  => $scan->auth_user_id,
-            'proceso'       => 'escaneo_factura_compra',
-            'body'          => $body,
-            'referencia_id' => $scan->id,
-        ]);
+        $this->dejar_rastro_de_la_lectura($scan, $primera, $ganadora, $motivo);
 
-        $parseado = $this->parse_respuesta($body);
+        /*
+         * 🔴 Si la revisión falla, el error va al usuario aunque la primera lectura haya traído
+         * datos. Esa lectura ya se sabe que no cierra: mostrarla sería ofrecerle a confirmar unos
+         * costos que el propio sistema detectó mal, justo cuando no pudo corregirlos. Mejor el
+         * error de siempre y que vuelva a escanear.
+         */
+        if (!is_null($ganadora['error'])) {
+            throw $ganadora['error'];
+        }
+
+        $parseado = $ganadora['parseado'];
 
         /* Los avisos de la preparación (fotos salteadas) se suman a los que dio la IA. */
         $parseado['avisos'] = array_merge($avisos, $parseado['avisos']);
@@ -195,8 +234,6 @@ class EscaneoFacturaCompraService
         $parseado['articulos'] = $this->resolver_iva_id_de_articulos($parseado['articulos']);
         $parseado['factura']   = $this->resolver_iva_ids($parseado['factura']);
 
-        $usage = isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [];
-
         return [
             'version'             => self::VERSION_CONTRATO,
             'paginas_procesadas'  => count($imagenes),
@@ -204,11 +241,284 @@ class EscaneoFacturaCompraService
             'articulos'           => $parseado['articulos'],
             'factura'             => $parseado['factura'],
             'avisos'              => $parseado['avisos'],
-            'tokens'              => [
-                'input'  => isset($usage['input_tokens']) ? (int) $usage['input_tokens'] : 0,
-                'output' => isset($usage['output_tokens']) ? (int) $usage['output_tokens'] : 0,
+            'tokens'              => $tokens,
+            /*
+             * Rastro para medir cuántas facturas se revisan y por qué. Solo modelos y un motivo de
+             * una lista cerrada: ningún dato de la factura. La pantalla de revisión no lo usa.
+             */
+            'lectura'             => [
+                'modelo'          => $ganadora['modelo'],
+                'revisada'        => !is_null($motivo),
+                'motivo_revision' => $motivo,
+                'primer_modelo'   => $primera['modelo'],
             ],
         ];
+    }
+
+    /**
+     * Modelo de la primera lectura.
+     *
+     * El fallback por si config() viene vacío tiene que decir lo MISMO que el default de
+     * config/services.php ('escaneo_factura_compra.model') y que el .env.example: son tres lugares
+     * con el mismo valor, y desincronizarlos hace que el modelo real dependa de cuál de los tres
+     * ganó, que es lo peor de los dos mundos.
+     *
+     * @return string
+     */
+    protected function modelo_de_lectura(): string
+    {
+        $modelo = trim((string) config('services.escaneo_factura_compra.model'));
+
+        return $modelo !== '' ? $modelo : 'claude-haiku-5-5';
+    }
+
+    /**
+     * Modelo de la revisión. Mismo criterio de tres lugares que modelo_de_lectura().
+     *
+     * @return string
+     */
+    protected function modelo_de_revision(): string
+    {
+        $modelo = trim((string) config('services.escaneo_factura_compra.model_revision'));
+
+        return $modelo !== '' ? $modelo : 'claude-sonnet-5-5';
+    }
+
+    /**
+     * Hace una lectura completa de la factura con un modelo y devuelve cómo salió, sin lanzar: quien
+     * llama decide si una lectura fallida se revisa o llega al usuario.
+     *
+     * Se registra el consumo apenas hay respuesta, ANTES de mirar si sirve: una lectura cortada o
+     * con el JSON roto también se paga, y sin su fila el escaneo revisado parecería más barato de
+     * lo que fue.
+     *
+     * Las respuestas con `stop_reason` max_tokens y refusal se tratan como lecturas fallidas de
+     * entrada, sin depender de que el parseo reviente: una respuesta cortada puede traer un JSON
+     * que por casualidad decodifica y le falta la mitad de los renglones.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @param  array                          $imagenes  Salida de preparar_imagenes()
+     * @param  string                         $modelo    Modelo a pedir
+     * @return array  ['modelo'=>string,'parseado'=>array|null,'tokens'=>['input'=>int,'output'=>int],
+     *                 'error'=>\RuntimeException|null,'motivo_falla'=>string|null]
+     */
+    protected function leer_factura(ProviderOrderScan $scan, array $imagenes, string $modelo): array
+    {
+        $lectura = [
+            'modelo'       => $modelo,
+            'parseado'     => null,
+            'tokens'       => ['input' => 0, 'output' => 0],
+            'error'        => null,
+            'motivo_falla' => null,
+        ];
+
+        /* Avanza junto con el proceso, para saber en qué punto se cayó si salta la excepción. */
+        $motivo_si_falla = 'error_de_la_api';
+
+        try {
+            $response = $this->llamar_a_claude($scan, $imagenes, $modelo);
+
+            $motivo_si_falla = 'respuesta_invalida';
+
+            $body = $response->json();
+
+            if (!is_array($body)) {
+                throw new \RuntimeException('La IA devolvió una respuesta que no se pudo interpretar.');
+            }
+
+            /*
+             * `model` de la respuesta es quien la produjo: con un fallback de servidor puede no ser
+             * el pedido. Se contabiliza con ese, que es el que se cobró.
+             */
+            if (isset($body['model']) && trim((string) $body['model']) !== '') {
+                $lectura['modelo'] = trim((string) $body['model']);
+            }
+
+            /*
+             * Registro de consumo (§3.5). registrar() nunca lanza: es contabilidad de fondo y
+             * no puede voltear un escaneo que ya está hecho.
+             */
+            AiTokenUsageHelper::registrar([
+                'user_id'       => $scan->user_id,
+                'auth_user_id'  => $scan->auth_user_id,
+                'proceso'       => 'escaneo_factura_compra',
+                'body'          => $body,
+                'modelo'        => $lectura['modelo'],
+                'referencia_id' => $scan->id,
+            ]);
+
+            $usage = isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [];
+
+            $lectura['tokens'] = [
+                'input'  => isset($usage['input_tokens']) ? (int) $usage['input_tokens'] : 0,
+                'output' => isset($usage['output_tokens']) ? (int) $usage['output_tokens'] : 0,
+            ];
+
+            $stop_reason = isset($body['stop_reason']) ? (string) $body['stop_reason'] : '';
+
+            if ($stop_reason === 'refusal') {
+                $motivo_si_falla = 'rechazo_del_modelo';
+
+                throw new \RuntimeException('La IA no devolvió contenido de texto.');
+            }
+
+            if ($stop_reason === 'max_tokens') {
+                $motivo_si_falla = 'corte_por_max_tokens';
+
+                throw new \RuntimeException('La IA no devolvió un JSON válido con los datos de la factura: la respuesta se cortó antes de terminar.');
+            }
+
+            $lectura['parseado'] = $this->parse_respuesta($body);
+        } catch (\RuntimeException $e) {
+            $lectura['error']        = $e;
+            $lectura['motivo_falla'] = $motivo_si_falla;
+        }
+
+        return $lectura;
+    }
+
+    /**
+     * Decide si una lectura necesita que otro modelo relea la factura. Devuelve el motivo (de una
+     * lista cerrada, va al rastro) o null si la lectura pasa.
+     *
+     * 🔴 Es el control del que depende toda la misión. Medido con 10 facturas reales y 30 lecturas
+     * del modelo económico: detectó las 4 lecturas malas de 4, sin falsas alarmas. Lo que se le
+     * escapa a ese modelo no es leer sino interpretar (una bonificación 50 % + 15 % tomada como
+     * 50 %, el costo neto escrito como unitario con el descuento encima), y eso se ve solo porque
+     * el total del renglón impreso en el papel deja de cerrar con lo demás que leyó.
+     *
+     * Revisa si:
+     *   · la lectura falló: error de la API, respuesta sin JSON válido, cortada o rechazada;
+     *   · no trae ningún artículo;
+     *   · algún renglón no da la cuenta (ver renglon_cierra());
+     *   · más de la mitad de los renglones no tienen con qué hacer la cuenta, porque entonces el
+     *     control no está controlando nada;
+     *   · la suma de los renglones no llega al neto (ver faltan_renglones_contra_el_neto()).
+     *
+     * @param  array  $lectura  Salida de leer_factura()
+     * @return string|null
+     */
+    protected function necesita_revision(array $lectura)
+    {
+        if (!is_null($lectura['motivo_falla'])) {
+            return $lectura['motivo_falla'];
+        }
+
+        $articulos = $lectura['parseado']['articulos'];
+
+        if (count($articulos) === 0) {
+            return 'sin_articulos';
+        }
+
+        $sin_cuenta      = 0;
+        $sin_total       = 0;
+        $suma_de_totales = 0.0;
+
+        foreach ($articulos as $articulo) {
+            if (is_null($articulo['total_linea'])) {
+                $sin_total++;
+            } else {
+                $suma_de_totales += (float) $articulo['total_linea'];
+            }
+
+            if (is_null($articulo['cantidad']) || is_null($articulo['costo_unitario']) || is_null($articulo['total_linea'])) {
+                $sin_cuenta++;
+                continue;
+            }
+
+            if (!$this->renglon_cierra($articulo)) {
+                return 'renglon_no_cierra';
+            }
+        }
+
+        if ($sin_cuenta * 2 > count($articulos)) {
+            return 'renglones_sin_datos';
+        }
+
+        /* Con renglones sin total la suma queda corta por eso, no porque falten renglones. */
+        if ($sin_total === 0 && $this->faltan_renglones_contra_el_neto($suma_de_totales, $lectura['parseado']['factura'])) {
+            return 'suma_menor_que_el_neto';
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿Cierra `cantidad × costo × (1 − descuento) = total del renglón`?
+     *
+     * La tolerancia es el mayor entre 2 pesos y el 1 % del total, para no pagar una segunda lectura
+     * por centavos: los comprobantes redondean el unitario a dos decimales y lo multiplican por
+     * cantidades decimales. Un descuento null es que el renglón no tiene descuento.
+     *
+     * @param  array  $articulo  Renglón normalizado, con cantidad, costo y total no nulos
+     * @return bool
+     */
+    protected function renglon_cierra(array $articulo): bool
+    {
+        $descuento = is_null($articulo['descuento_porcentaje']) ? 0.0 : (float) $articulo['descuento_porcentaje'];
+
+        $calculado = (float) $articulo['cantidad'] * (float) $articulo['costo_unitario'] * (1 - $descuento / 100);
+        $impreso   = (float) $articulo['total_linea'];
+
+        return abs($calculado - $impreso) <= max(2, abs($impreso) * 0.01);
+    }
+
+    /**
+     * ¿La suma de los renglones queda por debajo del neto del comprobante? Eso es que faltan
+     * renglones, lo único que la cuenta por renglón no puede ver.
+     *
+     * 🔴 Se compara para UN SOLO LADO, y no es un olvido. El comprobante no trae un "subtotal" en el
+     * contrato: lo más parecido es `neto_gravado`, que no incluye impuestos pero sí está DESPUÉS de
+     * las bonificaciones de pie. En las facturas A medidas, dos de siete tienen la suma de renglones
+     * bien leída hasta un 18 % ARRIBA del neto por una bonificación general, así que "se aleja
+     * para arriba" no dice nada: comparado para los dos lados mandaría a revisar una de cada cinco
+     * facturas sin motivo. Para abajo, en cambio, una bonificación nunca explica la diferencia. En
+     * las 30 lecturas medidas no saltó ninguna vez.
+     *
+     * `factura.total` no sirve para esto: incluye IVA y percepciones. Sin neto (remitos, facturas C)
+     * no hay con qué comparar y no se revisa por esto.
+     *
+     * @param  float  $suma_de_totales  Suma de `total_linea` de todos los renglones
+     * @param  array  $factura          Factura normalizada
+     * @return bool
+     */
+    protected function faltan_renglones_contra_el_neto(float $suma_de_totales, array $factura): bool
+    {
+        $neto = isset($factura['neto_gravado']) ? (float) $factura['neto_gravado'] : 0.0;
+
+        if ($neto <= 0) {
+            return false;
+        }
+
+        $diferencia = $neto - $suma_de_totales;
+
+        return $diferencia > $neto * 0.01 && $diferencia > abs($suma_de_totales) * 0.01;
+    }
+
+    /**
+     * Deja en el log qué modelo quedó y por qué se revisó, también cuando el escaneo termina en
+     * error (ahí no hay `resultado` donde quede). Es lo que permite medir después cuántas facturas
+     * se revisan. Ningún dato de la factura: solo ids, modelos, un motivo y tokens.
+     *
+     * @param  \App\Models\ProviderOrderScan  $scan
+     * @param  array                          $primera   Salida de leer_factura()
+     * @param  array                          $ganadora  Salida de leer_factura()
+     * @param  string|null                    $motivo    Salida de necesita_revision()
+     * @return void
+     */
+    protected function dejar_rastro_de_la_lectura(ProviderOrderScan $scan, array $primera, array $ganadora, $motivo)
+    {
+        Log::info('EscaneoFacturaCompraService: lectura terminada', [
+            'provider_order_scan_id' => $scan->id,
+            'primer_modelo'          => $primera['modelo'],
+            'modelo'                 => $ganadora['modelo'],
+            'revisada'               => !is_null($motivo),
+            'motivo_revision'        => $motivo,
+            'termino_en_error'       => !is_null($ganadora['error']),
+            'motivo_del_error'       => $ganadora['motivo_falla'],
+            'tokens_primera'         => $primera['tokens'],
+            'tokens_ganadora'        => $ganadora['tokens'],
+        ]);
     }
 
     /**
@@ -318,7 +628,7 @@ class EscaneoFacturaCompraService
     }
 
     /**
-     * Hace LA llamada a Anthropic: una sola, con todas las páginas juntas.
+     * Hace la llamada de UNA lectura a Anthropic: una sola, con todas las páginas juntas.
      *
      * 🔴 Estructura del content, y el orden importa (§3.1):
      *   [ texto "PÁGINA 1 de 3", imagen, texto "PÁGINA 2 de 3", imagen, ..., instrucciones ]
@@ -326,26 +636,24 @@ class EscaneoFacturaCompraService
      * recomienda Anthropic para visión multi-imagen y lo que ya hace
      * ArticleImageValidationService::validate() (imagen primero, texto después).
      *
+     * Sin `temperature`, `thinking` ni `tool_choice`, y a propósito: Haiku 5.5 y Sonnet 5.5 rechazan
+     * con un 400 los valores no default de los parámetros de muestreo y el `tool_choice` forzado, y
+     * los dos razonan por defecto. Los bloques de razonamiento que eso agrega al `content` los
+     * saltea parse_respuesta(), que junta solo los de tipo `text`.
+     *
      * @param  \App\Models\ProviderOrderScan  $scan
      * @param  array                          $imagenes  Salida de preparar_imagenes()
+     * @param  string                         $model     Modelo que hace esta lectura
      * @return \Illuminate\Http\Client\Response
      *
      * @throws \RuntimeException
      */
-    protected function llamar_a_claude(ProviderOrderScan $scan, array $imagenes)
+    protected function llamar_a_claude(ProviderOrderScan $scan, array $imagenes, string $model)
     {
         $api_key    = (string) config('services.anthropic.api_key');
-        $model      = (string) config('services.escaneo_factura_compra.model');
         $timeout    = (int) config('services.escaneo_factura_compra.timeout');
         $max_tokens = (int) config('services.escaneo_factura_compra.max_tokens');
 
-        /*
-         * Fallback por si config() viene vacío. Tiene que decir lo MISMO que el default de
-         * config/services.php ('escaneo_factura_compra.model') y que el .env.example: son tres
-         * lugares con el mismo valor, y desincronizarlos hace que el modelo real dependa de cuál
-         * de los tres ganó, que es lo peor de los dos mundos.
-         */
-        $model      = $model !== '' ? $model : 'claude-sonnet-5';
         $timeout    = $timeout > 0 ? $timeout : 180;
         $max_tokens = $max_tokens > 0 ? $max_tokens : 8000;
 
@@ -378,23 +686,38 @@ class EscaneoFacturaCompraService
             'text' => $this->build_user_prompt($scan, $total),
         ];
 
+        $cuerpo = [
+            'model'      => $model,
+            'max_tokens' => $max_tokens,
+            'system'     => $this->build_system_prompt(),
+            'messages'   => [
+                [
+                    'role'    => 'user',
+                    'content' => $content,
+                ],
+            ],
+        ];
+
+        $http = $this->build_anthropic_http_client($api_key);
+
+        /*
+         * Si el clasificador declina la lectura, que la reintente la propia API con otro modelo. El
+         * que produjo la respuesta viene en `model`, y leer_factura() contabiliza con ese.
+         */
+        if (in_array($model, self::MODELOS_CON_FALLBACK_DE_SERVIDOR, true)) {
+            $cuerpo['fallbacks'] = 'default';
+
+            $http = $http->withHeaders(['anthropic-beta' => self::BETA_FALLBACK_DE_SERVIDOR]);
+        }
+
         try {
-            $response = $this->build_anthropic_http_client($api_key)
+            $response = $http
                 ->timeout($timeout)
-                ->post('https://api.anthropic.com/v1/messages', [
-                    'model'      => $model,
-                    'max_tokens' => $max_tokens,
-                    'system'     => $this->build_system_prompt(),
-                    'messages'   => [
-                        [
-                            'role'    => 'user',
-                            'content' => $content,
-                        ],
-                    ],
-                ]);
+                ->post('https://api.anthropic.com/v1/messages', $cuerpo);
         } catch (\Exception $e) {
             Log::warning('EscaneoFacturaCompraService: error de conexión con Anthropic', [
                 'provider_order_scan_id' => $scan->id,
+                'modelo'                 => $model,
                 'error'                  => $e->getMessage(),
             ]);
 
@@ -407,6 +730,7 @@ class EscaneoFacturaCompraService
 
             Log::warning('EscaneoFacturaCompraService: Anthropic respondió con error', [
                 'provider_order_scan_id' => $scan->id,
+                'modelo'                 => $model,
                 'status'                 => $response->status(),
                 'error'                  => $api_error,
             ]);

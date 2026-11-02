@@ -58,9 +58,14 @@ class RunProviderOrderScanJob implements ShouldQueue
     protected $provider_order_scan_id;
 
     /**
-     * Tiempo máximo (segundos) que el worker le da al job antes de matarlo. La llamada a
+     * Tiempo máximo (segundos) que el worker le da al job antes de matarlo. Cada llamada a
      * Anthropic ya tiene su propio timeout (180 s por config), y antes de eso hay que
-     * redimensionar y encodear hasta seis fotos de teléfono.
+     * redimensionar, agrandar y encodear hasta seis fotos de teléfono.
+     *
+     * Desde la misión escaneo-factura-haiku una factura puede hacer DOS llamadas seguidas (la
+     * lectura y la revisión): 360 s en el peor caso, más unos segundos de imágenes y el matcheo.
+     * 600 lo tolera sin cambios, y `retry_after` de la cola (4200 en database) está muy por encima.
+     * Si alguien sube ESCANEO_FACTURA_TIMEOUT arriba de unos 280 s, hay que subir este número.
      *
      * @var int
      */
