@@ -205,8 +205,8 @@ class EscaneoFacturaCompraService
 
     /**
      * Peso máximo del total de imágenes de un escaneo, en bytes crudos. Son unos 85 MB en base64 contra
-     * los 128 MB que la API acepta por pedido. Lo normal son 3 MB por página. Se lee con `static::`
-     * para poder probarlo.
+     * los 128 MB que la API acepta por pedido. Medido con fotos reales: menos de 2 MB por página. Se
+     * lee con `static::` para poder probarlo.
      *
      * @var int
      */
@@ -949,8 +949,8 @@ class EscaneoFacturaCompraService
      * ¿Entran estos tramos en el pedido a la API y en la memoria que hace falta para mandarlo?
      *
      * Al enviar, el base64 de todas las imágenes convive con dos copias más: el JSON del cuerpo y lo que
-     * arma el cliente HTTP. Una factura de seis páginas son unos 25 MB de base64: en un worker de 128 MB
-     * ya no es un detalle.
+     * arma el cliente HTTP. Medido con fotos reales, seis páginas son unos 13 MB de base64 y entran
+     * cómodas en un worker de 128 MB; este control es para las fotos que pesen mucho más que esas.
      *
      * @param  string[]  $tramos            PNG de esta foto
      * @param  int       $bytes_acumulados  Bytes crudos de las imágenes anteriores
