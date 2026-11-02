@@ -288,4 +288,18 @@ class Cuotas_de_tienda_por_asistente_Test extends TestCase
         $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $this->conversation->id)->count());
     }
 
+    public function test_herramienta_se_agrega_al_final_del_registro_con_despacho_y_esquema()
+    {
+        $nombres = HerramientasDeCarga::nombres();
+        $this->assertSame('proponer_cuotas_tienda', end($nombres));
+        $this->assertTrue(HerramientasDeCarga::maneja('proponer_cuotas_tienda'));
+        $this->assertContains('proponer_cuotas_tienda', HerramientasDeCarga::nombres(true));
+        $definiciones = HerramientasDeCarga::definiciones();
+        $ultima = end($definiciones);
+        $this->assertSame(['cuotas'], $ultima['input_schema']['required']);
+        $this->assertSame(['cantidad_cuotas'], $ultima['input_schema']['properties']['cuotas']['items']['required']);
+        $this->assertSame(36, $ultima['input_schema']['properties']['cuotas']['maxItems']);
+        $this->assertTrue(HerramientasDeCarga::es_de_carga('proponer_cuotas_tienda'));
+    }
+
 }
