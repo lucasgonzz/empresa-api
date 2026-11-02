@@ -238,13 +238,7 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
                 'emisor_cuit'         => '30-71234567-8',
                 'emisor_razon_social' => 'DISTRIBUIDORA DEL SUR S.A.',
                 'receptor_cuit'       => null,
-                /*
-                 * El neto es el del único renglón de arriba para que esta lectura pase el control
-                 * de EscaneoFacturaCompraService::necesita_revision(): con un neto más alto que la
-                 * suma de los renglones, faltan renglones y se pide una segunda lectura. Los otros
-                 * importes siguen como estaban: el total y su desglose no cuadran a propósito.
-                 */
-                'neto_gravado'        => 26465.4,
+                'neto_gravado'        => 100000,
                 'total_iva'           => 21000,
                 'total'               => '$ 124.300,00',
                 'ivas'                => [
@@ -261,6 +255,30 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
         ];
 
         return json_encode(array_merge($base, $overrides), JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Lectura que pasa el control de EscaneoFacturaCompraService::necesita_revision(), para los tests
+     * que cuentan llamadas o tokens.
+     *
+     * La factura por defecto de json_de_factura() no lo pasa, y a propósito no se cambia: su total y su
+     * desglose no cuadran (ver no_avisa_nada_cuando_el_total_cuadra_con_el_desglose()), así que con ella
+     * el escaneo hace una segunda lectura. Los demás tests no cuentan llamadas y siguen con esa.
+     *
+     * @return string
+     */
+    protected function json_de_factura_que_pasa_el_control(): string
+    {
+        return $this->json_de_factura(['factura' => [
+            'es_factura_afip' => true,
+            'neto_gravado'    => 26465.4,
+            'total_iva'       => 5557.73,
+            'total'           => 32023.13,
+            'ivas'            => [
+                ['porcentaje' => 21, 'neto' => 26465.4, 'importe' => 5557.73],
+            ],
+            'campos_dudosos'  => [],
+        ]]);
     }
 
     /**
@@ -405,7 +423,7 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
      */
     public function manda_las_tres_paginas_juntas_en_una_sola_llamada()
     {
-        $this->fake_de_anthropic($this->json_de_factura());
+        $this->fake_de_anthropic($this->json_de_factura_que_pasa_el_control());
 
         $scan = $this->escaneo();
         $this->foto($scan, 1);
@@ -871,7 +889,7 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
      */
     public function registra_el_consumo_de_tokens()
     {
-        $this->fake_de_anthropic($this->json_de_factura(), ['input_tokens' => 4210, 'output_tokens' => 1980]);
+        $this->fake_de_anthropic($this->json_de_factura_que_pasa_el_control(), ['input_tokens' => 4210, 'output_tokens' => 1980]);
 
         $scan = $this->escaneo();
         $this->foto($scan, 1);

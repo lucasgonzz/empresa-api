@@ -267,8 +267,9 @@ class EscaneoFacturaCompraService
         $motivo  = $this->necesita_revision($primera);
 
         /* Si la primera pasó el control, es la que vale. Si no, gana la revisión entera. */
-        $ganadora = $primera;
-        $tokens   = $primera['tokens'];
+        $ganadora         = $primera;
+        $tokens           = $primera['tokens'];
+        $sigue_sin_cerrar = null;
 
         if (!is_null($motivo)) {
             $ganadora = $this->leer_factura($scan, $imagenes, $this->modelo_de_revision());
@@ -276,21 +277,34 @@ class EscaneoFacturaCompraService
             /* Se pagaron las dos: lo que queda en el resultado es lo que costó el escaneo. */
             $tokens['input']  += $ganadora['tokens']['input'];
             $tokens['output'] += $ganadora['tokens']['output'];
+
+            /* La revisión pasa por el mismo control: que la haya leído otro modelo no la hace cierta. */
+            if (is_null($ganadora['error'])) {
+                $sigue_sin_cerrar = $this->necesita_revision($ganadora);
+            }
         }
 
-        $this->dejar_rastro_de_la_lectura($scan, $primera, $ganadora, $motivo);
+        $this->dejar_rastro_de_la_lectura($scan, $primera, $ganadora, $motivo, $sigue_sin_cerrar);
 
         /*
-         * 🔴 Si la revisión falla, el error va al usuario aunque la primera lectura haya traído
-         * datos. Esa lectura ya se sabe que no cierra: mostrarla sería ofrecerle a confirmar unos
-         * costos que el propio sistema detectó mal, justo cuando no pudo corregirlos. Mejor el
-         * error de siempre y que vuelva a escanear.
+         * 🔴 Dos salidas distintas, y no hay que confundirlas:
+         *
+         *   · La revisión FALLÓ (error de la API, sin JSON, cortada): no hay segunda lectura, solo una
+         *     primera que ya no pasó el control o que tampoco existe. Va el error de siempre, y el
+         *     usuario vuelve a escanear.
+         *   · La revisión LEYÓ pero tampoco cierra: el escaneo sigue "listo", porque es lo mejor que se
+         *     pudo leer y hay datos para corregir a mano contra el papel. Lo que no puede es llegar en
+         *     silencio: va con aviso y con los renglones marcados (ver anotar_lo_que_sigue_sin_cerrar()).
          */
         if (!is_null($ganadora['error'])) {
             throw $ganadora['error'];
         }
 
         $parseado = $ganadora['parseado'];
+
+        if (!is_null($sigue_sin_cerrar)) {
+            $parseado = $this->anotar_lo_que_sigue_sin_cerrar($parseado);
+        }
 
         /* Los avisos de la preparación (fotos salteadas) se suman a los que dio la IA. */
         $parseado['avisos'] = array_merge($avisos, $parseado['avisos']);
@@ -316,10 +330,11 @@ class EscaneoFacturaCompraService
              * una lista cerrada: ningún dato de la factura. La pantalla de revisión no lo usa.
              */
             'lectura'             => [
-                'modelo'          => $ganadora['modelo'],
-                'revisada'        => !is_null($motivo),
-                'motivo_revision' => $motivo,
-                'primer_modelo'   => $primera['modelo'],
+                'modelo'           => $ganadora['modelo'],
+                'revisada'         => !is_null($motivo),
+                'motivo_revision'  => $motivo,
+                'primer_modelo'    => $primera['modelo'],
+                'sigue_sin_cerrar' => $sigue_sin_cerrar,
             ],
         ];
     }
@@ -460,9 +475,12 @@ class EscaneoFacturaCompraService
      *   · la lectura falló: error de la API, respuesta sin JSON válido, cortada o rechazada;
      *   · no trae ningún artículo;
      *   · algún renglón no da la cuenta (ver renglon_cierra());
+     *   · dos renglones son iguales (ver clave_de_renglon());
      *   · más de la mitad de los renglones no tienen con qué hacer la cuenta, porque entonces el
      *     control no está controlando nada;
-     *   · la suma de los renglones no llega al neto (ver faltan_renglones_contra_el_neto()).
+     *   · la suma de los renglones no llega a lo que dice el comprobante (ver
+     *     importe_de_referencia_de_los_renglones());
+     *   · el total impreso no cierra con su desglose (ver aviso_de_total_que_no_cuadra()).
      *
      * @param  array  $lectura  Salida de leer_factura()
      * @return string|null
@@ -473,51 +491,161 @@ class EscaneoFacturaCompraService
             return $lectura['motivo_falla'];
         }
 
-        $articulos = $lectura['parseado']['articulos'];
+        return $this->controlar_lectura($lectura['parseado'])['motivo'];
+    }
+
+    /**
+     * Corre el control sobre una lectura ya parseada y devuelve TODO lo que encontró, no solo lo
+     * primero: la primera lectura solo necesita saber si se relee, pero la que queda después de la
+     * revisión tiene que avisar de cada cosa (ver anotar_lo_que_sigue_sin_cerrar()).
+     *
+     * `motivo` es el de mayor prioridad: los renglones antes que los totales, porque el costo mal de un
+     * renglón es lo que más se propaga (cuenta corriente, y con "actualizar precios", precios de venta).
+     *
+     * @param  array  $parseado  Salida de parse_respuesta()
+     * @return array  ['motivo'=>string|null,'no_cierran'=>int[],'repetidos'=>int[],'sin_datos'=>bool,
+     *                 'faltan_renglones'=>bool,'suma'=>float,'referencia'=>float|null]
+     */
+    protected function controlar_lectura(array $parseado): array
+    {
+        $articulos = $parseado['articulos'];
+
+        $control = [
+            'motivo'           => null,
+            'no_cierran'       => [],
+            'repetidos'        => [],
+            'sin_datos'        => false,
+            'faltan_renglones' => false,
+            'suma'             => 0.0,
+            'referencia'       => null,
+        ];
 
         if (count($articulos) === 0) {
-            return 'sin_articulos';
+            $control['motivo'] = 'sin_articulos';
+
+            return $control;
         }
 
-        $sin_cuenta      = 0;
-        $sin_total       = 0;
-        $suma_de_totales = 0.0;
+        $sin_cuenta    = 0;
+        $suma_completa = true;
+        $vistos        = [];
 
-        foreach ($articulos as $articulo) {
-            if (is_null($articulo['total_linea'])) {
-                $sin_total++;
+        foreach ($articulos as $indice => $articulo) {
+            $importe = $this->importe_del_renglon($articulo);
+
+            if (is_null($importe)) {
+                $suma_completa = false;
             } else {
-                $suma_de_totales += (float) $articulo['total_linea'];
+                $control['suma'] += $importe;
             }
 
             if (is_null($articulo['cantidad']) || is_null($articulo['costo_unitario']) || is_null($articulo['total_linea'])) {
                 $sin_cuenta++;
-                continue;
+            } elseif (!$this->renglon_cierra($articulo)) {
+                $control['no_cierran'][] = $indice;
             }
 
-            if (!$this->renglon_cierra($articulo)) {
-                return 'renglon_no_cierra';
+            $clave = $this->clave_de_renglon($articulo);
+
+            if (!is_null($clave)) {
+                if (isset($vistos[$clave])) {
+                    $control['repetidos'][] = $vistos[$clave];
+                    $control['repetidos'][] = $indice;
+                } else {
+                    $vistos[$clave] = $indice;
+                }
             }
         }
 
-        if ($sin_cuenta * 2 > count($articulos)) {
-            return 'renglones_sin_datos';
+        $control['sin_datos'] = $sin_cuenta * 2 > count($articulos);
+
+        /* Un renglón sin total ni cuenta posible deja la suma corta por eso, no porque falten renglones. */
+        if ($suma_completa) {
+            $control['referencia']       = $this->importe_de_referencia_de_los_renglones($parseado['factura']);
+            $control['faltan_renglones'] = $this->faltan_renglones($control['suma'], $control['referencia']);
         }
 
-        /* Con renglones sin total la suma queda corta por eso, no porque falten renglones. */
-        if ($sin_total === 0 && $this->faltan_renglones_contra_el_neto($suma_de_totales, $lectura['parseado']['factura'])) {
-            return 'suma_menor_que_el_neto';
+        if (count($control['no_cierran']) > 0) {
+            $control['motivo'] = 'renglon_no_cierra';
+        } elseif (count($control['repetidos']) > 0) {
+            $control['motivo'] = 'renglon_repetido';
+        } elseif ($control['sin_datos']) {
+            $control['motivo'] = 'renglones_sin_datos';
+        } elseif ($control['faltan_renglones']) {
+            $control['motivo'] = 'faltan_renglones';
+        } elseif (!is_null($this->aviso_de_total_que_no_cuadra($parseado['factura']))) {
+            /*
+             * 🔴 La cabecera también termina en la deuda: el total que se guarda sale del desglose más
+             * las percepciones (ProviderOrderScanController::guardar_factura()). Medido en 7 facturas A:
+             * el total y su desglose dan exacto o se alejan un 3,2 %, sin nada en el medio, y ese 3,2 %
+             * es una percepción de pie que esa lectura perdió (otras lecturas de la misma factura la
+             * traen justa; se rotula, por ejemplo, "Regímenes Especiales"). No hubo falsas alarmas. Ojo:
+             * en lo medido Sonnet 5.5 también la pierde, así que ahí la revisión no la recupera y lo
+             * que queda es el aviso.
+             */
+            $control['motivo'] = 'total_no_cuadra';
         }
 
-        return null;
+        return $control;
     }
 
     /**
-     * ¿Cierra `cantidad × costo × (1 − descuento) = total del renglón`?
+     * Importe de un renglón para sumarlo contra el comprobante: el impreso, o si no se leyó, la cuenta
+     * con lo que sí se leyó. Null si tampoco hay con qué hacerla.
      *
-     * La tolerancia es el mayor entre 2 pesos y el 1 % del total, para no pagar una segunda lectura
-     * por centavos: los comprobantes redondean el unitario a dos decimales y lo multiplican por
-     * cantidades decimales. Un descuento null es que el renglón no tiene descuento.
+     * @param  array  $articulo  Renglón normalizado
+     * @return float|null
+     */
+    protected function importe_del_renglon(array $articulo)
+    {
+        if (!is_null($articulo['total_linea'])) {
+            return (float) $articulo['total_linea'];
+        }
+
+        if (is_null($articulo['cantidad']) || is_null($articulo['costo_unitario'])) {
+            return null;
+        }
+
+        $descuento = is_null($articulo['descuento_porcentaje']) ? 0.0 : (float) $articulo['descuento_porcentaje'];
+
+        return (float) $articulo['cantidad'] * (float) $articulo['costo_unitario'] * (1 - $descuento / 100);
+    }
+
+    /**
+     * Clave para reconocer dos renglones iguales: mismo código, cantidad y costo. Null si falta alguno
+     * de los tres (sin código, vale el nombre: hay facturas que no traen códigos).
+     *
+     * 🔴 Por qué importa: el solape entre tramos puede hacer que un renglón se lea dos veces. Las dos filas
+     * cierran su cuenta, y una suma de más contra el neto se confunde con una bonificación de pie, así
+     * que ningún otro control lo ve. Y al confirmar hace daño en silencio: la compra guarda una sola
+     * fila por artículo, pero el stock se mueve por cada renglón (NewProviderOrderHelper::update_article()),
+     * así que entra el doble de stock con la deuda de uno.
+     *
+     * @param  array  $articulo  Renglón normalizado
+     * @return string|null
+     */
+    protected function clave_de_renglon(array $articulo)
+    {
+        $codigo = $articulo['codigo_proveedor'];
+
+        if (is_null($codigo)) {
+            $codigo = $articulo['bar_code'];
+        }
+
+        if (is_null($codigo)) {
+            $codigo = $articulo['nombre'];
+        }
+
+        if (is_null($codigo) || is_null($articulo['cantidad']) || is_null($articulo['costo_unitario'])) {
+            return null;
+        }
+
+        return mb_strtolower(preg_replace('/\s+/', '', $codigo)) . '|' . (float) $articulo['cantidad'] . '|' . (float) $articulo['costo_unitario'];
+    }
+
+    /**
+     * ¿Cierra `cantidad × costo × (1 − descuento) = total del renglón`? Un descuento null es que el
+     * renglón no tiene descuento.
      *
      * @param  array  $articulo  Renglón normalizado, con cantidad, costo y total no nulos
      * @return bool
@@ -529,11 +657,77 @@ class EscaneoFacturaCompraService
         $calculado = (float) $articulo['cantidad'] * (float) $articulo['costo_unitario'] * (1 - $descuento / 100);
         $impreso   = (float) $articulo['total_linea'];
 
-        return abs($calculado - $impreso) <= max(2, abs($impreso) * 0.01);
+        return abs($calculado - $impreso) <= $this->tolerancia_del_renglon((float) $articulo['cantidad'], $impreso);
     }
 
     /**
-     * ¿La suma de los renglones queda por debajo del neto del comprobante? Eso es que faltan
+     * Cuánto puede alejarse la cuenta de un renglón sin que valga la pena pagar otra lectura. El mayor de:
+     *
+     *   · El 1 % del total.
+     *   · Un piso de 2, acotado al 5 % del total. Sin ese tope no escala: en una factura en dólares,
+     *     1 × 3,50 leído 5,00 pasaba con un 43 % de error, porque 1,50 entra en un piso de 2.
+     *   · Los centavos de redondeo: el unitario impreso viene redondeado a dos decimales, y ese medio
+     *     centavo se multiplica por la cantidad. 1000 × 0,125 se imprime 0,13 y da 5 de diferencia.
+     *
+     * @param  float  $cantidad
+     * @param  float  $total
+     * @return float
+     */
+    protected function tolerancia_del_renglon(float $cantidad, float $total): float
+    {
+        return max(
+            abs($total) * 0.01,
+            min(2, abs($total) * 0.05),
+            0.01 + 0.005 * abs($cantidad)
+        );
+    }
+
+    /**
+     * Importe del comprobante contra el que se compara la suma de los renglones, o null si la lectura no
+     * trae con qué. Tiene que estar en la misma base que los renglones, y depende del comprobante:
+     *
+     *   · Factura B o C: no discriminan IVA, así que los renglones lo traen adentro y su base es
+     *     `total − percepciones`. Contra el neto no serviría: si lo leyó, la suma le queda un 21 % arriba
+     *     y eso tapa cualquier renglón perdido.
+     *   · Con neto: el neto. No incluye impuestos, igual que los renglones de una factura A.
+     *   · Sin neto: `total − percepciones − IVA`. Un remito sin desglose queda en el total, que es lo único
+     *     que tiene.
+     *
+     * Se decide por el tipo que leyó el modelo y no por lo cerca que quede la suma de cada importe:
+     * una bonificación de pie deja la suma de una factura A más cerca del neto con IVA que del neto, y
+     * eso daría una falsa alarma en facturas bien leídas (medido).
+     *
+     * @param  array  $factura  Factura normalizada
+     * @return float|null
+     */
+    protected function importe_de_referencia_de_los_renglones(array $factura)
+    {
+        $neto  = isset($factura['neto_gravado']) ? (float) $factura['neto_gravado'] : 0.0;
+        $total = isset($factura['total']) ? (float) $factura['total'] : 0.0;
+        $iva   = isset($factura['total_iva']) ? (float) $factura['total_iva'] : 0.0;
+
+        $percepciones = (isset($factura['percepcion_iibb']) ? (float) $factura['percepcion_iibb'] : 0.0)
+                      + (isset($factura['percepcion_iva']) ? (float) $factura['percepcion_iva'] : 0.0);
+
+        $tipo = isset($factura['tipo_comprobante']) ? (string) $factura['tipo_comprobante'] : '';
+
+        if ($total > 0 && preg_match('/\b[BC]\b/i', $tipo) === 1) {
+            return $total - $percepciones;
+        }
+
+        if ($neto > 0) {
+            return $neto;
+        }
+
+        if ($total > 0) {
+            return $total - $percepciones - $iva;
+        }
+
+        return null;
+    }
+
+    /**
+     * ¿La suma de los renglones queda por debajo de lo que dice el comprobante? Eso es que faltan
      * renglones, lo único que la cuenta por renglón no puede ver.
      *
      * 🔴 Se compara para UN SOLO LADO, y no es un olvido. El comprobante no trae un "subtotal" en el
@@ -542,26 +736,128 @@ class EscaneoFacturaCompraService
      * bien leída hasta un 18 % ARRIBA del neto por una bonificación general, así que "se aleja
      * para arriba" no dice nada: comparado para los dos lados mandaría a revisar una de cada cinco
      * facturas sin motivo. Para abajo, en cambio, una bonificación nunca explica la diferencia. En
-     * las 30 lecturas medidas no saltó ninguna vez.
+     * las lecturas guardadas no saltó ninguna vez.
      *
-     * `factura.total` no sirve para esto: incluye IVA y percepciones. Sin neto (remitos, facturas C)
-     * no hay con qué comparar y no se revisa por esto.
-     *
-     * @param  float  $suma_de_totales  Suma de `total_linea` de todos los renglones
-     * @param  array  $factura          Factura normalizada
+     * @param  float       $suma        Suma de los importes de todos los renglones
+     * @param  float|null  $referencia  Salida de importe_de_referencia_de_los_renglones()
      * @return bool
      */
-    protected function faltan_renglones_contra_el_neto(float $suma_de_totales, array $factura): bool
+    protected function faltan_renglones(float $suma, $referencia): bool
     {
-        $neto = isset($factura['neto_gravado']) ? (float) $factura['neto_gravado'] : 0.0;
-
-        if ($neto <= 0) {
+        if (is_null($referencia) || $referencia <= 0) {
             return false;
         }
 
-        $diferencia = $neto - $suma_de_totales;
+        $diferencia = $referencia - $suma;
 
-        return $diferencia > $neto * 0.01 && $diferencia > abs($suma_de_totales) * 0.01;
+        return $diferencia > $referencia * 0.01 && $diferencia > abs($suma) * 0.01;
+    }
+
+    /**
+     * Deja a la vista lo que la revisión no pudo resolver: un aviso por cada problema, en `avisos`, que
+     * la pantalla de revisión ya muestra arriba de todo, y los renglones afectados en `campos_dudosos`,
+     * que los pinta. No corrige ni saca nada: dos lecturas dijeron lo mismo, y quien puede decidir es
+     * quien tiene el papel adelante. Un renglón repetido, por ejemplo, puede ser real.
+     *
+     * El total que no cuadra no se agrega acá: parse_respuesta() ya puso su aviso y marcó el campo.
+     *
+     * @param  array  $parseado  Salida de parse_respuesta()
+     * @return array  El mismo $parseado, con los avisos y los campos dudosos sumados
+     */
+    protected function anotar_lo_que_sigue_sin_cerrar(array $parseado): array
+    {
+        $control = $this->controlar_lectura($parseado);
+        $avisos  = [];
+
+        if ($control['motivo'] === 'sin_articulos') {
+            $avisos[] = 'No se pudo leer ningún artículo de la factura, ni volviéndola a leer.';
+        }
+
+        if (count($control['no_cierran']) > 0) {
+            $filas = $this->nombrar_filas($parseado['articulos'], $control['no_cierran']);
+
+            $avisos[] = $filas['sujeto'] . ($filas['plural'] ? ' no cierran' : ' no cierra') . ': la cantidad por el costo con el ' .
+                        'descuento no da el total de la línea, y volver a leer la factura no lo resolvió. Revisá esos ' .
+                        'importes contra el papel antes de confirmar: el costo que quede es el que entra a la cuenta corriente.';
+
+            $parseado['articulos'] = $this->marcar_como_dudosos(
+                $parseado['articulos'],
+                $control['no_cierran'],
+                ['cantidad', 'costo_unitario', 'descuento_porcentaje', 'total_linea']
+            );
+        }
+
+        if (count($control['repetidos']) > 0) {
+            $filas = $this->nombrar_filas($parseado['articulos'], $control['repetidos']);
+
+            $avisos[] = $filas['sujeto'] . ($filas['plural'] ? ' traen' : ' trae') . ' el mismo código, cantidad y costo. Puede ser ' .
+                        'real o un renglón leído dos veces: si está de más, sacalo antes de confirmar, porque el stock ' .
+                        'se sumaría dos veces.';
+
+            $parseado['articulos'] = $this->marcar_como_dudosos($parseado['articulos'], $control['repetidos'], ['cantidad']);
+        }
+
+        if ($control['sin_datos']) {
+            $avisos[] = 'Más de la mitad de los renglones no tiene cantidad, costo o total, así que no se pudieron ' .
+                        'controlar. Revisalos contra el papel antes de confirmar.';
+        }
+
+        if ($control['faltan_renglones']) {
+            $avisos[] = 'Los renglones suman ' . number_format($control['suma'], 2, ',', '.') . ' y el comprobante dice ' .
+                        number_format((float) $control['referencia'], 2, ',', '.') . ': puede faltar algún renglón, y volver a ' .
+                        'leer la factura no lo resolvió. Comparalo contra el papel antes de confirmar.';
+        }
+
+        $parseado['avisos'] = array_merge($parseado['avisos'], $avisos);
+
+        return $parseado;
+    }
+
+    /**
+     * Cómo nombrar unos renglones en un aviso, con el número de fila que muestra la pantalla de revisión.
+     *
+     * @param  array  $articulos
+     * @param  int[]  $indices
+     * @return array  ['sujeto'=>string,'plural'=>bool]
+     */
+    protected function nombrar_filas(array $articulos, array $indices): array
+    {
+        $numeros = [];
+
+        foreach ($indices as $indice) {
+            $numeros[] = (int) $articulos[$indice]['fila'];
+        }
+
+        $numeros = array_values(array_unique($numeros));
+
+        sort($numeros);
+
+        if (count($numeros) === 1) {
+            return ['sujeto' => 'La fila ' . $numeros[0], 'plural' => false];
+        }
+
+        $ultimo = array_pop($numeros);
+
+        return ['sujeto' => 'Las filas ' . implode(', ', $numeros) . ' y ' . $ultimo, 'plural' => true];
+    }
+
+    /**
+     * Suma campos a `campos_dudosos` de unos renglones, que es lo que la pantalla de revisión pinta.
+     *
+     * @param  array     $articulos
+     * @param  int[]     $indices
+     * @param  string[]  $campos
+     * @return array
+     */
+    protected function marcar_como_dudosos(array $articulos, array $indices, array $campos): array
+    {
+        foreach (array_unique($indices) as $indice) {
+            $articulos[$indice]['campos_dudosos'] = array_values(array_unique(
+                array_merge($articulos[$indice]['campos_dudosos'], $campos)
+            ));
+        }
+
+        return $articulos;
     }
 
     /**
@@ -577,10 +873,11 @@ class EscaneoFacturaCompraService
      * @param  \App\Models\ProviderOrderScan  $scan
      * @param  array                          $primera   Salida de leer_factura()
      * @param  array                          $ganadora  Salida de leer_factura()
-     * @param  string|null                    $motivo    Salida de necesita_revision()
+     * @param  string|null                    $motivo    Salida de necesita_revision() para la primera
+     * @param  string|null                    $sigue_sin_cerrar  Salida de necesita_revision() para la revisión
      * @return void
      */
-    protected function dejar_rastro_de_la_lectura(ProviderOrderScan $scan, array $primera, array $ganadora, $motivo)
+    protected function dejar_rastro_de_la_lectura(ProviderOrderScan $scan, array $primera, array $ganadora, $motivo, $sigue_sin_cerrar)
     {
         $contexto = [
             'provider_order_scan_id' => $scan->id,
@@ -588,6 +885,7 @@ class EscaneoFacturaCompraService
             'modelo'                 => $ganadora['modelo'],
             'revisada'               => !is_null($motivo),
             'motivo_revision'        => $motivo,
+            'sigue_sin_cerrar'       => $sigue_sin_cerrar,
             'termino_en_error'       => !is_null($ganadora['error']),
             'motivo_del_error'       => $ganadora['motivo_falla'],
             'tokens_primera'         => $primera['tokens'],

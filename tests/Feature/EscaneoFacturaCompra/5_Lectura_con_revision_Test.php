@@ -10,6 +10,7 @@ use App\Models\ProviderOrderScanImage;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Str;
 use Tests\EmpresaTestCase;
@@ -154,15 +155,16 @@ class Lectura_con_revision_Test extends EmpresaTestCase
      * @param  mixed  $costo
      * @param  mixed  $descuento
      * @param  mixed  $total
+     * @param  string $codigo  Dos renglones con el mismo código, cantidad y costo cuentan como repetidos
      * @return array
      */
-    protected function renglon($cantidad, $costo, $descuento, $total): array
+    protected function renglon($cantidad, $costo, $descuento, $total, string $codigo = 'INV-001'): array
     {
         return [
             'fila'                 => 1,
             'pagina'               => 1,
             'bar_code'             => null,
-            'codigo_proveedor'     => 'INV-001',
+            'codigo_proveedor'     => $codigo,
             'nombre'               => 'ARTICULO INVENTADO',
             'cantidad'             => $cantidad,
             'costo_unitario'       => $costo,
@@ -180,19 +182,20 @@ class Lectura_con_revision_Test extends EmpresaTestCase
      *
      * @param  array       $articulos
      * @param  float|null  $neto_gravado
+     * @param  array       $cabecera  Campos de la factura a pisar (total, ivas, percepcion_iibb…)
      * @return string
      */
-    protected function factura_leida(array $articulos, $neto_gravado = null): string
+    protected function factura_leida(array $articulos, $neto_gravado = null, array $cabecera = []): string
     {
         return json_encode([
             'columnas_detectadas' => [],
             'articulos'           => $articulos,
-            'factura'             => [
+            'factura'             => array_merge([
                 'es_factura_afip' => true,
                 'neto_gravado'    => $neto_gravado,
                 'ivas'            => [],
                 'campos_dudosos'  => [],
-            ],
+            ], $cabecera),
             'avisos'              => [],
         ], JSON_UNESCAPED_UNICODE);
     }
@@ -460,7 +463,29 @@ class Lectura_con_revision_Test extends EmpresaTestCase
             'cantidad decimal'                    => [1.75, 1234.56, null, 2160.48],
             'descuento null es sin descuento'     => [4, 250, null, 1000],
             'descuento decimal'                   => [2, 1000, 12.5, 1750],
+            'centavos en un total de dólares'     => [3, 0.33, null, 1.00],
+            'unitario redondeado por mucha cantidad' => [1000, 0.13, null, 125],
         ];
+    }
+
+    /**
+     * 🔴 El piso de la tolerancia no puede comerse un total chico. En una factura en dólares, un costo
+     * de 3,50 leído 5,00 es un 43 % de error, y con un piso fijo de 2 pasaba como redondeo.
+     *
+     * @test
+     * @return void
+     */
+    public function un_error_grande_en_un_total_chico_hace_releer()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(1, 5.00, null, 3.50)])),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(1, 3.50, null, 3.50)])),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('renglon_no_cierra', $scan->resultado['lectura']['motivo_revision']);
+        $this->assertEquals(3.50, $scan->resultado['articulos'][0]['costo_unitario']);
     }
 
     /**
@@ -541,8 +566,8 @@ class Lectura_con_revision_Test extends EmpresaTestCase
     {
         $this->fake_por_modelo([
             'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([
-                $this->renglon(1, 100, null, null),
-                $this->renglon(1, 100, null, 100),
+                $this->renglon(1, 100, null, null, 'INV-001'),
+                $this->renglon(1, 100, null, 100, 'INV-002'),
             ])),
         ]);
 
@@ -594,7 +619,534 @@ class Lectura_con_revision_Test extends EmpresaTestCase
 
         $scan = $this->correr_el_job($this->escaneo_con_foto());
 
-        $this->assertSame('suma_menor_que_el_neto', $scan->resultado['lectura']['motivo_revision']);
+        $this->assertSame('faltan_renglones', $scan->resultado['lectura']['motivo_revision']);
+    }
+
+    /**
+     * 🔴 Sin neto, el renglón perdido en un corte se ve igual contra `total − percepciones`. Un remito o
+     * una factura C no traen neto, y antes ahí el control se apagaba justo donde nada más lo cubría.
+     *
+     * @test
+     * @dataProvider cabeceras_sin_neto_con_renglones_faltantes
+     * @param  array  $cabecera
+     * @return void
+     */
+    public function sin_neto_un_renglon_perdido_se_ve_contra_el_total(array $cabecera)
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(1, 500, null, 500)], null, $cabecera)),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(2, 500, null, 1000)], null, $cabecera)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('faltan_renglones', $scan->resultado['lectura']['motivo_revision']);
+    }
+
+    /**
+     * @return array
+     */
+    public function cabeceras_sin_neto_con_renglones_faltantes(): array
+    {
+        return [
+            'solo total'               => [['total' => 1000]],
+            'total con percepción'     => [['total' => 1100, 'percepcion_iibb' => 100]],
+            'total con IVA discriminado' => [['total' => 1210, 'total_iva' => 210]],
+        ];
+    }
+
+    /**
+     * La otra mitad: con los renglones completos no revisa, ni con percepciones ni con IVA aparte. Si no
+     * se descontaran, cada factura con una percepción pagaría la segunda lectura sin motivo.
+     *
+     * @test
+     * @dataProvider cabeceras_sin_neto_que_cierran
+     * @param  array  $cabecera
+     * @return void
+     */
+    public function sin_neto_con_los_renglones_completos_no_revisa(array $cabecera)
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(2, 500, null, 1000)], null, $cabecera)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame(['claude-haiku-5-5'], $this->modelos_llamados());
+        $this->assertFalse($scan->resultado['lectura']['revisada']);
+    }
+
+    /**
+     * @return array
+     */
+    public function cabeceras_sin_neto_que_cierran(): array
+    {
+        return [
+            'solo total'                 => [['total' => 1000]],
+            'total con percepción'       => [['total' => 1100, 'percepcion_iibb' => 100]],
+            'total con IVA discriminado' => [['total' => 1210, 'total_iva' => 210]],
+        ];
+    }
+
+    /**
+     * Un renglón sin total no apaga el control: se estima con su propia cuenta. Si no, alcanzaba un solo
+     * total ilegible para que no se viera un renglón perdido en toda la factura.
+     *
+     * @test
+     * @return void
+     */
+    public function un_renglon_sin_total_se_estima_y_el_control_sigue_prendido()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([
+                $this->renglon(1, 1000, null, null, 'INV-001'),
+                $this->renglon(1, 500, null, 500, 'INV-002'),
+            ], 3000)),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(3, 1000, null, 3000)], 3000)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('faltan_renglones', $scan->resultado['lectura']['motivo_revision']);
+    }
+
+    /**
+     * Y la estimación no da falsas alarmas: 1000 estimado más 500 impreso es el neto de 1500.
+     *
+     * @test
+     * @return void
+     */
+    public function un_renglon_sin_total_bien_estimado_no_revisa()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([
+                $this->renglon(1, 1000, null, null, 'INV-001'),
+                $this->renglon(1, 500, null, 500, 'INV-002'),
+            ], 1500)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame(['claude-haiku-5-5'], $this->modelos_llamados());
+    }
+
+    /**
+     * 🔴 Factura B con neto leído: los renglones traen el IVA adentro, así que su suma queda un 21 % arriba
+     * del neto y tapa un renglón perdido. Se compara contra el total, que está en la misma base.
+     *
+     * @test
+     * @return void
+     */
+    public function en_una_factura_b_un_renglon_perdido_no_lo_tapa_el_iva()
+    {
+        $cabecera = ['tipo_comprobante' => 'B', 'total' => 1210];
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(1, 1100, null, 1100)], 1000, $cabecera)),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(1, 1210, null, 1210)], 1000, $cabecera)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('faltan_renglones', $scan->resultado['lectura']['motivo_revision']);
+    }
+
+    /**
+     * Y una factura B completa no revisa, aunque la suma de sus renglones esté arriba del neto.
+     *
+     * @test
+     * @return void
+     */
+    public function una_factura_b_completa_no_revisa()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida(
+                [$this->renglon(1, 1210, null, 1210)],
+                1000,
+                ['tipo_comprobante' => 'B', 'total' => 1210]
+            )),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame(['claude-haiku-5-5'], $this->modelos_llamados());
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  🔴 Dos lecturas que no cierran
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 Si Sonnet también lee mal la bonificación doble, el escaneo sigue "listo": hay datos para revisar a
+     * mano. Pero no en silencio. Va un aviso en `avisos`, que la pantalla de revisión muestra, y los
+     * renglones que no cierran quedan en `campos_dudosos`, solo esos. Y no hay una tercera lectura.
+     *
+     * @test
+     * @return void
+     */
+    public function si_la_revision_tampoco_cierra_queda_listo_con_aviso_y_campos_dudosos()
+    {
+        $bien = $this->renglon(2, 100, null, 200, 'INV-001');
+        $bien['fila'] = 1;
+
+        $mal = $this->renglon(10, 1000, 50, 4250, 'INV-002');
+        $mal['fila'] = 2;
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$bien, $mal])),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$bien, $mal])),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertEquals('listo', $scan->estado);
+        $this->assertSame(['claude-haiku-5-5', 'claude-sonnet-5-5'], $this->modelos_llamados());
+        $this->assertSame('renglon_no_cierra', $scan->resultado['lectura']['sigue_sin_cerrar']);
+
+        $avisos = implode(' | ', $scan->resultado['avisos']);
+
+        $this->assertStringContainsString('fila 2', $avisos, 'El aviso tiene que decir qué renglón mirar.');
+        $this->assertStringContainsString('no cierra', $avisos);
+
+        foreach (['cantidad', 'costo_unitario', 'descuento_porcentaje'] as $campo) {
+            $this->assertContains($campo, $scan->resultado['articulos'][1]['campos_dudosos']);
+        }
+
+        $this->assertSame([], $scan->resultado['articulos'][0]['campos_dudosos'], 'El renglón que cierra no se marca: si todo es dudoso, nada lo es.');
+    }
+
+    /**
+     * Si la revisión sí cierra no hay nada que avisar: la primera lectura mala queda atrás.
+     *
+     * @test
+     * @return void
+     */
+    public function si_la_revision_cierra_no_hay_aviso()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(10, 1000, 50, 4250)])),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(10, 1000, 57.5, 4250)])),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertNull($scan->resultado['lectura']['sigue_sin_cerrar']);
+        $this->assertSame([], $scan->resultado['avisos']);
+        $this->assertSame([], $scan->resultado['articulos'][0]['campos_dudosos']);
+    }
+
+    /**
+     * Cuando la revisión también deja renglones afuera, se avisa cuánto falta.
+     *
+     * @test
+     * @return void
+     */
+    public function si_tambien_faltan_renglones_en_la_revision_va_un_aviso()
+    {
+        $leida = $this->factura_leida([$this->renglon(1, 1000, null, 1000)], 2000);
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $leida),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $leida),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertEquals('listo', $scan->estado);
+        $this->assertSame('faltan_renglones', $scan->resultado['lectura']['sigue_sin_cerrar']);
+        $this->assertStringContainsString('puede faltar', implode(' | ', $scan->resultado['avisos']));
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  🔴 El renglón repetido por el solape
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 Dos filas iguales cierran cada una su cuenta y la suma mayor al neto pasa. Al confirmar, la compra
+     * guarda una sola y el stock se mueve por cada fila: stock ×2 y deuda ×1, sin que nada avise.
+     *
+     * @test
+     * @return void
+     */
+    public function un_renglon_repetido_hace_releer_y_gana_la_lectura_sin_repetir()
+    {
+        $renglon = $this->renglon(2, 100, null, 200);
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$renglon, $renglon], 200)),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$renglon], 200)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('renglon_repetido', $scan->resultado['lectura']['motivo_revision']);
+        $this->assertCount(1, $scan->resultado['articulos']);
+        $this->assertSame([], $scan->resultado['avisos']);
+    }
+
+    /**
+     * Si la revisión también lo trae, puede ser real: una factura puede listar dos veces lo mismo. No se
+     * saca solo, se avisa, y lo decide quien tiene el papel adelante.
+     *
+     * @test
+     * @return void
+     */
+    public function si_la_revision_tambien_trae_el_repetido_va_un_aviso_y_no_se_saca()
+    {
+        $primero = $this->renglon(2, 100, null, 200);
+        $primero['fila'] = 3;
+
+        $segundo = $this->renglon(2, 100, null, 200);
+        $segundo['fila'] = 4;
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$primero, $segundo])),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$primero, $segundo])),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertEquals('listo', $scan->estado);
+        $this->assertCount(2, $scan->resultado['articulos'], 'No se saca solo: puede ser real.');
+        $this->assertSame('renglon_repetido', $scan->resultado['lectura']['sigue_sin_cerrar']);
+
+        $avisos = implode(' | ', $scan->resultado['avisos']);
+
+        $this->assertStringContainsString('filas 3 y 4', $avisos);
+        $this->assertStringContainsString('stock', $avisos);
+        $this->assertContains('cantidad', $scan->resultado['articulos'][1]['campos_dudosos']);
+    }
+
+    /**
+     * Mismo código con otra cantidad u otro costo no es un repetido: es una compra normal.
+     *
+     * @test
+     * @return void
+     */
+    public function mismo_codigo_con_otra_cantidad_o_costo_no_es_repetido()
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([
+                $this->renglon(2, 100, null, 200),
+                $this->renglon(3, 100, null, 300),
+                $this->renglon(2, 150, null, 300),
+            ])),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame(['claude-haiku-5-5'], $this->modelos_llamados());
+    }
+
+    /**
+     * Sin código, el repetido se reconoce por el nombre: hay facturas que no traen códigos.
+     *
+     * @test
+     * @return void
+     */
+    public function sin_codigo_el_repetido_se_reconoce_por_el_nombre()
+    {
+        $renglon = $this->renglon(2, 100, null, 200);
+        $renglon['codigo_proveedor'] = null;
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$renglon, $renglon])),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$renglon])),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('renglon_repetido', $scan->resultado['lectura']['motivo_revision']);
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  🔴 La cabecera: el total contra su desglose
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Cabecera que cierra o no según la percepción, que es justo lo que se mide que se pierde: una línea
+     * "Regímenes Especiales" al pie que el modelo a veces no toma como percepción.
+     *
+     * @param  float|null  $percepcion
+     * @return array
+     */
+    protected function cabecera_con_percepcion($percepcion): array
+    {
+        return [
+            'tipo_comprobante' => 'A',
+            'total_iva'        => 210,
+            'total'            => 1250,
+            'ivas'             => [['porcentaje' => 21, 'neto' => 1000, 'importe' => 210]],
+            'percepcion_iibb'  => $percepcion,
+        ];
+    }
+
+    /**
+     * 🔴 Una percepción perdida mueve la deuda: el total que se guarda sale del desglose más las
+     * percepciones. Si el total impreso no cierra, se relee, y si la revisión la trae, gana.
+     *
+     * @test
+     * @return void
+     */
+    public function un_total_que_no_cuadra_hace_releer()
+    {
+        $renglones = [$this->renglon(10, 100, null, 1000)];
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida($renglones, 1000, $this->cabecera_con_percepcion(null))),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida($renglones, 1000, $this->cabecera_con_percepcion(40))),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('total_no_cuadra', $scan->resultado['lectura']['motivo_revision']);
+        $this->assertNull($scan->resultado['lectura']['sigue_sin_cerrar']);
+        $this->assertEquals(40, $scan->resultado['factura']['percepcion_iibb']);
+        $this->assertStringNotContainsString('no coincide', implode(' | ', $scan->resultado['avisos']));
+    }
+
+    /**
+     * Si la revisión tampoco lo cierra, queda el aviso de siempre con el total marcado, una sola vez: es
+     * el mismo que ya mostraba la pantalla de revisión.
+     *
+     * @test
+     * @return void
+     */
+    public function si_la_revision_tampoco_cuadra_el_total_queda_el_aviso_una_sola_vez()
+    {
+        $leida = $this->factura_leida([$this->renglon(10, 100, null, 1000)], 1000, $this->cabecera_con_percepcion(null));
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $leida),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $leida),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertEquals('listo', $scan->estado);
+        $this->assertSame('total_no_cuadra', $scan->resultado['lectura']['sigue_sin_cerrar']);
+        $this->assertContains('total', $scan->resultado['factura']['campos_dudosos']);
+        $this->assertSame(1, substr_count(implode(' | ', $scan->resultado['avisos']), 'no coincide'));
+    }
+
+    /**
+     * Un total que cierra, o una factura sin desglose, no piden segunda lectura.
+     *
+     * @test
+     * @dataProvider cabeceras_que_no_revisan_por_el_total
+     * @param  array  $cabecera
+     * @return void
+     */
+    public function un_total_que_cuadra_o_sin_desglose_no_revisa(array $cabecera)
+    {
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(10, 100, null, 1000)], 1000, $cabecera)),
+        ]);
+
+        $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame(['claude-haiku-5-5'], $this->modelos_llamados());
+    }
+
+    /**
+     * @return array
+     */
+    public function cabeceras_que_no_revisan_por_el_total(): array
+    {
+        return [
+            'cierra con la percepción' => [array_merge(['tipo_comprobante' => 'A', 'total' => 1250], ['ivas' => [['porcentaje' => 21, 'neto' => 1000, 'importe' => 210]], 'percepcion_iibb' => 40])],
+            'medio peso de redondeo'   => [['tipo_comprobante' => 'A', 'total' => 1210.4, 'ivas' => [['porcentaje' => 21, 'neto' => 1000, 'importe' => 210]]]],
+            'sin desglose'             => [['tipo_comprobante' => 'A', 'total' => 1250]],
+        ];
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  El rastro en el log
+     * ------------------------------------------------------------------ */
+
+    /**
+     * 🔴 El piso de log de casi todas las instalaciones es `warning`: en `info`, el rastro de una factura
+     * revisada no se escribía y no había con qué medir cuántas se revisan.
+     *
+     * @test
+     * @return void
+     */
+    public function una_factura_revisada_deja_rastro_en_warning()
+    {
+        Log::spy();
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(10, 1000, 50, 4250)])),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(10, 1000, 57.5, 4250)])),
+        ]);
+
+        $this->correr_el_job($this->escaneo_con_foto());
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'lectura terminada') !== false && $contexto['motivo_revision'] === 'renglon_no_cierra';
+        });
+    }
+
+    /**
+     * Una lectura que pasó de una no ensucia el log de producción: queda en `info`.
+     *
+     * @test
+     * @return void
+     */
+    public function una_factura_sin_revision_deja_rastro_en_info()
+    {
+        Log::spy();
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida([$this->renglon(1, 100, null, 100)])),
+        ]);
+
+        $this->correr_el_job($this->escaneo_con_foto());
+
+        Log::shouldHaveReceived('info')->withArgs(function ($mensaje) {
+            return strpos($mensaje, 'lectura terminada') !== false;
+        });
+
+        Log::shouldNotHaveReceived('warning', [\Mockery::pattern('/lectura terminada/'), \Mockery::any()]);
+    }
+
+    /**
+     * 🔴 La respuesta cruda trae datos de la factura de un cliente: no va al log, con ninguno de los dos
+     * errores de parseo. Alcanza con el error y el largo para diagnosticar.
+     *
+     * @test
+     * @dataProvider respuestas_que_no_se_pueden_parsear
+     * @param  string  $texto
+     * @return void
+     */
+    public function el_log_de_un_json_invalido_no_trae_la_respuesta_cruda(string $texto)
+    {
+        Log::spy();
+
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $texto),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $this->factura_leida([$this->renglon(1, 100, null, 100)])),
+        ]);
+
+        $this->correr_el_job($this->escaneo_con_foto());
+
+        Log::shouldHaveReceived('error')->withArgs(function ($mensaje, $contexto = []) use ($texto) {
+            return strpos($mensaje, 'EscaneoFacturaCompraService') !== false
+                && !array_key_exists('respuesta_cruda', $contexto)
+                && $contexto['largo'] === mb_strlen($texto)
+                && strpos(json_encode($contexto, JSON_UNESCAPED_UNICODE), 'CUIT SECRETO') === false;
+        });
+    }
+
+    /**
+     * @return array
+     */
+    public function respuestas_que_no_se_pueden_parsear(): array
+    {
+        return [
+            'sin objeto JSON' => ['La factura es de CUIT SECRETO y no la pude leer'],
+            'JSON inválido'   => ['{"nombre": "CUIT SECRETO \\Z"}'],
+        ];
     }
 
     /**
@@ -618,7 +1170,8 @@ class Lectura_con_revision_Test extends EmpresaTestCase
     }
 
     /**
-     * Dentro del 1 % tampoco revisa, y sin neto no hay con qué comparar (remitos, facturas C).
+     * Dentro del 1 % tampoco revisa, y sin neto ni total no hay con qué comparar. Sin neto pero con total
+     * sí hay: ver sin_neto_un_renglon_perdido_se_ve_contra_el_total().
      *
      * @test
      * @dataProvider netos_que_no_revisan
@@ -643,8 +1196,8 @@ class Lectura_con_revision_Test extends EmpresaTestCase
     public function netos_que_no_revisan(): array
     {
         return [
-            'dentro del 1 %' => [1005],
-            'sin neto'       => [null],
+            'dentro del 1 %'  => [1005],
+            'sin neto ni total' => [null],
         ];
     }
 
