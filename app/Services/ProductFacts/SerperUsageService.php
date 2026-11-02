@@ -15,6 +15,11 @@ class SerperUsageService
             $body = $response ? $response->json() : null;
             $credits = is_array($body) && isset($body['credits']) && is_numeric($body['credits']) && $body['credits'] >= 0
                 ? (float) $body['credits'] : null;
+            // /resolve es gratuito por contrato del proveedor, también si no responde. Viaja como search
+            // para mantener compatibilidad con la ingesta del admin, identificado por su proceso exclusivo.
+            if ($endpoint === 'search' && ($context['process'] ?? '') === SerperLinkResolver::PROCESO) {
+                $credits = 0.0;
+            }
             SerperUsageEvent::create([
                 'event_uuid' => (string) Str::uuid(),
                 'user_id' => $context['user_id'] ?? null,
@@ -25,7 +30,7 @@ class SerperUsageService
                 'query' => mb_substr((string) $query, 0, 255),
                 'ok' => $response ? $response->successful() : false,
                 'http_status' => $response ? $response->status() : null,
-                // Un timeout o una respuesta sin créditos NUNCA se convierten en consumo cero.
+                // Una búsqueda paga sin créditos informados conserva consumo desconocido; /resolve es gratuito por contrato.
                 'credits' => $credits,
                 'duration_ms' => (int) max(0, round((microtime(true) - $started) * 1000)),
                 'occurred_at' => now(),

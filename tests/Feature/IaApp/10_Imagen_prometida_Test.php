@@ -304,6 +304,136 @@ class Imagen_prometida_Test extends IaAppTestCase
     }
 
     /**
+     * Ronda de arreglos de la misión agente-mejoras-diario (F8, 31/10/2026): el aviso del job dice qué falta
+     * DE VERDAD. Un pedido que nació pendiente y después se quedó sin la clave de salida no sale sin header
+     * (el admin lo rechazaría con 401): queda no_disponible y el log y el motivo nombran solo la clave.
+     */
+    public function test_el_job_dice_que_falta_solo_la_clave_de_salida()
+    {
+        $mensaje = $this->mensaje_para_la_imagen('Job sin clave');
+
+        $pedido = IaImagenPedido::create([
+            'uuid' => (string) Str::uuid(), 'user_id' => $this->dueno->id, 'ai_message_id' => $mensaje->id,
+            'prompt' => 'Una placa', 'tamano' => 'cuadrada', 'estado' => 'pendiente',
+        ]);
+
+        config(['services.admin_api.inbound_key' => '']);
+
+        Log::spy();
+        Http::fake();
+
+        (new EnviarPedidoDeImagenAlAdminJob($pedido->id))->handle();
+
+        Http::assertNothingSent();
+        $this->assertSame('no_disponible', $pedido->fresh()->estado);
+        $this->assertSame('falta ADMIN_API_OUTBOUND_KEY en este cliente', $pedido->fresh()->error);
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje) {
+            return strpos((string) $mensaje, 'EnviarPedidoDeImagenAlAdminJob: ' . PedidosDeImagenIaHelper::AVISO_SIN_CONEXION . ' (falta ADMIN_API_OUTBOUND_KEY);') === 0;
+        });
+    }
+
+    /**
+     * El assistant 'listo' de la app donde se cuelga un pedido de imagen armado a mano.
+     *
+     * @param  string  $titulo
+     * @return \App\Models\AiMessage
+     */
+    protected function mensaje_para_la_imagen($titulo)
+    {
+        $conversation = $this->conversacion(['titulo' => $titulo]);
+
+        return AiMessage::create([
+            'ai_conversation_id' => $conversation->id,
+            'rol'                => 'assistant',
+            'estado'             => 'listo',
+            'contenido'          => 'La pedí.',
+            'canal'              => 'app',
+        ]);
+    }
+
+    /**
+     * 🔴 Misión agente-mejoras-diario (análisis del 30/10/2026, #6): con la URL y el UUID cargados pero
+     * SIN la clave de salida (ADMIN_API_OUTBOUND_KEY), el pedido salía sin header, el admin daba 401 y
+     * la imagen quedaba `fallida` después del turno, con el texto prometiéndola. Ahora pedir() la deja
+     * `no_disponible` en el mismo turno, se lo dice a la herramienta, y al admin no sale nada.
+     */
+    public function test_sin_la_clave_de_salida_el_pedido_nace_no_disponible_y_no_sale_nada()
+    {
+        config([
+            'services.admin_api.url'         => 'https://admin.ia-app.test',
+            'services.admin_api.client_uuid' => 'uuid-del-cliente-de-prueba',
+            'services.admin_api.inbound_key' => '',
+        ]);
+
+        Http::fake();
+
+        $mensaje = $this->mensaje_para_la_imagen('Sin clave');
+
+        $resultado = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, ['prompt' => 'Placa cuadrada del chaleco de polar azul']);
+
+        $this->assertNotNull($resultado['pedido']);
+        $this->assertSame(IaImagenPedido::ESTADO_NO_DISPONIBLE, $resultado['pedido']->fresh()->estado);
+        $this->assertStringContainsString('no está disponible en este sistema', $resultado['texto'], 'La herramienta se lo dice al modelo en el mismo turno.');
+        $this->assertStringContainsString('ADMIN_API_OUTBOUND_KEY', (string) $resultado['pedido']->fresh()->error);
+
+        // Aunque el job corriera, un pedido no_disponible no se manda.
+        (new EnviarPedidoDeImagenAlAdminJob($resultado['pedido']->id))->handle();
+
+        Http::assertNothingSent();
+        $this->assertSame(IaImagenPedido::ESTADO_NO_DISPONIBLE, $resultado['pedido']->fresh()->estado);
+    }
+
+    /**
+     * Lo mismo por el turno entero de la app: sin la clave de salida el texto final es el honesto (no
+     * «se está generando») y al admin no le llega ningún pedido.
+     */
+    public function test_sin_la_clave_de_salida_el_texto_no_dice_que_se_genera()
+    {
+        config(['services.admin_api.inbound_key' => null]);
+
+        $assistant = $this->conversar('Haceme una placa para Instagram del chaleco', [
+            $this->pide_la_imagen(),
+            $this->end_turn('Listo, la imagen se está generando.'),
+        ]);
+
+        $pedido = IaImagenPedido::where('ai_message_id', $assistant->id)->first();
+
+        $this->assertSame('no_disponible', $pedido->estado);
+        $this->assertSame(PedidosDeImagenIaHelper::NO_DISPONIBLE_PARA_EL_DUENO, $assistant->contenido);
+
+        Http::assertNotSent(function ($request) {
+            return strpos($request->url(), 'admin.ia-app.test') !== false;
+        });
+    }
+
+    /**
+     * Con la clave cargada sigue como hoy: el pedido nace `pendiente` y el job lo manda al admin con el
+     * header X-Admin-Api-Key.
+     */
+    public function test_con_la_clave_de_salida_el_pedido_sale_como_hoy()
+    {
+        Http::fake([
+            'admin.ia-app.test/*' => Http::response(['ok' => true, 'estado' => 'pendiente'], 201),
+        ]);
+
+        $mensaje = $this->mensaje_para_la_imagen('Con clave');
+
+        $resultado = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, ['prompt' => 'Placa cuadrada del chaleco de polar azul']);
+
+        $this->assertSame(IaImagenPedido::ESTADO_PENDIENTE, $resultado['pedido']->fresh()->estado);
+
+        (new EnviarPedidoDeImagenAlAdminJob($resultado['pedido']->id))->handle();
+
+        Http::assertSent(function ($request) {
+            return strpos($request->url(), 'https://admin.ia-app.test/api' . EnviarPedidoDeImagenAlAdminJob::RUTA) === 0
+                && $request->hasHeader('X-Admin-Api-Key', 'clave-inbound-de-prueba');
+        });
+
+        $this->assertNotNull($resultado['pedido']->fresh()->enviado_al_admin_en);
+    }
+
+    /**
      * Lo que el revisor encontró disparando en c49fb2e5: ofrecimientos, gráficos, diseños de PDF,
      * presupuestos e historias de compras. Ninguno reintenta ni cambia el texto.
      *

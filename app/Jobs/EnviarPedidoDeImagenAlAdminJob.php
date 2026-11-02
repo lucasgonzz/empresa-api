@@ -27,8 +27,8 @@ use Illuminate\Support\Facades\Log;
  *   - Lo demás (5xx, timeout, red caída, un 429 sin `tope_diario`): se lanza y la cola reintenta (3
  *     intentos); si se agotan, failed() lo deja `fallida`.
  *
- * Sin la configuración del admin (`services.admin_api.url` / `client_uuid`) no hay a quién mandarlo:
- * `no_disponible`, sin salir a la red.
+ * Sin la configuración del admin (`services.admin_api.url` / `client_uuid` / `inbound_key`) no hay a quién
+ * mandarlo, o el admin lo rechazaría: `no_disponible`, sin salir a la red, y el log dice qué falta.
  *
  * Se encola DESPUÉS de que el job de respuesta guardó el mensaje con su bloque (ver
  * ResponderMensajeChatIaJob): si corriera antes, la marca de no_disponible no tendría bloque que tocar.
@@ -85,28 +85,52 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
         }
 
         $admin_url   = self::base_del_admin();
-        $client_uuid = (string) config('services.admin_api.client_uuid');
+        $client_uuid = trim((string) config('services.admin_api.client_uuid'));
+        $clave       = trim((string) config('services.admin_api.inbound_key'));
 
-        if ($admin_url === '' || $client_uuid === '') {
+        /*
+         * Lo que falta DE VERDAD, por nombre (ronda de arreglos de la misión agente-mejoras-diario, F8,
+         * 31/10/2026). El aviso decía siempre las tres variables (AVISO_SIN_CONEXION) y el motivo «falta
+         * ADMIN_API_URL o ADMIN_API_CLIENT_UUID» aunque faltara una sola, y no miraba la clave de salida: sin
+         * ella el pedido salía sin header, el admin daba 401 y la imagen quedaba `fallida`. Desde A5,
+         * PedidosDeImagenIaHelper::falta_la_conexion_con_el_admin() también mira la clave y el pedido nace
+         * `no_disponible`; acá se mira lo mismo para un pedido que nació pendiente y la clave se sacó después.
+         * El texto del log sigue EMPEZANDO con AVISO_SIN_CONEXION (lo buscan los tests de IaApp/10) y suma
+         * «(falta …)» con lo que falta.
+         */
+        $faltan = [];
+
+        if ($admin_url === '') {
+            $faltan[] = 'ADMIN_API_URL';
+        }
+
+        if ($client_uuid === '') {
+            $faltan[] = 'ADMIN_API_CLIENT_UUID';
+        }
+
+        if ($clave === '') {
+            $faltan[] = 'ADMIN_API_OUTBOUND_KEY';
+        }
+
+        if (count($faltan)) {
 
             /* Que quede claro en el log por qué ninguna imagen de este cliente llega (misión app-ia-imagen-prometida). */
-            Log::warning('EnviarPedidoDeImagenAlAdminJob: ' . PedidosDeImagenIaHelper::AVISO_SIN_CONEXION . '; el pedido queda no_disponible.', [
+            Log::warning('EnviarPedidoDeImagenAlAdminJob: ' . PedidosDeImagenIaHelper::AVISO_SIN_CONEXION . ' (falta ' . implode(', ', $faltan) . '); el pedido queda no_disponible.', [
                 'ia_imagen_pedido_id' => $pedido->id,
                 'falta_la_url'        => $admin_url === '',
                 'falta_el_uuid'       => $client_uuid === '',
+                'falta_la_clave'      => $clave === '',
             ]);
 
-            PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'falta ADMIN_API_URL o ADMIN_API_CLIENT_UUID en este cliente');
+            PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'falta ' . implode(' y ', $faltan) . ' en este cliente');
 
             return;
         }
 
-        $headers = ['Accept' => 'application/json'];
-        $clave   = (string) config('services.admin_api.inbound_key');
-
-        if ($clave !== '') {
-            $headers['X-Admin-Api-Key'] = $clave;
-        }
+        $headers = [
+            'Accept'          => 'application/json',
+            'X-Admin-Api-Key' => $clave,
+        ];
 
         $response = Http::withHeaders($headers)
             ->timeout(20)

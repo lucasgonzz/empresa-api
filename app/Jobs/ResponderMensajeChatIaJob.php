@@ -186,7 +186,16 @@ class ResponderMensajeChatIaJob implements ShouldQueue
 
             $message->contenido = $texto;
             $message->estado = 'listo';
-            $message->error_mensaje = null;
+            /*
+             * Misión agente-memoria-y-sin-techo (segunda ronda de arreglos, F3): si el turno terminó con lo
+             * hecho armado sin el modelo (una falla a mitad de turno o un cierre que no escribió), el
+             * mensaje queda `listo` —la persona tiene su respuesta— pero el detalle técnico de qué lo cortó
+             * queda acá para soporte. Ninguna SPA pinta el `error_mensaje` de un mensaje y el admin solo lo
+             * lee con el mensaje en `error` (ver AsistenteIaService::detalle_tecnico()). Si terminó normal,
+             * null como siempre.
+             */
+            $detalle = $service->detalle_tecnico();
+            $message->error_mensaje = is_null($detalle) ? null : mb_substr((string) $detalle, 0, 5000);
             /*
              * Misión agente-ia-mano-derecha (§1): las menciones se guardan CON el mensaje, en la
              * misma pasada, porque se arman cruzando los resultados de las tools de esta respuesta

@@ -348,7 +348,7 @@ class CreateSaleOrderHelper {
     }
 
 
-    static function createSale($order, $instance, $to_check = false, $from_tienda_nube, $from_meli, $user) {
+    static function createSale($order, $instance, $to_check, $from_tienda_nube, $from_meli, $user) {
 
         if ($user) {
             $num = $instance->num('sales', $user->id, 'user_id', $user->id);

@@ -231,6 +231,69 @@ class Fotos_al_modelo_y_escalado_Test extends AsistenteWhatsappTestCase
         $this->assertSame(0, $this->imagenes_del_ultimo_turno($payload));
     }
 
+    /**
+     * 🔴 Misión agente-mejoras-diario (análisis del 31/10/2026, #4): el dueño mandó a la mañana la
+     * foto del QR, se le contestó, y dos horas y media después pegó una planilla de ventas. La foto
+     * seguía «sin gestionar» y estaba a un solo mensaje suyo de distancia, así que volvía a viajar con
+     * la planilla y la nota «Van de nuevo las fotos…»: el modelo le contestó otra vez lo del QR. Con el
+     * tope de tiempo (más de 30 minutos entre la foto y el último mensaje del dueño) la foto ya no viaja
+     * en base64 ni va la nota; las herramientas la siguen encontrando 24 horas por su cuenta.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_foto_de_hace_horas_no_vuelve_a_viajar_con_otro_tema()
+    {
+        $conversation = $this->conversacion_whatsapp();
+
+        $con_foto  = $this->mensaje($conversation, 'user', 'listo', ['contenido' => '']);
+        $foto      = $this->guardar_foto($con_foto);
+        $respuesta = $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'Corregí la provincia y tocá Crear QR.']);
+
+        // La foto y su respuesta, dos horas y media antes del mensaje nuevo.
+        $hace = Carbon::now()->subMinutes(150);
+        AiMessage::whereIn('id', [$con_foto->id, $respuesta->id])->update(['created_at' => $hace]);
+        AiMessageImagen::where('id', $foto->id)->update(['created_at' => $hace]);
+
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => "C FINAL\t59.999,00\t04-oct\tSKU 17006", 'canal' => AiMessage::CANAL_SISTEMA]);
+
+        $payload = (new AsistenteIaService())->build_messages_payload($conversation);
+
+        $this->assertSame(0, $this->imagenes_del_ultimo_turno($payload), 'Una foto de hace horas no viaja con un mensaje de otro tema.');
+        $this->assertStringNotContainsString('Van de nuevo', json_encode(end($payload), JSON_UNESCAPED_UNICODE), 'Sin la foto tampoco va la nota de que vuelve a viajar.');
+    }
+
+    /**
+     * El tope de tiempo no corta la charla de un momento: la foto de hace 20 minutos (menos que el
+     * tope) sigue viajando con el mensaje nuevo, y la nota dice que es la MISMA foto de antes, para
+     * que el modelo no la tome como una planilla nueva ni cambie lo ya acordado por releerla.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_foto_de_hace_un_rato_vuelve_a_viajar_como_referencia()
+    {
+        $conversation = $this->conversacion_whatsapp();
+
+        $con_foto  = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Mirá este producto']);
+        $foto      = $this->guardar_foto($con_foto);
+        $respuesta = $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => '¿Qué querés hacer con él?']);
+
+        $hace = Carbon::now()->subMinutes(20);
+        AiMessage::whereIn('id', [$con_foto->id, $respuesta->id])->update(['created_at' => $hace]);
+        AiMessageImagen::where('id', $foto->id)->update(['created_at' => $hace]);
+
+        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Cargalo con 1500 de costo']);
+
+        $payload = (new AsistenteIaService())->build_messages_payload($conversation);
+
+        $this->assertSame(1, $this->imagenes_del_ultimo_turno($payload), 'Dentro del tope la foto sin usar sigue viajando.');
+
+        $ultimo = end($payload);
+        $this->assertStringContainsString('las MISMAS fotos que mandó antes', $ultimo['content'][1]['text']);
+        $this->assertStringContainsString('no digas que llegó otra planilla', $ultimo['content'][1]['text']);
+    }
+
     // ------------------------------------------------------------------------------------ k
 
     /**

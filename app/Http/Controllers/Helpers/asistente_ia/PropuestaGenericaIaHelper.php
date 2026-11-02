@@ -998,7 +998,8 @@ class PropuestaGenericaIaHelper
             list($cambios, $subcategoria_pedida) = self::separar_categoria_del_articulo($declaracion, $cambios);
         }
 
-        $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_EDICION, $cambios);
+        // Con la fila: un CUIT/CUIL que no cambia no se vuelve a validar (F5, 31/10/2026; ver coercionar()).
+        $validado = self::validar_campos($contexto, $declaracion, Catalogo::OP_EDICION, $cambios, $fila);
 
         if (RespuestaDeCargaIa::es_negativa($validado)) {
 
@@ -1622,10 +1623,13 @@ class PropuestaGenericaIaHelper
      * @param  array  $declaracion
      * @param  string  $operacion
      * @param  array  $valores  [clave => valor], clave = columna, etiqueta o nombre de la relación.
+     * @param  object|null  $fila  En una EDICIÓN, el registro como está (ronda de arreglos de la misión
+     *                             agente-mejoras-diario, F5, 31/10/2026): un CUIT/CUIL que no cambia no se
+     *                             vuelve a validar (ver coercionar()). En un alta, null.
      * @return array  ['payload' => [columna => valor para el controller], 'pedidos' => [columna => valor normalizado],
      *                 'nombres' => [columna => nombre de la relación]] o la respuesta negativa.
      */
-    public static function validar_campos(ContextoDeCargaIa $contexto, array $declaracion, string $operacion, array $valores)
+    public static function validar_campos(ContextoDeCargaIa $contexto, array $declaracion, string $operacion, array $valores, $fila = null)
     {
         $payload = [];
         $pedidos = [];
@@ -1664,7 +1668,7 @@ class PropuestaGenericaIaHelper
                 );
             }
 
-            $resultado = self::coercionar($contexto, $declaracion, $campo, $valor);
+            $resultado = self::coercionar($contexto, $declaracion, $campo, $valor, $fila);
 
             if (RespuestaDeCargaIa::es_negativa($resultado)) {
 
@@ -1690,9 +1694,10 @@ class PropuestaGenericaIaHelper
      * @param  array  $declaracion
      * @param  array  $campo
      * @param  mixed  $valor
+     * @param  object|null  $fila  En una edición, el registro como está (F5: ver el bloque del CUIT); null en un alta.
      * @return array
      */
-    protected static function coercionar(ContextoDeCargaIa $contexto, array $declaracion, array $campo, $valor)
+    protected static function coercionar(ContextoDeCargaIa $contexto, array $declaracion, array $campo, $valor, $fila = null)
     {
         $etiqueta = $campo['etiqueta'];
 
@@ -1714,6 +1719,33 @@ class PropuestaGenericaIaHelper
         if (!is_null($campo['relacion'])) {
 
             return self::resolver_relacion($contexto, $declaracion, $campo, $valor);
+        }
+
+        /*
+         * 🔴 CUIT y CUIL con el dígito verificador (misión agente-mejoras-diario, análisis del
+         * 31/10/2026, #2): el modelo "corrigió" CUIT válidos leídos de una foto y propuso números que
+         * no existen, y acá caían en el `trim` del final como cualquier texto. Va antes del switch para
+         * que valga sea cual sea el tipo de la columna, en el alta y en la edición. Un DNI (7 u 8
+         * dígitos) pasa: ver CuitIaHelper.
+         *
+         * Ronda de arreglos de la misión (F5, 31/10/2026): un `0` cuenta como vacío y no se valida
+         * (CuitIaHelper::es_vacio(): DeepSeek rellena los opcionales con 0), y en una EDICIÓN se valida
+         * solo si el valor CAMBIA respecto de la fila (CuitIaHelper::es_el_mismo()): un CUIT inválido ya
+         * guardado no tiene que bloquear que se le edite otro campo al registro cuando el modelo repite el
+         * CUIT que ya estaba entre los cambios.
+         */
+        $cuit_actual = (!is_null($fila) && isset($campo['columna']) && isset($fila->{$campo['columna']})) ? $fila->{$campo['columna']} : null;
+
+        if (isset($campo['columna']) && CuitIaHelper::es_columna_de_cuit($campo['columna']) && !CuitIaHelper::es_el_mismo($valor, $cuit_actual)) {
+
+            $motivo = CuitIaHelper::motivo_si_no_sirve($valor);
+
+            if (!is_null($motivo)) {
+
+                return RespuestaDeCargaIa::error(
+                    'El '.$etiqueta.' '.trim((string) $valor).' no es válido: '.$motivo.'. No lo propongas; si lo leíste de una foto, pedile el número a la persona.'
+                );
+            }
         }
 
         switch ($campo['tipo']) {

@@ -15,6 +15,7 @@ use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\ProductFacts\Gtin;
 use App\Services\ProductFacts\ProductFactsException;
 use App\Services\ProductFacts\SerperUsageService;
+use App\Services\ProductFacts\SerperLinkResolver;
 use App\Services\ProductFacts\TopeSerperDemo;
 use App\Services\ProductFacts\TopeSerperDemoAgotado;
 use App\Services\Traits\GoogleSearchHelpers;
@@ -76,6 +77,11 @@ use Illuminate\Support\Str;
 class ArticleDimensionSearchEngine
 {
     use GoogleSearchHelpers;
+
+    /** Respuesta íntegra para /resolve; presupuesto acumulado entre los planes de UN artículo. */
+    protected $ultima_respuesta_serper = [];
+    protected $resolucion_incompleta = false;
+    protected $segundos_resolucion_restantes = SerperLinkResolver::PRESUPUESTO_SEGUNDOS;
 
     /** Búsquedas de Serper como mucho por artículo. */
     const MAX_BUSQUEDAS = 3;
@@ -223,6 +229,8 @@ class ArticleDimensionSearchEngine
         }
 
         $this->lector()->reiniciar_presupuesto();
+        $this->segundos_resolucion_restantes = SerperLinkResolver::PRESUPUESTO_SEGUNDOS;
+        $this->resolucion_incompleta = false;
 
         $gasto = $this->gasto_en_cero();
 
@@ -458,6 +466,17 @@ class ArticleDimensionSearchEngine
 
                 $this->cerrar($item, array_merge($this->propuesta_sin_respaldo($propuestas_sin_respaldo, $titulos, $urls_leidas), ['diagnostico' => $diagnostico]), $gasto);
 
+                return $resultado;
+            }
+
+            if ($this->resolucion_incompleta) {
+                $this->cerrar($item, [
+                    'status' => DimensionSearchItem::STATUS_SIN_PROCESAR,
+                    'motivo' => 'error_de_busqueda',
+                    'motivo_detalle' => 'El buscador dejó fuentes pendientes de resolver. Se puede volver a intentar.',
+                    'diagnostico' => $diagnostico,
+                ], $gasto);
+                $resultado['error_de_proveedor'] = true;
                 return $resultado;
             }
 
@@ -722,6 +741,8 @@ class ArticleDimensionSearchEngine
             return $this->busqueda_fallida('Serper devolvió una respuesta que no se pudo leer.');
         }
 
+        $this->ultima_respuesta_serper = $cuerpo;
+
         return [
             'ok'        => true,
             'error'     => null,
@@ -764,7 +785,10 @@ class ArticleDimensionSearchEngine
         $descargas  = 0;
         $candidatas = [];   // url => páginas que no bajaron y admiten el respaldo.
 
-        foreach ($organicos as $resultado) {
+        $puede_leer = function () use (&$documentos, &$descargas) {
+            return count($documentos) < self::MAX_PAGINAS_LEIDAS && $descargas < self::MAX_DESCARGAS_POR_BUSQUEDA;
+        };
+        foreach ($this->fuentes_directas_y_resueltas($organicos, $puede_leer) as $resultado) {
             if (count($documentos) >= self::MAX_PAGINAS_LEIDAS || $descargas >= self::MAX_DESCARGAS_POR_BUSQUEDA) {
                 break;
             }
@@ -828,6 +852,51 @@ class ArticleDimensionSearchEngine
         $this->respaldar($candidatas, $plan, $codigos, $leidas, $documentos, $paginas, $hubo_misma_cosa);
 
         return $documentos;
+    }
+
+    /** Iteración perezosa: resolver solo si no alcanzaron las fuentes directas. */
+    protected function fuentes_directas_y_resueltas(array $organicos, callable $puede_leer)
+    {
+        foreach (SerperLinkResolver::directos($organicos) as $result) {
+            yield $result;
+        }
+        if (!$puede_leer()) {
+            return;
+        }
+        if ($this->segundos_resolucion_restantes < 1) {
+            $this->resolucion_incompleta = $this->resolucion_incompleta
+                || app(SerperLinkResolver::class)->hay_pendientes($this->ultima_respuesta_serper);
+            return;
+        }
+        $inicio = $this->ahora_para_resolucion();
+        $resolved = app(SerperLinkResolver::class)->resolver($this->ultima_respuesta_serper,
+            ImageSearchProviderFactory::clave_serper_para($this->owner),
+            ['user_id' => (int) $this->owner->id, 'auth_user_id' => null],
+            $inicio + $this->segundos_resolucion_restantes);
+        $this->segundos_resolucion_restantes = max(0,
+            $this->segundos_resolucion_restantes - ($this->ahora_para_resolucion() - $inicio));
+        $this->resolucion_incompleta = $this->resolucion_incompleta
+            || app(SerperLinkResolver::class)->hay_pendientes($resolved);
+        foreach ($organicos as $index => $result) {
+            if (is_array($result) && SerperLinkResolver::pendiente($result['link'] ?? null)
+                && isset($resolved['organic'][$index])) {
+                foreach (SerperLinkResolver::directos([$resolved['organic'][$index]]) as $direct) {
+                    if (!$puede_leer()) {
+                        return;
+                    }
+                    // Incluye PDF: ese camino saltea la descarga y podría pedir scrape pago sin validar DNS.
+                    if (is_null($this->lector()->url_permitida($direct['link']))) {
+                        continue;
+                    }
+                    yield $direct;
+                }
+            }
+        }
+    }
+
+    protected function ahora_para_resolucion()
+    {
+        return microtime(true);
     }
 
     /**

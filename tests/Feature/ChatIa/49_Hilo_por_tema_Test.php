@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\HiloPorTemaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -681,18 +682,30 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
         $this->comercio->plan_ia_tope_interacciones_diarias = 2;
         $this->comercio->save();
 
-        for ($i = 0; $i < 2; $i++) {
+        /*
+         * Contrato cambiado a propósito (misión agente-memoria-y-sin-techo, 30/10/2026): el tope diario
+         * cuenta RESPUESTAS del agente, no filas `chat_mensaje`. La conversación vigente ya trae una de
+         * hoy; con una más se llega a las 2 del tope (antes se sembraban 2 filas de consumo).
+         *
+         * Y desde la ronda de arreglos (R3) cada respuesta cuenta por sus filas `chat_mensaje` con su
+         * mensaje en `referencia_id` (las que graba el loop): se siembra una por respuesta.
+         */
+        $this->mensaje($vigente, 'user', 'listo', ['contenido' => '¿Y cuántas quedaron en Florida?']);
+        $this->mensaje($vigente, 'assistant', 'listo', ['contenido' => 'En Florida quedaron 5.']);
 
+        foreach (AiMessage::where('ai_conversation_id', $vigente->id)->where('rol', 'assistant')->get() as $respuesta) {
             AiTokenUsage::create([
                 'user_id'                     => $this->comercio->id,
                 'auth_user_id'                => $this->comercio->id,
-                'proceso'                     => 'chat_mensaje',
+                'proceso'                     => TopeDeTokensHelper::PROCESO_CHAT,
                 'proveedor'                   => 'anthropic',
-                'modelo'                      => 'claude-modelo-fake',
-                'input_tokens'                => 10,
-                'output_tokens'               => 10,
+                'modelo'                      => 'claude-sonnet-5',
+                'input_tokens'                => 1,
+                'output_tokens'               => 1,
                 'cache_creation_input_tokens' => 0,
                 'cache_read_input_tokens'     => 0,
+                'ai_conversation_id'          => $vigente->id,
+                'referencia_id'               => $respuesta->id,
             ]);
         }
 

@@ -1446,6 +1446,21 @@ class SaleController extends Controller
 
             return response()->json(['message' => $e->getMessage(), 'devolucion_excedida' => true], 422);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+
+            /*
+             * Un renglon que la API no puede guardar (por ejemplo una fila de varios_precios con
+             * cantidad y sin precio, mision panchito-venta-price-vender, 1/11/2026): se revierte todo
+             * y el usuario ve el motivo, con el mismo 422 `{message, errors}` que el alta. Sin esto
+             * caia al 500 generico de abajo, sin mensaje.
+             */
+            DB::rollBack();
+
+            $errores = $e->errors();
+            $primero = reset($errores);
+
+            return response()->json(['message' => $primero[0], 'errors' => $errores], 422);
+
         } catch(\Throwable $e) {
             DB::rollBack();
             // El reporter de errores esta enganchado al handler global (Handler::register ->

@@ -295,6 +295,25 @@ class ArticleController extends Controller
         }
 
         /*
+         * 🔴 El costo puede llegar escrito con formato («$88.782,13», pegado desde un Excel o la
+         * edición rápida). En PHP 8 (VPS) eso es TypeError en `Numbers::price()` y en el shared lo
+         * rechaza MySQL con «Incorrect decimal value». Se lee con el formato argentino; un número
+         * común («88782.13») pasa tal cual.
+         */
+        if (!is_numeric($cost)) {
+
+            $costo_leido = Numbers::parse_input_decimal($cost);
+
+            if (is_null($costo_leido)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    'cost' => ['El costo no es un número válido.'],
+                ]);
+            }
+
+            $cost = $costo_leido;
+        }
+
+        /*
          * Para un Responsable Inscripto manda el formulario: declara en cuál de los dos inputs se
          * tipeó. Para un Monotributista migrado no se descompone nunca y el resolvedor ignora lo
          * declarado — ver el bloque en ArticlePricesHelper::el_costo_cargado_es_bruto().

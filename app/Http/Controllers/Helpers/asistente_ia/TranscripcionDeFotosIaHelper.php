@@ -29,10 +29,11 @@ use Illuminate\Support\Facades\Log;
  * foto quedó sin texto, Pro trabajaría sin ella sin saberlo, que es el mismo camino de falla mudo.
  *
  * 🔴 NO ES UNA INTERACCIÓN DEL DUEÑO, PERO SÍ ES GASTO. La llamada se registra en ai_token_usages
- * con su propio proceso (PROCESO): TopeDeTokensHelper cuenta interacciones sólo por las filas
- * `chat_mensaje` (una transcripción no es una pregunta del dueño y no le come el tope diario), y
- * los tokens del mes los suma sobre TODAS las filas del dueño, así que los de la transcripción sí
- * cuentan contra el tope mensual — son tokens que se pagaron por su turno.
+ * con su propio proceso (PROCESO): TopeDeTokensHelper cuenta interacciones sólo sobre las filas
+ * `chat_mensaje`, una por RESPUESTA (cada `referencia_id` distinto: el mensaje que contesta el loop,
+ * desde la misión agente-memoria-y-sin-techo), así que una transcripción no es una pregunta del dueño
+ * y no le come el tope diario; y los tokens del mes los suma sobre TODAS las filas del dueño, así que
+ * los de la transcripción sí cuentan contra el tope mensual — son tokens que se pagaron por su turno.
  *
  * Caché: la transcripción de cada foto se guarda 24 h por (ai_message_imagenes.id + hash de los
  * bytes). Las fotos sin usar de la última tanda vuelven a viajar hasta tres mensajes después

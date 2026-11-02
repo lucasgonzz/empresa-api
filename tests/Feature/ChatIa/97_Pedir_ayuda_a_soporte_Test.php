@@ -281,9 +281,10 @@ class Pedir_ayuda_a_soporte_Test extends EmpresaTestCase
         $this->assertContains('pedir_ayuda_a_soporte', McpHerramientasHelper::EXCLUIDAS);
         $this->assertFalse(McpHerramientasHelper::existe('pedir_ayuda_a_soporte'));
 
-        // Al final de las de carga comunes (el prefijo del caché): después de los envíos a clientes.
+        // Al final de las de carga comunes (el prefijo del caché): después de los envíos a clientes. Detrás
+        // va solo armar_texto_de_promocion (misión agente-mejoras-diario-30-10, B2, 31/10/2026), por la misma regla.
         $nombres = HerramientasDeCarga::nombres();
-        $this->assertSame('pedir_ayuda_a_soporte', $nombres[count($nombres) - 1]);
+        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion'], array_slice($nombres, -2));
 
         $descripcion = '';
         foreach (HerramientasDeCarga::definiciones() as $definicion) {

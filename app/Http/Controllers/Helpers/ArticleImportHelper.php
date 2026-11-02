@@ -660,7 +660,7 @@ class ArticleImportHelper {
         $import_history->matching_counts_json = json_encode($total);
     }
 
-    static function create_import_history($user, $auth_user_id, $provider_id, $columns, $archivo_excel_path, $error_message = null, $articulos_creados, $articulos_actualizados) {
+    static function create_import_history($user, $auth_user_id, $provider_id, $columns, $archivo_excel_path, $error_message, $articulos_creados, $articulos_actualizados) {
 
     	Log::info('create_import_history, columns:');
 

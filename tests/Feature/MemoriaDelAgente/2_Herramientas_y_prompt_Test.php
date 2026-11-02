@@ -8,6 +8,7 @@ use App\Models\AgenteContextoRevision;
 use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use App\Services\AsistenteIa\HerramientasDeContexto;
+use App\Services\AsistenteIa\HerramientasDeConversaciones;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -53,7 +54,13 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
 
             $system = $this->service->build_system_payload($conversation, $this->dueno, false, $es_whatsapp);
 
-            $this->assertCount(2, $system, 'Canal ' . $canal . ': el cacheado y la memoria.');
+            /*
+             * Censo cambiado a propósito (misión agente-memoria-y-sin-techo, 30/10/2026): desde la
+             * segunda vuelta de este foreach la persona ya tiene conversaciones anteriores (las de las
+             * vueltas de antes), y después de la memoria va la lista de esas conversaciones
+             * (ConversacionesAnterioresIaHelper::bloque_para_prompt). La memoria sigue en el lugar 1.
+             */
+            $this->assertCount($canal === 'sistema' ? 2 : 3, $system, 'Canal ' . $canal . ': el cacheado, la memoria y (con conversaciones anteriores) su lista.');
             $this->assertEquals(['type' => 'ephemeral'], $system[0]['cache_control']);
             $this->assertStringContainsString('guardar_en_contexto', $system[0]['text'], 'Canal ' . $canal . ': las reglas van en el bloque cacheado (son fijas).');
             $this->assertStringContainsString('Lo calculable NO se guarda nunca', $system[0]['text']);
@@ -72,9 +79,12 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
 
         $system = $this->service->build_system_payload($con_contexto, $this->dueno);
 
-        $this->assertCount(3, $system);
+        // Censo cambiado a propósito (misión agente-memoria-y-sin-techo): la lista de las conversaciones
+        // anteriores va entre la memoria y el contexto de fondo.
+        $this->assertCount(4, $system);
         $this->assertStringContainsString('=== contexto/contexto_maestro.md', $system[1]['text']);
-        $this->assertStringStartsWith('Contexto de fondo de esta conversación', $system[2]['text']);
+        $this->assertStringStartsWith('Tus últimas conversaciones con esta persona', $system[2]['text']);
+        $this->assertStringStartsWith('Contexto de fondo de esta conversación', $system[3]['text']);
     }
 
     /** @test */
@@ -107,7 +117,9 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
         $nombres = array_column($this->service->build_tools(false, false, $sin), 'name');
 
         $this->assertNotContains('leer_contexto', $nombres);
-        $this->assertSame($this->service->nombres_de_lectura(), $nombres, 'Las tools de siempre, en su orden.');
+        // Censo cambiado a propósito (misión agente-memoria-y-sin-techo, 30/10/2026): las dos de las
+        // conversaciones anteriores van al final en todos los juegos y NO dependen de Agentes de IA.
+        $this->assertSame(array_merge($this->service->nombres_de_lectura(), ['buscar_conversaciones_anteriores', 'leer_conversacion_anterior']), $nombres, 'Las tools de siempre, en su orden, y las de las conversaciones anteriores.');
         $this->assertSame(0, AgenteContextoArchivo::where('user_id', $sin->id)->count(), 'Sin la extensión no se crea memoria.');
 
         // Y si el modelo igual llamara a una, contesta sin escribir.
@@ -125,22 +137,29 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
     {
         $lectura = $this->service->nombres_de_lectura();
 
+        /*
+         * Censo cambiado a propósito (misión agente-memoria-y-sin-techo, 30/10/2026): después de las dos
+         * de la memoria van, en todos los juegos, las dos de las conversaciones anteriores. Las de la
+         * memoria siguen justo después de lo de antes: su prefijo no cambia.
+         */
+        $conversaciones = ['buscar_conversaciones_anteriores', 'leer_conversacion_anterior'];
+
         $sistema = array_column($this->service->build_tools(false, false, $this->dueno), 'name');
-        $this->assertSame(array_merge($lectura, HerramientasDeContexto::nombres()), $sistema, 'Al final: el prefijo de las de antes no cambia.');
+        $this->assertSame(array_merge($lectura, HerramientasDeContexto::nombres(), $conversaciones), $sistema, 'Al final: el prefijo de las de antes no cambia.');
 
         $con_acciones = array_column($this->service->build_tools(true, false, $this->dueno), 'name');
-        $this->assertSame(array_merge($lectura, HerramientasDeCarga::nombres(), HerramientasDeContexto::nombres()), $con_acciones);
+        $this->assertSame(array_merge($lectura, HerramientasDeCarga::nombres(), HerramientasDeContexto::nombres(), $conversaciones), $con_acciones);
 
         $whatsapp = array_column($this->service->build_tools(true, true, $this->dueno), 'name');
-        $this->assertSame(array_merge($lectura, HerramientasDeCarga::nombres(true), HerramientasDeContexto::nombres()), $whatsapp);
+        $this->assertSame(array_merge($lectura, HerramientasDeCarga::nombres(true), HerramientasDeContexto::nombres(), $conversaciones), $whatsapp);
 
-        // El marcador de caché queda en la última, como siempre.
+        // El marcador de caché queda en la última, como siempre (desde esta misión, la de leer conversaciones).
         $tools = $this->service->build_tools(false, false, $this->dueno);
         $this->assertEquals(['type' => 'ephemeral'], $tools[count($tools) - 1]['cache_control']);
-        $this->assertSame('guardar_en_contexto', $tools[count($tools) - 1]['name']);
+        $this->assertSame(HerramientasDeConversaciones::LEER, $tools[count($tools) - 1]['name']);
 
-        // Sin dueño (los llamadores de antes) siguen viajando las de siempre.
-        $this->assertSame($lectura, array_column($this->service->build_tools(), 'name'));
+        // Sin dueño (los llamadores de antes) siguen viajando las de siempre, más las de las conversaciones.
+        $this->assertSame(array_merge($lectura, $conversaciones), array_column($this->service->build_tools(), 'name'));
     }
 
     /** @test */

@@ -87,6 +87,16 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_articulos_sin_rotacion',
     ];
 
+    /**
+     * Las dos de las conversaciones anteriores (misión agente-memoria-y-sin-techo, 30/10/2026): no son
+     * del registro de lectura (HerramientasDeConversaciones) y van AL FINAL de TODOS los juegos de
+     * build_tools(), con o sin acciones. Escritas a mano por lo mismo que la lista de arriba.
+     */
+    const HERRAMIENTAS_DE_CONVERSACIONES = [
+        'buscar_conversaciones_anteriores',
+        'leer_conversacion_anterior',
+    ];
+
     /** @var User */
     protected $comercio;
 
@@ -242,7 +252,8 @@ class Acciones_service_y_job_Test extends TestCase
 
         $body = Http::recorded()[0][0]->data();
 
-        $this->assertEquals(self::HERRAMIENTAS_DE_LECTURA, array_column($body['tools'], 'name'), 'Sin el flag viajan exactamente las tools de lectura declaradas, en su orden.');
+        // Censo cambiado a propósito (misión agente-memoria-y-sin-techo): al final, las dos de las conversaciones anteriores.
+        $this->assertEquals(array_merge(self::HERRAMIENTAS_DE_LECTURA, self::HERRAMIENTAS_DE_CONVERSACIONES), array_column($body['tools'], 'name'), 'Sin el flag viajan exactamente las tools de lectura declaradas, en su orden.');
 
         $prompt = $body['system'][0]['text'];
 
@@ -267,7 +278,8 @@ class Acciones_service_y_job_Test extends TestCase
 
         $nombres = array_column($body['tools'], 'name');
 
-        $this->assertEquals(array_merge(self::HERRAMIENTAS_DE_LECTURA, HerramientasDeCarga::nombres()), $nombres);
+        // Censo cambiado a propósito (misión agente-memoria-y-sin-techo): al final, las dos de las conversaciones anteriores.
+        $this->assertEquals(array_merge(self::HERRAMIENTAS_DE_LECTURA, HerramientasDeCarga::nombres(), self::HERRAMIENTAS_DE_CONVERSACIONES), $nombres);
         $this->assertContains('proponer_gasto', $nombres);
         $this->assertContains('proponer_marcar_tarea_hecha', $nombres);
 
@@ -527,6 +539,15 @@ class Acciones_service_y_job_Test extends TestCase
     }
 
     /**
+     * Un mensaje que termina en ERROR no deja tarjetas confirmables: las que alcanzó a proponer quedan
+     * `descartada`.
+     *
+     * 🔴 Contrato cambiado a propósito (misión agente-memoria-y-sin-techo, segunda ronda de arreglos F2,
+     * 30/10/2026): un 529 DESPUÉS de una ronda de herramientas ya no termina en error, cierra `listo` con lo
+     * hecho y la tarjeta sigue `propuesta` (para que la persona la confirme; en error se perdía). El camino
+     * que sí termina en error con tarjetas propuestas es el failed() del job (el worker que muere a mitad
+     * de turno): este test lo mide por ahí, y mide también el 529 a mitad de turno con el contrato nuevo.
+     *
      * @group chat-ia
      * @test
      */
@@ -557,11 +578,29 @@ class Acciones_service_y_job_Test extends TestCase
 
         (new ResponderMensajeChatIaJob($assistant->id))->handle();
 
-        $this->assertEquals('error', $assistant->fresh()->estado);
+        /* El 529 a mitad de turno (F2): `listo`, con la tarjeta esperando el sí. */
+        $this->assertEquals('listo', $assistant->fresh()->estado, (string) $assistant->fresh()->error_mensaje);
 
         $tarjeta = AiMessageAction::where('ai_message_id', $assistant->id)->first();
 
         $this->assertNotNull($tarjeta, 'La herramienta alcanzó a crear la tarjeta antes del 529.');
+        $this->assertEquals('propuesta', $tarjeta->estado, 'Con el mensaje listo la tarjeta sigue confirmable.');
+        $this->assertStringContainsString('para que la confirmes', (string) $assistant->fresh()->contenido);
+
+        /* El mensaje que SÍ termina en error con una tarjeta propuesta: el worker muere a mitad de turno. */
+        list($otra, $muerto) = $this->conversacion_con_pendiente(true, 'Cargame el flete de 7000 en efectivo');
+
+        $propuesta = json_decode($this->service->execute_tool_calls([$this->bloque_proponer_gasto($flete, 7000, 'toolu_muerto')], $otra, $muerto)[0]['content'], true);
+
+        $this->assertTrue($propuesta['ok'], json_encode($propuesta));
+
+        (new ResponderMensajeChatIaJob($muerto->id))->failed(new \RuntimeException('worker muerto a mitad de turno (P15)'));
+
+        $this->assertEquals('error', $muerto->fresh()->estado);
+
+        $tarjeta = AiMessageAction::where('ai_message_id', $muerto->id)->first();
+
+        $this->assertNotNull($tarjeta);
         $this->assertEquals('descartada', $tarjeta->estado, 'La tarjeta de una respuesta que falló no se puede confirmar.');
     }
 
@@ -570,6 +609,11 @@ class Acciones_service_y_job_Test extends TestCase
      * a ser confirmable. Antes quedaba 'reemplazada' para siempre: la persona veía una sola tarjeta
      * diciendo "Reemplazada por una versión corregida" —por una corrección que nunca existió, porque
      * el mensaje falló— y no tenía nada que confirmar.
+     *
+     * Contrato cambiado a propósito (segunda ronda de arreglos F2, 30/10/2026): la respuesta ya no se cae
+     * por un 529 después de proponer (eso ahora cierra `listo` con la corrección esperando el sí: ver el
+     * test de arriba), así que la caída se mide con el failed() del job, el camino que sigue terminando en
+     * error con la corrección ya propuesta.
      *
      * @group chat-ia
      * @test
@@ -609,18 +653,13 @@ class Acciones_service_y_job_Test extends TestCase
             'acciones_habilitadas' => true,
         ]);
 
-        Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
-                ->push([
-                    'model'       => 'claude-modelo-fake',
-                    'stop_reason' => 'tool_use',
-                    'content'     => [$this->bloque_proponer_gasto($flete, 6000, 'toolu_falla')],
-                    'usage'       => ['input_tokens' => 300, 'output_tokens' => 40],
-                ], 200)
-                ->push(['error' => ['type' => 'overloaded_error', 'message' => 'Overloaded']], 529),
-        ]);
+        /* La tanda propone la corrección (reemplaza a la de 5000) y el worker muere antes de contestar. */
+        $correccion_propuesta = json_decode($this->service->execute_tool_calls([$this->bloque_proponer_gasto($flete, 6000, 'toolu_falla')], $conversation, $segundo_assistant)[0]['content'], true);
 
-        (new ResponderMensajeChatIaJob($segundo_assistant->id))->handle();
+        $this->assertTrue($correccion_propuesta['ok'], json_encode($correccion_propuesta));
+        $this->assertEquals('reemplazada', AiMessageAction::find($primera['tarjeta_id'])->estado_guardado(), 'La corrección reemplazó a la de antes.');
+
+        (new ResponderMensajeChatIaJob($segundo_assistant->id))->failed(new \RuntimeException('worker muerto a mitad de turno (P15)'));
 
         $this->assertEquals('error', $segundo_assistant->fresh()->estado);
 
@@ -739,10 +778,11 @@ class Acciones_service_y_job_Test extends TestCase
         // asistente-envios-a-clientes (16/10/2026: proponer_envio_de_comprobante,
         // proponer_recordatorios_de_cobro, proponer_promocion_por_whatsapp) + las de
         // agente-mejoras-uso-real (29/10/2026: proponer_compra_sin_articulos,
-        // proponer_cambio_de_proveedor_de_compra, proponer_reintento_de_escaneo, pedir_ayuda_a_soporte).
+        // proponer_cambio_de_proveedor_de_compra, proponer_reintento_de_escaneo, pedir_ayuda_a_soporte) + la de
+        // agente-mejoras-diario-30-10 (31/10/2026, B2: armar_texto_de_promocion).
         // El número se toca SOLO cuando se agrega o se saca una herramienta a propósito: si se mueve
         // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
-        $this->assertCount(43, HerramientasDeCarga::definiciones());
+        $this->assertCount(44, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -818,13 +858,15 @@ class Acciones_service_y_job_Test extends TestCase
             array_slice(HerramientasDeCarga::nombres(), 36, 3)
         );
 
-        // ...y las compras y el pedido a soporte de agente-mejoras-uso-real (29/10/2026) al final de todo.
+        // ...las compras y el pedido a soporte de agente-mejoras-uso-real (29/10/2026) después de aquéllas...
+        // ...y el texto de la promo para reenviar de agente-mejoras-diario-30-10 (31/10/2026) al final de todo.
         $this->assertSame(
             [
                 'proponer_compra_sin_articulos',
                 'proponer_cambio_de_proveedor_de_compra',
                 'proponer_reintento_de_escaneo',
                 'pedir_ayuda_a_soporte',
+                'armar_texto_de_promocion',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
         );

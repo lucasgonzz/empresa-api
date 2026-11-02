@@ -133,10 +133,11 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
          * (proponer_envio_de_comprobante, proponer_recordatorios_de_cobro y
          * proponer_promocion_por_whatsapp), y la misión agente-mejoras-uso-real (29/10/2026) sumó las
          * compras al final (proponer_compra_sin_articulos, proponer_cambio_de_proveedor_de_compra,
-         * proponer_reintento_de_escaneo) y después pedir_ayuda_a_soporte. Son las mismas que fija
-         * ChatIa/15_Acciones_service_y_job_Test.
+         * proponer_reintento_de_escaneo) y después pedir_ayuda_a_soporte, y la misión
+         * agente-mejoras-diario-30-10 (31/10/2026, B2) sumó armar_texto_de_promocion al final. Son las mismas
+         * que fija ChatIa/15_Acciones_service_y_job_Test.
          */
-        $this->assertCount(46, $nombres, 'Cuarenta y tres de la pantalla más las tres del canal de WhatsApp.');
+        $this->assertCount(47, $nombres, 'Cuarenta y cuatro de la pantalla más las tres del canal de WhatsApp.');
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(

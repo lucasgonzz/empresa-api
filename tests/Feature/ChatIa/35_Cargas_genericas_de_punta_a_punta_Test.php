@@ -198,7 +198,7 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', [
             'entidad' => 'provider',
-            'datos'   => ['name' => 'Bulonera P35', 'phone' => '351 444 5555', 'cuit' => '30-12345678-9'],
+            'datos'   => ['name' => 'Bulonera P35', 'phone' => '351 444 5555', 'cuit' => '30-12345678-1'],
         ]);
 
         $this->assertTrue($respuesta['ok'], json_encode($respuesta));
@@ -213,7 +213,7 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
         $this->assertSame('Nuevo proveedor', $tarjeta->presentacion['titulo']);
         $this->assertSame('Bulonera P35', $this->renglon($tarjeta->presentacion, 'nombre'));
         $this->assertSame('351 444 5555', $this->renglon($tarjeta->presentacion, 'fono'));
-        $this->assertSame('30-12345678-9', $this->renglon($tarjeta->presentacion, 'CUIT'));
+        $this->assertSame('30-12345678-1', $this->renglon($tarjeta->presentacion, 'CUIT'));
         $this->assertNull($tarjeta->presentacion['aviso']);
 
         // `datos` es exactamente lo que va al controller: los campos pedidos, los sí/no que la
@@ -221,7 +221,7 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
         $this->assertSame('provider', $tarjeta->datos['entidad']);
         $this->assertSame('alta', $tarjeta->datos['operacion']);
         $this->assertSame('Bulonera P35', $tarjeta->datos['payload']['name']);
-        $this->assertSame(['name' => 'Bulonera P35', 'phone' => '351 444 5555', 'cuit' => '30-12345678-9'], $tarjeta->datos['pedidos']);
+        $this->assertSame(['name' => 'Bulonera P35', 'phone' => '351 444 5555', 'cuit' => '30-12345678-1'], $tarjeta->datos['pedidos']);
         $this->assertArrayHasKey('childrens', $tarjeta->datos['payload']);
         $this->assertArrayHasKey('price_from_cost_mas_iva', $tarjeta->datos['payload']);
 
@@ -237,7 +237,7 @@ class Cargas_genericas_de_punta_a_punta_Test extends EmpresaTestCase
         $this->assertNotNull($proveedor, 'El proveedor tenía que quedar creado');
         $this->assertSame($correlativo_anterior + 1, (int) $proveedor->num, 'El correlativo sale de num(): pasó por ProviderController::store()');
         $this->assertSame('351 444 5555', $proveedor->phone);
-        $this->assertSame('30-12345678-9', $proveedor->cuit);
+        $this->assertSame('30-12345678-1', $proveedor->cuit);
         // Las cuentas corrientes las crea el controller (CreditAccountHelper), no el asistente.
         $this->assertGreaterThanOrEqual(1, DB::table('credit_accounts')->where('model_name', 'provider')->where('model_id', $proveedor->id)->count());
 

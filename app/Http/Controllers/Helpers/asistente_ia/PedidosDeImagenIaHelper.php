@@ -54,8 +54,12 @@ class PedidosDeImagenIaHelper
     /** Los estados del bloque que todavía esperan la imagen. */
     const ESTADOS_EN_CURSO = ['pendiente', 'generando'];
 
-    /** El aviso del log cuando a esta instalación le falta la configuración para mandarle pedidos al admin. */
-    const AVISO_SIN_CONEXION = 'esta instalación no tiene la conexión con el admin: ADMIN_API_URL / ADMIN_API_CLIENT_UUID';
+    /**
+     * El aviso del log cuando a esta instalación le falta alguna de las variables para mandarle pedidos
+     * al admin. La clave de salida se sumó en la misión agente-mejoras-diario (ver
+     * falta_la_conexion_con_el_admin()); va al final para que el texto de antes siga siendo su comienzo.
+     */
+    const AVISO_SIN_CONEXION = 'esta instalación no tiene la conexión con el admin: ADMIN_API_URL / ADMIN_API_CLIENT_UUID / ADMIN_API_OUTBOUND_KEY';
 
     /** Lo que ve el dueño cuando su sistema no tiene todavía el circuito de imágenes del otro lado. */
     const NO_DISPONIBLE_PARA_EL_DUENO = 'La generación de imágenes todavía no está disponible para tu sistema.';
@@ -176,13 +180,21 @@ class PedidosDeImagenIaHelper
 
     /**
      * true si a esta instalación le falta lo que hace falta para mandarle un pedido al admin
-     * (`services.admin_api.url` o `services.admin_api.client_uuid`).
+     * (`services.admin_api.url`, `services.admin_api.client_uuid` o `services.admin_api.inbound_key`).
+     *
+     * 🔴 LA CLAVE DE SALIDA TAMBIÉN (misión agente-mejoras-diario, análisis del 30/10/2026, #6). Sin
+     * `ADMIN_API_OUTBOUND_KEY` (config `services.admin_api.inbound_key`) EnviarPedidoDeImagenAlAdminJob
+     * manda el pedido sin el header X-Admin-Api-Key, el admin contesta 401 y la imagen queda `fallida`
+     * DESPUÉS del turno, con el texto ya prometiéndola («la pedí; aparece acá»). Mirándola acá, el
+     * pedido nace `no_disponible` en el mismo turno y el texto sale honesto.
      *
      * @return bool
      */
     public static function falta_la_conexion_con_el_admin(): bool
     {
-        return trim((string) config('services.admin_api.url')) === '' || trim((string) config('services.admin_api.client_uuid')) === '';
+        return trim((string) config('services.admin_api.url')) === ''
+            || trim((string) config('services.admin_api.client_uuid')) === ''
+            || trim((string) config('services.admin_api.inbound_key')) === '';
     }
 
     /**

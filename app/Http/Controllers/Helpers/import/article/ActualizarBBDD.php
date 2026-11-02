@@ -1230,7 +1230,7 @@ class ActualizarBBDD {
         return false;
     }
 
-    function get_discounts_surchages_insert_data($relation = 'discounts', $article_id, $article_cache, $insertData, $discount_type = '%') {
+    function get_discounts_surchages_insert_data($relation, $article_id, $article_cache, $insertData, $discount_type = '%') {
 
         $check_final_flag = $relation == 'surchages' ? true : false;
 
@@ -1279,7 +1279,7 @@ class ActualizarBBDD {
         return $insertData;
     }
 
-    function get_insert_data($article_id, $value, $key = 'percentage', $check_final_flag) {
+    function get_insert_data($article_id, $value, $key, $check_final_flag) {
 
         // $this->log('get_insert_data:');
         // $this->log('check_final_flag: '.$check_final_flag);

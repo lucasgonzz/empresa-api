@@ -64,7 +64,8 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
      * @var int 8 minutos. Un tramo son hasta SEGUNDOS_POR_TRAMO_MAXIMO (90 s) más el último artículo. El peor
      * artículo posible, con todo en contra a la vez: tres búsquedas de Serper de 15 s (45 s) + 90 s de páginas
      * (presupuesto de DimensionPageReader) + tres scrapes del respaldo de 20 s (60 s; en el plan de nombre es uno
-     * solo) + tres llamadas a la IA de 45 s (135 s) = 330 s. Con los 90 s del tramo antes de empezarlo son 420 s: el
+     * solo) + tres llamadas a la IA de 45 s (135 s) = 330 s. La resolución de enlaces agrega como máximo 40 s ACUMULADOS por artículo: 370 s.
+     * Con los 90 s del tramo antes de empezarlo son 460 s, por debajo de los 480 s del job. El
      * valor anterior quedaba justo en el límite, así que se subió a 480 para dejar margen. En la práctica un
      * artículo tarda ~12 s. Tiene que quedar por debajo del retry_after de las colas (config/queue.php: 4200 en
      * database, 9000 en redis).

@@ -32,7 +32,17 @@ use RuntimeException;
  */
 class AsistenteIaException extends RuntimeException
 {
-    /** Se acabó el tiempo: presupuesto del loop agotado o techo de iteraciones sin texto final. */
+    /**
+     * Se acabó el tiempo: presupuesto del loop agotado o techo de iteraciones sin texto final.
+     *
+     * Desde la misión agente-memoria-y-sin-techo (30/10/2026) casi nunca llega a la persona: cuando se
+     * terminan las vueltas o el tiempo, el loop hace una LLAMADA DE CIERRE que cuenta lo hecho y lo que
+     * falta (AsistenteIaService::responder_con_el_modelo()), y si esa llamada falla, vuelve vacía o no
+     * tiene ventana, el turno igual cierra `listo` con lo hecho armado sin el modelo
+     * (AsistenteIaService::respuesta_sin_terminar(), ronda de arreglos R1). Queda solo para un turno que
+     * se quedó sin tiempo o sin vueltas SIN haber hecho ninguna ronda de herramientas: nada hecho que
+     * contar.
+     */
     const MOTIVO_TIEMPO_AGOTADO = 'tiempo_agotado';
 
     /** Anthropic contestó un error transitorio (529 / overloaded_error / api_error). */
@@ -50,9 +60,22 @@ class AsistenteIaException extends RuntimeException
      *
      * MOTIVO_FALLA_TECNICA NO figura a propósito — no tiene nada que decirle a la persona que ella
      * pueda usar, así que cae al genérico del llamador.
+     *
+     * 🔴 EL DE TIEMPO AGOTADO YA NO PIDE «ALGO MÁS ACOTADO» (misión agente-memoria-y-sin-techo,
+     * 30/10/2026; cambio de contrato a propósito). Era el texto que leyó Pablo (Ferre Total) por un pedido
+     * razonable —un recordatorio por cheque— que solo se había comido el techo de vueltas: acotar no era el
+     * remedio, y la persona no tiene por qué saber cómo partir un pedido. Lo que sirve es seguir con un
+     * «seguí».
+     *
+     * 🔴 Y NO PROMETE «DESDE DONDE QUEDÓ» (ronda de arreglos de la revisión independiente, R1, 30/10/2026;
+     * otro cambio de contrato a propósito). Un mensaje en `error` no viaja en el historial
+     * (build_messages_payload() lee solo los `listo`), así que el «seguí» retoma desde el pedido de la
+     * persona, no desde lo que el turno alcanzó a hacer. Y este texto ya solo sale cuando el turno no hizo
+     * NINGUNA ronda de herramientas (con alguna, cierra `listo` con lo hecho): lo honesto es «lo intento de
+     * nuevo».
      */
     const MENSAJES = [
-        self::MOTIVO_TIEMPO_AGOTADO => 'La consulta se hizo larga y no llegué a terminarla. Probá pidiéndome algo más acotado.',
+        self::MOTIVO_TIEMPO_AGOTADO => 'No llegué a terminar esta respuesta. Escribime «seguí» y lo intento de nuevo.',
         self::MOTIVO_SOBRECARGADO   => 'El servicio de IA está sobrecargado. Probá de nuevo en unos segundos.',
         self::MOTIVO_SIN_RESPUESTA  => 'La IA no llegó a generar una respuesta. Probá mandar el mensaje de nuevo.',
     ];

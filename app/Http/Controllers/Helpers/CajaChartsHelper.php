@@ -10,7 +10,7 @@ use App\Models\Sale;
 
 class CajaChartsHelper {
 	
-	static function charts($instance = null, $from_date, $until_date, $user_id = null, $slice_articles = true) {
+	static function charts($instance, $from_date, $until_date, $user_id = null, $slice_articles = true) {
 		$cantidad_ventas = 0;
 		$total_ventas = 0;
 		$categorias = [];

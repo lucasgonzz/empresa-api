@@ -188,8 +188,14 @@ class AsistenteController extends Controller
          * se pasó del tope se contesta con el texto de límite SIN gastar una llamada a la API — y
          * la decisión de hilo (HiloPorTemaIaHelper) ES una llamada a la API. Se calcula una sola
          * vez y se reusa más abajo, así que no cuesta una consulta de más.
+         *
+         * Misión agente-memoria-y-sin-techo (30/10/2026): se guarda el estado entero y no solo `supero`,
+         * porque el texto del corte depende de CUÁL tope se pasó (TopeDeTokensHelper::mensaje_limite()).
+         * Y medirlo antes de crear los mensajes del turno importa: desde esa misión una interacción es
+         * una respuesta del agente, y la de este turno todavía no existe.
          */
-        $supero_el_tope = TopeDeTokensHelper::estado($dueno)['supero'];
+        $estado_del_tope = TopeDeTokensHelper::estado($dueno);
+        $supero_el_tope = $estado_del_tope['supero'];
 
         /*
          * 🔴 Y un audio que Kapso no pudo transcribir NO dice nada del tema: viaja como texto
@@ -278,7 +284,8 @@ class AsistenteController extends Controller
          */
         if ($supero_el_tope) {
 
-            $assistant_message->contenido = TopeDeTokensHelper::MENSAJE_LIMITE;
+            /* El del tope diario («mañana se renueva») o el del mensual, según cuál se pasó. */
+            $assistant_message->contenido = TopeDeTokensHelper::mensaje_limite($estado_del_tope);
             $assistant_message->estado = 'listo';
             $assistant_message->save();
 

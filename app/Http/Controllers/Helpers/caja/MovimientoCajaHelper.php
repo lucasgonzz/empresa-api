@@ -337,9 +337,19 @@ class MovimientoCajaHelper {
 		$this->movimiento_caja->caja->save();
 	}
 
-	function set_apertura_caja_ingresos_egresos($apertura_caja_id) {
+	/**
+	 * 🔴 `static`: se la llama como instancia (`(new MovimientoCajaHelper())->…`), con `Self::` y desde
+	 * ExpenseCajaHelper como `MovimientoCajaHelper::…`. Sin `static`, esa última es un Error fatal en
+	 * PHP 8 (los clientes del VPS corren PHP-FPM 8.4) y un deprecated en el 7.4 del shared. No usa `$this`.
+	 */
+	static function set_apertura_caja_ingresos_egresos($apertura_caja_id) {
 
 		$apertura_caja = AperturaCaja::where('id', $apertura_caja_id)->lockForUpdate()->first();
+
+		/* Apertura inexistente (id viejo o borrada): no hay totales que actualizar. */
+		if (is_null($apertura_caja)) {
+			return;
+		}
 
 		$total_ingresos = 0;
 		$total_egresos = 0;
@@ -364,6 +374,7 @@ class MovimientoCajaHelper {
     static function recalcular_saldos($desde_movimiento_caja = null, $caja_id = null) {
 
     	$caja = null;
+    	$apertura_caja = null;
 
     	$movimientos_caja_para_actualizar = null;
     	$saldo_anterior = null;
@@ -384,6 +395,18 @@ class MovimientoCajaHelper {
     	} else if (!is_null($caja_id)) {
 
     		$caja = Caja::find($caja_id);
+
+    		/*
+    		 * 🔴 Caja borrada, o caja SIN apertura abierta (p. ej. se la cerró después de cargar el gasto):
+    		 * no hay saldos que recalcular. Seguir de largo tumbaba el guardado con "Attempt to assign
+    		 * property on null" (PHP 8) y, de haber llegado al final, habría dejado `cajas.saldo` en null
+    		 * y habría releído como "de la apertura null" los movimientos sueltos.
+    		 */
+    		if (is_null($caja) || is_null($caja->current_apertura_caja_id)) {
+
+    			Log::info('recalcular_saldos: la caja '.$caja_id.' no existe o no tiene apertura abierta, no hay nada que recalcular');
+    			return;
+    		}
 
 	    	Log::info('Entro con caja_id: '.$caja_id);
 	    	Log::info('current_aperutra_caja_id: '.$caja->current_apertura_caja_id);
@@ -429,9 +452,12 @@ class MovimientoCajaHelper {
 
 
 
-		$apertura_caja->total_ingresos = $total_ingresos;
-		$apertura_caja->total_egresos = $total_egresos;
-		$apertura_caja->save();
+		if (!is_null($apertura_caja)) {
+
+			$apertura_caja->total_ingresos = $total_ingresos;
+			$apertura_caja->total_egresos = $total_egresos;
+			$apertura_caja->save();
+		}
 
     	$caja->saldo = $saldo_anterior;
     	$caja->save();

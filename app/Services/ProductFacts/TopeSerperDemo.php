@@ -27,7 +27,8 @@ use Illuminate\Support\Facades\Log;
  * un rearmado.
  *
  * Qué cuenta: toda llamada REAL registrada por SerperUsageService::record(), haya salido bien o no
- * (Serper la cobra o no, pero salió a la red). Un cache hit de la ficha compartida no llama y no cuenta.
+ * (Serper la cobra o no, pero salió a la red), excepto /resolve: resuelve una búsqueda ya contada, es gratuito
+ * y tiene su propio proceso. Un cache hit de la ficha compartida no llama y no cuenta.
  *
  * Por qué un candado: chequeo, llamada y registro van juntos bajo `GET_LOCK` por dueño (el patrón de
  * EliminarSucursalHelper y de la creación de ventas). Sin él, la ficha por barras y una corrida de
@@ -85,7 +86,8 @@ class TopeSerperDemo
             return 0;
         }
 
-        $query = SerperUsageEvent::where('user_id', $dueno_id);
+        $query = SerperUsageEvent::where('user_id', $dueno_id)
+            ->where('process', '<>', SerperLinkResolver::PROCESO);
 
         // El dueño se recrea en cada setup de la demo: lo de antes de su alta es de otro lead.
         $alta = DB::table('users')->where('id', $dueno_id)->value('created_at');
