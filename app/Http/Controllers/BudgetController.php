@@ -270,7 +270,7 @@ class BudgetController extends Controller
 
             return response()->json($e->getCuerpo(), 422);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (\App\Exceptions\CotizacionPorArticuloInvalidaException $e) {
             DB::rollBack();
             $errores = $e->errors();
             $primero = reset($errores);
@@ -806,7 +806,7 @@ class BudgetController extends Controller
 
             return response()->json($e->getCuerpo(), 422);
 
-        } catch (\Illuminate\Validation\ValidationException $e) {
+        } catch (\App\Exceptions\CotizacionPorArticuloInvalidaException $e) {
             DB::rollBack();
             $errores = $e->errors();
             $primero = reset($errores);

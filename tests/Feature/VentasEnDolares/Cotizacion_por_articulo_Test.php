@@ -231,4 +231,43 @@ class Cotizacion_por_articulo_Test extends EmpresaTestCase
 
 
 
+    public function test_presupuesto_invalido_responde_422_y_revierte_su_alta()
+    {
+        $articulo = $this->crear_articulo('Presupuesto cotización inválida', ['cost' => 1000]);
+        $fila = array_merge($articulo->getAttributes(), $this->foto(0), ['amount' => 1, 'price' => 1500, 'bonus' => null, 'location' => null]);
+        $cliente = \App\Models\Client::create(['num' => 991235, 'name' => 'Cliente presupuesto inválido', 'user_id' => $this->dueno->id]);
+        $antes = DB::table('budgets')->count();
+        $payload = [
+            'client_id' => $cliente->id,
+            'aplicar_recargos_directo_a_items' => 0, 'aplicar_descuentos_directo_a_items' => 0,
+            'total' => 1500, 'budget_status_id' => 1, 'moneda_id' => 1, 'valor_dolar' => 1200,
+            'surchages_in_services' => 1, 'discounts_in_services' => 1,
+            'discounts' => [], 'surchages' => [], 'services' => [], 'promocion_vinotecas' => [], 'combos' => [], 'articles' => [$fila],
+        ];
+        $res = $this->postJson('api/budget', $payload);
+        $this->assertEquals(422, $res->status(), $res->getContent());
+        $this->assertEquals($antes, DB::table('budgets')->count());
+        $this->assertArrayHasKey('cotizacion_aplicada', $res->json('errors'));
+        $payload['articles'][0]['cotizacion_aplicada'] = 1000;
+        $alta = $this->postJson('api/budget', $payload);
+        $this->assertEquals(201, $alta->status(), $alta->getContent());
+        $id = $alta->json('model.id');
+        $foto = DB::table('article_budget')->where('budget_id', $id)->get()->toJson();
+        $payload['articles'][0]['cotizacion_aplicada'] = 0;
+        $res = $this->putJson('api/budget/'.$id, $payload);
+        $this->assertEquals(422, $res->status(), $res->getContent());
+        $this->assertSame($foto, DB::table('article_budget')->where('budget_id', $id)->get()->toJson());
+    }
+
+    public function test_cotizacion_presente_sin_origen_no_se_descarta_silenciosamente()
+    {
+        $articulo = $this->crear_articulo('Cotización incompleta', ['cost' => 1000]);
+        $datos = $this->foto(1000);
+        unset($datos['cotizacion_origen']);
+        $this->avanzar_reloj();
+        $res = $this->postJson('api/sale', $this->payload_venta(2, 1200, [$this->item($articulo, 1, 1.5, $datos)]));
+        $res->assertStatus(422);
+        $this->assertArrayHasKey('cotizacion_origen', $res->json('errors'));
+    }
+
 }

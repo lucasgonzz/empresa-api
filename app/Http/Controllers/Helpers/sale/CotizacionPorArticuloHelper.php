@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Helpers\sale;
 
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Validation\ValidationException;
+use App\Exceptions\CotizacionPorArticuloInvalidaException as ValidationException;
 
 /** Fotos monetarias opcionales. Una ficha actual nunca interpreta un costo histórico. */
 class CotizacionPorArticuloHelper
@@ -35,7 +35,7 @@ class CotizacionPorArticuloHelper
     public static function datos($item)
     {
         $item = is_object($item) ? $item->toArray() : $item;
-        if (array_key_exists('cotizacion_aplicada', $item) && !empty($item['cotizacion_origen'])) {
+        if (array_key_exists('cotizacion_aplicada', $item) && ($item['cotizacion_aplicada'] !== null || !empty($item['cotizacion_origen']))) {
             return array_intersect_key($item, array_flip(self::CAMPOS));
         }
         if (isset($item['pivot'])) {
