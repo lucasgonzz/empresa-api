@@ -45,6 +45,12 @@ class User extends Authenticatable
         // al dueño entero adentro de su get_user (AuthController::set_employee_props) --. La SPA
         // no la necesita: a diferencia de la de Google, el navegador nunca busca en Serper.
         'serper_api_key',
+        // El plan de IA en plata (misión plan-ia-por-gasto, 2/11/2026): el dueño ve un porcentaje de su
+        // plan, nunca dólares ni precios. Hacen falta acá, y no solo en mi-consumo-ia, porque get_user y
+        // update devuelven el modelo entero y un empleado recibe al dueño adentro del suyo. Estar en
+        // $hidden también las deja como "[oculto]" en audit_logs (AuditLogRecorder::es_sensible()).
+        'plan_ia_tope_gasto_usd_mensual',
+        'plan_ia_precios',
     ];
 
     protected $casts = [
