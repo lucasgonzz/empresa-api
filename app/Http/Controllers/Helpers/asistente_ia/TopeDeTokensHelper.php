@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Models\AiTokenUsage;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -140,9 +141,12 @@ class TopeDeTokensHelper
         'openai'    => ['gpt', 'text-embedding'],
     ];
 
+    /** Vida de la marca de un aviso en el caché. La clave lleva la fecha: alcanza con que dure un día. */
+    const SEGUNDOS_DE_LA_MARCA_DEL_AVISO = 86400;
+
     /**
-     * Lo que ya se avisó al log en este proceso: un modelo sin tarifa cae en cada mensaje del dueño y un
-     * worker vive días; sin esto el warning taparía el log.
+     * Lo que este proceso ya avisó hoy, para no pedirle al caché lo mismo en cada estado() de un worker y para
+     * seguir acotando el log si el caché se cae. El tope real del aviso NO es esto: ver avisar_una_vez_por_dia().
      *
      * @var array<string, bool>
      */
@@ -301,7 +305,7 @@ class TopeDeTokensHelper
 
         if (is_null($tarifa)) {
             $tarifa = self::tarifa_de_reemplazo($fila, $precios);
-            self::avisar_una_vez('modelo:' . (string) $fila->modelo, 'TopeDeTokensHelper: modelo sin tarifa en plan_ia_precios, se cobra a la más cara de su proveedor.', [
+            self::avisar_una_vez_por_dia('modelo:' . (string) $fila->modelo, 'TopeDeTokensHelper: modelo sin tarifa en plan_ia_precios, se cobra a la más cara de su proveedor.', [
                 'modelo'    => (string) $fila->modelo,
                 'proveedor' => (string) $fila->proveedor,
             ]);
@@ -500,7 +504,7 @@ class TopeDeTokensHelper
         }
 
         if (empty(self::precios_de($owner))) {
-            self::avisar_una_vez('sin_precios:' . (int) $owner->id, 'TopeDeTokensHelper: hay tope de gasto pero no hay tabla de precios, sigue mandando el tope de tokens.', [
+            self::avisar_una_vez_por_dia('sin_precios:' . (int) $owner->id, 'TopeDeTokensHelper: hay tope de gasto pero no hay tabla de precios, sigue mandando el tope de tokens.', [
                 'owner_id' => (int) $owner->id,
             ]);
 
@@ -511,23 +515,42 @@ class TopeDeTokensHelper
     }
 
     /**
-     * Un warning en el log, una sola vez por proceso para cada clave.
+     * Un warning en el log, una sola vez por día para cada clave (cada modelo sin tarifa, cada dueño sin tabla).
+     *
+     * 🔴 LA MARCA VA AL CACHÉ Y NO A UN STATIC (revisión del contrato, 2/11/2026): bajo PHP-FPM un `static` dura
+     * un request, así que el aviso salía una vez por cada estado() de cada request web. Con el caché caído no
+     * se corta nada: se mide igual, y el warning sale una vez por proceso, porque un aviso de más es mejor que
+     * ninguno.
      *
      * @param  string  $clave
      * @param  string  $mensaje
      * @param  array  $contexto
      * @return void
      */
-    protected static function avisar_una_vez($clave, $mensaje, array $contexto)
+    protected static function avisar_una_vez_por_dia($clave, $mensaje, array $contexto)
     {
-        if (isset(self::$ya_avisado[$clave])) {
+        /* md5 porque el nombre de un modelo viene de afuera y no todo driver de caché acepta cualquier clave. */
+        $clave_del_dia = 'tope_de_tokens_aviso:' . Carbon::now()->toDateString() . ':' . md5($clave);
+
+        if (isset(self::$ya_avisado[$clave_del_dia])) {
 
             return;
         }
 
-        self::$ya_avisado[$clave] = true;
+        self::$ya_avisado[$clave_del_dia] = true;
 
-        Log::warning($mensaje, $contexto);
+        try {
+
+            $es_el_primero_del_dia = (bool) Cache::add($clave_del_dia, true, self::SEGUNDOS_DE_LA_MARCA_DEL_AVISO);
+
+        } catch (\Throwable $e) {
+
+            $es_el_primero_del_dia = true;
+        }
+
+        if ($es_el_primero_del_dia) {
+            Log::warning($mensaje, $contexto);
+        }
     }
 
     /**
