@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Helpers\Budget;
 
+use App\Http\Controllers\Helpers\sale\CotizacionPorArticuloHelper;
+
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\BudgetHelper;
@@ -231,7 +233,8 @@ class BudgetDuplicarHelper {
                     "Talle M". Con la variante viva manda la descripción de la variante.
                 */
                 'variant_description' => VarianteEnPresupuestoEsquemaHelper::descripcion_del_pivot($article->pivot),
-                'pivot' => [
+                'pivot' => array_merge(CotizacionPorArticuloHelper::datos($article), [
+                    'cost' => $article->pivot->cost,
                     'amount' => $article->pivot->amount,
                     'bonus' => $article->pivot->bonus,
                     'location' => $article->pivot->location,
@@ -249,7 +252,7 @@ class BudgetDuplicarHelper {
                     RecargosEnPreciosEsquemaHelper::CLAVE_REQUEST => RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot),
                     // Y la de descuentos (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), por lo mismo y tambien SIEMPRE.
                     DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST => DescuentosEnPreciosEsquemaHelper::base_del_pivot($article->pivot),
-                ],
+                ]),
             ];
         }
         return $rows;

@@ -1041,6 +1041,10 @@ class SaleController extends Controller
             $model->setRelation('combos', $previus_combos);
             $model->setRelation('promocion_vinotecas', $previus_promos);
 
+            // Foto con el candado tomado, antes de modificar venta o renglones. La comparación
+            // posterior evita borrar débitos y soltar cobros dirigidos por un guardado equivalente.
+            $efectos_financieros_previos = \App\Http\Controllers\Helpers\sale\EfectosFinancierosDeVentaHelper::foto($model);
+
             $request->items = array_reverse($request->items);
 
             $sale_modification = SaleModificationsHelper::create($model, $this);
@@ -1330,6 +1334,8 @@ class SaleController extends Controller
 
             SaleHelper::attachProperies($model, $request, false, $previus_articles, $previus_combos, $previus_promos, $sale_modification, $se_esta_confirmando, $se_activando_discount_stock);
 
+            \App\Http\Controllers\Helpers\sale\EfectosFinancierosDeVentaHelper::conservar_totales_si_equivalente($efectos_financieros_previos, $model);
+
             $model->updated_at = Carbon::now();
             $model->save();
 
@@ -1371,21 +1377,26 @@ class SaleController extends Controller
              * Va antes de updateCurrentAcountsAndCommissions() porque ese helper recrea el
              * movimiento de la cuenta corriente leyendo `sales.total`, que es el total que el
              * front ya mandó neteado por el canje.
+             * Si el canje guardado no cambió, se conserva su movimiento y su consumo de lotes:
+             * estos tres pasos sólo corresponden a un canje efectivamente modificado.
              */
-            PuntosCanjeHelper::deshacer($model);
+            $conservar_canje = \App\Http\Controllers\Helpers\sale\EfectosFinancierosDeVentaHelper::conservar_canje($efectos_financieros_previos, $model, $request);
+            if (!$conservar_canje) {
+                PuntosCanjeHelper::deshacer($model);
 
-            $error_canje_puntos = PuntosCanjeHelper::validar_venta_actualizada($model, $request);
+                $error_canje_puntos = PuntosCanjeHelper::validar_venta_actualizada($model, $request);
 
-            if (!is_null($error_canje_puntos)) {
+                if (!is_null($error_canje_puntos)) {
 
-                DB::rollBack();
-                return response()->json($error_canje_puntos, 422);
+                    DB::rollBack();
+                    return response()->json($error_canje_puntos, 422);
+                }
+
+                PuntosCanjeHelper::aplicar($model, $request);
             }
 
-            PuntosCanjeHelper::aplicar($model, $request);
-
             if ($model->client_id && !$model->to_check && !$model->checked) {
-                SaleHelper::updateCurrentAcountsAndCommissions($model);
+                SaleHelper::updateCurrentAcountsAndCommissions($model, $efectos_financieros_previos);
             } else if (!$model->client_id && $previus_client_id) {
 
                 /*

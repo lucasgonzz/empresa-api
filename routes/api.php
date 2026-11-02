@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Route;
 // Route::middleware(['set.user.database', 'auth:sanctum'])->group(function() {
 Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::class])->group(function() {
 
+    Route::get('vender/cotizaciones-articulos', 'CotizacionPorArticuloController@index');
+
     Route::get('diagnostico-conexion/config', 'DiagnosticoConexionController@configuracion')->middleware('throttle:20,1');
     Route::post('diagnostico-conexion/eventos', 'DiagnosticoConexionController@eventos')->middleware('throttle:10,1');
 

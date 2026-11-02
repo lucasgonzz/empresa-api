@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\sale\CotizacionPorArticuloHelper;
+
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
@@ -235,7 +237,7 @@ class Sale extends Model
         ventana del deploy se cae la lectura de toda venta.
     */
     public function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'name', 'article_variant_id', 'price_type_personalizado_id', 'ganancia', 'fecha_agregado', 'iva_percentage', 'price_sin_iva'], 'article_sale'), 'article_sale'))->withTrashed();
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(CotizacionPorArticuloHelper::columnas(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['id', 'amount', 'cost', 'price', 'returned_amount', 'delivered_amount', 'discount', 'with_dolar', 'checked_amount', 'variant_description', 'name', 'article_variant_id', 'price_type_personalizado_id', 'ganancia', 'fecha_agregado', 'iva_percentage', 'price_sin_iva'], 'article_sale'), 'article_sale'), 'article_sale'))->withTrashed();
     }
 
     public function combos() {

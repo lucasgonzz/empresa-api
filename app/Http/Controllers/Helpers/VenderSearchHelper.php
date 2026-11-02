@@ -383,6 +383,8 @@ class VenderSearchHelper
             'cost'                    => $article->cost,
             'costo_real'              => $article->costo_real,
             'cost_in_dollars'         => $article->cost_in_dollars,
+            'provider'                => $article->provider,
+            'provider_id'             => $article->provider_id,
             'presentacion'            => $article->presentacion,
             'name'                    => $article->name . ' ' . $variant->variant_description,
             'article'                 => $article,

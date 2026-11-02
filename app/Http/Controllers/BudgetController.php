@@ -270,6 +270,12 @@ class BudgetController extends Controller
 
             return response()->json($e->getCuerpo(), 422);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            DB::rollBack();
+            $errores = $e->errors();
+            $primero = reset($errores);
+            return response()->json(['message' => $primero[0], 'errors' => $errores], 422);
+
         } catch(\Throwable $e) {
 
             DB::rollBack();
@@ -799,6 +805,12 @@ class BudgetController extends Controller
             DB::rollBack();
 
             return response()->json($e->getCuerpo(), 422);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            DB::rollBack();
+            $errores = $e->errors();
+            $primero = reset($errores);
+            return response()->json(['message' => $primero[0], 'errors' => $errores], 422);
 
         } catch (\Throwable $e) {
 
