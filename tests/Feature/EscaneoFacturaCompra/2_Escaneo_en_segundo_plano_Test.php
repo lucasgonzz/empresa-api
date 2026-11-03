@@ -5,6 +5,7 @@ namespace Tests\Feature\EscaneoFacturaCompra;
 use App\Jobs\RunProviderOrderScanJob;
 use App\Models\AiTokenUsage;
 use App\Models\Article;
+use App\Models\LocalActividadEvento;
 use App\Models\ProviderOrder;
 use App\Models\ProviderOrderScan;
 use App\Models\ProviderOrderScanImage;
@@ -955,5 +956,129 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
 
         $this->assertEquals('listo', $terminado->estado, 'Un escaneo ya terminado no se pisa con error.');
         $this->assertNull($terminado->error);
+    }
+
+    /* ------------------------------------------------------------------ *
+     *  «El local» del admin (misión el-local-fase-2, 3/11/2026)
+     * ------------------------------------------------------------------ */
+
+    /**
+     * Deja la instancia avisándole al admin, con el dueño del fixture como USER_ID.
+     *
+     * @return void
+     */
+    protected function prender_el_local()
+    {
+        config([
+            'services.admin_api.url'         => 'https://admin.test/public',
+            'services.admin_api.inbound_key' => 'clave-de-salida-del-test',
+            'app.USER_ID'                    => $this->owner->id,
+        ]);
+    }
+
+    /**
+     * Un escaneo que pasa el control a la primera: evento con el id, el estado y sin revisión.
+     *
+     * @test
+     * @return void
+     */
+    public function el_escaneo_listo_le_avisa_al_local_sin_revision()
+    {
+        $this->prender_el_local();
+        $this->fake_de_anthropic($this->json_de_factura_que_pasa_el_control());
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('listo', $scan->estado);
+
+        $evento = LocalActividadEvento::where('tipo', 'escaneo')->first();
+        $this->assertNotNull($evento);
+        $this->assertSame((int) $this->owner->id, (int) $evento->owner_id);
+        $this->assertSame($this->owner->name, $evento->usuario);
+        $this->assertSame(['scan_id' => $scan->id, 'estado' => 'listo', 'necesito_revision' => false], $evento->detalle);
+    }
+
+    /**
+     * La factura por defecto no cierra (ver json_de_factura_que_pasa_el_control()): se relee y el evento lo dice.
+     *
+     * @test
+     * @return void
+     */
+    public function el_escaneo_que_necesito_revision_lo_dice_en_el_evento()
+    {
+        $this->prender_el_local();
+        $this->fake_de_anthropic($this->json_de_factura());
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('listo', $scan->estado);
+        $this->assertTrue($scan->resultado['lectura']['revisada']);
+        $this->assertTrue(LocalActividadEvento::where('tipo', 'escaneo')->first()->detalle['necesito_revision']);
+    }
+
+    /**
+     * Un escaneo que falla también terminó: el robot trabajó.
+     *
+     * @test
+     * @return void
+     */
+    public function el_escaneo_con_error_tambien_le_avisa_al_local()
+    {
+        $this->prender_el_local();
+
+        /* Sin clave de IA (setUp): termina en error. */
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('error', $scan->estado);
+        $this->assertSame(
+            ['scan_id' => $scan->id, 'estado' => 'error', 'necesito_revision' => false],
+            LocalActividadEvento::where('tipo', 'escaneo')->first()->detalle
+        );
+    }
+
+    /**
+     * Si el comercio ya no tiene la extensión, el escaneo ni arrancó: nadie trabajó.
+     *
+     * @test
+     * @return void
+     */
+    public function sin_agentes_ia_el_escaneo_no_le_avisa_al_local()
+    {
+        $this->prender_el_local();
+        $this->owner->extencions()->detach();
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('error', $scan->estado);
+        $this->assertSame(0, LocalActividadEvento::where('tipo', 'escaneo')->count());
+    }
+
+    /**
+     * Un `failed()` del worker (timeout, fatal) también cierra el escaneo.
+     *
+     * @test
+     * @return void
+     */
+    public function el_failed_del_job_tambien_le_avisa_al_local()
+    {
+        $this->prender_el_local();
+
+        $scan = $this->escaneo(['estado' => 'procesando']);
+
+        (new RunProviderOrderScanJob($scan->id))->failed(new \RuntimeException('El worker lo mató'));
+
+        $this->assertSame(1, LocalActividadEvento::where('tipo', 'escaneo')->count());
     }
 }

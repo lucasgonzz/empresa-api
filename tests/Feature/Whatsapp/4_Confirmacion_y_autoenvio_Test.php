@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Jobs\AutoSendWhatsappAiMessageJob;
 use App\Jobs\GenerateWhatsappAiReplyJob;
 use App\Models\ExtencionEmpresa;
+use App\Models\LocalActividadEvento;
 use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
@@ -565,5 +566,111 @@ class Confirmacion_y_autoenvio_Test extends TestCase
             $mensaje->fresh()->ai_status,
             'Un mensaje manual nunca toca el eje de confirmación del agente.'
         );
+    }
+
+    /**
+     * Deja la instancia avisándole a «El local» del admin (misión el-local-fase-2, 3/11/2026), con el comercio del
+     * test como USER_ID.
+     *
+     * @return void
+     */
+    protected function prender_el_local()
+    {
+        config([
+            'services.admin_api.url'         => 'https://admin.test/public',
+            'services.admin_api.inbound_key' => 'clave-de-salida-del-test',
+            'app.USER_ID'                    => $this->comercio->id,
+        ]);
+    }
+
+    /**
+     * @group whatsapp
+     * @test
+     */
+    public function la_respuesta_del_agente_que_sale_le_avisa_al_local_sin_telefono_ni_texto()
+    {
+        $this->prender_el_local();
+        $this->fakes_de_red();
+
+        $chat = $this->chat_con_entrante();
+        $mensaje = WhatsappChatHelper::store_pending_ai_message($chat, 'Respuesta del agente.');
+
+        $resultado = WhatsappChatHelper::send_pending_ai_message($mensaje, $chat, $this->config);
+
+        $this->assertSame(WhatsappChatHelper::ENVIO_HECHO, $resultado);
+
+        $evento = LocalActividadEvento::where('tipo', 'agente_negocio')->first();
+        $this->assertNotNull($evento);
+        $this->assertSame((int) $this->comercio->id, (int) $evento->owner_id);
+        $this->assertNull($evento->usuario);
+        $this->assertSame(['chat_id' => $chat->id, 'message_id' => $mensaje->id], $evento->detalle);
+    }
+
+    /**
+     * @group whatsapp
+     * @test
+     */
+    public function el_autoenvio_tambien_le_avisa_al_local()
+    {
+        Queue::fake();
+        $this->prender_el_local();
+        $this->fakes_de_red();
+
+        $this->config->ai_confirm_delay_seconds = 120;
+        $this->config->save();
+
+        $chat = $this->chat_con_entrante();
+        $mensaje = WhatsappChatHelper::store_pending_ai_message($chat, 'Respuesta que sale sola.');
+
+        (new WhatsappAiAutoSendScheduler())->schedule_for_message($mensaje, $this->config);
+
+        (new AutoSendWhatsappAiMessageJob((int) $mensaje->id, 1))->handle(app(WhatsappAiAutoSendScheduler::class));
+
+        $this->assertEquals(1, $this->llamadas_a_kapso);
+        $this->assertSame(1, LocalActividadEvento::where('tipo', 'agente_negocio')->count());
+    }
+
+    /**
+     * Si WhatsApp no lo aceptó, el agente no le contestó a nadie.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_respuesta_que_whatsapp_rechaza_no_le_avisa_al_local()
+    {
+        $this->prender_el_local();
+
+        Http::fake(['*' => Http::response(['error' => 'clave vencida'], 401)]);
+
+        $chat = $this->chat_con_entrante();
+        $mensaje = WhatsappChatHelper::store_pending_ai_message($chat, 'Respuesta del agente.');
+
+        $resultado = WhatsappChatHelper::send_pending_ai_message($mensaje, $chat, $this->config);
+
+        $this->assertSame(WhatsappChatHelper::ENVIO_FALLIDO, $resultado);
+        $this->assertSame(0, LocalActividadEvento::where('tipo', 'agente_negocio')->count());
+    }
+
+    /**
+     * En simulación nadie recibió nada: el negocio no está atendiendo a un cliente de verdad.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_respuesta_a_un_chat_simulado_no_le_avisa_al_local()
+    {
+        $this->prender_el_local();
+        $this->fakes_de_red();
+
+        $chat = $this->chat_con_entrante();
+        $chat->last_inbound_simulated = true;
+        $chat->save();
+
+        $mensaje = WhatsappChatHelper::store_pending_ai_message($chat, 'Respuesta simulada.');
+
+        $resultado = WhatsappChatHelper::send_pending_ai_message($mensaje, $chat, $this->config);
+
+        $this->assertSame(WhatsappChatHelper::ENVIO_HECHO, $resultado);
+        $this->assertSame(0, LocalActividadEvento::where('tipo', 'agente_negocio')->count());
     }
 }
