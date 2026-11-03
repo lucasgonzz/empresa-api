@@ -9,6 +9,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ArticleTablePdfHelper;
 use App\Http\Controllers\Helpers\ArticleTicketDesignHelper;
@@ -520,6 +521,9 @@ class ArticleController extends Controller
          */
         DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
 
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.articulo_creado', ['id' => (int) $model->id]);
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
 
@@ -786,6 +790,9 @@ class ArticleController extends Controller
          * carga el artículo desde ahí hizo la acción igual, y el roadmap tiene que enterarse.
          */
         DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.articulo_creado', ['id' => (int) $model->id]);
 
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }

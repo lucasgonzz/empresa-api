@@ -409,6 +409,19 @@ class Kernel extends ConsoleKernel
                 return DemoTrackingConfigHelper::hay_canal();
             });
 
+        /*
+         * Barrido de la prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer pedido de la
+         * tienda (lo escribe tienda-api en la base, no hay request de empresa) y el vencimiento (el negocio
+         * puede no volver a entrar). El when() mira el .env y nada más: en los ~40 clientes reales no se
+         * dispara ni un artisan.
+         */
+        $schedule->command('prueba:barrido')
+            ->everyFiveMinutes()
+            ->withoutOverlapping(5)
+            ->when(function () {
+                return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
+            });
+
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');

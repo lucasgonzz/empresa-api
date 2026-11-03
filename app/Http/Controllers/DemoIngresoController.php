@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use Illuminate\Http\Request;
@@ -71,6 +72,9 @@ class DemoIngresoController extends Controller
          * que pulsar el boton habia dejado en `parcial`.
          */
         DemoEventoEmitter::emitir('demo.ingreso', null, ['user_id' => $user->id]);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): el primer ingreso llega por este token.
+        PruebaHitosHelper::emitir('prueba.ingreso', ['user_id' => (int) $user->id, 'via' => 'token'], (int) $user->id);
 
         return response()->json(['ok' => true], 200);
     }

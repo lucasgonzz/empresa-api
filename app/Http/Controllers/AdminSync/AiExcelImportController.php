@@ -232,6 +232,9 @@ class AiExcelImportController extends Controller
             'user'                  => $owner,
             'auth_user_id'          => $user_id,
             'archivo_excel_path'    => $excel_path,
+            // Prueba gratuita (C4, misión prueba-experiencia-empresa, 3/11/2026): de dónde viene el archivo
+            // (`excel` | `pdf` | `martin`). Opcional; sin él, por esta puerta es Martín.
+            'prueba_origen'         => $request->input('origen', 'martin'),
             'registrar_art_cre'     => $request->input('registrar_art_cre', true),
             'registrar_art_act'     => $request->input('registrar_art_act', true),
 

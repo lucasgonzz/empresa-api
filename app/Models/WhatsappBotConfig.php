@@ -105,6 +105,15 @@ class WhatsappBotConfig extends Model
             return false;
         }
 
+        /*
+         * Una instancia de la prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026) cuenta como
+         * demo para la siembra, pero sus envíos son REALES: el negocio está probando el sistema con su
+         * WhatsApp. Aunque alguien deje `envio_simulado` en 1, acá se sale por Kapso.
+         */
+        if (DemoSetupHelper::es_instancia_de_prueba()) {
+            return false;
+        }
+
         return DemoSetupHelper::es_instancia_de_demo();
     }
 

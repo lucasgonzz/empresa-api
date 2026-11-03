@@ -8,6 +8,8 @@ use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\EsquemaDemoSnapshotHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Http\Controllers\ZipnovaIntegracionController;
 use App\Models\Address;
@@ -91,8 +93,31 @@ class DemoSetupHelper
             return true;
         }
 
+        /*
+         * La instancia de la prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026) nace con los
+         * mismos datos de ejemplo que una demo: la semilla, la tienda con criterio de demo y el tope de
+         * Serper la tratan igual. Lo que NO comparte con una demo se decide aparte con
+         * `es_instancia_de_prueba()`: la guarda del `migrate:fresh` (ver run()), el WhatsApp simulado y el
+         * volcado del esquema.
+         */
+        if (self::es_instancia_de_prueba()) {
+            return true;
+        }
+
         // Bases de desarrollo: la máquina de Lucas y la suite.
         return in_array(config('app.env'), ['local', 'testing'], true);
+    }
+
+    /**
+     * Si esta instalación es una instancia de la PRUEBA GRATUITA: `FOR_USER=prueba` en el `.env`, estricto
+     * (lo escribe el script de alta del admin). A diferencia de `es_instancia_de_demo()`, `local` y
+     * `testing` NO cuentan: lo que esto decide son excepciones a la demo que la suite no tiene que heredar.
+     *
+     * @return bool
+     */
+    public static function es_instancia_de_prueba()
+    {
+        return config('app.FOR_USER') === PruebaHelper::FOR_USER_PRUEBA;
     }
 
     /**
@@ -130,6 +155,12 @@ class DemoSetupHelper
      *                                   address_1..3, price_type_1..3,
      *                                   demo_eventos_token, demo_eventos_url, demo_plan,
      *                                   demo_media_urls (mision 50, las cuatro opcionales),
+     *                                   password (string de 8 o más: la contraseña del dueño) y
+     *                                   prueba {dias, vence_at, video_url, whatsapp_soporte} (prende
+     *                                   el modo prueba y fija users.expired_at; misión
+     *                                   prueba-experiencia-empresa, 3/11/2026, las dos opcionales),
+     *                                   con_clave_de_admin (bool: lo escribe DemoSetupController
+     *                                   leyendo X-Admin-Api-Key; ver la segunda guarda de run()),
      *                                   serper_api_key (opcional, misión serper-en-user-setup),
      *                                   zipnova_api_token + zipnova_api_secret (+ zipnova_account_id
      *                                   opcional) y mercadopago_access_token + mercadopago_public_key
@@ -178,6 +209,24 @@ class DemoSetupHelper
         if (! self::es_instancia_de_demo()) {
             BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
         }
+
+        /**
+         * 🔴 SEGUNDA GUARDA, SOLO PARA LA PRUEBA GRATUITA (misión prueba-experiencia-empresa, 3/11/2026).
+         *
+         * Una instancia de prueba (`FOR_USER=prueba`) cuenta como demo para la siembra, pero NO se rearma
+         * por lead: es la instalación definitiva del negocio, y si contrata se queda con esa base. Dejar
+         * la puerta pública de arriba como en una demo sería que cualquier POST a su API le vacíe la base
+         * de un cliente. Entonces: con la base VACÍA (el alta) se arma como siempre; con datos, solo si el
+         * POST trajo la `X-Admin-Api-Key` de la instancia (`con_clave_de_admin`, que escribe el
+         * controlador leyendo el header: NUNCA viene del payload). Sin clave y con datos: 409 sin tocar
+         * nada, igual que un cliente real.
+         */
+        if (self::es_instancia_de_prueba() && empty($data['con_clave_de_admin'])) {
+            BorradoTotalDeBaseHelper::exigir_base_sin_datos_o_autorizacion([]);
+        }
+
+        // La prueba gratuita (C1): `password` y `prueba` se validan ANTES de vaciar nada, como `demo_industria`.
+        PruebaHelper::validar_payload($data);
 
         // Se valida ANTES de vaciar nada. Un admin anterior omite el campo y conserva su catálogo.
         $industria = trim((string) ($data['demo_industria'] ?? ''));
@@ -375,6 +424,15 @@ class DemoSetupHelper
         // Puntos de venta de AFIP (RRII + Monotributo) asociados al user
         self::puntos_de_venta_afip($user);
 
+        /*
+         * Prueba gratuita (C1, misión prueba-experiencia-empresa, 3/11/2026): con el objeto `prueba` se
+         * guarda su configuración (video, WhatsApp de soporte, días) y se fija `users.expired_at`. Va acá,
+         * con el dueño recién creado y las tablas recién migradas. Sin `prueba`, es la demo de siempre.
+         */
+        if (isset($data['prueba']) && is_array($data['prueba'])) {
+            PruebaHelper::activar_desde_payload($user, $data['prueba']);
+        }
+
         // Extensiones y seeders se arman dinámicamente según los flags del form
         $extencions = self::base_extencions();
         $seeders = self::base_seeders();
@@ -420,6 +478,15 @@ class DemoSetupHelper
         }
 
         $etapas['usuario_y_extensiones'] = self::cronometrar($t_etapa);
+
+        /*
+         * Marca de lo sembrado (misión prueba-experiencia-empresa, 3/11/2026): desde acá hasta después de
+         * la trazabilidad del clip, todo id nuevo de las tablas de negocio queda registrado en
+         * `semilla_registros` (ver SemillaRegistroHelper). Es lo que permite borrar los datos de ejemplo al
+         * primer import de la prueba sin tocar lo que el negocio cargó después. `semilla:datos`, que corre
+         * adentro de este tramo, ve el lote abierto y no abre otro.
+         */
+        SemillaRegistroHelper::abrir_lote($user->id, 'demo-setup');
 
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
@@ -516,7 +583,7 @@ class DemoSetupHelper
          * ese Client queda sin operaciones sembradas, que es lo correcto: es él, no un cliente de
          * ejemplo.
          */
-        self::crear_client_con_mail_del_user_demo($data);
+        $client_del_lead = self::crear_client_con_mail_del_user_demo($data);
 
         /**
          * Performance histórica del usuario (costos, márgenes, etc.), SOLO si `semilla:datos` no
@@ -578,6 +645,16 @@ class DemoSetupHelper
         }
 
         $etapas['cliente_performance_y_trazabilidad'] = self::cronometrar($t_etapa);
+
+        /*
+         * Cierra la marca de lo sembrado. El Client del propio lead nació adentro del tramo pero no es un
+         * dato de ejemplo (es él): se saca de la marca con sus cuentas corrientes, así sobrevive al primer
+         * import.
+         */
+        SemillaRegistroHelper::cerrar_lote();
+        if (!is_null($client_del_lead)) {
+            SemillaRegistroHelper::excluir_cliente($client_del_lead->id);
+        }
 
         // Tienda online por defecto para que la demo tenga URL pública.
         //
@@ -790,7 +867,8 @@ class DemoSetupHelper
      */
     private static function preparar_whatsapp_de_la_demo(User $user)
     {
-        if (! self::es_instancia_de_demo()) {
+        // En la prueba gratuita el WhatsApp del negocio es real: ni clave ficticia ni chats de ejemplo.
+        if (! self::es_instancia_de_demo() || self::es_instancia_de_prueba()) {
             return;
         }
 
@@ -864,6 +942,8 @@ class DemoSetupHelper
         ]);
 
         CreditAccountHelper::crear_credit_accounts('client', $client->id);
+
+        return $client;
     }
 
     /**
@@ -1077,6 +1157,16 @@ class DemoSetupHelper
      */
     private static function password_inicial(array $data)
     {
+        /*
+         * Prueba gratuita (C1, misión prueba-experiencia-empresa, 3/11/2026): el alta de la landing pide
+         * una contraseña (mínimo 8, la única regla, decisión de Lucas) y el admin la manda en `password`.
+         * Con ella, el dueño entra con esa contraseña. Sin ella, todo sigue como siempre (el documento).
+         * `validar_payload()` ya rechazó con 422, antes del migrate:fresh, una contraseña corta.
+         */
+        if (PruebaHelper::trae_password($data)) {
+            return bcrypt($data['password']);
+        }
+
         $doc_number = isset($data['doc_number']) ? trim((string) $data['doc_number']) : '';
 
         if ($doc_number === '') {

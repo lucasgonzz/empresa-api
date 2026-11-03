@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Jobs\ProcessClientExportJob;
 use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
@@ -143,6 +144,9 @@ class ClientController extends Controller
         CreditAccountHelper::crear_credit_accounts('client', $model->id);
 
         $this->sincronizar_ajustes_de_venta($model, $request);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.cliente_creado', ['id' => (int) $model->id]);
         
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 201);
