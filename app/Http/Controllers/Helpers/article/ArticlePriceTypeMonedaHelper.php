@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\article;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
@@ -26,10 +27,22 @@ class ArticlePriceTypeMonedaHelper {
         // $cost = $article->cost;
 
         // $cost = ArticlePricesHelper::aplicar_iva($article, $cost, $user);
-        
+
+        /*
+         * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026): sus filas por moneda son
+         * un espejo del precio del artículo, así que lo que la persona edita en esa tarjeta se
+         * escribe en el ARTÍCULO (margen y precio manual) y el espejo vuelve a escribir las filas al
+         * recalcular. Ver write_through_precio_final() y ArticleHelper::espejar_lista_precio_final().
+         */
+        $lista_precio_final = PriceTypeHelper::lista_precio_final((int) $article->user_id);
+
         foreach ($price_type_monedas as $ptm) {
 
             $moneda_id = $ptm['moneda_id'];
+
+            if (!is_null($lista_precio_final) && (int) $ptm['price_type_id'] === (int) $lista_precio_final->id) {
+                self::write_through_precio_final($article, $user, $ptm, (int) $moneda_id);
+            }
             
             $setear_precio_final = 0;
 
@@ -140,7 +153,171 @@ class ArticlePriceTypeMonedaHelper {
     {
         self::calcular_precios_por_price_type_y_moneda($article, $_cost, $user);
 
-        self::espejar_precio_en_pesos_en_la_pivot($article);
+        self::espejar_precio_en_pesos_en_la_pivot($article, PriceTypeHelper::lista_precio_final($user));
+    }
+
+    /**
+     * Lo que la persona edita en la tarjeta de la lista «Precio final» de una cuenta con precios por
+     * moneda se escribe en el artículo (misión prueba-listas-siempre, 3/11/2026, decisión D2):
+     *
+     *  - el `percentage` de la fila de la moneda NATIVA del artículo → `articles.percentage_gain`;
+     *  - `setear_precio_final` + `final_price` de esa misma fila → `articles.price` (o null al
+     *    destildar).
+     *
+     * Solo la fila nativa (pesos, o dólares si el costo está en dólares y el dueño no cotiza), que es
+     * la que lleva el precio del artículo; la otra se deriva con el dólar de la cuenta y no es
+     * editable. Y SOLO si el valor que llega difiere del que esa fila tiene GUARDADO: la ficha manda
+     * siempre todas las filas, también cuando la persona editó el margen del artículo en el recuadro
+     * de siempre (una sola lista: la tarjeta ni se dibuja); si se tomara el valor del espejo viejo se
+     * pisaría lo que acaba de escribir. Un cambio en la fila se persiste en el artículo en el acto:
+     * setFinalPrice() corre después, lee el modelo y espeja.
+     *
+     * @param  mixed  $article
+     * @param  mixed  $user
+     * @param  array  $ptm        Una fila del request: price_type_id, moneda_id, percentage, final_price, setear_precio_final.
+     * @param  int    $moneda_id
+     * @return void
+     */
+    private static function write_through_precio_final($article, $user, array $ptm, $moneda_id)
+    {
+        $owner = (!is_null($user) && !is_null($user->owner_id)) ? \App\Models\User::find($user->owner_id) : $user;
+
+        if (is_null($owner) || $moneda_id !== PriceTypeHelper::moneda_nativa_del_precio($article, $owner)) {
+            return;
+        }
+
+        $guardada = $article->price_type_monedas()
+                            ->where('price_type_id', $ptm['price_type_id'])
+                            ->where('moneda_id', $moneda_id)
+                            ->first();
+
+        $percentage = (!isset($ptm['percentage']) || $ptm['percentage'] === '' || is_null($ptm['percentage']))
+                        ? null
+                        : (float) $ptm['percentage'];
+
+        $final_price = (!isset($ptm['final_price']) || $ptm['final_price'] === '' || is_null($ptm['final_price']))
+                        ? null
+                        : (float) $ptm['final_price'];
+
+        $setear = isset($ptm['setear_precio_final']) && ($ptm['setear_precio_final'] == 1 || $ptm['setear_precio_final'] == '1');
+
+        $percentage_guardado = (is_null($guardada) || is_null($guardada->percentage)) ? null : (float) $guardada->percentage;
+        $final_guardado      = (is_null($guardada) || is_null($guardada->final_price)) ? null : (float) $guardada->final_price;
+        $setear_guardado     = !is_null($guardada) && (int) $guardada->setear_precio_final === 1;
+
+        $cambio = false;
+
+        if (!$setear && self::distinto($percentage, $percentage_guardado)) {
+            $article->percentage_gain = $percentage;
+            $cambio = true;
+        }
+
+        if ($setear !== $setear_guardado || ($setear && self::distinto($final_price, $final_guardado))) {
+            $article->price = $setear ? $final_price : null;
+
+            // Un precio fijado a mano no convive con un margen del artículo (setFinalPrice() lo
+            // borraría): ver ArticlePriceTypeHelper::write_through_precio_final().
+            if ($setear) {
+                $article->percentage_gain = null;
+            }
+
+            $cambio = true;
+        }
+
+        if ($cambio) {
+            $article->save();
+        }
+    }
+
+    /**
+     * @param  float|null  $a
+     * @param  float|null  $b
+     * @return bool
+     */
+    private static function distinto($a, $b)
+    {
+        if (is_null($a) || is_null($b)) {
+            return !(is_null($a) && is_null($b));
+        }
+
+        return abs((float) $a - (float) $b) > 0.000001;
+    }
+
+    /**
+     * El espejo de la lista «Precio final» en `article_price_type_monedas` (misión
+     * prueba-listas-siempre, 3/11/2026, decisión D3 del plan): la fila de la moneda NATIVA del
+     * artículo lleva `articles.final_price` tal cual, y la otra se deriva con el dólar de la cuenta
+     * (`users.dollar`) y queda marcada con `cotizar_desde_otra_moneda = 1`. Nativa = dólares si el
+     * costo está en dólares y el dueño NO cotiza los precios a pesos (ahí `final_price` está en
+     * dólares); pesos en cualquier otro caso. Así «Precio final» existe en los dos motores y da el
+     * mismo número que el precio del artículo, en su moneda, y la cotización cruzada en la otra.
+     *
+     * Las dos filas se crean si no existen (un INSERT por fila, una sola vez por artículo) y después
+     * se actualizan por guardar_entrada(), que en modo lote las registra para el volcado en bloque.
+     * Sin dólar en la cuenta (0 o null) la fila derivada queda en null: no se inventa una cotización.
+     *
+     * Lo llama ArticleHelper::espejar_lista_precio_final(), siempre DESPUÉS de
+     * aplicar_precios_por_price_type_y_moneda() (que saltea esta lista).
+     *
+     * @param  mixed                 $article
+     * @param  mixed                 $user         El dueño.
+     * @param  \App\Models\PriceType $lista        La lista «Precio final».
+     * @param  float|null            $final_price  `articles.final_price`, ya redondeado.
+     * @param  float|null            $percentage   `articles.percentage_gain`.
+     * @param  bool                  $manual       Si el artículo tiene precio manual.
+     * @return void
+     */
+    public static function espejar_precio_final_en_monedas($article, $user, $lista, $final_price, $percentage, $manual)
+    {
+        $ars_id = 1;
+        $usd_id = 2;
+
+        $nativa = PriceTypeHelper::moneda_nativa_del_precio($article, $user);
+        $rate   = (float) $user->dollar;
+
+        $article->loadMissing('price_type_monedas');
+
+        foreach (array($ars_id, $usd_id) as $moneda_id) {
+
+            $entrada = $article->price_type_monedas->first(function ($e) use ($lista, $moneda_id) {
+                return (int) $e->price_type_id === (int) $lista->id && (int) $e->moneda_id === (int) $moneda_id;
+            });
+
+            if (is_null($entrada)) {
+
+                $entrada = $article->price_type_monedas()->create([
+                    'price_type_id'             => $lista->id,
+                    'moneda_id'                 => $moneda_id,
+                    'percentage'                => null,
+                    'final_price'               => null,
+                    'setear_precio_final'       => 0,
+                    'cotizar_desde_otra_moneda' => 0,
+                ]);
+
+                // Para que el resto del request (el espejo en pesos de la pivot, un segundo
+                // recálculo) vea la fila sin volver a consultar.
+                $article->price_type_monedas->push($entrada);
+            }
+
+            $es_nativa = (int) $moneda_id === (int) $nativa;
+
+            if ($es_nativa) {
+                $valor = $final_price;
+            } else if (is_null($final_price) || $rate <= 0) {
+                $valor = null;
+            } else if ((int) $nativa === $ars_id) {
+                $valor = (float) $final_price / $rate;
+            } else {
+                $valor = (float) $final_price * $rate;
+            }
+
+            $entrada->percentage                = $percentage;
+            $entrada->final_price               = $valor;
+            $entrada->setear_precio_final       = ($es_nativa && $manual) ? 1 : 0;
+            $entrada->cotizar_desde_otra_moneda = $es_nativa ? 0 : 1;
+
+            self::guardar_entrada($entrada);
+        }
     }
 
     /**
@@ -158,9 +335,14 @@ class ArticlePriceTypeMonedaHelper {
      *
      * @return void
      */
-    private static function espejar_precio_en_pesos_en_la_pivot($article)
+    private static function espejar_precio_en_pesos_en_la_pivot($article, $lista_precio_final = null)
     {
         $ars_id = 1;
+
+        // La lista «Precio final» la espeja ArticleHelper::espejar_lista_precio_final() con el precio
+        // final ya armado (misión prueba-listas-siempre, 3/11/2026): acá se saltea para no pisar la
+        // pivot con una fila en pesos que todavía es la vieja.
+        $id_precio_final = is_null($lista_precio_final) ? null : (int) $lista_precio_final->id;
 
         if (PreciosEnLote::esta_activo()) {
 
@@ -190,6 +372,10 @@ class ArticlePriceTypeMonedaHelper {
         foreach ($entradas as $entrada) {
 
             if (is_null($entrada->final_price)) {
+                continue;
+            }
+
+            if (!is_null($id_precio_final) && (int) $entrada->price_type_id === $id_precio_final) {
                 continue;
             }
 
@@ -291,6 +477,14 @@ class ArticlePriceTypeMonedaHelper {
     {
         $price_type_id = (int) $price_type_id;
         $moneda_id     = (int) $moneda_id;
+
+        // El "?" de la lista «Precio final» es el desglose del precio final único, que setFinalPrice()
+        // devuelve entero cuando de acá no sale nada (misión prueba-listas-siempre, 3/11/2026).
+        $lista_precio_final = PriceTypeHelper::lista_precio_final($user);
+
+        if (!is_null($lista_precio_final) && (int) $lista_precio_final->id === $price_type_id) {
+            return [];
+        }
 
         $grupo   = $article->price_type_monedas->where('price_type_id', $price_type_id);
         $entrada = $grupo->firstWhere('moneda_id', $moneda_id);
@@ -612,6 +806,19 @@ class ArticlePriceTypeMonedaHelper {
         };
 
         $groups = $article->price_type_monedas->groupBy('price_type_id');
+
+        /*
+         * La lista «Precio final» no se calcula por esta cadena (misión prueba-listas-siempre,
+         * 3/11/2026): la espeja ArticleHelper::espejar_lista_precio_final() con el precio del
+         * artículo ya armado (ver espejar_precio_final_en_monedas()).
+         */
+        $lista_precio_final = PriceTypeHelper::lista_precio_final($user);
+
+        if (!is_null($lista_precio_final)) {
+            $groups = $groups->filter(function ($group, $price_type_id) use ($lista_precio_final) {
+                return (int) $price_type_id !== (int) $lista_precio_final->id;
+            });
+        }
 
         if (!$en_lote) {
             Log::info('groups');
