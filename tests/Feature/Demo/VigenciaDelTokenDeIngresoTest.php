@@ -3,12 +3,15 @@
 namespace Tests\Feature\Demo;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
+use App\Http\Controllers\SaleController;
 use App\Models\DemoIngresoToken;
 use App\Models\User;
 use App\Models\VersionSessionTransfer;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 use Tests\TestCase;
@@ -532,6 +535,107 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
         $this->assertTrue($destino->json('login'));
         $this->assertFalse($destino->json('user.es_sesion_demo'));
         $this->assertFalse(session()->has('demo_ingreso_token_id'));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Descargas por sesion del grupo `web` (misión vigencia-token-demo-rojos, 3/11/2026)
+    // -----------------------------------------------------------------------------------
+
+    /** Lo que contesta el controlador fingido: si el cuerpo es este, la regla dejo pasar. */
+    const SERVIDA = 'DESCARGA-SERVIDA';
+
+    /**
+     * Sesion de demo con el marcador dado, una venta del usuario 500 y la ventana de transicion
+     * cerrada. El controlador se finge porque el PDF real termina en `exit` y mata el proceso del
+     * test (ver PdfDeVentaPublico\DescargaTestCase): se prueba la ruta y el middleware reales.
+     *
+     * @param int $token_id Valor del marcador.
+     * @return int Id de la venta.
+     */
+    protected function preparar_descarga_con_marcador($token_id)
+    {
+        $this->app->instance(SaleController::class, new class extends SaleController {
+            function pdf(Request $request, $id) { return response(VigenciaDelTokenDeIngresoTest::SERVIDA, 200); }
+            function excel_export($from_date, $until_date = null) { return response(VigenciaDelTokenDeIngresoTest::SERVIDA, 200); }
+        });
+
+        DB::table('users')->where('id', 500)->update(['pdf_links_legacy_until' => null]);
+
+        $this->actingAs($this->usuario_de_testing(), 'web');
+        $this->withSession(['demo_ingreso_token_id' => $token_id]);
+
+        return DB::table('sales')->insertGetId([
+            'user_id'    => 500,
+            'num'        => 990000 + mt_rand(1, 9999),
+            'total'      => 1500,
+            'moneda_id'  => 1,
+            'terminada'  => 1,
+            'created_at' => Carbon::now(),
+            'updated_at' => Carbon::now(),
+        ]);
+    }
+
+    /**
+     * 🔴 Medido por HTTP real antes de este arreglo: con el token revocado, las descargas por sesion
+     * se seguian atendiendo. Los dos caminos del middleware: con recurso y sin recurso.
+     *
+     * @test
+     */
+    public function una_demo_revocada_no_descarga_por_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $venta_id = $this->preparar_descarga_con_marcador($creado['token']->id);
+
+        $this->get('sale/pdf/' . $venta_id)->assertStatus(404);
+        $this->get('sales/excel/export/2026-01-01')->assertStatus(404);
+
+        /* No se cierra la sesion desde aca: eso lo hace la proxima ruta de `api`. */
+        $this->assertTrue(session()->has('demo_ingreso_token_id'));
+    }
+
+    /**
+     * Revocada es lo mismo que sin sesion, no peor: el link con su token sigue abriendo.
+     *
+     * @test
+     */
+    public function una_demo_revocada_con_el_token_del_link_descarga_igual()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $venta_id = $this->preparar_descarga_con_marcador($creado['token']->id);
+
+        $token_del_link = PdfLinkHelper::token_para('sale', $venta_id, 500);
+
+        $this->get('sale/pdf/' . $venta_id . '?t=' . $token_del_link)
+            ->assertStatus(200)
+            ->assertSee(self::SERVIDA);
+    }
+
+    /** @test */
+    public function una_demo_vigente_descarga_por_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+        $venta_id = $this->preparar_descarga_con_marcador($creado['token']->id);
+
+        $this->get('sale/pdf/' . $venta_id)->assertStatus(200)->assertSee(self::SERVIDA);
+        $this->get('sales/excel/export/2026-01-01')->assertStatus(200)->assertSee(self::SERVIDA);
     }
 
     // -----------------------------------------------------------------------------------
