@@ -33,6 +33,9 @@ class VencimientoDePruebaTest extends EmpresaTestCase
     {
         parent::setUp();
 
+        // El modo prueba existe solo con FOR_USER=prueba (lo escribe el script de alta del admin).
+        config(['app.FOR_USER' => 'prueba']);
+
         PruebaHelper::olvidar_cache();
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();

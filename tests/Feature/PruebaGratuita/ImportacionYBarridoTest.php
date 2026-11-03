@@ -38,6 +38,9 @@ class ImportacionYBarridoTest extends EmpresaTestCase
     {
         parent::setUp();
 
+        // El modo prueba existe solo con FOR_USER=prueba (lo escribe el script de alta del admin).
+        config(['app.FOR_USER' => 'prueba']);
+
         PruebaHelper::olvidar_cache();
         SemillaRegistroHelper::descartar_lote();
 
@@ -116,6 +119,7 @@ class ImportacionYBarridoTest extends EmpresaTestCase
 
     public function test_fuera_del_modo_prueba_la_cadena_es_la_de_siempre_aunque_haya_semilla()
     {
+        config(['app.FOR_USER' => null]);
         $this->sembrar_un_articulo();
         Bus::fake();
 
@@ -140,6 +144,32 @@ class ImportacionYBarridoTest extends EmpresaTestCase
         PruebaHelper::olvidar_cache();
         $this->assertSame('pdf', PruebaHelper::origen_de_importacion($this->dueno->id));
         $this->assertNotNull(DB::table('prueba_config')->where('owner_id', $this->dueno->id)->value('semilla_borrada_at'));
+    }
+
+    public function test_el_origen_de_la_importacion_del_dueno_sale_del_analisis_que_dejo_el_admin()
+    {
+        $this->assertSame('excel', PruebaHelper::origen_del_analisis($this->dueno->id, 'excel-import/no-existe.xlsx'));
+
+        \App\Models\ExcelAnalysisRun::create([
+            'uuid'       => (string) \Illuminate\Support\Str::uuid(),
+            'user_id'    => $this->dueno->id,
+            'tipo'       => 'analisis',
+            'estado'     => 'listo',
+            'excel_path' => 'excel-import/de-martin.xlsx',
+            'payload'    => ['origen' => 'martin', 'hoja' => 0],
+        ]);
+        \App\Models\ExcelAnalysisRun::create([
+            'uuid'       => (string) \Illuminate\Support\Str::uuid(),
+            'user_id'    => $this->dueno->id,
+            'tipo'       => 'analisis',
+            'estado'     => 'listo',
+            'excel_path' => 'excel-import/del-dueno.xlsx',
+            'payload'    => ['hoja' => 0],
+        ]);
+
+        $this->assertSame('martin', PruebaHelper::origen_del_analisis($this->dueno->id, 'excel-import/de-martin.xlsx'));
+        $this->assertSame('excel', PruebaHelper::origen_del_analisis($this->dueno->id, 'excel-import/del-dueno.xlsx'), 'Sin origen en el payload, es el dueño.');
+        $this->assertSame('excel', PruebaHelper::origen_del_analisis($this->dueno->id + 1, 'excel-import/de-martin.xlsx'), 'El análisis de otro dueño no cuenta.');
     }
 
     public function test_un_origen_desconocido_cae_a_excel()
@@ -186,6 +216,7 @@ class ImportacionYBarridoTest extends EmpresaTestCase
 
     public function test_el_barrido_sin_modo_prueba_no_registra_nada()
     {
+        config(['app.FOR_USER' => null]);
         DB::table('users')->where('id', $this->dueno->id)->update(['expired_at' => Carbon::now()->subMinute()]);
 
         Artisan::call('prueba:barrido');

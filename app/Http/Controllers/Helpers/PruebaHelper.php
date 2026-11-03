@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Models\ExcelAnalysisRun;
 use App\Models\PruebaConfig;
 use App\Models\PruebaHito;
 use App\Models\User;
@@ -64,23 +65,20 @@ class PruebaHelper
     private static $tabla_disponible = null;
 
     /**
-     * ¿En esta instalación puede haber una prueba gratuita? `FOR_USER=prueba` en el `.env`, o una base de
-     * desarrollo (local y la suite, para poder probarlo). Se lee `config()` y NUNCA `env()`: con
-     * `config:cache` activo, `env()` fuera de `config/` devuelve null.
+     * ¿En esta instalación puede haber una prueba gratuita? Solo con `FOR_USER=prueba` en el `.env` (lo
+     * escribe el script de alta del admin; en local o en la suite se pone en la config para probarlo). Se
+     * lee `config()` y NUNCA `env()`: con `config:cache` activo, `env()` fuera de `config/` devuelve null.
      *
-     * Es la primera guarda de todos los enganches, y no toca la base. No confundir con
-     * `DemoSetupHelper::es_instancia_de_prueba()`, que es estricta (solo `FOR_USER=prueba`) y decide las
-     * excepciones a la demo que la suite no tiene que heredar.
+     * Es la primera guarda de todos los enganches y del middleware, y no toca la base. Estricta a propósito:
+     * `local` y `testing` NO cuentan, porque cada enganche pagaría una query por request en toda la suite
+     * (medido: ImportHistoryIndexPaginationTest cuenta las consultas del índice y se puso rojo con una
+     * más). Mismo criterio que `DemoSetupHelper::es_instancia_de_prueba()`.
      *
      * @return bool
      */
     public static function puede_haber_prueba()
     {
-        if (config('app.FOR_USER') === self::FOR_USER_PRUEBA) {
-            return true;
-        }
-
-        return in_array(config('app.env'), ['local', 'testing'], true);
+        return config('app.FOR_USER') === self::FOR_USER_PRUEBA;
     }
 
     /**
@@ -415,6 +413,40 @@ class PruebaHelper
         }
 
         return self::normalizar_origen($config->importacion_origen);
+    }
+
+    /**
+     * De dónde vino el archivo de un análisis de Excel que el dueño confirma importar: el admin (M4) lo deja
+     * en `excel_analysis_runs.payload['origen']` cuando crea el análisis por admin-sync (`martin` o `pdf`);
+     * un análisis que subió el propio dueño no lo trae y es `excel`. Se busca por `excel_path`, que es lo
+     * que el import del dueño conoce del análisis.
+     *
+     * @param int $owner_id
+     * @param string|null $excel_path Ruta relativa a storage/app, la misma que guarda el análisis.
+     * @return string
+     */
+    public static function origen_del_analisis($owner_id, $excel_path)
+    {
+        $excel_path = is_scalar($excel_path) ? trim((string) $excel_path) : '';
+
+        if ($excel_path === '') {
+            return 'excel';
+        }
+
+        try {
+            $analisis = ExcelAnalysisRun::where('user_id', (int) $owner_id)
+                ->where('excel_path', $excel_path)
+                ->orderBy('id', 'DESC')
+                ->first();
+        } catch (\Throwable $e) {
+            return 'excel';
+        }
+
+        if (is_null($analisis) || !is_array($analisis->payload) || !isset($analisis->payload['origen'])) {
+            return 'excel';
+        }
+
+        return self::normalizar_origen($analisis->payload['origen']);
     }
 
     /**

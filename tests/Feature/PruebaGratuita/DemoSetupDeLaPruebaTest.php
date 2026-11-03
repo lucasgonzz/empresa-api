@@ -35,6 +35,9 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
     protected function setUp(): void
     {
         parent::setUp();
+
+        // El modo prueba existe solo con FOR_USER=prueba (lo escribe el script de alta del admin).
+        config(['app.FOR_USER' => 'prueba']);
         PruebaHelper::olvidar_cache();
     }
 
@@ -90,6 +93,8 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
 
     public function test_un_password_corto_se_rechaza_con_422_antes_de_vaciar_nada()
     {
+        // La validación no depende del modo: sin el marcador, la segunda guarda (base con datos) no se mete.
+        config(['app.FOR_USER' => null]);
         Artisan::shouldReceive('call')->never();
         $this->verificar_que_artisan_es_un_mock();
 
@@ -103,6 +108,8 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
 
     public function test_un_prueba_que_no_es_objeto_se_rechaza_con_422_antes_de_vaciar_nada()
     {
+        // La validación no depende del modo: sin el marcador, la segunda guarda (base con datos) no se mete.
+        config(['app.FOR_USER' => null]);
         Artisan::shouldReceive('call')->never();
         $this->verificar_que_artisan_es_un_mock();
 
@@ -116,6 +123,8 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
 
     public function test_un_vence_at_que_no_es_fecha_se_rechaza_con_422()
     {
+        // La validación no depende del modo: sin el marcador, la segunda guarda (base con datos) no se mete.
+        config(['app.FOR_USER' => null]);
         Artisan::shouldReceive('call')->never();
         $this->verificar_que_artisan_es_un_mock();
 
@@ -194,7 +203,7 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
 
         config(['app.env' => 'testing', 'app.FOR_USER' => null]);
         $this->assertFalse(DemoSetupHelper::es_instancia_de_prueba(), 'La suite NO es una instancia de prueba: la estricta no mira app.env.');
-        $this->assertTrue(PruebaHelper::puede_haber_prueba(), 'Pero sí puede probar el modo prueba.');
+        $this->assertFalse(PruebaHelper::puede_haber_prueba(), 'Sin FOR_USER=prueba no hay modo prueba, ni en la suite: cero costo por request.');
     }
 
     public function test_en_una_instancia_de_prueba_con_datos_y_sin_clave_el_setup_se_niega_sin_tocar_nada()
@@ -277,7 +286,7 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
         $fuente = implode('', array_slice($lineas, $run->getStartLine() - 1, $run->getEndLine() - $run->getStartLine() + 1));
 
         $guarda_prueba  = strpos($fuente, "self::es_instancia_de_prueba() && empty(\$data['con_clave_de_admin'])");
-        $validacion     = strpos($fuente, 'PruebaHelper::validar_payload($data);');
+        $validacion     = strpos($fuente, 'PruebaHelper::validar_payload([');
         $primer_artisan = strpos($fuente, 'Artisan::call(');
 
         $this->assertNotFalse($guarda_prueba, 'run() ya no tiene la guarda de la prueba.');

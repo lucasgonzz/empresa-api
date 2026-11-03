@@ -226,7 +226,11 @@ class DemoSetupHelper
         }
 
         // La prueba gratuita (C1): `password` y `prueba` se validan ANTES de vaciar nada, como `demo_industria`.
-        PruebaHelper::validar_payload($data);
+        // Solo las dos claves, no el payload entero: el resto del payload trae credenciales que no viajan.
+        PruebaHelper::validar_payload([
+            'password' => $data['password'] ?? null,
+            'prueba'   => $data['prueba'] ?? null,
+        ]);
 
         // Se valida ANTES de vaciar nada. Un admin anterior omite el campo y conserva su catálogo.
         $industria = trim((string) ($data['demo_industria'] ?? ''));
@@ -1163,7 +1167,7 @@ class DemoSetupHelper
          * Con ella, el dueño entra con esa contraseña. Sin ella, todo sigue como siempre (el documento).
          * `validar_payload()` ya rechazó con 422, antes del migrate:fresh, una contraseña corta.
          */
-        if (PruebaHelper::trae_password($data)) {
+        if (isset($data['password']) && is_string($data['password']) && mb_strlen($data['password']) >= PruebaHelper::PASSWORD_MINIMO) {
             return bcrypt($data['password']);
         }
 

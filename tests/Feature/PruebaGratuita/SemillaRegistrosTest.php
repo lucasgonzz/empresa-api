@@ -38,6 +38,9 @@ class SemillaRegistrosTest extends EmpresaTestCase
     {
         parent::setUp();
 
+        // El modo prueba existe solo con FOR_USER=prueba (lo escribe el script de alta del admin).
+        config(['app.FOR_USER' => 'prueba']);
+
         PruebaHelper::olvidar_cache();
         SemillaRegistroHelper::descartar_lote();
 

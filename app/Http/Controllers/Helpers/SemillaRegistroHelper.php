@@ -17,6 +17,7 @@ use App\Models\Sale;
 use App\Models\SemillaRegistro;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
@@ -321,6 +322,9 @@ class SemillaRegistroHelper
             return $resumen;
         }
 
+        // Los controladores leen Auth()->user(): se entra como el dueño por el guard de sesión. `shouldUse('web')`
+        // porque dentro de un request de la API el guard activo es `sanctum`, que no tiene loginUsingId().
+        Auth::shouldUse('web');
         DeleteModelsHelper::setup_auth_context($owner_id);
 
         $request = Request::create('/');

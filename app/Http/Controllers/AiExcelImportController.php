@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
 use App\Jobs\RunExcelAnalysisJob;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\ExcelAnalysisRun;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -641,6 +642,10 @@ class AiExcelImportController extends Controller
         $result = $excel_import->importar([
             'import_uuid'           => $import_uuid,
             'archivo_excel'         => $excel_full_path,
+            // Prueba gratuita (C4, misión prueba-experiencia-empresa): si el análisis lo creó el admin por
+            // admin-sync (Martín, o un PDF convertido), su `payload['origen']` dice de dónde vino; el dueño
+            // confirma la importación desde acá y el hito `prueba.importo` tiene que llevar ese origen.
+            'prueba_origen'         => PruebaHelper::origen_del_analisis($owner->id, $excel_path),
             'columns'               => $columns,
             // Prompt 310: flags "permitir_valores_en_blanco" por columna (default: ninguna, todas OFF).
             'blank_flags'           => $this->resolver_blank_flags($request, $columns),
