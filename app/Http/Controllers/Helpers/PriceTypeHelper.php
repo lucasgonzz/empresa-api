@@ -820,11 +820,19 @@ class PriceTypeHelper {
 	/**
 	 * Memo por proceso de la lista «Precio final» de cada dueño: `setFinalPrice()` la pregunta por
 	 * artículo (un recálculo del catálogo son decenas de miles de llamadas) y la lista no cambia en
-	 * el medio. `[user_id => PriceType|false]`; false = ese dueño no tiene. Ver olvidar_precio_final().
+	 * el medio. `[user_id => ['lista' => PriceType|null, 'desde' => int]]`; null = ese dueño no tiene.
+	 *
+	 * 🔴 Con vencimiento (MEMO_SEGUNDOS): un worker de la cola es un proceso largo que atiende a
+	 * muchos dueños, y si memorizara "no tiene" para siempre, los recálculos que corran después de
+	 * que el comando `listas:migrar-a-precio-final` creó la lista seguirían sin espejarla hasta que el
+	 * worker se reinicie. Con el vencimiento, lo peor es un minuto. Ver olvidar_precio_final().
 	 *
 	 * @var array
 	 */
 	protected static $memo_precio_final = array();
+
+	/** Segundos que vale una entrada del memo. */
+	const MEMO_SEGUNDOS = 60;
 
 	/**
 	 * ¿Esta lista es la «Precio final» del dueño? Compara con 1 (nunca "!= 0"): NULL y 0 son una
@@ -861,8 +869,11 @@ class PriceTypeHelper {
 			return null;
 		}
 
-		if (array_key_exists($owner_id, self::$memo_precio_final)) {
-			return self::$memo_precio_final[$owner_id] === false ? null : self::$memo_precio_final[$owner_id];
+		if (
+			isset(self::$memo_precio_final[$owner_id])
+			&& (time() - self::$memo_precio_final[$owner_id]['desde']) < self::MEMO_SEGUNDOS
+		) {
+			return self::$memo_precio_final[$owner_id]['lista'];
 		}
 
 		$lista = PriceType::where('user_id', $owner_id)
@@ -870,7 +881,7 @@ class PriceTypeHelper {
 							->orderBy('id')
 							->first();
 
-		self::$memo_precio_final[$owner_id] = is_null($lista) ? false : $lista;
+		self::$memo_precio_final[$owner_id] = array('lista' => $lista, 'desde' => time());
 
 		return $lista;
 	}
