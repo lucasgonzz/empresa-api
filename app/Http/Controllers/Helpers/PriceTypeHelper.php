@@ -997,8 +997,9 @@ class PriceTypeHelper {
 	}
 
 	/**
-	 * ¿El dueño trabaja con listas VISIBLES? Es decir: el flag prendido y DOS o más listas. Con una
-	 * sola (la «Precio final») la interfaz se comporta como la de un negocio sin listas —etiquetas de
+	 * ¿El dueño trabaja con listas VISIBLES? Es decir: el flag prendido y DOS o más listas, o una sola
+	 * que no sea la «Precio final» (una cuenta con una lista propia no cambia). Con la «Precio final»
+	 * sola la interfaz se comporta como la de un negocio sin listas —etiquetas de
 	 * góndola, opciones por lista—, igual que `muestra_sucursales` de la SPA con una sola sucursal.
 	 * Es el gemelo de `price_type/muestra_listas` de la SPA y los dos tienen que decir lo mismo.
 	 *
@@ -1013,7 +1014,7 @@ class PriceTypeHelper {
 			return false;
 		}
 
-		return PriceType::where('user_id', $owner->id)->count() >= 2;
+		return PriceType::where('user_id', $owner->id)->exists() && !self::solo_lista_precio_final($owner);
 	}
 
 	/**
@@ -1023,9 +1024,8 @@ class PriceTypeHelper {
 	 * los mails): para esta cuenta el margen y el precio manual del artículo siguen mandando, igual
 	 * que antes de prender el flag.
 	 *
-	 * 🔴 No es la negación de muestra_listas(): una cuenta con el flag y una sola lista PROPIA (no
-	 * la «Precio final») o sin ninguna lista también da muestra_listas() = false, pero su precio
-	 * sigue sin salir del artículo, y esas cuentas no tienen que cambiar en nada.
+	 * 🔴 No es la negación de muestra_listas(): una cuenta sin el flag o sin ninguna lista también da
+	 * muestra_listas() = false, y esas cuentas no tienen que cambiar en nada.
 	 *
 	 * @param  int|\App\Models\User|null  $user
 	 * @return bool
