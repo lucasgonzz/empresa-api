@@ -53,6 +53,12 @@ class Kernel extends ConsoleKernel
                 }
             });
 
+        // «El local» del admin (misión el-local-fase-2, 3/11/2026): sin eventos, sin clave o en pausa no arranca nada.
+        $schedule->command('local:enviar-actividad')->everyMinute()->withoutOverlapping(5)->runInBackground()
+            ->when(function () {
+                return \App\Services\LocalActividad::hay_para_enviar();
+            });
+
         // Procesa la cola de jobs hasta vaciarla (reemplaza cron directo de queue:work.
         // Nota: no usar ['--stop-when-empty' => true]; Laravel lo serializa como --stop-when-empty="1"
         // y Symfony rechaza ese flag (no acepta valor), el worker falla sin procesar jobs.
