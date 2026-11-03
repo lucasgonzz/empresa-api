@@ -292,7 +292,7 @@ class ConsolidarFacturacionHelper extends Controller
 
             /** Copia los ítems de todas las ventas originales a la consolidada. */
             self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items, $factores);
-            self::copiar_combos($venta_consolidada, $ventas_originales, $factores);
+            self::copiar_combos($venta_consolidada, $ventas_originales);
             self::copiar_services($venta_consolidada, $ventas_originales, $factores);
 
             /** Vincula cada venta original con la consolidada para trazabilidad. */
@@ -676,20 +676,21 @@ class ConsolidarFacturacionHelper extends Controller
 
     /**
      * Copia los combos de todas las ventas originales a la venta consolidada.
-     * No agrupa combos, se replican como están en cada venta.
+     * Cada combo conserva su cantidad y el precio con los ajustes de su venta.
      *
      * @param Sale       $consolidada       Venta contenedora destino.
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'combos'.
      */
-    private static function copiar_combos(Sale $consolidada, $ventas_originales, array $factores): void
+    private static function copiar_combos(Sale $consolidada, $ventas_originales): void
     {
         $relacion = $consolidada->combos();
         foreach ($ventas_originales as $venta) {
+            $factor = self::factores_de_recargo($venta)['combos'];
             foreach ($venta->combos as $combo) {
                 $pivot = $combo->pivot;
                 $relacion->attach($combo->id, $relacion->conservar_precision([
                     'amount'     => (float)($pivot->amount ?? 1),
-                    'price'      => self::precio_con_recargo($pivot->price, $factores[$venta->id]['combos']),
+                    'price'      => self::precio_con_recargo($pivot->price, $factor),
                     /*
                      * El costo se copia TAL CUAL, NULL incluido (misión combos-calculados, Parte A2,
                      * 30/9/2026). Antes era `?? 0`, y eso convierte "no sé cuánto costó" (el combo de

@@ -182,10 +182,13 @@ class Reenvio_tras_escaneo_fallido_Test extends ComprasDelAgenteTestCase
         $this->assertSame(
             ['proponer_compra_sin_articulos', 'proponer_cambio_de_proveedor_de_compra', 'proponer_reintento_de_escaneo'],
             // Atrás de ellas va pedir_ayuda_a_soporte (E3 de la misma misión), por la misma regla, y después
-            // armar_texto_de_promocion (misión agente-mejoras-diario-30-10, B2, 31/10/2026).
-            array_slice($nombres, -5, 3)
+            // armar_texto_de_promocion (31/10/2026) y proponer_cuotas_tienda (2/11/2026).
+            array_slice($nombres, -6, 3)
         );
-        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion'], array_slice($nombres, -2));
+        $this->assertSame(
+            ['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda'],
+            array_slice($nombres, -3)
+        );
 
         foreach (['proponer_compra_sin_articulos', 'proponer_cambio_de_proveedor_de_compra', 'proponer_reintento_de_escaneo'] as $nombre) {
             $this->assertContains($nombre, McpHerramientasHelper::nombres(), $nombre . ' no está en el MCP');
