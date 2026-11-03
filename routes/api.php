@@ -1691,6 +1691,13 @@ Route::middleware('admin.api.key')
         Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
+        // Importación desde el ticket de soporte durante la prueba gratuita (misión cruzada
+        // prueba-martin-importacion, 3/11/2026). `analyze` con `segundo_plano=1` encola la corrida y
+        // contesta 202 con su uuid; esto la consulta (`user_id` obligatorio, el dueño de la corrida) y
+        // `imagenes` asigna las fotos del catálogo del proveedor a los artículos por su código (el nombre
+        // del archivo). Un admin viejo no las llama; un cliente viejo contesta 404 y el admin lo tolera.
+        Route::get('ai-excel-import/analysis/{uuid}', 'AdminSync\\AiExcelImportController@analysisStatus');
+        Route::post('ai-excel-import/imagenes', 'AdminSync\\AiExcelImportController@imagenes');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
         // Horarios comerciales empujados por admin-api (ClientScheduleSyncService). El contrato viene

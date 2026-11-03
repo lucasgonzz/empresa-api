@@ -18,6 +18,13 @@ class AiAvisoDelAsistente extends Model
     /** El aviso de un turno que no terminó (cortado con fotos sin cargar, o colgado). */
     const TIPO_TURNO_SIN_TERMINAR = 'turno_sin_terminar';
 
+    /**
+     * El aviso de «ya leí tu Excel» de una importación que el admin pidió en segundo plano desde el ticket
+     * de soporte (misión prueba-martin-importacion, 3/11/2026): ver AvisosDeImportacionHelper. `uuid` es el
+     * de la `ExcelAnalysisRun`; sin conversación ni mensaje.
+     */
+    const TIPO_IMPORTACION_LISTA = 'importacion_lista';
+
     protected $table = 'ai_avisos_del_asistente';
 
     protected $guarded = [];
