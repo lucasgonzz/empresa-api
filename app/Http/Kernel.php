@@ -57,6 +57,8 @@ class Kernel extends HttpKernel
              * no afectar en nada a los requests de clientes reales.
              */
             \App\Http\Middleware\DemoSessionVigente::class,
+            /* Solo actúa en terminate(), con la respuesta ya enviada (misión el-local-fase-2, 3/11/2026). */
+            \App\Http\Middleware\AvisarActividadAlLocal::class,
         ],
     ];
 

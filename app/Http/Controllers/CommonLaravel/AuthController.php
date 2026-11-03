@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
 use App\Notifications\SessionForcedLogoutNotification;
+use App\Services\LocalActividad;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -183,6 +184,15 @@ class AuthController extends Controller
         $user = $this->set_employee_props($user);
 
         UserHelper::set_sessions($user);
+
+        /**
+         * «El local» del admin (misión el-local-fase-2, 3/11/2026): el negocio entró. El login maestro, el acceso de
+         * soporte y la demo no cuentan: es alguien mirando, no el comercio. Es una fila en una tabla, sin red, y nunca
+         * tira una excepción: no puede frenar el login.
+         */
+        if (!$this->debe_omitir_candado_de_actividad()) {
+            LocalActividad::login_de($user);
+        }
 
         return $user;
     }
@@ -479,6 +489,15 @@ class AuthController extends Controller
         if ($auth_user && !$es_sesion_de_soporte) {
             $this->removeUserLastActivity($auth_user);
             $this->set_logout_at($auth_user->id);
+        }
+
+        /**
+         * «El local» del admin (misión el-local-fase-2, 3/11/2026), con la misma exención que el login y ANTES de vaciar
+         * la sesión, que es de donde sale. `create_version_session_token()` no emite a propósito: cambiar de versión no
+         * es irse, y el `/logout` que la SPA manda después ya llega sin usuario.
+         */
+        if ($auth_user && !$this->debe_omitir_candado_de_actividad()) {
+            LocalActividad::de_la_persona('logout', $auth_user);
         }
 
         /** Limpia flags y datos cacheados en sesión PHP. */
