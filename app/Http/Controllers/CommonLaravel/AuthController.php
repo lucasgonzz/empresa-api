@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
@@ -413,14 +414,22 @@ class AuthController extends Controller
             /** Modelo a autenticar en esta API. */
             $candidate = User::find($transfer['user_id']);
 
+            /**
+             * La sesión destino sigue siendo de demo: la revocación la corta igual que a la de
+             * origen (misión vigencia-token-demo-rojos, 3/11/2026).
+             */
+            $es_transferencia_de_demo = !empty($transfer['demo_ingreso_token_id']);
+
+            /**
+             * El token se emitió con la demo vigente y la revocaron antes de consumirlo (dura 5 minutos):
+             * no se abre sesión. Sale por el mismo `login: false` de un token vencido, que la SPA ya maneja.
+             */
+            if ($es_transferencia_de_demo && !DemoIngresoTokenHelper::sesion_demo_vigente($transfer['demo_ingreso_token_id'])) {
+                $candidate = null;
+            }
+
             if ($candidate) {
                 Auth::login($candidate, false);
-
-                /**
-                 * La sesión destino sigue siendo de demo: la revocación la corta igual que a la de
-                 * origen (misión vigencia-token-demo-rojos, 3/11/2026).
-                 */
-                $es_transferencia_de_demo = !empty($transfer['demo_ingreso_token_id']);
 
                 if ($es_transferencia_de_demo) {
                     session()->put('demo_ingreso_token_id', $transfer['demo_ingreso_token_id']);

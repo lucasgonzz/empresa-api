@@ -469,6 +469,103 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
     }
 
     /**
+     * El token de transferencia dura 5 minutos: si lo emitieron con la demo vigente y la revocan antes
+     * de consumirlo, no abre sesion. El camino es el mismo `login: false` de un token vencido.
+     *
+     * @test
+     */
+    public function un_token_emitido_antes_de_revocar_ya_no_abre_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $emision = $this->pedir_transferencia_con_marcador($creado['token']->id);
+        $emision->assertStatus(200);
+
+        DemoIngresoTokenHelper::revocar($creado['plain']);
+
+        $this->como_un_request_nuevo();
+        $destino = $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        );
+
+        $destino->assertStatus(200);
+        $this->assertFalse($destino->json('login'));
+        $this->assertNull($destino->json('user'));
+
+        $this->como_un_request_nuevo();
+        $this->get_con_sesion_stateful('/api/user')->assertStatus(401);
+    }
+
+    /**
+     * Rutas de `web` que atienden por sesion sin pasar por `descarga.comercio`: `DemoSessionVigente` no
+     * corre sola ahi. Medido contra el codigo el 3/11/2026: las tres atendian a una demo revocada.
+     *
+     * @test
+     * @dataProvider rutas_web_con_sesion
+     */
+    public function una_demo_revocada_queda_afuera_de_las_rutas_web_con_sesion($metodo, $uri)
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $this->actingAs($user, 'web');
+        $this->withSession(['demo_ingreso_token_id' => $creado['token']->id]);
+
+        $respuesta = $this->json($metodo, $uri, ['channel_name' => 'private-App.Models.User.500', 'socket_id' => '1.1']);
+
+        $respuesta->assertStatus(401);
+        $respuesta->assertJson(['error' => 'demo_expirada']);
+    }
+
+    /**
+     * El control de la prueba de arriba: con la demo vigente, esas mismas rutas no contestan `demo_expirada`.
+     *
+     * @test
+     * @dataProvider rutas_web_con_sesion
+     */
+    public function una_demo_vigente_sigue_entrando_a_las_rutas_web_con_sesion($metodo, $uri)
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+        $this->actingAs($user, 'web');
+        $this->withSession(['demo_ingreso_token_id' => $creado['token']->id]);
+
+        $respuesta = $this->json($metodo, $uri, ['channel_name' => 'private-App.Models.User.500', 'socket_id' => '1.1']);
+
+        /* El cuerpo crudo: `broadcasting/auth` y los PDF no contestan JSON. */
+        $this->assertStringNotContainsString('demo_expirada', (string) $respuesta->getContent());
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public function rutas_web_con_sesion()
+    {
+        return [
+            'pdf de clientes'     => ['GET', '/client/pdf'],
+            'txt de ventas'       => ['GET', '/afip-txt/1/1'],
+            'txt de alicuotas'    => ['GET', '/afip-txt-alicuotas/1/1'],
+            'canales de Pusher'   => ['POST', '/broadcasting/auth'],
+        ];
+    }
+
+    /**
      * 🔴 EL CASO MEDIDO: la sesion que nacio de un cambio de version se corta al revocar, igual que
      * la original. Antes del arreglo quedaba abierta para siempre.
      *

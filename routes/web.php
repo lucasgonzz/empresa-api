@@ -263,7 +263,9 @@ Route::get('sale/delivered-articles-pdf/{id}', 'SaleController@deliveredArticles
 Route::get('sale/etiqueta-envio/pdf/{sale_id}', 'SaleController@etiqueta_envio')->middleware('descarga.comercio:sale,sale_id');
 
 
-Route::get('client/pdf', 'ClientController@pdf');
+// demo.session.vigente: esta ruta atiende por sesión y DemoSessionVigente solo corre sola en el grupo `api`
+// (misión vigencia-token-demo-rojos, 3/11/2026). Sin marcador de demo no hace nada ni pega a la base.
+Route::get('client/pdf', 'ClientController@pdf')->middleware('demo.session.vigente');
 
 Route::get('road-map/pdf/{id}', 'RoadMapController@pdf')->middleware('descarga.comercio:road_map,id');
 
@@ -335,8 +337,9 @@ Route::get('sale/charts/{from}/{to}', 'SaleController@charts')->middleware('desc
 // (AfipController::exportVentas y exportAlicuotasTxt) y su test lo fija. Pasarlos además por el
 // middleware cambiaba ese 401 por un 404. Son internos (no salen links a terceros): no necesitan token
 // ni ventana. El guardián de rutas los tiene en AFUERA_A_PROPOSITO con este motivo.
-Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas');
-Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt');
+// demo.session.vigente: una demo revocada no baja estos TXT (misión vigencia-token-demo-rojos); sin marcador no hace nada.
+Route::get('afip-txt/{mes_inicio}/{mes_fin}', 'AfipController@exportVentas')->middleware('demo.session.vigente');
+Route::get('afip-txt-alicuotas/{mes_inicio}/{mes_fin}', 'AfipController@exportAlicuotasTxt')->middleware('demo.session.vigente');
 
 // Libros de IVA de ARCA: sin id de recurso, el controlador toma el dueño con userId().
 Route::middleware('descarga.comercio:sesion')->group(function () {
