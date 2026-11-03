@@ -112,6 +112,28 @@ class DemoIngresoTokenHelper
     }
 
     /**
+     * Informa si una sesión de demo ya abierta sigue vigente: el registro existe y no fue revocado.
+     *
+     * Es la única definición de "vigente": la usan `DemoSessionVigente` y `DescargaDelComercio`.
+     * NO mira `expires_at`: el vencimiento del turno frena el canje de `resolver()`, no una sesión
+     * en curso (pedido de Lucas, 4/9/2026). En local se ignora la revocación
+     * (`bypass_vigencia_local()`), pero el registro SIEMPRE tiene que existir.
+     *
+     * @param int|string $token_id Valor del marcador `demo_ingreso_token_id` de la sesión.
+     * @return bool
+     */
+    public static function sesion_demo_vigente($token_id): bool
+    {
+        /** Registro del token de la sesión, o null si ya no existe. */
+        $registro = DemoIngresoToken::find($token_id);
+
+        return !is_null($registro) && (
+            self::bypass_vigencia_local()
+            || is_null($registro->revoked_at)
+        );
+    }
+
+    /**
      * Revoca manualmente un token de ingreso (por ejemplo, desde el admin).
      *
      * @param string $plain_token Token en claro a revocar.

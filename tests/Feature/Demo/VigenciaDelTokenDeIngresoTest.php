@@ -5,6 +5,7 @@ namespace Tests\Feature\Demo;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Models\DemoIngresoToken;
 use App\Models\User;
+use App\Models\VersionSessionTransfer;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
@@ -383,6 +384,154 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
 
         $response->assertStatus(401);
         $response->assertJson(['error' => 'demo_expirada']);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Cambio de version (misión vigencia-token-demo-rojos, 3/11/2026)
+    // -----------------------------------------------------------------------------------
+
+    /**
+     * Pide el token de transferencia desde una sesion de demo con el marcador dado.
+     *
+     * @param int $token_id Valor del marcador.
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_transferencia_con_marcador($token_id)
+    {
+        $this->actingAs($this->usuario_de_testing(), 'web');
+        $this->withSession(['demo_ingreso_token_id' => $token_id]);
+
+        return $this->post_con_sesion_stateful('/version-session-token');
+    }
+
+    /**
+     * 🔴 Medido por HTTP real antes de este arreglo: una demo revocada recibia 200 con el token, y con
+     * ese token abria una sesion nueva sin marcador que `/api/user` atendia con 200.
+     *
+     * @test
+     */
+    public function una_demo_revocada_no_recibe_token_de_transferencia()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $filas_antes = VersionSessionTransfer::count();
+
+        $respuesta = $this->pedir_transferencia_con_marcador($creado['token']->id);
+
+        $respuesta->assertStatus(401);
+        $respuesta->assertJson(['error' => 'demo_expirada']);
+        $this->assertSame($filas_antes, VersionSessionTransfer::count(), 'No se emite ningun token.');
+    }
+
+    /**
+     * Una demo vigente cambia de version y del otro lado sigue siendo una demo, aunque otra sesion
+     * tenga el candado tomado (`debe_omitir_candado_de_actividad()`).
+     *
+     * @test
+     */
+    public function una_demo_vigente_conserva_el_marcador_al_cambiar_de_version()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $emision = $this->pedir_transferencia_con_marcador($creado['token']->id);
+        $emision->assertStatus(200);
+
+        $user->activity_minutes = 60;
+        $user->session_id = 'candado-tomado-por-otra-sesion';
+        $user->last_activity = Carbon::now();
+        $user->save();
+
+        $this->como_un_request_nuevo();
+        $destino = $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        );
+
+        $destino->assertStatus(200);
+        $this->assertTrue($destino->json('login'));
+        $this->assertTrue($destino->json('user.es_sesion_demo'));
+        $this->assertEquals($creado['token']->id, session('demo_ingreso_token_id'));
+    }
+
+    /**
+     * 🔴 EL CASO MEDIDO: la sesion que nacio de un cambio de version se corta al revocar, igual que
+     * la original. Antes del arreglo quedaba abierta para siempre.
+     *
+     * @test
+     */
+    public function despues_de_cambiar_de_version_revocar_corta_la_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $emision = $this->pedir_transferencia_con_marcador($creado['token']->id);
+        $emision->assertStatus(200);
+
+        $this->como_un_request_nuevo();
+        $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        )->assertStatus(200);
+
+        $this->como_un_request_nuevo();
+        $this->get_con_sesion_stateful('/api/user')->assertStatus(200);
+
+        DemoIngresoTokenHelper::revocar($creado['plain']);
+
+        $this->como_un_request_nuevo();
+        $afuera = $this->get_con_sesion_stateful('/api/user');
+        $afuera->assertStatus(401);
+        $afuera->assertJson(['error' => 'demo_expirada']);
+    }
+
+    /**
+     * El camino de todos los clientes reales, sin cambios: sin marcador se transfiere igual, la
+     * columna queda en null y del otro lado no aparece ninguna demo.
+     *
+     * @test
+     */
+    public function una_sesion_normal_cambia_de_version_sin_marcador()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $this->actingAs($user, 'web');
+        $emision = $this->post_con_sesion_stateful('/version-session-token');
+        $emision->assertStatus(200);
+
+        $fila = VersionSessionTransfer::where('token_hash', hash('sha256', $emision->json('token')))->first();
+        $this->assertNull($fila->demo_ingreso_token_id);
+
+        $this->como_un_request_nuevo();
+        $destino = $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        );
+
+        $this->assertTrue($destino->json('login'));
+        $this->assertFalse($destino->json('user.es_sesion_demo'));
+        $this->assertFalse(session()->has('demo_ingreso_token_id'));
     }
 
     // -----------------------------------------------------------------------------------
