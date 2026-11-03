@@ -334,6 +334,104 @@ class Comando_migrar_a_precio_final_Test extends ListasSiempreTestCase
     }
 
     /** @test */
+    public function con_listas_existentes_avisa_las_dos_cosas_que_cambian()
+    {
+        $dueno = $this->dueno_nuevo('avisa');
+        $this->otra_lista($dueno, 'zz Minorista avisa', 100, 3);
+        $this->articulo($dueno, 'con listas', array('cost' => 1000, 'percentage_gain' => 50));
+
+        // El freno lo dice, y sin escribir nada.
+        $this->assertSame(1, $this->correr($dueno, array('--ver' => true)));
+        $this->assertStringContainsString('La TIENDA cambia', $this->texto);
+        $this->assertStringContainsString('VENDER cambia', $this->texto);
+        $this->assertStringContainsString('zz Minorista avisa', $this->texto);
+
+        // --ver con la opción también.
+        $this->assertSame(0, $this->correr($dueno, array('--ver' => true, '--incluir-listas-existentes' => true)), $this->texto);
+        $this->assertStringContainsString('La TIENDA cambia', $this->texto);
+        $this->assertStringContainsString('VENDER cambia', $this->texto);
+        $this->assertStringContainsString('--posicion-precio-final=min', $this->texto);
+        $this->assertNull($this->lista_precio_final_de($dueno));
+    }
+
+    /** @test */
+    public function posicion_min_deja_la_lista_por_debajo_de_las_demas()
+    {
+        $dueno = $this->dueno_nuevo('posicion-min');
+        $minorista = $this->otra_lista($dueno, 'zz Minorista min', 100, 3);
+        $articulo = $this->articulo($dueno, 'con listas', array('cost' => 1000, 'percentage_gain' => 50));
+        $this->recalcular($articulo, $dueno);
+        $precio = $this->final_price_de($articulo);
+
+        $this->assertSame(0, $this->correr($dueno, array(
+            '--aplicar' => true,
+            '--incluir-listas-existentes' => true,
+            '--posicion-precio-final' => 'min',
+        )), $this->texto);
+
+        $lista = $this->lista_precio_final_de($dueno);
+
+        $this->assertSame(2, (int) $lista->position, 'La tienda toma la de mayor position: sigue con la Minorista.');
+        $this->assertMismoPrecio($precio, $this->final_price_de($articulo));
+        $this->assertMismoPrecio($precio, (float) $this->pivote($articulo, $lista)->final_price);
+        $this->assertNotNull($this->pivote($articulo, $minorista));
+    }
+
+    /** @test */
+    public function una_posicion_que_no_existe_no_escribe_nada()
+    {
+        $dueno = $this->dueno_nuevo('posicion-mala');
+
+        $this->assertSame(1, $this->correr($dueno, array('--aplicar' => true, '--posicion-precio-final' => 'arriba')));
+        $this->assertNull($this->lista_precio_final_de($dueno));
+    }
+
+    /** @test */
+    public function ver_cuenta_y_lista_los_calculados_por_primera_vez()
+    {
+        $dueno = $this->dueno_nuevo('primera-vez');
+
+        $sin_calcular = $this->articulo($dueno, 'nunca calculado', array('cost' => 1000));
+        DB::table('articles')->where('id', $sin_calcular->id)->update(array('final_price' => null));
+
+        $sin_nada = $this->articulo($dueno, 'sin costo ni precio', array());
+        DB::table('articles')->where('id', $sin_nada->id)->update(array('final_price' => null));
+
+        $calculado = $this->recalcular($this->articulo($dueno, 'ya calculado', array('cost' => 1000)), $dueno);
+
+        $this->assertSame(0, $this->correr($dueno, array('--ver' => true)), $this->texto);
+        $this->assertStringContainsString('hoy no tienen precio final: pasan a tener precio): 1.', $this->texto);
+        $this->assertStringContainsString(' · '.$sin_calcular->id.' · ', $this->texto);
+        $this->assertStringNotContainsString(' · '.$sin_nada->id.' · ', $this->texto);
+        $this->assertStringNotContainsString(' · '.$calculado->id.' · ', $this->texto);
+        $this->assertStringContainsString('17,7 s', $this->texto);
+        $this->assertStringContainsString('Tiempo estimado de --aplicar', $this->texto);
+    }
+
+    /** @test */
+    public function la_papelera_recibe_tambien_sus_filas_por_moneda()
+    {
+        $dueno = $this->con_extension($this->dueno_nuevo('papelera-monedas'), 'ventas_en_dolares');
+
+        $articulo = $this->articulo($dueno, 'en la papelera', array('cost' => 1000, 'percentage_gain' => 15));
+        $this->recalcular($articulo, $dueno);
+        $precio = $this->final_price_de($articulo);
+        $articulo->delete();
+
+        $this->assertSame(0, $this->correr($dueno, array('--aplicar' => true)), $this->texto);
+
+        $lista = $this->lista_precio_final_de($dueno);
+
+        $pesos = $this->fila_moneda($articulo, $lista, 1);
+        $dolares = $this->fila_moneda($articulo, $lista, 2);
+
+        $this->assertNotNull($pesos, 'Un restaurado queda igual que los vivos, en los dos motores.');
+        $this->assertNotNull($dolares);
+        $this->assertMismoPrecio($precio, (float) $pesos->final_price);
+        $this->assertMismoPrecio($precio / 1000, (float) $dolares->final_price);
+    }
+
+    /** @test */
     public function a_un_empleado_no_lo_migra()
     {
         $dueno = $this->dueno_nuevo('con-empleado');

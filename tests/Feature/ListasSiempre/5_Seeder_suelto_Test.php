@@ -7,9 +7,14 @@ use Illuminate\Support\Facades\DB;
 
 /**
  * D8 de la misión prueba-listas-siempre: el seeder suelto prende el flag SOLO donde prenderlo no
- * cambia ningún precio (lista «Precio final» ya creada, o listas con la extensión vieja de listas), y
- * deja en paz a los demás: sin listas (los migra el comando), con listas sin la extensión (cambiaría
- * el precio de Vender), o con otro modo de listas.
+ * cambia ningún precio (lista «Precio final» ya creada), y deja en paz a los demás: sin listas (los
+ * migra el comando), con listas con o sin la extensión vieja (cambiaría el precio de Vender y de la
+ * tienda sin verificar), o con otro modo de listas.
+ *
+ * 🔴 Esta regla CAMBIÓ por decisión escrita del chequeo independiente (B4, 3/11/2026): antes el seeder
+ * también prendía el flag a «listas + extensión vieja», y este test lo afirmaba. Se sacó porque ese
+ * caso prendía el flag sin la verificación artículo por artículo del comando; esos dueños van solo por
+ * `listas:migrar-a-precio-final --incluir-listas-existentes`.
  */
 class Seeder_suelto_Test extends ListasSiempreTestCase
 {
@@ -24,7 +29,7 @@ class Seeder_suelto_Test extends ListasSiempreTestCase
     }
 
     /** @test */
-    public function prende_el_flag_a_quien_tiene_precio_final_o_la_extension_vieja_y_a_nadie_mas()
+    public function prende_el_flag_solo_a_quien_tiene_precio_final()
     {
         $con_precio_final = $this->dueno_nuevo('seeder-precio-final');
         $this->con_precio_final($con_precio_final);
@@ -50,7 +55,7 @@ class Seeder_suelto_Test extends ListasSiempreTestCase
         $this->correr_seeder();
 
         $this->assertSame(1, $this->flag_de($con_precio_final), 'Con la lista «Precio final» el flag vuelve a 1.');
-        $this->assertSame(1, $this->flag_de($con_extension_vieja), 'Listas + la extensión vieja: era un usuario de listas.');
+        $this->assertSame(0, $this->flag_de($con_extension_vieja), 'Listas + la extensión vieja: va solo por el comando, que verifica artículo por artículo.');
         $this->assertSame(0, $this->flag_de($sin_listas), 'Sin listas no se prende: lo migra el comando.');
         $this->assertSame(0, $this->flag_de($listas_sin_extension), 'Listas sin la extensión vieja: prenderlo cambiaría el precio de Vender.');
         $this->assertSame(0, $this->flag_de($por_categoria), 'Otro modo de listas: no se toca.');

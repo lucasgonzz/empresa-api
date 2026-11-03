@@ -15,18 +15,15 @@ use Illuminate\Support\Facades\Log;
  * Todo negocio trabaja con listas de precios desde esta versión. Pero prender el flag en una cuenta
  * cambia de dónde sale el precio de Vender, del listado y de la tienda (del `final_price` del artículo
  * al pivote de la lista por defecto), así que este seeder prende el flag SOLO en los dos casos en que
- * ese número es el mismo por construcción:
+ * ese número es el mismo por construcción, que es UNO: el dueño ya tiene la lista «Precio final»
+ * (`price_types.es_precio_final = 1`), creada por el comando `listas:migrar-a-precio-final`: su pivote es
+ * el espejo del precio del artículo. Es la red de seguridad del comando (si el flag se apagó por el camino,
+ * acá vuelve).
  *
- *  a. el dueño ya tiene la lista «Precio final» (`price_types.es_precio_final = 1`), creada por el
- *     comando `listas:migrar-a-precio-final`: su pivote es el espejo del precio del artículo. Es la red de
- *     seguridad del comando (si el flag se apagó por el camino, acá vuelve);
- *  b. el dueño tiene listas y la extensión vieja `articulo_margen_de_ganancia_segun_lista_de_precios`,
- *     que es la marca de "usa listas" de antes del flag: lo mismo que ya hacía el comando
- *     `check_extencion_listas_de_precios`.
- *
- * 🔴 NO prende el flag a un dueño con listas cargadas pero sin esa extensión ni la «Precio final»:
- * Vender pasaría a cobrar la lista por defecto en vez del precio final del artículo, o sea otro número.
- * Esos se migran de a uno con el comando (`--incluir-listas-existentes`, que avisa qué pasa). Tampoco
+ * 🔴 NO prende el flag a un dueño con listas cargadas sin la «Precio final», tenga o no la extensión vieja
+ * `articulo_margen_de_ganancia_segun_lista_de_precios`: Vender y la tienda pasarían a cobrar otra cosa, sin
+ * verificar artículo por artículo (decisión del chequeo independiente de la misión, 3/11/2026: ese caso se
+ * sacó). Esos se migran de a uno con el comando (`--incluir-listas-existentes`, que avisa qué pasa). Tampoco
  * toca a los dueños que usan otro modo de listas (`lista_de_precios_por_categoria`,
  * `lista_de_precios_por_rango_de_cantidad_vendida`), ni crea listas: la «Precio final» de un dueño sin
  * listas la crea el comando, con respaldo y verificación artículo por artículo.
@@ -80,11 +77,7 @@ class ListasSiemprePrecioFinalSeeder extends Seeder
 
             $tiene_precio_final = DB::table('price_types')->where('user_id', $user_id)->where('es_precio_final', 1)->exists();
 
-            $tiene_listas_con_extension_vieja = !is_null($id_listas)
-                && DB::table('price_types')->where('user_id', $user_id)->exists()
-                && DB::table('extencion_empresa_user')->where('user_id', $user_id)->where('extencion_empresa_id', $id_listas)->exists();
-
-            if ($tiene_precio_final || $tiene_listas_con_extension_vieja) {
+            if ($tiene_precio_final) {
                 DB::table('users')->where('id', $user_id)->update(array('listas_de_precio' => 1));
                 PriceTypeHelper::olvidar_precio_final($user_id);
                 $prendidos++;

@@ -5,6 +5,7 @@ namespace App\Console\Commands;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Models\Article;
 use App\Models\ExtencionEmpresa;
 use App\Models\PriceType;
@@ -37,7 +38,13 @@ use Illuminate\Support\Facades\DB;
  *  b. Si el dueño ya trabaja con listas (flag prendido y listas propias) no hace nada y lo dice: sus
  *     listas son sus precios. Si tiene listas cargadas con el flag APAGADO, frena salvo
  *     `--incluir-listas-existentes`: al prender el flag esas listas pasan a verse (tarjetas, columnas,
- *     selector de Vender) y «Precio final» queda como lista por defecto (`position` = la mayor + 1).
+ *     selector de Vender). 🔴 Y una de dos cosas CAMBIA, según `--posicion-precio-final`:
+ *       - `max` (por defecto): «Precio final» queda arriba de todas (`position` = la mayor + 1). Vender
+ *         sigue igual; la TIENDA cambia, porque `tienda-api ArticleHelper::checkPriceTypes` toma la lista
+ *         de mayor position sin mirar el flag: pasa de la lista más alta a «Precio final».
+ *       - `min`: «Precio final» queda abajo de todas (`position` = la menor - 1). La tienda sigue igual;
+ *         VENDER cambia: su lista por defecto pasa a ser la más alta en vez del precio final.
+ *     Lo decide Lucas, dueño por dueño. --ver y el freno lo dicen con los nombres de las listas.
  *  c. Crea la lista «Precio final» (`es_precio_final = 1`) sin disparar el observer de PriceType: el
  *     dueño ya tiene su diseño de etiquetas genérico y con una sola lista ese es el que vale. Prende el
  *     flag y otorga las tres extensiones de listas que el user setup da siempre.
@@ -52,7 +59,12 @@ use Illuminate\Support\Facades\DB;
  *     sus pivotes ANTES de tocarlo) y `reversion.sql` (un bloque por artículo, más el de la cuenta, que
  *     devuelve todo a como estaba). Si el respaldo no se puede abrir, no se escribe nada.
  *
- * `--ver` (por defecto, y gana si llegan los dos) no escribe nada, ni en la base ni en archivos.
+ * `--ver` (por defecto, y gana si llegan los dos) no escribe nada, ni en la base ni en archivos. Cuenta y
+ * lista los «calculados por primera vez»: artículos con costo o precio que hoy tienen `final_price` NULL
+ * y que después de migrar van a tener precio (no son un precio que cambia: antes no había ninguno).
+ *
+ * Memoria: el catálogo se cuenta y se recorre de a tandas, sin acumular (hay cuentas de ~750.000
+ * artículos). El respaldo se escribe artículo por artículo al disco, antes de tocar cada uno.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union types,
  * promoción de constructor, readonly, enum ni #[...].
@@ -67,6 +79,7 @@ class MigrarAListaPrecioFinal extends Command
                             {--ver : Solo lee y reporta (por defecto). No escribe nada.}
                             {--aplicar : Escribe: la lista «Precio final», el flag, las extensiones y el pivote de cada artículo, con respaldo y SQL de reversión.}
                             {--incluir-listas-existentes : Migra también a un dueño que tiene listas cargadas con el flag apagado (esas listas pasan a verse).}
+                            {--posicion-precio-final=max : max = «Precio final» arriba de todo (Vender sigue igual, la tienda pasa a «Precio final»); min = abajo de todo (la tienda sigue igual, Vender pasa a la lista más alta).}
                             {--salida= : Carpeta base del respaldo (por defecto storage/app/respaldos/listas-precio-final).}';
 
     /**
@@ -94,7 +107,13 @@ class MigrarAListaPrecioFinal extends Command
     const CARPETA = 'respaldos/listas-precio-final';
 
     /** Se imprime en --ver y al terminar --aplicar. */
-    const AVISO_HORARIO = 'Correr --aplicar FUERA del horario del negocio: la reversión solo vale inmediatamente después de migrar (si hubo cambios de precio en el medio, los pisa).';
+    const AVISO_HORARIO = 'Correr --aplicar FUERA del horario del negocio: la reversión solo vale inmediatamente después de migrar (si hubo cambios de precio en el medio, los pisa). Tiempo medido: 17,7 s cada 1.000 artículos (50.000 ≈ 15 min).';
+
+    /** Segundos medidos de --aplicar por artículo, para la estimación de --ver. */
+    const SEGUNDOS_POR_ARTICULO = 0.0177;
+
+    /** Cuántos «calculados por primera vez» se listan como máximo (se cuentan todos). */
+    const MAXIMO_A_LISTAR = 50;
 
     /** Tamaño de las tandas de lectura de artículos. */
     const TANDA = 500;
@@ -146,6 +165,14 @@ class MigrarAListaPrecioFinal extends Command
 
         $aplicar = (bool) $this->option('aplicar') && !(bool) $this->option('ver');
 
+        $posicion = (string) $this->option('posicion-precio-final');
+
+        if (!in_array($posicion, array('max', 'min'), true)) {
+            $this->error('--posicion-precio-final tiene que ser max o min. No se escribe nada.');
+
+            return 1;
+        }
+
         $this->info('Migración a la lista «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'» · dueño '.$user_id.' ('.$dueno->name.') · base '.DB::connection()->getDatabaseName());
 
         if ($this->option('aplicar') && $this->option('ver')) {
@@ -163,7 +190,7 @@ class MigrarAListaPrecioFinal extends Command
             }
         }
 
-        $medicion = $this->medir($dueno);
+        $medicion = $this->medir($dueno, $posicion);
 
         // b. Ya trabaja con listas propias: no hay nada que migrar.
         if ($medicion['trabaja_con_listas_propias']) {
@@ -174,8 +201,10 @@ class MigrarAListaPrecioFinal extends Command
 
         if ($medicion['listas_con_flag_apagado'] && !(bool) $this->option('incluir-listas-existentes')) {
             $this->error('El dueño tiene '.$medicion['listas'].' lista(s) cargadas con el flag apagado ('.$medicion['nombres_de_listas'].'). '
-                .'Al prender el flag esas listas pasan a VERSE (tarjetas del artículo, columnas del listado, selector de Vender) y la «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'» queda como lista por defecto. '
+                .'Al prender el flag esas listas pasan a VERSE (tarjetas del artículo, columnas del listado, selector de Vender). '
                 .'Si es lo que se quiere, volvé a correr con --incluir-listas-existentes. No se escribe nada.');
+
+            $this->avisar_que_cambia($medicion);
 
             return 1;
         }
@@ -214,10 +243,11 @@ class MigrarAListaPrecioFinal extends Command
     /**
      * Lo que haría la migración, sin escribir nada.
      *
-     * @param  User  $dueno
+     * @param  User    $dueno
+     * @param  string  $posicion  'max' | 'min'.
      * @return array
      */
-    private function medir($dueno)
+    private function medir($dueno, $posicion = 'max')
     {
         $flag = (int) $dueno->listas_de_precio === 1;
 
@@ -244,29 +274,58 @@ class MigrarAListaPrecioFinal extends Command
             }
         }
 
-        $articulos = is_null($precio_final)
-            ? $this->articulos_del_dueno($dueno->id, null)
-            : $this->articulos_del_dueno($dueno->id, (int) $precio_final->id);
+        $casos = array('vivos' => 0, 'papelera' => 0, 'con_precio_manual' => 0, 'sin_costo_ni_precio' => 0, 'calculados_por_primera_vez' => 0);
 
-        $casos = array('vivos' => 0, 'papelera' => 0, 'con_precio_manual' => 0, 'sin_costo_ni_precio' => 0);
+        $pendientes = 0;
 
-        foreach ($articulos as $a) {
-            if ($a['papelera']) {
-                $casos['papelera']++;
-            } else {
-                $casos['vivos']++;
-            }
+        // Solo se cuenta: de un catálogo entero queda en memoria, como mucho, la lista acotada de abajo.
+        $primera_vez = array();
 
-            if (!is_null($a['price'])) {
-                $casos['con_precio_manual']++;
-            }
+        foreach ($this->tandas_de_articulos($dueno->id, is_null($precio_final) ? null : (int) $precio_final->id) as $tanda) {
 
-            if (is_null($a['cost']) && is_null($a['price'])) {
-                $casos['sin_costo_ni_precio']++;
+            foreach ($tanda as $a) {
+
+                $pendientes++;
+
+                if ($a['papelera']) {
+                    $casos['papelera']++;
+                } else {
+                    $casos['vivos']++;
+                }
+
+                if (!is_null($a['price'])) {
+                    $casos['con_precio_manual']++;
+                }
+
+                if (is_null($a['cost']) && is_null($a['price'])) {
+                    $casos['sin_costo_ni_precio']++;
+
+                } else if (is_null($a['final_price']) && !$a['papelera']) {
+
+                    $casos['calculados_por_primera_vez']++;
+
+                    if (count($primera_vez) < self::MAXIMO_A_LISTAR) {
+                        $primera_vez[] = $a;
+                    }
+                }
             }
         }
 
         $trabaja_con_listas_propias = $flag && count($otras) > 0 && is_null($precio_final);
+
+        $mas_alta = null;
+
+        foreach ($otras as $lista) {
+            if (is_null($mas_alta) || (int) $lista->position >= (int) $mas_alta->position) {
+                $mas_alta = $lista;
+            }
+        }
+
+        $position = is_null($listas->max('position')) ? 1 : ((int) $listas->max('position')) + 1;
+
+        if ($posicion === 'min' && !is_null($listas->min('position'))) {
+            $position = ((int) $listas->min('position')) - 1;
+        }
 
         return array(
             'flag'                        => $flag,
@@ -274,31 +333,33 @@ class MigrarAListaPrecioFinal extends Command
             'nombres_de_listas'           => implode(', ', $listas->pluck('name')->all()),
             'precio_final'                => $precio_final,
             'crear'                       => is_null($precio_final),
-            'position'                    => is_null($listas->max('position')) ? 1 : ((int) $listas->max('position')) + 1,
+            'position'                    => $position,
+            'posicion'                    => $posicion,
+            'lista_mas_alta'              => is_null($mas_alta) ? null : (string) $mas_alta->name,
             'prender_flag'                => !$flag,
             'extensiones_faltantes'       => $extensiones_faltantes,
             'trabaja_con_listas_propias'  => $trabaja_con_listas_propias,
             'listas_con_flag_apagado'     => !$flag && count($otras) > 0,
             'otras_listas'                => count($otras),
             'usa_monedas'                 => UserHelper::hasExtencion('ventas_en_dolares', $dueno),
-            'articulos'                   => $articulos,
+            'pendientes'                  => $pendientes,
             'casos'                       => $casos,
-            'nada_que_hacer'              => !is_null($precio_final) && $flag && count($extensiones_faltantes) === 0 && count($articulos) === 0,
+            'primera_vez'                 => $primera_vez,
+            'nada_que_hacer'              => !is_null($precio_final) && $flag && count($extensiones_faltantes) === 0 && $pendientes === 0,
         );
     }
 
     /**
      * Los artículos del dueño (con la papelera) que todavía no tienen pivote en la lista «Precio
-     * final» (todos, si la lista no existe).
+     * final» (todos, si la lista no existe), de a una tanda por vez y sin acumular: hay catálogos de
+     * ~750.000 artículos y el `memory_limit` de la CLI no los aguanta en un array.
      *
      * @param  int       $user_id
      * @param  int|null  $price_type_id
-     * @return array  [{id, cost, price, final_price, papelera}]
+     * @return \Generator  Cada tanda: [{id, name, cost, price, final_price, papelera}]
      */
-    private function articulos_del_dueno($user_id, $price_type_id)
+    private function tandas_de_articulos($user_id, $price_type_id)
     {
-        $resultado = array();
-
         $ultimo_id = 0;
 
         while (true) {
@@ -308,7 +369,7 @@ class MigrarAListaPrecioFinal extends Command
                 ->where('id', '>', $ultimo_id)
                 ->orderBy('id')
                 ->limit(self::TANDA)
-                ->get(array('id', 'cost', 'price', 'final_price', 'deleted_at'));
+                ->get(array('id', 'name', 'cost', 'price', 'final_price', 'deleted_at'));
 
             if (count($tanda) === 0) {
                 break;
@@ -334,6 +395,8 @@ class MigrarAListaPrecioFinal extends Command
                 $con_pivote = array_flip(array_map('intval', $con_pivote));
             }
 
+            $resultado = array();
+
             foreach ($tanda as $fila) {
 
                 if (isset($con_pivote[(int) $fila->id])) {
@@ -342,15 +405,33 @@ class MigrarAListaPrecioFinal extends Command
 
                 $resultado[] = array(
                     'id'          => (int) $fila->id,
+                    'name'        => $fila->name,
                     'cost'        => $fila->cost,
                     'price'       => $fila->price,
                     'final_price' => $fila->final_price,
                     'papelera'    => !is_null($fila->deleted_at),
                 );
             }
-        }
 
-        return $resultado;
+            yield $resultado;
+        }
+    }
+
+    /**
+     * Las dos cosas que hay que decirle a quien migra a un dueño con listas cargadas y el flag apagado:
+     * una de las dos pantallas cambia de precio, y cuál depende de `--posicion-precio-final`.
+     *
+     * @param  array  $m
+     * @return void
+     */
+    private function avisar_que_cambia(array $m)
+    {
+        $mas_alta = '«'.$m['lista_mas_alta'].'»';
+        $precio_final = '«'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'»';
+
+        $this->warn('🔴 Con listas ya cargadas, UNA de estas dos cosas cambia de precio. Lo decide Lucas, dueño por dueño:');
+        $this->warn(' · --posicion-precio-final=max (por defecto)'.($m['posicion'] === 'max' ? ' [elegida]' : '').': Vender sigue igual (cobra '.$precio_final.', el precio de hoy). La TIENDA cambia: hoy publica la lista de mayor position ('.$mas_alta.') y pasa a publicar '.$precio_final.'.');
+        $this->warn(' · --posicion-precio-final=min'.($m['posicion'] === 'min' ? ' [elegida]' : '').': la tienda sigue igual (sigue publicando '.$mas_alta.'). VENDER cambia: su lista por defecto pasa a ser '.$mas_alta.' en vez del precio final de hoy.');
     }
 
     /**
@@ -363,7 +444,11 @@ class MigrarAListaPrecioFinal extends Command
 
         if ($m['crear']) {
             $this->line('Lista: el comercio NO tiene la «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'» → se crea con position '.$m['position']
-                .($m['otras_listas'] ? ' (por encima de sus '.$m['otras_listas'].' lista(s): queda como lista por defecto)' : '').'.');
+                .($m['otras_listas']
+                    ? ($m['posicion'] === 'min'
+                        ? ' (por debajo de sus '.$m['otras_listas'].' lista(s))'
+                        : ' (por encima de sus '.$m['otras_listas'].' lista(s): queda como lista por defecto)')
+                    : '').'.');
         } else {
             $this->line('Lista: el comercio ya tiene la «'.$m['precio_final']->name.'» (id '.$m['precio_final']->id.').');
         }
@@ -374,11 +459,27 @@ class MigrarAListaPrecioFinal extends Command
 
         $c = $m['casos'];
 
-        $this->line('Artículos sin pivote de «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'»: '.count($m['articulos'])
+        $this->line('Artículos sin pivote de «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'»: '.$m['pendientes']
             .' · vivos (recálculo real y verificación): '.$c['vivos']
             .' · en la papelera (pivote directo, sin recálculo): '.$c['papelera']
             .' · con precio manual: '.$c['con_precio_manual']
             .' · sin costo ni precio (conservan su precio final): '.$c['sin_costo_ni_precio'].'.');
+
+        $this->line('Calculados por primera vez (tienen costo o precio y hoy no tienen precio final: pasan a tener precio): '.$c['calculados_por_primera_vez'].'.');
+
+        foreach ($m['primera_vez'] as $a) {
+            $this->line(' · '.$a['id'].' · '.$a['name'].' · costo '.(is_null($a['cost']) ? '-' : $a['cost']).' · precio manual '.(is_null($a['price']) ? '-' : $a['price']));
+        }
+
+        if ($c['calculados_por_primera_vez'] > count($m['primera_vez'])) {
+            $this->line(' · … y '.($c['calculados_por_primera_vez'] - count($m['primera_vez'])).' más.');
+        }
+
+        if ($m['listas_con_flag_apagado']) {
+            $this->avisar_que_cambia($m);
+        }
+
+        $this->line('Tiempo estimado de --aplicar: ≈ '.max(1, (int) ceil($c['vivos'] * self::SEGUNDOS_POR_ARTICULO / 60)).' min.');
 
         $this->warn(self::AVISO_HORARIO);
     }
@@ -413,36 +514,45 @@ class MigrarAListaPrecioFinal extends Command
         $owner = User::find($dueno->id);
 
         $ok = 0;
-        $revertidos = array();
+        $revertidos = 0;
+        $ids_revertidos = array();
 
-        foreach ($m['articulos'] as $a) {
+        // Por tandas y sin acumular: la memoria de la corrida no crece con el catálogo.
+        foreach ($this->tandas_de_articulos($dueno->id, (int) $lista->id) as $tanda) {
 
-            try {
-                DB::transaction(function () use ($a, $lista, $owner) {
-                    $this->migrar_articulo($a, $lista, $owner);
-                });
+            foreach ($tanda as $a) {
 
-                $ok++;
+                try {
+                    DB::transaction(function () use ($a, $lista, $owner) {
+                        $this->migrar_articulo($a, $lista, $owner);
+                    });
 
-            } catch (\Throwable $e) {
+                    $ok++;
 
-                if ($e->getCode() === 9002) {
-                    // El respaldo no se pudo escribir: no se sigue sin respaldo.
-                    $this->error($e->getMessage());
+                } catch (\Throwable $e) {
 
-                    return 1;
+                    if ($e->getCode() === 9002) {
+                        // El respaldo no se pudo escribir: no se sigue sin respaldo.
+                        $this->error($e->getMessage());
+
+                        return 1;
+                    }
+
+                    $revertidos++;
+
+                    if (count($ids_revertidos) < self::MAXIMO_A_LISTAR) {
+                        $ids_revertidos[] = $a['id'];
+                    }
+
+                    $this->warn('Artículo '.$a['id'].': '.$e->getMessage().' → se revirtió, quedó como estaba.');
+
+                    $this->escribir_json(array('tipo' => 'revertido', 'article_id' => $a['id'], 'motivo' => $e->getMessage()), false);
                 }
-
-                $revertidos[] = $a['id'];
-
-                $this->warn('Artículo '.$a['id'].': '.$e->getMessage().' → se revirtió, quedó como estaba.');
-
-                $this->escribir_json(array('tipo' => 'revertido', 'article_id' => $a['id'], 'motivo' => $e->getMessage()), false);
             }
         }
 
         $this->line('');
-        $this->info('Listo: '.$ok.' artículo(s) migrados'.(count($revertidos) ? ', '.count($revertidos).' revertidos (ids: '.implode(', ', array_slice($revertidos, 0, 50)).')' : '').'.');
+        $this->info('Listo: '.$ok.' artículo(s) migrados'.($revertidos ? ', '.$revertidos.' revertidos (ids: '.implode(', ', $ids_revertidos).')' : '').'.');
 
         if ($this->calculados_por_primera_vez > 0) {
             $this->line('Artículos que no tenían precio final calculado y ahora lo tienen: '.$this->calculados_por_primera_vez.'.');
@@ -451,7 +561,7 @@ class MigrarAListaPrecioFinal extends Command
         $this->line('Respaldo y reversión en: '.$this->carpeta);
         $this->warn(self::AVISO_HORARIO);
 
-        return count($revertidos) ? 1 : 0;
+        return $revertidos ? 1 : 0;
     }
 
     /**
@@ -566,6 +676,19 @@ class MigrarAListaPrecioFinal extends Command
                 'setear_precio_final' => is_null($antes->price) ? 0 : 1,
                 'incluir_en_excel_para_clientes' => 1,
             ));
+
+            // Y sus filas por moneda, para el dueño con el motor por moneda: un restaurado tiene que
+            // quedar igual que los vivos, en los dos motores (decisión D3 del plan).
+            if (UserHelper::hasExtencion('ventas_en_dolares', $owner)) {
+                ArticlePriceTypeMonedaHelper::espejar_precio_final_en_monedas(
+                    Article::withTrashed()->find($id),
+                    $owner,
+                    $lista,
+                    is_null($antes->final_price) ? null : (float) $antes->final_price,
+                    is_null($antes->percentage_gain) ? null : (float) $antes->percentage_gain,
+                    !is_null($antes->price)
+                );
+            }
 
         } else {
 
