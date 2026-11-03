@@ -433,7 +433,7 @@ class Promo_para_reenviar_y_comprobante_al_dueno_Test extends EmpresaTestCase
     }
 
     /**
-     * La herramienta: al FINAL de la lista común (prefijo del caché), con su `case`, su etiqueta de progreso,
+     * La herramienta precede a cuotas en el cierre de la lista común (prefijo del caché), con su `case`, su etiqueta de progreso,
      * de lectura para el MCP, y una descripción que manda a proponer_promocion_por_whatsapp para «mandales».
      * Y con el WhatsApp conectado, proponer_promocion_por_whatsapp sigue dejando su tarjeta como siempre.
      *
@@ -443,7 +443,11 @@ class Promo_para_reenviar_y_comprobante_al_dueno_Test extends EmpresaTestCase
     {
         $nombres = HerramientasDeCarga::nombres();
 
-        $this->assertSame('armar_texto_de_promocion', $nombres[count($nombres) - 1], 'Al final de la lista común (prefijo del caché).');
+        $this->assertSame(
+            ['armar_texto_de_promocion', 'proponer_cuotas_tienda'],
+            array_slice($nombres, -2),
+            'La herramienta de cuotas se agrega al final del prefijo de caché.'
+        );
         $this->assertTrue(HerramientasDeCarga::maneja('armar_texto_de_promocion'));
         $this->assertFalse(HerramientasDeCarga::es_de_carga('armar_texto_de_promocion'), 'No es una carga: no escala al Profundo.');
         $this->assertStringContainsString("case 'armar_texto_de_promocion':", file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php')));
