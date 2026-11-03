@@ -4,7 +4,7 @@ namespace App\Http\Controllers\Pdf\Afip;
 
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\PdfHelper;
-use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Pdf\AfipQrPdf;
 use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
 use App\Http\Controllers\Helpers\Numbers;
@@ -2593,12 +2593,10 @@ class AfipPdfHelper
         $pdf->Cell(50, 4, 'Pág. '.$pdf->PageNo(), 0, 0, 'C');
 
         /**
-         * QR AFIP a la izquierda (omitido en entorno local).
+         * QR fiscal a la izquierda.
          */
         $qr_bottom_y = $footer_start_y + $qr_size;
-        if (config('app.APP_ENV') != 'local') {
-            self::print_afip_qr_image($pdf, $afip_ticket, $page_left, $footer_start_y + 2, $qr_size);
-        }
+        self::print_afip_qr_image($pdf, $afip_ticket, $page_left, $footer_start_y + 2, $qr_size);
 
         /**
          * Logo AFIP y leyenda "Comprobante Autorizado" al centro.
@@ -2675,27 +2673,7 @@ class AfipPdfHelper
      */
     protected static function print_afip_qr_image($pdf, $afip_ticket, $x, $y, $size): void
     {
-        $data = [
-            'ver' => 1,
-            'fecha' => date_format($afip_ticket->created_at, 'Y-m-d'),
-            'cuit' => $afip_ticket->cuit_negocio,
-            'ptoVta' => $afip_ticket->punto_venta,
-            'tipoCmp' => $afip_ticket->cbte_tipo,
-            'nroCmp' => $afip_ticket->cbte_numero,
-            'importe' => $afip_ticket->importe_total,
-            'moneda' => $afip_ticket->moneda_id,
-            'ctz' => 1,
-            'tipoDocRec' => AfipHelper::getDocType('Cuit'),
-            'nroDocRec' => $afip_ticket->cuit_cliente,
-            'codAut' => $afip_ticket->cae,
-        ];
-
-        $afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
-        $url = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data='.$afip_link.'&format=jpeg#.jpg';
-
-        if (GeneralHelper::file_exists_2($url)) {
-            $pdf->Image($url, $x, $y, $size, $size);
-        }
+        AfipQrPdf::imprimir_codigo($pdf, $afip_ticket, $x, $y, $size);
     }
 
     /**
