@@ -2,6 +2,7 @@
 
 namespace App\Mail;
 
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\OnlineConfiguration;
@@ -90,8 +91,9 @@ class Advise extends Mailable
         }
 
         // Precio solo si el negocio NO trabaja con listas de precio (con listas el precio
-        // depende del comprador; mostrar uno solo seria enganoso).
-        $mostrar_precio = !UserHelper::uses_listas_de_precio($user);
+        // depende del comprador; mostrar uno solo seria enganoso). Con una sola lista, la «Precio
+        // final», hay un solo precio y es el de siempre (misión prueba-listas-siempre, 3/11/2026).
+        $mostrar_precio = !UserHelper::uses_listas_de_precio($user) || PriceTypeHelper::solo_lista_precio_final($user);
         $precio = null;
         if ($mostrar_precio && isset($article->final_price) && (float) $article->final_price > 0) {
             $precio = '$ '.number_format((float) $article->final_price, 2, ',', '.');

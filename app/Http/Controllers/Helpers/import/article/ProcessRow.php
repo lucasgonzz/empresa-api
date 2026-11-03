@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
@@ -1027,7 +1028,9 @@ class ProcessRow {
                 'prop_key'      => 'contenido',
             ],
         ];
-        
+
+        $props_to_add = $this->props_de_la_lista_precio_final($props_to_add, $row);
+
         $this->iniciar();
 
         $provider_id = $this->get_provider_id($row);
@@ -3707,6 +3710,74 @@ class ProcessRow {
 
 
     /**
+     * Las columnas de la lista «Precio final» se importan como el margen y el precio manual del
+     * ARTÍCULO (misión prueba-listas-siempre, 3/11/2026, decisión D2 del plan): esa lista es un espejo
+     * de `articles.final_price`, así que escribir solo su pivote se perdía en silencio con el primer
+     * recálculo. Un Excel exportado con dos o más listas trae `%_<lista>`, `$_final_<lista>` y
+     * `setear_precio_final_<lista>`; también puede mapearlas a mano una persona o la IA.
+     *
+     *  - `setear_precio_final_<lista>` = Sí: manda `$_final_<lista>` (precio manual), y el margen de esa
+     *    fila no se toma.
+     *  - `setear_precio_final_<lista>` = No: manda `%_<lista>` (margen), y el precio no se toma: es el
+     *    que el sistema calculó, no uno fijado.
+     *  - Sin esa columna: las dos, si están mapeadas.
+     *
+     * Se suman a las columnas de siempre para pasar por lo mismo: validación del número, el cero que no
+     * es un valor, y el criterio de ArticleHelper de "no se pasa de margen a manual desde un Excel"
+     * (aplicar_criterio_de_precio()). Si la misma fila mapea también «Margen de ganancia» o «Precio»,
+     * ganan esas, que son las del artículo.
+     *
+     * @param  array  $props_to_add
+     * @param  array  $row
+     * @return array
+     */
+    private function props_de_la_lista_precio_final(array $props_to_add, $row)
+    {
+        $lista = null;
+
+        foreach ($this->price_types as $price_type) {
+            if (PriceTypeHelper::es_lista_precio_final($price_type)) {
+                $lista = $price_type;
+                break;
+            }
+        }
+
+        if (is_null($lista)) {
+            return $props_to_add;
+        }
+
+        $columna_margen = $this->get_price_type_row_name('%_', $lista);
+        $columna_precio = $this->get_price_type_row_name('$_final_', $lista);
+        $columna_setear = $this->get_price_type_row_name('setear_precio_final_', $lista);
+
+        $hay_setear = !ImportHelper::isIgnoredColumn($columna_setear, $this->columns);
+
+        $fijado = $hay_setear && in_array(
+            mb_strtolower((string) ImportHelper::getColumnValue($row, $columna_setear, $this->columns)),
+            array('si', 'sí', 's'),
+            true
+        );
+
+        if (
+            !$fijado
+            && !ImportHelper::isIgnoredColumn($columna_margen, $this->columns)
+            && ImportHelper::isIgnoredColumn('margen_de_ganancia', $this->columns)
+        ) {
+            $props_to_add[] = array('excel_column' => $columna_margen, 'prop_key' => 'percentage_gain', 'is_number' => true);
+        }
+
+        if (
+            (!$hay_setear || $fijado)
+            && !ImportHelper::isIgnoredColumn($columna_precio, $this->columns)
+            && ImportHelper::isIgnoredColumn('precio', $this->columns)
+        ) {
+            $props_to_add[] = array('excel_column' => $columna_precio, 'prop_key' => 'price', 'is_number' => true);
+        }
+
+        return $props_to_add;
+    }
+
+    /**
      * Arma las filas de `article_price_type` que le corresponden a esta fila del Excel.
      *
      * @param  array                    $row                  Fila del Excel.
@@ -3805,6 +3876,18 @@ class ProcessRow {
 
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
                 $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns), 2, $this->interpretacion_punto);
+
+                /*
+                 * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026): sus columnas ya se
+                 * tomaron como margen y precio del ARTÍCULO (props_de_la_lista_precio_final()), y su
+                 * pivote lo escribe el espejo de setFinalPrice(). Acá viaja vacía: un artículo nuevo
+                 * queda relacionado con la lista y uno existente no reescribe nada.
+                 */
+                if (PriceTypeHelper::es_lista_precio_final($price_type)) {
+                    $setear = null;
+                    $percentage = null;
+                    $final_price = null;
+                }
 
                 // "Visible en la tienda para esta lista": 1, 0 o null = no informado (misión
                 // catalogo-por-lista-tienda, 5/10/2026). Ver leer_visible_en_tienda().

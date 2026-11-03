@@ -1017,6 +1017,31 @@ class PriceTypeHelper {
 	}
 
 	/**
+	 * ¿El precio de esta cuenta se carga en el ARTÍCULO? O sea: tiene la lista «Precio final» y
+	 * ninguna otra, que es un negocio que hasta ayer no tenía listas. Es la pregunta de todo lo que
+	 * vive FUERA de setFinalPrice() y decide con el flag crudo (la masiva, el asistente, el Excel,
+	 * los mails): para esta cuenta el margen y el precio manual del artículo siguen mandando, igual
+	 * que antes de prender el flag.
+	 *
+	 * 🔴 No es la negación de muestra_listas(): una cuenta con el flag y una sola lista PROPIA (no
+	 * la «Precio final») o sin ninguna lista también da muestra_listas() = false, pero su precio
+	 * sigue sin salir del artículo, y esas cuentas no tienen que cambiar en nada.
+	 *
+	 * @param  int|\App\Models\User|null  $user
+	 * @return bool
+	 */
+	static function solo_lista_precio_final($user = null) {
+
+		$lista = self::lista_precio_final($user);
+
+		if (is_null($lista)) {
+			return false;
+		}
+
+		return !PriceType::where('user_id', $lista->user_id)->where('id', '!=', $lista->id)->exists();
+	}
+
+	/**
 	 * La moneda NATIVA del precio de un artículo en una cuenta: dólares (2) si el costo está en dólares
 	 * y el dueño NO cotiza los precios a pesos (`users.cotizar_precios_en_dolares` apagado), porque en
 	 * ese caso `setFinalPrice()` no cotiza y `articles.final_price` queda en dólares; pesos (1) en
@@ -1034,6 +1059,20 @@ class PriceTypeHelper {
 		}
 
 		return 1;
+	}
+
+	/**
+	 * La moneda de la fila de «Precio final» que lleva el tilde «Cotizar desde la otra moneda»: la
+	 * regla de Lucas (decisión D3), la misma que `PriceTypeMonedas.vue` usa para una fila nueva.
+	 * `users.cotizar_precios_en_dolares` prendido → la fila en dólares; apagado → la fila en pesos.
+	 * La fila que queda SIN el tilde es la que se edita en la tarjeta.
+	 *
+	 * @param  \App\Models\User  $user  El dueño.
+	 * @return int  1 pesos, 2 dólares.
+	 */
+	static function moneda_que_se_cotiza($user) {
+
+		return empty($user->cotizar_precios_en_dolares) ? 1 : 2;
 	}
 
 	/**

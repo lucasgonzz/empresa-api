@@ -4,6 +4,7 @@ namespace App\Services\Pdf\Catalog;
 
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Models\Article;
 use TCPDF;
 
@@ -132,7 +133,14 @@ class TCPDCCatalog extends TCPDF
             $this->SetFont('helvetica', '', 12);
             $py = $this->GetY();
 
-            if (count($article->price_type_monedas) >= 1) {
+            // Con una sola lista, la «Precio final» (misión prueba-listas-siempre, 3/11/2026), el catálogo
+            // imprime el precio de siempre: ni el nombre de la lista ni sus filas por moneda.
+            if (PriceTypeHelper::solo_lista_precio_final()) {
+
+                $this->SetX($x + 50);
+                $this->Cell(0, 6, '$'.Numbers::price($article->final_price), 0, 1, 'L');
+
+            } else if (count($article->price_type_monedas) >= 1) {
 
 
                 foreach ($article->price_type_monedas as $price_type_moneda) {

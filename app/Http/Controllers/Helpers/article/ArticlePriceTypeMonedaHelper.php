@@ -160,13 +160,15 @@ class ArticlePriceTypeMonedaHelper {
      * Lo que la persona edita en la tarjeta de la lista «Precio final» de una cuenta con precios por
      * moneda se escribe en el artículo (misión prueba-listas-siempre, 3/11/2026, decisión D2):
      *
-     *  - el `percentage` de la fila de la moneda NATIVA del artículo → `articles.percentage_gain`;
+     *  - el `percentage` de la fila que se edita → `articles.percentage_gain`;
      *  - `setear_precio_final` + `final_price` de esa misma fila → `articles.price` (o null al
-     *    destildar).
+     *    destildar), llevado a la moneda del artículo si la fila está en otra.
      *
-     * Solo la fila nativa (pesos, o dólares si el costo está en dólares y el dueño no cotiza), que es
-     * la que lleva el precio del artículo; la otra se deriva con el dólar de la cuenta y no es
-     * editable. Y SOLO si el valor que llega difiere del que esa fila tiene GUARDADO: la ficha manda
+     * Solo la fila SIN el tilde «Cotizar desde la otra moneda» (PriceTypeHelper::moneda_que_se_cotiza(),
+     * la regla de Lucas), que es la única que la tarjeta deja editar. Casi siempre coincide con la
+     * moneda nativa del artículo; la excepción es un artículo en pesos de un dueño que NO cotiza: la
+     * tarjeta edita la fila en dólares y el manual del artículo, que está en pesos, se convierte con el
+     * dólar de la cuenta. Y SOLO si el valor que llega difiere del que esa fila tiene GUARDADO: la ficha manda
      * siempre todas las filas, también cuando la persona editó el margen del artículo en el recuadro
      * de siempre (una sola lista: la tarjeta ni se dibuja); si se tomara el valor del espejo viejo se
      * pisaría lo que acaba de escribir. Un cambio en la fila se persiste en el artículo en el acto:
@@ -182,7 +184,7 @@ class ArticlePriceTypeMonedaHelper {
     {
         $owner = (!is_null($user) && !is_null($user->owner_id)) ? \App\Models\User::find($user->owner_id) : $user;
 
-        if (is_null($owner) || $moneda_id !== PriceTypeHelper::moneda_nativa_del_precio($article, $owner)) {
+        if (is_null($owner) || $moneda_id === PriceTypeHelper::moneda_que_se_cotiza($owner)) {
             return;
         }
 
@@ -213,7 +215,15 @@ class ArticlePriceTypeMonedaHelper {
         }
 
         if ($setear !== $setear_guardado || ($setear && self::distinto($final_price, $final_guardado))) {
-            $article->price = $setear ? $final_price : null;
+
+            $precio_del_articulo = $final_price;
+
+            // La fila editada está en dólares y el precio del artículo en pesos (ver el docblock).
+            if (!is_null($final_price) && $moneda_id !== PriceTypeHelper::moneda_nativa_del_precio($article, $owner)) {
+                $precio_del_articulo = round($final_price * (float) $owner->dollar, 2);
+            }
+
+            $article->price = $setear ? $precio_del_articulo : null;
 
             // Un precio fijado a mano no convive con un margen del artículo (setFinalPrice() lo
             // borraría): ver ArticlePriceTypeHelper::write_through_precio_final().
@@ -251,6 +261,10 @@ class ArticlePriceTypeMonedaHelper {
      * costo está en dólares y el dueño NO cotiza los precios a pesos (ahí `final_price` está en
      * dólares); pesos en cualquier otro caso. Así «Precio final» existe en los dos motores y da el
      * mismo número que el precio del artículo, en su moneda, y la cotización cruzada en la otra.
+     *
+     * El tilde «Cotizar desde la otra moneda» NO sigue a la moneda nativa: sigue la regla de Lucas
+     * (PriceTypeHelper::moneda_que_se_cotiza()), igual que una fila nueva de `PriceTypeMonedas.vue`. El
+     * número de cada fila no depende del tilde: esta lista no pasa por el motor por moneda.
      *
      * Las dos filas se crean si no existen (un INSERT por fila, una sola vez por artículo) y después
      * se actualizan por guardar_entrada(), que en modo lote las registra para el volcado en bloque.
@@ -313,8 +327,10 @@ class ArticlePriceTypeMonedaHelper {
 
             $entrada->percentage                = $percentage;
             $entrada->final_price               = $valor;
-            $entrada->setear_precio_final       = ($es_nativa && $manual) ? 1 : 0;
-            $entrada->cotizar_desde_otra_moneda = $es_nativa ? 0 : 1;
+            $se_cotiza = (int) $moneda_id === PriceTypeHelper::moneda_que_se_cotiza($user);
+
+            $entrada->setear_precio_final       = (!$se_cotiza && $manual) ? 1 : 0;
+            $entrada->cotizar_desde_otra_moneda = $se_cotiza ? 1 : 0;
 
             self::guardar_entrada($entrada);
         }

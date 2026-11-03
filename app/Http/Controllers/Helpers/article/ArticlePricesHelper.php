@@ -180,8 +180,13 @@ class ArticlePricesHelper {
             return $desde_el_articulo;
         }
 
+        /*
+         * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026) ES el precio del artículo:
+         * se contesta con la columna y no con el pivote, así el número es el de hoy aunque el pivote
+         * todavía no se haya vuelto a espejar. En la moneda del artículo, igual que `final_price`.
+         */
         return [
-            'final_price'     => $elegida->pivot->final_price,
+            'final_price'     => PriceTypeHelper::es_lista_precio_final($elegida) ? $article->final_price : $elegida->pivot->final_price,
             'price_type_id'   => $elegida->id,
             'price_type_name' => $elegida->name,
             'origen'          => $origen,

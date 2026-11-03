@@ -18,8 +18,8 @@ use Tests\TestCase;
  * de 7 días»): todo negocio trabaja con listas de precios, y el que no carga listas propias tiene UNA,
  * «Precio final», que es el precio del artículo de siempre espejado en una lista.
  *
- * Cada test usa dueños PROPIOS (el 500 del fixture tiene cuatro listas con el flag apagado y cientos de
- * miles de artículos): un dueño nace sin listas y con el flag apagado, como un cliente de hoy, y el
+ * Cada test usa dueños PROPIOS (el 500 del fixture tiene cuatro listas con el flag apagado, un escenario
+ * que no es el de estos tests): un dueño nace sin listas y con el flag apagado, como un cliente de hoy, y el
  * test lo pasa a «siempre con listas» con con_precio_final(). Las fotos se leen de la base, nunca del
  * modelo en memoria.
  *

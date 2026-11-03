@@ -6,6 +6,7 @@ use App\Events\CompanyOwnerContextUpdated;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\Log;
 
@@ -62,6 +63,34 @@ class UserHelper {
      * @param User|null $user Usuario autenticado, dueño o cualquier modelo User; se resuelve al owner si tiene owner_id.
      * @return bool
      */
+    /**
+     * ¿Este negocio opera en dólares? Reemplaza a los gates de PRESENTACIÓN sobre la extensión
+     * `ventas_en_dolares` (misión prueba-listas-siempre, 3/11/2026, C8): las ventas en dólares pasaron
+     * al núcleo, así que un negocio sin la extensión que vende o gasta en dólares tiene que ver esa
+     * dimensión en el asistente y en los reportes, y uno que nunca los usó sigue viendo lo de siempre.
+     *
+     * 🔴 La elección del MOTOR de precios sigue en la extensión (`hasExtencion('ventas_en_dolares')`):
+     * esto es solo para qué se muestra.
+     *
+     * @param  \App\Models\User|null  $user
+     * @return bool
+     */
+    static function opera_en_dolares($user) {
+
+        if (is_null($user)) {
+            return false;
+        }
+
+        if (self::hasExtencion('ventas_en_dolares', $user)) {
+            return true;
+        }
+
+        $owner_id = $user->owner_id ? (int) $user->owner_id : (int) $user->id;
+
+        return DB::table('sales')->where('user_id', $owner_id)->where('moneda_id', 2)->exists()
+            || DB::table('expenses')->where('user_id', $owner_id)->where('moneda_id', 2)->exists();
+    }
+
     static function uses_listas_de_precio($user = null) {
         $candidate = $user ?? self::user(true);
         if (!$candidate) {
