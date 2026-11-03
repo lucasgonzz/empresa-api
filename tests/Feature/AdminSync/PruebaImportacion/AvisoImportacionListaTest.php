@@ -81,8 +81,8 @@ class AvisoImportacionListaTest extends EmpresaTestCase
         $this->assertSame($run->uuid, $aviso['uuid']);
         $this->assertSame($aviso['texto'], $aviso['resumen']);
         $this->assertNull($aviso['ai_conversation_id']);
-        $this->assertSame('/listado?importacion=' . $run->uuid, $aviso['ruta']);
-        $this->assertSame('https://negocio.test/listado?importacion=' . $run->uuid, $aviso['url']);
+        $this->assertSame('/listado-de-articulos?importacion=' . $run->uuid, $aviso['ruta']);
+        $this->assertSame('https://negocio.test/listado-de-articulos?importacion=' . $run->uuid, $aviso['url']);
 
         $this->assertTrue(AvisosDelAsistenteHelper::marcar_avisado($dueno, 'importacion_lista:' . $run->uuid, null, 'wamid.IMPORT-1'));
 

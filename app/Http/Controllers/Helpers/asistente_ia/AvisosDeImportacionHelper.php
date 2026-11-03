@@ -32,10 +32,11 @@ class AvisosDeImportacionHelper
     const TIPO = AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA;
 
     /**
-     * La ruta del SPA que abre el Listado con la importación para seguir (la SPA levanta la corrida
-     * abierta con `analysis-en-curso` al cargar; la query deja el rastro de cuál era).
+     * La ruta del SPA que abre el Listado de artículos con la importación para seguir (`routes.js`:
+     * `/listado-de-articulos`; la SPA levanta la corrida abierta con `analysis-en-curso` al cargar y, desde
+     * M3, lee `?importacion=<uuid>` para abrir ese análisis).
      */
-    const RUTA = '/listado?importacion=';
+    const RUTA = '/listado-de-articulos?importacion=';
 
     /**
      * Deja el aviso de una corrida que terminó (listo o error), si la corrida pidió el aviso. Nunca lanza.
