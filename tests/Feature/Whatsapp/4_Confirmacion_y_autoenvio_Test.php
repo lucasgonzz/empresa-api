@@ -673,4 +673,29 @@ class Confirmacion_y_autoenvio_Test extends TestCase
         $this->assertSame(WhatsappChatHelper::ENVIO_HECHO, $resultado);
         $this->assertSame(0, LocalActividadEvento::where('tipo', 'agente_negocio')->count());
     }
+
+    /**
+     * En modo demostración sale con un id ficticio: pasa por el camino del envío, pero no le contestó a nadie.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_respuesta_en_modo_demostracion_no_le_avisa_al_local()
+    {
+        $this->prender_el_local();
+        $this->fakes_de_red();
+
+        config(['app.FOR_USER' => 'demo']);
+        $this->config->envio_simulado = true;
+        $this->config->save();
+
+        $chat = $this->chat_con_entrante();
+        $mensaje = WhatsappChatHelper::store_pending_ai_message($chat, 'Respuesta de la demo.');
+
+        $resultado = WhatsappChatHelper::send_pending_ai_message($mensaje, $chat, $this->config);
+
+        $this->assertSame(WhatsappChatHelper::ENVIO_HECHO, $resultado);
+        $this->assertEquals(0, $this->llamadas_a_kapso);
+        $this->assertSame(0, LocalActividadEvento::where('tipo', 'agente_negocio')->count());
+    }
 }

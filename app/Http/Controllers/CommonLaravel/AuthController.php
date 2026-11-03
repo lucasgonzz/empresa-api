@@ -64,6 +64,15 @@ class AuthController extends Controller
 
                 $login = true;
 
+                /**
+                 * «El local» del admin (misión el-local-fase-2, 3/11/2026): el negocio entró. Va en esta rama y en
+                 * `login_forzado()`, y NO en `procesar_login()`: por ahí pasan también el login maestro (alguien
+                 * mirando), el cambio de versión y `forzar_pestana()` (la persona ya estaba adentro). Esos caminos, si
+                 * son de verdad, aparecen por `actividad` en el primer request. Es una fila en una tabla, sin red, y
+                 * nunca tira una excepción: no puede frenar el login.
+                 */
+                LocalActividad::login_de($user);
+
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} entro desde: ".$request->header('referer'));
             } else {
                 $user_last_activity_wait_minutes = $this->getUserLastActivityWaitMinutes(Auth()->user());
@@ -153,6 +162,8 @@ class AuthController extends Controller
 
                 $user = $this->procesar_login();
                 $login = true;
+                /** «El local» del admin: mismo aviso que en `login()`, ver el motivo ahí. */
+                LocalActividad::login_de($user);
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} forzo el ingreso expulsando otro dispositivo, desde: ".$request->header('referer'));
             } else {
                 /** Paridad con login(): si por una carrera el candado no queda libre, no dejar la sesión autenticada a medias. */
@@ -184,15 +195,6 @@ class AuthController extends Controller
         $user = $this->set_employee_props($user);
 
         UserHelper::set_sessions($user);
-
-        /**
-         * «El local» del admin (misión el-local-fase-2, 3/11/2026): el negocio entró. El login maestro, el acceso de
-         * soporte y la demo no cuentan: es alguien mirando, no el comercio. Es una fila en una tabla, sin red, y nunca
-         * tira una excepción: no puede frenar el login.
-         */
-        if (!$this->debe_omitir_candado_de_actividad()) {
-            LocalActividad::login_de($user);
-        }
 
         return $user;
     }
@@ -492,9 +494,9 @@ class AuthController extends Controller
         }
 
         /**
-         * «El local» del admin (misión el-local-fase-2, 3/11/2026), con la misma exención que el login y ANTES de vaciar
-         * la sesión, que es de donde sale. `create_version_session_token()` no emite a propósito: cambiar de versión no
-         * es irse, y el `/logout` que la SPA manda después ya llega sin usuario.
+         * «El local» del admin (misión el-local-fase-2, 3/11/2026): el login maestro, la demo y el soporte no son el
+         * comercio yéndose. Se mira ANTES de vaciar la sesión, que es de donde sale. `create_version_session_token()` no
+         * emite a propósito: cambiar de versión no es irse, y el `/logout` que la SPA manda después ya llega sin usuario.
          */
         if ($auth_user && !$this->debe_omitir_candado_de_actividad()) {
             LocalActividad::de_la_persona('logout', $auth_user);

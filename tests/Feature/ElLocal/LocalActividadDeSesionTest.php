@@ -2,12 +2,14 @@
 
 namespace Tests\Feature\ElLocal;
 
+use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\DemoIngresoToken;
 use App\Models\LocalActividadEvento;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Tests\Feature\ElLocal\Concerns\ConfiguraElLocal;
 use Tests\TestCase;
 
@@ -180,6 +182,59 @@ class LocalActividadDeSesionTest extends TestCase
         $this->assertSame($this->user->id, $respuesta->json('user.id'));
     }
 
+    /**
+     * El camino del botón «cerrar la otra sesión e ingresar acá»: también es el negocio entrando.
+     *
+     * @test
+     */
+    public function el_login_forzado_emite()
+    {
+        Notification::fake();
+
+        $this->user->activity_minutes = 60;
+        $this->user->session_id = 'candado-tomado-por-otro-dispositivo';
+        $this->user->last_activity = Carbon::now();
+        $this->user->save();
+
+        $respuesta = $this->postJson('/login-forzado', [
+            'doc_number' => $this->user->doc_number,
+            'password'   => self::PASSWORD_DE_PRUEBA,
+        ]);
+
+        $this->assertTrue($respuesta->json('login'));
+        $this->assertCount(1, $this->eventos('login'));
+    }
+
+    /**
+     * 🔴 Cambiar de versión no es entrar: la persona ya estaba adentro, y el `login` lo emitió el frente de origen.
+     *
+     * @test
+     */
+    public function el_login_por_cambio_de_version_no_emite()
+    {
+        $token = VersionSessionTransferHelper::create_for_user($this->user->id, false, false);
+
+        $respuesta = $this->postJson('/login-from-version-session-token', ['token' => $token]);
+
+        $this->assertTrue($respuesta->json('login'));
+        $this->assertCount(0, $this->eventos('login'));
+    }
+
+    /**
+     * 🔴 Retomar el candado desde otra pestaña tampoco: es la misma persona, en el mismo navegador.
+     *
+     * @test
+     */
+    public function retomar_la_pestana_no_emite_login()
+    {
+        Notification::fake();
+
+        $respuesta = $this->actingAs($this->user, 'sanctum')->postJson('/api/session-lock/forzar-pestana');
+
+        $this->assertTrue($respuesta->json('login'));
+        $this->assertCount(0, $this->eventos('login'));
+    }
+
     /** @test */
     public function el_logout_emite_con_el_nombre_del_usuario()
     {
@@ -300,7 +355,8 @@ class LocalActividadDeSesionTest extends TestCase
      */
     public function lo_que_la_spa_llama_sola_no_cuenta_como_actividad($ruta)
     {
-        $this->actingAs($this->user, 'sanctum')->getJson($ruta);
+        /* El 200 importa: un request rechazado tampoco cuenta, y el test pasaría sin mirar la lista. */
+        $this->actingAs($this->user, 'sanctum')->getJson($ruta)->assertStatus(200);
 
         $this->assertCount(0, $this->eventos('actividad'));
     }
@@ -387,7 +443,8 @@ class LocalActividadDeSesionTest extends TestCase
     {
         $this->actingAs($this->user, 'sanctum')
             ->withHeader('Authorization', 'Bearer token-que-no-es-de-la-app')
-            ->getJson('/api/user');
+            ->getJson('/api/user')
+            ->assertStatus(200);
 
         $this->assertCount(0, $this->eventos('actividad'));
     }
@@ -409,7 +466,7 @@ class LocalActividadDeSesionTest extends TestCase
     {
         config(['services.admin_api.inbound_key' => null]);
 
-        $this->actingAs($this->user, 'sanctum')->getJson('/api/user');
+        $this->actingAs($this->user, 'sanctum')->getJson('/api/user')->assertStatus(200);
 
         $this->assertCount(0, $this->eventos('actividad'));
     }

@@ -83,14 +83,32 @@ class LocalActividadEnvioTest extends TestCase
     }
 
     /**
-     * 🔴 Base compartida: la clave representa a un solo dueño. Si otro comercio entra por esta instancia, su evento no
-     * se encola, porque ninguna instancia lo mandaría nunca.
+     * 🔴 Base compartida: la cola de jobs es una sola, y el worker de este comercio puede tomar el escaneo de otro. El
+     * evento no se pierde: queda en la tabla y lo manda la instancia de su dueño, con su propia clave.
      *
      * @test
      */
-    public function el_evento_de_otro_dueno_no_se_encola()
+    public function el_evento_de_otro_dueno_queda_para_la_instancia_de_ese_dueno()
     {
-        LocalActividad::registrar('login', self::DUENO + 1, 'De otro comercio');
+        Http::fake(['*' => Http::response(['ok' => true, 'guardados' => 1], 200)]);
+
+        LocalActividad::registrar('escaneo', self::DUENO + 1, 'De otro comercio');
+
+        $this->assertSame(1, LocalActividadEvento::count());
+        $this->assertFalse(LocalActividad::hay_para_enviar(), 'La clave de esta instancia no lo representa.');
+        $this->assertSame(0, (new LocalActividad())->enviar());
+        Http::assertNothingSent();
+
+        config(['app.USER_ID' => self::DUENO + 1]);
+
+        $this->assertSame(1, (new LocalActividad())->enviar());
+        $this->assertSame(0, LocalActividadEvento::count());
+    }
+
+    /** @test */
+    public function un_evento_sin_dueno_no_se_encola()
+    {
+        LocalActividad::registrar('agente_negocio', null);
 
         $this->assertSame(0, LocalActividadEvento::count());
     }
@@ -346,23 +364,26 @@ class LocalActividadEnvioTest extends TestCase
     }
 
     /**
-     * Si falla, lo que ya no le sirve a la escena se descarta, aunque no haya llegado al tope.
+     * Lo de más de 24 horas ya no le sirve a la escena y se poda, sea de quien sea: lo de un comercio sin instancia en
+     * esta base no lo manda nadie. Lo reciente de otro dueño se queda para su instancia.
      *
      * @test
      */
-    public function al_fallar_se_descarta_lo_de_mas_de_24_horas()
+    public function cada_corrida_poda_lo_de_mas_de_24_horas_de_cualquier_dueno()
     {
-        Http::fake(['*' => Http::response(['message' => 'error'], 500)]);
+        Http::fake(['*' => Http::response(['ok' => true, 'guardados' => 1], 200)]);
 
-        for ($i = 0; $i < 100; $i++) {
-            $this->fila();
-        }
-        $this->fila(['usuario' => 'Viejo fuera del lote', 'ocurrido_at' => now()->subHours(25)]);
+        $this->fila(['usuario' => 'Propio viejo', 'ocurrido_at' => now()->subHours(25)]);
+        $this->fila(['usuario' => 'Ajeno viejo', 'owner_id' => self::DUENO + 1, 'ocurrido_at' => now()->subHours(25)]);
+        $this->fila(['usuario' => 'Ajeno reciente', 'owner_id' => self::DUENO + 1]);
+        $this->fila(['usuario' => 'Propio reciente']);
 
-        (new LocalActividad())->enviar();
+        $this->assertSame(1, (new LocalActividad())->enviar());
 
-        $this->assertSame(100, LocalActividadEvento::count());
-        $this->assertSame(0, LocalActividadEvento::where('usuario', 'Viejo fuera del lote')->count());
+        Http::assertSent(function (Request $request) {
+            return count($request['eventos']) === 1 && $request['eventos'][0]['usuario'] === 'Propio reciente';
+        });
+        $this->assertSame(['Ajeno reciente'], LocalActividadEvento::pluck('usuario')->all());
     }
 
     /**

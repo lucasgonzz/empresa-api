@@ -70,8 +70,10 @@ class LocalActividad
     /**
      * Encola un evento. No toca la red y no tira excepciones.
      *
-     * 🔴 Lo de otro dueño no se encola: en una base compartida ninguna instancia lo mandaría nunca y quedaría
-     * huérfano. Puede pasar: en esa base el login no valida que el documento sea del comercio de la instalación.
+     * 🔴 Se encola aunque el dueño no sea el `USER_ID` de esta instancia, y lo manda la instancia de ese dueño (enviar()
+     * filtra por el suyo). En una base compartida la cola de jobs es una sola: el worker de un comercio toma el escaneo
+     * de otro, y filtrar acá perdería ese evento sin que nadie se entere. Si ese dueño no tiene instancia, enviar() lo
+     * poda a las HORAS_DE_VIGENCIA.
      *
      * @param  string      $tipo      Uno de TIPOS.
      * @param  int         $owner_id  Dueño del comercio.
@@ -82,7 +84,7 @@ class LocalActividad
     public static function registrar($tipo, $owner_id, $usuario = null, array $detalle = null)
     {
         try {
-            if (!self::activa() || !in_array($tipo, self::TIPOS, true) || (int) $owner_id !== (int) config('app.USER_ID')) {
+            if (!self::activa() || !in_array($tipo, self::TIPOS, true) || (int) $owner_id <= 0) {
                 return;
             }
 
@@ -161,6 +163,10 @@ class LocalActividad
     public static function escaneo_terminado(ProviderOrderScan $scan)
     {
         try {
+            if (!self::activa()) {
+                return;
+            }
+
             $persona = empty($scan->auth_user_id) ? null : User::find($scan->auth_user_id);
 
             self::registrar('escaneo', $scan->user_id, is_null($persona) ? null : $persona->name, [
@@ -207,6 +213,9 @@ class LocalActividad
             return 0;
         }
 
+        /* De cualquier dueño: lo de un comercio sin instancia en esta base no lo va a mandar nadie. */
+        LocalActividadEvento::where('ocurrido_at', '<', Carbon::now()->subHours(self::HORAS_DE_VIGENCIA))->delete();
+
         $eventos = LocalActividadEvento::where('owner_id', (int) config('app.USER_ID'))
             ->orderBy('id')
             ->limit(self::TOPE_LOTE)
@@ -240,7 +249,10 @@ class LocalActividad
         if ($response->status() === 422) {
             LocalActividadEvento::whereIn('id', $eventos->pluck('id'))->delete();
 
-            Log::warning('LocalActividad: el admin rechazó el lote (422) y se descartó.', ['eventos' => $eventos->count()]);
+            Log::warning('LocalActividad: el admin rechazó el lote (422) y se descartó.', [
+                'eventos' => $eventos->count(),
+                'campos'  => array_slice(array_keys((array) $response->json('errors')), 0, 5),
+            ]);
 
             return 0;
         }
@@ -259,8 +271,8 @@ class LocalActividad
     }
 
     /**
-     * El lote no llegó: suma un intento, descarta lo que llegó al tope o ya no sirve, y pausa los envíos. La causa casi
-     * siempre es de toda la instancia (admin caído, clave mal cargada), así que la pausa es de la cola entera: el resto
+     * El lote no llegó: suma un intento, descarta lo que llegó al tope y pausa los envíos. La causa casi siempre es de
+     * toda la instancia (admin caído, clave mal cargada), así que la pausa es de la cola entera: el resto
      * fallaría igual, y con la pausa una clave rota no arranca un proceso por minuto todo el día.
      *
      * @param  \Illuminate\Support\Collection $eventos
@@ -273,10 +285,6 @@ class LocalActividad
 
         LocalActividadEvento::whereIn('id', $ids)->increment('intentos');
         LocalActividadEvento::whereIn('id', $ids)->where('intentos', '>=', self::TOPE_INTENTOS)->delete();
-
-        LocalActividadEvento::where('owner_id', (int) config('app.USER_ID'))
-            ->where('ocurrido_at', '<', Carbon::now()->subHours(self::HORAS_DE_VIGENCIA))
-            ->delete();
 
         $intentos = (int) $eventos->max('intentos') + 1;
         $minutos  = min(self::PAUSA_MAXIMA_MINUTOS, pow(2, $intentos - 1));
