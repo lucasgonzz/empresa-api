@@ -2,8 +2,6 @@
 
 namespace App\Http\Controllers\Pdf;
 
-use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
-use App\Http\Controllers\Helpers\AfipHelper;
 
 class AfipQrPdf {
 
@@ -46,31 +44,14 @@ class AfipQrPdf {
 
 		$this->instance->y += 7;
 
-		$data = [
-			'ver' 			=> 1,
-			'fecha' 		=> date_format($this->afip_ticket->created_at, 'Y-m-d'),
-			'cuit' 			=> $this->afip_ticket->cuit_negocio,
-			'ptoVta' 		=> $this->afip_ticket->punto_venta,
-			'tipoCmp' 		=> $this->afip_ticket->cbte_tipo,
-			'nroCmp' 		=> $this->afip_ticket->cbte_numero,
-			'importe' 		=> $this->afip_ticket->importe_total,
-			'moneda' 		=> $this->afip_ticket->moneda_id,
-			'ctz' 			=> 1,
-			'tipoDocRec' 	=> AfipHelper::getDocType('Cuit'),
-			'nroDocRec' 	=> $this->afip_ticket->cuit_cliente,
-			'codAut' 		=> $this->afip_ticket->cae,
-		];
+        self::imprimir_codigo(
+            $this->instance,
+            $this->afip_ticket,
+            $this->img_start_x,
+            $this->instance->y,
+            $this->img_width
+        );
 
-		$afip_link = 'https://www.afip.gob.ar/fe/qr/?'.base64_encode(json_encode($data));
-		 
-		$url = "https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=$afip_link&format=jpeg#.jpg";
-
-		if (GeneralHelper::file_exists_2($url)) {
-
-        	$this->instance->Image($url, $this->img_start_x, $this->instance->y, $this->img_width);
-
-		}
-        
         if ($this->from_ticket) {
 	        $x_position = 10;
 	        $this->instance->y += 52;
@@ -88,6 +69,101 @@ class AfipQrPdf {
 
         $this->instance->x = $x_position;
 	}
+
+    public static function enlace_fiscal($ticket): string
+    {
+        $fecha = $ticket->afip_fecha_emision ?: $ticket->created_at->format('Y-m-d');
+        $cotizacion = $ticket->moneda_cotizacion ?: self::campo_soap($ticket->request ?? null, 'MonCotiz');
+        $data = [
+            'ver' => 1,
+            'fecha' => substr((string) $fecha, 0, 10),
+            'cuit' => (int) $ticket->cuit_negocio,
+            'ptoVta' => (int) $ticket->punto_venta,
+            'tipoCmp' => (int) $ticket->cbte_tipo,
+            'nroCmp' => (int) $ticket->cbte_numero,
+            'importe' => (float) $ticket->importe_total,
+            'moneda' => $ticket->moneda ?: $ticket->moneda_id,
+            'ctz' => (float) ($cotizacion ?: 1),
+            'tipoCodAut' => 'E',
+            'codAut' => (int) $ticket->cae,
+        ];
+
+        if (!empty($ticket->cuit_cliente)) {
+            $tipo_documento = self::tipo_documento_receptor($ticket);
+            if ($tipo_documento !== null) {
+                $data['tipoDocRec'] = $tipo_documento;
+                $data['nroDocRec'] = (int) $ticket->cuit_cliente;
+            }
+        }
+
+        return 'https://www.arca.gob.ar/fe/qr/?p='.rawurlencode(base64_encode(json_encode($data)));
+    }
+
+    private static function tipo_documento_receptor($ticket): ?int
+    {
+        $tipo = self::campo_soap($ticket->response ?? null, 'DocTipo');
+        if ($tipo !== null) {
+            return (int) $tipo;
+        }
+
+        // Los comprobantes históricos pueden tener CUIT pero no la respuesta de ARCA.
+        return strlen((string) $ticket->cuit_cliente) === 11 ? 80 : null;
+    }
+
+    private static function campo_soap(?string $xml, string $campo): ?string
+    {
+        if (!$xml) {
+            return null;
+        }
+
+        $respuesta = simplexml_load_string($xml, 'SimpleXMLElement', LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
+        $valores = $respuesta !== false ? $respuesta->xpath('//*[local-name()="'.$campo.'"]') : [];
+        return !empty($valores) ? (string) $valores[0] : null;
+    }
+
+    public static function imprimir_codigo($pdf, $ticket, $x, $y, $size): void
+    {
+        if (empty($ticket->cae)) {
+            return;
+        }
+
+        $qr = new \TCPDF2DBarcode(self::enlace_fiscal($ticket), 'QRCODE,M');
+        $matriz = $qr->getBarcodeArray();
+        $escala = 4;
+        $margen = 4 * $escala;
+        $imagen = imagecreate(
+            $matriz['num_cols'] * $escala + 2 * $margen,
+            $matriz['num_rows'] * $escala + 2 * $margen
+        );
+        imagecolorallocate($imagen, 255, 255, 255);
+        $negro = imagecolorallocate($imagen, 0, 0, 0);
+
+        foreach ($matriz['bcode'] as $fila => $modulos) {
+            foreach ($modulos as $columna => $activo) {
+                if ($activo) {
+                    $izquierda = $margen + $columna * $escala;
+                    $arriba = $margen + $fila * $escala;
+                    imagefilledrectangle($imagen, $izquierda, $arriba, $izquierda + $escala - 1, $arriba + $escala - 1, $negro);
+                }
+            }
+        }
+
+        $archivo = tempnam(sys_get_temp_dir(), 'qr-fiscal-');
+        if ($archivo === false) {
+            imagedestroy($imagen);
+            throw new \RuntimeException('No se pudo preparar la imagen del QR fiscal.');
+        }
+
+        try {
+            if (!imagepng($imagen, $archivo)) {
+                throw new \RuntimeException('No se pudo generar la imagen del QR fiscal.');
+            }
+            $pdf->Image($archivo, $x, $y, $size, $size, 'PNG');
+        } finally {
+            imagedestroy($imagen);
+            unlink($archivo);
+        }
+    }
 
 	function logo_afip() {
 

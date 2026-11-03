@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\sale\CotizacionPorArticuloHelper;
+
 use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
@@ -1425,8 +1427,10 @@ class SaleHelper extends Controller {
         */
         $stock_a_descontar = [];
 
+        $fotos_cotizacion = $previus_articles ? $previus_articles->all() : [];
         foreach ($articles as $article) {
             if (isset($article['is_article'])) {
+                $article = Self::tiene_varios_precios($article) ? $article : CotizacionPorArticuloHelper::preservar($article, $fotos_cotizacion);
 
                 /*
                     🔴 Las filas sin precio (mision panchito-venta-price-vender, 1/11/2026): una fila sin
@@ -1454,6 +1458,7 @@ class SaleHelper extends Controller {
 
                         // Cada fila ES el renglon con otro precio y otra cantidad: ver fila_de_varios_precios().
                         $fila = Self::fila_de_varios_precios($article, $otro_precio);
+                        $fila = CotizacionPorArticuloHelper::preservar($fila, $fotos_cotizacion);
 
                         // $fecha_agregado = Self::get_fecha_agregado_for_item($otro_precio, $fecha_agregado_map);
                         Self::attachArticle($sale, $fila, null);
@@ -1683,6 +1688,9 @@ class SaleHelper extends Controller {
             $fila[DescuentosEnPreciosEsquemaHelper::CLAVE_REQUEST] = null;
         }
 
+        $fila = array_merge($fila, CotizacionPorArticuloHelper::datos($otro_precio));
+        if (isset($otro_precio['pivot'])) $fila['pivot'] = $otro_precio['pivot'];
+        unset($fila['_foto_monetaria_guardada']);
         return Self::precio_y_base_de_varios_precios($fila);
     }
 
@@ -1900,7 +1908,7 @@ class SaleHelper extends Controller {
             de arriba: dos columnas, dos memos. Mismas reglas: la API no la calcula ni la valida, y
             clave ausente (SPA vieja) = NULL.
         */
-        $sale->articles()->attach($article['id'], DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+        $datos_pivot = DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
             'amount'                => $amount,
             'ganancia'              => $ganancia * $amount,
             'cost'                  => $cost,
@@ -1927,7 +1935,19 @@ class SaleHelper extends Controller {
             'fecha_agregado'        => $fecha_agregado,
 
             'created_at'            => Carbon::now(),
-        ], RecargosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'));
+        ], RecargosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_item($article), 'article_sale');
+        $foto = $article['_foto_monetaria_guardada'] ?? null;
+        if ($foto && $sale->relationLoaded('foto_cotizacion_original')
+            && $sale->getRelation('foto_cotizacion_original') == ['moneda_id' => $sale->moneda_id, 'iva_aplicado' => $sale->iva_aplicado, 'iva_en_articulos_sin_iva' => $sale->iva_en_articulos_sin_iva]
+            && (float) ($foto['discount'] ?? 0) == (float) Self::getDiscount($article)
+            && abs((float) $foto['cost'] - (float) $cost) < 0.000001 && abs((float) $foto['amount'] - (float) $amount) < 0.000001) {
+            foreach (['ganancia', 'iva_percentage', 'price_sin_iva'] as $campo) {
+                if (array_key_exists($campo, $foto)) {
+                    $datos_pivot[$campo] = $foto[$campo];
+                }
+            }
+        }
+        $sale->articles()->attach($article['id'], CotizacionPorArticuloHelper::agregar($datos_pivot, $article, 'article_sale'));
 
         if (!is_null($delivered_amount) && !$sale->en_acopio) {
             $sale->en_acopio = 1;
@@ -2076,6 +2096,9 @@ class SaleHelper extends Controller {
      */
     static function get_iva_percentage_for_pivot($article_data)
     {
+        if (CotizacionPorArticuloHelper::datos($article_data) && isset($article_data['pivot']['iva_percentage'])) {
+            return Self::normalize_iva_percentage_for_pivot($article_data['pivot']['iva_percentage']);
+        }
         /** @var float|string|int $iva_percentage Alícuota por defecto cuando no hay IVA explícito. */
         $iva_percentage = 21;
 
@@ -2147,7 +2170,9 @@ class SaleHelper extends Controller {
          */
         $iva_percentage = 21;
 
-        if (isset($article_data['iva']) && isset($article_data['iva']['percentage'])) {
+        if (CotizacionPorArticuloHelper::datos($article_data) && isset($article_data['pivot']['iva_percentage'])) {
+            $iva_percentage = $article_data['pivot']['iva_percentage'];
+        } else if (isset($article_data['iva']) && isset($article_data['iva']['percentage'])) {
             $iva_percentage = $article_data['iva']['percentage'];
         } else if (isset($article_data['iva_id']) && !is_null($article_data['iva_id'])) {
             $iva_model = Iva::find($article_data['iva_id']);
@@ -2266,7 +2291,21 @@ class SaleHelper extends Controller {
         }
     }
 
-    static function updateCurrentAcountsAndCommissions($sale) {
+    static function updateCurrentAcountsAndCommissions($sale, $foto_previa = null) {
+
+        // Los otros llamadores conservan su comportamiento. En una edición se compara el estado
+        // persistido, sin confiar en una marca enviada por el navegador ni omitir otros cambios.
+        $conservar_cuenta = false;
+        $conservar_comisiones = false;
+        if (!is_null($foto_previa)) {
+            $foto_actual = \App\Http\Controllers\Helpers\sale\EfectosFinancierosDeVentaHelper::foto($sale);
+            $conservar_cuenta = $foto_previa['cuenta'] === $foto_actual['cuenta'];
+            $conservar_comisiones = $foto_previa['comisiones'] === $foto_actual['comisiones'];
+        }
+
+        if ($conservar_cuenta && $conservar_comisiones) {
+            return;
+        }
 
         /*
             Se evalua ANTES de borrar si la venta va a volver a la cuenta corriente, con las
@@ -2306,8 +2345,10 @@ class SaleHelper extends Controller {
             }
         }
 
-        $credit_account_id_anterior = Self::deleteCurrentAcountFromSale($sale);
-        Self::deleteSellerCommissionsFromSale($sale);
+        $credit_account_id_anterior = $conservar_cuenta ? null : Self::deleteCurrentAcountFromSale($sale);
+        if (!$conservar_comisiones) {
+            Self::deleteSellerCommissionsFromSale($sale);
+        }
 
         /*
             🔴 La cuenta en la que entra el movimiento nuevo la recalcula ENTERA
@@ -2318,9 +2359,11 @@ class SaleHelper extends Controller {
             dos checkPagos de ~10 s cada uno por guardado—, y cuando el helper decidía mal que la venta
             era "la última" (comparaba por día) la única que corría era ésta.
         */
-        $credit_account_id_nuevo = Self::create_current_acount($sale);
+        $credit_account_id_nuevo = $conservar_cuenta ? null : Self::create_current_acount($sale);
 
-        Self::crear_comision($sale);
+        if (!$conservar_comisiones) {
+            Self::crear_comision($sale);
+        }
 
         /*
             🔴 Y la cuenta de la que SALIÓ el movimiento viejo, si no es la misma: la edición le cambió
@@ -2618,6 +2661,13 @@ class SaleHelper extends Controller {
             $item = json_decode(json_encode($item), true);
         }
 
+        if (isset($item['_foto_monetaria_guardada'])) {
+            return $item['_foto_monetaria_guardada']['cost'];
+        }
+        if (CotizacionPorArticuloHelper::datos($item) && isset($item['pivot']) && array_key_exists('cost', $item['pivot'])) {
+            return $item['pivot']['cost'];
+        }
+
         $cost = null;
 
         /*
@@ -2733,7 +2783,7 @@ class SaleHelper extends Controller {
                     //     && $user->cotizar_precios_en_dolares == 0
                     // )
                 ) {
-                    $valor_dolar = CotizacionDeVentaHelper::resolver_para_costo($sale, $user);
+                    $valor_dolar = (CotizacionPorArticuloHelper::positiva($item['cotizacion_aplicada'] ?? null) ? (float) $item['cotizacion_aplicada'] : CotizacionDeVentaHelper::resolver_para_costo($sale, $user));
 
                     if (!is_null($valor_dolar)) {
                         $cost *= $valor_dolar;
@@ -2750,7 +2800,7 @@ class SaleHelper extends Controller {
                  */
                 if (CotizacionDeVentaHelper::item_esta_en_pesos($item)) {
 
-                    $valor_dolar = CotizacionDeVentaHelper::resolver_para_costo($sale, $user);
+                    $valor_dolar = (CotizacionPorArticuloHelper::positiva($item['cotizacion_aplicada'] ?? null) ? (float) $item['cotizacion_aplicada'] : CotizacionDeVentaHelper::resolver_para_costo($sale, $user));
 
                     if (!is_null($valor_dolar)) {
                         $cost /= $valor_dolar;
@@ -2912,6 +2962,8 @@ class SaleHelper extends Controller {
     }
 
     static function detachItems($sale, $sale_modification) {
+        $sale->setRelation('foto_cotizacion_original', ['moneda_id' => $sale->moneda_id, 'iva_aplicado' => $sale->iva_aplicado, 'iva_en_articulos_sin_iva' => $sale->iva_en_articulos_sin_iva]);
+
 
         SaleModificationsHelper::attach_articulos_antes_de_actualizar($sale, $sale_modification);
 

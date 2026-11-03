@@ -850,7 +850,7 @@ class SaleTicketPdf extends fpdf {
 
 	function qr() {
 		if (!is_null($this->afip_ticket)) {
-			$pdf = new AfipQrPdf($this, $this->sale, true);
+			$pdf = new AfipQrPdf($this, $this->afip_ticket, true);
 			$pdf->printQr();
 		}
 	}

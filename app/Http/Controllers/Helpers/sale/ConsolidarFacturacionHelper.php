@@ -26,6 +26,8 @@ use Illuminate\Support\Facades\Log;
 class ConsolidarFacturacionHelper extends Controller
 {
 
+    private const ESCALA_PRECIO_CONSOLIDADO = 12;
+
     /**
      * Valida que las ventas indicadas puedan consolidarse.
      * Lanza una Exception si alguna condición no se cumple.
@@ -233,6 +235,11 @@ class ConsolidarFacturacionHelper extends Controller
                 $forzado_consolidado = null;
             }
 
+            $factores = [];
+            foreach ($ventas_originales as $venta) {
+                $factores[$venta->id] = self::factores_de_recargo($venta);
+            }
+
             /** Usa el sale_type_id de la primera venta como referencia; todas deben ser del mismo tipo. */
             $sale_type_id = $ventas_originales->first()->sale_type_id;
 
@@ -284,9 +291,9 @@ class ConsolidarFacturacionHelper extends Controller
             ], $forzado_consolidado, 'sales'), 'sales'));
 
             /** Copia los ítems de todas las ventas originales a la consolidada. */
-            self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items);
+            self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items, $factores);
             self::copiar_combos($venta_consolidada, $ventas_originales);
-            self::copiar_services($venta_consolidada, $ventas_originales);
+            self::copiar_services($venta_consolidada, $ventas_originales, $factores);
 
             /** Vincula cada venta original con la consolidada para trazabilidad. */
             Sale::whereIn('id', $sale_ids)->update([
@@ -358,6 +365,44 @@ class ConsolidarFacturacionHelper extends Controller
     }
 
     /**
+     * Materializa los ajustes que forman el recargo de cada remito sobre su propia base.
+     * Los recargos directos ya vienen en el precio y las ventas sin recargo global se copian tal cual.
+     */
+    private static function factores_de_recargo(Sale $venta): array
+    {
+        $recargo = 1.0;
+        if (!$venta->aplicar_recargos_directo_a_items) {
+            foreach ($venta->surchages as $surchage) {
+                $recargo *= 1 + (float) $surchage->pivot->percentage / 100;
+            }
+        }
+
+        $recargo_en_descuento = min(0, (float) $venta->descuento);
+        if ($recargo == 1.0 && $recargo_en_descuento == 0.0) {
+            return ['articles' => 1.0, 'combos' => 1.0, 'services' => 1.0];
+        }
+
+        $descuento = 1.0;
+        if (!$venta->aplicar_descuentos_directo_a_items) {
+            foreach ($venta->discounts as $discount) {
+                $descuento *= 1 - (float) $discount->pivot->percentage / 100;
+            }
+        }
+
+        return [
+            'articles' => $recargo * $descuento * (1 - (float) $venta->descuento / 100),
+            'combos' => $recargo * $descuento,
+            'services' => ($venta->surchages_in_services ? $recargo : 1.0)
+                * ($venta->discounts_in_services ? $descuento : 1.0),
+        ];
+    }
+
+    private static function precio_con_recargo($precio, float $factor): float
+    {
+        return round((float) $precio * $factor, self::ESCALA_PRECIO_CONSOLIDADO);
+    }
+
+    /**
      * Copia los artículos de todas las ventas originales a la venta consolidada.
      *
      * Sin agrupar, cada renglón de cada venta original es un renglón de la consolidada, aunque
@@ -371,7 +416,7 @@ class ConsolidarFacturacionHelper extends Controller
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'articles'.
      * @param bool       $agrupar           Si true, agrupa renglones iguales sumando cantidades.
      */
-    private static function copiar_articulos(Sale $consolidada, $ventas_originales, bool $agrupar): void
+    private static function copiar_articulos(Sale $consolidada, $ventas_originales, bool $agrupar, array $factores): void
     {
         /**
          * Renglones a adjuntar, en el orden en que aparecen en las ventas originales.
@@ -387,9 +432,10 @@ class ConsolidarFacturacionHelper extends Controller
             foreach ($venta->articles as $article) {
                 /** Extrae todos los datos del pivot para reproducirlos en la consolidada. */
                 $pivot = $article->pivot;
+                $item = self::item_desde_pivot($article->id, $pivot, $factores[$venta->id]['articles']);
 
                 if ($agrupar) {
-                    $clave = self::clave_de_agrupacion($article);
+                    $clave = self::clave_de_agrupacion($article, $item['price']);
 
                     if (isset($items_a_adjuntar[$clave])) {
                         /**
@@ -412,47 +458,35 @@ class ConsolidarFacturacionHelper extends Controller
                         if (is_null($items_a_adjuntar[$clave]['iva_percentage']) && !is_null($pivot->iva_percentage)) {
                             $items_a_adjuntar[$clave]['iva_percentage'] = $pivot->iva_percentage;
                         }
-                        if (is_null($items_a_adjuntar[$clave]['price_sin_iva']) && !is_null($pivot->price_sin_iva)) {
-                            $items_a_adjuntar[$clave]['price_sin_iva'] = $pivot->price_sin_iva;
+                        if (is_null($items_a_adjuntar[$clave]['price_sin_iva']) && !is_null($item['price_sin_iva'])) {
+                            $items_a_adjuntar[$clave]['price_sin_iva'] = $item['price_sin_iva'];
                         }
                         continue;
                     }
 
-                    $items_a_adjuntar[$clave] = self::item_desde_pivot($article->id, $pivot);
+                    $items_a_adjuntar[$clave] = $item;
                     continue;
                 }
 
-                $items_a_adjuntar[] = self::item_desde_pivot($article->id, $pivot);
+                $items_a_adjuntar[] = $item;
             }
         }
 
         /** Adjunta todos los ítems acumulados a la venta consolidada, un renglón por ítem. */
+        $relacion = $consolidada->articles();
         foreach ($items_a_adjuntar as $item) {
             $article_id = $item['article_id'];
             unset($item['article_id']);
-            $consolidada->articles()->attach($article_id, $item);
+            $relacion->attach($article_id, $relacion->conservar_precision($item));
         }
     }
 
     /**
      * Arma el renglón de la consolidada a partir del pivot de un renglón original.
      *
-     * 🔴 MENOS `price_sin_recargos_de_venta`, A PROPOSITO, y no es un olvido (mision
-     * recargos-en-precios-editable, 28/9/2026). La base dice "este precio trae adentro los recargos
-     * de ESTE comprobante", y la consolidada no tiene recargos ni la opcion
-     * `aplicar_recargos_directo_a_items`: `consolidar()` no copia ni `surchages` ni el flag de las
-     * originales (que ademas pueden tener la opcion distinta entre si). Para la consolidada, `price`
-     * es el precio final y punto. Si la base se copiara, VENDER —que con el flag en 0 muestra la base
-     * cuando la hay— le bajaria el precio a cada renglon al abrirla y el recargo no apareceria en
-     * ningun lado. NULL es la verdad de este comprobante. Lo mismo en combos y servicios, mas abajo.
-     *
-     * 🔴 Y TAMBIEN MENOS `price_sin_descuentos_de_venta` Y MENOS EL FLAG `aplicar_descuentos_directo_a_items`
-     * (mision descuentos-aplicar-al-precio-del-articulo, 8/10/2026), por el mismo motivo y a proposito:
-     * la consolidada no copia ni `discounts` ni el flag de las originales. Para ella `price` es el
-     * precio final —ya con el descuento que cada original llevara adentro— y punto; copiar el precio
-     * original haria que VENDER, con el flag en 0, le subiera el precio a cada renglon al abrirla.
-     * Lo mismo en combos y servicios, mas abajo. (Que la consolidada no herede los descuentos al pie
-     * de las originales es el hallazgo 7 del informe del 28/9/2026, abierto.)
+     * Conserva el precio final del renglón, incluido el recargo global que le corresponde.
+     * Los precios base de recargos o descuentos directos y sus flags pertenecen al remito
+     * original. Copiarlos permitiría revertir un ajuste que ya forma parte del precio consolidado.
      *
      * `name`, `iva_percentage` y `price_sin_iva` se copian desde el 5/10/2026 (decisión de Lucas).
      * Antes no, y la factura consolidada salía con el IVA ACTUAL del artículo en vez del del momento
@@ -464,13 +498,13 @@ class ConsolidarFacturacionHelper extends Controller
      * @param object $pivot      Pivot del renglón original (article_sale).
      * @return array Datos del renglón, con `article_id` para el attach.
      */
-    private static function item_desde_pivot($article_id, $pivot): array
+    private static function item_desde_pivot($article_id, $pivot, float $factor): array
     {
         return [
             'article_id'                  => $article_id,
             'amount'                      => (float)$pivot->amount,
             'cost'                        => (float)$pivot->cost,
-            'price'                       => (float)$pivot->price,
+            'price'                       => self::precio_con_recargo($pivot->price, $factor),
             'ganancia'                    => (float)$pivot->ganancia,
             'returned_amount'             => (float)($pivot->returned_amount ?? 0),
             'delivered_amount'            => $pivot->delivered_amount,
@@ -482,7 +516,9 @@ class ConsolidarFacturacionHelper extends Controller
             'article_variant_id'          => $pivot->article_variant_id,
             'price_type_personalizado_id' => $pivot->price_type_personalizado_id,
             'iva_percentage'              => $pivot->iva_percentage,
-            'price_sin_iva'               => $pivot->price_sin_iva,
+            'price_sin_iva'               => is_null($pivot->price_sin_iva)
+                ? null
+                : round((float) $pivot->price_sin_iva * $factor, 2),
             'fecha_agregado'              => $pivot->fecha_agregado,
             'created_at'                  => Carbon::now(),
         ];
@@ -527,7 +563,7 @@ class ConsolidarFacturacionHelper extends Controller
      *                                       y la relación `iva` cargada.
      * @return string
      */
-    private static function clave_de_agrupacion($article): string
+    private static function clave_de_agrupacion($article, float $precio): string
     {
         $pivot = $article->pivot;
 
@@ -540,7 +576,7 @@ class ConsolidarFacturacionHelper extends Controller
         return serialize([
             (int)$article->id,
             self::id_opcional($pivot->article_variant_id),
-            (float)$pivot->price,
+            $precio,
             (float)($pivot->discount ?? 0),
             self::numero_opcional($pivot->with_dolar),
             self::alicuota_normalizada($alicuota),
@@ -640,19 +676,21 @@ class ConsolidarFacturacionHelper extends Controller
 
     /**
      * Copia los combos de todas las ventas originales a la venta consolidada.
-     * No agrupa combos, se replican como están en cada venta.
+     * Cada combo conserva su cantidad y el precio con los ajustes de su venta.
      *
      * @param Sale       $consolidada       Venta contenedora destino.
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'combos'.
      */
     private static function copiar_combos(Sale $consolidada, $ventas_originales): void
     {
+        $relacion = $consolidada->combos();
         foreach ($ventas_originales as $venta) {
+            $factor = self::factores_de_recargo($venta)['combos'];
             foreach ($venta->combos as $combo) {
                 $pivot = $combo->pivot;
-                $consolidada->combos()->attach($combo->id, [
+                $relacion->attach($combo->id, $relacion->conservar_precision([
                     'amount'     => (float)($pivot->amount ?? 1),
-                    'price'      => (float)($pivot->price ?? 0),
+                    'price'      => self::precio_con_recargo($pivot->price, $factor),
                     /*
                      * El costo se copia TAL CUAL, NULL incluido (misión combos-calculados, Parte A2,
                      * 30/9/2026). Antes era `?? 0`, y eso convierte "no sé cuánto costó" (el combo de
@@ -663,7 +701,7 @@ class ConsolidarFacturacionHelper extends Controller
                      */
                     'cost'       => is_null($pivot->cost) ? null : (float)$pivot->cost,
                     'created_at' => Carbon::now(),
-                ]);
+                ]));
             }
         }
     }
@@ -674,18 +712,18 @@ class ConsolidarFacturacionHelper extends Controller
      * @param Sale       $consolidada       Venta contenedora destino.
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'services'.
      */
-    private static function copiar_services(Sale $consolidada, $ventas_originales): void
+    private static function copiar_services(Sale $consolidada, $ventas_originales, array $factores): void
     {
+        $relacion = $consolidada->services();
         foreach ($ventas_originales as $venta) {
             foreach ($venta->services as $service) {
                 $pivot = $service->pivot;
-                $consolidada->services()->attach($service->id, [
+                $relacion->attach($service->id, $relacion->conservar_precision([
                     'discount'        => (float)($pivot->discount ?? 0),
                     'amount'          => (float)($pivot->amount ?? 1),
-                    'price'           => (float)($pivot->price ?? 0),
+                    'price'           => self::precio_con_recargo($pivot->price, $factores[$venta->id]['services']),
                     'returned_amount' => (float)($pivot->returned_amount ?? 0),
-                    'created_at'      => Carbon::now(),
-                ]);
+                ]));
             }
         }
     }

@@ -92,8 +92,11 @@ class UpdateSaleHelper {
 	 */
 	static function escribir_devueltas_de_la_clave($sale, $article_id, $variant_id, $items) {
 
+		$consolidada = (bool) $sale->is_consolidacion_facturacion;
+		$precio = $consolidada ? $sale->articles()->expresion_de_precio() : 'price';
 		$query = DB::table('article_sale')
-					->select('id', 'amount', 'price', 'returned_amount')
+					->select('id', 'amount', 'returned_amount')
+					->selectRaw($precio.' AS price')
 					->where('sale_id', $sale->id)
 					->where('article_id', $article_id)
 					->orderBy('id', 'ASC');
@@ -129,7 +132,7 @@ class UpdateSaleHelper {
 
 		foreach ($items as $item) {
 
-			$fila = Self::fila_para_el_item($filas, $usadas, $item);
+			$fila = Self::fila_para_el_item($filas, $usadas, $item, $consolidada);
 
 			if (is_null($fila)) {
 				Log::info('Devolucion sobre la venta '.$sale->id.': llegaron mas items que renglones para el articulo '.$article_id.'; el sobrante no se marca.');
@@ -178,7 +181,7 @@ class UpdateSaleHelper {
 	 * @param  array  $item
 	 * @return object|null
 	 */
-	static function fila_para_el_item($filas, $usadas, $item) {
+	static function fila_para_el_item($filas, $usadas, $item, $consolidada = false) {
 
 		$precio = isset($item['price_vender']) ? (float)$item['price_vender'] : null;
 		$cantidad = isset($item['amount']) ? (float)$item['amount'] : null;
@@ -194,7 +197,7 @@ class UpdateSaleHelper {
 		if (!is_null($precio) && !is_null($cantidad)) {
 
 			foreach ($libres as $fila) {
-				if (abs((float)$fila->price - $precio) < 0.0001 && abs((float)$fila->amount - $cantidad) < 0.0001) {
+				if (Self::mismo_precio((float)$fila->price, $precio, $consolidada) && abs((float)$fila->amount - $cantidad) < 0.0001) {
 					return $fila;
 				}
 			}
@@ -212,13 +215,18 @@ class UpdateSaleHelper {
 		if (!is_null($precio)) {
 
 			foreach ($libres as $fila) {
-				if (abs((float)$fila->price - $precio) < 0.0001) {
+				if (Self::mismo_precio((float)$fila->price, $precio, $consolidada)) {
 					return $fila;
 				}
 			}
 		}
 
 		return $libres[0];
+	}
+
+	private static function mismo_precio(float $precio_fila, float $precio_item, bool $consolidada): bool
+	{
+		return $consolidada ? $precio_fila == $precio_item : abs($precio_fila - $precio_item) < 0.0001;
 	}
 
 	/**

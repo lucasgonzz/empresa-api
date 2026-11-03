@@ -47,7 +47,7 @@ class SaleAfipTicketPdf extends fpdf {
         /**
          * Helper compartido para lógica fiscal AFIP reutilizable entre PDFs.
          */
-        $this->ticket_info_helper = new TicketInfoHelper($this->afip_ticket, $this->user);
+        $this->ticket_info_helper = new TicketInfoHelper($this->afip_ticket, $this->sale, $this->user);
         $this->afip_helper = $this->ticket_info_helper->afip_helper();
 		$this->pdf_column_profile = PdfColumnService::get_profile_for_print(
 			$this->user->id,

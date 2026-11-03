@@ -311,8 +311,11 @@ class NotaCreditoHelper {
 	 */
 	static function renglon_a_deshacer($sale, $article_id, $variante = null, $con_variante = false, $precio = null, $cantidad = null) {
 
+		$consolidada = (bool) $sale->is_consolidacion_facturacion;
+		$expresion_precio = $consolidada ? $sale->articles()->expresion_de_precio() : 'price';
 		$query = DB::table('article_sale')
-					->select('id', 'article_variant_id', 'returned_amount', 'price')
+					->select('id', 'article_variant_id', 'returned_amount')
+					->selectRaw($expresion_precio.' AS price')
 					->where('sale_id', $sale->id)
 					->where('article_id', $article_id);
 
@@ -338,8 +341,10 @@ class NotaCreditoHelper {
 
 		if (!is_null($precio)) {
 
-			$mismo_precio = array_values(array_filter($filas, function ($fila) use ($precio) {
-				return abs((float)$fila->price - (float)$precio) < 0.0001;
+			$mismo_precio = array_values(array_filter($filas, function ($fila) use ($precio, $consolidada) {
+				return $consolidada
+					? (float)$fila->price == (float)$precio
+					: abs((float)$fila->price - (float)$precio) < 0.0001;
 			}));
 
 			foreach ($mismo_precio as $fila) {

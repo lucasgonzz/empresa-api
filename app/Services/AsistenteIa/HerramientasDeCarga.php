@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FiltroDeArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaCuotasTiendaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraSinArticulosIaHelper;
@@ -256,6 +257,7 @@ class HerramientasDeCarga
      * @var array<int, string>
      */
     const NUNCA_AUTO_CONFIRMABLES = [
+        AiMessageAction::TIPO_CUOTAS_TIENDA,
         AiMessageAction::TIPO_BAJA,
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
         AiMessageAction::TIPO_UNIFICAR_BANCOS,
@@ -1750,6 +1752,30 @@ class HerramientasDeCarga
                     'required'   => ['texto'],
                 ],
             ],
+            [
+                'name' => 'proponer_cuotas_tienda',
+                'description' => 'Configura en UNA propuesta las cuotas CON RECARGO de Mercado Pago para la tienda online. Usala cuando te pidan cargar coeficientes o recargos, incluso desde un Excel adjunto: leé la tabla del archivo y pasá cada cantidad de cuotas con su coeficiente (1.0256 significa 2.56% de recargo) o su recargo porcentual. No uses el ABM genérico: la relación de las cuotas es con el método de CUENTA CORRIENTE y el sistema lo vincula a la tienda. Reusa los métodos existentes y crea Mercado Pago si falta, sin tocar credenciales. La tarjeta muestra todas las opciones y los cambios antes de confirmar; SIEMPRE requiere confirmación, también en directo. Si una cantidad ya existe, se actualiza esa cantidad; no se borran otras cuotas. No inventes filas ni interpretes un coeficiente como porcentaje. Si no pudiste leer el archivo o está recortado, pedí los datos que faltan. Esto no conecta la cuenta de Mercado Pago ni realiza cobros. Avisá que debe revisar las cuotas sin interés en Mercado Pago para no sumar otro interés. Si devuelve error, contá el motivo; no digas que ya quedó cargado.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'metodo' => ['type' => ['string', 'integer'], 'description' => 'Nombre del método Mercado Pago de la tienda; por defecto Mercado Pago. Si hay varios, el nombre exacto o el id que te devolvió la herramienta.'],
+                        'cuotas' => [
+                            'type' => 'array', 'minItems' => 1, 'maxItems' => 36,
+                            'items' => [
+                                'type' => 'object',
+                                'properties' => [
+                                    'cantidad_cuotas' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 36],
+                                    'coeficiente' => ['type' => 'number', 'description' => 'Multiplicador del total; 1.0256 para 2.56% de recargo.'],
+                                    'recargo' => ['type' => 'number', 'description' => 'Porcentaje; 2.56 para 2.56% de recargo. Mandá coeficiente o recargo.'],
+                                ],
+                                'required' => ['cantidad_cuotas'],
+                            ],
+                        ],
+                        'reemplaza_a' => ['type' => 'integer'],
+                    ],
+                    'required' => ['cuotas'],
+                ],
+            ],
         ];
 
         if ($con_whatsapp) {
@@ -2146,6 +2172,9 @@ class HerramientasDeCarga
                 return self::resultado(PropuestaBancosChequesIaHelper::consultar($contexto));
 
             // 🔴 SIN quizas_auto_confirmar(), a propósito: unificar bancos SIEMPRE deja tarjeta (ver AUTO_CONFIRMABLES).
+            case 'proponer_cuotas_tienda':
+                return self::resultado(PropuestaCuotasTiendaIaHelper::proponer($contexto, $assistant_message, $input));
+
             case 'proponer_unificar_bancos_de_cheques':
                 return self::resultado(PropuestaBancosChequesIaHelper::proponer($contexto, $assistant_message, $input));
 

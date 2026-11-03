@@ -69,6 +69,7 @@ class McpServidor
         AiMessageAction::TIPO_BAJA                 => 'borrar algo',
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA => 'la actualización masiva de artículos',
         AiMessageAction::TIPO_UNIFICAR_BANCOS      => 'unificar los bancos de los cheques',
+        AiMessageAction::TIPO_CUOTAS_TIENDA        => 'configurar las cuotas de Mercado Pago de la tienda',
         AiMessageAction::TIPO_PERMISO_EMPLEADO     => 'los permisos de un empleado',
         AiMessageAction::TIPO_BORRADO_PANTALLA     => 'borrar por una acción de pantalla',
         // Misión asistente-envios-a-clientes (16/10/2026): los tres envíos a clientes del negocio.

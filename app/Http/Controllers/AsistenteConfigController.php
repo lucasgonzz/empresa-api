@@ -143,6 +143,11 @@ class AsistenteConfigController extends Controller
      * Desde la misión agente-memoria-y-sin-techo (ronda de arreglos R7) suma, de forma aditiva,
      * `supero_tokens` y `supero_interacciones` (cuál de los dos topes se pasó).
      *
+     * 🔴 Misión plan-ia-por-gasto (2/11/2026): ESTA RESPUESTA NO LLEVA DÓLARES NI PRECIOS, la ve el dueño. Con
+     * tope de gasto suma `porcentaje_del_plan` (entero de 0 a 100; null sin ese tope, y ahí el SPA sigue con
+     * los tokens) y `plan.tope_tokens_mensual` sale null, para que un SPA viejo saque su barra en vez de
+     * mostrar un tope que ya no corta.
+     *
      * @return JsonResponse
      */
     public function mi_consumo(): JsonResponse
@@ -174,8 +179,19 @@ class AsistenteConfigController extends Controller
              * aditivo, para que las SPA puedan decir «hoy» (interacciones, se renueva mañana) o «este mes»
              * (tokens). `supero` sigue siendo el O de los dos; una SPA vieja no las lee.
              */
-            'supero_tokens'        => $estado['supero_tokens'],
+            'supero_tokens'        => $estado['supero_tokens'] || $estado['supero_gasto'],
             'supero_interacciones' => $estado['supero_interacciones'],
+            /*
+             * Misión plan-ia-por-gasto: 🔴 `supero_tokens` acá quiere decir «se pasó el tope del MES», sea de
+             * tokens o de gasto, y no se suma una `supero_gasto`. Los dos SPA (este y ia-spa) dicen «mañana se
+             * renueva» con `supero_interacciones && !supero_tokens`: con los dos topes pasados, un SPA viejo le
+             * mentiría al dueño si esta clave quedara en false.
+             *
+             * `cerca_del_mes` es para decir de qué tope se está cerca: `cerca` también se prende por las
+             * interacciones de hoy, y «Usaste 12 % de tu plan · te estás acercando al límite» no se entiende.
+             */
+            'porcentaje_del_plan'  => TopeDeTokensHelper::porcentaje_del_plan($estado),
+            'cerca_del_mes'        => $estado['cerca_del_mes'],
             /*
              * Misión proveedores-ia-deepseek: el footer describe con qué CORRE el asistente, así que
              * los tres salen de modelo_del_asistente(): el proveedor efectivo (con el fallback de

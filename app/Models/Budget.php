@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Http\Controllers\Helpers\sale\CotizacionPorArticuloHelper;
+
 use App\Http\Controllers\Helpers\Budget\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\Budget\VarianteEnPresupuestoEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
@@ -129,7 +131,7 @@ class Budget extends Model
      * andando. Con ella, `GeneralHelper::article_name()` ya imprime "Remera Talle M" en el PDF.
      */
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(VarianteEnPresupuestoEsquemaHelper::columnas_pivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name'], 'article_budget'), 'article_budget')));
+        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot(CotizacionPorArticuloHelper::columnas(VarianteEnPresupuestoEsquemaHelper::columnas_pivot(DescuentosEnPreciosEsquemaHelper::columnas_pivot(RecargosEnPreciosEsquemaHelper::columnas_pivot(['id', 'amount', 'bonus', 'location', 'price', 'price_type_personalizado_id', 'cost', 'name'], 'article_budget'), 'article_budget')), 'article_budget'));
     }
 
     function optional_order_production_statuses() {

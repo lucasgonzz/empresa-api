@@ -2,6 +2,8 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\sale\CotizacionPorArticuloHelper;
+
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\Budget\BudgetCobroHelper;
@@ -372,7 +374,7 @@ class BudgetHelper {
 			 *
 			 * Unidades y ficha salen del modelo del artículo, el mismo dato que `getCost()` lee.
 			 */
-			$cost = CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
+			$cost = CotizacionPorArticuloHelper::datos($article) ? $cost : CostoDeLineaDeVentaHelper::corregir_costo_de_bulto_sin_dividir(
 				$cost,
 				$price,
 				$article->unidades_individuales,
@@ -414,7 +416,7 @@ class BudgetHelper {
 			 */
 			$variante = Self::variante_para_la_venta($article);
 
-			$sale->articles()->attach($article->id, DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$datos_cotizados = DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 				'amount'			=> $amount,
 				'checked_amount'	=> Self::get_checked_amount($has_extencion_check_sales, $article),
 				'price'	    		=> $price,
@@ -425,7 +427,8 @@ class BudgetHelper {
 				'name'				=> $article->pivot->name,
 				'article_variant_id'	=> $variante['article_variant_id'],
 				'variant_description'	=> $variante['variant_description'],
-			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'));
+			], RecargosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale'), DescuentosEnPreciosEsquemaHelper::base_del_pivot($article->pivot), 'article_sale');
+			$sale->articles()->attach($article->id, CotizacionPorArticuloHelper::agregar($datos_cotizados, $article, 'article_sale'));
 
 			Log::info('sale articles:');
 			Log::info($sale->articles);
@@ -892,8 +895,10 @@ class BudgetHelper {
 		 * ver `variante_del_renglon()`.
 		 */
 		$variantes_guardadas = Self::snapshot_de_variantes($budget->articles);
+		$fotos_cotizacion = $budget->articles->all();
 		$budget->articles()->detach();
 		foreach ($articles as $article) {
+			$article = CotizacionPorArticuloHelper::preservar($article, $fotos_cotizacion);
 			$id = (int)$article['id'];
 
 			// $amount = array_key_exists('amount', $article) ? $article['amount'] : $article['pivot']['amount'];
@@ -994,7 +999,7 @@ class BudgetHelper {
 			 * La variante entra por su guarda de esquema: sin las columnas (ventana del deploy) el
 			 * pivot queda exactamente como antes.
 			 */
-			$budget->articles()->attach($article['id'], VarianteEnPresupuestoEsquemaHelper::agregar_al_pivot(DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
+			$datos_cotizados = VarianteEnPresupuestoEsquemaHelper::agregar_al_pivot(DescuentosEnPreciosEsquemaHelper::agregar_al_pivot(RecargosEnPreciosEsquemaHelper::agregar_al_pivot([
 									'amount' 	=> $amount,
 									'price' 	=> $price,
 									'cost' 		=> $cost,
@@ -1002,7 +1007,8 @@ class BudgetHelper {
 									'location' 	=> $location,
 									'price_type_personalizado_id' 	=> $price_type_personalizado_id,
 									'name' 		=> $pivot_name,
-								], $bases['recargos'], 'article_budget'), $bases['descuentos'], 'article_budget'), $variante['article_variant_id'], $variante['variant_description']));
+								], $bases['recargos'], 'article_budget'), $bases['descuentos'], 'article_budget'), $variante['article_variant_id'], $variante['variant_description']);
+			$budget->articles()->attach($article['id'], CotizacionPorArticuloHelper::agregar($datos_cotizados, $article, 'article_budget'));
 		}
 	}
 
