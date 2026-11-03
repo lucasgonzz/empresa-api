@@ -120,6 +120,15 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
     {
         $dueno = $this->crear_dueno(true);
 
+        /*
+         * Misión prueba-listas-siempre (3/11/2026): los diseños por lista existen desde la SEGUNDA
+         * lista (con una sola, la «Precio final», vale la etiqueta genérica). La que crea la API acá
+         * es la segunda, así que el observer deja el diseño de las dos.
+         */
+        $primera = $this->crear_lista($dueno, 'Primera', 1);
+
+        $this->assertCount(0, $this->disenos_de($dueno), 'La primera lista no crea ningún diseño.');
+
         $this->actingAs($dueno, 'web');
 
         $respuesta = $this->postJson('api/price-type', array(
@@ -138,11 +147,13 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
 
         $disenos = $this->disenos_de($dueno);
 
-        $this->assertCount(1, $disenos);
-        $this->assertSame('Revendedor', $disenos[0]->name);
-        $this->assertSame($lista_id, $disenos[0]->price_type_id);
-        $this->assertSame(4, $disenos[0]->position);
-        $this->assertEquals(ArticleTicketDesignHelper::diseno_actual($lista_id), $disenos[0]->diseno);
+        $this->assertCount(2, $disenos, 'Con la segunda lista aparecen los diseños de las dos.');
+        $this->assertSame('Primera', $disenos[0]->name);
+        $this->assertSame($primera->id, $disenos[0]->price_type_id);
+        $this->assertSame('Revendedor', $disenos[1]->name);
+        $this->assertSame($lista_id, $disenos[1]->price_type_id);
+        $this->assertSame(4, $disenos[1]->position);
+        $this->assertEquals(ArticleTicketDesignHelper::diseno_actual($lista_id), $disenos[1]->diseno);
 
         /* Ni el helper de nuevo ni el seeder lo duplican. */
         $lista = \App\Models\PriceType::find($lista_id);
@@ -150,7 +161,7 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
         $this->assertNull(ArticleTicketDesignHelper::crear_diseno_de_lista($lista));
         $this->correr_seeder();
 
-        $this->assertCount(1, $this->disenos_de($dueno));
+        $this->assertCount(2, $this->disenos_de($dueno));
     }
 
     /**
@@ -164,15 +175,18 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
     {
         $dueno = $this->crear_dueno(true);
 
+        // Misión prueba-listas-siempre (3/11/2026): los diseños por lista existen desde la segunda.
+        $this->crear_lista($dueno, 'Primera', 1);
+
         $lista = $this->crear_lista($dueno, 'Importada', 3);
 
         $disenos = $this->disenos_de($dueno);
 
-        $this->assertCount(1, $disenos);
-        $this->assertSame('Importada', $disenos[0]->name);
-        $this->assertSame($lista->id, $disenos[0]->price_type_id);
-        $this->assertSame(3, $disenos[0]->position);
-        $this->assertEquals(ArticleTicketDesignHelper::diseno_actual($lista->id), $disenos[0]->diseno);
+        $this->assertCount(2, $disenos);
+        $this->assertSame('Importada', $disenos[1]->name);
+        $this->assertSame($lista->id, $disenos[1]->price_type_id);
+        $this->assertSame(3, $disenos[1]->position);
+        $this->assertEquals(ArticleTicketDesignHelper::diseno_actual($lista->id), $disenos[1]->diseno);
 
         /* Sin listas prendidas, crear una lista no crea diseño. */
         $sin_listas = $this->crear_dueno(false);
