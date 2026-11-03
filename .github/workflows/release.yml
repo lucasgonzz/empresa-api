@@ -18,14 +18,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extraer version del commit
         id: version
         run: |
-          MSG="${{ github.event.head_commit.message }}"
+          MSG=$(git show -s --format=%B "$GITHUB_SHA")
           VERSION=$(echo "$MSG" | grep -oP '(?<=\[release:)[^\]]+')
-          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          [[ "$VERSION" =~ ^[0-9]+(\.[0-9]+){2,}$ ]]
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------------------------------
       # Paquete de la API (misión actualizar-sin-el-vps, 9/9/2026).
@@ -44,8 +46,7 @@ jobs:
       # falla, el job corta ANTES de tocar master: no queda ni merge, ni tag, ni release. Se
       # arregla en develop y se vuelve a pushear el [release:X.Y.Z].
       #
-      # Se empaqueta el árbol de develop, que es exactamente el que master va a recibir en el
-      # merge --no-ff de abajo (master es ancestro de develop en este punto).
+      # Se empaqueta el árbol del commit que disparó el release. El merge verifica ese mismo árbol.
       # ------------------------------------------------------------------------------------
 
       - name: Preparar PHP 7.4
@@ -98,15 +99,18 @@ jobs:
           unzip -l "$ZIP" | tail -1
           ls -la "$ZIP"
 
-      - name: Merge develop a master
+      - name: Integrar el commit del release en master
+        id: merge
         # vendor/ está en el .gitignore y el zip queda como archivo sin trackear: ninguno de los
         # dos existe en master, así que el checkout no tiene con qué chocar.
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git checkout master
-          git merge develop --no-ff -m "chore: release v${{ steps.version.outputs.VERSION }}"
+          git merge --no-ff "$GITHUB_SHA" -m "chore: release v${{ steps.version.outputs.VERSION }}"
+          git diff --exit-code "$GITHUB_SHA" HEAD --
           git push origin master
+          echo "COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Crear tag y release
         uses: softprops/action-gh-release@v2
@@ -114,7 +118,7 @@ jobs:
           tag_name: v${{ steps.version.outputs.VERSION }}
           name: v${{ steps.version.outputs.VERSION }}
           generate_release_notes: true
-          target_commitish: master
+          target_commitish: ${{ steps.merge.outputs.COMMIT }}
           files: empresa-api-v${{ steps.version.outputs.VERSION }}.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
