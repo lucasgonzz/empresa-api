@@ -3,6 +3,8 @@
 namespace App\Models;
 
 use App\Http\Controllers\Helpers\Devoluciones\VarianteEnNotaCreditoEsquemaHelper;
+use App\Models\Relations\RenglonesDeVenta;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 
 class CurrentAcount extends Model
@@ -111,6 +113,18 @@ class CurrentAcount extends Model
 
     public function to_pay() {
         return $this->belongsTo(CurrentAcount::class, 'to_pay_id');
+    }
+
+    protected function newBelongsToMany(Builder $query, Model $parent, $table, $foreignPivotKey, $relatedPivotKey,
+                                        $parentKey, $relatedKey, $relationName = null)
+    {
+        if (in_array($table, RenglonesDeVenta::TABLAS, true)) {
+            return (new RenglonesDeVenta($query, $parent, $table, $foreignPivotKey, $relatedPivotKey,
+                $parentKey, $relatedKey, $relationName))->con_precio_consolidado();
+        }
+
+        return parent::newBelongsToMany($query, $parent, $table, $foreignPivotKey, $relatedPivotKey,
+            $parentKey, $relatedKey, $relationName);
     }
 
     public function articles() {

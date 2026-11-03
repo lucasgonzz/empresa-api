@@ -7,7 +7,9 @@ use App\Http\Controllers\Helpers\sale\CotizacionPorArticuloHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\sale\DescuentosEnPreciosEsquemaHelper;
 use App\Http\Controllers\Helpers\sale\RecargosEnPreciosEsquemaHelper;
+use App\Models\Relations\RenglonesDeVenta;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
@@ -218,6 +220,18 @@ class Sale extends Model
 
     public function surchages() {
         return $this->belongsToMany('App\Models\Surchage')->withTrashed()->withPivot('percentage');
+    }
+
+    protected function newBelongsToMany(Builder $query, Model $parent, $table, $foreignPivotKey, $relatedPivotKey,
+                                        $parentKey, $relatedKey, $relationName = null)
+    {
+        if (in_array($table, RenglonesDeVenta::TABLAS, true)) {
+            return (new RenglonesDeVenta($query, $parent, $table, $foreignPivotKey, $relatedPivotKey,
+                $parentKey, $relatedKey, $relationName))->con_precio_consolidado();
+        }
+
+        return parent::newBelongsToMany($query, $parent, $table, $foreignPivotKey, $relatedPivotKey,
+            $parentKey, $relatedKey, $relationName);
     }
 
     /*

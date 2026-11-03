@@ -366,7 +366,9 @@ class CurrentAcountHelper {
 
     static function attachNotaCreditoArticles($nota_credito, $items) {
         if (!is_null($items)) {
-            $nota_credito->articles()->detach();
+            $relacion = $nota_credito->articles();
+            $consolidada = $nota_credito->sale && $nota_credito->sale->is_consolidacion_facturacion;
+            $relacion->detach();
             foreach ($items as $item) {
                 if (isset($item['is_article'])) {
                     if (
@@ -403,13 +405,15 @@ class CurrentAcountHelper {
                          * dos variantes en la venta, es lo que dice cuál se devolvió cuando la NC
                          * se borra. Entra por la guarda de esquema (ventana del deploy).
                          */
-                        $nota_credito->articles()->attach($item['id'], VarianteEnNotaCreditoEsquemaHelper::agregar_al_pivot([
-                                                            'amount'          => $item['unidades_devueltas'],
-                                                            'price'           => $item['price_vender'],
-                                                            'cost'            => $cost,
-                                                            'discount'        => $item['discount'],
-                                                            'iva_percentage'  => SaleHelper::normalize_iva_percentage_for_pivot($iva_percentage_nc),
-                                                        ], $item));
+                        $pivot = VarianteEnNotaCreditoEsquemaHelper::agregar_al_pivot([
+                            'amount'         => $item['unidades_devueltas'],
+                            'price'          => $item['price_vender'],
+                            'cost'           => $cost,
+                            'discount'       => $item['discount'],
+                            'iva_percentage' => SaleHelper::normalize_iva_percentage_for_pivot($iva_percentage_nc),
+                        ], $item);
+
+                        $relacion->attach($item['id'], $consolidada ? $relacion->conservar_precision($pivot) : $pivot);
                     }
                 }
             }
@@ -418,18 +422,22 @@ class CurrentAcountHelper {
 
     static function attachNotaCreditoServices($nota_credito, $items) {
         if (!is_null($items)) {
-            $nota_credito->services()->detach();
+            $relacion = $nota_credito->services();
+            $consolidada = $nota_credito->sale && $nota_credito->sale->is_consolidacion_facturacion;
+            $relacion->detach();
             foreach ($items as $item) {
                 if (isset($item['is_service'])) {
 
                     if (isset($item['unidades_devueltas'])) {
 
                         Log::info('attach service '.$item['name'].' con '.$item['unidades_devueltas']);
-                        $nota_credito->services()->attach($item['id'], [
-                                                            'amount'    => $item['unidades_devueltas'],
-                                                            'price'     => $item['price_vender'],
-                                                            'discount'  => $item['discount'],
-                                                        ]);
+                        $pivot = [
+                            'amount'   => $item['unidades_devueltas'],
+                            'price'    => $item['price_vender'],
+                            'discount' => $item['discount'],
+                        ];
+
+                        $relacion->attach($item['id'], $consolidada ? $relacion->conservar_precision($pivot) : $pivot);
                     }
                 }
             }

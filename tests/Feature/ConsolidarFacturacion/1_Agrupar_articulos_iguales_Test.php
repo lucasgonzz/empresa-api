@@ -2,11 +2,24 @@
 
 namespace Tests\Feature\ConsolidarFacturacion;
 
+use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\Devoluciones\UpdateSaleHelper;
+use App\Http\Controllers\Helpers\NotaCreditoHelper;
+use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Models\AfipInformation;
+use App\Models\AfipTicket;
 use App\Models\Client;
+use App\Models\Combo;
+use App\Models\CurrentAcount;
+use App\Models\IvaCondition;
 use App\Models\Sale;
+use App\Models\Service;
+use App\Models\Surchage;
 use App\Models\User;
+use App\Services\PdfColumnService;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\DB;
 use Tests\EmpresaTestCase;
@@ -46,6 +59,146 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
 
     /** Segundo articulo del fixture, distinto del centinela. */
     const OTRO_ARTICULO = 'Pinza';
+
+    /**
+     * @test
+     * @dataProvider opciones_de_agrupacion
+     */
+    public function factura_y_pdf_conservan_el_recargo_de_cada_venta($agrupar)
+    {
+        $articulo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+        $global = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1000, 'price' => 10.01, 'iva_percentage' => '21']],
+        ]);
+        $directo = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 2, 'price' => 110.50, 'iva_percentage' => '10.5']],
+        ]);
+        $sin_ajuste = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1, 'price' => 110.50, 'iva_percentage' => '10.5']],
+        ]);
+
+        $recargo = Surchage::create(['name' => 'Recargo de prueba', 'percentage' => 2.5, 'user_id' => $this->comercio()->id]);
+        $global->surchages()->attach($recargo->id, ['percentage' => 2.5]);
+        $global->update(['total' => SaleHelper::getTotalSale($global->fresh())]);
+        $directo->surchages()->attach($recargo->id, ['percentage' => 2.5]);
+        $directo->update(['aplicar_recargos_directo_a_items' => 1]);
+
+        $consolidada = $this->consolidar_venta([$global->id, $directo->id, $sin_ajuste->id], $agrupar);
+        $this->assertEqualsWithDelta(10591.75, $consolidada->total, self::DELTA);
+        $this->assertCount($agrupar ? 2 : 3, $consolidada->articles);
+        $this->assertSame('10.01', $global->fresh()->articles->first()->pivot->price);
+        $this->assertSame('110.50', $directo->fresh()->articles->first()->pivot->price);
+        $this->assertSame('110.50', $sin_ajuste->fresh()->articles->first()->pivot->price);
+
+        $ticket = new AfipTicket(['cbte_letra' => 'A', 'cbte_tipo' => 1]);
+        $informacion = new AfipInformation();
+        $informacion->setRelation('iva_condition', IvaCondition::where('name', 'Responsable inscripto')->firstOrFail());
+        $ticket->setRelation('afip_information', $informacion);
+        $fiscal = new AfipHelper($ticket, null, null, $this->comercio(), $consolidada);
+        $importes = $fiscal->getImportes();
+        $this->assertEqualsWithDelta(10591.75, $importes['total'], self::DELTA);
+        $this->assertEqualsWithDelta(8479.55, $importes['ivas']['21']['BaseImp'], self::DELTA);
+        $this->assertEqualsWithDelta(300, $importes['ivas']['10']['BaseImp'], self::DELTA);
+
+        $renglon = $consolidada->articles->firstWhere('pivot.amount', '1000.00');
+        $this->assertSame('10.26025', $renglon->pivot->price);
+        $this->assertSame('10.26025', $consolidada->fresh()->articles()->firstWhere('article_sale.amount', 1000)->pivot->price);
+        $this->assertArrayNotHasKey('price_consolidacion', $renglon->pivot->toArray());
+        $renglon->is_article = true;
+        $impreso = PdfColumnService::resolve_value('item_subtotal_with_iva', [
+            'item' => $renglon,
+            'index' => 1,
+            'sale' => $consolidada,
+            'afip_ticket' => $ticket,
+            'afip_helper' => $fiscal,
+            'numbers' => Numbers::class,
+        ]);
+        $this->assertStringContainsString('10.260,25', $impreso);
+    }
+
+    public function opciones_de_agrupacion(): array
+    {
+        return ['agrupada' => [true], 'sin agrupar' => [false]];
+    }
+
+    /** @test */
+    public function aplica_el_recargo_a_combos_y_solo_a_los_servicios_marcados()
+    {
+        $con_recargo_en_servicios = $this->venta_con_renglones([]);
+        $con_recargo_en_servicios->update(['surchages_in_services' => 1]);
+        $sin_recargo_en_servicios = $this->venta_con_renglones([]);
+        $sin_recargo_en_servicios->update(['surchages_in_services' => 0]);
+
+        $recargo = Surchage::create(['name' => 'Recargo de prueba', 'percentage' => 2.5, 'user_id' => $this->comercio()->id]);
+        $combo = Combo::create(['num' => 9001, 'name' => 'Combo de prueba', 'price' => 10.01, 'cost' => 0, 'user_id' => $this->comercio()->id]);
+        $servicio = Service::create(['name' => 'Servicio de prueba', 'price' => 10.01, 'user_id' => $this->comercio()->id]);
+
+        foreach ([$con_recargo_en_servicios, $sin_recargo_en_servicios] as $venta) {
+            $venta->surchages()->attach($recargo->id, ['percentage' => 2.5]);
+            $venta->combos()->attach($combo->id, ['price' => 10.01, 'amount' => 1]);
+            $venta->services()->attach($servicio->id, ['price' => 10.01, 'amount' => 1]);
+            $venta->update(['total' => SaleHelper::getTotalSale($venta->fresh())]);
+        }
+
+        $consolidada = $this->consolidar_venta([$con_recargo_en_servicios->id, $sin_recargo_en_servicios->id], true);
+        $this->assertEqualsWithDelta(40.79, $consolidada->total, self::DELTA);
+        $this->assertSame(['10.26025', '10.26025'], $consolidada->combos->pluck('pivot.price')->all());
+        $this->assertEqualsCanonicalizing(['10.26025', '10.01'], $consolidada->services->pluck('pivot.price')->all());
+    }
+
+    /** @test */
+    public function conserva_el_precio_y_el_renglon_al_devolver_parte_de_la_consolidada()
+    {
+        $articulo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+        $recargo = Surchage::create(['name' => 'Recargo de prueba', 'percentage' => 2.5, 'user_id' => $this->comercio()->id]);
+        $ventas = [];
+        foreach ([2.5, 2.51] as $tasa) {
+            $venta = $this->venta_con_renglones([
+                [$articulo->id, ['amount' => 1000, 'price' => 10.01, 'iva_percentage' => '21']],
+            ]);
+            $venta->surchages()->attach($recargo->id, ['percentage' => $tasa]);
+            $venta->update(['total' => SaleHelper::getTotalSale($venta->fresh())]);
+            $ventas[] = $venta->id;
+        }
+
+        $consolidada = $this->consolidar_venta($ventas, true);
+        $this->assertCount(2, $consolidada->articles);
+        $renglon = $consolidada->articles->firstWhere('pivot.price', '10.261251');
+        $this->assertNotNull($renglon);
+
+        $nota = CurrentAcount::create([
+            'sale_id' => $consolidada->id,
+            'user_id' => $this->comercio()->id,
+            'status' => 'nota_credito',
+            'haber' => 5130.63,
+        ]);
+        $item = [
+            'id' => $articulo->id,
+            'is_article' => true,
+            'amount' => 1000,
+            'unidades_devueltas' => 500,
+            'returned_amount' => 500,
+            'price_vender' => $renglon->pivot->price,
+            'discount' => 0,
+            'costo_real' => 0,
+            'pivot' => $renglon->pivot->toArray(),
+        ];
+        CurrentAcountHelper::attachNotaCreditoArticles($nota, [$item]);
+        UpdateSaleHelper::escribir_devueltas_de_la_clave($consolidada, $articulo->id, null, [$item]);
+
+        $nota = $nota->fresh();
+        $this->assertSame('10.261251', $nota->articles->first()->pivot->price);
+        $devuelto = NotaCreditoHelper::renglon_a_deshacer($consolidada, $articulo->id, null, true, $item['price_vender'], 500);
+        $this->assertEquals($renglon->pivot->id, $devuelto->id);
+        $this->assertEqualsWithDelta(500, (float) $devuelto->returned_amount, self::DELTA);
+
+        $ticket = new AfipTicket(['cbte_letra' => 'A', 'cbte_tipo' => 3]);
+        $informacion = new AfipInformation();
+        $informacion->setRelation('iva_condition', IvaCondition::where('name', 'Responsable inscripto')->firstOrFail());
+        $ticket->setRelation('afip_information', $informacion);
+        $fiscal = new AfipHelper($ticket, $nota->articles, $nota->services, $this->comercio(), $consolidada, [], $nota);
+        $this->assertEqualsWithDelta(5130.63, $fiscal->getImportes()['total'], self::DELTA);
+    }
 
     /**
      * Test 1 — Agrupando, el mismo articulo de dos ventas distintas se junta en un renglon.
@@ -361,11 +514,22 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
      */
     protected function consolidar($sale_ids, $agrupar)
     {
+        $consolidada = $this->consolidar_venta($sale_ids, $agrupar);
+
+        return DB::table('article_sale')
+            ->where('sale_id', $consolidada->id)
+            ->orderBy('id')
+            ->get()
+            ->all();
+    }
+
+    protected function consolidar_venta(array $sale_ids, bool $agrupar): Sale
+    {
         $afip_information = AfipInformation::where('user_id', $this->comercio()->id)->first();
 
         $this->assertNotNull($afip_information, 'Falta la configuracion de AFIP del fixture.');
 
-        $consolidada = ConsolidarFacturacionHelper::consolidar(
+        return ConsolidarFacturacionHelper::consolidar(
             $sale_ids,
             $this->cliente()->id,
             $this->comercio()->id,
@@ -376,12 +540,6 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
             // 🔴 Sin emitir: emitir pegaria contra ARCA de verdad.
             false
         );
-
-        return DB::table('article_sale')
-            ->where('sale_id', $consolidada->id)
-            ->orderBy('id')
-            ->get()
-            ->all();
     }
 
     /**
