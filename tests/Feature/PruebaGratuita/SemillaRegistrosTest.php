@@ -164,6 +164,109 @@ class SemillaRegistrosTest extends EmpresaTestCase
         $this->assertFalse(SemillaRegistroHelper::semilla_presente($this->dueno->id));
     }
 
+    /**
+     * Política del chequeo (3/11/2026): lo real hecho CON lo de ejemplo se va; lo real con datos propios queda.
+     */
+    public function test_las_operaciones_reales_hechas_con_lo_sembrado_se_borran_y_las_propias_quedan()
+    {
+        $ahora = Carbon::now();
+
+        SemillaRegistroHelper::abrir_lote($this->dueno->id, 'test');
+        $articulo_sembrado = $this->crear_articulo('Artículo de ejemplo');
+        $cliente_sembrado = $this->crear_cliente('Cliente de ejemplo');
+        SemillaRegistroHelper::cerrar_lote();
+
+        $articulo_propio = $this->crear_articulo('Artículo propio');
+        $cliente_propio = $this->crear_cliente('Cliente propio');
+
+        // Tres ventas reales (fuera del lote): dos tocan lo de ejemplo, una es toda propia.
+        $venta_con_articulo_de_ejemplo = DB::table('sales')->insertGetId(['user_id' => $this->dueno->id, 'client_id' => $cliente_propio->id, 'created_at' => $ahora, 'updated_at' => $ahora]);
+        DB::table('article_sale')->insert(['sale_id' => $venta_con_articulo_de_ejemplo, 'article_id' => $articulo_sembrado->id, 'amount' => 1, 'price' => 10]);
+        $venta_a_cliente_de_ejemplo = DB::table('sales')->insertGetId(['user_id' => $this->dueno->id, 'client_id' => $cliente_sembrado->id, 'created_at' => $ahora, 'updated_at' => $ahora]);
+        DB::table('article_sale')->insert(['sale_id' => $venta_a_cliente_de_ejemplo, 'article_id' => $articulo_propio->id, 'amount' => 1, 'price' => 10]);
+        $venta_propia = DB::table('sales')->insertGetId(['user_id' => $this->dueno->id, 'client_id' => $cliente_propio->id, 'created_at' => $ahora, 'updated_at' => $ahora]);
+        DB::table('article_sale')->insert(['sale_id' => $venta_propia, 'article_id' => $articulo_propio->id, 'amount' => 1, 'price' => 10]);
+        // Un presupuesto real al cliente de ejemplo y un movimiento de stock real del artículo de ejemplo.
+        $presupuesto = Budget::create(['client_id' => $cliente_sembrado->id, 'user_id' => $this->dueno->id]);
+        $movimiento = DB::table('stock_movements')->insertGetId(['article_id' => $articulo_sembrado->id, 'user_id' => $this->dueno->id, 'amount' => 1, 'created_at' => $ahora, 'updated_at' => $ahora]);
+
+        $colgadas = SemillaRegistroHelper::operaciones_reales_colgadas($this->dueno->id);
+        $this->assertEqualsCanonicalizing([$venta_con_articulo_de_ejemplo, $venta_a_cliente_de_ejemplo], $colgadas['sales']);
+        $this->assertSame([$presupuesto->id], $colgadas['budgets']);
+        $this->assertSame([$movimiento], $colgadas['stock_movements']);
+
+        $resumen = SemillaRegistroHelper::borrar_lo_sembrado($this->dueno->id);
+
+        $this->assertSame(4, $resumen['reales_colgadas']);
+        $this->assertSame(0, DB::table('sales')->whereIn('id', [$venta_con_articulo_de_ejemplo, $venta_a_cliente_de_ejemplo])->count(), 'Las ventas hechas con lo de ejemplo se van.');
+        $this->assertSame(0, DB::table('article_sale')->whereIn('sale_id', [$venta_con_articulo_de_ejemplo, $venta_a_cliente_de_ejemplo])->count(), 'Con sus renglones.');
+        $this->assertSame(0, DB::table('budgets')->where('id', $presupuesto->id)->count());
+        $this->assertSame(0, DB::table('stock_movements')->where('id', $movimiento)->count());
+        $this->assertSame(1, DB::table('sales')->where('id', $venta_propia)->count(), 'La venta propia queda.');
+        $this->assertSame(1, DB::table('article_sale')->where('sale_id', $venta_propia)->count());
+        $this->assertNotNull(Article::find($articulo_propio->id));
+        $this->assertNotNull(Client::find($cliente_propio->id));
+
+        DB::table('article_sale')->where('sale_id', $venta_propia)->delete();
+        DB::table('sales')->where('id', $venta_propia)->delete();
+    }
+
+    /**
+     * Política del chequeo (3/11/2026): la caja con movimientos reales conserva su saldo; la que solo tenía
+     * movimientos de ejemplo vuelve a cero.
+     */
+    public function test_la_caja_con_movimientos_reales_conserva_su_saldo_y_la_de_ejemplo_vuelve_a_cero()
+    {
+        $ahora = Carbon::now();
+        $caja_mixta = \App\Models\Caja::create(['num' => 9001, 'name' => 'Caja mixta del test', 'user_id' => $this->dueno->id, 'saldo' => 1234, 'abierta' => 0]);
+        $caja_de_ejemplo = \App\Models\Caja::create(['num' => 9002, 'name' => 'Caja solo ejemplo del test', 'user_id' => $this->dueno->id, 'saldo' => 999, 'abierta' => 0]);
+
+        // Aperturas reales (fuera del lote): los movimientos cuelgan de una apertura siempre.
+        $apertura_mixta = DB::table('apertura_cajas')->insertGetId(['caja_id' => $caja_mixta->id, 'saldo_apertura' => 0, 'apertura_employee_id' => $this->dueno->id, 'total_ingresos' => 0, 'total_egresos' => 0, 'created_at' => $ahora, 'updated_at' => $ahora]);
+        $apertura_ejemplo = DB::table('apertura_cajas')->insertGetId(['caja_id' => $caja_de_ejemplo->id, 'saldo_apertura' => 0, 'apertura_employee_id' => $this->dueno->id, 'total_ingresos' => 0, 'total_egresos' => 0, 'created_at' => $ahora, 'updated_at' => $ahora]);
+
+        SemillaRegistroHelper::abrir_lote($this->dueno->id, 'test');
+        DB::table('movimiento_cajas')->insert(['caja_id' => $caja_mixta->id, 'apertura_caja_id' => $apertura_mixta, 'ingreso' => 100, 'saldo' => 100, 'created_at' => $ahora, 'updated_at' => $ahora]);
+        DB::table('movimiento_cajas')->insert(['caja_id' => $caja_de_ejemplo->id, 'apertura_caja_id' => $apertura_ejemplo, 'ingreso' => 999, 'saldo' => 999, 'created_at' => $ahora, 'updated_at' => $ahora]);
+        SemillaRegistroHelper::cerrar_lote();
+
+        $movimiento_real = DB::table('movimiento_cajas')->insertGetId(['caja_id' => $caja_mixta->id, 'apertura_caja_id' => $apertura_mixta, 'ingreso' => 1134, 'saldo' => 1234, 'created_at' => $ahora, 'updated_at' => $ahora]);
+
+        SemillaRegistroHelper::borrar_lo_sembrado($this->dueno->id);
+
+        $this->assertSame(1234.0, (float) DB::table('cajas')->where('id', $caja_mixta->id)->value('saldo'), 'Con un movimiento real, el saldo queda.');
+        $this->assertSame(1, DB::table('movimiento_cajas')->where('caja_id', $caja_mixta->id)->count());
+        $this->assertSame($movimiento_real, (int) DB::table('movimiento_cajas')->where('caja_id', $caja_mixta->id)->value('id'));
+        $this->assertSame(0.0, (float) DB::table('cajas')->where('id', $caja_de_ejemplo->id)->value('saldo'), 'Solo con movimientos de ejemplo, vuelve a cero.');
+        $this->assertSame(0, DB::table('movimiento_cajas')->where('caja_id', $caja_de_ejemplo->id)->count());
+
+        DB::table('movimiento_cajas')->where('id', $movimiento_real)->delete();
+        DB::table('apertura_cajas')->whereIn('id', [$apertura_mixta, $apertura_ejemplo])->delete();
+        DB::table('cajas')->whereIn('id', [$caja_mixta->id, $caja_de_ejemplo->id])->delete();
+    }
+
+    /**
+     * Lucas: «borra todo». Empleados, vendedores y propiedades de ejemplo se van; el dueño nunca.
+     */
+    public function test_empleados_vendedores_y_propiedades_de_ejemplo_se_van_y_el_dueno_queda()
+    {
+        SemillaRegistroHelper::abrir_lote($this->dueno->id, 'test');
+        $empleado = User::create(['name' => 'Empleado de ejemplo', 'owner_id' => $this->dueno->id, 'email' => 'empleado-' . uniqid() . '@test.local', 'password' => bcrypt('x')]);
+        $vendedor = \App\Models\Seller::create(['num' => 9001, 'name' => 'Vendedor de ejemplo', 'user_id' => $this->dueno->id]);
+        $tipo = \App\Models\ArticlePropertyType::create(['num' => 9001, 'name' => 'Talle de ejemplo', 'user_id' => $this->dueno->id]);
+        SemillaRegistroHelper::cerrar_lote();
+
+        $this->assertContains($empleado->id, SemillaRegistroHelper::ids($this->dueno->id, 'users'));
+        $this->assertNotContains($this->dueno->id, SemillaRegistroHelper::ids($this->dueno->id, 'users'), 'El dueño nunca entra en la marca.');
+
+        SemillaRegistroHelper::borrar_lo_sembrado($this->dueno->id);
+
+        $this->assertSame(0, DB::table('users')->where('id', $empleado->id)->count());
+        $this->assertSame(0, DB::table('sellers')->where('id', $vendedor->id)->count());
+        $this->assertSame(0, DB::table('article_property_types')->where('id', $tipo->id)->count());
+        $this->assertNotNull(User::find($this->dueno->id));
+    }
+
     public function test_borrar_sin_marcas_no_hace_nada()
     {
         $antes = (int) DB::table('articles')->count();

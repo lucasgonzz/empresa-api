@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\ProcessArticleExportJob;
 use App\Jobs\ProcessProviderExportJob;
 use App\Jobs\ProcessSetFinalPrices;
@@ -202,6 +203,8 @@ class ProviderController extends Controller
          * TODAS las hojas del libro aplicandoles el mismo mapeo (ver ProviderImport::sheets()).
          * Ahora se importa una sola.
          */
+        // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+        PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), 'excel');
         Excel::import(
             new ProviderImport(
                 $columns,
@@ -214,6 +217,7 @@ class ProviderController extends Controller
             ),
             $request->file('models')
         );
+        PruebaHelper::importacion_terminada($this->userId(), 'provider');
     }
 
     /**

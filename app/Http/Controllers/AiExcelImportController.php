@@ -905,11 +905,14 @@ class AiExcelImportController extends Controller
              * está congelada (el último parámetro tiene que ser vaciar_valores_en_blanco, lo fija
              * ValoresEnBlancoClientesProveedoresTest) porque AdminSync la construye con la corta.
              */
+            // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+            PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), PruebaHelper::origen_del_analisis($this->userId(), (string) $request->input('excel_path')));
             Excel::import(
                 (new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar_valores_en_blanco))
                     ->con_equivalencias($equivalencias),
                 $excel_full_path
             );
+            PruebaHelper::importacion_terminada($this->userId(), 'client');
 
             Log::info('AiExcelImportController::import_clients - importación finalizada', [
                 'user_id'     => $this->userId(),
@@ -983,11 +986,14 @@ class AiExcelImportController extends Controller
              * El quinto parámetro ($provider_id) es null; en importación de proveedores
              * no se asigna un proveedor padre al registro importado.
              */
+            // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+            PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), PruebaHelper::origen_del_analisis($this->userId(), (string) $request->input('excel_path')));
             Excel::import(
                 (new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre, $vaciar_valores_en_blanco))
                     ->con_equivalencias($equivalencias),
                 $excel_full_path
             );
+            PruebaHelper::importacion_terminada($this->userId(), 'provider');
 
             Log::info('AiExcelImportController::import_providers - importación finalizada', [
                 'user_id'     => $this->userId(),

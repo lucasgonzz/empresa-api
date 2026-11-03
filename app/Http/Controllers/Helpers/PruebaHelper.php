@@ -218,19 +218,6 @@ class PruebaHelper
     }
 
     /**
-     * ¿El payload del demo setup trae una contraseña válida para el dueño?
-     *
-     * @param array $data
-     * @return bool
-     */
-    public static function trae_password(array $data)
-    {
-        return isset($data['password'])
-            && is_string($data['password'])
-            && mb_strlen($data['password']) >= self::PASSWORD_MINIMO;
-    }
-
-    /**
      * Prende el modo prueba del dueño con lo que mandó el admin (C1): guarda la configuración y fija
      * `users.expired_at`. Sin `vence_at` pero con `dias`, vence a los `dias` días de ahora; sin ninguno de
      * los dos, no vence (el admin lo puede fijar después por C3).
@@ -459,7 +446,57 @@ class PruebaHelper
     {
         $origen = is_scalar($origen) ? strtolower(trim((string) $origen)) : '';
 
+        // M4 guarda `payload['origen'] = 'admin'` cuando el admin no manda `origen`: es Martín.
+        if ($origen === 'admin') {
+            return 'martin';
+        }
+
         return in_array($origen, self::ORIGENES_DE_IMPORTACION, true) ? $origen : 'excel';
+    }
+
+    /**
+     * El primer import de un negocio en prueba (artículos, clientes O proveedores: Lucas, «en el momento en
+     * que importa un archivo Excel ya cuenta como la migración») se lleva todo lo de ejemplo ANTES de aplicar
+     * el archivo. El import de artículos lo hace `BorrarSemillaDePruebaJob` al frente de su cadena de jobs;
+     * los de clientes y proveedores son sincrónicos (`Excel::import` en el request), así que se hace acá, en
+     * el request, antes de importar. Devuelve si borró algo.
+     *
+     * @param int $owner_id
+     * @param string|null $origen `excel` | `pdf` | `martin`
+     * @return bool
+     */
+    public static function borrar_semilla_antes_de_importar($owner_id, $origen = null)
+    {
+        $owner_id = (int) $owner_id;
+
+        if (!self::activa($owner_id) || !SemillaRegistroHelper::semilla_presente($owner_id)) {
+            return false;
+        }
+
+        // Borrar ~470 operaciones por sus controladores lleva minutos: mismo criterio que el demo setup.
+        set_time_limit(0);
+        ignore_user_abort(true);
+
+        SemillaRegistroHelper::borrar_lo_sembrado($owner_id);
+        self::marcar_semilla_borrada($owner_id, $origen);
+
+        return true;
+    }
+
+    /**
+     * Una importación sincrónica (clientes o proveedores) terminó: el hito `prueba.importo` (una sola vez,
+     * lo garantiza el job) con el origen que dejó `borrar_semilla_antes_de_importar()`.
+     *
+     * @param int $owner_id
+     * @param string $modelo `client` | `provider`
+     * @return void
+     */
+    public static function importacion_terminada($owner_id, $modelo)
+    {
+        PruebaHitosHelper::emitir('prueba.importo', [
+            'origen' => self::origen_de_importacion($owner_id),
+            'modelo' => (string) $modelo,
+        ], (int) $owner_id);
     }
 
     /**

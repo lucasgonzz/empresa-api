@@ -114,16 +114,35 @@ class VencimientoDePruebaTest extends EmpresaTestCase
         $this->assertTrue($respuesta->json('vencida'));
     }
 
-    public function test_el_403_encola_el_hito_prueba_vencida()
+    public function test_el_403_no_encola_nada_el_hito_vencida_lo_registra_el_barrido()
     {
         $this->prender_la_prueba(Carbon::now()->subHour()->toIso8601String());
         Queue::fake();
 
         $this->getJson('/api/user')->assertStatus(403);
+        $this->getJson('/api/user')->assertStatus(403);
 
-        Queue::assertPushed(RegistrarHitoDePruebaJob::class, function ($job) {
-            return $job->tipo === 'prueba.vencida';
-        });
+        Queue::assertNothingPushed();
+    }
+
+    public function test_el_ingreso_por_token_con_la_prueba_vencida_contesta_403_prueba_vencida()
+    {
+        $this->prender_la_prueba(Carbon::now()->subHour()->toIso8601String());
+        auth()->logout();
+
+        $plain = 'zz-ingreso-prueba-vencida-' . uniqid('', true);
+        \App\Models\DemoIngresoToken::create([
+            'token_hash' => hash('sha256', $plain),
+            'user_id'    => $this->dueno->id,
+            'expires_at' => Carbon::now()->addHours(4),
+            'revoked_at' => null,
+        ]);
+
+        $respuesta = $this->postJson('/api/demo/ingreso', ['t' => $plain]);
+
+        $respuesta->assertStatus(403);
+        $respuesta->assertJson(['error' => 'prueba_vencida', 'whatsapp_soporte' => '+5493444622139']);
+        $this->assertFalse(auth()->check(), 'No se abre sesión.');
     }
 
     public function test_fuera_de_una_instancia_de_prueba_expired_at_no_corta_nada()

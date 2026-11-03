@@ -172,11 +172,58 @@ class ImportacionYBarridoTest extends EmpresaTestCase
         $this->assertSame('excel', PruebaHelper::origen_del_analisis($this->dueno->id + 1, 'excel-import/de-martin.xlsx'), 'El análisis de otro dueño no cuenta.');
     }
 
-    public function test_un_origen_desconocido_cae_a_excel()
+    public function test_un_origen_desconocido_cae_a_excel_y_admin_es_martin()
     {
         $job = new BorrarSemillaDePruebaJob($this->dueno->id, 1, null, 'telepatia');
 
         $this->assertSame('excel', $job->origen);
+        $this->assertSame('martin', PruebaHelper::normalizar_origen('admin'), 'M4 guarda `admin` cuando el admin no manda origen.');
+        $this->assertSame('pdf', PruebaHelper::normalizar_origen('PDF'));
+    }
+
+    /**
+     * Los imports sincrónicos (clientes y proveedores) borran lo de ejemplo en el request, antes de aplicar.
+     */
+    public function test_borrar_semilla_antes_de_importar_borra_y_deja_el_origen_solo_en_modo_prueba_con_semilla()
+    {
+        $this->assertFalse(PruebaHelper::borrar_semilla_antes_de_importar($this->dueno->id, 'martin'), 'Sin modo prueba, nada.');
+
+        $this->prender_la_prueba();
+        $this->assertFalse(PruebaHelper::borrar_semilla_antes_de_importar($this->dueno->id, 'martin'), 'Sin semilla, nada.');
+
+        $articulo = $this->sembrar_un_articulo();
+
+        $this->assertTrue(PruebaHelper::borrar_semilla_antes_de_importar($this->dueno->id, 'martin'));
+        $this->assertSame(0, DB::table('articles')->where('id', $articulo->id)->count());
+        $this->assertFalse(SemillaRegistroHelper::semilla_presente($this->dueno->id));
+        PruebaHelper::olvidar_cache();
+        $this->assertSame('martin', PruebaHelper::origen_de_importacion($this->dueno->id));
+        $this->assertFalse(PruebaHelper::borrar_semilla_antes_de_importar($this->dueno->id, 'excel'), 'La segunda importación ya no borra nada.');
+    }
+
+    public function test_los_seis_imports_sincronicos_borran_antes_y_emiten_al_terminar()
+    {
+        foreach ([
+            'app/Http/Controllers/ClientController.php'                 => ['function import(Request $request) {', 'client'],
+            'app/Http/Controllers/ProviderController.php'               => ['function import(Request $request) {', 'provider'],
+            'app/Http/Controllers/AiExcelImportController.php'          => ['function import_clients(', 'client'],
+            'app/Http/Controllers/AiExcelImportController.php '         => ['function import_providers(', 'provider'],
+            'app/Http/Controllers/AdminSync/AiExcelImportController.php' => ['function import_clients(', 'client'],
+            'app/Http/Controllers/AdminSync/AiExcelImportController.php ' => ['function import_providers(', 'provider'],
+        ] as $archivo => $esperado) {
+            $fuente = file_get_contents(base_path(trim($archivo)));
+            $desde = strpos($fuente, $esperado[0]);
+            $this->assertNotFalse($desde, $archivo . ': falta ' . $esperado[0]);
+            $cuerpo = substr($fuente, $desde);
+            $borra = strpos($cuerpo, 'PruebaHelper::borrar_semilla_antes_de_importar(');
+            $importa = strpos($cuerpo, 'Excel::import(');
+            $termina = strpos($cuerpo, "PruebaHelper::importacion_terminada(");
+            $this->assertNotFalse($borra, $archivo . ': no borra la semilla antes de importar ' . $esperado[1]);
+            $this->assertNotFalse($termina, $archivo . ': no emite prueba.importo al terminar ' . $esperado[1]);
+            $this->assertLessThan($importa, $borra, $archivo . ': el borrado va ANTES del Excel::import');
+            $this->assertGreaterThan($importa, $termina, $archivo . ': el hito va DESPUÉS del Excel::import');
+            $this->assertStringContainsString("'" . $esperado[1] . "'", substr($cuerpo, $termina, 160));
+        }
     }
 
     public function test_el_barrido_registra_el_primer_pedido_de_la_tienda_que_no_es_de_la_semilla()

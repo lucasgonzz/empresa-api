@@ -56,7 +56,12 @@ class DemoSetupController extends Controller
 
         try {
             // Pasamos el input crudo al helper; internamente interpreta cada flag
-            DemoSetupHelper::run($request->all());
+            // El flag de la clave de admin NUNCA sale del payload (misión prueba-experiencia-empresa): esta
+            // puerta no lee ningún header de clave, así que siempre va en false.
+            $datos = $request->all();
+            $datos['con_clave_de_admin'] = false;
+
+            DemoSetupHelper::run($datos);
         } catch (BaseConDatosException $e) {
             // Guarda de instancia (10/10/2026): no es una demo y la base tiene datos; no se tocó
             // nada. Mismo texto genérico que el 409 de la API, sin el nombre de la base ni conteos.

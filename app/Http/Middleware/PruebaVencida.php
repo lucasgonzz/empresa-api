@@ -3,7 +3,6 @@
 namespace App\Http\Middleware;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
-use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -58,12 +57,8 @@ class PruebaVencida
             return $next($request);
         }
 
-        $vence_at = PruebaHelper::vence_at($owner_id);
-
-        PruebaHitosHelper::emitir('prueba.vencida', [
-            'vence_at' => is_null($vence_at) ? null : PruebaHelper::iso($vence_at),
-        ], $owner_id);
-
+        // El hito `prueba.vencida` lo registra `prueba:barrido` (una vez): acá no se encola nada, un negocio
+        // vencido que sigue con la pestaña abierta dispara este 403 en cada pedido.
         return PruebaHelper::respuesta_vencida($owner_id);
     }
 

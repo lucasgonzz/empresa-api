@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
@@ -290,10 +291,13 @@ class AiExcelImportController extends Controller
              */
             Auth::loginUsingId($user_id);
 
+            // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+            PruebaHelper::borrar_semilla_antes_de_importar($user_id, $request->input('origen', 'martin'));
             Excel::import(
                 new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
                 $excel_full_path
             );
+            PruebaHelper::importacion_terminada($user_id, 'client');
 
             Auth::logout();
 
@@ -356,10 +360,13 @@ class AiExcelImportController extends Controller
              */
             Auth::loginUsingId($user_id);
 
+            // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+            PruebaHelper::borrar_semilla_antes_de_importar($user_id, $request->input('origen', 'martin'));
             Excel::import(
                 new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
                 $excel_full_path
             );
+            PruebaHelper::importacion_terminada($user_id, 'provider');
 
             Auth::logout();
 
