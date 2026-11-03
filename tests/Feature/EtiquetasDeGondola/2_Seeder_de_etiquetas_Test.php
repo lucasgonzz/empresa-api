@@ -219,13 +219,20 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
     {
         $dueno = $this->crear_dueno(true);
 
-        $lista = $this->crear_lista($dueno, 'Lejos', 1);
+        // Misión prueba-listas-siempre (3/11/2026): los diseños por lista existen desde la SEGUNDA
+        // lista, así que la que se acota es la segunda del dueño.
+        $this->crear_lista($dueno, 'Primera', 1);
+
+        $lista = $this->crear_lista($dueno, 'Lejos', 2);
         ArticleTicketDesign::where('price_type_id', $lista->id)->delete();
 
         $lista->position = 5000000;
         $this->assertNotNull(ArticleTicketDesignHelper::crear_diseno_de_lista($lista));
 
-        $this->assertSame(ArticleTicketDesignHelper::POSICION_MAXIMA, $this->disenos_de($dueno)[0]->position);
+        $acotado = ArticleTicketDesign::where('user_id', $dueno->id)->where('price_type_id', $lista->id)->first();
+
+        $this->assertNotNull($acotado);
+        $this->assertSame(ArticleTicketDesignHelper::POSICION_MAXIMA, $acotado->position);
     }
 
     /**

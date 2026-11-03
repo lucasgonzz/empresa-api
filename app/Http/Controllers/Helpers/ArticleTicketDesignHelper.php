@@ -593,9 +593,14 @@ class ArticleTicketDesignHelper
             $creado = null;
 
             foreach ($listas as $una) {
-                $diseno = self::crear_diseno_de_lista_sin_candado($owner_id, $una);
 
-                if ((int) $una->id === (int) $lista->id) {
+                // La lista que se recibió va con SUS atributos en memoria (es la que acaba de
+                // crearse, o la que el llamador editó); las demás, como están en la base.
+                $es_la_recibida = (int) $una->id === (int) $lista->id;
+
+                $diseno = self::crear_diseno_de_lista_sin_candado($owner_id, $es_la_recibida ? $lista : $una);
+
+                if ($es_la_recibida) {
                     $creado = $diseno;
                 }
             }
