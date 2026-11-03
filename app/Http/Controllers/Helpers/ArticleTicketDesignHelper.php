@@ -517,6 +517,17 @@ class ArticleTicketDesignHelper
                                     ->get();
             }
 
+            /*
+             * Misión prueba-listas-siempre (3/11/2026): todo negocio trabaja con listas, pero la
+             * interfaz de listas aparece desde la SEGUNDA (como las sucursales). Con UNA sola lista
+             * —la «Precio final», que es el precio del artículo— el dueño tiene la etiqueta genérica
+             * de siempre, con el precio final, y no una "por lista" que diría lo mismo. Mismo
+             * criterio que PriceTypeHelper::muestra_listas() y que `muestra_listas` de la SPA.
+             */
+            if (count($listas) < 2) {
+                $listas = array();
+            }
+
             if (count($listas) == 0) {
                 if (ArticleTicketDesign::where('user_id', $owner_id)->exists()) {
                     return 0;
@@ -567,7 +578,29 @@ class ArticleTicketDesignHelper
                 return null;
             }
 
-            return self::crear_diseno_de_lista_sin_candado($owner_id, $lista);
+            /*
+             * Misión prueba-listas-siempre (3/11/2026): los diseños por lista existen desde la
+             * SEGUNDA lista (ver crear_disenos_del_sistema()). Con la primera no se crea nada (queda
+             * la etiqueta genérica); cuando llega la segunda, se completan los de TODAS las listas
+             * del dueño que no lo tengan, así la primera no queda sin el suyo.
+             */
+            $listas = PriceType::where('user_id', $owner_id)->orderBy('position')->orderBy('id')->get();
+
+            if (count($listas) < 2) {
+                return null;
+            }
+
+            $creado = null;
+
+            foreach ($listas as $una) {
+                $diseno = self::crear_diseno_de_lista_sin_candado($owner_id, $una);
+
+                if ((int) $una->id === (int) $lista->id) {
+                    $creado = $diseno;
+                }
+            }
+
+            return $creado;
         };
 
         /*

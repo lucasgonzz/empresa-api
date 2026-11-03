@@ -1564,11 +1564,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->
         ->middleware('check_extencion_empresa:agentes_ia');
 });
 
-// Cotización del dólar al iniciar sesión. Gateado por Sanctum + la extensión
-// 'costo_en_dolares' (ExtencionSeeder, índice 33, tabla extencion_empresas).
-// El gate por rol (is_admin) va adentro del controller: la extensión es de la
-// EMPRESA y el rol es de la PERSONA, y son dos preguntas distintas.
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:costo_en_dolares'])->group(function () {
+// Cotización del dólar al iniciar sesión. Gateado por Sanctum; el gate por rol (is_admin) va
+// adentro del controller.
+//
+// Hasta la misión prueba-listas-siempre (3/11/2026) este grupo exigía además la extensión
+// 'costo_en_dolares'. Los dólares pasaron al núcleo: el costo en dólares, el dólar de la cuenta y
+// esta cotización están para todo negocio, sin extensión. La fila de `extencion_empresas` queda
+// como dato y nadie la mira acá.
+Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('dolar-cotizacion', 'DolarCotizacionController@show');
     Route::post('dolar-cotizacion', 'DolarCotizacionController@store');
     Route::put('dolar-cotizacion/preferencias', 'DolarCotizacionController@preferencias');

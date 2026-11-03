@@ -319,10 +319,25 @@ class PriceTypeController extends Controller
     public function destroy($id) {
         $model = PriceType::find($id);
 
+        /*
+         * La lista «Precio final» no se borra (misión prueba-listas-siempre, 3/11/2026): es el precio
+         * del artículo espejado en una lista, y sin ella un negocio que no tiene otras listas se
+         * quedaría con el flag prendido y cero listas. Si el dueño quiere trabajar con sus propias
+         * listas, crea las suyas: esta queda como una más (y es la lista por defecto hasta que otra
+         * tenga mayor posición).
+         */
+        if (!is_null($model) && PriceTypeHelper::es_lista_precio_final($model)) {
+            return response()->json([
+                'message' => 'La lista «'.$model->name.'» es la lista de precio final del negocio y no se puede eliminar.',
+                'es_precio_final' => true,
+            ], 422);
+        }
+
         // Eliminar relaciones con artículos
         $model->articles()->detach();
         
         $model->delete();
+        PriceTypeHelper::olvidar_precio_final($model->user_id);
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('PriceType', $model->id);
 
