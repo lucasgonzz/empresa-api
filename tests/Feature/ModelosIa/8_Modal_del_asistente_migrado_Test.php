@@ -78,30 +78,28 @@ class Modal_del_asistente_migrado_Test extends TestCase
     /**
      * @test
      */
-    public function sin_clave_de_deepseek_el_get_trae_lo_que_corre_y_guardarlo_da_200_sin_bajar_de_modelo()
+    public function sin_clave_de_deepseek_una_configuracion_migrada_se_puede_guardar()
     {
         $this->assertSame('deepseek', (string) $this->comercio->agente_proveedor, 'La migración lo pasó a DeepSeek.');
         $this->assertSame('equilibrado', (string) $this->comercio->agente_pensamiento, 'Y no tocó el pensamiento.');
 
         $r = $this->actingAs($this->comercio, 'sanctum')->getJson('api/user/asistente-config');
 
-        /* Lo que la SPA usa para preseleccionar: lo que corre, Claude EQUILIBRADO (Sonnet). */
         $r->assertStatus(200)
-          ->assertJsonPath('proveedores_disponibles', ['anthropic'])
-          ->assertJsonPath('modelo.proveedor', 'anthropic')
-          ->assertJsonPath('modelo.pensamiento', 'equilibrado')
-          ->assertJsonPath('modelo.modelo', 'claude-sonnet-test');
+          ->assertJsonPath('proveedores_disponibles', [])
+          ->assertJsonPath('modelo.proveedor', 'deepseek')
+          ->assertJsonPath('modelo.pensamiento', 'agil')
+          ->assertJsonPath('modelo.modelo', 'deepseek-flash-test');
 
-        /* Lo que manda el modal con lo preseleccionado: 200, y queda en el mismo Sonnet. */
         $this->actingAs($this->comercio, 'sanctum')
              ->putJson('api/user/asistente-config', ['confianza' => 'resuelto', 'pensamiento' => 'equilibrado', 'proveedor' => 'anthropic'])
              ->assertStatus(200)
-             ->assertJsonPath('modelo.modelo', 'claude-sonnet-test');
+             ->assertJsonPath('modelo.modelo', 'deepseek-flash-test');
 
         $fresco = $this->comercio->fresh();
 
-        $this->assertSame('anthropic', (string) $fresco->agente_proveedor);
-        $this->assertSame('equilibrado', (string) $fresco->agente_pensamiento, 'No baja de Sonnet a Haiku.');
+        $this->assertSame('deepseek', (string) $fresco->agente_proveedor);
+        $this->assertSame('agil', (string) $fresco->agente_pensamiento);
     }
 
     /**

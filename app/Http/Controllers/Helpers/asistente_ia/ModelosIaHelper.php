@@ -409,8 +409,11 @@ class ModelosIaHelper
             $opcion = (string) $cambios[$tarea];
 
             if ($tarea === self::TAREA_ASISTENTE) {
-                $owner->agente_proveedor   = self::ASISTENTE_POR_OPCION[$opcion][0];
-                $owner->agente_pensamiento = self::ASISTENTE_POR_OPCION[$opcion][1];
+                $owner->agente_proveedor = ProveedorIaHelper::DEEPSEEK;
+                $pensamiento = self::ASISTENTE_POR_OPCION[$opcion][1];
+                $owner->agente_pensamiento = in_array($pensamiento, ProveedorIaHelper::pensamientos_de(ProveedorIaHelper::DEEPSEEK), true)
+                    ? $pensamiento
+                    : ProveedorIaHelper::PENSAMIENTO_POR_DEFECTO;
                 continue;
             }
 
@@ -456,7 +459,9 @@ class ModelosIaHelper
             $tareas[$tarea] = [
                 'nombre'           => self::NOMBRES_DE_TAREA[$tarea],
                 'opcion'           => self::opcion_elegida($owner, $tarea),
-                'opciones_validas' => self::opciones_validas($tarea),
+                'opciones_validas' => $tarea === self::TAREA_ASISTENTE
+                    ? [self::DEEPSEEK_FLASH, self::DEEPSEEK_PRO]
+                    : self::opciones_validas($tarea),
                 'efectiva'         => is_null($resolucion) ? null : [
                     'opcion'    => $resolucion['opcion_efectiva'],
                     'proveedor' => $resolucion['proveedor'],
@@ -773,7 +778,7 @@ class ModelosIaHelper
             'modelo'          => $eleccion['modelo'],
             'thinking'        => $eleccion['thinking'],
             'vision'          => $eleccion['proveedor'] === ProveedorIaHelper::ANTHROPIC || $necesita_vision || self::OPCIONES[$efectiva]['vision'],
-            'fallback'        => $eleccion['proveedor'] !== ProveedorIaHelper::proveedor_elegido($owner),
+            'fallback'        => false,
         ];
     }
 

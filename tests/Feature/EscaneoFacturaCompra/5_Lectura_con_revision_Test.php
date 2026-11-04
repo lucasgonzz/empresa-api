@@ -404,6 +404,50 @@ class Lectura_con_revision_Test extends EmpresaTestCase
         $this->assertSame('renglon_no_cierra', $scan->resultado['lectura']['motivo_revision']);
     }
 
+    /** @test */
+    public function evita_volver_a_descontar_un_unitario_ya_bonificado()
+    {
+        $articulos = [
+            $this->renglon(5, 10.21, 20, 51.04, 'A000008461'),
+            $this->renglon(5, 3.88, 40, 19.41, 'A000006368'),
+            $this->renglon(2, 50, 20, 80, 'DESCUENTO-GENUINO'),
+            $this->renglon(1, 100, 1, 100, 'DESCUENTO-AMBIGUO'),
+            $this->renglon(1, 50, 20, null, 'SIN-TOTAL-IMPRESO'),
+        ];
+        $this->fake_por_modelo([
+            'claude-haiku-5-5' => $this->respuesta('claude-haiku-5-5', $this->factura_leida($articulos)),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('listo', $scan->estado);
+        $this->assertSame(['claude-haiku-5-5'], $this->modelos_llamados());
+        $this->assertSame([null, null, 20.0, 1.0, 20.0], array_map(function ($articulo) {
+            return $articulo['descuento_porcentaje'] === null ? null : (float) $articulo['descuento_porcentaje'];
+        }, $scan->resultado['articulos']));
+        $this->assertEquals(51.04, $scan->resultado['articulos'][0]['total_linea']);
+        $this->assertEquals(19.41, $scan->resultado['articulos'][1]['total_linea']);
+    }
+
+    /** @test */
+    public function conserva_la_revision_si_el_unitario_ya_bonificado_es_dudoso()
+    {
+        $renglon = $this->renglon(5, 10.21, 20, 51.04);
+        $renglon['campos_dudosos'] = ['costo_unitario'];
+        $factura = $this->factura_leida([$renglon]);
+        $this->fake_por_modelo([
+            'claude-haiku-5-5'  => $this->respuesta('claude-haiku-5-5', $factura),
+            'claude-sonnet-5-5' => $this->respuesta('claude-sonnet-5-5', $factura),
+        ]);
+
+        $scan = $this->correr_el_job($this->escaneo_con_foto());
+
+        $this->assertSame('listo', $scan->estado);
+        $this->assertSame(['claude-haiku-5-5', 'claude-sonnet-5-5'], $this->modelos_llamados());
+        $this->assertEquals(20, $scan->resultado['articulos'][0]['descuento_porcentaje']);
+        $this->assertContains('costo_unitario', $scan->resultado['articulos'][0]['campos_dudosos']);
+    }
+
     /**
      * Un solo renglón que no cierra entre varios alcanza para revisar: la factura se relee entera,
      * porque el costo mal de un renglón es el que termina en la cuenta corriente.

@@ -892,6 +892,49 @@ class Tarjeta_prometida_sin_accion_Test extends TestCase
         $this->assertCount(2, $this->bodies_enviados(), 'Una llamada por pedido, ninguna de más.');
     }
 
+    /** @test */
+    public function por_whatsapp_un_si_sin_pago_confirmado_no_devuelve_una_carga_inventada()
+    {
+        $respuesta = 'Quedó registrado el pago al proveedor por $2.561.668,98 en seis e-cheq del Banco Galicia, numerados 1 a 6, con vencimientos 28/10, 27/11, 28/12, 28/01, 26/02 y 26/03.';
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->end_turn($respuesta), 200)
+                ->push($this->end_turn($respuesta), 200),
+        ]);
+
+        list($conversacion, $mensaje) = $this->conversacion('Sí', true, AiMessage::CANAL_WHATSAPP);
+        $texto = (new AsistenteIaService())->responder($conversacion, $mensaje);
+
+        $this->assertStringNotContainsString('Quedó registrado', $texto);
+        $this->assertStringContainsString('No llegué a terminar', $texto);
+        $this->assertCount(2, $this->bodies_enviados());
+        $this->assertSame(0, $this->tarjetas_de($mensaje));
+    }
+
+    /** @test */
+    public function la_respuesta_en_chino_se_reintenta_en_espanol_una_sola_vez()
+    {
+        $chino = '不，我不能给它设置一个已经过去的到期日。';
+        $espanol = 'Puedo preparar el pago con la fecha que me confirmaste.';
+        Http::fake([
+            'api.deepseek.com/*' => $this->secuencia()
+                ->push($this->end_turn($chino), 200)
+                ->push($this->end_turn($espanol), 200)
+                ->push($this->end_turn($chino), 200)
+                ->push($this->end_turn('不，可以。'), 200),
+        ]);
+
+        list($conversacion, $mensaje) = $this->conversacion('Cargalo igual, ya lo pagué', true, AiMessage::CANAL_WHATSAPP);
+        $this->assertSame($espanol, (new AsistenteIaService())->responder($conversacion, $mensaje));
+
+        list($conversacion, $mensaje) = $this->conversacion('Cargalo igual, ya lo pagué', true, AiMessage::CANAL_WHATSAPP);
+        $texto = (new AsistenteIaService())->responder($conversacion, $mensaje);
+
+        $this->assertDoesNotMatchRegularExpression('/\p{Han}/u', $texto);
+        $this->assertStringContainsString('No llegué a terminar', $texto);
+        $this->assertCount(4, $this->bodies_enviados());
+    }
+
     // ---------------------------------------------------------------------
     // El detector
     // ---------------------------------------------------------------------

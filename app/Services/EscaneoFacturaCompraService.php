@@ -688,6 +688,23 @@ class EscaneoFacturaCompraService
         );
     }
 
+    /** Identifica una bonificación informativa cuando el unitario ya incluye el descuento. */
+    protected function unitario_ya_bonificado(array $fila): bool
+    {
+        if ($fila['cantidad'] === null || $fila['costo_unitario'] === null || $fila['total_linea'] === null
+            || $fila['descuento_porcentaje'] <= 0 || $fila['descuento_porcentaje'] > 100) {
+            return false;
+        }
+
+        $importe = $fila['cantidad'] * $fila['costo_unitario'];
+        $impreso = $fila['total_linea'];
+        $redondeo = 0.01 + 0.005 * abs($fila['cantidad']);
+        $con_descuento = $importe * (1 - $fila['descuento_porcentaje'] / 100);
+
+        return abs($importe - $impreso) <= $redondeo
+            && abs($con_descuento - $impreso) > $this->tolerancia_del_renglon($fila['cantidad'], $impreso);
+    }
+
     /**
      * Importe del comprobante contra el que se compara la suma de los renglones, o null si la lectura no
      * trae con qué. Tiene que estar en la misma base que los renglones, y depende del comprobante:
@@ -1871,6 +1888,11 @@ class EscaneoFacturaCompraService
                 $numero = $this->numero_o_null($crudo, $campo, $fila['fila'], $campos_dudosos);
 
                 $fila[$campo] = $numero;
+            }
+
+            $campos_de_la_cuenta = ['cantidad', 'costo_unitario', 'descuento_porcentaje', 'total_linea'];
+            if (!array_intersect($campos_de_la_cuenta, $campos_dudosos) && $this->unitario_ya_bonificado($fila)) {
+                $fila['descuento_porcentaje'] = null;
             }
 
             $fila['campos_dudosos'] = array_values(array_unique($campos_dudosos));

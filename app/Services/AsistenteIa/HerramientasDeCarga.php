@@ -424,7 +424,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_pago',
-                'description'  => 'Arma la tarjeta de un pago de un cliente (cobro) o a un proveedor, sobre su cuenta corriente, para que la persona la confirme: NO registra nada. Con fecha futura arma una tarea para cobrar o pagar ese día. Con CHEQUE se puede: mandá la fila de pago con su objeto `cheque` (número, banco y fecha de vencimiento), sin caja — un cheque no entra a ninguna caja al cargarse. Lo que sigue siendo de la pantalla es ENDOSAR un cheque que ya te dieron, la tarjeta de crédito y los cobros en otra moneda que la de la cuenta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara un pago de un cliente o a un proveedor en su cuenta corriente. Consultá primero el cliente o proveedor por nombre para obtener su id. Un mismo pago admite varios e-cheq, transferencia y efectivo: mandá una fila por cheque y por cada otro medio indicado, incluido un ajuste en efectivo si lo pidieron. Si la persona confirmó números cortos o que todos los importes son iguales, usá esos datos y dejá que la herramienta valide. La fecha del pago es distinta del vencimiento de cada cheque. Un cheque histórico conserva su vencimiento; no inventes su emisión. Cada cheque va sin caja. Si devuelve una propuesta, pedí confirmación; si devuelve un resultado de ejecución, informá el número y el saldo que devolvió. Con fecha de pago futura arma una tarea. El endoso y los cobros con tarjeta de crédito o en otra moneda siguen siendo de la pantalla. Si devuelve "faltan" o "error", explicá el motivo concreto.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -2635,7 +2635,7 @@ class HerramientasDeCarga
     {
         return [
             'type'        => 'array',
-            'description' => 'Cómo se pagó. Una fila por método de pago.',
+            'description' => 'Cómo se pagó. Una fila por cada cheque y una por cada otro método elegido, aun si varios cheques usan el mismo método. Los importes deben sumar el total; no inventes importes, números ni métodos.',
             'items'       => [
                 'type'       => 'object',
                 'properties' => [
@@ -2675,7 +2675,7 @@ class HerramientasDeCarga
                             ],
                             'fecha_emision' => [
                                 'type'        => 'string',
-                                'description' => 'AAAA-MM-DD, solo si figura en el cheque o la dice la persona. Si no, no la mandes: se usa la de hoy y la tarjeta lo avisa.',
+                                'description' => 'AAAA-MM-DD, solo si figura en el cheque o la dice la persona. Si no, no la mandes: queda sin informar. No puede ser posterior al vencimiento.',
                             ],
                             'es_echeq'      => [
                                 'type'        => 'boolean',

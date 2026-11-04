@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\article\precios;
 
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\Provider;
@@ -42,6 +43,10 @@ use App\Models\User;
  *    con `price` cargado, el precio final ES el precio manual (la rama `else` de setFinalPrice()).
  *  - La palanca COSTO para `price_from_cost_mas_iva` es la rama `$usar_lista_mas_iva` de
  *    setFinalPrice(), y la de listas son las dos formas que setFinalPrice() trata como listas.
+ *  - Una cuenta con lista «Precio final» NO cuenta como "con listas" (misión prueba-listas-siempre,
+ *    3/11/2026): setFinalPrice() le sigue usando el margen y el precio manual del artículo, y esa
+ *    lista es el precio final. Ver comercio(). Sin esto, un migrado que sube 10 % multiplicaba el
+ *    COSTO y sus precios manuales no se movían.
  *
  * CUÁNTO SUBE DE VERDAD. El margen y el costo multiplican el precio, y casi todo lo que viene después
  * en setFinalPrice() también (recargos y descuentos porcentuales, IIBB por división, IVA), así que el
@@ -114,14 +119,20 @@ class PrecioFinalEnMasivaHelper
      * Sin dueño no se le pasa null a UserHelper: caería en Auth, que en la cola no existe. Se toma
      * como un comercio sin listas ni extensiones.
      *
+     * `listas_de_precio` responde "¿el precio del artículo sale de una cadena de listas e ignora el
+     * manual?", la misma condición de la rama de setFinalPrice(): flag prendido Y sin lista «Precio
+     * final». Con esa lista, tenga o no otras, el margen y el manual siguen moviendo el precio del
+     * artículo (o sea, esa lista); las demás listas siguen con su margen, y `otras_listas` es lo que le
+     * permite a la tarjeta del asistente avisarlo.
+     *
      * @param  \App\Models\User|null  $owner
      * @param  \ArrayObject|null      $memoria
-     * @return array{listas_de_precio: bool, listas_por_categoria: bool, precios_en_blanco: bool}
+     * @return array{listas_de_precio: bool, otras_listas: bool, listas_por_categoria: bool, precios_en_blanco: bool}
      */
     public static function comercio($owner, $memoria = null)
     {
         if (is_null($owner)) {
-            return ['listas_de_precio' => false, 'listas_por_categoria' => false, 'precios_en_blanco' => false];
+            return ['listas_de_precio' => false, 'otras_listas' => false, 'listas_por_categoria' => false, 'precios_en_blanco' => false];
         }
 
         $clave = 'precio_final:comercio:' . (int) $owner->id;
@@ -131,7 +142,10 @@ class PrecioFinalEnMasivaHelper
         }
 
         $comercio = [
-            'listas_de_precio'     => UserHelper::uses_listas_de_precio($owner),
+            'listas_de_precio'     => UserHelper::uses_listas_de_precio($owner) && !PriceTypeHelper::tiene_lista_precio_final($owner),
+            'otras_listas'         => UserHelper::uses_listas_de_precio($owner)
+                                        && PriceTypeHelper::tiene_lista_precio_final($owner)
+                                        && !PriceTypeHelper::solo_lista_precio_final($owner),
             'listas_por_categoria' => UserHelper::hasExtencion('lista_de_precios_por_categoria', $owner),
             'precios_en_blanco'    => UserHelper::hasExtencion('articulos_precios_en_blanco', $owner),
         ];

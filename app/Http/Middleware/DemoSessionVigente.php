@@ -3,7 +3,6 @@
 namespace App\Http\Middleware;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
-use App\Models\DemoIngresoToken;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -78,21 +77,11 @@ class DemoSessionVigente
             return $this->cerrarSesionExpirada($request);
         }
 
-        // A partir de aca sabemos que la sesion actual es una sesion de demo.
-        $registro = DemoIngresoToken::find($token_id);
-
         /**
-         * Vigente = existe y no fue revocado. Ya NO mira `expires_at`: el vencimiento del
-         * turno agendado no corta una sesion ya abierta (pedido de Lucas, 4/9/2026). En
-         * local se ignora la condicion de revocacion (DemoIngresoTokenHelper::
-         * bypass_vigencia_local()), pero el registro SIEMPRE tiene que existir: un
-         * token_id que no resuelve a ninguna fila sigue sin dejar pasar, en cualquier
-         * entorno.
+         * A partir de aca sabemos que la sesion actual es una sesion de demo. Vigente = existe y
+         * no fue revocado; la definicion vive en DemoIngresoTokenHelper::sesion_demo_vigente().
          */
-        $vigente = !is_null($registro) && (
-            DemoIngresoTokenHelper::bypass_vigencia_local()
-            || is_null($registro->revoked_at)
-        );
+        $vigente = DemoIngresoTokenHelper::sesion_demo_vigente($token_id);
 
         $request->attributes->set('demo_session_vigente', $vigente);
 

@@ -8,41 +8,9 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 /**
- * Las fotos de un turno de DeepSeek, pasadas a TEXTO para que las pueda leer el Pro (misión
- * asistente-deepseek-pro-razona, 24/9/2026).
- *
- * 🔴 POR QUÉ EXISTE. Lucas quiere que cuando hay que razonar más, el asistente use DeepSeek Pro y
- * no Claude. Pero `deepseek-v4-pro` NO VE IMÁGENES, y no lo avisa con un error: medido el 24/9/2026
- * contra la API real, a Pro con una foto le llega sólo el texto (110 tokens de entrada) y contesta
- * "No puedo ver la imagen". Por eso hasta hoy un turno con foto corría en Flash (`model_vision`)
- * aunque fuera escalado —y un turno con foto es justamente el de cargar algo, el que más razona—.
- * Flash, en cambio, lee bien la foto (el código de barras 7 798111 212032 en 1,8 s).
- *
- * La salida es partir el trabajo en dos: Flash MIRA (una llamada al arrancar el turno, sin pensar,
- * con todas las fotos del payload) y escribe lo que hay en cada foto; Pro RAZONA sobre esa
- * transcripción, pensando desde la vuelta 0. Los bloques `image` del payload se reemplazan por el
- * texto, así que Pro nunca recibe una imagen que no ve.
- *
- * 🔴 SI LA TRANSCRIPCIÓN FALLA, NADA SE ROMPE. Cualquier falla (HTTP, timeout, clave, una respuesta
- * que no trae una sección por foto) devuelve null, y el service sigue como antes de esta misión:
- * Flash con visión y el thinking del turno escalado. Una transcripción a medias NO se usa: si una
- * foto quedó sin texto, Pro trabajaría sin ella sin saberlo, que es el mismo camino de falla mudo.
- *
- * 🔴 NO ES UNA INTERACCIÓN DEL DUEÑO, PERO SÍ ES GASTO. La llamada se registra en ai_token_usages
- * con su propio proceso (PROCESO): TopeDeTokensHelper cuenta interacciones sólo sobre las filas
- * `chat_mensaje`, una por RESPUESTA (cada `referencia_id` distinto: el mensaje que contesta el loop,
- * desde la misión agente-memoria-y-sin-techo), así que una transcripción no es una pregunta del dueño
- * y no le come el tope diario; y los tokens del mes los suma sobre TODAS las filas del dueño, así que
- * los de la transcripción sí cuentan contra el tope mensual — son tokens que se pagaron por su turno.
- *
- * Caché: la transcripción de cada foto se guarda 24 h por (ai_message_imagenes.id + hash de los
- * bytes). Las fotos sin usar de la última tanda vuelven a viajar hasta tres mensajes después
- * (AsistenteIaService::con_las_fotos_de_la_ultima_tanda); sin el caché cada turno de esos pagaría
- * de nuevo la misma lectura. El hash va por si el archivo de una fila cambia: otra foto, otra clave.
- *
- * Anthropic no pasa nunca por acá: todos sus modelos ven.
- *
- * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
+ * Haiku transcribe las fotos y DeepSeek recibe el texto para responder.
+ * El caché por foto evita volver a pagar por las imágenes reenviadas.
+ * El consumo se registra aparte y se suma al costo mensual del asistente.
  */
 class TranscripcionDeFotosIaHelper
 {
@@ -53,7 +21,7 @@ class TranscripcionDeFotosIaHelper
     const HORAS_DE_CACHE = 24;
 
     /** Prefijo de la clave de caché: `<prefijo><ai_message_imagenes.id>:<sha1>`. */
-    const PREFIJO_DE_CACHE = 'asistente_ia:transcripcion_foto:';
+    const PREFIJO_DE_CACHE = 'asistente_ia:transcripcion_foto_haiku:';
 
     /**
      * Timeout de la llamada de transcripción, en segundos. Medido: 1,8 s para una foto. Corre ANTES
@@ -84,53 +52,8 @@ class TranscripcionDeFotosIaHelper
         . "Formato: una sección por foto, cada una arrancando con una línea \"FOTO k:\" (k es el número que acompaña a esa foto), sin nada antes de la primera.";
 
     /**
-     * true si el interruptor de config está prendido (`services.deepseek.pro_con_transcripcion`,
-     * DEEPSEEK_PRO_CON_TRANSCRIPCION, default true). Con false todo corre como antes de esta misión.
-     *
-     * @return bool
-     */
-    public static function activa(): bool
-    {
-        return (bool) config('services.deepseek.pro_con_transcripcion', true);
-    }
-
-    /**
-     * true si ESTE turno tiene que transcribir sus fotos y correr en Pro: el proveedor efectivo es
-     * DeepSeek, el interruptor está prendido y el turno va escalado DESDE LA VUELTA 0 — el dueño eligió
-     * Profundo, o el turno arranca escalado (foto propia en el mensaje, o una carga ya confirmada por
-     * el sí de la persona).
-     *
-     * 🔴 El escalado A MITAD de turno (el modelo pidió una tool de carga en una vuelta del Ágil) NO
-     * entra acá y no puede entrar: pasar de Flash a Pro con el thinking prendido después de un
-     * tool_use sin bloque `thinking` es el 400 de DeepSeek de 1e9711bd
-     * (ProveedorIaHelper::thinking_apto_para_historial). Ese turno sigue como hoy.
-     *
-     * No mira si hay fotos: eso lo sabe el service (AsistenteIaService::lleva_imagenes).
-     *
-     * @param  \App\Models\User|null  $owner
-     * @param  string  $proveedor  El proveedor efectivo del turno (ProveedorIaHelper::proveedor_de).
-     * @param  bool  $arranca_escalado  true si el turno ya está escalado antes de la primera llamada.
-     * @return bool
-     */
-    public static function corresponde($owner, $proveedor, $arranca_escalado): bool
-    {
-        if ((string) $proveedor !== ProveedorIaHelper::DEEPSEEK || ! self::activa()) {
-
-            return false;
-        }
-
-        if ($arranca_escalado) {
-
-            return true;
-        }
-
-        return ProveedorIaHelper::pensamiento_de($owner, $proveedor) === 'profundo';
-    }
-
-    /**
      * Devuelve los mensajes con cada bloque `image` reemplazado por el texto de su transcripción, o
-     * null si no se pudo transcribir alguna (el llamador sigue con los mensajes originales y el
-     * modelo con visión). Nunca lanza.
+     * null si no se pudo transcribir alguna. Nunca lanza.
      *
      * @param  array<int, array{role: string, content: string|array}>  $messages
      * @param  array<string, \App\Models\AiMessageImagen>  $fotos_por_hash  sha1 del `data` base64 del
@@ -178,7 +101,7 @@ class TranscripcionDeFotosIaHelper
 
             return self::con_las_transcripciones($messages, $fotos, $textos);
         } catch (\Throwable $e) {
-            Log::warning('TranscripcionDeFotosIaHelper: no se pudieron transcribir las fotos; el turno sigue con el modelo con visión.', [
+            Log::warning('TranscripcionDeFotosIaHelper: no se pudieron transcribir las fotos.', [
                 'ai_conversation_id' => is_null($conversation) ? null : $conversation->id,
                 'error'              => $e->getMessage(),
             ]);
@@ -257,7 +180,7 @@ class TranscripcionDeFotosIaHelper
     }
 
     /**
-     * UNA llamada al modelo con visión (Flash, thinking apagado) con todas las fotos que faltan.
+     * UNA llamada al modelo Haiku con todas las fotos que faltan.
      * Devuelve [numero => texto] con un texto no vacío para CADA foto pedida, o null.
      *
      * @param  array<int, array>  $fotos
@@ -266,8 +189,8 @@ class TranscripcionDeFotosIaHelper
      */
     protected static function transcribir(array $fotos, $conversation, $pedido = '')
     {
-        $proveedor = ProveedorIaHelper::DEEPSEEK;
-        $modelo    = ProveedorIaHelper::modelo_de_vision_de_deepseek();
+        $proveedor = ProveedorIaHelper::ANTHROPIC;
+        $modelo    = ProveedorIaHelper::MODELO_HAIKU_IMAGENES;
 
         $content = [];
 
@@ -289,23 +212,19 @@ class TranscripcionDeFotosIaHelper
 
         $content[] = ['type' => 'text', 'text' => 'Transcribí ' . (count($fotos) === 1 ? 'la foto' : 'las ' . count($fotos) . ' fotos') . ' con el formato indicado.'];
 
-        /*
-         * Thinking APAGADO explícito: DeepSeek lo trae prendido por defecto, y para leer una foto no
-         * hace falta razonar (el que razona es Pro, después). Además deja el max_tokens como está.
-         */
-        $payload = ProveedorIaHelper::agregar_thinking([
+        $payload = [
             'model'      => $modelo,
             'max_tokens' => self::MAX_TOKENS,
             'system'     => self::PROMPT_DE_TRANSCRIPCION,
             'messages'   => [['role' => 'user', 'content' => $content]],
-        ], ['type' => 'disabled']);
+        ];
 
         $response = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS)
             ->post(ProveedorIaHelper::url_messages($proveedor), $payload);
 
         if (! $response->successful()) {
             /* El body de un error de DeepSeek no trae la clave; igual se recorta, es para diagnosticar. */
-            Log::warning('TranscripcionDeFotosIaHelper: la API de DeepSeek rechazó la transcripción.', [
+            Log::warning('TranscripcionDeFotosIaHelper: la API de Anthropic rechazó la transcripción.', [
                 'ai_conversation_id' => $conversation->id,
                 'status'             => $response->status(),
                 'body'               => mb_substr((string) $response->body(), 0, 300),
@@ -331,7 +250,7 @@ class TranscripcionDeFotosIaHelper
          * 🔴 Una transcripción CORTADA por el techo de tokens no se usa (chequeo adversarial,
          * 24/9/2026): con varias fotos, la última sección quedaría a medias pero no vacía, pasaría
          * la guarda de separar_por_foto() y Pro razonaría sobre una foto incompleta —y la caché la
-         * guardaría 24 h—. Mejor Flash con la foto a la vista.
+         * guardaría 24 h—. Se descarta la transcripción incompleta.
          */
         if (is_array($body) && isset($body['stop_reason']) && $body['stop_reason'] === 'max_tokens') {
             Log::warning('TranscripcionDeFotosIaHelper: la transcripción se cortó por el techo de tokens; no se usa.', [

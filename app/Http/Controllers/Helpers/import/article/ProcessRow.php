@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CatalogoPorListaHelper;
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
 use App\Http\Controllers\Helpers\LocalImportHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\ArticleProviderDiscountHelper;
@@ -200,6 +201,15 @@ class ProcessRow {
     protected $property_types = [];
     protected $unidad_medidas = [];
     protected $se_importaron_price_types = false;
+
+    /**
+     * El precio de esta fila vino de la columna `$_final_<lista>` de la lista «Precio final», y si la
+     * fila dice «Setear: Sí» (misión prueba-listas-siempre, 3/11/2026). Ver
+     * sacar_precio_de_la_lista_si_no_cambio().
+     *
+     * @var array|null  ['fijado' => bool], o null si el precio de la fila vino de otro lado.
+     */
+    protected $precio_de_la_lista_precio_final = null;
 
     /**
      * Si el mapeo trae alguna columna de PRECIO de lista (`%_<lista>`, `$_final_<lista>` o
@@ -1027,7 +1037,9 @@ class ProcessRow {
                 'prop_key'      => 'contenido',
             ],
         ];
-        
+
+        $props_to_add = $this->props_de_la_lista_precio_final($props_to_add, $row);
+
         $this->iniciar();
 
         $provider_id = $this->get_provider_id($row);
@@ -1676,6 +1688,9 @@ class ProcessRow {
             $this->contar_fila('creado_nuevo');
 
             $this->log('El articulo NO existia');
+
+            $data = $this->precio_de_la_lista_en_la_moneda_del_articulo($data);
+
             // Si no existe, lo agregamos a los artículos para crear
             
             /* 
@@ -1872,6 +1887,8 @@ class ProcessRow {
      */
     protected function merge_fila_en_articulo_para_crear_pendiente(Article $articulo_fake, array $data, $row): void
     {
+        $data = $this->precio_de_la_lista_en_la_moneda_del_articulo($data, $articulo_fake);
+
         $fake_id = $articulo_fake->getAttribute('fake_id');
 
         if (!is_string($fake_id) || $fake_id === '') {
@@ -2112,6 +2129,8 @@ class ProcessRow {
         $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
         $this->terminar('precargar price_types y addresses para procesar articulo ya creado');
 
+        $data = $this->precio_de_la_lista_en_la_moneda_del_articulo($data, $articulo_ya_creado);
+
         // Comparar propiedades y obtener las que cambiaron
         $this->iniciar();
         $cambios = $this->get_modified_fields($articulo_ya_creado, $data);
@@ -2127,6 +2146,7 @@ class ProcessRow {
          * nada real.
          */
         $this->iniciar();
+        $cambios = $this->sacar_precio_de_la_lista_si_no_cambio($articulo_ya_creado, $cambios);
         $cambios = $this->aplicar_criterio_de_precio($articulo_ya_creado, $data, $cambios);
         $this->terminar('criterio de precio manual vs margen');
 
@@ -3707,6 +3727,190 @@ class ProcessRow {
 
 
     /**
+     * Las columnas de la lista «Precio final» se importan como el margen y el precio manual del
+     * ARTÍCULO (misión prueba-listas-siempre, 3/11/2026, decisión D2 del plan): esa lista es un espejo
+     * de `articles.final_price`, así que escribir solo su pivote se perdía en silencio con el primer
+     * recálculo. Un Excel exportado con dos o más listas trae `%_<lista>`, `$_final_<lista>` y
+     * `setear_precio_final_<lista>`; también puede mapearlas a mano una persona o la IA.
+     *
+     *  - `setear_precio_final_<lista>` = Sí: manda `$_final_<lista>` (precio manual), y el margen de esa
+     *    fila no se toma.
+     *  - `setear_precio_final_<lista>` = No: manda `%_<lista>` (margen), y el precio no se toma: es el
+     *    que el sistema calculó, no uno fijado.
+     *  - Sin esa columna: las dos, si están mapeadas.
+     *
+     * Se suman a las columnas de siempre para pasar por lo mismo: validación del número, el cero que no
+     * es un valor, y el criterio de ArticleHelper de "no se pasa de margen a manual desde un Excel"
+     * (aplicar_criterio_de_precio()). Si la misma fila mapea también «Margen de ganancia» o «Precio»,
+     * ganan esas, que son las del artículo.
+     *
+     * 🔴 `$_final_<lista>` es el precio YA ARMADO, con los recargos adentro, y `articles.price` es de donde
+     * setFinalPrice() parte para volver a aplicarlos. Ver sacar_precio_de_la_lista_si_no_cambio().
+     *
+     * @param  array  $props_to_add
+     * @param  array  $row
+     * @return array
+     */
+    private function props_de_la_lista_precio_final(array $props_to_add, $row)
+    {
+        $this->precio_de_la_lista_precio_final = null;
+
+        $lista = null;
+
+        foreach ($this->price_types as $price_type) {
+            if (PriceTypeHelper::es_lista_precio_final($price_type)) {
+                $lista = $price_type;
+                break;
+            }
+        }
+
+        if (is_null($lista)) {
+            return $props_to_add;
+        }
+
+        $columna_margen = $this->get_price_type_row_name('%_', $lista);
+        $columna_precio = $this->get_price_type_row_name('$_final_', $lista);
+        $columna_setear = $this->get_price_type_row_name('setear_precio_final_', $lista);
+
+        $hay_setear = !ImportHelper::isIgnoredColumn($columna_setear, $this->columns);
+
+        $fijado = $hay_setear && in_array(
+            mb_strtolower((string) ImportHelper::getColumnValue($row, $columna_setear, $this->columns)),
+            array('si', 'sí', 's'),
+            true
+        );
+
+        if (
+            !$fijado
+            && !ImportHelper::isIgnoredColumn($columna_margen, $this->columns)
+            && ImportHelper::isIgnoredColumn('margen_de_ganancia', $this->columns)
+        ) {
+            $props_to_add[] = array('excel_column' => $columna_margen, 'prop_key' => 'percentage_gain', 'is_number' => true);
+        }
+
+        if (
+            (!$hay_setear || $fijado)
+            && !ImportHelper::isIgnoredColumn($columna_precio, $this->columns)
+            && ImportHelper::isIgnoredColumn('precio', $this->columns)
+        ) {
+            $props_to_add[] = array('excel_column' => $columna_precio, 'prop_key' => 'price', 'is_number' => true);
+
+            $this->precio_de_la_lista_precio_final = array('fijado' => $fijado);
+        }
+
+        return $props_to_add;
+    }
+
+    /**
+     * Lleva la columna `$_final_<lista>` de la lista «Precio final» a la moneda de `articles.price`, en una
+     * cuenta con precios por moneda (`ventas_en_dolares`). Ahí el Excel exporta la fila en PESOS
+     * (ExportHelper::get_price_types_values_in_order()), y un artículo con el costo en dólares de un dueño
+     * que no cotiza tiene el precio en dólares: 15000 pesos se guardaban como USD 15000.
+     *
+     *  - Si trae lo que la fila en pesos ya tiene, es el precio del artículo tal cual, sin pasar por el dólar
+     *    de hoy: si `users.dollar` cambió desde el último recálculo, dividir daría otro número sin que nadie
+     *    haya tocado la planilla.
+     *  - Si trae otro número, se convierte con el dólar de la cuenta, como la tarjeta de la ficha
+     *    (ArticlePriceTypeMonedaHelper::write_through_precio_final()). Sin dólar no se inventa una
+     *    cotización: la columna se saltea y se reporta.
+     *
+     * @param  array                     $data
+     * @param  \App\Models\Article|null  $articulo  El que ya existe; null si la fila lo crea.
+     * @return array
+     */
+    private function precio_de_la_lista_en_la_moneda_del_articulo(array $data, $articulo = null)
+    {
+        if (
+            is_null($this->precio_de_la_lista_precio_final)
+            || !array_key_exists('price', $data)
+            || is_null($data['price'])
+            || !UserHelper::hasExtencion('ventas_en_dolares', $this->user)
+        ) {
+            return $data;
+        }
+
+        $cost_in_dollars = array_key_exists('cost_in_dollars', $data)
+                            ? $data['cost_in_dollars']
+                            : (is_null($articulo) ? 0 : $articulo->cost_in_dollars);
+
+        $nativa = PriceTypeHelper::moneda_nativa_del_precio((object) array('cost_in_dollars' => $cost_in_dollars), $this->user);
+
+        if (!is_null($articulo) && !empty($articulo->id)) {
+
+            $lista = PriceTypeHelper::lista_precio_final($this->user);
+
+            $filas = is_null($lista)
+                        ? collect()
+                        : $articulo->price_type_monedas()->where('price_type_id', $lista->id)->get();
+
+            $en_pesos = $filas->firstWhere('moneda_id', 1);
+            $en_nativa = $filas->firstWhere('moneda_id', $nativa);
+
+            if (
+                !is_null($en_pesos) && !is_null($en_nativa)
+                && !is_null($en_pesos->final_price) && !is_null($en_nativa->final_price)
+                && abs((float) $en_pesos->final_price - (float) $data['price']) <= 0.005
+            ) {
+                $data['price'] = round((float) $en_nativa->final_price, 2);
+
+                return $data;
+            }
+        }
+
+        $convertido = PriceTypeHelper::precio_en_moneda($data['price'], 1, $nativa, $this->user->dollar);
+
+        if (is_null($convertido)) {
+
+            $this->registrar_columna_de_precio_ignorada($this->fila_actual, 'price', $data['price'], isset($data['name']) ? $data['name'] : null);
+
+            unset($data['price']);
+
+            return $data;
+        }
+
+        $data['price'] = round($convertido, 2);
+
+        return $data;
+    }
+
+    /**
+     * Saca el precio de los cambios si la columna de la lista «Precio final» trae lo que el pivote ya
+     * tiene: la misma regla de la ficha (ArticlePriceTypeHelper::write_through_precio_final()), que solo
+     * toma un valor que difiere del guardado.
+     *
+     * Sin esto, reimportar la misma planilla subía los precios en cada vuelta: la columna trae el precio
+     * con los recargos adentro, y setFinalPrice() los vuelve a aplicar sobre `articles.price` (manual 500 +
+     * recargo 10 %: 550 → 605 → 665,50). «Setear: Sí» sobre un artículo que no tenía el precio fijado sí es
+     * un cambio aunque el número sea el mismo: es fijarlo, igual que tildarlo en la tarjeta.
+     *
+     * @param  \App\Models\Article  $articulo_ya_creado
+     * @param  array                  $cambios
+     * @return array
+     */
+    private function sacar_precio_de_la_lista_si_no_cambio($articulo_ya_creado, array $cambios)
+    {
+        if (is_null($this->precio_de_la_lista_precio_final) || !array_key_exists('price', $cambios)) {
+            return $cambios;
+        }
+
+        foreach ($articulo_ya_creado->price_types as $lista) {
+
+            if (!PriceTypeHelper::es_lista_precio_final($lista)) {
+                continue;
+            }
+
+            $igual = !is_null($lista->pivot->final_price)
+                && abs((float) $lista->pivot->final_price - (float) $cambios['price']) <= 0.005;
+
+            $fijar = $this->precio_de_la_lista_precio_final['fijado'] && (int) $lista->pivot->setear_precio_final !== 1;
+
+            return ($igual && !$fijar) ? $this->descartar_campo_de_cambios($cambios, 'price') : $cambios;
+        }
+
+        return $cambios;
+    }
+
+    /**
      * Arma las filas de `article_price_type` que le corresponden a esta fila del Excel.
      *
      * @param  array                    $row                  Fila del Excel.
@@ -3805,6 +4009,18 @@ class ProcessRow {
 
                 $row_final_price_name = $this->get_price_type_row_name('$_final_', $price_type);
                 $final_price = self::get_number(ImportHelper::getColumnValue($row, $row_final_price_name, $this->columns), 2, $this->interpretacion_punto);
+
+                /*
+                 * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026): sus columnas ya se
+                 * tomaron como margen y precio del ARTÍCULO (props_de_la_lista_precio_final()), y su
+                 * pivote lo escribe el espejo de setFinalPrice(). Acá viaja vacía: un artículo nuevo
+                 * queda relacionado con la lista y uno existente no reescribe nada.
+                 */
+                if (PriceTypeHelper::es_lista_precio_final($price_type)) {
+                    $setear = null;
+                    $percentage = null;
+                    $final_price = null;
+                }
 
                 // "Visible en la tienda para esta lista": 1, 0 o null = no informado (misión
                 // catalogo-por-lista-tienda, 5/10/2026). Ver leer_visible_en_tienda().

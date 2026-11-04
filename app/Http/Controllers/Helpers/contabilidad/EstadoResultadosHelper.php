@@ -79,11 +79,7 @@ class EstadoResultadosHelper
     {
         // La extensión de ventas en dólares se resuelve siempre a partir del $user_id explícito,
         // cargando el modelo directo — nunca desde la sesión (regla 06 del prompt, cron-safe).
-        $extension_dolares_activa = self::extension_dolares_activa($user_id);
-
-        // Sin la extensión activa, el parámetro moneda se ignora y el reporte es siempre en pesos
-        // (regla del prompt: "Sin la extensión, el parámetro moneda no afecta nada").
-        $moneda_efectiva = $extension_dolares_activa ? $moneda : 'pesos';
+        $moneda_efectiva = self::moneda_efectiva($user_id, $moneda);
 
         if ($moneda_efectiva === 'dolares') {
             return self::armar_estado_resultados_dolares($user_id, $desde, $hasta, $filtros_extra);
@@ -97,21 +93,22 @@ class EstadoResultadosHelper
     }
 
     /**
-     * Resuelve si el usuario (owner) tiene activa la extensión `ventas_en_dolares`, sin depender de
-     * sesión: carga el modelo `User` directo por id y se lo pasa a `UserHelper::hasExtencion()`.
+     * La moneda en la que sale el reporte (misión prueba-listas-siempre, 3/11/2026: el selector de la
+     * SPA dejó de depender de la extensión, así que esta respuesta tampoco). `dolares` se contesta
+     * siempre: a quien nunca vendió en dólares le da cero, que es la verdad. `consolidado` de un negocio
+     * que no opera en dólares ES el reporte en pesos, sin nada que convertir ni estimar.
      *
-     * @param  int $user_id
-     * @return bool
+     * @param  int    $user_id
+     * @param  string $moneda
+     * @return string
      */
-    private static function extension_dolares_activa($user_id)
+    public static function moneda_efectiva($user_id, $moneda)
     {
-        $user = User::find($user_id);
-
-        if (is_null($user)) {
-            return false;
+        if ($moneda !== 'consolidado') {
+            return $moneda;
         }
 
-        return UserHelper::hasExtencion('ventas_en_dolares', $user);
+        return UserHelper::opera_en_dolares(User::find($user_id)) ? 'consolidado' : 'pesos';
     }
 
     /**

@@ -496,6 +496,13 @@ class PropuestaActualizacionMasivaIaHelper
             $renglones[] = ['etiqueta' => 'Atención', 'valor' => 'Con listas de precio, el margen del artículo no cambia el precio de las listas'];
         }
 
+        // Una cuenta con lista «Precio final» y otras listas (misión prueba-listas-siempre): el margen
+        // mueve esa lista, y las otras no. Se avisa igual que se avisaba con listas.
+        if (!empty($comercio['otras_listas']) && $cambia_el_margen_del_articulo) {
+
+            $renglones[] = ['etiqueta' => 'Atención', 'valor' => 'El margen del artículo mueve la lista «Precio final»: las otras listas siguen con su margen'];
+        }
+
         return [
             'renglones'   => $renglones,
             'update_form' => $update_form,
@@ -695,6 +702,14 @@ class PropuestaActualizacionMasivaIaHelper
                 'valor'    => $margen === 1
                     ? 'El precio en blanco del artículo al que se le ajusta el margen no cambia'
                     : 'El precio en blanco de los ' . $margen . ' a los que se les ajusta el margen no cambia',
+            ];
+        }
+
+        if (!empty($comercio['otras_listas']) && ($margen + $manual) > 0) {
+
+            $renglones[] = [
+                'etiqueta' => 'Atención',
+                'valor'    => 'Se mueve la lista «Precio final»: las otras listas siguen con su margen',
             ];
         }
 

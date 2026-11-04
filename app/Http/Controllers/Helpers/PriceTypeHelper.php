@@ -803,4 +803,316 @@ class PriceTypeHelper {
 
 		return $candidate;
 	}
+
+	// ═════════════════════════════════════════════════════════════════════════════════════════
+	//  La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026)
+	// ═════════════════════════════════════════════════════════════════════════════════════════
+
+	/**
+	 * Nombre con el que nace la lista «Precio final» (user setup, demo setup y el comando de
+	 * migración). Es un nombre, no una clave: la marca es `price_types.es_precio_final`, y el dueño
+	 * puede renombrarla sin que deje de ser la de precio final.
+	 *
+	 * @var string
+	 */
+	const NOMBRE_PRECIO_FINAL = 'Precio final';
+
+	/**
+	 * Memo por proceso de la lista «Precio final» de cada dueño: `setFinalPrice()` la pregunta por
+	 * artículo (un recálculo del catálogo son decenas de miles de llamadas) y la lista no cambia en
+	 * el medio. `[user_id => ['lista' => PriceType|null, 'desde' => int]]`; null = ese dueño no tiene.
+	 *
+	 * 🔴 Con vencimiento (MEMO_SEGUNDOS): un worker de la cola es un proceso largo que atiende a
+	 * muchos dueños, y si memorizara "no tiene" para siempre, los recálculos que corran después de
+	 * que el comando `listas:migrar-a-precio-final` creó la lista seguirían sin espejarla hasta que el
+	 * worker se reinicie. Con el vencimiento, lo peor es un minuto. Ver olvidar_precio_final().
+	 *
+	 * @var array
+	 */
+	protected static $memo_precio_final = array();
+
+	/** Segundos que vale una entrada del memo. */
+	const MEMO_SEGUNDOS = 60;
+
+	/**
+	 * ¿Esta lista es la «Precio final» del dueño? Compara con 1 (nunca "!= 0"): NULL y 0 son una
+	 * lista común.
+	 *
+	 * @param  \App\Models\PriceType|object|array|null  $price_type
+	 * @return bool
+	 */
+	static function es_lista_precio_final($price_type) {
+
+		if (is_null($price_type)) {
+			return false;
+		}
+
+		if (is_array($price_type)) {
+			return isset($price_type['es_precio_final']) && (int) $price_type['es_precio_final'] === 1;
+		}
+
+		return isset($price_type->es_precio_final) && (int) $price_type->es_precio_final === 1;
+	}
+
+	/**
+	 * La lista «Precio final» del dueño, o null si no tiene (una cuenta con listas propias, o una
+	 * cuenta todavía sin migrar). Un empleado se resuelve a su dueño. Memorizada por proceso.
+	 *
+	 * @param  int|\App\Models\User|null  $user  Id o modelo del usuario; null = el autenticado.
+	 * @return \App\Models\PriceType|null
+	 */
+	static function lista_precio_final($user = null) {
+
+		$owner_id = self::owner_id_de($user);
+
+		if (is_null($owner_id)) {
+			return null;
+		}
+
+		if (
+			isset(self::$memo_precio_final[$owner_id])
+			&& (time() - self::$memo_precio_final[$owner_id]['desde']) < self::MEMO_SEGUNDOS
+		) {
+			return self::$memo_precio_final[$owner_id]['lista'];
+		}
+
+		$lista = PriceType::where('user_id', $owner_id)
+							->where('es_precio_final', 1)
+							->orderBy('id')
+							->first();
+
+		self::$memo_precio_final[$owner_id] = array('lista' => $lista, 'desde' => time());
+
+		return $lista;
+	}
+
+	/**
+	 * ¿El dueño tiene lista «Precio final»? Azúcar sobre lista_precio_final().
+	 *
+	 * @param  int|\App\Models\User|null  $user
+	 * @return bool
+	 */
+	static function tiene_lista_precio_final($user = null) {
+		return !is_null(self::lista_precio_final($user));
+	}
+
+	/**
+	 * Olvida el memo de un dueño (o de todos): se llama al crear o borrar la lista «Precio final»,
+	 * y lo usan los tests, que crean y borran listas dentro del mismo proceso.
+	 *
+	 * @param  int|null  $owner_id  Null = todos.
+	 * @return void
+	 */
+	static function olvidar_precio_final($owner_id = null) {
+
+		if (is_null($owner_id)) {
+			self::$memo_precio_final = array();
+			return;
+		}
+
+		unset(self::$memo_precio_final[(int) $owner_id]);
+	}
+
+	/**
+	 * Crea la lista «Precio final» de un dueño, o devuelve la que ya tiene (idempotente).
+	 *
+	 * Nace sin margen por defecto (`percentage` null: el margen es el del artículo), con
+	 * `setear_precio_final` en 0, visible al público y, salvo que se pida otra, con la `position` más
+	 * alta del dueño + 1, que es lo que la hace la lista POR DEFECTO de Vender y del listado
+	 * (`ArticlePricesHelper::resolver_precio_de_venta()`, rama 4: la de mayor position). En un negocio
+	 * que no tiene otras listas, position 1.
+	 *
+	 * @param  int       $owner_id
+	 * @param  int|null  $position        Si se pasa, se respeta tal cual.
+	 * @param  bool      $sin_observers   true = sin disparar el observer de PriceType (no le crea un
+	 *                                    diseño de etiquetas): lo usa el comando de migración, para un
+	 *                                    dueño que ya tiene su etiqueta genérica.
+	 * @return \App\Models\PriceType
+	 */
+	static function crear_lista_precio_final($owner_id, $position = null, $sin_observers = false) {
+
+		$owner_id = (int) $owner_id;
+
+		$existente = PriceType::where('user_id', $owner_id)->where('es_precio_final', 1)->orderBy('id')->first();
+
+		if (!is_null($existente)) {
+			self::olvidar_precio_final($owner_id);
+			return $existente;
+		}
+
+		if (is_null($position)) {
+			$mayor = PriceType::where('user_id', $owner_id)->max('position');
+			$position = is_null($mayor) ? 1 : ((int) $mayor) + 1;
+		}
+
+		$atributos = array(
+			'num'                                   => (int) PriceType::where('user_id', $owner_id)->count() + 1,
+			'name'                                  => self::NOMBRE_PRECIO_FINAL,
+			'percentage'                            => null,
+			'position'                              => (int) $position,
+			'ocultar_al_publico'                    => 0,
+			'incluir_en_lista_de_precios_de_excel'  => 1,
+			'setear_precio_final'                   => 0,
+			'apply_percentage_on_existing_articles' => 1,
+			'update_existing_articles_percentage_mode' => 'none',
+			'es_precio_final'                       => 1,
+			'user_id'                               => $owner_id,
+		);
+
+		$crear = function () use ($atributos) {
+			return PriceType::create($atributos);
+		};
+
+		$lista = $sin_observers ? PriceType::withoutEvents($crear) : $crear();
+
+		self::olvidar_precio_final($owner_id);
+
+		return $lista;
+	}
+
+	/**
+	 * Las listas que entran a los MOTORES de listas (`aplicar_precios_segun_listas_de_precios()` y
+	 * `aplicar_precios_por_price_type_y_moneda()`): todas menos la «Precio final», que no se calcula
+	 * por ninguna cadena de listas sino que espeja el precio del artículo al final de
+	 * `setFinalPrice()`. Acepta una colección o un array y devuelve lo mismo que recibió, filtrado.
+	 *
+	 * @param  \Illuminate\Support\Collection|array|null  $price_types
+	 * @return \Illuminate\Support\Collection|array|null
+	 */
+	static function sin_la_lista_precio_final($price_types) {
+
+		if (is_null($price_types)) {
+			return null;
+		}
+
+		if (is_array($price_types)) {
+			return array_values(array_filter($price_types, function ($price_type) {
+				return !self::es_lista_precio_final($price_type);
+			}));
+		}
+
+		return $price_types->filter(function ($price_type) {
+			return !self::es_lista_precio_final($price_type);
+		})->values();
+	}
+
+	/**
+	 * ¿El dueño trabaja con listas? El flag prendido, salvo que la única lista sea la «Precio final»: ahí
+	 * la interfaz se comporta como la de un negocio sin listas —etiquetas de góndola, opciones por lista—,
+	 * igual que `muestra_sucursales` de la SPA con una sola sucursal. Con el flag y cero listas da true,
+	 * como el flag solo.
+	 * Es el gemelo de `price_type/muestra_listas` de la SPA y los dos tienen que decir lo mismo.
+	 *
+	 * @param  int|\App\Models\User|null  $user
+	 * @return bool
+	 */
+	static function muestra_listas($user = null) {
+
+		$owner = self::owner_de(is_int($user) || is_string($user) ? User::find($user) : $user);
+
+		if (is_null($owner) || !UserHelper::uses_listas_de_precio($owner)) {
+			return false;
+		}
+
+		return !self::solo_lista_precio_final($owner);
+	}
+
+	/**
+	 * ¿El precio de esta cuenta se carga en el ARTÍCULO? O sea: tiene la lista «Precio final» y
+	 * ninguna otra, que es un negocio que hasta ayer no tenía listas. Es la pregunta de todo lo que
+	 * vive FUERA de setFinalPrice() y decide con el flag crudo (la masiva, el asistente, el Excel,
+	 * los mails): para esta cuenta el margen y el precio manual del artículo siguen mandando, igual
+	 * que antes de prender el flag.
+	 *
+	 * 🔴 No es la negación de muestra_listas(): una cuenta sin el flag también da muestra_listas() = false
+	 * y no tiene que cambiar en nada.
+	 *
+	 * @param  int|\App\Models\User|null  $user
+	 * @return bool
+	 */
+	static function solo_lista_precio_final($user = null) {
+
+		$lista = self::lista_precio_final($user);
+
+		if (is_null($lista)) {
+			return false;
+		}
+
+		return !PriceType::where('user_id', $lista->user_id)->where('id', '!=', $lista->id)->exists();
+	}
+
+	/**
+	 * La moneda NATIVA del precio de un artículo en una cuenta: dólares (2) si el costo está en dólares
+	 * y el dueño NO cotiza los precios a pesos (`users.cotizar_precios_en_dolares` apagado), porque en
+	 * ese caso `setFinalPrice()` no cotiza y `articles.final_price` queda en dólares; pesos (1) en
+	 * cualquier otro caso. Es la moneda en la que está `articles.final_price`, y la que la SPA asume
+	 * (`article_simbolo_moneda()`, `convertir_precio_a_moneda_de_la_venta()`).
+	 *
+	 * @param  \App\Models\Article  $article
+	 * @param  \App\Models\User     $user  El dueño.
+	 * @return int  1 pesos, 2 dólares.
+	 */
+	static function moneda_nativa_del_precio($article, $user) {
+
+		if (!empty($article->cost_in_dollars) && empty($user->cotizar_precios_en_dolares)) {
+			return 2;
+		}
+
+		return 1;
+	}
+
+	/**
+	 * Un precio en la moneda pedida: el mismo número si ya está en ella o no se pidió ninguna, y si no,
+	 * convertido con el dólar de la cuenta. Null si hay que convertir y la cuenta no tiene dólar: no se
+	 * inventa una cotización.
+	 *
+	 * @param  float|string|null  $precio
+	 * @param  int                $moneda_del_precio  1 pesos, 2 dólares.
+	 * @param  int|string|null    $moneda_pedida
+	 * @param  float|string|null  $dolar              `users.dollar`.
+	 * @return float|null
+	 */
+	static function precio_en_moneda($precio, $moneda_del_precio, $moneda_pedida, $dolar) {
+
+		if (is_null($precio) || empty($moneda_pedida) || (int) $moneda_pedida === (int) $moneda_del_precio) {
+			return is_null($precio) ? null : (float) $precio;
+		}
+
+		if ((float) $dolar <= 0) {
+			return null;
+		}
+
+		return (int) $moneda_pedida === 2 ? (float) $precio / (float) $dolar : (float) $precio * (float) $dolar;
+	}
+
+	/**
+	 * La moneda de la fila de «Precio final» que lleva el tilde «Cotizar desde la otra moneda»: la
+	 * regla de Lucas (decisión D3), la misma que `PriceTypeMonedas.vue` usa para una fila nueva.
+	 * `users.cotizar_precios_en_dolares` prendido → la fila en dólares; apagado → la fila en pesos.
+	 * La fila que queda SIN el tilde es la que se edita en la tarjeta.
+	 *
+	 * @param  \App\Models\User  $user  El dueño.
+	 * @return int  1 pesos, 2 dólares.
+	 */
+	static function moneda_que_se_cotiza($user) {
+
+		return empty($user->cotizar_precios_en_dolares) ? 1 : 2;
+	}
+
+	/**
+	 * El id del dueño a partir de un id, un modelo o null (el autenticado).
+	 *
+	 * @param  int|\App\Models\User|null  $user
+	 * @return int|null
+	 */
+	protected static function owner_id_de($user) {
+
+		if (is_int($user) || (is_string($user) && is_numeric($user))) {
+			return self::dueno_de_la_cuenta((int) $user);
+		}
+
+		$owner = self::owner_de($user);
+
+		return is_null($owner) ? null : (int) $owner->id;
+	}
 }
