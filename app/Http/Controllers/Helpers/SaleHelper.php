@@ -2381,6 +2381,58 @@ class SaleHelper extends Controller {
     }
 
     /**
+     * Recalcula SOLO la comisión del vendedor de una venta que ya no está en revisión de depósito,
+     * sin tocar su cuenta corriente.
+     *
+     * 🔴 Misión comision-mostrador-edicion-y-confirmacion (4/11/2026). La comisión no depende del
+     * cliente: una venta de MOSTRADOR (sin cliente) con vendedor genera comisión `active` desde el
+     * alta (`comisiones\Helper::get_status()`). Pero `SaleController::update()` y `updatePrices()`
+     * solo llamaban a `updateCurrentAcountsAndCommissions()` con cliente, que es la condición que
+     * protege la cuenta corriente, y la comisión quedó colgada de ella: una venta de mostrador de
+     * $1.000 con vendedor al 10 % editada a $2.000 se quedaba con $100, y la que nacía en depósito
+     * (`to_check`, sin comisión) y se confirmaba no generaba nunca la suya. Este método es el
+     * camino de comisión de esa función, aparte de su cuenta, para las ventas sin cliente.
+     *
+     * Con `$foto_previa` (la edición) se compara contra la foto de comisiones de hoy, la misma que
+     * usa `updateCurrentAcountsAndCommissions()`: si el hecho económico no cambió se conserva la
+     * comisión tal cual (no se recrea ni se le pisa `liquidada_at`). Sin foto (`updatePrices`) se
+     * recalcula siempre, como hace el camino con cliente.
+     *
+     * Respeta el motor de comisión del dueño (`ComisionesHelper::crear_comision()`: ros_mar,
+     * fenix, golonorte, truvari, distri_creo o el genérico). Sin vendedor no deja nada: borra la
+     * comisión que hubiera y `crear_comision()` no crea otra.
+     *
+     * @param  \App\Models\Sale  $sale
+     * @param  array|null  $foto_previa  `EfectosFinancierosDeVentaHelper::foto()` tomada antes de editar.
+     * @return void
+     */
+    static function actualizar_comisiones($sale, $foto_previa = null) {
+
+        if (!is_null($foto_previa)) {
+
+            $foto_actual = \App\Http\Controllers\Helpers\sale\EfectosFinancierosDeVentaHelper::foto($sale);
+
+            if ($foto_previa['comisiones'] === $foto_actual['comisiones']) {
+                return;
+            }
+        }
+
+        Self::deleteSellerCommissionsFromSale($sale);
+
+        /*
+            Los motores que comisionan por renglón (ros_mar, golonorte, truvari) leen
+            `$sale->articles`, y en la edición esa relación se cargó ANTES de reescribir los
+            pivotes: se la vuelve a leer para que la comisión salga de los precios nuevos.
+        */
+        $sale->unsetRelation('articles');
+        $sale->unsetRelation('combos');
+        $sale->unsetRelation('promocion_vinotecas');
+        $sale->unsetRelation('services');
+
+        Self::crear_comision($sale);
+    }
+
+    /**
      * Saca la venta de la cuenta corriente en la que estaba y deja esa cuenta recalculada (cadena de
      * saldos e imputaciones). Para cuando la venta deja de tener cliente: no entra a ninguna otra
      * cuenta, así que no hay un movimiento nuevo que recalcule nada.
