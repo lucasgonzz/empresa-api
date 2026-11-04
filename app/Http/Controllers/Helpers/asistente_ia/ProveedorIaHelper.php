@@ -2,7 +2,9 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 
 /**
  * El único lugar del repo que sabe que el asistente tiene DOS proveedores de IA: Claude (Anthropic)
@@ -336,6 +338,136 @@ class ProveedorIaHelper
         }
 
         return $http;
+    }
+
+    /**
+     * Llama al modelo resuelto y devuelve [respuesta, modelo enviado]. Para pedidos compatibles,
+     * reserva parte del timeout original para un único respaldo sin cambiar el contrato del pedido.
+     * El llamador recibe una sola respuesta y recién ahí interpreta texto o ejecuta herramientas.
+     */
+    public static function pedir_mensaje($proveedor, int $timeout, array $payload, bool $permitir_respaldo = true, ?callable $durante_respaldo = null): array
+    {
+        $modelo = (string) $payload['model'];
+        $alternativo = $proveedor === self::DEEPSEEK && $permitir_respaldo && $timeout >= 2
+            ? self::alternativo_de_deepseek($modelo, $payload)
+            : null;
+        $url = self::url_messages($proveedor);
+
+        if ($alternativo === null) {
+            return [self::cliente_http($proveedor, $timeout)->post($url, $payload), $modelo];
+        }
+
+        $inicio = hrtime(true);
+        $respuesta = null;
+        $error_inicial = null;
+        $timeout_inicial = $timeout - max(1, (int) floor($timeout / 4));
+
+        try {
+            $respuesta = self::cliente_http($proveedor, $timeout_inicial)->post($url, $payload);
+            if (! in_array($respuesta->status(), [408, 429, 500, 502, 503, 504, 529], true)) {
+                return [$respuesta, $modelo];
+            }
+        } catch (ConnectionException $e) {
+            if (! self::es_conexion_transitoria($e)) {
+                throw $e;
+            }
+            $error_inicial = $e;
+        }
+
+        $respaldar = function () use ($proveedor, $url, $payload, $modelo, $alternativo, $respuesta, $timeout, $inicio) {
+            // El aviso de progreso también consume tiempo del presupuesto del llamador.
+            $segundos_restantes = self::segundos_restantes($inicio, $timeout);
+            if ($segundos_restantes < 1) {
+                return null;
+            }
+
+            $datos = [
+                'modelo_inicial' => $modelo,
+                'modelo_de_respaldo' => $alternativo,
+                'motivo' => $respuesta === null ? 'conexion' : 'http',
+                'http' => $respuesta === null ? null : $respuesta->status(),
+            ];
+
+            $payload['model'] = $alternativo;
+            try {
+                $respaldo = self::cliente_http($proveedor, $segundos_restantes)->post($url, $payload);
+            } catch (ConnectionException $e) {
+                Log::warning('DeepSeek: falló la conexión con la variante de respaldo.', $datos);
+                throw $e;
+            }
+            Log::info('DeepSeek: respondió la variante de respaldo.', $datos + ['http_de_respaldo' => $respaldo->status()]);
+            return $respaldo;
+        };
+
+        try {
+            $respaldo = $durante_respaldo === null
+                ? $respaldar()
+                : $durante_respaldo($respaldar, $respuesta === null);
+        } catch (ConnectionException $e) {
+            $respaldo = null;
+        }
+
+        if ($respaldo !== null && $respaldo->successful()) {
+            return [$respaldo, $alternativo];
+        }
+        if ($error_inicial !== null) {
+            throw $error_inicial;
+        }
+        return [$respuesta, $modelo];
+    }
+
+    public static function segundos_restantes($inicio, int $timeout): int
+    {
+        return max(0, $timeout - (int) ceil((hrtime(true) - $inicio) / 1e9));
+    }
+
+    private static function alternativo_de_deepseek(string $modelo, array $payload): ?string
+    {
+        if (! empty($payload['stream'])) {
+            return null;
+        }
+        foreach ($payload['tools'] ?? [] as $herramienta) {
+            if (! is_array($herramienta) || array_key_exists('type', $herramienta) || ! isset($herramienta['input_schema'])) {
+                return null;
+            }
+        }
+        if ($modelo === 'deepseek-v4-pro') {
+            return 'deepseek-flash';
+        }
+        if (in_array($modelo, ['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'], true)
+            && ! self::requiere_vision($payload['messages'] ?? [])) {
+            return 'deepseek-v4-pro';
+        }
+        return null;
+    }
+
+    private static function requiere_vision(array $bloques): bool
+    {
+        foreach ($bloques as $bloque) {
+            if (! is_array($bloque)) {
+                continue;
+            }
+            if (in_array($bloque['type'] ?? null, ['image', 'image_url', 'document'], true) || self::requiere_vision($bloque)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static function es_conexion_transitoria(ConnectionException $e): bool
+    {
+        $causa = $e->getPrevious();
+        $errno = null;
+        if ($causa instanceof \GuzzleHttp\Exception\ConnectException) {
+            $errno = $causa->getHandlerContext()['errno'] ?? null;
+        }
+        if ($errno === null && preg_match('/cURL error (\d+)\b/i', $e->getMessage(), $coincide)) {
+            $errno = $coincide[1];
+        }
+        if ($errno !== null) {
+            return in_array((int) $errno, [5, 6, 7, 18, 28, 52, 55, 56, 92], true);
+        }
+        return preg_match('/\b(?:timed?\s*out|timeout|connection (?:reset|refused))\b/i', $e->getMessage()) === 1;
     }
 
     /**

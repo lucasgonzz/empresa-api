@@ -98,17 +98,12 @@ class InferirTituloConversacionIaJob implements ShouldQueue
                 . "\n\n<mensaje>\n" . $this->texto_primer_mensaje . "\n</mensaje>";
 
             // El mismo payload para los dos proveedores; `thinking` solo viaja con DeepSeek.
-            $response = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS)
-                ->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
-                    'model'      => $eleccion['modelo'],
-                    'max_tokens' => self::MAX_TOKENS,
-                    'messages'   => [
-                        [
-                            'role'    => 'user',
-                            'content' => $prompt,
-                        ],
-                    ],
-                ], $eleccion['thinking']));
+            $payload = ProveedorIaHelper::agregar_thinking([
+                'model'      => $eleccion['modelo'],
+                'max_tokens' => self::MAX_TOKENS,
+                'messages'   => [['role' => 'user', 'content' => $prompt]],
+            ], $eleccion['thinking']);
+            [$response, $modelo] = ProveedorIaHelper::pedir_mensaje($proveedor, self::TIMEOUT_SEGUNDOS, $payload);
 
             if (!$response->successful()) {
                 Log::warning('InferirTituloConversacionIaJob: la API devolvió error, el título queda null', [
@@ -127,7 +122,7 @@ class InferirTituloConversacionIaJob implements ShouldQueue
                 'auth_user_id'       => $conversation->auth_user_id,
                 'proceso'            => 'chat_titulo',
                 'proveedor'          => $proveedor,
-                'modelo'             => $eleccion['modelo'],
+                'modelo'             => $modelo,
                 'body'               => is_array($body) ? $body : [],
                 'ai_conversation_id' => $conversation->id,
             ]);

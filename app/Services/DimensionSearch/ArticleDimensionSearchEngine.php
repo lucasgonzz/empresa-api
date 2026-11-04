@@ -1374,8 +1374,7 @@ class ArticleDimensionSearchEngine
         ], $ia['thinking']);
 
         try {
-            $respuesta = ProveedorIaHelper::cliente_http($ia['proveedor'], self::TIMEOUT_IA)
-                ->post(ProveedorIaHelper::url_messages($ia['proveedor']), $payload);
+            [$respuesta, $modelo] = ProveedorIaHelper::pedir_mensaje($ia['proveedor'], self::TIMEOUT_IA, $payload);
         } catch (\Throwable $e) {
             Log::warning('[MedidasMasivas] La IA no respondió.', ['proveedor' => $ia['proveedor'], 'error' => Str::limit($e->getMessage(), 200, '…')]);
 
@@ -1397,7 +1396,7 @@ class ArticleDimensionSearchEngine
             'proceso'   => self::PROCESO_IA,
             'body'      => $cuerpo,
             'proveedor' => $ia['proveedor'],
-            'modelo'    => isset($cuerpo['model']) && (string) $cuerpo['model'] !== '' ? (string) $cuerpo['model'] : $ia['modelo'],
+            'modelo'    => isset($cuerpo['model']) && (string) $cuerpo['model'] !== '' ? (string) $cuerpo['model'] : $modelo,
         ]);
 
         $usage = isset($cuerpo['usage']) && is_array($cuerpo['usage']) ? $cuerpo['usage'] : [];

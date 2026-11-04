@@ -380,4 +380,31 @@ class Importacion_excel_Test extends TestCase
 
         $this->assertEquals(9, $this->enviados[0]['timeout']);
     }
+
+    /** @test */
+    public function los_tres_contabilizan_un_respaldo_cortado_sin_volver_a_pedirlo()
+    {
+        config(['services.deepseek.model_profundo' => 'deepseek-v4-pro']);
+        foreach ($this->analizadores() as $nombre => list($analizador, $proceso)) {
+            Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
+            $modelos = [];
+            Http::fake(function ($request) use (&$modelos) {
+                $modelos[] = $request['model'];
+                if (count($modelos) === 1) {
+                    return Http::response(['error' => ['type' => 'overloaded_error']], 503);
+                }
+                return Http::response([
+                    'stop_reason' => 'max_tokens',
+                    'content' => [['type' => 'text', 'text' => '{"column_mapping":']],
+                    'usage' => ['input_tokens' => 42, 'output_tokens' => 12],
+                ]);
+            });
+
+            $this->assertSame(AiExcelAnalyzer::MENSAJE_IA_RESPUESTA_ILEGIBLE, $this->mensaje_de_error($analizador), $nombre);
+            $this->assertSame(['deepseek-v4-pro', 'deepseek-flash'], $modelos, $nombre);
+            $consumos = AiTokenUsage::where('user_id', $this->dueno->id)->where('proceso', $proceso)->get();
+            $this->assertCount(1, $consumos, $nombre);
+            $this->assertSame('deepseek-flash', $consumos[0]->modelo, $nombre);
+        }
+    }
 }

@@ -774,6 +774,8 @@ class AsistenteIaService
          * hecho que contar.
          */
         $rondas_de_herramientas = 0;
+        $modelo_de_respaldo_del_turno = null;
+        $historial_admite_otro_modelo = true;
 
         /*
          * true cuando la vuelta en curso es la LLAMADA DE CIERRE (ver el 🔴 de abajo). Queda prendido
@@ -924,7 +926,7 @@ class AsistenteIaService
 
             /* Las cargas pueden escalar el modelo dentro de DeepSeek a partir de la próxima vuelta. */
             $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, false, $toco_una_carga, $modelo_pedido);
-            $model    = $eleccion['modelo'];
+            $model    = $modelo_de_respaldo_del_turno ?? $eleccion['modelo'];
 
             /*
              * 🔴 El escalado puede prender el thinking DESPUÉS de una vuelta que no lo tenía, y con
@@ -972,10 +974,32 @@ class AsistenteIaService
             }
 
             try {
-                $response = $this->post_al_proveedor(
-                    $cerrando ? ProveedorIaHelper::cliente_http($proveedor, $segundos_del_cierre) : $http,
-                    $url, $body, $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message
-                );
+                if ($proveedor === ProveedorIaHelper::DEEPSEEK) {
+                    $puede_cambiar_modelo = $modelo_de_respaldo_del_turno === null
+                        && $historial_admite_otro_modelo
+                        && $texto_antes_del_reintento === null
+                        && $confirmacion_determinista === null
+                        && ! $cerrando
+                        && $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message);
+                    [$response, $model] = ProveedorIaHelper::pedir_mensaje(
+                        $proveedor,
+                        $cerrando ? $segundos_del_cierre : self::TIMEOUT_SEGUNDOS,
+                        $body,
+                        $puede_cambiar_modelo,
+                        static function ($reintentar, $falla_de_conexion) use ($assistant_message) {
+                            $etiqueta = $falla_de_conexion ? ProgresoIaHelper::REINTENTO_CONEXION : ProgresoIaHelper::REINTENTO_PROVEEDOR;
+                            return ProgresoIaHelper::durante_reintento($assistant_message, $etiqueta, $reintentar);
+                        }
+                    );
+                    if ($response->successful() && $model !== $body['model']) {
+                        $modelo_de_respaldo_del_turno = $model;
+                    }
+                } else {
+                    $response = $this->post_al_proveedor(
+                        $cerrando ? ProveedorIaHelper::cliente_http($proveedor, $segundos_del_cierre) : $http,
+                        $url, $body, $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message
+                    );
+                }
             } catch (\Throwable $e) {
                 /* Si falla la llamada de cierre, lo hecho armado sin el modelo (ver respuesta_sin_terminar()). */
                 if ($cerrando) {
@@ -1147,8 +1171,14 @@ class AsistenteIaService
 
             if ($pide_herramientas) {
                 foreach ($content_blocks as $block) {
-                    if (is_array($block) && ($block['type'] ?? '') === 'tool_use') {
-                        $herramientas_pedidas[] = (string) ($block['name'] ?? '');
+                    $tipo = is_array($block) ? ($block['type'] ?? '') : '';
+                    if ($tipo === 'tool_use') {
+                        $herramienta = (string) ($block['name'] ?? '');
+                        $herramientas_pedidas[] = $herramienta;
+                        $historial_admite_otro_modelo = $historial_admite_otro_modelo && $this->es_lectura_sin_efectos($herramienta);
+                    } elseif (in_array($tipo, ['thinking', 'redacted_thinking'], true)) {
+                        // Una firma opaca del modelo anterior no se reenvía a otra variante.
+                        $historial_admite_otro_modelo = false;
                     }
                 }
 
@@ -5886,6 +5916,16 @@ CONFIRMACION;
     public function maneja_lectura($tool_name): bool
     {
         return in_array((string) $tool_name, $this->nombres_de_lectura(), true);
+    }
+
+    protected function es_lectura_sin_efectos(string $herramienta): bool
+    {
+        // Aunque se ofrecen con las consultas, estas herramientas guardan archivos, tokens o contexto.
+        if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'], true)) {
+            return false;
+        }
+        return $this->handler_de_lectura($herramienta) !== null
+            || HerramientasDeConversaciones::maneja($herramienta);
     }
 
     /**

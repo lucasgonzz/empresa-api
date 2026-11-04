@@ -1091,6 +1091,66 @@ class Cierre_con_lo_hecho_Test extends TestCase
         }
     }
 
+    /** @test */
+    public function si_falla_despues_de_confirmar_una_herramienta_cierra_sin_cambiar_de_modelo_ni_duplicarla()
+    {
+        config([
+            'services.deepseek.model_agil' => 'deepseek-flash',
+            'services.deepseek.model_profundo' => 'deepseek-v4-pro',
+        ]);
+        $this->comercio->agente_confianza = ConfianzaDelAgenteIaHelper::DIRECTO;
+        $this->comercio->save();
+
+        $contador = $this->proveedor_que_carga_y_despues_falla(
+            Http::response(['error' => ['type' => 'overloaded_error']], 503),
+            'ZZP102 Tarea que se registra una sola vez'
+        );
+        list($conversation, $assistant) = $this->conversacion();
+
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $this->assertSame(2, $contador->llamadas);
+        $this->assertSame('listo', $assistant->fresh()->estado);
+        $tarjetas = AiMessageAction::where('ai_message_id', $assistant->id)->get();
+        $this->assertCount(1, $tarjetas);
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, (string) $tarjetas[0]->estado);
+    }
+
+    /** @test */
+    public function si_falla_despues_de_una_consulta_reenvia_su_resultado_al_respaldo()
+    {
+        config([
+            'services.deepseek.model_agil' => 'deepseek-flash',
+            'services.deepseek.model_profundo' => 'deepseek-v4-pro',
+            'services.deepseek.thinking_agil' => 'disabled',
+        ]);
+        $pedidos = [];
+        Http::fake(function ($request) use (&$pedidos) {
+            $pedidos[] = $request->data();
+            if (count($pedidos) === 1) {
+                return Http::response($this->respuesta('tool_use', [[
+                    'type' => 'tool_use',
+                    'id' => 'toolu_p102_consulta',
+                    'name' => 'que_puedo_consultar',
+                    'input' => (object) [],
+                ]]));
+            }
+            if (count($pedidos) === 2) {
+                return Http::response(['error' => ['type' => 'overloaded_error']], 503);
+            }
+            return Http::response($this->respuesta('end_turn', [['type' => 'text', 'text' => 'Puedo consultar el stock y las ventas.']]));
+        });
+
+        list($conversation, $assistant) = $this->conversacion();
+        (new ResponderMensajeChatIaJob($assistant->id))->handle();
+
+        $this->assertSame(['deepseek-flash', 'deepseek-flash', 'deepseek-v4-pro'], array_column($pedidos, 'model'));
+        $this->assertSame($pedidos[1]['messages'], $pedidos[2]['messages']);
+        $ultimo_mensaje = end($pedidos[2]['messages']);
+        $this->assertSame('toolu_p102_consulta', $ultimo_mensaje['content'][0]['tool_use_id']);
+        $this->assertSame('listo', $assistant->fresh()->estado);
+    }
+
     /**
      * R1: lo que quedó esperando el sí (cauteloso) va como «Quedaron para que las confirmes» y las tarjetas
      * siguen `propuesta`: un mensaje `listo` no las descarta (el error sí las descartaba).
