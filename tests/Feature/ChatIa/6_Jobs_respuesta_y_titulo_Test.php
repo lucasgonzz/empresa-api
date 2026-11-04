@@ -119,11 +119,11 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
     public function el_camino_feliz_deja_el_mensaje_listo_y_emite_el_evento()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [
@@ -171,14 +171,14 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
     public function un_529_deja_el_mensaje_en_error_con_contenido_amigable_y_avisa_igual()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         list($conversation, $assistant) = $this->conversacion_con_pendiente();
 
         $motivos_durante_las_llamadas = [];
         Http::fake([
-            'api.anthropic.com/*' => function () use ($assistant, &$motivos_durante_las_llamadas) {
+            'api.deepseek.com/*' => function () use ($assistant, &$motivos_durante_las_llamadas) {
                 $motivos_durante_las_llamadas[] = $assistant->fresh()->toArray()['detalle_fallo'];
                 return Http::response([
                     'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded'],
