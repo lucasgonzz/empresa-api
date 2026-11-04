@@ -265,7 +265,7 @@ class PagosIaHelper {
                 $detalle = ' · N° '.$fila['cheque']['numero'].' de '.$fila['cheque']['banco']
                     .' · vence '.FormatoIaHelper::fecha_con_dia(Carbon::createFromFormat('Y-m-d', $fila['cheque']['fecha_pago'])->startOfDay())
                     // Misión agente-mejoras-uso-real: la emisión que no vino se dice, no se esconde.
-                    .(!empty($fila['cheque']['emision_supuesta']) ? ' · emisión: hoy (no vino)' : '');
+                    .(!empty($fila['cheque']['emision_supuesta']) ? ' · emisión: sin informar' : '');
 
                 $renglones[] = [
                     'etiqueta' => 'Cheque',
@@ -317,7 +317,7 @@ class PagosIaHelper {
      * impreso tiene 8— y la fecha de emisión de hoy en los cinco. Con la confianza en "directo" el pago se
      * registró en el acto y nadie lo vio. Desde acá:
      *
-     *   - la fecha de emisión que NO vino (validar_cheque pone la de hoy) se dice en la tarjeta;
+     *   - la fecha de emisión que NO vino queda vacía y se indica en la tarjeta;
      *   - los números CORTOS y CORRELATIVOS de una misma tanda se marcan como para revisar
      *     (numeros_para_revisar), y la propuesta los hace esperar el sí de la persona aunque el modo sea
      *     "directo". No se rechazan: los cheques de una misma chequera SÍ son correlativos (por eso
@@ -342,8 +342,8 @@ class PagosIaHelper {
         if ($sin_emision > 0) {
 
             $avisos[] = $sin_emision === 1
-                ? 'La fecha de emisión del cheque no vino: va la de hoy. Si figura en el cheque, corregila.'
-                : 'La fecha de emisión de ' . $sin_emision . ' cheques no vino: va la de hoy. Si figura en los cheques, corregila.';
+                ? 'La fecha de emisión del cheque no vino: queda sin informar.'
+                : 'La fecha de emisión de ' . $sin_emision . ' cheques no vino: queda sin informar.';
         }
 
         $para_revisar = self::numeros_para_revisar($filas);
@@ -677,7 +677,7 @@ class PagosIaHelper {
      * Qué se pide y por qué: el NÚMERO y el BANCO son lo que identifica al cheque en la cartera (sin
      * ellos, la pantalla de Cheques muestra una fila en blanco que nadie puede reconciliar), y la
      * FECHA DE PAGO es el vencimiento: es el dato con el que el comercio decide si lo deposita, lo
-     * endosa o lo espera. La fecha de emisión, si no la dicen, es hoy.
+     * endosa o lo espera. La fecha de emisión, si no la dicen, queda vacía.
      *
      * @param  ContextoDeCargaIa  $contexto
      * @param  mixed  $cheque  El objeto `cheque` de la fila que mandó la IA.
@@ -725,12 +725,12 @@ class PagosIaHelper {
 
         $fecha_emision = EntradaDeCargaIa::valor($cheque, 'fecha_emision');
 
-        // true si la fecha de emisión NO vino y se puso la de hoy: la tarjeta lo marca (avisos_de_cheques).
+        // La emisión desconocida se conserva vacía; no se deduce del vencimiento ni de hoy.
         $emision_supuesta = EntradaDeCargaIa::vacio($fecha_emision);
 
         if ($emision_supuesta) {
 
-            $fecha_emision = $contexto->hoy;
+            $fecha_emision = null;
 
         } else {
 
@@ -742,7 +742,7 @@ class PagosIaHelper {
             }
         }
 
-        if ($fecha_pago->lt($fecha_emision)) {
+        if (!is_null($fecha_emision) && $fecha_pago->lt($fecha_emision)) {
 
             return RespuestaDeCargaIa::error(
                 'El cheque no puede vencer antes de emitirse: decime bien la fecha de pago del cheque de '.$nombre_del_metodo.'.'
@@ -754,7 +754,7 @@ class PagosIaHelper {
         return [
             'numero'        => mb_substr($numero, 0, 191),
             'banco'         => mb_substr($banco, 0, 191),
-            'fecha_emision' => $fecha_emision->format('Y-m-d'),
+            'fecha_emision' => is_null($fecha_emision) ? null : $fecha_emision->format('Y-m-d'),
             'fecha_pago'    => $fecha_pago->format('Y-m-d'),
             'es_echeq'      => EntradaDeCargaIa::valor($cheque, 'es_echeq') ? 1 : 0,
             'notes'         => $notas === '' ? null : mb_substr($notas, 0, 500),

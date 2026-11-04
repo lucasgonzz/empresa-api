@@ -4,6 +4,7 @@ namespace App\Exports;
 
 use App\Http\Controllers\Helpers\Excel\Article\ArticleClientsExportHelper;
 use App\Http\Controllers\Helpers\ExportHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\PriceType;
@@ -21,8 +22,14 @@ class ArticleClientsExport implements FromCollection, WithHeadings, WithMapping,
     public function __construct($price_type_id) {
         $this->price_type_id = $price_type_id;
 
-        $this->price_types = PriceType::where('user_id', UserHelper::userId())
-                                        ->get();
+        /*
+         * Con una sola lista, la «Precio final» (misión prueba-listas-siempre, 3/11/2026), el Excel para
+         * clientes es el de un negocio sin listas: precio, precio anterior y variación. Sin esto perdía
+         * esas dos columnas al migrar.
+         */
+        $this->price_types = PriceTypeHelper::solo_lista_precio_final((int) UserHelper::userId())
+                                ? collect()
+                                : PriceType::where('user_id', UserHelper::userId())->get();
 
         $this->columnas_cambio_precio = [];
     }

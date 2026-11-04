@@ -280,8 +280,13 @@ class Esquema_y_gates_Test extends TestCase
      * @group cotizacion-dolar
      * @test
      */
-    public function con_sesion_pero_sin_la_extension_los_tres_devuelven_403()
+    public function con_sesion_pero_sin_la_extension_los_tres_responden_igual()
     {
+        /*
+         * Misión prueba-listas-siempre (3/11/2026): los dólares pasaron al núcleo y estos endpoints
+         * ya NO piden la extensión `costo_en_dolares` (la fila del padrón queda como dato). Hasta esa
+         * misión, sin la extensión los tres devolvían 403.
+         */
         $user = $this->comercio();
         if (is_null($user)) {
             $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
@@ -292,7 +297,8 @@ class Esquema_y_gates_Test extends TestCase
 
         $this->actingAs($user, 'web');
 
-        $this->assertEquals([403, 403, 403], $this->status_de_los_tres());
+        $this->assertNotContains(403, $this->status_de_los_tres(), 'Sin la extensión, ninguno de los tres devuelve 403.');
+        $this->assertSame(200, $this->getJson('api/dolar-cotizacion')->status());
     }
 
     /**

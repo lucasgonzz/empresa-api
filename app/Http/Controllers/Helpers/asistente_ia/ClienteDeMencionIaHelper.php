@@ -73,8 +73,8 @@ class ClienteDeMencionIaHelper
      * eligió moneda: filtrar por `== 1` deja a esos clientes sin cuenta corriente y el chat les
      * dice que no tienen. Es un defecto real que ya costó caro el 15/9/2026.
      *
-     * 🔴 La de dólares solo viaja con la extensión `ventas_en_dolares`. Sin ella, el comercio no
-     * tiene esa cuenta en ninguna pantalla y el chat no puede ser la excepción.
+     * 🔴 La de dólares solo viaja si el negocio opera en dólares (UserHelper::opera_en_dolares()). Si
+     * no, el comercio no trabaja con esa cuenta y el chat no se la ofrece.
      *
      * @param  Client  $client
      * @param  \App\Models\User|null  $owner
@@ -82,7 +82,7 @@ class ClienteDeMencionIaHelper
      */
     protected static function cuentas($client, $owner): array
     {
-        $con_dolares = !is_null($owner) && UserHelper::hasExtencion(self::EXTENCION_DOLARES, $owner);
+        $con_dolares = UserHelper::opera_en_dolares($owner);
 
         $pesos = [];
 
