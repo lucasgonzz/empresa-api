@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Model;
  * El dueño le pide una imagen al agente desde la app ("haceme una placa para Instagram con la
  * promo"); el agente llama a pedir_imagen, que deja este pedido y un bloque `imagen_generada`
  * `pendiente` en su respuesta. El pedido viaja al admin (EnviarPedidoDeImagenAlAdminJob, contrato
- * C2.1), la PC de Lucas lo genera con su cuenta de ChatGPT y el admin devuelve la imagen
+ * C2.1), donde se genera con la API de OpenAI, y el admin devuelve la imagen
  * (admin-sync/ia-imagenes/{uuid}/resultado, C1.4). Ahí se guarda en el disco `local` y el bloque pasa
  * a `lista`.
  *

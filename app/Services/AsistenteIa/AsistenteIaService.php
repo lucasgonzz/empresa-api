@@ -2204,6 +2204,12 @@ Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño
   pedir_imagen con un prompt detallado. Después decí en una línea que la pediste y que
   aparece acá cuando esté lista: sin prometer tiempos ni decir que ya está. Nunca digas
   que la pediste o que se está generando si no llamaste a pedir_imagen en este mensaje.
+- Si te piden crear una foto nueva desde la que tiene un artículo, usá pedir_imagen
+  con su articulo_id. Para varios artículos, primero consultá los filtros y pedí
+  una por artículo. Si son más de tres, acordá primero cuáles mostrar como muestra.
+  Decí en qué orden aparecen para poder identificar cada una. Cuando el dueño ya
+  vio una imagen y pide usarla, usá proponer_publicar_imagen con su pedido_imagen_uuid
+  si las acciones están habilitadas.
 - Pedir una imagen no autoriza a preparar promociones, envíos ni mensajes a clientes: si
   te parece útil, ofrecelo en una línea y no armes la tarjeta hasta que la persona lo pida.
 - Si la persona te dijo cómo prefiere que le respondas (más breve, más explicado, con
@@ -3657,7 +3663,8 @@ CONFIRMACION;
         $de_carga = [];
 
         foreach ($herramientas as $nombre) {
-            if (HerramientasDeCarga::es_de_carga($nombre) && ! in_array($nombre, $de_carga, true)) {
+            if ((HerramientasDeCarga::es_de_carga($nombre) || $nombre === HerramientasDeLaApp::PROPONER_PUBLICAR_IMAGEN)
+                && ! in_array($nombre, $de_carga, true)) {
                 $de_carga[] = $nombre;
             }
         }
@@ -4906,7 +4913,7 @@ CONFIRMACION;
         }
 
         if ($es_app) {
-            foreach (HerramientasDeLaApp::definiciones() as $definicion) {
+            foreach (HerramientasDeLaApp::definiciones($con_acciones) as $definicion) {
                 $tools[] = $definicion;
             }
         }

@@ -2,10 +2,17 @@
 
 namespace Tests\Feature\IaApp;
 
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
+use App\Jobs\EnviarPedidoDeImagenAlAdminJob;
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
+use App\Models\Article;
 use App\Models\IaImagenPedido;
+use App\Models\Image;
 use App\Models\User;
+use App\Services\AsistenteIa\HerramientasDeLaApp;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
@@ -349,6 +356,25 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
 
     // ---------------------------------------------------------------- las imágenes
 
+    public function test_publicar_imagen_solo_se_ofrece_y_despacha_con_acciones_habilitadas()
+    {
+        $herramienta = HerramientasDeLaApp::PROPONER_PUBLICAR_IMAGEN;
+        $this->assertNotContains($herramienta, array_column(HerramientasDeLaApp::definiciones(), 'name'));
+        $this->assertContains($herramienta, array_column(HerramientasDeLaApp::definiciones(true), 'name'));
+
+        list($pedido, $mensaje) = $this->pedido_pendiente();
+        $resultado = HerramientasDeLaApp::ejecutar(
+            $herramienta,
+            ['pedido_imagen_uuid' => $pedido->uuid],
+            $this->conversacion(),
+            $mensaje,
+            0
+        );
+        $this->assertTrue($resultado['is_error']);
+        $this->assertNull($resultado['bloque']);
+        $this->assertSame(0, $mensaje->acciones()->count());
+    }
+
     public function test_pedir_imagen_crea_el_pedido_el_bloque_y_lo_manda_al_admin()
     {
         Http::fake([
@@ -359,7 +385,7 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
                     'estilo' => 'minimalista',
                 ]), 200)
                 ->push($this->end_turn('Te la estoy haciendo.'), 200),
-            'admin.ia-app.test/*'  => Http::response(['ok' => true, 'estado' => 'pendiente'], 201),
+            'admin.ia-app.test/*'  => $this->aceptacion_por_openai(),
         ]);
 
         $conversation = $this->conversacion(['titulo' => 'Promo']);
@@ -389,13 +415,14 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
         ]], $assistant->bloques);
 
         Http::assertSent(function ($request) use ($pedido, $assistant) {
-            if ($request->url() !== 'https://admin.ia-app.test/api/inbound/ia-imagenes') {
+            if ($request->url() !== 'https://admin.ia-app.test/api/inbound/ia-imagenes/openai' || isset($request['consultar_capacidades'])) {
                 return false;
             }
 
             return $request->hasHeader('X-Admin-Api-Key', 'clave-inbound-de-prueba')
                 && $request['client_uuid'] === 'uuid-del-cliente-de-prueba'
                 && $request['uuid'] === $pedido->uuid
+                && $request['requiere_openai'] === true
                 && $request['tamano'] === 'cuadrada'
                 && $request['estilo'] === 'minimalista'
                 && (int) $request['ai_message_id'] === (int) $assistant->id
@@ -431,6 +458,8 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
     {
         $casos = [
             [429, 'tope_diario', 'Llegaste al tope de imágenes de hoy; probá mañana.'],
+            [429, 'tope_mensual_imagenes', 'Llegaste al límite mensual de tu plan de imágenes. Podés generar más cuando se renueve el cupo.'],
+            [422, 'sin_plan_imagenes', 'Tu negocio necesita un plan de imágenes activo para poder generarlas.'],
             [409, 'uuid_en_uso', null],
             [403, 'cliente_no_coincide', null],
         ];
@@ -443,7 +472,8 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
                 'api.deepseek.com/*'  => Http::sequence()
                     ->push($this->tool_use('pedir_imagen', ['prompt' => 'Un cartel ' . $caso[1], 'tamano' => 'cuadrada']), 200)
                     ->push($this->end_turn('Te la estoy haciendo.'), 200),
-                'admin.ia-app.test/*' => Http::response(['code' => $caso[1], 'message' => 'no'], $caso[0]),
+                'admin.ia-app.test/*' => Http::sequence()->push(['proveedor' => 'openai', 'acepta_referencia' => true], 200)
+                    ->push(['code' => $caso[1], 'message' => 'no'], $caso[0]),
             ]);
 
             $conversation = $this->conversacion(['titulo' => 'Rechazo ' . $caso[1]]);
@@ -465,7 +495,7 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
 
             $al_admin = 0;
             foreach (Http::recorded() as $par) {
-                if (strpos($par[0]->url(), 'admin.ia-app.test') !== false) {
+                if (strpos($par[0]->url(), 'admin.ia-app.test') !== false && !isset($par[0]['consultar_capacidades'])) {
                     $al_admin++;
                 }
             }
@@ -482,7 +512,7 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
             config(['services.admin_api.url' => $base]);
 
             Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
-            Http::fake(['admin.ia-app.test/*' => Http::response(['ok' => true, 'estado' => 'pendiente'], 201)]);
+            Http::fake(['admin.ia-app.test/*' => $this->aceptacion_por_openai()]);
 
             list($pedido) = $this->pedido_pendiente();
             $pedido->enviado_al_admin_en = null;
@@ -495,8 +525,121 @@ class Bloques_progreso_e_imagenes_Test extends IaAppTestCase
                 $urls[] = $par[0]->url();
             }
 
-            $this->assertSame(['https://admin.ia-app.test/api/inbound/ia-imagenes'], $urls, 'Con la base "' . $base . '".');
+            $ruta = 'https://admin.ia-app.test/api/inbound/ia-imagenes/openai';
+            $this->assertSame([$ruta, $ruta], $urls, 'La consulta y el alta comparten la ruta con base "' . $base . '".');
             $this->assertNotNull($pedido->fresh()->enviado_al_admin_en);
+        }
+    }
+
+    protected function aceptacion_por_openai()
+    {
+        return Http::sequence()->push(['proveedor' => 'openai', 'acepta_referencia' => true], 200)
+            ->push(['ok' => true, 'estado' => 'pendiente', 'proveedor' => 'openai'], 201);
+    }
+
+    public function test_un_admin_anterior_no_recibe_un_alta_que_pueda_mandar_a_la_pc()
+    {
+        Http::fake(['admin.ia-app.test/*' => Http::response(['code' => 'not_found'], 404)]);
+        list($anterior, $mensaje) = $this->pedido_pendiente();
+
+        $resultado = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, ['prompt' => 'Una foto']);
+        $pedido = $resultado['pedido'];
+        (new EnviarPedidoDeImagenAlAdminJob($pedido->id))->handle();
+
+        $this->assertSame(IaImagenPedido::ESTADO_NO_DISPONIBLE, $pedido->fresh()->estado);
+        Http::assertSentCount(1);
+        Http::assertSent(function ($request) {
+            return $request['consultar_capacidades'] === true && !isset($request['uuid'], $request['prompt']);
+        });
+    }
+
+    public function test_el_pedido_manda_solo_una_foto_de_la_misma_conversacion()
+    {
+        list($anterior, $mensaje) = $this->pedido_pendiente();
+        $otro = $this->conversacion(['titulo' => 'Otro chat']);
+        $origen = AiMessage::create([
+            'ai_conversation_id' => $otro->id,
+            'rol' => 'user',
+            'estado' => 'listo',
+            'contenido' => 'Usá esta foto',
+            'canal' => 'app',
+        ]);
+        $archivo = $this->png();
+        $binario = file_get_contents($archivo->getRealPath());
+        Storage::disk('local')->put('fotos/prueba.png', $binario);
+        $imagen = AiMessageImagen::create([
+            'ai_message_id' => $origen->id,
+            'user_id' => $this->dueno->id,
+            'orden' => 1,
+            'path' => 'fotos/prueba.png',
+            'mime' => 'image/png',
+            'bytes' => strlen($binario),
+        ]);
+        $datos = ['prompt' => 'Dejá el fondo blanco', 'imagen_id' => $imagen->id];
+        $no_permitido = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, $datos);
+        $this->assertNull($no_permitido['pedido']);
+
+        $origen->ai_conversation_id = $mensaje->ai_conversation_id;
+        $origen->save();
+        Http::fake(['admin.ia-app.test/*' => Http::sequence()
+            ->push(['proveedor' => 'openai', 'acepta_referencia' => true], 200)
+            ->push(['ok' => true, 'proveedor' => 'openai', 'referencia_recibida' => true], 201)]);
+        $resultado = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, $datos);
+        $this->assertNotNull($resultado['pedido']);
+        (new EnviarPedidoDeImagenAlAdminJob($resultado['pedido']->id))->handle();
+
+        $this->assertNotNull($resultado['pedido']->fresh()->enviado_al_admin_en);
+        Http::assertSent(function ($request) use ($binario) {
+            return isset($request['referencia_base64']) && $request['referencia_base64'] === base64_encode($binario);
+        });
+    }
+
+    public function test_pedir_una_imagen_del_articulo_conserva_la_portada_y_respeta_la_cantidad_registrada()
+    {
+        list($anterior, $mensaje) = $this->pedido_pendiente();
+        $articulo = Article::create([
+            'user_id' => $this->dueno->id,
+            'name' => 'Merlot caja x6',
+            'status' => 'active',
+            'presentacion' => 6,
+        ]);
+        $nombre = 'referencia-ia-' . Str::uuid() . '.png';
+        $archivo = $this->png();
+        $binario = file_get_contents($archivo->getRealPath());
+        $ruta = storage_path('app/public/' . $nombre);
+        file_put_contents($ruta, $binario);
+
+        try {
+            $foto = Image::create([
+                'imageable_type' => 'article',
+                'imageable_id' => $articulo->id,
+                'hosting_url' => ApiUrlHelper::storage($nombre),
+            ]);
+            $resultado = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, [
+                'prompt' => 'Mostrá las botellas con su etiqueta original',
+                'articulo_id' => $articulo->id,
+                'usar_presentacion' => true,
+            ]);
+            $pedido = $resultado['pedido'];
+            $this->assertNotNull($pedido);
+            $this->assertSame((int) $articulo->id, (int) $pedido->article_id);
+            $this->assertSame((int) $foto->id, (int) $pedido->referencia_imagen_id);
+            $this->assertSame(hash('sha256', $binario), $pedido->referencia_sha256);
+            $this->assertNotEmpty($pedido->referencia_articulo_sha256);
+            $this->assertStringContainsString('Cantidad exacta de unidades a mostrar: 6', $pedido->prompt);
+            $this->assertSame((int) $articulo->id, $resultado['bloque']['articulo_id']);
+            $this->assertSame($binario, Storage::disk('local')->get($pedido->referencia_path));
+
+            $articulo->presentacion = 12;
+            $articulo->save();
+            $resultado_conflictivo = PedidosDeImagenIaHelper::pedir($this->dueno->id, $mensaje, [
+                'prompt' => 'Mostrá las botellas',
+                'articulo_id' => $articulo->id,
+                'usar_presentacion' => true,
+            ]);
+            $this->assertNull($resultado_conflictivo['pedido']);
+        } finally {
+            unlink($ruta);
         }
     }
 

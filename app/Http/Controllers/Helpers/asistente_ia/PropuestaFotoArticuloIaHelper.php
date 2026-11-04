@@ -10,10 +10,12 @@ use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\AiMessageImagen;
 use App\Models\Article;
+use App\Models\IaImagenPedido;
 use App\Models\Image;
 use App\Services\MercadoLibre\ProductService;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Intervention\Image\ImageManager;
 
 /**
@@ -142,6 +144,8 @@ class PropuestaFotoArticuloIaHelper
 
     /** El `origen` de los `datos` de una tarjeta cuya foto sale de OTRO artículo (B3, 31/10/2026). */
     const ORIGEN_ARTICULO = 'articulo';
+
+    const ORIGEN_GENERADA = 'generada';
 
     /**
      * El código del error cuando todavía no hay foto que poner (B3, 31/10/2026): la foto está por llegar. El
@@ -364,6 +368,71 @@ class PropuestaFotoArticuloIaHelper
             : 'Foto de ' . count($ids) . ' artículos: ' . implode(', ', $nombres);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $texto_del_resumen, $resumen);
+    }
+
+    public static function proponer_generada(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)
+    {
+        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+            return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('fotos de artículos'));
+        }
+
+        $uuid = $input['pedido_imagen_uuid'] ?? null;
+
+        if (!$mensaje->es_de_la_app() || !is_string($uuid) || !\Illuminate\Support\Str::isUuid($uuid)) {
+            return RespuestaDeCargaIa::error('Elegí una imagen generada en esta conversación de ComercioCity IA.');
+        }
+
+        $pedido = self::pedido_generado($contexto, $uuid)->first();
+
+        if (!$pedido || $pedido->estado !== IaImagenPedido::ESTADO_LISTA || !$pedido->article_id) {
+            return RespuestaDeCargaIa::error('La imagen todavía no está lista o no pertenece a un artículo de esta conversación.');
+        }
+
+        $articulo = Article::where('user_id', $contexto->owner_id)->find($pedido->article_id);
+
+        if (!$articulo || ($input['articulo_id'] ?? $articulo->id) != $articulo->id) {
+            return RespuestaDeCargaIa::error('La imagen fue generada para otro artículo.');
+        }
+
+        if ($pedido->publicada_image_id) {
+            return RespuestaDeCargaIa::error('Esa imagen ya se publicó en el artículo.');
+        }
+
+        $principal = self::es_si($input['como_principal'] ?? false);
+        $nombre = self::nombre_de_articulo($articulo);
+        $creada = AccionesIaHelper::crear(
+            $contexto,
+            $mensaje,
+            AiMessageAction::TIPO_FOTO_ARTICULO,
+            self::clave([$articulo->id]),
+            [
+                'article_id' => (int) $articulo->id,
+                'articulo' => $nombre,
+                'origen' => self::ORIGEN_GENERADA,
+                'pedido_imagen_uuid' => $pedido->uuid,
+                'como_principal' => $principal,
+            ],
+            [
+                'titulo' => 'Publicar imagen generada',
+                'renglones' => [
+                    ['etiqueta' => 'Artículo', 'valor' => $nombre],
+                    ['etiqueta' => 'Qué se hace', 'valor' => $principal ? 'Usar como foto principal y conservar la anterior' : 'Agregar a la galería'],
+                ],
+                'aviso' => 'La foto también se publica en la tienda online del negocio.',
+            ],
+            EntradaDeCargaIa::valor($input, 'reemplaza_a')
+        );
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, 'Publicar la imagen generada de ' . $nombre);
+    }
+
+    protected static function pedido_generado(ContextoDeCargaIa $contexto, $uuid)
+    {
+        return IaImagenPedido::where('uuid', $uuid)
+            ->where('user_id', $contexto->owner_id)
+            ->whereHas('mensaje', function ($query) use ($contexto) {
+                $query->where('ai_conversation_id', $contexto->conversation->id);
+            });
     }
 
     /**
@@ -612,7 +681,7 @@ class PropuestaFotoArticuloIaHelper
      * @param  int  $article_id
      * @return \App\Models\Image|null
      */
-    protected static function portada_del_articulo($article_id)
+    public static function portada_del_articulo($article_id)
     {
         $imagenes = Image::where('imageable_type', 'article')
                             ->where('imageable_id', (int) $article_id)
@@ -638,6 +707,16 @@ class PropuestaFotoArticuloIaHelper
         return $portada;
     }
 
+    public static function huella_del_articulo(Article $articulo): string
+    {
+        return hash('sha256', serialize([
+            (string) $articulo->name,
+            (string) $articulo->descripcion,
+            (string) $articulo->presentacion,
+            (string) $articulo->unidades_por_bulto,
+        ]));
+    }
+
     /**
      * Dónde está, en el disco público de ESTE frente, el archivo de una fila de `images` (B3). El nombre sale
      * de `hosting_url`: se normaliza con ApiUrlHelper::url_publica_de_imagen() (que arregla los `/public`
@@ -648,7 +727,7 @@ class PropuestaFotoArticuloIaHelper
      * @param  \App\Models\Image  $imagen
      * @return array{ruta: string|null, motivo: string}  motivo 'ok', 'externa' o 'ausente'.
      */
-    protected static function archivo_de_la_imagen(Image $imagen)
+    public static function archivo_de_la_imagen(Image $imagen)
     {
         $publica = ApiUrlHelper::url_publica_de_imagen($imagen->hosting_url);
 
@@ -854,6 +933,10 @@ class PropuestaFotoArticuloIaHelper
 
         $datos = is_array($accion->datos) ? $accion->datos : [];
 
+        if (($datos['origen'] ?? null) === self::ORIGEN_GENERADA) {
+            return self::ejecutar_generada($contexto, $datos);
+        }
+
         $pedidos = self::articulos_de_la_tarjeta($datos);
 
         /*
@@ -1026,6 +1109,52 @@ class PropuestaFotoArticuloIaHelper
         ];
     }
 
+    protected static function ejecutar_generada(ContextoDeCargaIa $contexto, array $datos)
+    {
+        $articulo = Article::where('user_id', $contexto->owner_id)->lockForUpdate()->find($datos['article_id']);
+        $pedido = self::pedido_generado($contexto, $datos['pedido_imagen_uuid'])->lockForUpdate()->first();
+
+        if (!$articulo || !$pedido || (int) $pedido->article_id !== (int) $articulo->id
+            || $pedido->estado !== IaImagenPedido::ESTADO_LISTA || !$pedido->path) {
+            throw new AccionIaException(422, 'La imagen generada ya no está disponible para ese artículo.');
+        }
+
+        $hechos = [['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo)]];
+
+        if (!$pedido->publicada_image_id) {
+            if (!hash_equals((string) $pedido->referencia_articulo_sha256, self::huella_del_articulo($articulo))) {
+                throw new AccionIaException(422, 'El artículo cambió. Pedime una imagen nueva con los datos actuales.');
+            }
+
+            $portada = self::portada_del_articulo($articulo->id);
+            $ruta = $portada ? self::archivo_de_la_imagen($portada)['ruta'] : null;
+
+            if (!$ruta || (int) $portada->id !== (int) $pedido->referencia_imagen_id
+                || !hash_equals((string) $pedido->referencia_sha256, (string) hash_file('sha256', $ruta))) {
+                throw new AccionIaException(422, 'La foto original cambió. Pedime una imagen nueva con la foto actual.');
+            }
+
+            $disco = Storage::disk('local');
+            $webp = $disco->exists($pedido->path) ? self::codificar_webp($disco->get($pedido->path)) : null;
+            $nombre = $webp === null ? null : self::escribir_webp($webp, $articulo->id);
+
+            if ($nombre === null) {
+                throw new AccionIaException(422, 'No pude guardar la foto generada.');
+            }
+
+            try {
+                $imagen = self::colgar_y_sincronizar($contexto, $articulo, $nombre, !empty($datos['como_principal']));
+                $pedido->publicada_image_id = $imagen->id;
+                $pedido->save();
+            } catch (\Throwable $e) {
+                self::borrar_archivos([$nombre]);
+                throw $e;
+            }
+        }
+
+        return ['texto' => self::texto_del_resultado($hechos, []), 'hechos' => $hechos, 'no_hechos' => []];
+    }
+
     /**
      * El binario de la foto de OTRO artículo para ejecutar() (B3, 31/10/2026), revalidado: el artículo de origen
      * tiene que seguir siendo del negocio, la fila de `images` tiene que seguir colgando de él y el archivo
@@ -1119,7 +1248,7 @@ class PropuestaFotoArticuloIaHelper
      * @param  string  $name  Nombre del archivo en storage/app/public.
      * @return \App\Models\Image
      */
-    protected static function colgar_y_sincronizar(ContextoDeCargaIa $contexto, Article $articulo, $name)
+    protected static function colgar_y_sincronizar(ContextoDeCargaIa $contexto, Article $articulo, $name, $principal = false)
     {
         /*
          * 🔴 `imageable_type` es el string 'article' EN MINÚSCULA y no la clase con namespace: el
@@ -1133,6 +1262,12 @@ class PropuestaFotoArticuloIaHelper
             'imageable_type' => 'article',
             'temporal_id'    => null,
         ]);
+
+        if ($principal) {
+            $articulo->images()->where('first', '<>', 0)->update(['first' => 0]);
+            $image->first = 1;
+            $image->save();
+        }
 
         /*
          * 1) Vinculación de inventarios: si este comercio le sirve el catálogo a otro, la misma

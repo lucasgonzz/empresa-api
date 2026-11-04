@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Models\AiMessage;
+use App\Models\AiMessageImagen;
+use App\Models\Article;
 use App\Models\IaImagenPedido;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -17,7 +19,7 @@ use Illuminate\Support\Str;
  *
  * El circuito: pedir_imagen (herramienta del agente, solo en la app) → pedir() deja el pedido
  * `pendiente` y el bloque → el job de respuesta guarda el mensaje y despacha
- * EnviarPedidoDeImagenAlAdminJob (C2.1) → la PC de Lucas la genera → el admin la devuelve por
+ * EnviarPedidoDeImagenAlAdminJob (C2.1) → el admin la genera por API de OpenAI y la devuelve por
  * admin-sync/ia-imagenes/{uuid}/resultado (C1.4) → recibir_resultado() la guarda y el bloque pasa a
  * `lista` con su `url` → la app, que está consultando el mensaje cada 8 s, la muestra.
  *
@@ -36,6 +38,8 @@ class PedidosDeImagenIaHelper
     /** Los formatos que se aceptan del admin, por los bytes. */
     const MIMES_DEL_RESULTADO = ['image/png' => 'png', 'image/jpeg' => 'jpg', 'image/webp' => 'webp'];
 
+    const MAX_BYTES_REFERENCIA = 2 * 1024 * 1024;
+
     /** Lo que ve el dueño en el bloque cuando la imagen no se pudo generar. */
     const ERROR_PARA_EL_DUENO = 'No se pudo generar la imagen. Probá pedírmela de nuevo en un rato.';
 
@@ -44,7 +48,7 @@ class PedidosDeImagenIaHelper
 
     /**
      * Horas después de las cuales una imagen que sigue `pendiente` o `generando` se da por perdida: la PC
-     * que la genera estuvo apagada, el admin no la entregó. Sin esto el bloque queda girando para siempre.
+     * quedó sin terminar en la cola o sin entregar. Sin esto el bloque queda girando para siempre.
      */
     const HORAS_PARA_DARLA_POR_PERDIDA = 8;
 
@@ -147,8 +151,17 @@ class PedidosDeImagenIaHelper
             ]);
         }
 
-        $pedido = IaImagenPedido::create([
-            'uuid'          => (string) Str::uuid(),
+        $uuid = (string) Str::uuid();
+        $referencia = self::preparar_referencia($owner_id, $assistant_message, $input);
+        if (isset($referencia['error'])) {
+            return self::sin_pedido($referencia['error'], true);
+        }
+        if (isset($referencia['unidades'])) {
+            $prompt = 'Cantidad exacta de unidades a mostrar: ' . $referencia['unidades'] . ".\n" . $prompt;
+        }
+
+        $datos = [
+            'uuid'          => $uuid,
             'user_id'       => (int) $owner_id,
             'ai_message_id' => (int) $assistant_message->id,
             'prompt'        => mb_substr($prompt, 0, BloquesIaHelper::MAX_PROMPT),
@@ -156,7 +169,28 @@ class PedidosDeImagenIaHelper
             'estilo'        => $estilo === '' ? null : mb_substr($estilo, 0, 200),
             'estado'        => $sin_conexion ? IaImagenPedido::ESTADO_NO_DISPONIBLE : IaImagenPedido::ESTADO_PENDIENTE,
             'error'         => $sin_conexion ? self::AVISO_SIN_CONEXION : null,
-        ]);
+        ];
+
+        if (!$sin_conexion && isset($referencia['binario'])) {
+            $path = 'ia_imagenes/referencias/' . (int) $owner_id . '/' . $uuid;
+            if (!Storage::disk('local')->put($path, $referencia['binario'])) {
+                return self::sin_pedido('No pude guardar la foto de referencia. Probá de nuevo en un momento.', false);
+            }
+            $datos['referencia_path'] = $path;
+            $datos['article_id'] = $referencia['article_id'] ?? null;
+            $datos['referencia_imagen_id'] = $referencia['imagen_id'] ?? null;
+            $datos['referencia_sha256'] = hash('sha256', $referencia['binario']);
+            $datos['referencia_articulo_sha256'] = $referencia['articulo_sha256'] ?? null;
+        }
+
+        try {
+            $pedido = IaImagenPedido::create($datos);
+        } catch (\Throwable $e) {
+            if (isset($datos['referencia_path'])) {
+                Storage::disk('local')->delete($datos['referencia_path']);
+            }
+            throw $e;
+        }
 
         if ($sin_conexion) {
 
@@ -173,9 +207,104 @@ class PedidosDeImagenIaHelper
             'pedido'   => $pedido,
             'bloque'   => self::bloque_del_pedido($pedido),
             'texto'    => 'Listo: la imagen quedó pedida y aparece sola en este mismo mensaje cuando esté lista. '
-                . 'Decile a la persona en una línea «la pedí; aparece acá cuando esté lista»: no prometas tiempos, no digas que ya está ni pongas un link.',
+                . 'Decile a la persona en una línea «la pedí; aparece acá cuando esté lista»: no prometas tiempos, no digas que ya está ni pongas un link.'
+                . (isset($referencia['nombre']) ? ' Artículo: ' . $referencia['nombre'] . '. El pedido es '
+                    . $pedido->uuid . '. Después de ver la imagen, la persona puede pedirte que la agregues a la galería o la pongas como principal.' : ''),
             'es_error' => false,
         ];
+    }
+
+    public static function referencia_valida($binario): bool
+    {
+        return is_string($binario)
+            && strlen($binario) <= self::MAX_BYTES_REFERENCIA
+            && isset(self::MIMES_DEL_RESULTADO[AsistenteImagenHelper::media_type($binario)]);
+    }
+
+    protected static function borrar_referencia_temporal(IaImagenPedido $pedido): void
+    {
+        if ($pedido->referencia_path !== null) {
+            Storage::disk('local')->delete($pedido->referencia_path);
+        }
+    }
+
+    /**
+     * Sólo admite archivos propios y de la conversación o del artículo identificado.
+     * Una referencia inválida corta el pedido para evitar cobrar una generación sin la foto.
+     */
+    protected static function preparar_referencia($owner_id, AiMessage $mensaje, array $input): array
+    {
+        $adjunto_id = filter_var($input['imagen_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $articulo_id = filter_var($input['articulo_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if ((isset($input['imagen_id']) && $adjunto_id === false)
+            || (isset($input['articulo_id']) && $articulo_id === false)
+            || ($adjunto_id && $articulo_id)) {
+            return ['error' => 'Indicá una sola referencia válida: una foto de este chat o un artículo del negocio.'];
+        }
+
+        if ($adjunto_id) {
+            $imagen = AiMessageImagen::whereKey($adjunto_id)
+                ->where('user_id', (int) $owner_id)
+                ->whereHas('message', function ($query) use ($mensaje) {
+                    $query->where('ai_conversation_id', $mensaje->ai_conversation_id)->where('rol', 'user');
+                })->first();
+            $binario = $imagen && $imagen->bytes <= self::MAX_BYTES_REFERENCIA ? AsistenteImagenHelper::binario($imagen) : null;
+
+            return self::referencia_valida($binario)
+                ? ['binario' => $binario]
+                : ['error' => 'No puedo usar esa foto como referencia. Adjuntá una imagen JPG, PNG o WebP de hasta 2 MB en este chat.'];
+        }
+
+        if (!$articulo_id) {
+            return [];
+        }
+
+        $articulo = Article::where('user_id', (int) $owner_id)->find($articulo_id);
+        if ($articulo === null) {
+            return ['error' => 'Ese artículo no existe entre los tuyos. Buscalo por nombre o código antes de pedir la imagen.'];
+        }
+
+        $portada = PropuestaFotoArticuloIaHelper::portada_del_articulo($articulo_id);
+        $ruta = $portada ? PropuestaFotoArticuloIaHelper::archivo_de_la_imagen($portada)['ruta'] : null;
+        $binario = $ruta ? @file_get_contents($ruta, false, null, 0, self::MAX_BYTES_REFERENCIA + 1) : null;
+        if (!self::referencia_valida($binario)) {
+            return ['error' => 'El artículo ' . $articulo->name . ' no tiene una foto propia accesible de hasta 2 MB para usar como referencia.'];
+        }
+
+        $referencia = [
+            'article_id' => (int) $articulo->id,
+            'imagen_id' => (int) $portada->id,
+            'binario' => $binario,
+            'nombre' => (string) $articulo->name,
+            'articulo_sha256' => PropuestaFotoArticuloIaHelper::huella_del_articulo($articulo),
+        ];
+        if (($input['usar_presentacion'] ?? false) === true) {
+            $unidades = self::unidades_del_articulo($articulo);
+            if ($unidades === null) {
+                return ['error' => 'El artículo ' . $articulo->name . ' no tiene una cantidad de unidades inequívoca. Confirmala antes de pedir la imagen.'];
+            }
+            $referencia['unidades'] = $unidades;
+        }
+
+        return $referencia;
+    }
+
+    protected static function unidades_del_articulo(Article $articulo): ?int
+    {
+        $cantidades = [(int) $articulo->presentacion, (int) $articulo->unidades_por_bulto];
+        $descripcion = strip_tags((string) $articulo->descripcion);
+
+        // Las medidas como «20 x 6 cm» no cuentan como un pack.
+        preg_match_all('/\b(\d{1,3})\s*(?:botellas?|unidades?|unid\.?)\b/iu',
+            $articulo->name . ' ' . $descripcion, $explicitas);
+        preg_match_all('/\b(?:caja|pack|estuche|bulto)\s*(?:de\s*|x\s*)?(\d{1,3})(?!\s*(?:cm|mm|ml|litros?|kg)\b)\b/iu',
+            $articulo->name . ' ' . $descripcion, $packs);
+        $cantidades = array_merge($cantidades, array_map('intval', $explicitas[1]), array_map('intval', $packs[1]));
+        $cantidades = array_values(array_unique(array_filter($cantidades, function ($cantidad) {
+            return $cantidad > 1;
+        })));
+
+        return count($cantidades) === 1 ? $cantidades[0] : null;
     }
 
     /**
@@ -233,6 +362,7 @@ class PedidosDeImagenIaHelper
             'estado' => $pedido->estado,
             'prompt' => $pedido->prompt,
             'tamano' => $pedido->tamano,
+            'articulo_id' => $pedido->article_id,
             'error'  => $error,
         ]);
     }
@@ -292,11 +422,20 @@ class PedidosDeImagenIaHelper
      */
     public static function marcar_no_disponible(IaImagenPedido $pedido, $motivo)
     {
-        $pedido->estado = IaImagenPedido::ESTADO_NO_DISPONIBLE;
-        $pedido->error  = mb_substr((string) $motivo, 0, 500);
-        $pedido->save();
+        // Una entrega puede llegar mientras otro intento del job está consultando al admin.
+        $afectadas = IaImagenPedido::whereKey($pedido->id)
+            ->where('estado', IaImagenPedido::ESTADO_PENDIENTE)
+            ->whereNull('enviado_al_admin_en')
+            ->update([
+                'estado' => IaImagenPedido::ESTADO_NO_DISPONIBLE,
+                'error' => mb_substr((string) $motivo, 0, 500),
+            ]);
+        if (!$afectadas) {
+            return;
+        }
 
-        self::actualizar_bloque($pedido);
+        self::borrar_referencia_temporal($pedido);
+        self::actualizar_bloque($pedido->refresh());
     }
 
     /**
@@ -309,16 +448,18 @@ class PedidosDeImagenIaHelper
      */
     public static function marcar_fallido(IaImagenPedido $pedido, $motivo, $para_el_dueno = null)
     {
-        if ($pedido->estado === IaImagenPedido::ESTADO_LISTA) {
-
+        $afectadas = IaImagenPedido::whereKey($pedido->id)
+            ->where('estado', '<>', IaImagenPedido::ESTADO_LISTA)
+            ->update([
+                'estado' => IaImagenPedido::ESTADO_FALLIDA,
+                'error' => mb_substr((string) $motivo, 0, 500),
+            ]);
+        if (!$afectadas) {
             return;
         }
 
-        $pedido->estado = IaImagenPedido::ESTADO_FALLIDA;
-        $pedido->error  = mb_substr((string) $motivo, 0, 500);
-        $pedido->save();
-
-        self::actualizar_bloque($pedido, $para_el_dueno);
+        self::borrar_referencia_temporal($pedido);
+        self::actualizar_bloque($pedido->refresh(), $para_el_dueno);
     }
 
     /**
@@ -542,6 +683,7 @@ class PedidosDeImagenIaHelper
         $pedido->error  = null;
         $pedido->save();
 
+        self::borrar_referencia_temporal($pedido);
         self::actualizar_bloque($pedido);
 
         return IaImagenPedido::ESTADO_LISTA;
