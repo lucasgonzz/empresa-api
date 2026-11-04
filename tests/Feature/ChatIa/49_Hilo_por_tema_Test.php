@@ -39,7 +39,7 @@ use Tests\Feature\AsistenteWhatsapp\AsistenteWhatsappTestCase;
 class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
 {
     /** Una clave cualquiera: lo único que hace falta es que `hay_credenciales()` diga que sí. */
-    const CLAVE_FALSA = 'clave-de-anthropic-para-los-tests';
+    const CLAVE_FALSA = 'clave-de-deepseek-para-los-tests';
 
     /** @var string Lo que contesta el modelo en este test. */
     protected $texto_del_modelo = 'sigue';
@@ -62,11 +62,11 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
          * El padre deja la clave en null para que nada salga a la red. Acá hace falta que el
          * llamado se INTENTE, así que se pone una falsa y el que atiende es Http::fake().
          */
-        config(['services.anthropic.api_key' => self::CLAVE_FALSA]);
+        config(['services.deepseek.api_key' => self::CLAVE_FALSA]);
 
         /*
          * 🔴 UN SOLO Http::fake(), Y ACÁ. Los stubs de Laravel se APILAN: el primero que matchea
-         * la URL es el que contesta, así que un segundo `Http::fake(['api.anthropic.com/*' => ...])`
+         * la URL es el que contesta, así que un segundo `Http::fake(['api.deepseek.com/*' => ...])`
          * adentro de un test NO pisa a este — queda detrás y no lo ve nadie. Con ese patrón, todos
          * los tests de "sí corta" fallaban en silencio contestando siempre lo del setUp. Lo que
          * cambia por test son las propiedades que lee esta closure.
@@ -74,7 +74,7 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
         $test = $this;
 
         Http::fake([
-            'api.anthropic.com/*' => function () use ($test) {
+            'api.deepseek.com/*' => function () use ($test) {
                 return $test->respuesta_del_modelo();
             },
         ]);
@@ -589,7 +589,7 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
      */
     public function sin_credenciales_no_sale_a_la_red_ni_corta()
     {
-        config(['services.anthropic.api_key' => null]);
+        config(['services.deepseek.api_key' => null]);
 
         $vigente = $this->conversacion_con_historia();
 

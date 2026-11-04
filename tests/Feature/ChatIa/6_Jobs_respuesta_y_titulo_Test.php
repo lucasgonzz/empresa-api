@@ -47,7 +47,7 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
         parent::setUp();
 
         // 🔴 Nunca la clave real del .env.testing: cada test setea su fake si la necesita.
-        config(['services.anthropic.api_key' => null]);
+        config(['services.deepseek.api_key' => null]);
 
         $this->comercio = User::create([
             'name'         => 'Comercio chat-ia P6',
@@ -124,7 +124,7 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
 
         Http::fake([
             'api.deepseek.com/*' => Http::response([
-                'model'       => 'claude-modelo-fake',
+                'model'       => 'deepseek-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [
                     ['type' => 'text', 'text' => 'Tenés 12 unidades de tornillos.'],
@@ -237,7 +237,7 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
     public function sin_la_extension_no_sale_a_la_red_y_deja_error_amigable()
     {
         // A propósito NO se da la extensión; la clave sí existe.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
         Http::fake();
 
@@ -264,7 +264,7 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
     public function con_la_conversacion_borrada_el_job_vuelve_sin_explotar_ni_llamar_a_la_api()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
         Http::fake();
 
@@ -331,11 +331,11 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
      */
     public function el_titulo_se_guarda_limpio_de_comillas_y_graba_su_consumo()
     {
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
-                'model'   => 'claude-modelo-fake',
+            'api.deepseek.com/*' => Http::response([
+                'model'   => 'deepseek-modelo-fake',
                 'content' => [
                     ['type' => 'text', 'text' => '"Stock de tornillos"'],
                 ],
@@ -367,10 +367,10 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
      */
     public function el_titulo_se_recorta_a_150_caracteres()
     {
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'content' => [
                     ['type' => 'text', 'text' => str_repeat('t', 300)],
                 ],
@@ -396,10 +396,10 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
      */
     public function si_la_inferencia_falla_el_titulo_queda_null_sin_romper_nada()
     {
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response(['error' => ['type' => 'api_error']], 500),
+            'api.deepseek.com/*' => Http::response(['error' => ['type' => 'api_error']], 500),
         ]);
 
         $conversation = AiConversation::create([
@@ -434,7 +434,7 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
         $this->assertNull($conversation->fresh()->titulo);
 
         // Con título ya puesto (p. ej. una conversación de sugerencia): tampoco llama.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         $conversation->titulo = 'Sugerencia de stock #9';
         $conversation->save();
 

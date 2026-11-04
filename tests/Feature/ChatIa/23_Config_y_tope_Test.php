@@ -39,7 +39,7 @@ use Tests\TestCase;
  * crea (el_corte_se_mide_antes_de_crear_la_respuesta); y una fila sin mensaje (las de antes del cambio)
  * cuenta una.
  *
- * 🔴 Anthropic con clave nula o Http::fake: los tests jamás salen a la red.
+ * 🔴 DeepSeek con clave nula o Http::fake: los tests jamás salen a la red.
  */
 class Config_y_tope_Test extends TestCase
 {
@@ -58,7 +58,7 @@ class Config_y_tope_Test extends TestCase
     {
         parent::setUp();
 
-        config(['services.anthropic.api_key' => null]);
+        config(['services.deepseek.api_key' => null]);
 
         $this->comercio = User::create([
             'name'         => 'Comercio config P23',
@@ -420,10 +420,10 @@ class Config_y_tope_Test extends TestCase
      */
     public function cada_vuelta_del_chat_graba_el_mensaje_que_contesta()
     {
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push([
                     'stop_reason' => 'tool_use',
                     'content'     => [['type' => 'tool_use', 'id' => 'toolu_p23_r3', 'name' => 'consultar_stock_de_articulos', 'input' => ['busqueda' => '']]],
@@ -537,7 +537,12 @@ class Config_y_tope_Test extends TestCase
     {
         return [
             'agil (default del sistema)' => ['agil', 'modelo-agil-test'],
-            'equilibrado'                => ['equilibrado', 'modelo-equilibrado-test'],
+            /*
+             * Desde el 3/11/2026 el asistente corre siempre en DeepSeek (5daed675), que no tiene la variante
+             * "equilibrado": un `equilibrado` guardado de cuando el dueño usaba Claude cae a "ágil". Es la
+             * única aserción que cambia de este test, y cambia porque afirmaba el modelo de Claude.
+             */
+            'equilibrado (sin variante en DeepSeek: cae a ágil)' => ['equilibrado', 'modelo-agil-test'],
             'profundo'                   => ['profundo', 'modelo-profundo-test'],
         ];
     }
@@ -549,14 +554,13 @@ class Config_y_tope_Test extends TestCase
     public function el_service_elige_el_modelo_por_la_preferencia_del_dueno($pensamiento, $modelo_esperado)
     {
         config([
-            'services.anthropic.api_key'           => 'clave-de-prueba',
-            'services.anthropic.model_agil'        => 'modelo-agil-test',
-            'services.anthropic.model_equilibrado' => 'modelo-equilibrado-test',
-            'services.anthropic.model_profundo'    => 'modelo-profundo-test',
+            'services.deepseek.api_key'        => 'clave-de-prueba',
+            'services.deepseek.model_agil'     => 'modelo-agil-test',
+            'services.deepseek.model_profundo' => 'modelo-profundo-test',
         ]);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'stop_reason' => 'end_turn',
                 'content'     => [['type' => 'text', 'text' => 'listo']],
                 'usage'       => ['input_tokens' => 1, 'output_tokens' => 1],

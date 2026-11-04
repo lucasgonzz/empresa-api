@@ -69,7 +69,7 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
         parent::setUp();
 
         // 🔴 Nunca la clave real del .env.testing: este archivo no sale a la red.
-        config(['services.anthropic.api_key' => 'clave-de-prueba-p54']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba-p54']);
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
 
@@ -267,6 +267,16 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
     /** @test */
     public function pago_mixto_a_proveedor_con_cheque_vencido_conserva_todas_las_filas()
     {
+        /*
+         * EXPLÍCITO en 'cauteloso': este test confirma la tarjeta por el endpoint, así que necesita que la
+         * propuesta quede esperando. El dueño del fixture sale con el default de la columna, que desde la
+         * misión agente-ia-default-deepseek-directo (28/9/2026) es 'directo', y en ese modo un pago se
+         * ejecuta en el acto (TIPO_PAGO está en AUTO_CONFIRMABLES_DIRECTO): la tarjeta ya viene
+         * confirmada y el endpoint contesta 409 `accion_resuelta`. Es un arreglo del escenario, no de la aserción.
+         */
+        $this->dueno->agente_confianza = 'cauteloso';
+        $this->dueno->save();
+
         $proveedor = \App\Models\Provider::where('user_id', $this->dueno->id)->where('name', TestingFerreteriaSeeder::PROVIDER_BSAS)->firstOrFail();
         $cheque = $this->metodo_cheque();
         $transferencia = $this->resolver_metodo_pago_por_nombre('Transferencia');

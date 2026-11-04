@@ -52,25 +52,25 @@ class Confirmar_un_envio_sin_propuesta_Test extends EmpresaTestCase
 
         $this->armar_negocio([
             'agente_confianza'   => ConfianzaDelAgenteIaHelper::DIRECTO,
-            'agente_proveedor'   => 'anthropic',
+            'agente_proveedor'   => 'deepseek',
             'agente_pensamiento' => 'agil',
         ]);
 
         $this->dar_extension('agentes_ia');
 
         config([
-            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-p86',
-            'services.anthropic.base_url'       => 'https://api.anthropic.com',
-            'services.anthropic.model'          => 'claude-general-p86',
-            'services.anthropic.model_agil'     => 'claude-agil-p86',
-            'services.anthropic.model_profundo' => 'claude-profundo-p86',
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-p86',
+            'services.deepseek.base_url'       => 'https://api.deepseek.com/anthropic',
+            'services.deepseek.model'          => 'deepseek-general-p86',
+            'services.deepseek.model_agil'     => 'deepseek-agil-p86',
+            'services.deepseek.model_profundo' => 'deepseek-profundo-p86',
         ]);
 
         $this->respuestas_del_modelo = [];
 
         Http::fake(function ($request) {
 
-            if (strpos($request->url(), 'api.anthropic.com') === false) {
+            if (strpos($request->url(), 'api.deepseek.com') === false) {
                 return Http::response([], 200);
             }
 
@@ -141,7 +141,7 @@ class Confirmar_un_envio_sin_propuesta_Test extends EmpresaTestCase
     protected function pedidos_al_modelo()
     {
         return Http::recorded(function ($request) {
-            return strpos($request->url(), 'api.anthropic.com') !== false;
+            return strpos($request->url(), 'api.deepseek.com') !== false;
         })->count();
     }
 
@@ -156,7 +156,7 @@ class Confirmar_un_envio_sin_propuesta_Test extends EmpresaTestCase
 
         foreach (Http::recorded() as $par) {
 
-            if (strpos($par[0]->url(), 'api.anthropic.com') === false) {
+            if (strpos($par[0]->url(), 'api.deepseek.com') === false) {
                 continue;
             }
 

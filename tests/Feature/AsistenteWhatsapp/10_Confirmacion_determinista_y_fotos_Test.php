@@ -51,7 +51,7 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
         Storage::fake('local');
 
         // El loop necesita UNA clave para salir; la red está falseada con Http::fake.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
     }
 
     protected function tearDown(): void
@@ -150,9 +150,33 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
      */
     protected function proveedor_que_solo_escribe()
     {
+        /*
+         * Desde el 3/11/2026 el asistente corre en DeepSeek y las fotos las lee Haiku (Anthropic), que las pasa
+         * a texto ANTES del loop: un turno con fotos hace una llamada a api.anthropic.com y recién después la de
+         * DeepSeek. La lectura de Haiku devuelve una sección "FOTO k:" por cada imagen del pedido.
+         */
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
-                'model'       => 'claude-modelo-fake',
+            'api.anthropic.com/*' => function ($request) {
+                $cuerpo = json_decode((string) $request->body(), true);
+                $texto = '';
+                $fotos = 0;
+
+                foreach ($cuerpo['messages'][0]['content'] as $bloque) {
+                    if (($bloque['type'] ?? '') === 'image') {
+                        $fotos++;
+                        $texto .= 'FOTO ' . $fotos . ': Un mate de calabaza.' . "\n";
+                    }
+                }
+
+                return Http::response([
+                    'model'       => 'lo-que-diga-el-proveedor',
+                    'stop_reason' => 'end_turn',
+                    'content'     => [['type' => 'text', 'text' => $texto]],
+                    'usage'       => ['input_tokens' => 900, 'output_tokens' => 60],
+                ], 200);
+            },
+            'api.deepseek.com/*' => Http::response([
+                'model'       => 'deepseek-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [
                     ['type' => 'text', 'text' => 'Listo, la foto quedó asignada.'],

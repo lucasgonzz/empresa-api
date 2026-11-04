@@ -312,7 +312,11 @@ class Personas_por_modelo_y_configuracion_Test extends TestCase
             'modelo_general'   => 'deepseek-general-test',
         ], $configuracion);
 
-        /* El default del sistema: un dueño que nunca tocó la config es Claude / agil. */
+        /*
+         * Desde el 3/11/2026 (5daed675, a pedido de Lucas) el asistente corre siempre en DeepSeek: un dueño
+         * que quedó guardado con `anthropic` de antes se informa como `deepseek`, con los modelos de DeepSeek.
+         * Lo único que cambia de esta aserción es el proveedor y los ids, que afirmaban el modelo de Claude.
+         */
         $this->comercio->agente_proveedor = 'anthropic';
         $this->comercio->agente_pensamiento = 'agil';
         $this->comercio->save();
@@ -320,16 +324,17 @@ class Personas_por_modelo_y_configuracion_Test extends TestCase
         $this->getJson(self::RUTA . '?desde=2026-09-10&hasta=2026-09-11', $this->headers())
              ->assertStatus(200)
              ->assertJson(['configuracion' => [
-                 'proveedor'        => 'anthropic',
+                 'proveedor'        => 'deepseek',
                  'pensamiento'      => 'agil',
-                 'modelo_asistente' => 'claude-agil-test',
-                 'modelo_general'   => 'claude-general-test',
+                 'modelo_asistente' => 'deepseek-flash-test',
+                 'modelo_general'   => 'deepseek-general-test',
              ]]);
     }
 
     /**
-     * Si el dueño eligió DeepSeek y la instalación no tiene su clave, `configuracion` dice
-     * Anthropic: es lo que efectivamente corre y lo que aparece en las filas de consumo. Y un
+     * Si el dueño eligió DeepSeek y la instalación no tiene su clave, `configuracion` sigue diciendo
+     * DeepSeek: desde el 3/11/2026 el asistente no cae a Anthropic (5daed675), así que sin clave no
+     * corre nada, y lo que se informa es el modelo que correría. Y un
      * `equilibrado` guardado con el asistente corriendo en DeepSeek se informa como `agil`.
      *
      * @group consumo-ia
@@ -346,10 +351,10 @@ class Personas_por_modelo_y_configuracion_Test extends TestCase
         $this->getJson(self::RUTA . '?desde=2026-09-10&hasta=2026-09-11', $this->headers())
              ->assertStatus(200)
              ->assertJson(['configuracion' => [
-                 'proveedor'        => 'anthropic',
+                 'proveedor'        => 'deepseek',
                  'pensamiento'      => 'profundo',
-                 'modelo_asistente' => 'claude-profundo-test',
-                 'modelo_general'   => 'claude-general-test',
+                 'modelo_asistente' => 'deepseek-pro-test',
+                 'modelo_general'   => 'deepseek-general-test',
              ]]);
 
         config(['services.deepseek.api_key' => 'clave-deepseek-de-prueba']);

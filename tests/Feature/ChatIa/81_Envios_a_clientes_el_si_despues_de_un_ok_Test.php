@@ -66,7 +66,7 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         $this->armar_negocio([
             'agente_confianza'   => ConfianzaDelAgenteIaHelper::DIRECTO,
-            'agente_proveedor'   => 'anthropic',
+            'agente_proveedor'   => 'deepseek',
             'agente_pensamiento' => 'agil',
         ]);
 
@@ -75,18 +75,18 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
 
         // 🔴 Nunca las claves reales: todo pasa por el fake de abajo.
         config([
-            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-p81',
-            'services.anthropic.base_url'       => 'https://api.anthropic.com',
-            'services.anthropic.model'          => 'claude-general-p81',
-            'services.anthropic.model_agil'     => 'claude-agil-p81',
-            'services.anthropic.model_profundo' => 'claude-profundo-p81',
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-p81',
+            'services.deepseek.base_url'       => 'https://api.deepseek.com/anthropic',
+            'services.deepseek.model'          => 'deepseek-general-p81',
+            'services.deepseek.model_agil'     => 'deepseek-agil-p81',
+            'services.deepseek.model_profundo' => 'deepseek-profundo-p81',
         ]);
 
         $this->respuestas_del_modelo = [];
 
         Http::fake(function ($request) {
 
-            if (strpos($request->url(), 'api.anthropic.com') === false) {
+            if (strpos($request->url(), 'api.deepseek.com') === false) {
                 return Http::response([], 200);
             }
 
@@ -170,7 +170,7 @@ class Envios_a_clientes_el_si_despues_de_un_ok_Test extends EmpresaTestCase
     protected function pedidos_al_modelo()
     {
         return Http::recorded(function ($request) {
-            return strpos($request->url(), 'api.anthropic.com') !== false;
+            return strpos($request->url(), 'api.deepseek.com') !== false;
         })->count();
     }
 
