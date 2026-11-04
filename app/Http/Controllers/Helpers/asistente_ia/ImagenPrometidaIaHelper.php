@@ -51,6 +51,7 @@ class ImagenPrometidaIaHelper
         'proponer_imagenes_para_articulos',
         'proponer_imagenes_para_categorias',
         'proponer_foto_articulo',
+        'proponer_publicar_imagen',
         'proponer_foto_sucursal',
         'consultar_categorias_sin_imagen',
         'mostrar_grafico',

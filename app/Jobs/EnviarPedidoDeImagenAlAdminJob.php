@@ -11,20 +11,20 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Le manda al admin un pedido de imagen del agente (misión app-ia-y-memoria, 29/10/2026, contrato
- * C2.1): `POST {admin}/api/inbound/ia-imagenes` con la clave de salida y el `client_uuid` de este
+ * C2.1): `POST {admin}/api/inbound/ia-imagenes/openai` con la clave de salida y el `client_uuid` de este
  * cliente, el mismo mecanismo que SupportSyncHelper.
  *
  * Respuestas:
+ *   - Primero se verifica que el admin pueda generar por OpenAI, con una consulta sin costo.
  *   - 201 / 200: el admin lo tiene (200 = ya lo tenía: el reintento es idempotente por uuid).
  *   - 404: el admin todavía no tiene la cola (versión vieja). El bloque queda `no_disponible` y NO se
  *     reintenta: reintentar un 404 no lo vuelve 201.
- *   - 401 / 403 (clave, o `cliente_no_coincide`) / 409 `uuid_en_uso` / 422 / 429 `tope_diario`: el admin
- *     rechazó el pedido y reintentar no lo cambia. Queda `fallida`, con un texto humano en el bloque (el
- *     del tope: «Llegaste al tope de imágenes de hoy; probá mañana»).
- *   - Lo demás (5xx, timeout, red caída, un 429 sin `tope_diario`): se lanza y la cola reintenta (3
+ *   - 401 / 403 / 409 / 422 y topes 429: rechazo definitivo, con el motivo para el dueño en el bloque.
+ *   - Lo demás (5xx, timeout, red caída, un 429 ajeno al tope): se lanza y la cola reintenta (3
  *     intentos); si se agotan, failed() lo deja `fallida`.
  *
  * Sin la configuración del admin (`services.admin_api.url` / `client_uuid` / `inbound_key`) no hay a quién
@@ -45,7 +45,7 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
     public $timeout = 60;
 
     /** Ruta del admin (contrato C2.1), relativa a su `/api`. */
-    const RUTA = '/inbound/ia-imagenes';
+    const RUTA = '/inbound/ia-imagenes/openai';
 
     /** @var int */
     protected $ia_imagen_pedido_id;
@@ -132,21 +132,60 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
             'X-Admin-Api-Key' => $clave,
         ];
 
-        $response = Http::withHeaders($headers)
+        $http = Http::withHeaders($headers)
             ->timeout(20)
-            ->withOptions(['allow_redirects' => false])
-            ->post($admin_url . '/api' . self::RUTA, [
-                'client_uuid'   => $client_uuid,
-                'uuid'          => $pedido->uuid,
-                'prompt'        => $pedido->prompt,
-                'tamano'        => $pedido->tamano,
-                'estilo'        => $pedido->estilo,
-                'ai_message_id' => (int) $pedido->ai_message_id,
-            ]);
+            ->withOptions(['allow_redirects' => false]);
+        $ruta = $admin_url . '/api' . self::RUTA;
+
+        // Verifica el proveedor antes de subir una foto privada o pedir una generación.
+        $capacidades = $http->post($ruta, [
+            'client_uuid' => $client_uuid,
+            'consultar_capacidades' => true,
+        ]);
+        if (in_array($capacidades->status(), [404, 405, 422], true)
+            || $capacidades->json('code') === 'imagenes_no_disponibles'
+            || ($capacidades->successful() && $capacidades->json('proveedor') !== 'openai')) {
+            PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'el admin no ofrece generación por OpenAI');
+            return;
+        }
+
+        $datos = [
+            'client_uuid' => $client_uuid,
+            'uuid' => $pedido->uuid,
+            'prompt' => $pedido->prompt,
+            'tamano' => $pedido->tamano,
+            'estilo' => $pedido->estilo,
+            'ai_message_id' => (int) $pedido->ai_message_id,
+            'requiere_openai' => true,
+        ];
+        if ($capacidades->successful() && $pedido->referencia_path !== null) {
+            if ($capacidades->json('acepta_referencia') !== true) {
+                PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'el admin no acepta fotos de referencia');
+                return;
+            }
+
+            $archivo = Storage::disk('local');
+            $binario = $archivo->exists($pedido->referencia_path) ? $archivo->get($pedido->referencia_path) : null;
+            if (!PedidosDeImagenIaHelper::referencia_valida($binario)) {
+                PedidosDeImagenIaHelper::marcar_fallido($pedido, 'la foto de referencia ya no está disponible',
+                    'No encontré la foto de referencia. Adjuntala de nuevo.');
+                return;
+            }
+
+            $datos['referencia_base64'] = base64_encode($binario);
+        }
+
+        $response = $capacidades->successful() ? $http->post($ruta, $datos) : $capacidades;
 
         $status = $response->status();
 
         if ($status === 200 || $status === 201) {
+
+            if ($response->json('proveedor') !== 'openai'
+                || ($pedido->referencia_path !== null && $response->json('referencia_recibida') !== true)) {
+                PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'el admin no confirmó el alta por OpenAI');
+                return;
+            }
 
             $pedido->enviado_al_admin_en = now();
             $pedido->save();
@@ -167,9 +206,18 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
 
         $code = is_array($response->json()) ? (string) ($response->json()['code'] ?? '') : '';
 
-        $es_el_tope = $status === 429 && $code === 'tope_diario';
+        $motivos_para_el_dueno = [
+            'tope_diario' => PedidosDeImagenIaHelper::TOPE_PARA_EL_DUENO,
+            'tope_mensual_imagenes' => 'Llegaste al límite mensual de tu plan de imágenes. Podés generar más cuando se renueve el cupo.',
+            'sin_plan_imagenes' => 'Tu negocio necesita un plan de imágenes activo para poder generarlas.',
+        ];
 
-        if (in_array($status, [401, 403, 409, 422], true) || $es_el_tope) {
+        if ($status === 503 && $code === 'imagenes_no_disponibles') {
+            PedidosDeImagenIaHelper::marcar_no_disponible($pedido, 'la generación por OpenAI no está disponible');
+            return;
+        }
+
+        if (in_array($status, [401, 403, 409, 422], true) || ($status === 429 && isset($motivos_para_el_dueno[$code]))) {
 
             Log::warning('EnviarPedidoDeImagenAlAdminJob: el admin rechazó el pedido de imagen.', [
                 'ia_imagen_pedido_id' => $pedido->id,
@@ -181,7 +229,7 @@ class EnviarPedidoDeImagenAlAdminJob implements ShouldQueue
             PedidosDeImagenIaHelper::marcar_fallido(
                 $pedido,
                 'el admin rechazó el pedido (HTTP ' . $status . ($code === '' ? '' : ', ' . $code) . ')',
-                $es_el_tope ? PedidosDeImagenIaHelper::TOPE_PARA_EL_DUENO : null
+                $motivos_para_el_dueno[$code] ?? null
             );
 
             return;
