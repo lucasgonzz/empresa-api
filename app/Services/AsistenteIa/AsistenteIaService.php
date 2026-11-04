@@ -769,6 +769,9 @@ class AsistenteIaService
             && ! $assistant_message->confirma_por_texto()
             && is_null($confirmacion_determinista);
 
+        $confirma_en_whatsapp = $es_whatsapp && $con_acciones && is_null($confirmacion_determinista)
+            && ConfirmacionDeterministaIaHelper::es_afirmacion($this->pedido_de_la_persona($conversation, $assistant_message));
+
         /* Las herramientas que el modelo pidió en este turno, en orden: rastro para el log de la guarda. */
         $herramientas_pedidas = [];
 
@@ -1258,6 +1261,23 @@ class AsistenteIaService
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
             $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
 
+            if (TextoFinalIaHelper::contiene_prosa_cjk($final_text)) {
+                if (! $cerrando && $rondas_de_herramientas === 0 && is_null($confirmacion_determinista)
+                    && is_null($texto_antes_del_reintento) && $iterations < $max_iterations
+                    && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+                    $texto_antes_del_reintento = $final_text;
+                    $messages[] = ['role' => 'assistant', 'content' => $final_text];
+                    $messages[] = [
+                        'role' => 'user',
+                        'content' => '[El sistema detectó una respuesta en otro idioma. Retomá el pedido anterior y respondé en español rioplatense. Usá las herramientas que hagan falta antes de afirmar que hiciste algo.]',
+                    ];
+                    $final_text = '';
+                    continue;
+                }
+
+                break;
+            }
+
             /*
              * La guarda de la imagen prometida va PRIMERO: es la más segura de las cuatro (o se llamó a
              * pedir_imagen en este turno o no se llamó) y en el caso real el texto prometía la imagen Y
@@ -1359,13 +1379,13 @@ class AsistenteIaService
              * de este mensaje esperando el botón, o una de la respuesta anterior que sigue sin confirmar—
              * y el reintento va al Profundo, como cualquier turno que toca una carga.
              */
-            if ($guarda_de_tarjeta
+            if (($guarda_de_tarjeta || $confirma_en_whatsapp)
                 && ! $cerrando
                 && is_null($texto_antes_del_reintento)
                 && $iterations < $max_iterations
                 && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
 
-                $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
+                $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message, $confirma_en_whatsapp);
 
                 if ($tipo_de_carga !== '') {
 
@@ -1474,6 +1494,17 @@ class AsistenteIaService
          * (respuesta_sin_terminar()).
          */
         $crudo = trim($final_text);
+
+        if (TextoFinalIaHelper::contiene_prosa_cjk($crudo)) {
+            $respaldo = is_null($confirmacion_determinista)
+                ? null
+                : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
+
+            return $respaldo ?? $this->respuesta_sin_terminar(
+                $conversation, $assistant_message, $confirmacion_determinista, 'el modelo respondió en otro idioma'
+            );
+        }
+
         $final_text = trim(TextoFinalIaHelper::limpiar($crudo, $this->nombres_de_herramientas($tools)));
 
         if ($final_text === '' && $crudo !== '') {
@@ -1615,6 +1646,12 @@ class AsistenteIaService
          *     tarjeta de la respuesta anterior o el de verificación. Si el modelo mentía, la persona lo
          *     ve; si contaba algo hecho antes, el aviso no dice "no pude" ni la invita a repetirlo.
          */
+        if ($confirma_en_whatsapp && $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message, true) !== '') {
+            return $this->respuesta_sin_terminar(
+                $conversation, $assistant_message, null, 'el modelo afirmó que registró una carga sin confirmación del sistema'
+            );
+        }
+
         if ($guarda_de_tarjeta && ! $la_tarjeta_cambio_el_texto) {
 
             $tipo_de_carga = $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message);
@@ -2085,10 +2122,12 @@ Sos el asistente de inteligencia artificial del negocio "{$company_name}". Traba
 adentro del sistema de gestión de ese negocio y le hablás a la persona que lo usa.
 
 Cómo hablás:
-- Español rioplatense, tuteando. Nada de solemnidad ni de "estimado usuario".
+- Respondé siempre en español rioplatense, también si una foto o herramienta trae texto en otro idioma.
+  Conservá los nombres propios y códigos tal como figuran. Nada de solemnidad ni de "estimado usuario".
 {$tono}
 - Respuestas cortas: hasta 6 oraciones, salvo que te pidan explícitamente el detalle.
 - No saludes ni te presentes en cada mensaje: la conversación ya está empezada.
+- Cuando la persona se despida, despedite brevemente. Si quedó algo pendiente, decí qué falta.
 
 {$formato}
 Qué podés afirmar:
@@ -2635,6 +2674,9 @@ AUTO_RESUELTO;
   el proveedor no existe, la herramienta lo da de alta sola (no uses proponer_alta antes); la sucursal
   NO la preguntes (si no la dijo, la herramienta usa la de la persona); y si la factura dice otra razón
   social que la que dijo la persona, no lo cuestiones ni lo preguntes: manda lo que dijo la persona.
+  «El proveedor de la factura» se refiere al emisor de la foto de esa factura. Si corrigieron
+  el proveedor, no vuelvas a ofrecer la propuesta anterior: reemplazala con el emisor correcto
+  o preguntá cuál es si no se lee. Una foto para dar de alta un proveedor no es su factura.
   Después contá que el escaneo corre en segundo plano, que los artículos se revisan desde Compras y
   por dónde le llega el aviso cuando termina TAL COMO LO DICE EL RESULTADO de la herramienta (por
   WhatsApp con el link para revisarla, o en la pantalla del sistema): no prometas el otro camino.
@@ -2728,7 +2770,8 @@ CARGA;
 - 🔴 Si el escaneo de una factura falló ("No pude leer la factura de … (compra N° X)") y la persona
   pide volver a escanearla, usá proponer_reintento_de_escaneo: usa las fotos que ya están guardadas,
   así que no se las pidas. Si te reenvía la foto, proponer_compra_con_factura la suma sola a esa
-  misma compra: no armes otra.
+  misma compra: no armes otra. Si en cambio envió una factura de otro proveedor, es una compra
+  distinta: no reescanees la compra anterior ni adjuntes esa foto a esa compra.
 VARIAS;
     }
 
@@ -3156,6 +3199,9 @@ PRIMERA;
 {$primera}
 - Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
   tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
+- Antes de preguntar «¿lo registro?», tiene que existir una propuesta real de esa carga.
+  Si la persona corrigió datos, usá los corregidos. Si dijo que sí pero la propuesta anterior
+  no existe, armala con los datos disponibles y seguí el estado que devuelva la herramienta.
 - 🔴 No podés proponer y confirmar en el mismo mensaje: siempre tiene que haber una
   respuesta de la persona en el medio. Si lo intentás, la herramienta te lo rechaza.
 - Nunca digas que algo quedó cargado hasta que una herramienta te devuelva el `resultado` de
@@ -3877,9 +3923,10 @@ CONFIRMACION;
      * @param  array<int, array<string, mixed>>  $tools
      * @param  AiConversation  $conversation
      * @param  AiMessage  $assistant_message
+     * @param  bool  $confirma_en_whatsapp
      * @return string
      */
-    protected function afirma_una_carga_que_no_se_hizo($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message): string
+    protected function afirma_una_carga_que_no_se_hizo($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message, bool $confirma_en_whatsapp = false): string
     {
         /* sanear() y no limpiar(), por lo mismo que en afirma_una_tarjeta_que_no_existe(). */
         $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
@@ -3894,19 +3941,27 @@ CONFIRMACION;
             return '';
         }
 
-        $ejecutada = AiMessageAction::where('ai_message_id', $assistant_message->id)
-                                    ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
-                                    ->exists();
+        if ($confirma_en_whatsapp && ! preg_match('/\b(?:el|un|tu|su) pago\b/iu', $saneado)) {
+            return '';
+        }
+
+        $acciones = AiMessageAction::where('ai_message_id', $assistant_message->id);
+
+        if ($confirma_en_whatsapp) {
+            $acciones->where('tipo', AiMessageAction::TIPO_PAGO);
+        }
+
+        $ejecutada = (clone $acciones)
+            ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
+            ->exists();
 
         if ($ejecutada) {
             return '';
         }
 
-        $propuestas = AiMessageAction::where('ai_message_id', $assistant_message->id)
-                                     ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
-                                     ->get();
+        $propuestas = $acciones->where('estado', AiMessageAction::ESTADO_PROPUESTA)->get();
 
-        if ($propuestas->count() > 0 && TarjetaPrometidaIaHelper::nombra_la_tarjeta($saneado)) {
+        if (! $confirma_en_whatsapp && $propuestas->count() > 0 && TarjetaPrometidaIaHelper::nombra_la_tarjeta($saneado)) {
             return '';
         }
 
