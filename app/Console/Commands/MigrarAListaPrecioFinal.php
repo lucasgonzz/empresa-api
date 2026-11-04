@@ -42,8 +42,10 @@ use Illuminate\Support\Facades\DB;
  *       - `max` (por defecto): «Precio final» queda arriba de todas (`position` = la mayor + 1). Vender
  *         sigue igual; la TIENDA cambia, porque `tienda-api ArticleHelper::checkPriceTypes` toma la lista
  *         de mayor position sin mirar el flag: pasa de la lista más alta a «Precio final».
- *       - `min`: «Precio final» queda abajo de todas (`position` = la menor - 1). La tienda sigue igual;
- *         VENDER cambia: su lista por defecto pasa a ser la más alta en vez del precio final.
+ *       - `min`: «Precio final» queda abajo de todas (`position` = la menor - 1). La tienda sigue con la
+ *         misma lista; VENDER cambia: su lista por defecto pasa a ser la más alta en vez del precio final.
+ *     En los dos casos, al prender el flag setFinalPrice() recalcula los pivotes de las listas existentes,
+ *     que con el flag apagado pueden estar viejos: esos números se mueven. --ver los cuenta sin escribir.
  *     Lo decide Lucas, dueño por dueño. --ver y el freno lo dicen con los nombres de las listas.
  *  c. Crea la lista «Precio final» (`es_precio_final = 1`) sin disparar el observer de PriceType: el
  *     dueño ya tiene su diseño de etiquetas genérico y con una sola lista ese es el que vale. Prende el
@@ -191,6 +193,12 @@ class MigrarAListaPrecioFinal extends Command
         }
 
         $medicion = $this->medir($dueno, $posicion);
+
+        $medicion['pivotes_que_se_mueven'] = null;
+
+        if (!$aplicar && $medicion['listas_con_flag_apagado'] && (bool) $this->option('incluir-listas-existentes')) {
+            $medicion['pivotes_que_se_mueven'] = $this->pivotes_que_se_moverian($dueno);
+        }
 
         // b. Ya trabaja con listas propias: no hay nada que migrar.
         if ($medicion['trabaja_con_listas_propias']) {
@@ -418,6 +426,70 @@ class MigrarAListaPrecioFinal extends Command
     }
 
     /**
+     * Cuántos pivotes de las listas existentes se moverían al prender el flag: con el flag apagado
+     * setFinalPrice() no los recalcula, así que pueden estar viejos, y después de migrar son lo que
+     * publica la tienda. Se mide con el motor real, artículo por artículo, en una transacción que siempre
+     * se revierte (el mismo patrón de MargenesPorListaIaHelper::precios_estimados()): el dueño lleva el
+     * flag prendido solo en memoria y en la base no queda nada. Por eso solo corre con
+     * --incluir-listas-existentes: tarda lo que tarda --aplicar.
+     *
+     * @param  User  $dueno
+     * @return array  ['filas' => int, 'articulos' => int, 'sin_medir' => int]
+     */
+    private function pivotes_que_se_moverian($dueno)
+    {
+        $ids_de_listas = PriceType::where('user_id', $dueno->id)->pluck('id')->all();
+
+        $owner = User::find($dueno->id);
+        $owner->listas_de_precio = 1;
+
+        $resultado = array('filas' => 0, 'articulos' => 0, 'sin_medir' => 0);
+
+        foreach ($this->tandas_de_articulos($dueno->id, null) as $tanda) {
+
+            foreach ($tanda as $a) {
+
+                if ($a['papelera']) {
+                    continue;
+                }
+
+                DB::beginTransaction();
+
+                try {
+                    $antes = DB::table('article_price_type')->where('article_id', $a['id'])->whereIn('price_type_id', $ids_de_listas)->pluck('final_price', 'price_type_id')->all();
+
+                    ArticleHelper::setFinalPrice(Article::find($a['id']), null, $owner);
+
+                    $despues = DB::table('article_price_type')->where('article_id', $a['id'])->whereIn('price_type_id', $ids_de_listas)->pluck('final_price', 'price_type_id')->all();
+
+                    $movidas = 0;
+
+                    foreach ($despues as $price_type_id => $final_price) {
+
+                        $anterior = array_key_exists($price_type_id, $antes) ? $antes[$price_type_id] : null;
+
+                        if (!$this->iguales(is_null($anterior) ? null : (float) $anterior, is_null($final_price) ? null : (float) $final_price)) {
+                            $movidas++;
+                        }
+                    }
+
+                    $resultado['filas'] += $movidas;
+                    $resultado['articulos'] += $movidas > 0 ? 1 : 0;
+
+                } catch (\Throwable $e) {
+
+                    $resultado['sin_medir']++;
+
+                } finally {
+                    DB::rollBack();
+                }
+            }
+        }
+
+        return $resultado;
+    }
+
+    /**
      * Las dos cosas que hay que decirle a quien migra a un dueño con listas cargadas y el flag apagado:
      * una de las dos pantallas cambia de precio, y cuál depende de `--posicion-precio-final`.
      *
@@ -431,7 +503,19 @@ class MigrarAListaPrecioFinal extends Command
 
         $this->warn('🔴 Con listas ya cargadas, UNA de estas dos cosas cambia de precio. Lo decide Lucas, dueño por dueño:');
         $this->warn(' · --posicion-precio-final=max (por defecto)'.($m['posicion'] === 'max' ? ' [elegida]' : '').': Vender sigue igual (cobra '.$precio_final.', el precio de hoy). La TIENDA cambia: hoy publica la lista de mayor position ('.$mas_alta.') y pasa a publicar '.$precio_final.'.');
-        $this->warn(' · --posicion-precio-final=min'.($m['posicion'] === 'min' ? ' [elegida]' : '').': la tienda sigue igual (sigue publicando '.$mas_alta.'). VENDER cambia: su lista por defecto pasa a ser '.$mas_alta.' en vez del precio final de hoy.');
+        $this->warn(' · --posicion-precio-final=min'.($m['posicion'] === 'min' ? ' [elegida]' : '').': la tienda sigue con la misma lista ('.$mas_alta.'), sujeto a lo que se dice abajo de sus pivotes. VENDER cambia: su lista por defecto pasa a ser '.$mas_alta.' en vez del precio final de hoy.');
+
+        $mueve = isset($m['pivotes_que_se_mueven']) ? $m['pivotes_que_se_mueven'] : null;
+
+        if (is_null($mueve)) {
+            $this->warn(' · Al prender el flag se recalculan los pivotes de las listas existentes, que con el flag apagado pueden estar viejos: esos precios se mueven, en Vender y en la tienda. Para contarlos: --ver --incluir-listas-existentes.');
+
+            return;
+        }
+
+        $this->warn(' · Al prender el flag se recalculan los pivotes de las listas existentes: se moverían '.$mueve['filas'].' pivote(s), en '.$mueve['articulos'].' artículo(s).'
+            .($mueve['sin_medir'] ? ' No se pudieron medir '.$mueve['sin_medir'].' artículo(s).' : '')
+            .($mueve['filas'] ? ' Esos precios cambian en Vender y en la tienda, con cualquiera de las dos posiciones.' : ''));
     }
 
     /**

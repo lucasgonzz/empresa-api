@@ -355,6 +355,27 @@ class Comando_migrar_a_precio_final_Test extends ListasSiempreTestCase
     }
 
     /** @test */
+    public function ver_cuenta_los_pivotes_de_las_listas_existentes_que_se_moverian_sin_escribir()
+    {
+        $dueno = $this->dueno_nuevo('pivotes');
+        $minorista = $this->otra_lista($dueno, 'zz Minorista pivotes', 100, 3);
+
+        $viejo = $this->articulo($dueno, 'pivote viejo', array('cost' => 1000));
+        $this->recalcular($viejo, $dueno);
+        DB::table('article_price_type')->insert(array('article_id' => $viejo->id, 'price_type_id' => $minorista->id, 'percentage' => 100, 'final_price' => 7, 'setear_precio_final' => 0));
+
+        $this->assertSame(0, $this->correr($dueno, array('--ver' => true, '--incluir-listas-existentes' => true)), $this->texto);
+
+        $this->assertStringContainsString('se moverían 1 pivote(s), en 1 artículo(s)', $this->texto);
+        $this->assertStringContainsString('Esos precios cambian en Vender y en la tienda', $this->texto);
+        $this->assertStringNotContainsString('la tienda sigue igual', $this->texto, 'No promete lo que no verificó.');
+
+        $this->assertEqualsWithDelta(7, (float) $this->pivote($viejo, $minorista)->final_price, self::DELTA, '--ver no escribe nada.');
+        $this->assertSame(0, $this->flag_de($dueno));
+        $this->assertNull($this->lista_precio_final_de($dueno));
+    }
+
+    /** @test */
     public function posicion_min_deja_la_lista_por_debajo_de_las_demas()
     {
         $dueno = $this->dueno_nuevo('posicion-min');

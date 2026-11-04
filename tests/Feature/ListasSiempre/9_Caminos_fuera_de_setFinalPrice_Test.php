@@ -7,6 +7,7 @@ use App\Exports\ArticleExport;
 use App\Http\Controllers\Helpers\ExportHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePriceTypeMonedaHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\article\precios\PrecioFinalEnMasivaHelper;
@@ -30,8 +31,16 @@ use Illuminate\Support\Facades\DB;
  */
 class Caminos_fuera_de_setFinalPrice_Test extends ListasSiempreTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        UserHelper::olvidar_opera_en_dolares();
+    }
+
     protected function tearDown(): void
     {
+        UserHelper::olvidar_opera_en_dolares();
         ExportHelper::clear_article_export_owner_user();
 
         parent::tearDown();
@@ -451,6 +460,8 @@ class Caminos_fuera_de_setFinalPrice_Test extends ListasSiempreTestCase
 
         DB::table('sales')->insert(array('user_id' => $dueno->id, 'moneda_id' => 2, 'created_at' => now(), 'updated_at' => now()));
 
+        UserHelper::olvidar_opera_en_dolares();
+
         $this->assertTrue(UserHelper::opera_en_dolares($dueno), 'Vendió en dólares: no hace falta la extensión.');
 
         $con_extension = $this->con_extension($this->dueno_nuevo('opera-ext'), 'ventas_en_dolares');
@@ -469,7 +480,106 @@ class Caminos_fuera_de_setFinalPrice_Test extends ListasSiempreTestCase
 
         DB::table('sales')->insert(array('user_id' => $dueno->id, 'moneda_id' => 2, 'created_at' => now(), 'updated_at' => now()));
 
+        UserHelper::olvidar_opera_en_dolares();
+
         $this->assertSame('consolidado', EstadoResultadosHelper::moneda_efectiva($dueno->id, 'consolidado'));
+    }
+
+    /** @test */
+    public function opera_en_dolares_se_memoriza_y_no_cuenta_una_venta_borrada()
+    {
+        $dueno = $this->dueno_nuevo('opera-memo');
+
+        DB::table('sales')->insert(array('user_id' => $dueno->id, 'moneda_id' => 2, 'deleted_at' => now(), 'created_at' => now(), 'updated_at' => now()));
+
+        $this->assertFalse(UserHelper::opera_en_dolares($dueno), 'Una venta en la papelera no cuenta.');
+
+        DB::table('expenses')->insert(array('user_id' => $dueno->id, 'moneda_id' => 2, 'created_at' => now(), 'updated_at' => now()));
+
+        DB::enableQueryLog();
+        DB::flushQueryLog();
+
+        $this->assertFalse(UserHelper::opera_en_dolares($dueno), 'Memorizado: el asistente pregunta en cada herramienta.');
+        $this->assertCount(0, array_filter(DB::getQueryLog(), function ($consulta) {
+            return strpos($consulta['query'], 'from `sales`') !== false || strpos($consulta['query'], 'from `expenses`') !== false;
+        }), 'No vuelve a escanear ventas ni gastos.');
+
+        DB::disableQueryLog();
+
+        UserHelper::olvidar_opera_en_dolares();
+
+        $this->assertTrue(UserHelper::opera_en_dolares($dueno));
+    }
+
+    /** @test */
+    public function un_precio_se_lleva_a_la_moneda_pedida_sin_inventar_una_cotizacion()
+    {
+        $this->assertEqualsWithDelta(1500, PriceTypeHelper::precio_en_moneda(1500, 1, 1, 1000), self::DELTA);
+        $this->assertEqualsWithDelta(1500, PriceTypeHelper::precio_en_moneda(1500, 1, null, 1000), self::DELTA);
+        $this->assertEqualsWithDelta(1.5, PriceTypeHelper::precio_en_moneda(1500, 1, 2, 1000), self::DELTA);
+        $this->assertEqualsWithDelta(1500, PriceTypeHelper::precio_en_moneda(1.5, 2, 1, 1000), self::DELTA);
+        $this->assertNull(PriceTypeHelper::precio_en_moneda(1500, 1, 2, 0));
+        $this->assertNull(PriceTypeHelper::precio_en_moneda(1500, 1, 2, null));
+        $this->assertNull(PriceTypeHelper::precio_en_moneda(null, 1, 2, 1000));
+    }
+
+    /** @test */
+    public function sin_dolar_en_la_cuenta_la_tarjeta_no_deja_el_precio_en_cero()
+    {
+        $apagado = $this->con_extension($this->dueno_nuevo('sin-dolar', array('cotizar_precios_en_dolares' => 0, 'dollar' => 0)), 'ventas_en_dolares');
+        list($apagado, $lista) = $this->con_precio_final($apagado);
+
+        $articulo = $this->recalcular($this->articulo($apagado, 'en pesos', array('cost' => 1000, 'price' => 2500)), $apagado);
+
+        ArticlePriceTypeMonedaHelper::attach_price_type_monedas(Article::find($articulo->id), array(
+            array('price_type_id' => $lista->id, 'moneda_id' => 2, 'percentage' => null, 'final_price' => 3, 'setear_precio_final' => 1, 'cotizar_desde_otra_moneda' => 0),
+        ), $apagado);
+
+        $this->assertEqualsWithDelta(2500, (float) DB::table('articles')->where('id', $articulo->id)->value('price'), self::DELTA);
+    }
+
+    /** @test */
+    public function sin_lista_precio_final_el_write_through_no_toca_el_articulo()
+    {
+        $dueno = $this->con_extension($this->dueno_nuevo('sin-pf', array('listas_de_precio' => 1, 'cotizar_precios_en_dolares' => 1)), 'ventas_en_dolares');
+        $propia = $this->otra_lista($dueno, 'zz Propia write');
+
+        $articulo = $this->articulo($dueno, 'con lista propia', array('cost' => 1000, 'percentage_gain' => 20));
+
+        ArticlePriceTypeHelper::attach_price_types(Article::find($articulo->id), array(
+            array('id' => $propia->id, 'pivot' => array('percentage' => 70, 'final_price' => 9000, 'setear_precio_final' => 1)),
+        ));
+
+        ArticlePriceTypeMonedaHelper::attach_price_type_monedas(Article::find($articulo->id), array(
+            array('price_type_id' => $propia->id, 'moneda_id' => 1, 'percentage' => 70, 'final_price' => 9000, 'setear_precio_final' => 1, 'cotizar_desde_otra_moneda' => 0),
+        ), $dueno);
+
+        $fila = DB::table('articles')->where('id', $articulo->id)->first();
+
+        $this->assertEqualsWithDelta(20, (float) $fila->percentage_gain, self::DELTA);
+        $this->assertNull($fila->price);
+    }
+
+    /** @test */
+    public function muestra_listas_es_el_flag_salvo_la_precio_final_sola()
+    {
+        $apagado = $this->dueno_nuevo('muestra-flag-0');
+        $this->otra_lista($apagado, 'zz Por categoría 1');
+        $this->otra_lista($apagado, 'zz Por categoría 2');
+        $this->assertFalse(PriceTypeHelper::muestra_listas($apagado), 'Flag apagado: sigue como hasta hoy.');
+
+        $sin_listas = $this->dueno_nuevo('muestra-flag-1', array('listas_de_precio' => 1));
+        $this->assertTrue(PriceTypeHelper::muestra_listas($sin_listas), 'Flag y cero listas: como el flag solo.');
+
+        $propia = $this->dueno_nuevo('muestra-propia', array('listas_de_precio' => 1));
+        $this->otra_lista($propia, 'zz Única propia muestra');
+        $this->assertTrue(PriceTypeHelper::muestra_listas($propia));
+
+        list($sola, $lista) = $this->con_precio_final($this->dueno_nuevo('muestra-pf'));
+        $this->assertFalse(PriceTypeHelper::muestra_listas($sola));
+
+        $this->otra_lista($sola, 'zz Segunda muestra', 100, 0);
+        $this->assertTrue(PriceTypeHelper::muestra_listas($sola));
     }
 
     /** @test */

@@ -5,6 +5,7 @@ namespace App\Services\Pdf\Catalog;
 use App\Http\Controllers\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
+use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use TCPDF;
 
@@ -28,6 +29,7 @@ class TCPDCCatalog extends TCPDF
                     $_article->name = $article->name . ' ' . $variant->variant_description;
                     $_article->price_type_monedas = $article->price_type_monedas;
                     $_article->final_price = $article->final_price;
+                    $_article->cost_in_dollars = $article->cost_in_dollars;
 
                     if ($variant->image_url) {
                         $_article->images = [
@@ -57,6 +59,10 @@ class TCPDCCatalog extends TCPDF
     {
 
         $this->set_items($articles_ids);
+
+        // Una sola vez: el loop de abajo corre por artículo.
+        $solo_precio_final = PriceTypeHelper::solo_lista_precio_final();
+        $owner = UserHelper::getFullModel();
 
         $this->SetCreator(PDF_CREATOR);
         $this->SetAuthor($businessName);
@@ -135,10 +141,10 @@ class TCPDCCatalog extends TCPDF
 
             // Con una sola lista, la «Precio final» (misión prueba-listas-siempre, 3/11/2026), el catálogo
             // imprime el precio de siempre: ni el nombre de la lista ni sus filas por moneda.
-            if (PriceTypeHelper::solo_lista_precio_final()) {
+            if ($solo_precio_final) {
 
                 $this->SetX($x + 50);
-                $this->Cell(0, 6, '$'.Numbers::price($article->final_price), 0, 1, 'L');
+                $this->Cell(0, 6, $this->precio_del_articulo($article, $owner, $moneda_id), 0, 1, 'L');
 
             } else if (count($article->price_type_monedas) >= 1) {
 
@@ -166,20 +172,59 @@ class TCPDCCatalog extends TCPDF
 
                     $this->SetX($x + 50);
                 
-                    $price = Numbers::price($price_type->pivot->final_price);
-                
-                    $this->Cell(0, 6, $price_type->name.': $'.$price, 0, 1, 'L');
+                    // El pivote de una lista está en pesos.
+                    $this->Cell(0, 6, $price_type->name.': '.$this->precio_en_la_moneda_pedida($price_type->pivot->final_price, 1, $owner, $moneda_id), 0, 1, 'L');
                 }
 
             } else {
 
                 $this->SetX($x + 50);
-                $this->Cell(0, 6, '$'.Numbers::price($article->final_price), 0, 1, 'L');
+                $this->Cell(0, 6, $this->precio_del_articulo($article, $owner, $moneda_id), 0, 1, 'L');
             }
 
             $product_index++;
         }
 
         $this->Output('catalog_tcpdf.pdf', 'I');
+    }
+
+    /**
+     * El precio final del artículo, que está en su moneda nativa, en la moneda que pidió el PDF.
+     *
+     * @param  mixed                 $article
+     * @param  \App\Models\User|null $owner
+     * @param  mixed                 $moneda_id
+     * @return string
+     */
+    protected function precio_del_articulo($article, $owner, $moneda_id)
+    {
+        $nativa = is_null($owner) ? 1 : PriceTypeHelper::moneda_nativa_del_precio($article, $owner);
+
+        return $this->precio_en_la_moneda_pedida($article->final_price, $nativa, $owner, $moneda_id);
+    }
+
+    /**
+     * Un precio con su signo, en la moneda pedida (misión prueba-listas-siempre, 3/11/2026: la opción de
+     * PDF por moneda se ofrece a todo negocio). Sin moneda pedida, en la suya. Sin dólar en la cuenta no
+     * se inventa una cotización: se imprime en la moneda en la que está, con su signo.
+     *
+     * @param  float|string|null     $precio
+     * @param  int                   $moneda_del_precio
+     * @param  \App\Models\User|null $owner
+     * @param  mixed                 $moneda_id
+     * @return string
+     */
+    protected function precio_en_la_moneda_pedida($precio, $moneda_del_precio, $owner, $moneda_id)
+    {
+        $moneda = empty($moneda_id) ? (int) $moneda_del_precio : (int) $moneda_id;
+
+        $valor = PriceTypeHelper::precio_en_moneda($precio, $moneda_del_precio, $moneda, is_null($owner) ? 0 : $owner->dollar);
+
+        if (is_null($valor)) {
+            $valor = $precio;
+            $moneda = (int) $moneda_del_precio;
+        }
+
+        return Numbers::price(round((float) $valor, 2), true, $moneda);
     }
 }

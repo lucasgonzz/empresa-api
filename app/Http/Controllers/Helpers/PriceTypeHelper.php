@@ -997,10 +997,10 @@ class PriceTypeHelper {
 	}
 
 	/**
-	 * ¿El dueño trabaja con listas VISIBLES? Es decir: el flag prendido y DOS o más listas, o una sola
-	 * que no sea la «Precio final» (una cuenta con una lista propia no cambia). Con la «Precio final»
-	 * sola la interfaz se comporta como la de un negocio sin listas —etiquetas de
-	 * góndola, opciones por lista—, igual que `muestra_sucursales` de la SPA con una sola sucursal.
+	 * ¿El dueño trabaja con listas? El flag prendido, salvo que la única lista sea la «Precio final»: ahí
+	 * la interfaz se comporta como la de un negocio sin listas —etiquetas de góndola, opciones por lista—,
+	 * igual que `muestra_sucursales` de la SPA con una sola sucursal. Con el flag y cero listas da true,
+	 * como el flag solo.
 	 * Es el gemelo de `price_type/muestra_listas` de la SPA y los dos tienen que decir lo mismo.
 	 *
 	 * @param  int|\App\Models\User|null  $user
@@ -1014,7 +1014,7 @@ class PriceTypeHelper {
 			return false;
 		}
 
-		return PriceType::where('user_id', $owner->id)->exists() && !self::solo_lista_precio_final($owner);
+		return !self::solo_lista_precio_final($owner);
 	}
 
 	/**
@@ -1024,8 +1024,8 @@ class PriceTypeHelper {
 	 * los mails): para esta cuenta el margen y el precio manual del artículo siguen mandando, igual
 	 * que antes de prender el flag.
 	 *
-	 * 🔴 No es la negación de muestra_listas(): una cuenta sin el flag o sin ninguna lista también da
-	 * muestra_listas() = false, y esas cuentas no tienen que cambiar en nada.
+	 * 🔴 No es la negación de muestra_listas(): una cuenta sin el flag también da muestra_listas() = false
+	 * y no tiene que cambiar en nada.
 	 *
 	 * @param  int|\App\Models\User|null  $user
 	 * @return bool
@@ -1059,6 +1059,30 @@ class PriceTypeHelper {
 		}
 
 		return 1;
+	}
+
+	/**
+	 * Un precio en la moneda pedida: el mismo número si ya está en ella o no se pidió ninguna, y si no,
+	 * convertido con el dólar de la cuenta. Null si hay que convertir y la cuenta no tiene dólar: no se
+	 * inventa una cotización.
+	 *
+	 * @param  float|string|null  $precio
+	 * @param  int                $moneda_del_precio  1 pesos, 2 dólares.
+	 * @param  int|string|null    $moneda_pedida
+	 * @param  float|string|null  $dolar              `users.dollar`.
+	 * @return float|null
+	 */
+	static function precio_en_moneda($precio, $moneda_del_precio, $moneda_pedida, $dolar) {
+
+		if (is_null($precio) || empty($moneda_pedida) || (int) $moneda_pedida === (int) $moneda_del_precio) {
+			return is_null($precio) ? null : (float) $precio;
+		}
+
+		if ((float) $dolar <= 0) {
+			return null;
+		}
+
+		return (int) $moneda_pedida === 2 ? (float) $precio / (float) $dolar : (float) $precio * (float) $dolar;
 	}
 
 	/**

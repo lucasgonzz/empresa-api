@@ -14,8 +14,8 @@ use Illuminate\Support\Facades\Log;
  *
  * Todo negocio trabaja con listas de precios desde esta versión. Pero prender el flag en una cuenta
  * cambia de dónde sale el precio de Vender, del listado y de la tienda (del `final_price` del artículo
- * al pivote de la lista por defecto), así que este seeder prende el flag SOLO en los dos casos en que
- * ese número es el mismo por construcción, que es UNO: el dueño ya tiene la lista «Precio final»
+ * al pivote de la lista por defecto), así que este seeder prende el flag SOLO en el caso en que ese número
+ * es el mismo por construcción: el dueño ya tiene la lista «Precio final»
  * (`price_types.es_precio_final = 1`), creada por el comando `listas:migrar-a-precio-final`: su pivote es
  * el espejo del precio del artículo. Es la red de seguridad del comando (si el flag se apagó por el camino,
  * acá vuelve).
@@ -36,9 +36,6 @@ use Illuminate\Support\Facades\Log;
  */
 class ListasSiemprePrecioFinalSeeder extends Seeder
 {
-    /** La marca vieja de "usa listas". */
-    const EXTENSION_LISTAS = 'articulo_margen_de_ganancia_segun_lista_de_precios';
-
     /** Modos de listas que este seeder no toca. */
     const EXTENSIONES_DE_OTRO_MODO = array(
         'lista_de_precios_por_categoria',
@@ -51,7 +48,6 @@ class ListasSiemprePrecioFinalSeeder extends Seeder
     public function run()
     {
         $ids_otro_modo = ExtencionEmpresa::whereIn('slug', self::EXTENSIONES_DE_OTRO_MODO)->pluck('id')->all();
-        $id_listas     = ExtencionEmpresa::where('slug', self::EXTENSION_LISTAS)->value('id');
 
         $duenos = DB::table('users')
             ->whereNull('owner_id')

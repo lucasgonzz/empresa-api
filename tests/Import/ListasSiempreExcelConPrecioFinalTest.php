@@ -4,6 +4,7 @@ namespace Tests\Import;
 
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Models\Article;
+use App\Models\ArticleSurchage;
 use App\Models\PriceType;
 use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
@@ -195,6 +196,80 @@ class ListasSiempreExcelConPrecioFinalTest extends ImportTestCase
         $this->assertEspejo($con_margen);
         $this->assertEspejo($con_manual);
         $this->assertEspejo($sin_nada);
+    }
+
+    /** @test */
+    public function reimportar_la_misma_planilla_no_sube_los_precios()
+    {
+        // Así exporta el Excel desde la segunda lista: las tres columnas por lista.
+        PriceType::create(array('name' => 'zz Mayorista', 'percentage' => 100, 'position' => 0, 'user_id' => $this->tenant->id));
+
+        $con_manual = $this->articulo_del_tenant('7790202', 'Con manual', array('cost' => 100, 'price' => 500));
+
+        ArticleSurchage::create(array('article_id' => $con_manual->id, 'percentage' => 10, 'luego_del_precio_final' => 1));
+        ImportTestSeeder::derivar_precio(Article::find($con_manual->id), $this->tenant->id);
+
+        $this->assertDecimal(550, Article::find($con_manual->id)->final_price, 'Manual 500 + recargo 10 %.');
+
+        $mapeo = $this->mapeo(array(
+            'prop_$_final_precio_final'             => 3,
+            'prop_%_precio_final'                   => 4,
+            'prop_setear_precio_final_precio_final' => 5,
+        ));
+
+        // La planilla exportada trae el precio con el recargo adentro: 550.
+        $planilla = array(array('7790202', 'Con manual', 550, null, 'Si'));
+
+        foreach (array(1, 2) as $vuelta) {
+
+            $this->importar($this->archivo($planilla), $mapeo);
+
+            $fresco = Article::find($con_manual->id);
+
+            $this->assertDecimal(500, $fresco->price, 'Vuelta '.$vuelta.': el precio manual no se toca.');
+            $this->assertDecimal(550, $fresco->final_price, 'Vuelta '.$vuelta.': el precio final no sube.');
+            $this->assertEspejo($fresco);
+        }
+
+        // Un número distinto sí es un cambio, y sigue la regla de la ficha: el recargo va encima.
+        $this->importar($this->archivo(array(array('7790202', 'Con manual', 600, null, 'Si'))), $mapeo);
+
+        $fresco = Article::find($con_manual->id);
+
+        $this->assertDecimal(600, $fresco->price);
+        $this->assertDecimal(660, $fresco->final_price);
+    }
+
+    /** @test */
+    public function reimportar_solo_la_columna_de_precio_no_fija_un_precio_calculado()
+    {
+        PriceType::create(array('name' => 'zz Mayorista', 'percentage' => 100, 'position' => 0, 'user_id' => $this->tenant->id));
+
+        $calculado = $this->articulo_del_tenant('7790203', 'Calculado', array('cost' => 100));
+
+        $this->importar($this->archivo(array(
+            array('7790203', 'Calculado', (float) $calculado->final_price, null, null),
+        )), $this->mapeo(array('prop_$_final_precio_final' => 3)));
+
+        $this->assertNull(Article::find($calculado->id)->price, 'El número que ya tenía no es un precio fijado a mano.');
+    }
+
+    /** @test */
+    public function setear_si_sobre_un_precio_calculado_lo_fija_aunque_el_numero_sea_el_mismo()
+    {
+        PriceType::create(array('name' => 'zz Mayorista', 'percentage' => 100, 'position' => 0, 'user_id' => $this->tenant->id));
+
+        $calculado = $this->articulo_del_tenant('7790203', 'Calculado', array('cost' => 100));
+        $final = (float) $calculado->final_price;
+
+        $this->importar($this->archivo(array(
+            array('7790203', 'Calculado', $final, null, 'Si'),
+        )), $this->mapeo(array(
+            'prop_$_final_precio_final'             => 3,
+            'prop_setear_precio_final_precio_final' => 5,
+        )));
+
+        $this->assertDecimal($final, Article::find($calculado->id)->price, 'Es tildar «Setear precio final» en la tarjeta.');
     }
 
     /** @test */

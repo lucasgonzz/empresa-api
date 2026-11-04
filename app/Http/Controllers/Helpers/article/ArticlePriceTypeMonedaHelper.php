@@ -219,19 +219,30 @@ class ArticlePriceTypeMonedaHelper {
             $precio_del_articulo = $final_price;
 
             // La fila editada está en dólares y el precio del artículo en pesos (ver el docblock).
-            if (!is_null($final_price) && $moneda_id !== PriceTypeHelper::moneda_nativa_del_precio($article, $owner)) {
-                $precio_del_articulo = round($final_price * (float) $owner->dollar, 2);
+            if ($setear && !is_null($final_price)) {
+                $precio_del_articulo = PriceTypeHelper::precio_en_moneda(
+                    $final_price,
+                    $moneda_id,
+                    PriceTypeHelper::moneda_nativa_del_precio($article, $owner),
+                    $owner->dollar
+                );
             }
 
-            $article->price = $setear ? $precio_del_articulo : null;
+            // Sin dólar en la cuenta no hay cómo convertir: el precio queda como está, nunca en $0.
+            $sin_cotizacion = $setear && !is_null($final_price) && is_null($precio_del_articulo);
 
-            // Un precio fijado a mano no convive con un margen del artículo (setFinalPrice() lo
-            // borraría): ver ArticlePriceTypeHelper::write_through_precio_final().
-            if ($setear) {
-                $article->percentage_gain = null;
+            if (!$sin_cotizacion) {
+
+                $article->price = $setear ? (is_null($precio_del_articulo) ? null : round($precio_del_articulo, 2)) : null;
+
+                // Un precio fijado a mano no convive con un margen del artículo (setFinalPrice() lo
+                // borraría): ver ArticlePriceTypeHelper::write_through_precio_final().
+                if ($setear) {
+                    $article->percentage_gain = null;
+                }
+
+                $cambio = true;
             }
-
-            $cambio = true;
         }
 
         if ($cambio) {

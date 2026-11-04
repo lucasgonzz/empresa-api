@@ -203,6 +203,15 @@ class ProcessRow {
     protected $se_importaron_price_types = false;
 
     /**
+     * El precio de esta fila vino de la columna `$_final_<lista>` de la lista «Precio final», y si la
+     * fila dice «Setear: Sí» (misión prueba-listas-siempre, 3/11/2026). Ver
+     * sacar_precio_de_la_lista_si_no_cambio().
+     *
+     * @var array|null  ['fijado' => bool], o null si el precio de la fila vino de otro lado.
+     */
+    protected $precio_de_la_lista_precio_final = null;
+
+    /**
      * Si el mapeo trae alguna columna de PRECIO de lista (`%_<lista>`, `$_final_<lista>` o
      * `setear_precio_final_<lista>`).
      *
@@ -2130,6 +2139,7 @@ class ProcessRow {
          * nada real.
          */
         $this->iniciar();
+        $cambios = $this->sacar_precio_de_la_lista_si_no_cambio($articulo_ya_creado, $cambios);
         $cambios = $this->aplicar_criterio_de_precio($articulo_ya_creado, $data, $cambios);
         $this->terminar('criterio de precio manual vs margen');
 
@@ -3727,12 +3737,17 @@ class ProcessRow {
      * (aplicar_criterio_de_precio()). Si la misma fila mapea también «Margen de ganancia» o «Precio»,
      * ganan esas, que son las del artículo.
      *
+     * 🔴 `$_final_<lista>` es el precio YA ARMADO, con los recargos adentro, y `articles.price` es de donde
+     * setFinalPrice() parte para volver a aplicarlos. Ver sacar_precio_de_la_lista_si_no_cambio().
+     *
      * @param  array  $props_to_add
      * @param  array  $row
      * @return array
      */
     private function props_de_la_lista_precio_final(array $props_to_add, $row)
     {
+        $this->precio_de_la_lista_precio_final = null;
+
         $lista = null;
 
         foreach ($this->price_types as $price_type) {
@@ -3772,9 +3787,48 @@ class ProcessRow {
             && ImportHelper::isIgnoredColumn('precio', $this->columns)
         ) {
             $props_to_add[] = array('excel_column' => $columna_precio, 'prop_key' => 'price', 'is_number' => true);
+
+            $this->precio_de_la_lista_precio_final = array('fijado' => $fijado);
         }
 
         return $props_to_add;
+    }
+
+    /**
+     * Saca el precio de los cambios si la columna de la lista «Precio final» trae lo que el pivote ya
+     * tiene: la misma regla de la ficha (ArticlePriceTypeHelper::write_through_precio_final()), que solo
+     * toma un valor que difiere del guardado.
+     *
+     * Sin esto, reimportar la misma planilla subía los precios en cada vuelta: la columna trae el precio
+     * con los recargos adentro, y setFinalPrice() los vuelve a aplicar sobre `articles.price` (manual 500 +
+     * recargo 10 %: 550 → 605 → 665,50). «Setear: Sí» sobre un artículo que no tenía el precio fijado sí es
+     * un cambio aunque el número sea el mismo: es fijarlo, igual que tildarlo en la tarjeta.
+     *
+     * @param  \App\Models\Article  $articulo_ya_creado
+     * @param  array                  $cambios
+     * @return array
+     */
+    private function sacar_precio_de_la_lista_si_no_cambio($articulo_ya_creado, array $cambios)
+    {
+        if (is_null($this->precio_de_la_lista_precio_final) || !array_key_exists('price', $cambios)) {
+            return $cambios;
+        }
+
+        foreach ($articulo_ya_creado->price_types as $lista) {
+
+            if (!PriceTypeHelper::es_lista_precio_final($lista)) {
+                continue;
+            }
+
+            $igual = !is_null($lista->pivot->final_price)
+                && abs((float) $lista->pivot->final_price - (float) $cambios['price']) <= 0.005;
+
+            $fijar = $this->precio_de_la_lista_precio_final['fijado'] && (int) $lista->pivot->setear_precio_final !== 1;
+
+            return ($igual && !$fijar) ? $this->descartar_campo_de_cambios($cambios, 'price') : $cambios;
+        }
+
+        return $cambios;
     }
 
     /**
