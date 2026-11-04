@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 
 /**
  * El único lugar del repo que sabe que el asistente tiene DOS proveedores de IA: Claude (Anthropic)
@@ -52,6 +51,8 @@ class ProveedorIaHelper
     /** DeepSeek: por su endpoint compatible con Anthropic, el default del sistema desde el
      * 28/9/2026 (misión agente-ia-default-deepseek-directo, pedido de Lucas). */
     const DEEPSEEK = 'deepseek';
+
+    const MODELO_HAIKU_IMAGENES = 'claude-haiku-4-5-20251001';
 
     /** Los proveedores válidos, en el orden en que se ofrecen (y en el que se cae al buscar clave). */
     const PROVEEDORES = [self::ANTHROPIC, self::DEEPSEEK];
@@ -160,79 +161,16 @@ class ProveedorIaHelper
             : [];
     }
 
-    /**
-     * El proveedor que el dueño ELIGIÓ (`users.agente_proveedor`), cayendo al default si la columna
-     * está vacía o fuera del enum. Sin mirar las credenciales: es lo que se muestra en la
-     * configuración y lo que se compara al validar un PUT.
-     *
-     * @param  \App\Models\User|null  $owner
-     * @return string
-     */
+    /** El proveedor de texto del asistente, incluso para configuraciones anteriores. */
     public static function proveedor_elegido($owner): string
     {
-        $valor = is_null($owner) ? '' : (string) $owner->agente_proveedor;
-
-        return in_array($valor, self::PROVEEDORES, true) ? $valor : self::PROVEEDOR_POR_DEFECTO;
+        return self::DEEPSEEK;
     }
 
-    /**
-     * Los dueños por los que ya se avisó el fallback de clave en este proceso PHP, por owner_id
-     * (0 = sin dueño). Ver el comentario del warning en proveedor_de().
-     *
-     * @var array<int, bool>
-     */
-    protected static $avisados = [];
-
-    /**
-     * El proveedor con el que EFECTIVAMENTE se llama: el elegido si tiene clave; si no, el primero
-     * que la tenga, con un warning en el log (ver el docblock de la clase); si ninguno la tiene, el
-     * elegido, para que el llamador falle por "sin credenciales" como hasta hoy.
-     *
-     * @param  \App\Models\User|null  $owner
-     * @return string
-     */
+    /** El asistente necesita la clave de DeepSeek para responder. */
     public static function proveedor_de($owner): string
     {
-        $elegido = self::proveedor_elegido($owner);
-
-        if (self::hay_credenciales($elegido)) {
-
-            return $elegido;
-        }
-
-        $disponibles = self::proveedores_disponibles();
-
-        if (count($disponibles) === 0) {
-
-            return $elegido;
-        }
-
-        $reemplazo = $disponibles[0];
-
-        /*
-         * UN warning por dueño y por request, no uno por llamada: por cada mensaje esto se resuelve
-         * dos veces (el guard del job y el service), y además en cada GET de config o de consumo y
-         * en cada recolección nocturna del admin. Repetirlo no agrega información y entierra el
-         * log. El resultado no cambia: solo se calla el aviso repetido dentro del mismo proceso PHP
-         * (en un worker de cola de larga vida, una vez por dueño mientras viva el worker).
-         */
-        $clave_de_aviso = is_null($owner) ? 0 : (int) $owner->id;
-
-        if (! isset(self::$avisados[$clave_de_aviso])) {
-            self::$avisados[$clave_de_aviso] = true;
-
-            Log::warning(
-                'ProveedorIaHelper: el dueño eligió ' . self::nombre_de($elegido) . ' pero esta instalación no tiene '
-                . 'su clave cargada; el asistente cae a ' . self::nombre_de($reemplazo) . '.',
-                [
-                    'owner_id'  => is_null($owner) ? null : $owner->id,
-                    'elegido'   => $elegido,
-                    'reemplazo' => $reemplazo,
-                ]
-            );
-        }
-
-        return $reemplazo;
+        return self::proveedor_elegido($owner);
     }
 
     /**
@@ -252,100 +190,36 @@ class ProveedorIaHelper
     }
 
     /**
-     * Con qué corre el chat del dueño (AsistenteIaService): el proveedor efectivo, la variante de
-     * pensamiento válida para él, el id del modelo y el parámetro `thinking` del payload.
-     *
-     * 🔴 LOS IDS NO SE HARDCODEAN ACÁ: salen de config/services.php, que es donde se pueden mover
-     * por .env. Anthropic: el mapeo de siempre (profundo → model_profundo, equilibrado →
-     * model_equilibrado, el resto → model_agil), y si el elegido viniera vacío (config mal armada)
-     * cae al `services.anthropic.model` de siempre — así un negocio nunca queda sin modelo. Sin
-     * clave `thinking`: es exactamente lo que se mandaba antes de esta misión. DeepSeek: profundo →
-     * model_profundo con thinking `thinking_profundo` (enabled), el resto → model_agil con thinking
-     * `thinking_agil` (disabled); si el modelo viene vacío cae a `services.deepseek.model`.
-     *
-     * 🔴 CON UNA FOTO EN EL PEDIDO, DEEPSEEK VA CON EL MODELO DE VISIÓN. `deepseek-v4-pro` (Profundo)
-     * NO ve imágenes (api-docs.deepseek.com: Flash "Vision: Supported", Pro "Not supported"), y
-     * DeepSeek no lo denuncia con un error: mapea el pedido y contesta como si la foto no
-     * estuviera — un camino de falla mudo, el dueño manda la factura y recibe una respuesta que
-     * no la miró. Por eso, con `$necesita_vision`, el modelo se elige EXPLÍCITO
-     * (`services.deepseek.model_vision`, Flash; si viene vacío, `model_agil`) y el `thinking` sigue
-     * siendo el de la variante elegida: Profundo mantiene `enabled`, porque Flash también razona.
-     * Anthropic no cambia: todos sus modelos ven. El `modelo` que se devuelve es el que efectivamente
-     * se usa y el que se registra en ai_token_usages.
-     *
-     * Misión asistente-deepseek-pro-razona (24/9/2026): si el turno va escalado y las fotos se
-     * transcribieron (TranscripcionDeFotosIaHelper), el payload ya no lleva bloques `image` y el
-     * service pide esta elección SIN `$necesita_vision` y CON `$forzar_profundo`: sale Pro pensando.
-     * La guarda de acá sigue intacta para todo payload que todavía lleve una imagen.
-     *
-     * 🔴 CON `$forzar_profundo` EL PENSAMIENTO DEL DUEÑO SE IGNORA Y SE VA AL PROFUNDO (misión
-     * asistente-capacidades-y-hilos, 22/9/2026). Lo pide el loop del chat cuando el turno ya tocó
-     * una tool de carga: "las acciones contra deepseek pro a ver si cambia" (Lucas, 22/9). Es POR
-     * TURNO y por vuelta, no una preferencia guardada: `users.agente_pensamiento` no se toca y la
-     * configuración sigue mostrando lo que el dueño eligió. El orden importa — el forzado se aplica
-     * ANTES de elegir el modelo, así que la guarda de visión (que corre después) sigue mandando y un
-     * turno con foto va a Flash aunque haya escalado. Y el `thinking` sale del pensamiento ya
-     * forzado, así que el techo que sube agregar_thinking() acompaña al modelo que corre.
-     *
-     * @param  \App\Models\User|null  $owner
-     * @param  bool  $necesita_vision  true si el pedido lleva al menos un bloque `image`.
-     * @param  bool  $forzar_profundo  true para correr esta llamada con el modelo Profundo.
-     * @return array{proveedor:string, pensamiento:string, modelo:string, thinking:array|null}
+     * Modelo del asistente. La visión usa Haiku y el chat razona en DeepSeek.
+     * Los modos elegidos desde la app se aplican solo al turno actual.
      */
     public static function modelo_del_asistente($owner, $necesita_vision = false, $forzar_profundo = false, $modelo_pedido = null): array
     {
-        $proveedor   = self::proveedor_de($owner);
-        $pensamiento = self::pensamiento_de($owner, $proveedor);
-
-        /*
-         * Misión app-ia-y-memoria: el modelo que pidió el dueño desde la app manda SOLO en este turno
-         * (DeepSeek, ágil o profundo). El forzado a Profundo de las cargas y de las fotos sigue igual
-         * abajo, y la visión también: Pensamiento con una foto va por el camino de siempre.
-         */
-        if (self::modelo_pedido_aplica($modelo_pedido)) {
-            $proveedor   = self::DEEPSEEK;
-            $pensamiento = (string) $modelo_pedido === self::MODELO_PEDIDO_PENSAMIENTO ? 'profundo' : 'agil';
-        }
-
-        /* El `in_array` es por si alguna vez hay un proveedor sin variante profunda: ahí no se fuerza nada. */
-        if ($forzar_profundo && in_array('profundo', self::pensamientos_de($proveedor), true)) {
-
-            $pensamiento = 'profundo';
-        }
-
-        if ($proveedor === self::DEEPSEEK) {
-
-            $es_profundo = $pensamiento === 'profundo';
-
-            if ($necesita_vision) {
-                $modelo = self::modelo_de_vision_de_deepseek();
-            } else {
-                $modelo = (string) config($es_profundo ? 'services.deepseek.model_profundo' : 'services.deepseek.model_agil');
-            }
-
+        if ($necesita_vision) {
             return [
-                'proveedor'   => $proveedor,
-                'pensamiento' => $pensamiento,
-                'modelo'      => self::modelo_o_general($modelo, self::DEEPSEEK),
-                'thinking'    => self::thinking_de_deepseek($es_profundo),
+                'proveedor'   => self::ANTHROPIC,
+                'pensamiento' => 'agil',
+                'modelo'      => self::MODELO_HAIKU_IMAGENES,
+                'thinking'    => null,
             ];
         }
 
-        /* PHP 7.4: sin match(). 'agil' y cualquier valor no reconocido caen al mismo default de siempre. */
-        $modelos_por_pensamiento = [
-            'profundo'    => (string) config('services.anthropic.model_profundo'),
-            'equilibrado' => (string) config('services.anthropic.model_equilibrado'),
-        ];
+        $pensamiento = self::pensamiento_de($owner, self::DEEPSEEK);
+        if (self::modelo_pedido_aplica($modelo_pedido)) {
+            $pensamiento = (string) $modelo_pedido === self::MODELO_PEDIDO_PENSAMIENTO ? 'profundo' : 'agil';
+        }
+        if ($forzar_profundo) {
+            $pensamiento = 'profundo';
+        }
 
-        $preferido = isset($modelos_por_pensamiento[$pensamiento])
-            ? $modelos_por_pensamiento[$pensamiento]
-            : (string) config('services.anthropic.model_agil');
+        $es_profundo = $pensamiento === 'profundo';
+        $modelo = (string) config($es_profundo ? 'services.deepseek.model_profundo' : 'services.deepseek.model_agil');
 
         return [
-            'proveedor'   => $proveedor,
+            'proveedor'   => self::DEEPSEEK,
             'pensamiento' => $pensamiento,
-            'modelo'      => self::modelo_o_general($preferido, self::ANTHROPIC),
-            'thinking'    => null,
+            'modelo'      => self::modelo_o_general($modelo, self::DEEPSEEK),
+            'thinking'    => self::thinking_de_deepseek($es_profundo),
         ];
     }
 
@@ -372,7 +246,7 @@ class ProveedorIaHelper
      */
     public static function proveedor_del_turno($owner, $modelo_pedido = null): string
     {
-        return self::modelo_pedido_aplica($modelo_pedido) ? self::DEEPSEEK : self::proveedor_de($owner);
+        return self::proveedor_de($owner);
     }
 
     /**

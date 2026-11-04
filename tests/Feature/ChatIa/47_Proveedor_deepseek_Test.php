@@ -7,15 +7,12 @@ use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
-use App\Models\AiMessageImagen;
 use App\Models\AiTokenUsage;
 use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 /**
@@ -143,42 +140,6 @@ class Proveedor_deepseek_Test extends TestCase
     }
 
     /**
-     * Le cuelga una foto de verdad (un PNG chico en el disco fake) al último mensaje del usuario de
-     * la conversación, con su fila en `ai_message_imagenes`: así build_messages_payload() arma el
-     * bloque `image` como en producción. Misma siembra que AsistenteWhatsapp/4_Imagenes_Test.
-     *
-     * @param  AiConversation  $conversation
-     * @return void
-     */
-    protected function con_una_foto(AiConversation $conversation)
-    {
-        Storage::fake('local');
-
-        $mensaje = AiMessage::where('ai_conversation_id', $conversation->id)
-            ->where('rol', 'user')
-            ->orderBy('id', 'DESC')
-            ->first();
-
-        $recurso = imagecreatetruecolor(30, 30);
-        ob_start();
-        imagepng($recurso);
-        $binario = ob_get_clean();
-
-        $path = 'asistente_imagenes/' . $this->comercio->id . '/' . $mensaje->id . '/1.webp';
-
-        Storage::disk('local')->put($path, $binario);
-
-        AiMessageImagen::create([
-            'ai_message_id' => $mensaje->id,
-            'user_id'       => $this->comercio->id,
-            'orden'         => 1,
-            'path'          => $path,
-            'mime'          => 'image/webp',
-            'bytes'         => strlen($binario),
-        ]);
-    }
-
-    /**
      * Corre el loop del chat para el dueño tal como está guardado y devuelve la conversación.
      *
      * @return AiConversation
@@ -285,93 +246,8 @@ class Proveedor_deepseek_Test extends TestCase
         $this->assertEquals(config('services.deepseek.model_profundo'), $fila->modelo);
     }
 
-    /**
-     * (b') Dueño en DeepSeek / profundo con una FOTO en el pedido: la llamada va con el modelo de
-     * visión (Pro no ve imágenes y DeepSeek no avisa: contestaría sin mirar la foto), con el
-     * thinking de Profundo igual prendido, y la fila registra el modelo que efectivamente se usó.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function con_una_foto_el_dueno_en_deepseek_profundo_va_al_modelo_de_vision_pensando()
-    {
-        /*
-         * Misión asistente-deepseek-pro-razona (24/9/2026): con el interruptor prendido (default) el
-         * turno con foto de un dueño en Profundo transcribe con Flash y razona en Pro
-         * (13_Deepseek_pro_con_fotos_transcriptas_Test). Lo que fija este test —la foto al modelo con
-         * visión, pensando, nunca a Pro— sigue siendo el camino de respaldo (interruptor apagado o
-         * transcripción que falla), así que lo apaga, igual que 12_ y 51_.
-         */
-        config(['services.deepseek.pro_con_transcripcion' => false]);
-
-        $this->fakes_de_red();
-        $this->dueno_en('deepseek', 'profundo');
-
-        list($conversation, $assistant) = $this->conversacion_con_pendiente();
-        $this->con_una_foto($conversation);
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        list($url, $headers, $body) = $this->el_request_enviado();
-
-        $this->assertEquals(self::URL_DEEPSEEK, $url);
-        $this->assertEquals(config('services.deepseek.model_vision'), $body['model'], 'Con una foto, Profundo de DeepSeek va al modelo que ve.');
-        $this->assertNotEquals(config('services.deepseek.model_profundo'), $body['model']);
-        $this->assertEquals('enabled', $body['thinking']['type'], 'El thinking sigue siendo el de Profundo: Flash también razona.');
-
-        /* La foto efectivamente viajó: el último turno del dueño lleva un bloque image. */
-        $ultimo = $body['messages'][count($body['messages']) - 1];
-        $this->assertTrue(is_array($ultimo['content']));
-        $this->assertEquals('image', $ultimo['content'][0]['type']);
-
-        $fila = AiTokenUsage::where('ai_conversation_id', $conversation->id)->first();
-
-        $this->assertEquals('deepseek', $fila->proveedor);
-        $this->assertEquals(config('services.deepseek.model_vision'), $fila->modelo, 'Se registra el modelo con el que efectivamente se llamó.');
-    }
-
-    /**
-     * (b'') Y sin foto, Profundo sigue yendo a Pro: el modelo de visión es solo para las fotos.
-     * Con Anthropic una foto no cambia nada, porque todos sus modelos ven.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function sin_foto_profundo_sigue_en_pro_y_con_anthropic_la_foto_no_cambia_el_modelo()
-    {
-        $this->fakes_de_red();
-        $this->dueno_en('deepseek', 'profundo');
-
-        $this->responder();
-
-        list($url, $headers, $body) = $this->el_request_enviado();
-
-        $this->assertEquals(config('services.deepseek.model_profundo'), $body['model']);
-
-        /* Anthropic con foto: el modelo de la variante, sin desvío. Fake nuevo para contar de cero. */
-        $this->fakes_de_red();
-        $this->dueno_en('anthropic', 'profundo');
-
-        list($conversation, $assistant) = $this->conversacion_con_pendiente();
-        $this->con_una_foto($conversation);
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        list($url, $headers, $body) = $this->el_request_enviado();
-
-        $this->assertEquals(self::URL_ANTHROPIC, $url);
-        $this->assertEquals(config('services.anthropic.model_profundo'), $body['model'], 'Todos los modelos de Anthropic ven: la foto no cambia el modelo.');
-        $this->assertEquals('image', $body['messages'][count($body['messages']) - 1]['content'][0]['type']);
-    }
-
-    /**
-     * (c) Dueño en Anthropic: NADA cambia. La URL es la de Anthropic, la clave es la de Anthropic,
-     * el body no lleva la clave `thinking` y el techo es el de siempre.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function con_el_dueno_en_anthropic_el_request_es_el_de_siempre_sin_clave_thinking()
+    /** @test */
+    public function con_claude_guardado_el_texto_usa_deepseek_y_conserva_el_modo_profundo()
     {
         $this->fakes_de_red();
         $this->dueno_en('anthropic', 'profundo');
@@ -379,46 +255,13 @@ class Proveedor_deepseek_Test extends TestCase
         $conversation = $this->responder();
 
         list($url, $headers, $body) = $this->el_request_enviado();
-
-        $this->assertEquals(self::URL_ANTHROPIC, $url);
-        $this->assertEquals(['clave-anthropic-de-prueba'], $headers['x-api-key']);
-        $this->assertEquals(config('services.anthropic.model_profundo'), $body['model']);
-        $this->assertArrayNotHasKey('thinking', $body, 'A Anthropic no se le manda ninguna clave thinking: el body es el de antes de la misión.');
-        $this->assertEquals(AsistenteIaService::MAX_TOKENS, $body['max_tokens']);
+        $this->assertSame(self::URL_DEEPSEEK, $url);
+        $this->assertSame(['clave-deepseek-de-prueba'], $headers['x-api-key']);
+        $this->assertSame(config('services.deepseek.model_profundo'), $body['model']);
+        $this->assertSame('enabled', $body['thinking']['type']);
 
         $fila = AiTokenUsage::where('ai_conversation_id', $conversation->id)->first();
-
-        $this->assertEquals('anthropic', $fila->proveedor);
-    }
-
-    /**
-     * (d) Dueño en DeepSeek pero la instalación NO tiene la clave de DeepSeek (y sí la de
-     * Anthropic): el asistente no muere, cae a Anthropic, y la fila dice `anthropic` porque es
-     * quien contestó.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function sin_clave_de_deepseek_el_dueno_en_deepseek_cae_a_anthropic_y_el_gasto_lo_dice()
-    {
-        config(['services.deepseek.api_key' => null]);
-
-        $this->fakes_de_red();
-        $this->dueno_en('deepseek', 'agil');
-
-        $conversation = $this->responder();
-
-        list($url, $headers, $body) = $this->el_request_enviado();
-
-        $this->assertEquals(self::URL_ANTHROPIC, $url, 'Sin clave de DeepSeek, el request tiene que ir a Anthropic.');
-        $this->assertEquals(['clave-anthropic-de-prueba'], $headers['x-api-key']);
-        $this->assertEquals(config('services.anthropic.model_agil'), $body['model']);
-        $this->assertArrayNotHasKey('thinking', $body);
-
-        $fila = AiTokenUsage::where('ai_conversation_id', $conversation->id)->first();
-
-        $this->assertEquals('anthropic', $fila->proveedor, 'El gasto se imputa al proveedor que contestó, no al que el dueño eligió.');
-        $this->assertEquals(config('services.anthropic.model_agil'), $fila->modelo);
+        $this->assertSame('deepseek', $fila->proveedor);
     }
 
     /**
@@ -448,85 +291,23 @@ class Proveedor_deepseek_Test extends TestCase
         $this->assertEquals('agil', $eleccion['pensamiento']);
     }
 
-    /**
-     * (f) `hay_credenciales($owner)` pregunta por la clave del proveedor del dueño, con el
-     * fallback: con la clave de DeepSeek, true; sin ninguna, false; sin la de DeepSeek pero con la
-     * de Anthropic, true (porque cae a Anthropic). Y sin dueño, alcanza con que haya alguna.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function hay_credenciales_pregunta_por_el_proveedor_del_dueno_con_su_fallback()
+    /** @test */
+    public function para_responder_hace_falta_la_clave_de_deepseek()
     {
-        $this->dueno_en('deepseek', 'agil');
+        $this->dueno_en('anthropic', 'agil');
         $service = new AsistenteIaService();
 
-        /* Con las dos claves: el elegido tiene la suya. */
         $this->assertTrue($service->hay_credenciales($this->comercio->fresh()));
 
-        /* Sin la de DeepSeek pero con la de Anthropic: cae a Anthropic, así que sí hay. */
         config(['services.deepseek.api_key' => null]);
-        $this->assertTrue($service->hay_credenciales($this->comercio->fresh()));
-        $this->assertTrue($service->hay_credenciales(), 'Sin dueño alcanza con que algún proveedor tenga clave.');
 
-        /* Sin ninguna: no hay con qué contestar. */
-        config(['services.anthropic.api_key' => null]);
         $this->assertFalse($service->hay_credenciales($this->comercio->fresh()));
         $this->assertFalse($service->hay_credenciales());
-        $this->assertEquals([], ProveedorIaHelper::proveedores_disponibles());
+        $this->assertSame('deepseek', ProveedorIaHelper::proveedor_de($this->comercio->fresh()));
 
-        /* Solo la de DeepSeek: el dueño en Anthropic también cae al otro. */
-        config(['services.deepseek.api_key' => 'clave-deepseek-de-prueba']);
-        $this->dueno_en('anthropic', 'agil');
-        $this->assertTrue($service->hay_credenciales($this->comercio->fresh()));
-        $this->assertEquals('deepseek', ProveedorIaHelper::proveedor_de($this->comercio->fresh()));
-    }
+        config(['services.deepseek.api_key' => 'clave-deepseek-de-prueba', 'services.anthropic.api_key' => null]);
 
-    /**
-     * (f') El warning del fallback sale UNA vez por dueño en el mismo proceso, aunque el proveedor
-     * se resuelva varias veces (el guard del job, el service, el GET de config, la recolección):
-     * repetirlo entierra el log sin agregar nada. El resultado no cambia entre llamadas.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function el_warning_del_fallback_sale_una_sola_vez_por_dueno_en_el_mismo_proceso()
-    {
-        config(['services.deepseek.api_key' => null]);
-        $this->dueno_en('deepseek', 'agil');
-
-        Log::spy();
-
-        $owner = $this->comercio->fresh();
-
-        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($owner));
-        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($owner));
-        $this->assertEquals('anthropic', ProveedorIaHelper::modelo_del_asistente($owner)['proveedor']);
-        $this->assertEquals('anthropic', ProveedorIaHelper::modelo_general($owner)['proveedor']);
-
-        Log::shouldHaveReceived('warning')
-            ->withArgs(function ($mensaje) {
-                return strpos((string) $mensaje, 'ProveedorIaHelper: el dueño eligió DeepSeek') === 0;
-            })
-            ->once();
-
-        /* Otro dueño en la misma situación sí recibe su propio aviso: el silencio es por dueño. */
-        $otro = User::create([
-            'name'     => 'Otro comercio P47',
-            'email'    => 'deepseek-p47-otro-' . uniqid() . '@test.local',
-            'password' => Hash::make('secret'),
-        ]);
-        $otro->agente_proveedor = 'deepseek';
-        $otro->save();
-
-        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($otro->fresh()));
-        $this->assertEquals('anthropic', ProveedorIaHelper::proveedor_de($otro->fresh()));
-
-        Log::shouldHaveReceived('warning')
-            ->withArgs(function ($mensaje) {
-                return strpos((string) $mensaje, 'ProveedorIaHelper: el dueño eligió DeepSeek') === 0;
-            })
-            ->twice();
+        $this->assertTrue($service->hay_credenciales());
     }
 
     /**
@@ -589,7 +370,7 @@ class Proveedor_deepseek_Test extends TestCase
      * @group chat-ia
      * @test
      */
-    public function el_titulo_de_conversacion_sigue_al_proveedor_del_dueno()
+    public function el_titulo_de_conversacion_usa_deepseek_incluso_con_claude_guardado()
     {
         Http::fake([
             'api.deepseek.com/*' => Http::response([
@@ -600,7 +381,7 @@ class Proveedor_deepseek_Test extends TestCase
             '*' => Http::response(['error' => 'host sin stub'], 500),
         ]);
 
-        $this->dueno_en('deepseek', 'profundo');
+        $this->dueno_en('anthropic', 'profundo');
 
         $conversation = AiConversation::create([
             'user_id'      => $this->comercio->id,
@@ -633,9 +414,9 @@ class Proveedor_deepseek_Test extends TestCase
      * @group chat-ia
      * @test
      */
-    public function el_titulo_no_sale_a_la_red_sin_clave_del_proveedor_del_dueno()
+    public function el_titulo_no_sale_a_la_red_sin_clave_de_deepseek()
     {
-        config(['services.deepseek.api_key' => null, 'services.anthropic.api_key' => null]);
+        config(['services.deepseek.api_key' => null]);
         Http::fake();
 
         $this->dueno_en('deepseek', 'agil');

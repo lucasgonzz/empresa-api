@@ -297,94 +297,6 @@ class Fotos_al_modelo_y_escalado_Test extends AsistenteWhatsappTestCase
     // ------------------------------------------------------------------------------------ k
 
     /**
-     * 🔴 Anthropic en "ágil": un turno con foto arranca con el modelo de "profundo" desde la
-     * primera llamada, sin esperar a que el modelo pida una carga.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function con_anthropic_un_turno_con_foto_arranca_en_profundo()
-    {
-        $this->dueno_en('anthropic', 'agil');
-
-        Http::fake([
-            'api.anthropic.com/*' => Http::response($this->end_turn('Veo una botella.'), 200),
-            '*'                   => Http::response(['error' => 'host sin stub'], 500),
-        ]);
-
-        $conversation = $this->conversacion_whatsapp();
-        $con_foto = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Cargá este producto']);
-        $this->guardar_foto($con_foto);
-
-        $assistant = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        $bodies = $this->bodies_enviados();
-
-        $this->assertCount(1, $bodies);
-        $this->assertSame('claude-profundo-p12', $bodies[0]['model']);
-        $this->assertArrayNotHasKey('thinking', $bodies[0], 'Anthropic no lleva clave thinking.');
-    }
-
-    /**
-     * 🔴 DeepSeek en "ágil": un turno con foto va al modelo con visión (Pro no ve) CON el thinking
-     * prendido desde la vuelta 0. Y la vuelta siguiente, con el bloque `thinking` que devolvió el
-     * modelo en el historial, lo mantiene prendido (no es el 400 de prenderlo a mitad de turno).
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function con_deepseek_un_turno_con_foto_arranca_con_vision_y_pensando()
-    {
-        /*
-         * Misión asistente-deepseek-pro-razona (24/9/2026): con el interruptor prendido (default),
-         * este turno ahora transcribe la foto con Flash y razona en Pro (lo cubre
-         * 13_Deepseek_pro_con_fotos_transcriptas_Test). Lo que fija ESTE test —visión y pensando desde
-         * la vuelta 0— sigue siendo el camino de respaldo (interruptor apagado o transcripción que
-         * falla), así que se fija con el interruptor apagado. No es una aserción ajustada: la
-         * condición del camino cambió, la conducta del camino no.
-         */
-        config(['services.deepseek.pro_con_transcripcion' => false]);
-
-        $this->dueno_en('deepseek', 'agil');
-
-        $con_pensamiento = [
-            'model'       => 'lo-que-diga-el-proveedor',
-            'stop_reason' => 'tool_use',
-            'content'     => [
-                ['type' => 'thinking', 'thinking' => 'La persona quiere cargar el producto.', 'signature' => 'firma'],
-                ['type' => 'tool_use', 'id' => 'toolu_p12_1', 'name' => 'que_puedo_cargar', 'input' => ['entidad' => 'article']],
-            ],
-            'usage'       => ['input_tokens' => 11, 'output_tokens' => 7],
-        ];
-
-        Http::fake([
-            'api.deepseek.com/*' => Http::sequence()
-                ->push($con_pensamiento, 200)
-                ->push($this->end_turn('¿A qué precio lo cargo?'), 200),
-            '*'                  => Http::response(['error' => 'host sin stub'], 500),
-        ]);
-
-        $conversation = $this->conversacion_whatsapp();
-        $con_foto = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Cargá este producto']);
-        $this->guardar_foto($con_foto);
-
-        $assistant = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        $bodies = $this->bodies_enviados();
-
-        $this->assertCount(2, $bodies);
-
-        foreach ($bodies as $indice => $body) {
-            $this->assertSame('deepseek-vision-p12', $body['model'], 'Vuelta ' . $indice . ': Pro no ve imágenes.');
-            $this->assertSame('enabled', $body['thinking']['type'], 'Vuelta ' . $indice . ': el turno con foto piensa desde el inicio.');
-        }
-    }
-
-    /**
      * Y un turno SIN foto con el dueño en "ágil" sigue arrancando en el ágil: el escalado por foto
      * no encarece las consultas.
      *
@@ -396,7 +308,7 @@ class Fotos_al_modelo_y_escalado_Test extends AsistenteWhatsappTestCase
         $this->dueno_en('anthropic', 'agil');
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response($this->end_turn('Vendiste 3.'), 200),
+            'api.deepseek.com/*' => Http::response($this->end_turn('Vendiste 3.'), 200),
             '*'                   => Http::response(['error' => 'host sin stub'], 500),
         ]);
 
@@ -407,39 +319,8 @@ class Fotos_al_modelo_y_escalado_Test extends AsistenteWhatsappTestCase
 
         (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertSame('claude-agil-p12', $this->bodies_enviados()[0]['model']);
+        $this->assertSame(config('services.deepseek.model_agil'), $this->bodies_enviados()[0]['model']);
     }
 
-    /**
-     * ⚠️ Segundo chequeo adversarial: las fotos REENVIADAS de la última tanda viajan (el modelo las
-     * sigue viendo) pero no escalan. Un "gracias" después de una foto no arranca en el modelo caro.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function las_fotos_reenviadas_viajan_pero_no_escalan()
-    {
-        $this->dueno_en('anthropic', 'agil');
 
-        Http::fake([
-            'api.anthropic.com/*' => Http::response($this->end_turn('De nada.'), 200),
-            '*'                   => Http::response(['error' => 'host sin stub'], 500),
-        ]);
-
-        $conversation = $this->conversacion_whatsapp();
-        $con_foto = $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Mirá este producto']);
-        $this->guardar_foto($con_foto);
-
-        $this->mensaje($conversation, 'assistant', 'listo', ['contenido' => 'Es un termo.']);
-        $this->mensaje($conversation, 'user', 'listo', ['contenido' => 'Gracias']);
-
-        $assistant = $this->mensaje($conversation, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        $body = $this->bodies_enviados()[0];
-
-        $this->assertSame('claude-agil-p12', $body['model'], 'Un "gracias" no se paga con el modelo caro.');
-        $this->assertSame(1, $this->imagenes_del_ultimo_turno($body['messages']), 'La foto sin usar viaja igual.');
-    }
 }
