@@ -2,10 +2,13 @@
 
 namespace Tests\Import;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Models\Article;
 use App\Models\ArticleSurchage;
+use App\Models\ExtencionEmpresa;
 use App\Models\PriceType;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -270,6 +273,137 @@ class ListasSiempreExcelConPrecioFinalTest extends ImportTestCase
         )));
 
         $this->assertDecimal($final, Article::find($calculado->id)->price, 'Es tildar «Setear precio final» en la tarjeta.');
+    }
+
+    /**
+     * Cuenta con precios por moneda, dueño que no cotiza, dólar 1000, y un artículo con costo USD 10 y
+     * manual USD 15. El Excel exporta su fila en pesos: 15000. Reproducción de la revisión final.
+     */
+    protected function manual_en_dolares($bar_code)
+    {
+        PriceType::create(array('name' => 'zz Mayorista', 'percentage' => 100, 'position' => 0, 'user_id' => $this->tenant->id));
+
+        $extension = ExtencionEmpresa::where('slug', 'ventas_en_dolares')->first();
+
+        if (is_null($extension)) {
+            $extension = ExtencionEmpresa::forceCreate(array('name' => 'ventas_en_dolares', 'slug' => 'ventas_en_dolares'));
+        }
+
+        $this->tenant->extencions()->syncWithoutDetaching(array($extension->id));
+
+        DB::table('users')->where('id', $this->tenant->id)->update(array('cotizar_precios_en_dolares' => 0, 'dollar' => 1000));
+
+        $this->tenant = User::find($this->tenant->id);
+        $this->actingAs($this->tenant, 'web');
+
+        $articulo = $this->articulo_del_tenant($bar_code, 'Manual USD', array('cost' => 10, 'cost_in_dollars' => 1, 'price' => 15));
+
+        ArticleHelper::setFinalPrice(Article::find($articulo->id), null, $this->tenant);
+
+        $this->assertDecimal(15000, DB::table('article_price_type_monedas')->where('article_id', $articulo->id)->where('price_type_id', $this->lista->id)->where('moneda_id', 1)->value('final_price'));
+
+        return Article::find($articulo->id);
+    }
+
+    protected function mapeo_con_setear()
+    {
+        return $this->mapeo(array(
+            'prop_$_final_precio_final'             => 3,
+            'prop_%_precio_final'                   => 4,
+            'prop_setear_precio_final_precio_final' => 5,
+        ));
+    }
+
+    /** @test */
+    public function la_columna_en_pesos_no_se_guarda_como_dolares()
+    {
+        $articulo = $this->manual_en_dolares('7791009');
+
+        $this->importar($this->archivo(array(array('7791009', 'Manual USD', 15000, null, null))), $this->mapeo(array('prop_$_final_precio_final' => 3)));
+
+        $this->assertDecimal(15, Article::find($articulo->id)->price, 'Lo que el Excel exportó no es un cambio.');
+        $this->assertDecimal(15, Article::find($articulo->id)->final_price);
+    }
+
+    /** @test */
+    public function la_planilla_tal_cual_exporta_no_cambia_nada()
+    {
+        $articulo = $this->manual_en_dolares('7791007');
+
+        foreach (array(1, 2) as $vuelta) {
+            $this->importar($this->archivo(array(array('7791007', 'Manual USD', 15000, null, 'Si'))), $this->mapeo_con_setear());
+
+            $this->assertDecimal(15, Article::find($articulo->id)->price, 'Vuelta '.$vuelta);
+            $this->assertDecimal(15, Article::find($articulo->id)->final_price, 'Vuelta '.$vuelta);
+        }
+    }
+
+    /** @test */
+    public function un_precio_editado_en_pesos_se_convierte_a_la_moneda_del_articulo()
+    {
+        $articulo = $this->manual_en_dolares('7791010');
+
+        $this->importar($this->archivo(array(array('7791010', 'Manual USD', 16000, null, 'Si'))), $this->mapeo_con_setear());
+
+        $this->assertDecimal(16, Article::find($articulo->id)->price, '16000 pesos con el dólar a 1000.');
+        $this->assertDecimal(16, Article::find($articulo->id)->final_price);
+    }
+
+    /** @test */
+    public function si_el_dolar_cambio_la_misma_planilla_sigue_sin_ser_un_cambio()
+    {
+        $articulo = $this->manual_en_dolares('7791011');
+
+        DB::table('users')->where('id', $this->tenant->id)->update(array('dollar' => 1200));
+        $this->tenant = User::find($this->tenant->id);
+        $this->actingAs($this->tenant, 'web');
+
+        $this->importar($this->archivo(array(array('7791011', 'Manual USD', 15000, null, 'Si'))), $this->mapeo_con_setear());
+
+        $this->assertDecimal(15, Article::find($articulo->id)->price, 'Compara con la fila en pesos, no con el dólar de hoy.');
+    }
+
+    /** @test */
+    public function sin_dolar_en_la_cuenta_la_columna_no_se_toma()
+    {
+        $articulo = $this->manual_en_dolares('7791012');
+
+        DB::table('users')->where('id', $this->tenant->id)->update(array('dollar' => 0));
+        $this->tenant = User::find($this->tenant->id);
+        $this->actingAs($this->tenant, 'web');
+
+        $this->importar($this->archivo(array(array('7791012', 'Manual USD', 16000, null, 'Si'))), $this->mapeo_con_setear());
+
+        $this->assertDecimal(15, Article::find($articulo->id)->price, 'No se inventa una cotización.');
+    }
+
+    /** @test */
+    public function un_articulo_nuevo_en_dolares_nace_con_el_precio_convertido()
+    {
+        $this->manual_en_dolares('7791013');
+
+        $this->importar($this->archivo(array(array('7791099', 'Nuevo USD', 20000, null, null, 'USD'))), $this->mapeo(array(
+            'prop_$_final_precio_final' => 3,
+            'prop_moneda'               => 6,
+        )));
+
+        $nuevo = Article::where('user_id', $this->tenant->id)->where('bar_code', '7791099')->first();
+
+        $this->assertNotNull($nuevo);
+        $this->assertDecimal(20, $nuevo->price);
+    }
+
+    /** @test */
+    public function un_articulo_en_pesos_de_una_cuenta_con_monedas_toma_el_numero_tal_cual()
+    {
+        $this->manual_en_dolares('7791014');
+
+        $en_pesos = $this->articulo_del_tenant('7791015', 'En pesos', array('cost' => 100, 'price' => 500));
+        ArticleHelper::setFinalPrice(Article::find($en_pesos->id), null, $this->tenant);
+
+        $this->importar($this->archivo(array(array('7791015', 'En pesos', 700, null, 'Si'))), $this->mapeo_con_setear());
+
+        $this->assertDecimal(700, Article::find($en_pesos->id)->price);
     }
 
     /** @test */

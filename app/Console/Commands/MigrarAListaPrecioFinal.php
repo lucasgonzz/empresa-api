@@ -61,7 +61,8 @@ use Illuminate\Support\Facades\DB;
  *     sus pivotes ANTES de tocarlo) y `reversion.sql` (un bloque por artículo, más el de la cuenta, que
  *     devuelve todo a como estaba). Si el respaldo no se puede abrir, no se escribe nada.
  *
- * `--ver` (por defecto, y gana si llegan los dos) no escribe nada, ni en la base ni en archivos. Cuenta y
+ * `--ver` (por defecto, y gana si llegan los dos) no deja nada en la base ni crea respaldos; lo único que
+ * puede escribir es el log de la aplicación, si el motor de precios loguea al medir. Cuenta y
  * lista los «calculados por primera vez»: artículos con costo o precio que hoy tienen `final_price` NULL
  * y que después de migrar van a tener precio (no son un precio que cambia: antes no había ninguno).
  *
@@ -181,7 +182,7 @@ class MigrarAListaPrecioFinal extends Command
             $this->warn('Llegaron --ver y --aplicar juntos: gana la lectura, no se escribe nada.');
         }
 
-        $this->line($aplicar ? 'Modo: APLICAR (escribe, con respaldo y SQL de reversión).' : 'Modo: VER (solo lee: no escribe en la base ni en archivos).');
+        $this->line($aplicar ? 'Modo: APLICAR (escribe, con respaldo y SQL de reversión).' : 'Modo: VER (no deja nada en la base ni crea respaldos; lo único que puede escribir es el log).');
 
         // a. Otro modo de listas: se frena en los dos modos.
         foreach (self::EXTENSIONES_DE_OTRO_MODO as $slug) {

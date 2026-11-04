@@ -1688,6 +1688,9 @@ class ProcessRow {
             $this->contar_fila('creado_nuevo');
 
             $this->log('El articulo NO existia');
+
+            $data = $this->precio_de_la_lista_en_la_moneda_del_articulo($data);
+
             // Si no existe, lo agregamos a los artículos para crear
             
             /* 
@@ -1884,6 +1887,8 @@ class ProcessRow {
      */
     protected function merge_fila_en_articulo_para_crear_pendiente(Article $articulo_fake, array $data, $row): void
     {
+        $data = $this->precio_de_la_lista_en_la_moneda_del_articulo($data, $articulo_fake);
+
         $fake_id = $articulo_fake->getAttribute('fake_id');
 
         if (!is_string($fake_id) || $fake_id === '') {
@@ -2123,6 +2128,8 @@ class ProcessRow {
         $this->iniciar();
         $articulo_ya_creado->loadMissing(['price_types', 'addresses']);
         $this->terminar('precargar price_types y addresses para procesar articulo ya creado');
+
+        $data = $this->precio_de_la_lista_en_la_moneda_del_articulo($data, $articulo_ya_creado);
 
         // Comparar propiedades y obtener las que cambiaron
         $this->iniciar();
@@ -3792,6 +3799,78 @@ class ProcessRow {
         }
 
         return $props_to_add;
+    }
+
+    /**
+     * Lleva la columna `$_final_<lista>` de la lista «Precio final» a la moneda de `articles.price`, en una
+     * cuenta con precios por moneda (`ventas_en_dolares`). Ahí el Excel exporta la fila en PESOS
+     * (ExportHelper::get_price_types_values_in_order()), y un artículo con el costo en dólares de un dueño
+     * que no cotiza tiene el precio en dólares: 15000 pesos se guardaban como USD 15000.
+     *
+     *  - Si trae lo que la fila en pesos ya tiene, es el precio del artículo tal cual, sin pasar por el dólar
+     *    de hoy: si `users.dollar` cambió desde el último recálculo, dividir daría otro número sin que nadie
+     *    haya tocado la planilla.
+     *  - Si trae otro número, se convierte con el dólar de la cuenta, como la tarjeta de la ficha
+     *    (ArticlePriceTypeMonedaHelper::write_through_precio_final()). Sin dólar no se inventa una
+     *    cotización: la columna se saltea y se reporta.
+     *
+     * @param  array                     $data
+     * @param  \App\Models\Article|null  $articulo  El que ya existe; null si la fila lo crea.
+     * @return array
+     */
+    private function precio_de_la_lista_en_la_moneda_del_articulo(array $data, $articulo = null)
+    {
+        if (
+            is_null($this->precio_de_la_lista_precio_final)
+            || !array_key_exists('price', $data)
+            || is_null($data['price'])
+            || !UserHelper::hasExtencion('ventas_en_dolares', $this->user)
+        ) {
+            return $data;
+        }
+
+        $cost_in_dollars = array_key_exists('cost_in_dollars', $data)
+                            ? $data['cost_in_dollars']
+                            : (is_null($articulo) ? 0 : $articulo->cost_in_dollars);
+
+        $nativa = PriceTypeHelper::moneda_nativa_del_precio((object) array('cost_in_dollars' => $cost_in_dollars), $this->user);
+
+        if (!is_null($articulo) && !empty($articulo->id)) {
+
+            $lista = PriceTypeHelper::lista_precio_final($this->user);
+
+            $filas = is_null($lista)
+                        ? collect()
+                        : $articulo->price_type_monedas()->where('price_type_id', $lista->id)->get();
+
+            $en_pesos = $filas->firstWhere('moneda_id', 1);
+            $en_nativa = $filas->firstWhere('moneda_id', $nativa);
+
+            if (
+                !is_null($en_pesos) && !is_null($en_nativa)
+                && !is_null($en_pesos->final_price) && !is_null($en_nativa->final_price)
+                && abs((float) $en_pesos->final_price - (float) $data['price']) <= 0.005
+            ) {
+                $data['price'] = round((float) $en_nativa->final_price, 2);
+
+                return $data;
+            }
+        }
+
+        $convertido = PriceTypeHelper::precio_en_moneda($data['price'], 1, $nativa, $this->user->dollar);
+
+        if (is_null($convertido)) {
+
+            $this->registrar_columna_de_precio_ignorada($this->fila_actual, 'price', $data['price'], isset($data['name']) ? $data['name'] : null);
+
+            unset($data['price']);
+
+            return $data;
+        }
+
+        $data['price'] = round($convertido, 2);
+
+        return $data;
     }
 
     /**

@@ -185,7 +185,7 @@ class ExportHelper {
 			 * Con una sola lista, la «Precio final» (misión prueba-listas-siempre, 3/11/2026), el Excel
 			 * es el de un negocio sin listas: «Margen de ganancia», «Precio», «Precio Final» y «Precio
 			 * Final Anterior» del artículo, que es lo que el dueño venía usando para cambiar precios.
-			 * Las columnas por lista aparecen desde la segunda, como el resto de la interfaz.
+			 * Las columnas por lista aparecen en cuanto hay otra lista, como el resto de la interfaz.
 			 */
 			if (PriceTypeHelper::solo_lista_precio_final(self::article_export_owner_user_id())) {
 				return collect();
