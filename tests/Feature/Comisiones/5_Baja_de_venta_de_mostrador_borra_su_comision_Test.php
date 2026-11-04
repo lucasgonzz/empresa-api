@@ -195,6 +195,41 @@ class Baja_de_venta_de_mostrador_borra_su_comision_Test extends EmpresaTestCase
     }
 
     /**
+     * Test 5 — el vendedor con DOS ventas de mostrador: al borrar una, la comisión de la otra queda
+     * intacta y el saldo acumulado (columna `saldo`, que arma `recalcular_saldos()`) se recalcula
+     * sobre lo que queda. Es lo que ve el vendedor en su panel.
+     *
+     * @group comisiones
+     * @test
+     */
+    public function borrar_una_venta_de_mostrador_deja_intacta_la_comision_de_la_otra_y_recalcula_el_saldo()
+    {
+        $seller = $this->vendedor();
+        $primera = $this->venta_con_comision($seller, null);
+        $segunda = $this->venta_con_comision($seller, null);
+
+        $this->assertEqualsWithDelta(200.00, $this->saldo_del_vendedor($seller), self::DELTA, 'Precondición: dos comisiones de 100.');
+        $this->assertEqualsWithDelta(
+            200.00,
+            (float) SellerCommission::where('sale_id', $segunda->id)->value('saldo'),
+            self::DELTA,
+            'Precondición: el saldo acumulado de la segunda es 200.'
+        );
+
+        $this->deleteJson('api/sale/'.$primera->id)->assertStatus(200);
+
+        $this->assertEquals(0, SellerCommission::where('sale_id', $primera->id)->count());
+        $this->assertEquals(1, SellerCommission::where('sale_id', $segunda->id)->count(), 'la comisión de la otra venta no se toca');
+        $this->assertEqualsWithDelta(100.00, $this->saldo_del_vendedor($seller), self::DELTA);
+        $this->assertEqualsWithDelta(
+            100.00,
+            (float) SellerCommission::where('sale_id', $segunda->id)->value('saldo'),
+            self::DELTA,
+            'el saldo acumulado se recalcula sin la comisión borrada'
+        );
+    }
+
+    /**
      * Test 4 — una venta sin vendedor no tiene comisión que borrar ni que restaurar: la baja sigue
      * andando igual.
      *

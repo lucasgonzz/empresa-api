@@ -479,7 +479,25 @@ class AfipImportesCalculator
             $ivas = $this->add_iva_bucket($ivas, '0', $afip_helper->getImporteIva('0'));
         }
 
+        /*
+         * 🔴 UNA NOTA DE CRÉDITO NO LLEVA COMBOS NI PROMOCIONES (misión afip-combos-y-comision-mostrador,
+         * 4/11/2026). La NC se arma con SUS renglones (`$afip_helper->articles`, `services` y
+         * descripciones) pero `sale` es la venta ENTERA de la factura: recorrer `sale->combos` metía en
+         * una NC parcial todos los combos de la venta. Antes del arreglo del precio del combo eso era un
+         * error chico (el combo valía lo que el último artículo devuelto); con el precio correcto
+         * habría sumado el combo ENTERO a cada NC y el tope de NC contra la factura (que suma lo ya
+         * emitido) dejaría de cerrar. Una NC no devuelve combos —no hay ningún manejo de combos en las
+         * devoluciones— y la rama de no responsables inscriptos ya suma solo los artículos de la NC.
+         * El bruto del canje de puntos sí sigue siendo el de la venta entera (ver
+         * `AfipItemCalculator::get_bruto_facturable_de_la_venta()`): el porcentaje es de la venta.
+         */
+        $es_nota_de_credito = (bool) $afip_helper->nota_credito_model;
+
         foreach ($afip_helper->sale->combos as $combo) {
+            if ($es_nota_de_credito) {
+                break;
+            }
+
             $combo_iva = $afip_helper->get_combo_iva($combo);
             $ivas = $this->add_iva_bucket($ivas, '21', $combo_iva);
             $gravado += $combo_iva['BaseImp'];
@@ -497,6 +515,10 @@ class AfipImportesCalculator
         }
 
         foreach ($afip_helper->sale->promocion_vinotecas as $promo) {
+            if ($es_nota_de_credito) {
+                break;
+            }
+
             Log::info('Pidiendo iva de ' . $promo->name);
             $promo_iva = $afip_helper->get_combo_iva($promo);
             Log::info($promo_iva);

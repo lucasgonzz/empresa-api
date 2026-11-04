@@ -7,10 +7,12 @@ use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;
 use App\Models\Combo;
+use App\Models\CurrentAcount;
 use App\Models\Discount;
 use App\Models\IvaCondition;
 use App\Models\PromocionVinoteca;
 use App\Models\Sale;
+use App\Models\Service;
 use App\Models\Surchage;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
@@ -495,5 +497,97 @@ class Combos_y_promociones_se_facturan_a_su_precio_Test extends EmpresaTestCase
         $importes = $this->importes_de($sale);
 
         $this->assertEqualsWithDelta(4840.00, $importes['total'], self::DELTA, 'USD 4,84 a $1.000');
+    }
+
+    /**
+     * Test 12 — un helper que ya trae un combo como renglón en curso (lo deja una fila de PDF) calcula
+     * igual que uno limpio: el combo se reconoce por su CLASE, no por una marca ni por identidad.
+     * Dos combos con un descuento de lista del 10 %: 4.356 + 4.356 = 8.712.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function un_helper_con_un_combo_ya_asignado_calcula_igual_que_uno_limpio()
+    {
+        $sale = $this->venta(['sub_total' => 9680, 'total' => 8712]);
+        $this->combo($sale, 1);
+        $this->combo($sale, 1);
+        $this->descuento_de_lista($sale, 10);
+
+        $afip_ticket = new AfipTicket();
+        $afip_ticket->facturar_importe_personalizado = null;
+        $afip_ticket->importe_personalizado_ivas_json = null;
+        $afip_ticket->afip_tipo_comprobante_id = 1;
+        $afip_ticket->cbte_tipo = 1;
+        $afip_ticket->sale = Sale::find($sale->id);
+        $afip_ticket->setRelation('afip_information', $this->afip_information_ri());
+
+        $afip_helper = new AfipHelper($afip_ticket);
+        $afip_helper->article = $afip_helper->sale->combos->last();
+
+        $importes = $afip_helper->getImportes();
+
+        $this->assertEqualsWithDelta(8712.00, $importes['total'], self::DELTA, 'los dos combos llevan el descuento de lista');
+    }
+
+    /**
+     * Test 13 — combo, servicio y promoción en la misma venta, cada uno a su precio. Antes la promo
+     * (que se calcula DESPUÉS de los servicios) tomaba el precio del servicio: 4.840 + 1.000 + 3.025.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function combo_servicio_y_promocion_juntos_suman_cada_uno_a_su_precio()
+    {
+        $sale = $this->venta(['sub_total' => 8865, 'total' => 8865]);
+        $this->combo($sale, 1);
+        $this->promo($sale, 1);
+
+        $servicio = Service::create(['name' => 'zz Servicio de la suite de facturación', 'price' => 1000, 'user_id' => $sale->user_id]);
+        $sale->services()->attach($servicio->id, ['price' => 1000, 'amount' => 1]);
+
+        $importes = $this->importes_de($sale);
+
+        $this->assertEqualsWithDelta(8865.00, $importes['total'], self::DELTA, '4.840 + 1.000 + 3.025');
+        $this->assert_desglose_cierra($importes);
+    }
+
+    /**
+     * Test 14 — una NOTA DE CRÉDITO no lleva combos ni promociones: la de un martillo de una venta
+     * que tiene un combo sale por el martillo (1.210), no por el martillo más el combo entero.
+     *
+     * @group facturacion
+     * @test
+     */
+    public function una_nota_de_credito_parcial_no_arrastra_los_combos_de_la_venta()
+    {
+        $sale = $this->venta(['sub_total' => 7260, 'total' => 7260]);
+        $this->martillo($sale, 2);
+        $this->combo($sale, 1);
+        $this->promo($sale, 1);
+
+        $sale = Sale::find($sale->id);
+        $devuelto = $sale->articles->first();
+        $devuelto->pivot->amount = 1;
+
+        $nota_credito = new CurrentAcount();
+        $nota_credito->setRelation('discounts', collect());
+        $nota_credito->setRelation('surchages', collect());
+
+        $afip_ticket = new AfipTicket();
+        $afip_ticket->facturar_importe_personalizado = null;
+        $afip_ticket->importe_personalizado_ivas_json = null;
+        $afip_ticket->afip_tipo_comprobante_id = 3;
+        $afip_ticket->cbte_tipo = 3;
+        $afip_ticket->sale = $sale;
+        $afip_ticket->setRelation('afip_information', $this->afip_information_ri());
+
+        $afip_helper = new AfipHelper($afip_ticket, collect([$devuelto]), collect(), null, $sale, [], $nota_credito);
+
+        $importes = $afip_helper->getImportes();
+
+        $this->assertEqualsWithDelta(1210.00, $importes['total'], self::DELTA, 'la NC de un martillo no lleva el combo ni la promo de la venta');
+        $this->assertEqualsWithDelta(1000.00, $importes['gravado'], self::DELTA);
+        $this->assert_desglose_cierra($importes);
     }
 }
