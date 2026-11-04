@@ -3,10 +3,17 @@
 namespace Tests\Feature\Demo;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\PdfLinkHelper;
+use App\Http\Controllers\SaleController;
 use App\Models\DemoIngresoToken;
 use App\Models\User;
+use App\Models\VersionSessionTransfer;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
+use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
 use Tests\TestCase;
 
 /**
@@ -50,20 +57,45 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
     }
 
     /**
-     * GET autenticado con el Referer del dominio stateful de Sanctum (SANCTUM_STATEFUL_DOMAINS
-     * en .env.testing: `empresa.local:8183`). Sin esto, `EnsureFrontendRequestsAreStateful::
-     * fromFrontend()` da false, la sesion nunca arranca (`StartSession` ni corre), y
-     * `DemoSessionVigente` corta en su guarda temprana #1 (`!hasSession()`) sin mirar el
-     * marcador -- cualquier aserto de 401 sale falso, y cualquier aserto de 200 pasa vacio
-     * (pasaria igual con el codigo roto). Se detecto corriendo esta suite: tres tests que
-     * esperaban 401 devolvian 200 porque la sesion jamas se activaba.
+     * El Referer que activa la sesion stateful de Sanctum EN ESTE ENTORNO. Sin esto,
+     * `EnsureFrontendRequestsAreStateful::fromFrontend()` da false, la sesion nunca arranca
+     * (`StartSession` ni corre), y `DemoSessionVigente` corta en su guarda temprana #1
+     * (`!hasSession()`) sin mirar el marcador -- cualquier aserto de 401 sale falso, y
+     * cualquier aserto de 200 pasa vacio (pasaria igual con el codigo roto).
+     *
+     * 🔴 Hasta el 3/11/2026 este Referer estaba escrito a mano con el puerto de s3, donde se
+     * escribio el test el 17/8/2026. Cada slot tiene su puerto, asi que en cualquier otro los dos
+     * tests que esperan 401 daban 200 y los que esperan 200 no probaban nada: `actingAs()` deja al
+     * usuario puesto en el guard y por eso el request pasaba sin sesion, cosa que por HTTP real
+     * da 401 `Unauthenticated`. Sale de `app.url`, igual que en el resto de los tests, y se
+     * confirma contra Sanctum para que un `.env` mal armado no vuelva a dar un 200 vacio: falla
+     * diciendo por que.
+     *
+     * @return string
+     */
+    protected function referer_stateful()
+    {
+        $referer = rtrim((string) config('app.url'), '/') . '/';
+
+        $request = Request::create('/api/user', 'GET', [], [], [], ['HTTP_REFERER' => $referer]);
+
+        $this->assertTrue(
+            EnsureFrontendRequestsAreStateful::fromFrontend($request),
+            'El Referer ' . $referer . ' no activa la sesion: APP_URL y SANCTUM_STATEFUL_DOMAINS no coinciden en este .env.testing.'
+        );
+
+        return $referer;
+    }
+
+    /**
+     * GET autenticado con el Referer del dominio stateful de Sanctum.
      *
      * @param string $uri
      * @return \Illuminate\Testing\TestResponse
      */
     protected function get_con_sesion_stateful($uri)
     {
-        return $this->withHeaders(['referer' => 'http://empresa.local:8183/'])
+        return $this->withHeaders(['referer' => $this->referer_stateful()])
             ->getJson($uri);
     }
 
@@ -71,12 +103,26 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
      * Mismo criterio que `get_con_sesion_stateful()`, para un POST.
      *
      * @param string $uri
+     * @param array $datos
      * @return \Illuminate\Testing\TestResponse
      */
-    protected function post_con_sesion_stateful($uri)
+    protected function post_con_sesion_stateful($uri, array $datos = [])
     {
-        return $this->withHeaders(['referer' => 'http://empresa.local:8183/'])
-            ->postJson($uri);
+        return $this->withHeaders(['referer' => $this->referer_stateful()])
+            ->postJson($uri, $datos);
+    }
+
+    /**
+     * Lo que hace distinto a cada request real: los guards arrancan de cero y solo la sesion dice
+     * quien es. Dentro de un test la instancia sobrevive y sin esto el usuario quedaria puesto en
+     * el guard del request anterior, que es justo lo que no queremos medir.
+     *
+     * @return void
+     */
+    protected function como_un_request_nuevo()
+    {
+        $this->app['auth']->forgetGuards();
+        $this->app['auth']->shouldUse('web');
     }
 
     /**
@@ -157,6 +203,54 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
 
         $response->assertStatus(401);
         $response->assertJson(['error' => 'demo_expirada']);
+    }
+
+    /**
+     * 🔴 La revocacion de punta a punta y sin atajos: el lead entra por el endpoint real, el admin
+     * revoca por el suyo, y la misma sesion deja de pasar. Sin `actingAs` ni `withSession`: lo
+     * unico que sostiene al usuario es lo que dejo el ingreso en la sesion.
+     *
+     * @test
+     */
+    public function un_lead_que_entro_por_el_link_queda_afuera_cuando_lo_revocan()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+        config(['services.admin_api.api_key' => 'clave-de-admin-del-test']);
+        /* El ingreso le avisa al admin con `demo.ingreso`: nada de esto puede salir a la red. */
+        Http::fake(['*' => Http::response(['ok' => true], 200)]);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $this->post_con_sesion_stateful('/api/demo/ingreso', ['t' => $creado['plain']])->assertStatus(200);
+
+        $this->como_un_request_nuevo();
+        $adentro = $this->get_con_sesion_stateful('/api/user');
+        $adentro->assertStatus(200);
+        $this->assertTrue($adentro->json('user.es_sesion_demo'));
+
+        /* El admin no manda Referer: es un servidor, no la SPA. */
+        $this->flushHeaders();
+        $this->como_un_request_nuevo();
+        $this->postJson(
+            '/api/admin-sync/demo-token',
+            ['accion' => 'revocar'],
+            ['X-Admin-Api-Key' => 'clave-de-admin-del-test']
+        )->assertStatus(200);
+        $this->assertNotNull($creado['token']->fresh()->revoked_at);
+
+        $this->como_un_request_nuevo();
+        $afuera = $this->get_con_sesion_stateful('/api/user');
+        $afuera->assertStatus(401);
+        $afuera->assertJson(['error' => 'demo_expirada']);
+
+        /* Y no solo ese request: la sesion quedo cerrada, ya no hay marcador ni usuario. */
+        $this->assertFalse(session()->has('demo_ingreso_token_id'));
+        $this->como_un_request_nuevo();
+        $this->get_con_sesion_stateful('/api/user')->assertStatus(401);
     }
 
     /**
@@ -293,6 +387,352 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
 
         $response->assertStatus(401);
         $response->assertJson(['error' => 'demo_expirada']);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Cambio de version (misión vigencia-token-demo-rojos, 3/11/2026)
+    // -----------------------------------------------------------------------------------
+
+    /**
+     * Pide el token de transferencia desde una sesion de demo con el marcador dado.
+     *
+     * @param int $token_id Valor del marcador.
+     * @return \Illuminate\Testing\TestResponse
+     */
+    protected function pedir_transferencia_con_marcador($token_id)
+    {
+        $this->actingAs($this->usuario_de_testing(), 'web');
+        $this->withSession(['demo_ingreso_token_id' => $token_id]);
+
+        return $this->post_con_sesion_stateful('/version-session-token');
+    }
+
+    /**
+     * 🔴 Medido por HTTP real antes de este arreglo: una demo revocada recibia 200 con el token, y con
+     * ese token abria una sesion nueva sin marcador que `/api/user` atendia con 200.
+     *
+     * @test
+     */
+    public function una_demo_revocada_no_recibe_token_de_transferencia()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $filas_antes = VersionSessionTransfer::count();
+
+        $respuesta = $this->pedir_transferencia_con_marcador($creado['token']->id);
+
+        $respuesta->assertStatus(401);
+        $respuesta->assertJson(['error' => 'demo_expirada']);
+        $this->assertSame($filas_antes, VersionSessionTransfer::count(), 'No se emite ningun token.');
+    }
+
+    /**
+     * Una demo vigente cambia de version y del otro lado sigue siendo una demo, aunque otra sesion
+     * tenga el candado tomado (`debe_omitir_candado_de_actividad()`).
+     *
+     * @test
+     */
+    public function una_demo_vigente_conserva_el_marcador_al_cambiar_de_version()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $emision = $this->pedir_transferencia_con_marcador($creado['token']->id);
+        $emision->assertStatus(200);
+
+        $user->activity_minutes = 60;
+        $user->session_id = 'candado-tomado-por-otra-sesion';
+        $user->last_activity = Carbon::now();
+        $user->save();
+
+        $this->como_un_request_nuevo();
+        $destino = $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        );
+
+        $destino->assertStatus(200);
+        $this->assertTrue($destino->json('login'));
+        $this->assertTrue($destino->json('user.es_sesion_demo'));
+        $this->assertEquals($creado['token']->id, session('demo_ingreso_token_id'));
+    }
+
+    /**
+     * El token de transferencia dura 5 minutos: si lo emitieron con la demo vigente y la revocan antes
+     * de consumirlo, no abre sesion. El camino es el mismo `login: false` de un token vencido.
+     *
+     * @test
+     */
+    public function un_token_emitido_antes_de_revocar_ya_no_abre_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $emision = $this->pedir_transferencia_con_marcador($creado['token']->id);
+        $emision->assertStatus(200);
+
+        DemoIngresoTokenHelper::revocar($creado['plain']);
+
+        $this->como_un_request_nuevo();
+        $destino = $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        );
+
+        $destino->assertStatus(200);
+        $this->assertFalse($destino->json('login'));
+        $this->assertNull($destino->json('user'));
+
+        $this->como_un_request_nuevo();
+        $this->get_con_sesion_stateful('/api/user')->assertStatus(401);
+    }
+
+    /**
+     * Rutas de `web` que atienden por sesion sin pasar por `descarga.comercio`: `DemoSessionVigente` no
+     * corre sola ahi. Medido contra el codigo el 3/11/2026: las tres atendian a una demo revocada.
+     *
+     * @test
+     * @dataProvider rutas_web_con_sesion
+     */
+    public function una_demo_revocada_queda_afuera_de_las_rutas_web_con_sesion($metodo, $uri)
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $this->actingAs($user, 'web');
+        $this->withSession(['demo_ingreso_token_id' => $creado['token']->id]);
+
+        $respuesta = $this->json($metodo, $uri, ['channel_name' => 'private-App.Models.User.500', 'socket_id' => '1.1']);
+
+        $respuesta->assertStatus(401);
+        $respuesta->assertJson(['error' => 'demo_expirada']);
+    }
+
+    /**
+     * El control de la prueba de arriba: con la demo vigente, esas mismas rutas no contestan `demo_expirada`.
+     *
+     * @test
+     * @dataProvider rutas_web_con_sesion
+     */
+    public function una_demo_vigente_sigue_entrando_a_las_rutas_web_con_sesion($metodo, $uri)
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+        $this->actingAs($user, 'web');
+        $this->withSession(['demo_ingreso_token_id' => $creado['token']->id]);
+
+        $respuesta = $this->json($metodo, $uri, ['channel_name' => 'private-App.Models.User.500', 'socket_id' => '1.1']);
+
+        /* El cuerpo crudo: `broadcasting/auth` y los PDF no contestan JSON. */
+        $this->assertStringNotContainsString('demo_expirada', (string) $respuesta->getContent());
+    }
+
+    /** @return array<string, array{0: string, 1: string}> */
+    public function rutas_web_con_sesion()
+    {
+        return [
+            'pdf de clientes'     => ['GET', '/client/pdf'],
+            'txt de ventas'       => ['GET', '/afip-txt/1/1'],
+            'txt de alicuotas'    => ['GET', '/afip-txt-alicuotas/1/1'],
+            'canales de Pusher'   => ['POST', '/broadcasting/auth'],
+        ];
+    }
+
+    /**
+     * 🔴 EL CASO MEDIDO: la sesion que nacio de un cambio de version se corta al revocar, igual que
+     * la original. Antes del arreglo quedaba abierta para siempre.
+     *
+     * @test
+     */
+    public function despues_de_cambiar_de_version_revocar_corta_la_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+
+        $emision = $this->pedir_transferencia_con_marcador($creado['token']->id);
+        $emision->assertStatus(200);
+
+        $this->como_un_request_nuevo();
+        $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        )->assertStatus(200);
+
+        $this->como_un_request_nuevo();
+        $this->get_con_sesion_stateful('/api/user')->assertStatus(200);
+
+        DemoIngresoTokenHelper::revocar($creado['plain']);
+
+        $this->como_un_request_nuevo();
+        $afuera = $this->get_con_sesion_stateful('/api/user');
+        $afuera->assertStatus(401);
+        $afuera->assertJson(['error' => 'demo_expirada']);
+    }
+
+    /**
+     * El camino de todos los clientes reales, sin cambios: sin marcador se transfiere igual, la
+     * columna queda en null y del otro lado no aparece ninguna demo.
+     *
+     * @test
+     */
+    public function una_sesion_normal_cambia_de_version_sin_marcador()
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $this->actingAs($user, 'web');
+        $emision = $this->post_con_sesion_stateful('/version-session-token');
+        $emision->assertStatus(200);
+
+        $fila = VersionSessionTransfer::where('token_hash', hash('sha256', $emision->json('token')))->first();
+        $this->assertNull($fila->demo_ingreso_token_id);
+
+        $this->como_un_request_nuevo();
+        $destino = $this->post_con_sesion_stateful(
+            '/login-from-version-session-token',
+            ['token' => $emision->json('token')]
+        );
+
+        $this->assertTrue($destino->json('login'));
+        $this->assertFalse($destino->json('user.es_sesion_demo'));
+        $this->assertFalse(session()->has('demo_ingreso_token_id'));
+    }
+
+    // -----------------------------------------------------------------------------------
+    // Descargas por sesion del grupo `web` (misión vigencia-token-demo-rojos, 3/11/2026)
+    // -----------------------------------------------------------------------------------
+
+    /** Lo que contesta el controlador fingido: si el cuerpo es este, la regla dejo pasar. */
+    const SERVIDA = 'DESCARGA-SERVIDA';
+
+    /**
+     * Sesion de demo con el marcador dado, una venta del usuario 500 y la ventana de transicion
+     * cerrada. El controlador se finge porque el PDF real termina en `exit` y mata el proceso del
+     * test (ver PdfDeVentaPublico\DescargaTestCase): se prueba la ruta y el middleware reales.
+     *
+     * @param int $token_id Valor del marcador.
+     * @return int Id de la venta.
+     */
+    protected function preparar_descarga_con_marcador($token_id)
+    {
+        $this->app->instance(SaleController::class, new class extends SaleController {
+            function pdf(Request $request, $id) { return response(VigenciaDelTokenDeIngresoTest::SERVIDA, 200); }
+            function excel_export($from_date, $until_date = null) { return response(VigenciaDelTokenDeIngresoTest::SERVIDA, 200); }
+        });
+
+        DB::table('users')->where('id', 500)->update(['pdf_links_legacy_until' => null]);
+
+        $this->actingAs($this->usuario_de_testing(), 'web');
+        $this->withSession(['demo_ingreso_token_id' => $token_id]);
+
+        return DB::table('sales')->insertGetId([
+            'user_id'    => 500,
+            'num'        => 990000 + mt_rand(1, 9999),
+            'total'      => 1500,
+            'moneda_id'  => 1,
+            'terminada'  => 1,
+            'created_at' => Carbon::now(),
+            'updated_at' => Carbon::now(),
+        ]);
+    }
+
+    /**
+     * 🔴 Medido por HTTP real antes de este arreglo: con el token revocado, las descargas por sesion
+     * se seguian atendiendo. Los dos caminos del middleware: con recurso y sin recurso.
+     *
+     * @test
+     */
+    public function una_demo_revocada_no_descarga_por_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $venta_id = $this->preparar_descarga_con_marcador($creado['token']->id);
+
+        $this->get('sale/pdf/' . $venta_id)->assertStatus(404);
+        $this->get('sales/excel/export/2026-01-01')->assertStatus(404);
+
+        /* No se cierra la sesion desde aca: eso lo hace la proxima ruta de `api`. */
+        $this->assertTrue(session()->has('demo_ingreso_token_id'));
+    }
+
+    /**
+     * Revocada es lo mismo que sin sesion, no peor: el link con su token sigue abriendo.
+     *
+     * @test
+     */
+    public function una_demo_revocada_con_el_token_del_link_descarga_igual()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), Carbon::now());
+        $venta_id = $this->preparar_descarga_con_marcador($creado['token']->id);
+
+        $token_del_link = PdfLinkHelper::token_para('sale', $venta_id, 500);
+
+        $this->get('sale/pdf/' . $venta_id . '?t=' . $token_del_link)
+            ->assertStatus(200)
+            ->assertSee(self::SERVIDA);
+    }
+
+    /** @test */
+    public function una_demo_vigente_descarga_por_sesion()
+    {
+        if (is_null($this->usuario_de_testing())) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing']);
+
+        $creado = $this->crear_token(null, Carbon::now()->addHour(), null);
+        $venta_id = $this->preparar_descarga_con_marcador($creado['token']->id);
+
+        $this->get('sale/pdf/' . $venta_id)->assertStatus(200)->assertSee(self::SERVIDA);
+        $this->get('sales/excel/export/2026-01-01')->assertStatus(200)->assertSee(self::SERVIDA);
     }
 
     // -----------------------------------------------------------------------------------

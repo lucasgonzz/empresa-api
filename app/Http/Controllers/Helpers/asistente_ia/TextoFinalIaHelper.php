@@ -76,6 +76,22 @@ class TextoFinalIaHelper
         return trim($limpio) === '' ? (string) $texto : $limpio;
     }
 
+    /** Una oración en otro idioma, separada de los nombres breves que pueden venir del catálogo. */
+    public static function contiene_prosa_cjk(string $texto): bool
+    {
+        foreach (preg_split('/\R/u', $texto) ?: [] as $renglon) {
+            $caracteres_cjk = preg_match_all('/[\p{Han}\p{Hiragana}\p{Katakana}]/u', $renglon);
+            $letras_latinas = preg_match_all('/\p{Latin}/u', $renglon);
+
+            if ($caracteres_cjk > $letras_latinas
+                || preg_match('/[\p{Han}\p{Hiragana}\p{Katakana}]{6,}/u', $renglon) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /**
      * El texto sin las oraciones filtradas, AUNQUE quede vacío. Si no hubo nada que sacar, vuelve el
      * texto tal cual, byte por byte.

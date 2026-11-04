@@ -118,7 +118,12 @@ class BroadcastServiceProvider extends ServiceProvider
             return new PusherBroadcasterConEspacio($pusher);
         });
 
-        Broadcast::routes();
+        /*
+         * `web` es el default de Broadcast::routes(). demo.session.vigente: una demo revocada no se suscribe
+         * a canales nuevos (misión vigencia-token-demo-rojos, 3/11/2026). Sin marcador no hace nada ni pega a
+         * la base. Una suscripción ya autorizada sigue viva hasta que se corte el websocket.
+         */
+        Broadcast::routes(['middleware' => ['web', 'demo.session.vigente']]);
 
         require base_path('routes/channels.php');
     }

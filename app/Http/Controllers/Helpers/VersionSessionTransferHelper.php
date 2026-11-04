@@ -28,9 +28,11 @@ class VersionSessionTransferHelper
      *   reproduzca el mismo estado en vez de arrancar como una sesión cualquiera del usuario.
      * @param bool $skip_offline_articles_sync Si la sesión de origen omitía la descarga de
      *   artículos offline (solo login maestro básico, ver AuthController::login()).
+     * @param int|null $demo_ingreso_token_id Marcador de demo de la sesión de origen, si lo tenía.
+     *   Sin esto la sesión destino arranca sin marcador y revocar el token ya no la corta.
      * @return string Token en claro para enviar al SPA destino vía query string.
      */
-    public static function create_for_user($user_id, $master_login_bypass = false, $skip_offline_articles_sync = false)
+    public static function create_for_user($user_id, $master_login_bypass = false, $skip_offline_articles_sync = false, $demo_ingreso_token_id = null)
     {
         /** Token aleatorio que viaja en la URL del SPA destino. */
         $plain_token = Str::random(64);
@@ -41,13 +43,24 @@ class VersionSessionTransferHelper
         /** Fecha límite de uso del token. */
         $expires_at = Carbon::now()->addMinutes(self::$ttl_minutes);
 
-        VersionSessionTransfer::create([
+        /** Datos de la fila de transferencia. */
+        $datos = [
             'token_hash' => $token_hash,
             'user_id' => $user_id,
             'master_login_bypass' => (bool) $master_login_bypass,
             'skip_offline_articles_sync' => (bool) $skip_offline_articles_sync,
             'expires_at' => $expires_at,
-        ]);
+        ];
+
+        /**
+         * 🔴 La clave se escribe solo si viene con valor: así la sesión de un cliente real no toca la
+         * columna nueva y su cambio de versión no se cae si el código llega antes que la migración.
+         */
+        if (!empty($demo_ingreso_token_id)) {
+            $datos['demo_ingreso_token_id'] = (int) $demo_ingreso_token_id;
+        }
+
+        VersionSessionTransfer::create($datos);
 
         Log::info('Version session transfer creado para user_id: '.$user_id);
 
@@ -58,8 +71,9 @@ class VersionSessionTransferHelper
      * Valida el token, devuelve sus datos y elimina el registro (uso único).
      *
      * @param string $plain_token Token recibido desde el query string del SPA.
-     * @return array|null Array con `user_id`, `master_login_bypass` y
-     *   `skip_offline_articles_sync`, o null si el token no es válido.
+     * @return array|null Array con `user_id`, `master_login_bypass`,
+     *   `skip_offline_articles_sync` y `demo_ingreso_token_id` (null si la sesión de origen no era
+     *   de una demo), o null si el token no es válido.
      */
     public static function consume($plain_token)
     {
@@ -84,6 +98,7 @@ class VersionSessionTransferHelper
             'user_id' => (int) $transfer->user_id,
             'master_login_bypass' => (bool) $transfer->master_login_bypass,
             'skip_offline_articles_sync' => (bool) $transfer->skip_offline_articles_sync,
+            'demo_ingreso_token_id' => empty($transfer->demo_ingreso_token_id) ? null : (int) $transfer->demo_ingreso_token_id,
         ];
 
         $transfer->delete();
