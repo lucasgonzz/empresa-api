@@ -4,6 +4,7 @@ namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\PruebaHitosHelper;
@@ -249,6 +250,12 @@ class AuthController extends Controller
             // Log::info('owner_extencions: ');
             // Log::info($user->owner_extencions);
         }
+        /*
+         * Misión vender-tras-migrar-precio-final (4/11/2026): con esto la SPA sabe, sin el catálogo de
+         * listas, que la cuenta tiene la «Precio final» sola y no frena una venta si el catálogo no llega.
+         * Clave nueva y opcional: un SPA viejo la ignora.
+         */
+        $user->solo_lista_precio_final = !is_null(PriceTypeHelper::lista_precio_final_unica($user));
         return $user;
     }
 

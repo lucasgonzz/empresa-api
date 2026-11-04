@@ -56,6 +56,12 @@ use Illuminate\Support\Facades\Log;
  *
  * Y una cuenta con el flag prendido pero SIN ninguna `PriceType` cargada no tiene qué elegir:
  * tampoco se le exige (es el estado de una cuenta recién configurada, antes de cargar la primera).
+ *
+ * 🔴 LA EXCEPCIÓN DE «POR QUÉ SE RECHAZA»: la cuenta cuya ÚNICA lista es la «Precio final» (misión
+ * vender-tras-migrar-precio-final, 4/11/2026). Ahí el comprobante sin lista se completa con esa lista
+ * y no miente: esa lista ES el precio del artículo (`espejar_lista_precio_final()`) y los renglones ya
+ * vienen preciados con él. Es lo que manda una pestaña abierta durante la migración, una venta guardada
+ * sin conexión antes de migrar o la pantalla sin catálogo. Ver lista_precio_final_unica().
  */
 class PriceTypeHelper {
 
@@ -722,20 +728,62 @@ class PriceTypeHelper {
 	}
 
 	/**
-	 * La lista con la que se guarda un alta: la del request, o la del cliente, o ninguna.
+	 * La lista «Precio final» de una cuenta que no tiene otra, o null.
 	 *
-	 * La lista del cliente es el ÚNICO default que se aplica, y por qué se puede aplicar está en
-	 * el docblock de la clase: es la que el front usa para preciar cuando hay cliente con lista,
-	 * así que los renglones ya vienen cobrados con ella. Un cliente con `price_type_id` en 0
-	 * cuenta como cliente sin lista.
+	 * Es lo único que le permite a la API completar un comprobante que llegó sin lista (el porqué está
+	 * en el docblock de la clase). Una lista propia, o la «Precio final» junto con otra, dan null: ahí
+	 * el renglón depende de la lista y se sigue exigiendo. La extensión de rangos también: esa cuenta
+	 * vende sin lista de comprobante a propósito.
+	 *
+	 * 🔴 El flag se lee de la BASE y no del modelo: `UserHelper::user()` devuelve el usuario que quedó en
+	 * la sesión al entrar, y en una pestaña abierta durante la migración sigue diciendo flag 0.
+	 *
+	 * @param  \App\Models\User|null  $user  Dueño o empleado; se resuelve al dueño. Null = el autenticado.
+	 * @return \App\Models\PriceType|null
+	 */
+	static function lista_precio_final_unica($user = null) {
+
+		$owner = self::owner_de($user);
+
+		if (is_null($owner)) {
+			return null;
+		}
+
+		$listas = PriceType::where('user_id', $owner->id)->limit(2)->get();
+
+		if (count($listas) !== 1 || !self::es_lista_precio_final($listas[0])) {
+			return null;
+		}
+
+		if (UserHelper::hasExtencion(self::EXTENCION_RANGOS, $owner)) {
+			return null;
+		}
+
+		if (!User::where('id', $owner->id)->where('listas_de_precio', 1)->exists()) {
+			return null;
+		}
+
+		return $listas[0];
+	}
+
+	/**
+	 * La lista con la que se guarda un alta: la del request, la única «Precio final» de la cuenta, la
+	 * del cliente, o ninguna.
+	 *
+	 * La lista del cliente es el ÚNICO default que se aplica fuera de la «Precio final», y por qué se
+	 * puede aplicar está en el docblock de la clase: es la que el front usa para preciar cuando hay
+	 * cliente con lista, así que los renglones ya vienen cobrados con ella. Un cliente con
+	 * `price_type_id` en 0 cuenta como cliente sin lista. Con la «Precio final» sola, la del cliente no
+	 * puede ser otra que esa o una que ya no existe: por eso va primero.
 	 *
 	 * @param  mixed                    $price_type_id_del_request
 	 * @param  \App\Models\Client|null  $client                     El cliente de la venta o del presupuesto, ya cargado; null si es de mostrador.
+	 * @param  \App\Models\User|null    $user                       Dueño o empleado; null = el autenticado.
 	 * @return int|null
 	 */
-	static function resolver_price_type_id_para_guardar($price_type_id_del_request, $client) {
+	static function resolver_price_type_id_para_guardar($price_type_id_del_request, $client, $user = null) {
 
-		$price_type_id = self::normalizar_price_type_id($price_type_id_del_request);
+		$price_type_id = self::resolver_price_type_id_para_actualizar($price_type_id_del_request, $user);
 
 		if (!is_null($price_type_id)) {
 			return $price_type_id;
@@ -746,6 +794,28 @@ class PriceTypeHelper {
 		}
 
 		return null;
+	}
+
+	/**
+	 * La lista con la que se guarda una edición cuando el request manda la clave: la del request, la
+	 * única «Precio final» de la cuenta, o ninguna. No mira al cliente: los renglones de un comprobante
+	 * guardado ya están preciados y solo la «Precio final» sola no cambia lo que dicen.
+	 *
+	 * @param  mixed                  $price_type_id_del_request
+	 * @param  \App\Models\User|null  $user  Dueño o empleado; null = el autenticado.
+	 * @return int|null
+	 */
+	static function resolver_price_type_id_para_actualizar($price_type_id_del_request, $user = null) {
+
+		$price_type_id = self::normalizar_price_type_id($price_type_id_del_request);
+
+		if (!is_null($price_type_id)) {
+			return $price_type_id;
+		}
+
+		$lista = self::lista_precio_final_unica($user);
+
+		return is_null($lista) ? null : (int) $lista->id;
 	}
 
 	/**

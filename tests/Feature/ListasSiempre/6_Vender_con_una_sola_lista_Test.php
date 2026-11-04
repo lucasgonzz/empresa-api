@@ -12,7 +12,8 @@ use Tests\Feature\Stock\AuditoriaStockTestCase;
 /**
  * D4/D5 de la misión prueba-listas-siempre, del lado de la API: un negocio con UNA sola lista (la
  * «Precio final») vende por `POST api/sale` con esa lista y el renglón queda al precio final de
- * siempre. La regla "toda venta lleva lista" no cambia: la SPA elige sola la única lista y no la pide.
+ * siempre. La SPA elige sola la única lista y no la pide; y si igual llega sin lista (pestaña vieja, venta
+ * sin conexión, catálogo caído), la API toma esa misma lista y cobra lo mismo (10_Comprobante_sin_lista...).
  *
  * Sobre el dueño 500 del fixture (tiene el cliente, la sucursal y los medios de pago que la venta
  * necesita); sus cuatro listas se sacan dentro de la transacción del test para dejarlo con una sola.
@@ -95,9 +96,14 @@ class Vender_con_una_sola_lista_Test extends AuditoriaStockTestCase
     }
 
     /** @test */
-    public function sin_lista_la_api_sigue_rechazando_como_siempre()
+    public function sin_lista_la_api_toma_la_unica_lista_y_cobra_lo_mismo()
     {
-        $this->una_sola_lista();
+        /*
+         * Hasta el 4/11/2026 este test fijaba un 422. Se invirtió por pedido explícito (misión
+         * vender-tras-migrar-precio-final): probando un negocio migrado en navegador real, ese 422
+         * rechazaba la pestaña abierta durante la migración y la venta guardada sin conexión.
+         */
+        $lista = $this->una_sola_lista();
 
         $articulo = $this->crear_articulo('zz Sin lista con una sola lista');
 
@@ -107,7 +113,8 @@ class Vender_con_una_sola_lista_Test extends AuditoriaStockTestCase
             array('article' => $articulo, 'amount' => 1, 'price' => 150),
         ), array('price_type_id' => null)));
 
-        $respuesta->assertStatus(422);
-        $this->assertTrue((bool) $respuesta->json('sin_lista_de_precios'));
+        $respuesta->assertStatus(201);
+        $this->assertSame((int) $lista->id, (int) DB::table('sales')->where('id', $respuesta->json('model.id'))->value('price_type_id'));
+        $this->assertEqualsWithDelta(150, (float) DB::table('article_sale')->where('sale_id', $respuesta->json('model.id'))->where('article_id', $articulo->id)->value('price'), 0.005);
     }
 }

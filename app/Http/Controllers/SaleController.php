@@ -353,7 +353,7 @@ class SaleController extends Controller
          */
         $client_de_la_venta = $request->client_id ? Client::withTrashed()->find($request->client_id) : null;
 
-        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_de_la_venta);
+        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_de_la_venta, $this->user());
 
         if (is_null($price_type_id) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
 
@@ -897,7 +897,8 @@ class SaleController extends Controller
          * tempranos de este método, para que no haya nada que revertir. No se completa con la
          * lista del cliente ni con la por defecto: los renglones ya vienen preciados por el front
          * y ponerles una lista ahora diría que se cobraron con precios que nadie aplicó. La
-         * asignación va adentro, junto a las otras.
+         * asignación va adentro, junto a las otras. La excepción es la «Precio final» sola, que es
+         * el precio del artículo y no cambia lo que dicen los renglones (ver PriceTypeHelper).
          */
         $actualizar_price_type_id = $request->exists('price_type_id');
 
@@ -905,7 +906,7 @@ class SaleController extends Controller
 
         if ($actualizar_price_type_id) {
 
-            $price_type_id_nuevo = PriceTypeHelper::normalizar_price_type_id($request->price_type_id);
+            $price_type_id_nuevo = PriceTypeHelper::resolver_price_type_id_para_actualizar($request->price_type_id, $this->user());
 
             if (is_null($price_type_id_nuevo) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
 
