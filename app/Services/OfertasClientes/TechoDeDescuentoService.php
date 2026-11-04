@@ -3,6 +3,7 @@
 namespace App\Services\OfertasClientes;
 
 use App\Http\Controllers\Helpers\CriterioDePrecioHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 
@@ -329,7 +330,11 @@ class TechoDeDescuentoService
      *                                 Los dos llamadores usan la misma condición: el else de
      *                                 calcular_base_antes_de_listas() (:162-171) y el if de la rama
      *                                 price_from_cost_mas_iva (:365-372), que es la misma escrita con
-     *                                 De Morgan.
+     *                                 De Morgan. Y desde la misión prueba-listas-siempre (3/11/2026)
+     *                                 también se llama con la lista «Precio final»: la cadena del
+     *                                 artículo cotiza como una cuenta sin listas (ArticleHelper, las
+     *                                 dos ramas con `$base_para_las_listas`), porque ese precio vuelve
+     *                                 a ser el que se cobra.
      *
      * 🔴 Vive en un método propio y no inline en el guard por dos razones: el día que alguien cambie
      * el ruteo de cotizar() en ArticleHelper tiene UN solo lugar acá que espejar, y el test la afirma
@@ -348,6 +353,7 @@ class TechoDeDescuentoService
         return !(
             UserHelper::uses_listas_de_precio($user)
             && UserHelper::hasExtencion('ventas_en_dolares', $user)
+            && !PriceTypeHelper::tiene_lista_precio_final($user)
         );
     }
 

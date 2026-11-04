@@ -953,7 +953,9 @@ SECCION;
              */
             $owner = User::find((int) $mapeo->user_id);
 
-            if (UserHelper::uses_listas_de_precio($owner)) {
+            // Con una sola lista, la «Precio final», no hay columnas por lista (misión
+            // prueba-listas-siempre, 3/11/2026): mismo criterio que AiExcelAnalyzer.
+            if (UserHelper::uses_listas_de_precio($owner) && !\App\Http\Controllers\Helpers\PriceTypeHelper::solo_lista_precio_final($owner)) {
 
                 $listas = PriceType::where('user_id', (int) $mapeo->user_id)
                     ->get(['id', 'catalogo_restringido_en_tienda']);

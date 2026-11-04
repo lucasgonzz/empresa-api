@@ -54,10 +54,8 @@ class FlujoCajaHelper
      */
     public static function flujo_caja($user_id, $desde, $hasta, $moneda = 'pesos', $filtros_extra = [])
     {
-        $extension_dolares_activa = self::extension_dolares_activa($user_id);
-
-        // Sin la extensión activa, el parámetro moneda se ignora (mismo criterio que el grupo 225).
-        $moneda_efectiva = $extension_dolares_activa ? $moneda : 'pesos';
+        // Mismo criterio que el Estado de Resultados (misión prueba-listas-siempre, 3/11/2026).
+        $moneda_efectiva = EstadoResultadosHelper::moneda_efectiva($user_id, $moneda);
 
         if ($moneda_efectiva === 'dolares') {
             $flujo = self::armar_flujo_dolares($user_id, $desde, $hasta, $filtros_extra);
@@ -72,24 +70,6 @@ class FlujoCajaHelper
         $flujo['plata_en_transito'] = self::plata_en_transito($user_id, $moneda_efectiva, $filtros_extra);
 
         return $flujo;
-    }
-
-    /**
-     * Resuelve si el usuario (owner) tiene activa la extensión `ventas_en_dolares`, sin depender
-     * de sesión (mismo criterio que `EstadoResultadosHelper::extension_dolares_activa()`).
-     *
-     * @param  int $user_id
-     * @return bool
-     */
-    private static function extension_dolares_activa($user_id)
-    {
-        $user = User::find($user_id);
-
-        if (is_null($user)) {
-            return false;
-        }
-
-        return UserHelper::hasExtencion('ventas_en_dolares', $user);
     }
 
     /**

@@ -34,9 +34,13 @@ class ClientsPdf extends fpdf {
 		$this->user = $user;
 		$this->clients = $clients;
 
-		// La columna "Saldo USD" sale con la misma regla que en la tabla de clientes de la SPA
-		// (models/client.js): solo si el negocio vende en dólares.
-		$this->con_saldo_en_dolares = UserHelper::hasExtencion('ventas_en_dolares', $user);
+		// La columna "Saldo USD" sale si el negocio vende en dólares o si alguno de estos clientes
+		// tiene saldo en dólares: desde la misión prueba-listas-siempre (3/11/2026) los dólares no
+		// dependen de la extensión. Sin nada en dólares no se ocupa media hoja con ceros.
+		$this->con_saldo_en_dolares = UserHelper::hasExtencion('ventas_en_dolares', $user)
+			|| collect($clients)->contains(function ($client) {
+				return (float) $client->saldo_dolares != 0;
+			});
 	}
 
 	/**

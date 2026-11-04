@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\DesglosePrecioHelper;
 use App\Http\Controllers\Helpers\Numbers;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
@@ -179,8 +180,13 @@ class ArticlePricesHelper {
             return $desde_el_articulo;
         }
 
+        /*
+         * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026) ES el precio del artículo:
+         * se contesta con la columna y no con el pivote, así el número es el de hoy aunque el pivote
+         * todavía no se haya vuelto a espejar. En la moneda del artículo, igual que `final_price`.
+         */
         return [
-            'final_price'     => $elegida->pivot->final_price,
+            'final_price'     => PriceTypeHelper::es_lista_precio_final($elegida) ? $article->final_price : $elegida->pivot->final_price,
             'price_type_id'   => $elegida->id,
             'price_type_name' => $elegida->name,
             'origen'          => $origen,
@@ -301,6 +307,13 @@ class ArticlePricesHelper {
 
             // Recorrer cada tipo de precio para calcular el precio final
             foreach ($price_types as $price_type) {
+
+                // La lista «Precio final» no se calcula por ninguna cadena de listas (misión
+                // prueba-listas-siempre, 3/11/2026): la espeja setFinalPrice(). Mismo salto que en
+                // aplicar_precios_segun_listas_de_precios().
+                if (PriceTypeHelper::es_lista_precio_final($price_type)) {
+                    continue;
+                }
 
                 $percentage = $price_type->pivot->percentage; // Porcentaje de ganancia
 
@@ -523,6 +536,16 @@ class ArticlePricesHelper {
         // Log::info('aplicar_precios_segun_listas_de_precios, price_types: '.count($price_types));
 
         foreach ($price_types as $price_type) {
+
+            /*
+             * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026) no se calcula por
+             * esta cadena: es el precio del artículo y la espeja ArticleHelper::setFinalPrice() al
+             * final, con el precio final ya armado (ver espejar_lista_precio_final()). Tampoco se
+             * describe desde acá: su "?" es el desglose del precio final único, que es su cálculo.
+             */
+            if (PriceTypeHelper::es_lista_precio_final($price_type)) {
+                continue;
+            }
 
             $percentage = $price_type->percentage;
 
