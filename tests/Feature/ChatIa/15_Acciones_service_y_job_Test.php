@@ -108,7 +108,7 @@ class Acciones_service_y_job_Test extends TestCase
         parent::setUp();
 
         // 🔴 Nunca la clave real del .env.testing: los tests jamás salen a la red.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         $this->comercio = User::create([
             'name'         => 'Comercio acciones P15',
@@ -244,7 +244,7 @@ class Acciones_service_y_job_Test extends TestCase
      */
     public function sin_acciones_el_request_lleva_solo_las_tools_de_lectura_y_el_prompt_de_solo_lectura()
     {
-        Http::fake(['api.anthropic.com/*' => Http::response($this->end_turn('Tenés 12 tornillos.'), 200)]);
+        Http::fake(['api.deepseek.com/*' => Http::response($this->end_turn('Tenés 12 tornillos.'), 200)]);
 
         list($conversation, $assistant) = $this->conversacion_con_pendiente(false, '¿Cuántos tornillos tengo?');
 
@@ -268,7 +268,7 @@ class Acciones_service_y_job_Test extends TestCase
      */
     public function con_acciones_el_request_suma_las_herramientas_de_carga_y_el_prompt_de_carga()
     {
-        Http::fake(['api.anthropic.com/*' => Http::response($this->end_turn('¿De cuánto fue el flete?'), 200)]);
+        Http::fake(['api.deepseek.com/*' => Http::response($this->end_turn('¿De cuánto fue el flete?'), 200)]);
 
         list($conversation, $assistant) = $this->conversacion_con_pendiente(true, 'Cargame el flete');
 
@@ -309,7 +309,7 @@ class Acciones_service_y_job_Test extends TestCase
      */
     public function la_enumeracion_del_prompt_nombra_todo_lo_que_se_puede_cargar()
     {
-        Http::fake(['api.anthropic.com/*' => Http::response($this->end_turn('Listo.'), 200)]);
+        Http::fake(['api.deepseek.com/*' => Http::response($this->end_turn('Listo.'), 200)]);
 
         list($conversation, $assistant) = $this->conversacion_con_pendiente(true, 'Armame un combo');
 
@@ -352,7 +352,7 @@ class Acciones_service_y_job_Test extends TestCase
         $flete = $this->subcategoria('Flete P15');
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push([
                     'model'       => 'claude-modelo-fake',
                     'stop_reason' => 'tool_use',
@@ -564,7 +564,7 @@ class Acciones_service_y_job_Test extends TestCase
         $flete = $this->subcategoria('Flete P15');
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push([
                     'model'       => 'claude-modelo-fake',
                     'stop_reason' => 'tool_use',

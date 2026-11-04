@@ -3,18 +3,25 @@
 namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
+use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
 use App\Jobs\RunExcelAnalysisJob;
+use App\Models\Article;
+use App\Models\ExcelAnalysisRun;
+use App\Models\Image;
 use App\Models\User;
+use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -82,6 +89,20 @@ class AiExcelImportController extends Controller
                 'user_id'           => $user_id,
                 'model'             => $model,
             ]);
+
+            /*
+             * 🔴 EN SEGUNDO PLANO, SI EL ADMIN LO PIDE (misión cruzada prueba-martin-importacion,
+             * 3/11/2026). El Excel que el negocio en prueba le manda a Martín por el ticket de soporte
+             * no lo sube nadie desde el modal: el admin lo reenvía acá con `segundo_plano=1`, y lo que
+             * hace falta es que quede EXACTAMENTE como si el dueño lo hubiera subido él —una
+             * `ExcelAnalysisRun` suya, el job de siempre, el aviso `excel_analysis_ready` en el sistema
+             * y la corrida abierta que la SPA levanta al entrar (`analysis-en-curso`)—, más el aviso
+             * por WhatsApp si `avisar_por_whatsapp=1` (AvisosDeImportacionHelper). Sin el campo, este
+             * endpoint sigue haciendo lo de siempre: el análisis síncrono con el mapeo en la respuesta.
+             */
+            if ($this->en_segundo_plano($request)) {
+                return $this->encolar_analisis($request, $user_id, $model, $excel_path, $original_filename);
+            }
 
             /*
              * Instanciamos el analizador correspondiente al modelo indicado.
@@ -232,6 +253,9 @@ class AiExcelImportController extends Controller
             'user'                  => $owner,
             'auth_user_id'          => $user_id,
             'archivo_excel_path'    => $excel_path,
+            // Prueba gratuita (C4, misión prueba-experiencia-empresa, 3/11/2026): de dónde viene el archivo
+            // (`excel` | `pdf` | `martin`). Opcional; sin él, por esta puerta es Martín.
+            'prueba_origen'         => $request->input('origen', 'martin'),
             'registrar_art_cre'     => $request->input('registrar_art_cre', true),
             'registrar_art_act'     => $request->input('registrar_art_act', true),
 
@@ -287,10 +311,13 @@ class AiExcelImportController extends Controller
              */
             Auth::loginUsingId($user_id);
 
+            // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+            PruebaHelper::borrar_semilla_antes_de_importar($user_id, $request->input('origen', 'martin'));
             Excel::import(
                 new ClientImport($columns, $create_and_edit, $start_row, $finish_row),
                 $excel_full_path
             );
+            PruebaHelper::importacion_terminada($user_id, 'client');
 
             Auth::logout();
 
@@ -353,10 +380,13 @@ class AiExcelImportController extends Controller
              */
             Auth::loginUsingId($user_id);
 
+            // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+            PruebaHelper::borrar_semilla_antes_de_importar($user_id, $request->input('origen', 'martin'));
             Excel::import(
                 new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null),
                 $excel_full_path
             );
+            PruebaHelper::importacion_terminada($user_id, 'provider');
 
             Auth::logout();
 
@@ -383,6 +413,327 @@ class AiExcelImportController extends Controller
                 'message' => 'No pudimos importar los proveedores de este archivo. Volvé a intentar; si sigue pasando, avisá al equipo.',
             ], 500);
         }
+    }
+
+    /**
+     * Si el admin pidió el análisis en segundo plano (`segundo_plano=1`). Ausente o vacío = no, que
+     * es lo que manda un admin anterior a la misión prueba-martin-importacion.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return bool
+     */
+    protected function en_segundo_plano(Request $request): bool
+    {
+        return $this->bandera($request->input('segundo_plano'));
+    }
+
+    /**
+     * Una bandera del admin ("1", true, "si") a booleano. Vacío o ausente = false.
+     *
+     * @param  mixed  $valor
+     * @return bool
+     */
+    protected function bandera($valor): bool
+    {
+        if ($valor === true) {
+            return true;
+        }
+
+        if (is_null($valor)) {
+            return false;
+        }
+
+        return in_array(strtolower(trim((string) $valor)), ['1', 'true', 'si', 'sí'], true);
+    }
+
+    /**
+     * Crea la corrida de análisis del dueño y la encola (misión prueba-martin-importacion, 3/11/2026).
+     *
+     * Misma forma de `payload` que el `analyze()` autenticado por Bearer (hoja 0, encabezado detectado,
+     * sin rango: son los defaults con los que ese endpoint trata a una SPA sin desplegar), más tres
+     * claves propias: `origen` (`martin` o `pdf`: de dónde vino el archivo), `avisar_por_whatsapp` y
+     * `provider_id` (el proveedor, si el admin lo sabe; la recomendación del paso 2 lo vuelve a pedir).
+     *
+     * `auth_user_id` es el dueño: es a quien le llega `excel_analysis_ready` y a quien la SPA le levanta
+     * la corrida abierta al entrar. Sin él, el job no avisa a nadie (ver RunExcelAnalysisJob).
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  int  $user_id
+     * @param  string  $model
+     * @param  string  $excel_path
+     * @param  string  $original_filename
+     * @return \Illuminate\Http\JsonResponse  202 {analysis_uuid, excel_path, estado}
+     */
+    protected function encolar_analisis(Request $request, int $user_id, string $model, string $excel_path, string $original_filename): JsonResponse
+    {
+        $origen = trim((string) $request->input('origen', ''));
+
+        $provider_id = $request->input('provider_id');
+        $provider_id = is_numeric($provider_id) && (int) $provider_id > 0 ? (int) $provider_id : null;
+
+        $run = ExcelAnalysisRun::create([
+            'uuid'         => Str::uuid()->toString(),
+            'user_id'      => $user_id,
+            'auth_user_id' => $user_id,
+            'tipo'         => 'analisis',
+            'estado'       => 'pendiente',
+            'excel_path'   => $excel_path,
+            'payload'      => [
+                'model'               => $model,
+                'original_filename'   => $original_filename,
+                'start_row'           => null,
+                'finish_row'          => null,
+                'has_header_row'      => null,
+                'hoja'                => 0,
+                'hoja_nombre'         => null,
+                'header_row'          => null,
+                'origen'              => $origen !== '' ? mb_substr($origen, 0, 40) : 'admin',
+                'avisar_por_whatsapp' => $this->bandera($request->input('avisar_por_whatsapp')),
+                'provider_id'         => $provider_id,
+            ],
+        ]);
+
+        RunExcelAnalysisJob::dispatch($run->id);
+
+        Log::info('AdminSync\\AiExcelImportController::analyze - corrida encolada en segundo plano', [
+            'excel_analysis_run_id' => $run->id,
+            'uuid'                  => $run->uuid,
+            'user_id'               => $user_id,
+            'model'                 => $model,
+            'origen'                => $run->payload['origen'],
+        ]);
+
+        return response()->json([
+            'analysis_uuid' => $run->uuid,
+            'excel_path'    => $excel_path,
+            'estado'        => $run->estado,
+        ], 202);
+    }
+
+    /**
+     * Estado (y resultado, si terminó) de una corrida encolada con `segundo_plano=1`, para que el admin
+     * o la tarea que armó el Excel la consulten. Misma forma que el `analysisStatus()` autenticado.
+     *
+     * `user_id` es obligatorio y la corrida tiene que ser suya: el uuid solo no alcanza para decidir de
+     * quién es, y en las bases compartidas viejas conviven varios comercios.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  string  $uuid
+     * @return \Illuminate\Http\JsonResponse  200 · 404 · 422
+     */
+    public function analysisStatus(Request $request, $uuid): JsonResponse
+    {
+        $user_validation = $this->resolve_owner_user($request);
+        if ($user_validation instanceof JsonResponse) {
+            return $user_validation;
+        }
+
+        $run = ExcelAnalysisRun::where('uuid', (string) $uuid)
+            ->where('user_id', (int) $request->input('user_id'))
+            ->first();
+
+        if (is_null($run)) {
+            return response()->json(['message' => 'No se encontró el análisis.'], 404);
+        }
+
+        return response()->json([
+            'uuid'      => $run->uuid,
+            'tipo'      => $run->tipo,
+            'estado'    => $run->estado,
+            'progreso'  => $run->progreso,
+            'paso'      => $run->paso,
+            'error'     => $run->error,
+            'contexto'  => $run->contexto_para_frontend(),
+            'resultado' => $run->estado === 'listo' ? $run->resultado : null,
+        ], 200);
+    }
+
+    /** Extensiones de imagen que se aceptan, con el mime que tiene que declarar el archivo. */
+    const EXTENSIONES_DE_IMAGEN = [
+        'jpg'  => 'image/jpeg',
+        'jpeg' => 'image/jpeg',
+        'png'  => 'image/png',
+        'webp' => 'image/webp',
+    ];
+
+    /** Peso máximo de cada imagen, en bytes. */
+    const MAX_BYTES_IMAGEN = 4 * 1024 * 1024;
+
+    /** Imágenes por pedido, como mucho. */
+    const MAX_IMAGENES_POR_PEDIDO = 50;
+
+    /**
+     * Asigna fotos a los artículos del dueño por su código (misión prueba-martin-importacion, 3/11/2026).
+     *
+     * Es la mitad que el importador de 4 pasos no tiene: la columna `imagen` solo la mira para las
+     * variantes (ProcessRow::build_variant_payload), así que las fotos que la tarea del PDF saca del
+     * catálogo del proveedor no tenían por dónde entrar. Multipart: `user_id`, `imagenes[]` (jpg, png o
+     * webp, hasta 4 MiB cada una, hasta 50 por pedido) y, opcionales, `provider_id` (para buscar también
+     * por el código de proveedor de ese proveedor) y `reemplazar=1` (pisa la foto de un artículo que ya
+     * tiene). El NOMBRE de cada archivo, sin extensión, es el código: se busca, dentro del dueño, por
+     * `bar_code`, por `provider_code` y por el `provider_code` del pivot con el proveedor.
+     *
+     * 🔴 Un artículo que ya tiene imagen NO se pisa sin `reemplazar`: la foto que el dueño cargó a mano
+     * vale más que la del catálogo. Y nunca se borran archivos del disco: al reemplazar se quitan las
+     * filas de `images` del artículo y queda la nueva.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse  200 {asignadas, ya_tenian, sin_articulo, rechazadas} · 422
+     */
+    public function imagenes(Request $request): JsonResponse
+    {
+        $user_validation = $this->resolve_owner_user($request);
+        if ($user_validation instanceof JsonResponse) {
+            return $user_validation;
+        }
+
+        $user_id = (int) $request->input('user_id');
+
+        $archivos = $request->file('imagenes');
+
+        if (!is_array($archivos) || count($archivos) === 0) {
+            return response()->json([
+                'message' => 'Se requiere al menos una imagen en el campo "imagenes[]".',
+            ], 422);
+        }
+
+        if (count($archivos) > self::MAX_IMAGENES_POR_PEDIDO) {
+            return response()->json([
+                'message' => 'Hasta ' . self::MAX_IMAGENES_POR_PEDIDO . ' imágenes por pedido.',
+            ], 422);
+        }
+
+        $provider_id = $request->input('provider_id');
+        $provider_id = is_numeric($provider_id) && (int) $provider_id > 0 ? (int) $provider_id : null;
+
+        $reemplazar = $this->bandera($request->input('reemplazar'));
+
+        $asignadas    = 0;
+        $ya_tenian    = [];
+        $sin_articulo = [];
+        $rechazadas   = [];
+
+        foreach ($archivos as $archivo) {
+            if (!is_object($archivo) || !method_exists($archivo, 'isValid') || !$archivo->isValid()) {
+                $rechazadas[] = ['codigo' => '', 'motivo' => 'archivo_invalido'];
+                continue;
+            }
+
+            $nombre    = (string) $archivo->getClientOriginalName();
+            $codigo    = trim((string) pathinfo($nombre, PATHINFO_FILENAME));
+            $extension = strtolower((string) $archivo->getClientOriginalExtension());
+
+            if ($codigo === '') {
+                $rechazadas[] = ['codigo' => '', 'motivo' => 'sin_codigo'];
+                continue;
+            }
+
+            if (!isset(self::EXTENSIONES_DE_IMAGEN[$extension])) {
+                $rechazadas[] = ['codigo' => $codigo, 'motivo' => 'formato'];
+                continue;
+            }
+
+            if ((int) $archivo->getSize() > self::MAX_BYTES_IMAGEN) {
+                $rechazadas[] = ['codigo' => $codigo, 'motivo' => 'peso'];
+                continue;
+            }
+
+            $mime = (string) $archivo->getMimeType();
+            if (strpos($mime, 'image/') !== 0) {
+                $rechazadas[] = ['codigo' => $codigo, 'motivo' => 'contenido'];
+                continue;
+            }
+
+            $article = $this->articulo_por_codigo($user_id, $codigo, $provider_id);
+
+            if (is_null($article)) {
+                $sin_articulo[] = $codigo;
+                continue;
+            }
+
+            $tiene_imagen = $article->images()->exists();
+
+            if ($tiene_imagen && !$reemplazar) {
+                $ya_tenian[] = $codigo;
+                continue;
+            }
+
+            try {
+                $guardado = (string) Str::uuid() . '.' . ($extension === 'jpeg' ? 'jpg' : $extension);
+
+                Storage::disk('public')->put($guardado, file_get_contents($archivo->getRealPath()));
+
+                if ($tiene_imagen) {
+                    $article->images()->delete();
+                }
+
+                Image::create([
+                    'hosting_url'    => ApiUrlHelper::storage($guardado),
+                    'imageable_id'   => $article->id,
+                    'imageable_type' => 'article',
+                ]);
+
+                /* Igual que una imagen asignada por el motor: sin apagar timestamps, para que el sync
+                   incremental del front baje el artículo con su imagen. */
+                $article->needs_sync_with_tn = true;
+                $article->save();
+
+                try {
+                    TiendaNubeSyncArticleService::add_article_to_sync($article);
+                } catch (\Throwable $e) {
+                    // Sin Tienda Nube no hay nada que encolar.
+                }
+
+                $asignadas++;
+            } catch (\Throwable $e) {
+                Log::warning('AdminSync\\AiExcelImportController::imagenes - no se pudo guardar una imagen', [
+                    'user_id' => $user_id,
+                    'codigo'  => $codigo,
+                    'error'   => $e->getMessage(),
+                ]);
+
+                $rechazadas[] = ['codigo' => $codigo, 'motivo' => 'no_se_pudo_guardar'];
+            }
+        }
+
+        return response()->json([
+            'asignadas'    => $asignadas,
+            'ya_tenian'    => $ya_tenian,
+            'sin_articulo' => $sin_articulo,
+            'rechazadas'   => $rechazadas,
+        ], 200);
+    }
+
+    /**
+     * El artículo del dueño con ese código: por `bar_code`, por `provider_code` o por el `provider_code`
+     * del pivot con el proveedor indicado. El primero que aparece, en ese orden.
+     *
+     * @param  int  $user_id
+     * @param  string  $codigo
+     * @param  int|null  $provider_id
+     * @return \App\Models\Article|null
+     */
+    protected function articulo_por_codigo(int $user_id, string $codigo, $provider_id)
+    {
+        $article = Article::where('user_id', $user_id)
+            ->where(function ($query) use ($codigo) {
+                $query->where('bar_code', $codigo)
+                      ->orWhere('provider_code', $codigo);
+            })
+            ->orderBy('id')
+            ->first();
+
+        if (!is_null($article) || is_null($provider_id)) {
+            return $article;
+        }
+
+        return Article::where('user_id', $user_id)
+            ->whereHas('providers', function ($query) use ($codigo, $provider_id) {
+                $query->where('providers.id', $provider_id)
+                      ->where('article_provider.provider_code', $codigo);
+            })
+            ->orderBy('id')
+            ->first();
     }
 
     /**

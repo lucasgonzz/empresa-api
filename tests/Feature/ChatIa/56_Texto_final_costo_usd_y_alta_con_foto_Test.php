@@ -60,7 +60,7 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
         parent::setUp();
 
         // 🔴 Nunca la clave real del .env.testing: este archivo no sale a la red.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         Storage::fake('local');
 
@@ -306,7 +306,7 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
     public function si_limpiar_deja_vacio_despues_de_una_confirmacion_va_el_resultado()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [
@@ -378,7 +378,7 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
     public function el_loop_devuelve_el_texto_limpio()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [
@@ -409,7 +409,7 @@ class Texto_final_costo_usd_y_alta_con_foto_Test extends EmpresaTestCase
     public function el_razonamiento_en_un_bloque_aparte_sin_saltos_se_descarta()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [

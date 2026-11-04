@@ -40,7 +40,7 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
 
         $this->armar_negocio([
             'agente_confianza'   => ConfianzaDelAgenteIaHelper::DIRECTO,
-            'agente_proveedor'   => 'anthropic',
+            'agente_proveedor'   => 'deepseek',
             'agente_pensamiento' => 'agil',
         ]);
 
@@ -48,10 +48,10 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
 
         // 🔴 Nunca las claves reales: este archivo no sale a la red (todo pasa por Http::fake).
         config([
-            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-p78',
-            'services.anthropic.model'          => 'claude-general-p78',
-            'services.anthropic.model_agil'     => 'claude-agil-p78',
-            'services.anthropic.model_profundo' => 'claude-profundo-p78',
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-p78',
+            'services.deepseek.model'          => 'deepseek-general-p78',
+            'services.deepseek.model_agil'     => 'deepseek-agil-p78',
+            'services.deepseek.model_profundo' => 'deepseek-profundo-p78',
         ]);
     }
 
@@ -101,7 +101,7 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
         $this->clientes_que_deben();
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push($this->tool_use('proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']), 200)
                 ->push($this->tool_use('proponer_recordatorios_de_cobro', ['monto_minimo' => 100000]), 200)
                 ->push($this->end_turn('Te dejo preparadas las dos cosas.'), 200),
@@ -138,7 +138,7 @@ class Envios_a_clientes_garantias_del_codigo_Test extends EmpresaTestCase
         $this->clientes_que_deben();
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push($this->tool_use('proponer_promocion_por_whatsapp', ['texto' => '20% en todo el local']), 200)
                 ->push($this->end_turn('Te dejé la tarjeta de la promo.'), 200),
             '*'                   => Http::response(['error' => 'host sin stub'], 500),

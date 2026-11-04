@@ -154,6 +154,30 @@ class Seeder_de_etiquetas_Test extends EtiquetasDeGondolaTestCase
     }
 
     /**
+     * Misión prueba-listas-siempre (3/11/2026): si la única lista del dueño es la «Precio final», que es
+     * el precio del artículo, el diseño es el genérico de siempre, y no uno "por lista" que diría lo
+     * mismo. Una lista propia (los otros escenarios de este archivo) sigue recibiendo el suyo.
+     *
+     * @test
+     */
+    public function si_la_unica_lista_es_precio_final_el_diseno_es_el_generico()
+    {
+        $dueno = $this->crear_dueno(true);
+
+        \App\Http\Controllers\Helpers\PriceTypeHelper::crear_lista_precio_final($dueno->id);
+
+        $this->assertCount(0, $this->disenos_de($dueno), 'Crear la «Precio final» no crea un diseño por lista.');
+
+        $this->correr_seeder();
+
+        $disenos = $this->disenos_de($dueno);
+
+        $this->assertCount(1, $disenos);
+        $this->assertSame(ArticleTicketDesignHelper::NOMBRE_GENERICO, $disenos[0]->name);
+        $this->assertNull($disenos[0]->price_type_id);
+    }
+
+    /**
      * La importación de clientes (`ClientImport` -> `LocalImportHelper::savePriceType()`) y la demo
      * crean listas con `PriceType::create()` directo, sin pasar por el controller: el diseño lo
      * tiene que crear el observer del modelo.

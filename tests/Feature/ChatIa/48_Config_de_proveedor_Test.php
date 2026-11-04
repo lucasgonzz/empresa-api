@@ -107,52 +107,32 @@ class Config_de_proveedor_Test extends TestCase
         $this->assertSame('profundo', (string) $fresco->agente_pensamiento);
     }
 
-    /**
-     * @group chat-ia
-     * @test
-     */
-    public function deepseek_con_equilibrado_es_422_sin_guardar_nada()
+    /** @test */
+    public function un_put_legado_con_claude_equilibrado_guarda_deepseek_agil()
     {
-        /* Arranca en 'anthropic' EXPLÍCITO: el test prueba "nada se tocó", no cuál es el default. */
         $this->comercio->agente_proveedor = 'anthropic';
-        $this->comercio->agente_pensamiento = 'agil';
+        $this->comercio->agente_pensamiento = 'equilibrado';
         $this->comercio->save();
 
-        $r = $this->put_config(['confianza' => 'cauteloso', 'pensamiento' => 'equilibrado', 'proveedor' => 'deepseek']);
+        $this->put_config(['confianza' => 'cauteloso', 'pensamiento' => 'equilibrado', 'proveedor' => 'anthropic'])
+             ->assertStatus(200)
+             ->assertJson(['confianza' => 'cauteloso', 'proveedor' => 'deepseek', 'pensamiento' => 'agil']);
 
-        $r->assertStatus(422);
-        $this->assertStringContainsString('DeepSeek', (string) $r->json('message'));
-        $this->assertStringContainsString('equilibrado', (string) $r->json('message'));
-
-        /* No se tocó nada: ni el proveedor, ni el pensamiento, ni la confianza. */
         $fresco = $this->comercio->fresh();
-
-        $this->assertSame('anthropic', (string) $fresco->agente_proveedor);
+        $this->assertSame('deepseek', (string) $fresco->agente_proveedor);
         $this->assertSame('agil', (string) $fresco->agente_pensamiento);
-        $this->assertNotSame('cauteloso', (string) $fresco->agente_confianza);
+        $this->assertSame('cauteloso', (string) $fresco->agente_confianza);
     }
 
-    /**
-     * @group chat-ia
-     * @test
-     */
-    public function deepseek_sin_clave_en_la_instalacion_es_422_con_mensaje()
+    /** @test */
+    public function sin_clave_de_deepseek_se_puede_guardar_la_configuracion()
     {
-        /* Arranca en 'anthropic' EXPLÍCITO: el test prueba "la columna no se toca", no el default. */
-        $this->comercio->agente_proveedor = 'anthropic';
-        $this->comercio->save();
-
         config(['services.deepseek.api_key' => null]);
 
-        $r = $this->put_config(['confianza' => 'resuelto', 'pensamiento' => 'agil', 'proveedor' => 'deepseek']);
-
-        $r->assertStatus(422);
-        $this->assertEquals(
-            'DeepSeek no está disponible en esta instalación: falta cargar la clave de la API.',
-            (string) $r->json('message')
-        );
-
-        $this->assertSame('anthropic', (string) $this->comercio->fresh()->agente_proveedor, 'Sin clave no se puede elegir: la columna no se toca.');
+        $this->put_config(['confianza' => 'resuelto', 'pensamiento' => 'agil'])
+             ->assertStatus(200)
+             ->assertJsonPath('proveedor', 'deepseek')
+             ->assertJsonPath('proveedores_disponibles', []);
     }
 
     /**
@@ -195,23 +175,7 @@ class Config_de_proveedor_Test extends TestCase
         $this->assertSame('cauteloso', (string) $fresco->agente_confianza);
     }
 
-    /**
-     * Y sin `proveedor` la validez del pensamiento se mide contra el proveedor GUARDADO: con
-     * DeepSeek guardado, `equilibrado` sigue siendo 422 aunque la SPA vieja no mande proveedor.
-     *
-     * @group chat-ia
-     * @test
-     */
-    public function un_put_sin_proveedor_valida_el_pensamiento_contra_el_guardado()
-    {
-        $this->comercio->agente_proveedor = 'deepseek';
-        $this->comercio->agente_pensamiento = 'agil';
-        $this->comercio->save();
 
-        $this->put_config(['confianza' => 'resuelto', 'pensamiento' => 'equilibrado'])->assertStatus(422);
-
-        $this->assertSame('agil', (string) $this->comercio->fresh()->agente_pensamiento);
-    }
 
     /**
      * @group chat-ia
@@ -229,7 +193,7 @@ class Config_de_proveedor_Test extends TestCase
           ])
           ->assertJson([
               'proveedor'                  => ProveedorIaHelper::PROVEEDOR_POR_DEFECTO,
-              'proveedores_disponibles'    => ['anthropic', 'deepseek'],
+              'proveedores_disponibles'    => ['deepseek'],
               'pensamientos_por_proveedor' => [
                   'anthropic' => ['agil', 'equilibrado', 'profundo'],
                   'deepseek'  => ['agil', 'profundo'],
@@ -242,7 +206,7 @@ class Config_de_proveedor_Test extends TestCase
         $this->actingAs($this->comercio, 'sanctum')
              ->getJson('api/user/asistente-config')
              ->assertStatus(200)
-             ->assertJson(['proveedores_disponibles' => ['anthropic']]);
+             ->assertJsonPath('proveedores_disponibles', []);
     }
 
     /**
@@ -252,7 +216,7 @@ class Config_de_proveedor_Test extends TestCase
      * @group chat-ia
      * @test
      */
-    public function el_get_distingue_el_proveedor_elegido_del_que_efectivamente_corre()
+    public function el_get_mantiene_deepseek_como_unico_proveedor_sin_clave()
     {
         $this->comercio->agente_proveedor = 'deepseek';
         $this->comercio->agente_pensamiento = 'profundo';
@@ -266,7 +230,7 @@ class Config_de_proveedor_Test extends TestCase
              ->assertJson([
                  'proveedor'   => 'deepseek',
                  'pensamiento' => 'profundo',
-                 'modelo'      => ['proveedor' => 'anthropic', 'modelo' => 'claude-profundo-test', 'pensamiento' => 'profundo'],
+                 'modelo'      => ['proveedor' => 'deepseek', 'modelo' => 'deepseek-pro-test', 'pensamiento' => 'profundo'],
              ]);
     }
 
@@ -298,6 +262,6 @@ class Config_de_proveedor_Test extends TestCase
         $this->actingAs($this->comercio, 'sanctum')
              ->getJson('api/mi-consumo-ia')
              ->assertStatus(200)
-             ->assertJson(['proveedor' => 'anthropic', 'modelo' => 'claude-equilibrado-test', 'pensamiento' => 'equilibrado']);
+             ->assertJson(['proveedor' => 'deepseek', 'modelo' => 'deepseek-flash-test', 'pensamiento' => 'agil']);
     }
 }

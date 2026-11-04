@@ -131,8 +131,7 @@ class Admin_sync_modelos_ia_Test extends TestCase
           ->assertJsonPath('tareas.whatsapp.efectiva.fallback', true)
           ->assertJsonPath('tareas.imagenes.efectiva.modelo', 'claude-haiku-legado-imagenes-test')
           ->assertJsonPath('tareas.excel.efectiva.modelo', 'claude-sonnet-legado-excel-test')
-          ->assertJsonPath('tareas.asistente.efectiva.opcion', 'claude_haiku')
-          ->assertJsonPath('tareas.asistente.efectiva.fallback', true);
+          ->assertJsonPath('tareas.asistente.efectiva', null);
 
         /* Sin ninguna clave, efectiva es null. */
         config(['services.anthropic.api_key' => null]);
@@ -204,8 +203,8 @@ class Admin_sync_modelos_ia_Test extends TestCase
         ], $this->headers());
 
         $r->assertStatus(200)
-          ->assertJsonPath('tareas.asistente.opcion', 'claude_opus')
-          ->assertJsonPath('tareas.asistente.efectiva.modelo', 'claude-opus-test')
+          ->assertJsonPath('tareas.asistente.opcion', 'deepseek_pro')
+          ->assertJsonPath('tareas.asistente.efectiva.modelo', 'deepseek-pro-test')
           ->assertJsonPath('tareas.whatsapp.opcion', 'deepseek_pro')
           ->assertJsonPath('tareas.imagenes.opcion', 'claude_haiku')
           ->assertJsonPath('tareas.imagenes.efectiva.modelo', 'claude-haiku-test')
@@ -213,7 +212,7 @@ class Admin_sync_modelos_ia_Test extends TestCase
 
         $fresco = $this->comercio->fresh();
 
-        $this->assertSame('anthropic', (string) $fresco->agente_proveedor, 'El asistente se guarda en las columnas del modal.');
+        $this->assertSame('deepseek', (string) $fresco->agente_proveedor, 'El asistente se guarda en las columnas del modal.');
         $this->assertSame('profundo', (string) $fresco->agente_pensamiento);
         $this->assertSame('deepseek_pro', (string) $fresco->ia_modelo_whatsapp);
         $this->assertSame('claude_haiku', (string) $fresco->ia_modelo_imagenes);
@@ -308,7 +307,7 @@ class Admin_sync_modelos_ia_Test extends TestCase
         $this->actingAs($this->comercio, 'sanctum')
              ->getJson('api/user/asistente-config')
              ->assertStatus(200)
-             ->assertJsonPath('proveedor', 'anthropic')
-             ->assertJsonPath('pensamiento', 'equilibrado');
+             ->assertJsonPath('proveedor', 'deepseek')
+             ->assertJsonPath('pensamiento', 'agil');
     }
 }

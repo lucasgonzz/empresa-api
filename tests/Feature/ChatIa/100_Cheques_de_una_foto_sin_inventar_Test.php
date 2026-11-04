@@ -162,12 +162,13 @@ class Cheques_de_una_foto_sin_inventar_Test extends EmpresaTestCase
 
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $tarjeta->estado_guardado());
         $this->assertStringContainsString('Los números de cheque 7, 8, 9, 10 y 11 son correlativos y muy cortos', $tarjeta->presentacion['aviso']);
-        $this->assertStringContainsString('La fecha de emisión de 5 cheques no vino: va la de hoy', $tarjeta->presentacion['aviso']);
-        $this->assertStringContainsString('emisión: hoy (no vino)', json_encode($tarjeta->presentacion['renglones'], JSON_UNESCAPED_UNICODE));
+        $this->assertStringContainsString('La fecha de emisión de 5 cheques no vino: queda sin informar', $tarjeta->presentacion['aviso']);
+        $this->assertStringContainsString('emisión: sin informar', json_encode($tarjeta->presentacion['renglones'], JSON_UNESCAPED_UNICODE));
 
         // Lo que llega al backend no lleva la marca: es solo para la tarjeta.
         foreach ($tarjeta->datos['current_acount_payment_methods'] as $fila) {
             $this->assertArrayNotHasKey('emision_supuesta', $fila);
+            $this->assertNull($fila['fecha_emision']);
         }
     }
 

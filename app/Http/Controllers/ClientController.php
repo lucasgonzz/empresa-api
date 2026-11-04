@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ExportHistoryHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Jobs\ProcessClientExportJob;
 use App\Http\Controllers\AfipConstanciaInscripcionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
@@ -143,6 +145,9 @@ class ClientController extends Controller
         CreditAccountHelper::crear_credit_accounts('client', $model->id);
 
         $this->sincronizar_ajustes_de_venta($model, $request);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.cliente_creado', ['id' => (int) $model->id]);
         
         $this->sendAddModelNotification('Client', $model->id);
         return response()->json(['model' => $this->fullModel('Client', $model->id)], 201);
@@ -340,6 +345,8 @@ class ClientController extends Controller
          * TODAS las hojas del libro aplicandoles el mismo mapeo (ver ClientImport::sheets()).
          * Ahora se importa una sola.
          */
+        // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
+        PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), 'excel');
         Excel::import(
             new ClientImport(
                 $columns,
@@ -351,6 +358,7 @@ class ClientController extends Controller
             ),
             $request->file('models')
         );
+        PruebaHelper::importacion_terminada($this->userId(), 'client');
     }
 
     /**

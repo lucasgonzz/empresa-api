@@ -191,7 +191,7 @@ class McpRecursosHelper
         return [
             'nombre'                  => self::nombre_del_negocio($dueno),
             'moneda_principal'        => self::MONEDA_PRINCIPAL,
-            'usa_dolares'             => UserHelper::hasExtencion('ventas_en_dolares', $dueno),
+            'usa_dolares'             => UserHelper::opera_en_dolares($dueno),
             'extensiones'             => $extensiones,
             'confianza_del_asistente' => ConfianzaDelAgenteIaHelper::con_default($dueno),
             'proveedor_de_ia'         => ProveedorIaHelper::proveedor_elegido($dueno),

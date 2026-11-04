@@ -1591,6 +1591,12 @@ class AiExcelAnalyzer
             return [];
         }
 
+        // Con una sola lista, la «Precio final» (misión prueba-listas-siempre, 3/11/2026), no hay
+        // columnas por lista que sugerir: la pantalla ofrece el margen y el precio del artículo.
+        if (\App\Http\Controllers\Helpers\PriceTypeHelper::solo_lista_precio_final($owner)) {
+            return [];
+        }
+
         /*
          * `catalogo_restringido_en_tienda` (misión catalogo-por-lista-tienda, 5/10/2026): la
          * columna "visible en la tienda" solo se le ofrece a la IA para las listas restringidas, y

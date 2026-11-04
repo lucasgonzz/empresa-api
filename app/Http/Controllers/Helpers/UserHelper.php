@@ -6,6 +6,7 @@ use App\Events\CompanyOwnerContextUpdated;
 use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Facades\Log;
 
@@ -77,6 +78,68 @@ class UserHelper {
         }
 
         return (bool) $candidate->listas_de_precio;
+    }
+
+    /**
+     * Memo por proceso de opera_en_dolares(): `[owner_id => ['opera' => bool, 'desde' => int]]`.
+     *
+     * @var array
+     */
+    protected static $memo_opera_en_dolares = array();
+
+    /** Segundos que vale una entrada del memo (el mismo criterio que la lista «Precio final»). */
+    const MEMO_OPERA_EN_DOLARES_SEGUNDOS = 60;
+
+    /**
+     * ¿Este negocio opera en dólares? Reemplaza a los gates de PRESENTACIÓN sobre la extensión
+     * `ventas_en_dolares` (misión prueba-listas-siempre, 3/11/2026, C8): las ventas en dólares pasaron
+     * al núcleo, así que un negocio sin la extensión que vende o gasta en dólares tiene que ver esa
+     * dimensión en el asistente y en los reportes, y uno que nunca los usó sigue viendo lo de siempre.
+     *
+     * 🔴 La elección del MOTOR de precios sigue en la extensión (`hasExtencion('ventas_en_dolares')`):
+     * esto es solo para qué se muestra.
+     *
+     * Las dos consultas se memorizan: el asistente pregunta en cada herramienta, y `expenses` no tiene
+     * índice para esto (se recorre entera). Un minuto de atraso, en el peor caso, para el primer
+     * comprobante en dólares de un negocio. `expenses` no tiene borrado lógico; `sales`, sí.
+     *
+     * @param  \App\Models\User|null  $user
+     * @return bool
+     */
+    static function opera_en_dolares($user) {
+
+        if (is_null($user)) {
+            return false;
+        }
+
+        if (self::hasExtencion('ventas_en_dolares', $user)) {
+            return true;
+        }
+
+        $owner_id = $user->owner_id ? (int) $user->owner_id : (int) $user->id;
+
+        if (
+            isset(self::$memo_opera_en_dolares[$owner_id])
+            && (time() - self::$memo_opera_en_dolares[$owner_id]['desde']) < self::MEMO_OPERA_EN_DOLARES_SEGUNDOS
+        ) {
+            return self::$memo_opera_en_dolares[$owner_id]['opera'];
+        }
+
+        $opera = DB::table('sales')->where('user_id', $owner_id)->where('moneda_id', 2)->whereNull('deleted_at')->exists()
+            || DB::table('expenses')->where('user_id', $owner_id)->where('moneda_id', 2)->exists();
+
+        self::$memo_opera_en_dolares[$owner_id] = array('opera' => $opera, 'desde' => time());
+
+        return $opera;
+    }
+
+    /**
+     * Olvida el memo de opera_en_dolares() (lo usan los tests, que crean ventas en el mismo proceso).
+     *
+     * @return void
+     */
+    static function olvidar_opera_en_dolares() {
+        self::$memo_opera_en_dolares = array();
     }
 
     /**

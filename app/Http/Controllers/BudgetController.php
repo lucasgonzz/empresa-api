@@ -85,7 +85,7 @@ class BudgetController extends Controller
          */
         $client_del_presupuesto = $request->client_id ? Client::find($request->client_id) : null;
 
-        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_del_presupuesto);
+        $price_type_id = PriceTypeHelper::resolver_price_type_id_para_guardar($request->price_type_id, $client_del_presupuesto, $this->user());
 
         if (is_null($price_type_id) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
 
@@ -392,7 +392,8 @@ class BudgetController extends Controller
             Clave presente y en null (o en 0, que se lee como null: ver PriceTypeHelper) con la
             cuenta trabajando con listas = 422 ANTES de escribir nada. Desde la tanda 2 de la
             mision (18/9/2026, item A1) este metodo corre en una transaccion, pero el 422 sigue
-            yendo antes de abrirla: es una respuesta, no un fallo que haya que revertir.
+            yendo antes de abrirla: es una respuesta, no un fallo que haya que revertir. La excepcion
+            es la «Precio final» sola, que es el precio del articulo (ver PriceTypeHelper).
         */
         $actualizar_price_type_id = $request->exists('price_type_id');
 
@@ -400,7 +401,7 @@ class BudgetController extends Controller
 
         if ($actualizar_price_type_id) {
 
-            $price_type_id_nuevo = PriceTypeHelper::normalizar_price_type_id($request->price_type_id);
+            $price_type_id_nuevo = PriceTypeHelper::resolver_price_type_id_para_actualizar($request->price_type_id, $this->user());
 
             if (is_null($price_type_id_nuevo) && PriceTypeHelper::requiere_lista_de_precios($this->user())) {
 

@@ -17,7 +17,7 @@ use Tests\TestCase;
  * Arma un dueño con la extensión `agentes_ia` y deja a mano otro dueño (para la tenencia: dos
  * comercios en la misma base no se ven la memoria) y un empleado.
  *
- * 🔴 Ningún test sale a la red: la clave de DeepSeek queda nula y la de Anthropic es de prueba, con
+ * 🔴 Ningún test sale a la red: la clave de DeepSeek es de prueba (el asistente corre ahí) y la de Anthropic queda nula, con
  * Http::fake donde se corre el loop.
  */
 abstract class MemoriaTestCase extends TestCase
@@ -34,8 +34,8 @@ abstract class MemoriaTestCase extends TestCase
         parent::setUp();
 
         config([
-            'services.anthropic.api_key' => 'clave-de-prueba',
-            'services.deepseek.api_key'  => null,
+            'services.anthropic.api_key' => null,
+            'services.deepseek.api_key'  => 'clave-de-prueba',
         ]);
 
         $this->dueno = $this->nuevo_dueno('Ferretería Memoria', true);
@@ -55,7 +55,7 @@ abstract class MemoriaTestCase extends TestCase
             'company_name'     => $negocio . ' ' . uniqid(),
             'email'            => 'memoria-' . uniqid() . '@test.local',
             'password'         => Hash::make('secret'),
-            'agente_proveedor' => 'anthropic',
+            'agente_proveedor' => 'deepseek',
         ]);
 
         if ($con_extension) {
@@ -138,7 +138,7 @@ abstract class MemoriaTestCase extends TestCase
     }
 
     /**
-     * Respuesta end_turn de Anthropic.
+     * Respuesta end_turn (formato Anthropic, que DeepSeek acepta en su endpoint compatible).
      *
      * @param  string  $texto
      * @return array
@@ -154,7 +154,7 @@ abstract class MemoriaTestCase extends TestCase
     }
 
     /**
-     * Respuesta tool_use de Anthropic con una sola herramienta.
+     * Respuesta tool_use (formato Anthropic) con una sola herramienta.
      *
      * @param  string  $nombre
      * @param  array  $input

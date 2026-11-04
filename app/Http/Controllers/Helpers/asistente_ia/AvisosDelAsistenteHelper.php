@@ -323,6 +323,37 @@ class AvisosDelAsistenteHelper
             // Sin la tabla de los avisos de turnos, siguen saliendo los demás.
         }
 
+        /*
+         * 🔴 CUARTO TIPO DESDE EL 3/11/2026: `importacion_lista` (misión cruzada prueba-martin-importacion,
+         * programa «Prueba gratuita de 7 días»). El Excel que el negocio en prueba le mandó a Martín por el
+         * ticket se analizó en segundo plano (AvisosDeImportacionHelper); esto le avisa por WhatsApp que ya
+         * está para seguir en el sistema. CON link al Listado (como el escaneo), y con dos claves de más,
+         * `uuid` y `resumen`, que son las del contrato C4 del programa: un admin viejo no las mira.
+         */
+        try {
+
+            foreach (AvisosDeImportacionHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
+
+                $ruta = AvisosDeImportacionHelper::ruta($fila->uuid);
+
+                $avisos[] = [
+                    'id'                 => AvisosDeImportacionHelper::TIPO . ':' . (string) $fila->uuid,
+                    'tipo'               => AvisosDeImportacionHelper::TIPO,
+                    'uuid'               => (string) $fila->uuid,
+                    'ai_conversation_id' => null,
+                    'texto'              => (string) $fila->texto,
+                    'resumen'            => (string) $fila->texto,
+                    'ruta'               => $ruta,
+                    'url'                => is_null($base) ? null : $base . $ruta,
+                ];
+
+                $orden[] = [self::momento($fila->created_at), 3, (int) $fila->id];
+            }
+
+        } catch (\Throwable $e) {
+            // Sin la tabla, siguen saliendo los demás.
+        }
+
         if (count($orden) > 1) {
 
             $posiciones = array_keys($avisos);
@@ -396,6 +427,14 @@ class AvisosDelAsistenteHelper
             return self::marcar_turno_avisado($dueno, $uuid_de_turno, self::url_segura($url), $whatsapp_message_id);
         }
 
+        /* La importación lista (3/11/2026): misma tabla que el turno, sin conversación que escribir. */
+        $uuid_de_importacion = self::uuid_del_tipo($id, AvisosDeImportacionHelper::TIPO);
+
+        if (!is_null($uuid_de_importacion)) {
+
+            return self::marcar_importacion_avisada($dueno, $uuid_de_importacion, $whatsapp_message_id);
+        }
+
         $uuid = self::uuid_de_escaneo($id);
 
         if (is_null($uuid)) {
@@ -433,6 +472,50 @@ class AvisosDelAsistenteHelper
             $scan->save();
 
             self::dejar_en_la_conversacion($dueno, $scan->ai_conversation_id, self::texto_del_aviso($scan), $url, $whatsapp_message_id);
+
+            return true;
+        });
+    }
+
+    /**
+     * Sella el aviso de una importación lista (misión prueba-martin-importacion, 3/11/2026). Mismas
+     * garantías que el del turno: dentro del dueño, la fila bloqueada y el sello mirado adentro de la
+     * transacción, idempotente. No deja mensaje en ninguna conversación: la importación no nació de un
+     * turno del asistente, y el rastro ya está en el ticket de soporte del admin.
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  string  $uuid
+     * @param  mixed  $whatsapp_message_id
+     * @return bool  false si no existe o no es de este dueño (el 404 del contrato).
+     */
+    protected static function marcar_importacion_avisada(User $dueno, $uuid, $whatsapp_message_id): bool
+    {
+        if (!AvisosDeTurnosIaHelper::hay_tabla()) {
+
+            return false;
+        }
+
+        return DB::transaction(function () use ($dueno, $uuid, $whatsapp_message_id) {
+
+            $fila = AiAvisoDelAsistente::where('owner_id', (int) $dueno->id)
+                                        ->where('tipo', AvisosDeImportacionHelper::TIPO)
+                                        ->where('uuid', $uuid)
+                                        ->lockForUpdate()
+                                        ->first();
+
+            if (is_null($fila)) {
+
+                return false;
+            }
+
+            if (!is_null($fila->avisado_por_whatsapp_at)) {
+
+                return true;
+            }
+
+            $fila->avisado_por_whatsapp_at = Carbon::now();
+            $fila->whatsapp_message_id = is_null($whatsapp_message_id) ? null : mb_substr((string) $whatsapp_message_id, 0, 191);
+            $fila->save();
 
             return true;
         });

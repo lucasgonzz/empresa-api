@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeImportacionHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
@@ -1041,6 +1042,13 @@ class RunExcelAnalysisJob implements ShouldQueue
      */
     protected function notificar_fin(ExcelAnalysisRun $run)
     {
+        /*
+         * El aviso POR WHATSAPP de una importación pedida desde el ticket de soporte (misión
+         * prueba-martin-importacion, 3/11/2026): solo si el payload lo pidió, una fila por corrida, y
+         * antes del aviso del sistema porque no depende de `auth_user_id`. Nunca lanza.
+         */
+        AvisosDeImportacionHelper::dejar($run);
+
         /*
          * Corridas viejas (anteriores a este cambio) no tienen auth_user_id. Sin
          * ese dato el aviso llegaría a todos los empleados del comercio, así que

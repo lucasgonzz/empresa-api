@@ -73,6 +73,13 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
         sesion no tocaria la cookie y no serviria para nada.
     */
     Route::post('demo/heartbeat', 'DemoEventoController@heartbeat');
+    /*
+        Prueba gratuita de 7 días (misión prueba-experiencia-empresa, 3/11/2026): el estado que el Listado
+        vuelve a pedir después de importar, y la marca del modal de primer ingreso. Fuera del modo prueba
+        contestan `{prueba: null}` sin escribir nada: este SPA se despliega en los ~40 clientes reales.
+    */
+    Route::get('prueba/estado', 'PruebaController@estado');
+    Route::post('prueba/modal-visto', 'PruebaController@modal_visto');
 
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
@@ -1564,11 +1571,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:tracking_buyers'])->
         ->middleware('check_extencion_empresa:agentes_ia');
 });
 
-// Cotización del dólar al iniciar sesión. Gateado por Sanctum + la extensión
-// 'costo_en_dolares' (ExtencionSeeder, índice 33, tabla extencion_empresas).
-// El gate por rol (is_admin) va adentro del controller: la extensión es de la
-// EMPRESA y el rol es de la PERSONA, y son dos preguntas distintas.
-Route::middleware(['auth:sanctum', 'check_extencion_empresa:costo_en_dolares'])->group(function () {
+// Cotización del dólar al iniciar sesión. Gateado por Sanctum; el gate por rol (is_admin) va
+// adentro del controller.
+//
+// Hasta la misión prueba-listas-siempre (3/11/2026) este grupo exigía además la extensión
+// 'costo_en_dolares'. Los dólares pasaron al núcleo: el costo en dólares, el dólar de la cuenta y
+// esta cotización están para todo negocio, sin extensión. La fila de `extencion_empresas` queda
+// como dato y nadie la mira acá.
+Route::middleware(['auth:sanctum'])->group(function () {
     Route::get('dolar-cotizacion', 'DolarCotizacionController@show');
     Route::post('dolar-cotizacion', 'DolarCotizacionController@store');
     Route::put('dolar-cotizacion/preferencias', 'DolarCotizacionController@preferencias');
@@ -1680,6 +1690,11 @@ Route::middleware('admin.api.key')
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
+        // Prueba gratuita de 7 días (C3, misión prueba-experiencia-empresa, 3/11/2026): el admin fija o saca el
+        // vencimiento (`{vence_at: ISO|null}` → `{vence_at}`) y lee el estado (`{vence_at, vencida,
+        // semilla_presente, hitos: {tipo: ISO|null}}`). Un empresa viejo contesta 404 y el admin lo tolera.
+        Route::post('prueba/vencimiento', 'AdminSync\\PruebaController@vencimiento');
+        Route::get('prueba/estado', 'AdminSync\\PruebaController@estado');
         // Contacto del dueño (misión aviso-de-actualizacion-al-cliente): el admin necesita su
         // casilla para mandarle el mail con las novedades cuando le actualiza el sistema. Hoy el
         // único endpoint del canal que devuelve `email` es mostrador/duenos, que filtra por la
@@ -1691,6 +1706,13 @@ Route::middleware('admin.api.key')
         Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
+        // Importación desde el ticket de soporte durante la prueba gratuita (misión cruzada
+        // prueba-martin-importacion, 3/11/2026). `analyze` con `segundo_plano=1` encola la corrida y
+        // contesta 202 con su uuid; esto la consulta (`user_id` obligatorio, el dueño de la corrida) y
+        // `imagenes` asigna las fotos del catálogo del proveedor a los artículos por su código (el nombre
+        // del archivo). Un admin viejo no las llama; un cliente viejo contesta 404 y el admin lo tolera.
+        Route::get('ai-excel-import/analysis/{uuid}', 'AdminSync\\AiExcelImportController@analysisStatus');
+        Route::post('ai-excel-import/imagenes', 'AdminSync\\AiExcelImportController@imagenes');
         // Canal "sistema:" de WhatsApp: consulta de datos del owner (stock, ventas, facturas, clientes).
         Route::post('sistema-query', 'AdminSync\\SistemaQueryController@query_data');
         // Horarios comerciales empujados por admin-api (ClientScheduleSyncService). El contrato viene

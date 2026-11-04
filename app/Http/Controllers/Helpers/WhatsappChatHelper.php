@@ -8,6 +8,7 @@ use App\Models\Client;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
+use App\Services\LocalActividad;
 use App\Services\WhatsappAiAutoSendScheduler;
 use App\Services\WhatsappBotSendService;
 use App\Services\WhatsappInboundMediaService;
@@ -358,6 +359,16 @@ class WhatsappChatHelper
         }
 
         self::mark_ai_message_sent($message, $wa_message_id);
+
+        // «El local» del admin (misión el-local-fase-2, 3/11/2026): el agente del negocio contestó. Va acá, en el embudo
+        // único de la respuesta del agente, y solo si salió de verdad: ni la simulación de arriba ni el modo demostración
+        // le contestaron a nadie. Sin teléfono ni texto: el panel solo necesita saber que pasó.
+        if (! WhatsappBotSendService::es_id_simulado($wa_message_id)) {
+            LocalActividad::registrar('agente_negocio', $chat->user_id, null, [
+                'chat_id'    => $chat->id,
+                'message_id' => $message->id,
+            ]);
+        }
 
         return self::ENVIO_HECHO;
     }

@@ -101,7 +101,9 @@ class WhatsappDemoHelper
      */
     public static function preparar(User $owner, array $opciones = [])
     {
-        if (! DemoSetupHelper::es_instancia_de_demo()) {
+        if (! DemoSetupHelper::es_instancia_de_demo() || DemoSetupHelper::es_instancia_de_prueba()) {
+            // La prueba gratuita (FOR_USER=prueba) cuenta como demo para la siembra, pero NO para esto: su
+            // WhatsApp es real y sus clientes también (misión prueba-experiencia-empresa, 3/11/2026).
             throw new \RuntimeException('WhatsappDemoHelper solo se puede correr en una instancia de demo (FOR_USER=demo): pisa la clave de Kapso, aprueba plantillas y reescribe teléfonos.');
         }
 

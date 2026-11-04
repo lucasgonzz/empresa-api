@@ -4,6 +4,8 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 
@@ -79,7 +81,61 @@ class MensualidadController extends Controller
             'online'               => $user->online,
             'conteos'              => $conteos,
             'afip_information'     => $afip_information,
+            // C5 (misión prueba-experiencia-empresa, 3/11/2026): clave nueva y opcional, un admin viejo la ignora.
+            'operaciones_mes'      => $this->operaciones_del_mes((int) $user->id),
         ], 200);
+    }
+
+    /**
+     * Las operaciones del mes calendario en curso (C5, programa «Prueba gratuita de 7 días»): ventas, compras
+     * y gastos REGISTRADOS, se facturen o no, en la zona horaria de la app. El admin arma con esto la cuota
+     * con excedentes de los planes por operaciones.
+     *
+     * Lo sembrado por el demo setup (`semilla_registros`) no cuenta: una prueba que todavía no importó sus
+     * datos tiene ~150 ventas de ejemplo en el mes, y no son operaciones del negocio.
+     *
+     * @param int $user_id
+     * @return array{mes: string, ventas: int, compras: int, gastos: int, total: int}
+     */
+    private function operaciones_del_mes($user_id): array
+    {
+        $desde = Carbon::now()->startOfMonth();
+        $hasta = Carbon::now()->endOfMonth();
+        $schema = DB::connection()->getSchemaBuilder();
+        $hay_marcas = $schema->hasTable('semilla_registros');
+
+        $contar = function ($tabla) use ($user_id, $desde, $hasta, $schema, $hay_marcas) {
+            $query = DB::table($tabla)
+                ->where('user_id', $user_id)
+                ->whereBetween('created_at', [$desde, $hasta]);
+
+            if ($schema->hasColumn($tabla, 'deleted_at')) {
+                $query->whereNull('deleted_at');
+            }
+
+            if ($hay_marcas) {
+                $query->whereNotExists(function ($sub) use ($tabla) {
+                    $sub->select(DB::raw(1))
+                        ->from('semilla_registros')
+                        ->where('semilla_registros.tabla', $tabla)
+                        ->whereColumn('semilla_registros.registro_id', $tabla . '.id');
+                });
+            }
+
+            return (int) $query->count();
+        };
+
+        $ventas  = $contar('sales');
+        $compras = $contar('provider_orders');
+        $gastos  = $contar('expenses');
+
+        return [
+            'mes'     => $desde->format('Y-m'),
+            'ventas'  => $ventas,
+            'compras' => $compras,
+            'gastos'  => $gastos,
+            'total'   => $ventas + $compras + $gastos,
+        ];
     }
 
     /**

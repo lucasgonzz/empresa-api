@@ -45,13 +45,13 @@ class Fotos_tope_reintento_y_conciliacion_Test extends AsistenteWhatsappTestCase
         Storage::fake('local');
 
         config([
-            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-e1',
-            'services.anthropic.model'          => 'claude-general-e1',
-            'services.anthropic.model_agil'     => 'claude-agil-e1',
-            'services.anthropic.model_profundo' => 'claude-profundo-e1',
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-e1',
+            'services.deepseek.model'          => 'deepseek-general-e1',
+            'services.deepseek.model_agil'     => 'deepseek-agil-e1',
+            'services.deepseek.model_profundo' => 'deepseek-profundo-e1',
         ]);
 
-        User::where('id', $this->comercio->id)->update(['agente_proveedor' => 'anthropic', 'agente_pensamiento' => 'agil']);
+        User::where('id', $this->comercio->id)->update(['agente_proveedor' => 'deepseek', 'agente_pensamiento' => 'agil']);
     }
 
     /**
@@ -178,14 +178,14 @@ class Fotos_tope_reintento_y_conciliacion_Test extends AsistenteWhatsappTestCase
     }
 
     /**
-     * Un error transitorio (529 de Anthropic) también se reintenta una vez.
+     * Un error transitorio (529 de DeepSeek) también se reintenta una vez.
      *
      * @test
      */
     public function un_error_transitorio_se_reintenta_una_vez()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push(['error' => ['type' => 'overloaded_error', 'message' => 'Overloaded']], 529)
                 ->push($this->end_turn('Listo, ya está.'), 200),
         ]);

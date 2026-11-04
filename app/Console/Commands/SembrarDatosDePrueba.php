@@ -7,6 +7,7 @@ use App\Http\Controllers\ExpenseController;
 use App\Http\Controllers\Helpers\providerOrder\FacturaDeCompraHelper;
 use App\Http\Controllers\Helpers\BudgetHelper;
 use App\Http\Controllers\Helpers\DeleteModelsHelper;
+use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Http\Controllers\Helpers\Seeders\ActividadTiendaHelper;
 use App\Http\Controllers\Helpers\Seeders\SaleSeederHelper;
 use App\Http\Controllers\Helpers\Seeders\SemillaHelper;
@@ -377,8 +378,10 @@ class SembrarDatosDePrueba extends Command
         // con config:cache activo, env() fuera de config/ devuelve null y la guarda dejaría pasar.
         // Este comando borra y crea datos masivamente; que no pueda correr contra un cliente no es
         // opcional.
-        if (config('app.env') !== 'local' && config('app.FOR_USER') !== 'demo') {
-            $this->error('semilla:datos solo corre en local o en la instancia demo.');
+        // `prueba` desde la misión prueba-experiencia-empresa (3/11/2026): la instancia de la prueba gratuita
+        // nace con los mismos datos de ejemplo que una demo (y los borra al primer import).
+        if (config('app.env') !== 'local' && !in_array(config('app.FOR_USER'), ['demo', 'prueba'], true)) {
+            $this->error('semilla:datos solo corre en local, en la instancia demo o en una instancia de prueba.');
             return 1;
         }
 
@@ -396,6 +399,13 @@ class SembrarDatosDePrueba extends Command
         }
 
         $this->cargar_catalogo();
+
+        /*
+         * Marca de lo sembrado (misión prueba-experiencia-empresa, 3/11/2026): si nadie abrió un lote (una
+         * corrida suelta en local), este comando abre el suyo y lo cierra al terminar. Adentro del demo
+         * setup el lote ya está abierto y lo cierra él.
+         */
+        $lote_propio = SemillaRegistroHelper::abrir_lote($this->user_id, 'semilla-datos');
 
         // ANTES del primer reparto: sin esto, dos corridas del comando dan datos distintos y
         // comparar una con otra es imposible.
@@ -569,6 +579,11 @@ class SembrarDatosDePrueba extends Command
             ]);
 
             $tiempos['performance'] = $this->cronometrar($t_fase);
+
+            if ($lote_propio) {
+                SemillaRegistroHelper::cerrar_lote();
+            }
+
             $tiempos['total'] = round(array_sum(array_filter($tiempos, function ($clave) {
                 return $clave !== 'operaciones_cantidad';
             }, ARRAY_FILTER_USE_KEY)), 1);
@@ -3002,6 +3017,9 @@ class SembrarDatosDePrueba extends Command
     protected function resetear()
     {
         $user_id = $this->user_id;
+
+        // Se borra TODO lo del dueño, sembrado o no: las marcas de la semilla dejan de tener sentido.
+        SemillaRegistroHelper::olvidar($user_id);
 
         $request = Request::create('/');
         config(['app.suppress_delete_notifications' => true]);

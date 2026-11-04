@@ -49,7 +49,7 @@ class Errores_distinguibles_Test extends TestCase
     {
         parent::setUp();
 
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         $this->comercio = User::create([
             'name'         => 'Comercio errores IA',
@@ -122,7 +122,7 @@ class Errores_distinguibles_Test extends TestCase
     public function un_529_le_dice_a_la_persona_que_el_servicio_esta_sobrecargado()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded'],
             ], 529),
         ]);
@@ -164,7 +164,7 @@ class Errores_distinguibles_Test extends TestCase
     {
         // Anthropic contesta SIEMPRE con una tool call: el loop nunca llega a un texto final.
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'tool_use',
                 'content'     => [[
@@ -200,7 +200,7 @@ class Errores_distinguibles_Test extends TestCase
     public function un_error_http_cualquiera_cae_al_generico_y_el_body_crudo_no_llega_a_la_pantalla()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'error' => ['type' => 'invalid_request_error', 'message' => 'esto-es-el-body-crudo-de-anthropic'],
             ], 400),
         ]);

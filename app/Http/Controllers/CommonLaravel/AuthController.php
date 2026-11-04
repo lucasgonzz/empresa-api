@@ -3,10 +3,15 @@
 namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
 use App\Notifications\SessionForcedLogoutNotification;
+use App\Services\LocalActividad;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -56,12 +61,38 @@ class AuthController extends Controller
                            'password' => $request->password], $request->remember)) {
             /** Limpia bypass en logins normales. */
             session()->forget($this->master_login_bypass_activity_key);
+
+            /*
+             * Prueba gratuita vencida (misión prueba-experiencia-empresa, 3/11/2026): la credencial es
+             * correcta, pero la prueba terminó. Se contesta el mismo 403 `prueba_vencida` que el middleware
+             * (con el WhatsApp de soporte) y NO `login: false`: el negocio tiene que ver la pantalla «Tu
+             * prueba terminó», no «credenciales incorrectas». Antes del candado de sesión única a propósito:
+             * una prueba vencida no tiene por qué ocupar el candado.
+             */
+            if (PruebaHelper::vencida_para(Auth::user())) {
+                $owner_id = PruebaHelper::owner_id_de(Auth::user());
+                Auth::logout();
+
+                return PruebaHelper::respuesta_vencida($owner_id);
+            }
             
             if ($this->checkUserLastActivity()) {
 
                 $user = $this->procesar_login();
 
                 $login = true;
+
+                /**
+                 * «El local» del admin (misión el-local-fase-2, 3/11/2026): el negocio entró. Va en esta rama y en
+                 * `login_forzado()`, y NO en `procesar_login()`: por ahí pasan también el login maestro (alguien
+                 * mirando), el cambio de versión y `forzar_pestana()` (la persona ya estaba adentro). Esos caminos, si
+                 * son de verdad, aparecen por `actividad` en el primer request. Es una fila en una tabla, sin red, y
+                 * nunca tira una excepción: no puede frenar el login.
+                 */
+                LocalActividad::login_de($user);
+
+                // Hito de la prueba gratuita (C2): cada ingreso. Cero costo fuera de una instancia de prueba.
+                PruebaHitosHelper::emitir('prueba.ingreso', ['user_id' => (int) $user->id, 'via' => 'login'], PruebaHelper::owner_id_de($user));
 
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} entro desde: ".$request->header('referer'));
             } else {
@@ -86,6 +117,8 @@ class AuthController extends Controller
              * frontend viejo la ignora.
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            // `user.prueba` (misión prueba-experiencia-empresa): null fuera del modo prueba.
+            PruebaHelper::adjuntar_resumen($user);
         }
 
         return response()->json([
@@ -123,6 +156,14 @@ class AuthController extends Controller
 
             $auth_user = Auth()->user();
 
+            // Prueba gratuita vencida: mismo 403 que en login() (misión prueba-experiencia-empresa).
+            if (PruebaHelper::vencida_para($auth_user)) {
+                $owner_id = PruebaHelper::owner_id_de($auth_user);
+                Auth::logout();
+
+                return PruebaHelper::respuesta_vencida($owner_id);
+            }
+
             /**
              * Libera el candado que tenía tomado el otro dispositivo. Mismo método que ya usan
              * logout() y create_version_session_token() -no hay una segunda forma de liberarlo.
@@ -152,6 +193,10 @@ class AuthController extends Controller
 
                 $user = $this->procesar_login();
                 $login = true;
+                /** «El local» del admin: mismo aviso que en `login()`, ver el motivo ahí. */
+                LocalActividad::login_de($user);
+                PruebaHitosHelper::emitir('prueba.ingreso', ['user_id' => (int) $user->id, 'via' => 'login'], PruebaHelper::owner_id_de($user));
+
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} forzo el ingreso expulsando otro dispositivo, desde: ".$request->header('referer'));
             } else {
                 /** Paridad con login(): si por una carrera el candado no queda libre, no dejar la sesión autenticada a medias. */
@@ -164,6 +209,7 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = false;
             $user->master_login_mode = null;
+            PruebaHelper::adjuntar_resumen($user);
         }
 
         return response()->json([
@@ -204,6 +250,12 @@ class AuthController extends Controller
             // Log::info('owner_extencions: ');
             // Log::info($user->owner_extencions);
         }
+        /*
+         * Misión vender-tras-migrar-precio-final (4/11/2026): con esto la SPA sabe, sin el catálogo de
+         * listas, que la cuenta tiene la «Precio final» sola y no frena una venta si el catálogo no llega.
+         * Clave nueva y opcional: un SPA viejo la ignora.
+         */
+        $user->solo_lista_precio_final = !is_null(PriceTypeHelper::lista_precio_final_unica($user));
         return $user;
     }
 
@@ -322,11 +374,18 @@ class AuthController extends Controller
          */
         $master_login_bypass = $this->is_master_login_activity_bypass_enabled();
         $skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
+        /**
+         * Marcador de demo de esta sesión (misión vigencia-token-demo-rojos, 3/11/2026). Viaja con el
+         * token porque sin marcador `DemoSessionVigente` no mira nada: la sesión destino sobrevivía a
+         * la revocación. Que esté revocada ya lo frenó `demo.session.vigente` en la ruta.
+         */
+        $demo_ingreso_token_id = session('demo_ingreso_token_id');
 
         $plain_token = VersionSessionTransferHelper::create_for_user(
             $auth_user->id,
             $master_login_bypass,
-            $skip_offline_articles_sync
+            $skip_offline_articles_sync,
+            $demo_ingreso_token_id
         );
 
         /**
@@ -394,8 +453,26 @@ class AuthController extends Controller
             /** Modelo a autenticar en esta API. */
             $candidate = User::find($transfer['user_id']);
 
+            /**
+             * La sesión destino sigue siendo de demo: la revocación la corta igual que a la de
+             * origen (misión vigencia-token-demo-rojos, 3/11/2026).
+             */
+            $es_transferencia_de_demo = !empty($transfer['demo_ingreso_token_id']);
+
+            /**
+             * El token se emitió con la demo vigente y la revocaron antes de consumirlo (dura 5 minutos):
+             * no se abre sesión. Sale por el mismo `login: false` de un token vencido, que la SPA ya maneja.
+             */
+            if ($es_transferencia_de_demo && !DemoIngresoTokenHelper::sesion_demo_vigente($transfer['demo_ingreso_token_id'])) {
+                $candidate = null;
+            }
+
             if ($candidate) {
                 Auth::login($candidate, false);
+
+                if ($es_transferencia_de_demo) {
+                    session()->put('demo_ingreso_token_id', $transfer['demo_ingreso_token_id']);
+                }
 
                 if ($transfer['master_login_bypass']) {
                     /**
@@ -418,7 +495,12 @@ class AuthController extends Controller
                     session()->forget($this->master_login_bypass_activity_key);
                     session()->put('skip_offline_articles_sync', $transfer['skip_offline_articles_sync']);
 
-                    if ($this->checkUserLastActivity()) {
+                    /**
+                     * Una demo está eximida del candado (`debe_omitir_candado_de_actividad()`), y
+                     * `checkUserLastActivity()` no mira eso: sin este corte el lead se quedaría
+                     * afuera si otra sesión tiene el candado tomado.
+                     */
+                    if ($es_transferencia_de_demo || $this->checkUserLastActivity()) {
                         $user = $this->procesar_login();
                         $login = true;
                         Log::info(
@@ -442,6 +524,9 @@ class AuthController extends Controller
                     // Mismo flag que login() y get_user() (misión imagenes-catalogo-completo): el
                     // SPA destino usa este `user` directo, sin pasar por auth/me.
                     $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+                    // Mismo flag que get_user(): el SPA destino usa este `user` directo y con él
+                    // decide si muestra el panel de la demo.
+                    $user->es_sesion_demo = $this->es_sesion_de_demo();
                 }
             }
         }
@@ -479,6 +564,15 @@ class AuthController extends Controller
         if ($auth_user && !$es_sesion_de_soporte) {
             $this->removeUserLastActivity($auth_user);
             $this->set_logout_at($auth_user->id);
+        }
+
+        /**
+         * «El local» del admin (misión el-local-fase-2, 3/11/2026): el login maestro, la demo y el soporte no son el
+         * comercio yéndose. Se mira ANTES de vaciar la sesión, que es de donde sale. `create_version_session_token()` no
+         * emite a propósito: cambiar de versión no es irse, y el `/logout` que la SPA manda después ya llega sin usuario.
+         */
+        if ($auth_user && !$this->debe_omitir_candado_de_actividad()) {
+            LocalActividad::de_la_persona('logout', $auth_user);
         }
 
         /** Limpia flags y datos cacheados en sesión PHP. */
@@ -529,6 +623,8 @@ class AuthController extends Controller
              * Una sesión de soporte NO es acceso maestro: esto da false para ella.
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
+            PruebaHelper::adjuntar_resumen($user);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -559,6 +655,8 @@ class AuthController extends Controller
             // siempre false (el maestro entra por la rama de arriba), pero se calcula igual en vez
             // de fijarlo: si mañana cambia la condición de esa rama, el flag sigue diciendo la verdad.
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
+            PruebaHelper::adjuntar_resumen($user);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -657,6 +755,7 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = false;
             $user->master_login_mode = null;
+            PruebaHelper::adjuntar_resumen($user);
         }
 
         return response()->json([

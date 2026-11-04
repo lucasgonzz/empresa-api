@@ -48,7 +48,7 @@ class Rol_de_quien_escribe_Test extends TestCase
         parent::setUp();
 
         // 🔴 Nunca la clave real del .env.testing: los tests jamás salen a la red.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         $this->comercio = User::create([
             'name'         => 'Lucas Dueño',
@@ -252,7 +252,7 @@ class Rol_de_quien_escribe_Test extends TestCase
     public function el_system_que_viaja_a_la_api_por_whatsapp_lleva_el_rol_del_dueno()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [['type' => 'text', 'text' => 'Listo, le puse la foto a la sucursal.']],

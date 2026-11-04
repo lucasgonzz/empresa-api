@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\providerOrder;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Models\ProviderOrder;
 use App\Services\DemoEventoEmitter;
 use Illuminate\Support\Facades\DB;
@@ -147,6 +148,9 @@ class ProviderOrderAltaHelper
          * mira el marcador de sesión de demo y sale.
          */
         DemoEventoEmitter::emitir('compra.creada', null, ['id' => $model->id]);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.compra', ['id' => (int) $model->id]);
 
         return $model;
     }

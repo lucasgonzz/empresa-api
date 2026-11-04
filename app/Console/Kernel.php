@@ -53,6 +53,12 @@ class Kernel extends ConsoleKernel
                 }
             });
 
+        // «El local» del admin (misión el-local-fase-2, 3/11/2026): sin eventos, sin clave o en pausa no arranca nada.
+        $schedule->command('local:enviar-actividad')->everyMinute()->withoutOverlapping(5)->runInBackground()
+            ->when(function () {
+                return \App\Services\LocalActividad::hay_para_enviar();
+            });
+
         // Procesa la cola de jobs hasta vaciarla (reemplaza cron directo de queue:work.
         // Nota: no usar ['--stop-when-empty' => true]; Laravel lo serializa como --stop-when-empty="1"
         // y Symfony rechaza ese flag (no acepta valor), el worker falla sin procesar jobs.
@@ -401,6 +407,19 @@ class Kernel extends ConsoleKernel
             ->withoutOverlapping(5)
             ->when(function () {
                 return DemoTrackingConfigHelper::hay_canal();
+            });
+
+        /*
+         * Barrido de la prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer pedido de la
+         * tienda (lo escribe tienda-api en la base, no hay request de empresa) y el vencimiento (el negocio
+         * puede no volver a entrar). El when() mira el .env y nada más: en los ~40 clientes reales no se
+         * dispara ni un artisan.
+         */
+        $schedule->command('prueba:barrido')
+            ->everyFiveMinutes()
+            ->withoutOverlapping(5)
+            ->when(function () {
+                return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
             });
 
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.

@@ -8,6 +8,7 @@ use App\Models\ProviderOrderScan;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
 use App\Services\EscaneoFacturaCompraService;
+use App\Services\LocalActividad;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -112,7 +113,7 @@ class RunProviderOrderScanJob implements ShouldQueue
          */
         if (! AgentesIaHelper::tiene_el_comercio_de($scan->user_id)) {
             // El escaneo queda en error (no «pendiente» para siempre) y se cierra su registro visible.
-            $this->finalizar_con_error($scan, 'Agentes de IA no está activo para este comercio: la factura no se escaneó. Activá la extensión y volvé a sacar la foto.');
+            $this->finalizar_con_error($scan, 'Agentes de IA no está activo para este comercio: la factura no se escaneó. Activá la extensión y volvé a sacar la foto.', false);
 
             return;
         }
@@ -156,6 +157,8 @@ class RunProviderOrderScanJob implements ShouldQueue
 
             $this->notificar_fin($scan);
 
+            LocalActividad::escaneo_terminado($scan);
+
         } catch (\RuntimeException $e) {
             /*
              * Errores esperables y explicables: sin clave de API, fotos ilegibles, la IA
@@ -188,9 +191,10 @@ class RunProviderOrderScanJob implements ShouldQueue
      *
      * @param  \App\Models\ProviderOrderScan  $scan
      * @param  string                         $mensaje  Texto legible para el usuario
+     * @param  bool                           $avisar_al_local  False si el escaneo ni arrancó: nadie trabajó.
      * @return void
      */
-    protected function finalizar_con_error(ProviderOrderScan $scan, string $mensaje)
+    protected function finalizar_con_error(ProviderOrderScan $scan, string $mensaje, bool $avisar_al_local = true)
     {
         $scan->update([
             'estado' => 'error',
@@ -204,6 +208,10 @@ class RunProviderOrderScanJob implements ShouldQueue
         $this->fallar_proceso_en_segundo_plano($scan, $mensaje);
 
         $this->notificar_fin($scan);
+
+        if ($avisar_al_local) {
+            LocalActividad::escaneo_terminado($scan);
+        }
     }
 
     /**

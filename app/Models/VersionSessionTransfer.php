@@ -19,6 +19,7 @@ class VersionSessionTransfer extends Model
         'user_id',
         'master_login_bypass',
         'skip_offline_articles_sync',
+        'demo_ingreso_token_id',
         'expires_at',
     ];
 

@@ -68,7 +68,9 @@ class TopeSerperDemo
      */
     public static function aplica()
     {
-        return config('app.FOR_USER') === 'demo';
+        // `prueba` desde la misión prueba-experiencia-empresa (3/11/2026): la instancia de la prueba
+        // gratuita usa la misma clave de Serper que las demos y lleva el mismo tope por dueño.
+        return in_array(config('app.FOR_USER'), ['demo', 'prueba'], true);
     }
 
     /**
