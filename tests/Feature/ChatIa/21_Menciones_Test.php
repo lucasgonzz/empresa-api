@@ -51,7 +51,7 @@ class Menciones_Test extends TestCase
     {
         parent::setUp();
 
-        config(['services.anthropic.api_key' => null]);
+        config(['services.deepseek.api_key' => null]);
 
         $this->comercio = User::create([
             'name'         => 'Comercio menciones C1',
@@ -128,7 +128,7 @@ class Menciones_Test extends TestCase
     protected function fakear_loop($tool, array $input, $texto)
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push([
                     'stop_reason' => 'tool_use',
                     'content'     => [
@@ -185,7 +185,7 @@ class Menciones_Test extends TestCase
     public function la_mencion_se_guarda_y_viaja_por_los_tres_lugares()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         $cliente = $this->cliente_con_deuda('Ferreteria Tucumana', 687610.88);
@@ -288,7 +288,7 @@ class Menciones_Test extends TestCase
     public function un_nombre_que_no_esta_en_el_texto_no_viaja()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         $this->cliente_con_deuda('Distribuidora Del Norte', 4000);
@@ -613,13 +613,13 @@ class Menciones_Test extends TestCase
     public function una_respuesta_en_error_no_guarda_menciones()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         $this->cliente_con_deuda('Deudor Del Error', 1000);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded'],
             ], 529),
         ]);

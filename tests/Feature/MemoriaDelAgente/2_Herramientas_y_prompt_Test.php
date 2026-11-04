@@ -166,7 +166,7 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
     public function el_loop_guarda_con_la_herramienta_y_deja_la_conversacion_en_la_revision()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push($this->tool_use('guardar_en_contexto', [
                     'ruta'      => 'areas/compras_y_proveedores.md',
                     'operacion' => 'agregar',
@@ -217,7 +217,7 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
         $this->assertSame('', \App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper::afirma_una_carga_hecha('Me lo anoto.'));
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push($this->tool_use('guardar_en_contexto', [
                     'ruta'      => 'aprendizajes/correcciones.md',
                     'operacion' => 'agregar',
@@ -240,7 +240,7 @@ class Herramientas_y_prompt_Test extends MemoriaTestCase
         AgenteContextoHelper::guardar($this->dueno, 'decisiones/decisiones.md', 'agregar', '- No trabaja más con Distribuidora Norte (29/10/2026).', null, 'm', 'agente');
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push($this->tool_use('leer_contexto', ['ruta' => 'decisiones/decisiones.md']), 200)
                 ->push($this->end_turn('Ya no le comprás a Distribuidora Norte.'), 200),
         ]);

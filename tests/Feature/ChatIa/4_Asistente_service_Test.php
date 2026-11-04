@@ -42,7 +42,7 @@ class Asistente_service_Test extends TestCase
         parent::setUp();
 
         // 🔴 Nunca la clave real del .env.testing: los tests jamás salen a la red.
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
 
         $this->comercio = User::create([
             'name'         => 'Comercio chat-ia P4',
@@ -96,7 +96,7 @@ class Asistente_service_Test extends TestCase
     public function con_end_turn_directo_devuelve_el_texto_y_graba_los_tokens()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'model'       => 'claude-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [
@@ -135,7 +135,7 @@ class Asistente_service_Test extends TestCase
         ]);
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 // 1ª respuesta: Claude pide la tool de stock.
                 ->push([
                     'model'       => 'claude-modelo-fake',
@@ -196,7 +196,7 @@ class Asistente_service_Test extends TestCase
     public function un_input_vacio_del_tool_use_se_reenvia_como_objeto_y_no_como_array()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 /*
                  * Claude llama a la tool SIN argumentos (no tiene obligatorios):
                  * el input:{} de la API llega a PHP como [] vía json_decode, y
@@ -245,7 +245,7 @@ class Asistente_service_Test extends TestCase
     public function un_529_lanza_el_mensaje_amigable_de_error_transitorio()
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::response([
+            'api.deepseek.com/*' => Http::response([
                 'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded'],
             ], 529),
         ]);

@@ -41,13 +41,13 @@ class Avisos_de_turnos_sin_terminar_Test extends AsistenteWhatsappTestCase
         Event::fake([ChatIaMensajeActualizado::class]);
 
         config([
-            'services.anthropic.api_key'        => 'clave-anthropic-de-prueba-e1r',
-            'services.anthropic.model'          => 'claude-general-e1r',
-            'services.anthropic.model_agil'     => 'claude-agil-e1r',
-            'services.anthropic.model_profundo' => 'claude-profundo-e1r',
+            'services.deepseek.api_key'        => 'clave-deepseek-de-prueba-e1r',
+            'services.deepseek.model'          => 'deepseek-general-e1r',
+            'services.deepseek.model_agil'     => 'deepseek-agil-e1r',
+            'services.deepseek.model_profundo' => 'deepseek-profundo-e1r',
         ]);
 
-        User::where('id', $this->comercio->id)->update(['agente_proveedor' => 'anthropic', 'agente_pensamiento' => 'agil', 'agente_confianza' => 'cauteloso']);
+        User::where('id', $this->comercio->id)->update(['agente_proveedor' => 'deepseek', 'agente_pensamiento' => 'agil', 'agente_confianza' => 'cauteloso']);
 
         /* El admin de este dueño anunció que consulta los avisos (lo hace en cada POST de mensajes). */
         AvisosDelAsistenteHelper::anunciar($this->comercio->id, '1', 'https://ferretotal.comerciocity.com');

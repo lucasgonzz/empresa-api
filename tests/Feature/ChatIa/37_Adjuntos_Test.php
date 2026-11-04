@@ -56,7 +56,7 @@ class Adjuntos_Test extends TestCase
     {
         parent::setUp();
 
-        config(['services.anthropic.api_key' => null]);
+        config(['services.deepseek.api_key' => null]);
         config(['services.admin_api.api_key' => self::CLAVE]);
         config(['services.admin_api.require_api_key' => false]);
 
@@ -164,7 +164,7 @@ class Adjuntos_Test extends TestCase
     protected function fakear_loop($tool, array $input, $texto)
     {
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push([
                     'stop_reason' => 'tool_use',
                     'content'     => [
@@ -335,7 +335,7 @@ class Adjuntos_Test extends TestCase
         }
 
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         $article = $this->articulo_con_foto('Martillo adjuntos C1', 'https://fotos.test/martillo-c1.jpg');
@@ -368,7 +368,7 @@ class Adjuntos_Test extends TestCase
     public function el_job_termina_listo_con_adjuntos_vacios_cuando_no_hay_fotos()
     {
         $this->dar_extension();
-        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+        config(['services.deepseek.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
         $this->fakear_loop('consultar_clientes', ['busqueda' => ''], 'No tenés clientes cargados todavía.');

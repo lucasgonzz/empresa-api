@@ -62,12 +62,11 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
     {
         parent::setUp();
 
-        $this->armar_negocio(['agente_proveedor' => 'anthropic']);
+        $this->armar_negocio(['agente_proveedor' => 'deepseek']);
 
         // 🔴 Una clave de mentira y Http::fake donde corre el loop: nada sale a la red.
         config([
-            'services.anthropic.api_key' => 'clave-de-prueba',
-            'services.deepseek.api_key'  => null,
+            'services.deepseek.api_key' => 'clave-de-prueba',
         ]);
 
         $this->service = new AsistenteIaService();
@@ -763,9 +762,9 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
         $respuesta_final = 'Encontré lo de ayer: el Pago N° 1706 a Pinturas Sudamericanas tiene 5 e-cheq. ¿Qué querés hacer con los cheques?';
 
         Http::fake([
-            'api.anthropic.com/*' => Http::sequence()
+            'api.deepseek.com/*' => Http::sequence()
                 ->push([
-                    'model'       => 'claude-modelo-fake',
+                    'model'       => 'deepseek-modelo-fake',
                     'stop_reason' => 'tool_use',
                     'content'     => [[
                         'type'  => 'tool_use',
@@ -776,7 +775,7 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
                     'usage'       => ['input_tokens' => 100, 'output_tokens' => 10],
                 ], 200)
                 ->push([
-                    'model'       => 'claude-modelo-fake',
+                    'model'       => 'deepseek-modelo-fake',
                     'stop_reason' => 'end_turn',
                     'content'     => [['type' => 'text', 'text' => $respuesta_final]],
                     'usage'       => ['input_tokens' => 100, 'output_tokens' => 10],
@@ -870,7 +869,7 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
 
             if ($contador->llamadas === 1 && (!is_null($leer) || !is_null($buscar))) {
                 return Http::response([
-                    'model'       => 'claude-modelo-fake',
+                    'model'       => 'deepseek-modelo-fake',
                     'stop_reason' => 'tool_use',
                     'content'     => [[
                         'type'  => 'tool_use',
@@ -883,7 +882,7 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
             }
 
             return Http::response([
-                'model'       => 'claude-modelo-fake',
+                'model'       => 'deepseek-modelo-fake',
                 'stop_reason' => 'end_turn',
                 'content'     => [['type' => 'text', 'text' => $texto]],
                 'usage'       => ['input_tokens' => 10, 'output_tokens' => 5],
