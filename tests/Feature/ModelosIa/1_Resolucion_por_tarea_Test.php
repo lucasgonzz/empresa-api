@@ -120,9 +120,9 @@ class Resolucion_por_tarea_Test extends TestCase
     public function el_asistente_se_traduce_desde_agente_proveedor_y_pensamiento()
     {
         $casos = [
-            ['anthropic', 'agil', 'claude_haiku'],
-            ['anthropic', 'equilibrado', 'claude_sonnet'],
-            ['anthropic', 'profundo', 'claude_opus'],
+            ['anthropic', 'agil', 'deepseek_flash'],
+            ['anthropic', 'equilibrado', 'deepseek_flash'],
+            ['anthropic', 'profundo', 'deepseek_pro'],
             ['deepseek', 'agil', 'deepseek_flash'],
             ['deepseek', 'profundo', 'deepseek_pro'],
             ['deepseek', 'equilibrado', 'deepseek_flash'],
@@ -164,12 +164,7 @@ class Resolucion_por_tarea_Test extends TestCase
             $this->assertTrue($resolucion['fallback'], $tarea);
         }
 
-        /* El asistente: lo de siempre de ProveedorIaHelper (Flash elegido → Haiku, agil de Anthropic). */
-        $asistente = ModelosIaHelper::resolver($this->dueno, 'asistente');
-
-        $this->assertSame('anthropic', $asistente['proveedor']);
-        $this->assertSame('claude-haiku-test', $asistente['modelo']);
-        $this->assertTrue($asistente['fallback']);
+        $this->assertNull(ModelosIaHelper::resolver($this->dueno, 'asistente'));
     }
 
     /**

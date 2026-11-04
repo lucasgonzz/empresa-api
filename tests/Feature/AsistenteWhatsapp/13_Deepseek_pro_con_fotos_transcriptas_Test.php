@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\AsistenteWhatsapp;
 
+use App\Exceptions\AsistenteIaException;
+use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeFotosIaHelper;
 use App\Models\AiMessage;
@@ -13,23 +15,7 @@ use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Storage;
 
-/**
- * Misión asistente-deepseek-pro-razona (24/9/2026): con DeepSeek, un turno ESCALADO con fotos razona
- * en Pro, y las fotos le llegan transcriptas por el modelo con visión.
- *
- * Pro (`deepseek-v4-pro`) no ve imágenes: medido contra la API real, con una foto contesta "No puedo
- * ver la imagen". Hasta esta misión un turno con foto corría en Flash aunque fuera escalado. Ahora:
- *   1. UNA llamada a Flash, sin pensar, con todas las fotos, que las transcribe;
- *   2. el turno entero en Pro con el thinking prendido desde la vuelta 0 y SIN bloques `image`;
- *   3. la transcripción de cada foto se cachea 24 h: las fotos reenviadas no se vuelven a pagar;
- *   4. si la transcripción falla, el turno sigue como antes (Flash con visión);
- *   5. con `services.deepseek.pro_con_transcripcion` en false, todo como antes;
- *   6. Anthropic, byte a byte igual.
- *
- * 🔴 Ningún test sale a la red: Http::fake con red de seguridad, y las claves son de prueba.
- *
- * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin union types.
- */
+/** Contrato de lectura de fotos con Haiku y razonamiento con DeepSeek. */
 class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
 {
     /** Lo que "lee" el modelo con visión en los fakes. */
@@ -53,8 +39,6 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
             'services.deepseek.model'                 => 'deepseek-general-p13',
             'services.deepseek.model_agil'            => 'deepseek-flash-p13',
             'services.deepseek.model_profundo'        => 'deepseek-pro-p13',
-            'services.deepseek.model_vision'          => 'deepseek-vision-p13',
-            'services.deepseek.pro_con_transcripcion' => true,
         ]);
     }
 
@@ -241,21 +225,46 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
 
     // ------------------------------------------------------------------------------------ tests
 
+    /** @test */
+    public function una_configuracion_anterior_con_claude_usa_haiku_solo_para_leer_la_foto()
+    {
+        $this->dueno_en('anthropic', 'equilibrado');
+
+        Http::fake([
+            'api.anthropic.com/*' => Http::response($this->transcripcion('FOTO 1: ' . self::TRANSCRIPCION)),
+            'api.deepseek.com/*' => Http::response($this->end_turn('Es un aceite Natura.')),
+            '*' => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->turno_con_foto('¿Qué producto es?');
+
+        $this->assertSame('Es un aceite Natura.', (new AsistenteIaService())->responder($conversation, $assistant));
+
+        $bodies = $this->bodies_enviados();
+        $this->assertCount(2, $bodies);
+        $this->assertSame('claude-haiku-4-5-20251001', $bodies[0]['model']);
+        $this->assertSame(1, $this->imagenes_en($bodies[0]['messages']));
+        $this->assertArrayNotHasKey('tools', $bodies[0]);
+        $this->assertSame('deepseek-pro-p13', $bodies[1]['model']);
+        $this->assertSame(0, $this->imagenes_en($bodies[1]['messages']));
+        $this->assertStringContainsString(self::TRANSCRIPCION, $this->texto_del_ultimo_user($bodies[1]['messages']));
+    }
+
     /**
      * 🔴 El caso central. DeepSeek en "ágil" con una foto propia (el turno arranca escalado):
-     * primera llamada a Flash SIN pensar con la imagen; después el turno entero en Pro CON el
+     * primera llamada a Haiku con la imagen; después el turno entero en Pro CON el
      * thinking prendido y sin un solo bloque `image`, con la transcripción en el texto del dueño.
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function con_deepseek_y_foto_transcribe_con_flash_y_razona_en_pro_pensando()
+    public function con_foto_transcribe_con_haiku_y_razona_en_pro_pensando()
     {
         $this->dueno_en('deepseek', 'agil');
 
         Http::fake([
+            'api.anthropic.com/*' => Http::response($this->transcripcion('FOTO 1: ' . self::TRANSCRIPCION)),
             'api.deepseek.com/*' => Http::sequence()
-                ->push($this->transcripcion('FOTO 1: ' . self::TRANSCRIPCION), 200)
                 ->push($this->tool_use_pensando(), 200)
                 ->push($this->end_turn('Es un aceite Natura. ¿A qué costo lo cargo?'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
@@ -272,8 +281,8 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->assertCount(3, $bodies, 'Una transcripción y dos vueltas del loop.');
 
         /* 1. La transcripción: el modelo que ve, sin pensar, con la foto. */
-        $this->assertSame('deepseek-vision-p13', $bodies[0]['model']);
-        $this->assertSame('disabled', $bodies[0]['thinking']['type'], 'Para leer una foto no hace falta razonar.');
+        $this->assertSame(ProveedorIaHelper::MODELO_HAIKU_IMAGENES, $bodies[0]['model']);
+        $this->assertArrayNotHasKey('thinking', $bodies[0]);
         $this->assertSame(1, $this->imagenes_en($bodies[0]['messages']), 'La foto viaja a la transcripción.');
         $this->assertArrayNotHasKey('tools', $bodies[0], 'La transcripción no lleva herramientas.');
         $this->assertStringContainsString('SÓLO el tipo', $bodies[0]['system'], 'El prompt prohíbe transcribir montos de una factura.');
@@ -298,8 +307,8 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
             ->get();
 
         $this->assertCount(1, $transcripciones);
-        $this->assertSame('deepseek', $transcripciones[0]->proveedor);
-        $this->assertSame('deepseek-vision-p13', $transcripciones[0]->modelo);
+        $this->assertSame('anthropic', $transcripciones[0]->proveedor);
+        $this->assertSame(ProveedorIaHelper::MODELO_HAIKU_IMAGENES, $transcripciones[0]->modelo);
         $this->assertSame(900, (int) $transcripciones[0]->input_tokens);
 
         $del_chat = AiTokenUsage::where('ai_conversation_id', $conversation->id)
@@ -335,8 +344,8 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->dueno_en('deepseek', 'profundo');
 
         Http::fake([
+            'api.anthropic.com/*' => Http::response($this->transcripcion('FOTO 1: ' . self::TRANSCRIPCION)),
             'api.deepseek.com/*' => Http::sequence()
-                ->push($this->transcripcion('FOTO 1: ' . self::TRANSCRIPCION), 200)
                 ->push($this->end_turn('Es un aceite. ¿Lo cargo?'), 200)
                 ->push($this->end_turn('Listo, lo cargo con 1500 de costo.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
@@ -356,7 +365,7 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $bodies = $this->bodies_enviados();
 
         $this->assertCount(3, $bodies, 'Una sola transcripción para los dos turnos.');
-        $this->assertSame('deepseek-vision-p13', $bodies[0]['model']);
+        $this->assertSame(ProveedorIaHelper::MODELO_HAIKU_IMAGENES, $bodies[0]['model']);
 
         $segundo_turno = $bodies[2];
 
@@ -370,107 +379,60 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
             ->count());
     }
 
-    /**
-     * Si la API rechaza la transcripción, el turno cae a lo de antes: Flash con la foto y el
-     * thinking del turno escalado. Nada se rompe y la persona recibe su respuesta.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function si_la_transcripcion_falla_el_turno_sigue_con_flash_viendo_la_foto()
+    /** @test */
+    public function si_haiku_rechaza_la_foto_no_se_envia_a_deepseek()
     {
-        $this->dueno_en('deepseek', 'agil');
-
-        Http::fake([
-            'api.deepseek.com/*' => Http::sequence()
-                ->push(['error' => ['type' => 'authentication_error', 'message' => 'clave inválida']], 401)
-                ->push($this->end_turn('Veo un aceite.'), 200),
-            '*'                  => Http::response(['error' => 'host sin stub'], 500),
-        ]);
+        Http::fake(['api.anthropic.com/*' => Http::response(['error' => 'fallo de prueba'], 500), '*' => Http::response([], 500)]);
 
         list($conversation, $assistant) = $this->turno_con_foto();
 
-        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+        $this->expectException(AsistenteIaException::class);
+        $this->expectExceptionMessage('No se pudieron leer todas las');
 
-        $this->assertSame('Veo un aceite.', $texto);
-
-        $bodies = $this->bodies_enviados();
-
-        $this->assertCount(2, $bodies);
-        $this->assertSame('deepseek-vision-p13', $bodies[1]['model'], 'Sin transcripción, el turno va al modelo que ve.');
-        $this->assertSame('enabled', $bodies[1]['thinking']['type'], 'Con el thinking del turno escalado, como antes.');
-        $this->assertSame(1, $this->imagenes_en($bodies[1]['messages']), 'Y la foto viaja como imagen.');
-
-        $this->assertSame(0, AiTokenUsage::where('ai_conversation_id', $conversation->id)
-            ->where('proceso', TranscripcionDeFotosIaHelper::PROCESO)
-            ->count(), 'Un 401 no se pagó: no hay fila.');
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+        } finally {
+            Http::assertSentCount(1);
+        }
     }
 
-    /**
-     * Una transcripción cortada por el techo de tokens (stop_reason max_tokens) no se usa ni se
-     * cachea: el turno sigue con el modelo que ve la foto (chequeo adversarial, 24/9/2026).
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function una_transcripcion_cortada_por_tokens_no_se_usa()
+    /** @test */
+    public function si_haiku_corta_la_transcripcion_no_se_envia_a_deepseek()
     {
-        $this->dueno_en('deepseek', 'agil');
-
-        $cortada = $this->transcripcion('FOTO 1: Botella de aceite de girasol Natura 1,5 L. Código de ba');
-        $cortada['stop_reason'] = 'max_tokens';
-
-        Http::fake([
-            'api.deepseek.com/*' => Http::sequence()
-                ->push($cortada, 200)
-                ->push($this->end_turn('Veo un aceite.'), 200),
-            '*'                  => Http::response(['error' => 'host sin stub'], 500),
-        ]);
+        Http::fake(['api.anthropic.com/*' => Http::response(array_merge($this->transcripcion('FOTO 1: Texto incompleto'), ['stop_reason' => 'max_tokens'])), '*' => Http::response([], 500)]);
 
         list($conversation, $assistant) = $this->turno_con_foto();
 
-        (new AsistenteIaService())->responder($conversation, $assistant);
+        $this->expectException(AsistenteIaException::class);
+        $this->expectExceptionMessage('No se pudieron leer todas las');
 
-        $bodies = $this->bodies_enviados();
-
-        $this->assertCount(2, $bodies);
-        $this->assertSame('deepseek-vision-p13', $bodies[1]['model'], 'Cortada, no se usa: el turno va al modelo que ve.');
-        $this->assertSame(1, $this->imagenes_en($bodies[1]['messages']));
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+        } finally {
+            Http::assertSentCount(1);
+        }
     }
 
-    /**
-     * Lo mismo con un timeout (la excepción de conexión de Laravel): el turno no se rompe.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function un_timeout_de_la_transcripcion_tampoco_rompe_el_turno()
+    /** @test */
+    public function un_timeout_de_haiku_no_envia_imagenes_a_deepseek()
     {
-        $this->dueno_en('deepseek', 'profundo');
+        $llamadas = [];
+        Http::fake(function ($request) use (&$llamadas) {
+            $llamadas[] = $request->url();
 
-        $llamadas = 0;
-        $fin = $this->end_turn('Veo un aceite.');
-
-        Http::fake(function ($request) use (&$llamadas, $fin) {
-            $llamadas++;
-
-            if ($llamadas === 1) {
-                throw new ConnectionException('cURL error 28: Operation timed out');
-            }
-
-            return Http::response($fin, 200);
+            throw new ConnectionException('Timeout de prueba');
         });
 
         list($conversation, $assistant) = $this->turno_con_foto();
 
-        $this->assertSame('Veo un aceite.', (new AsistenteIaService())->responder($conversation, $assistant));
+        $this->expectException(AsistenteIaException::class);
+        $this->expectExceptionMessage('No se pudieron leer todas las');
 
-        $bodies = $this->bodies_enviados();
-
-        $ultimo = end($bodies);
-
-        $this->assertSame('deepseek-vision-p13', $ultimo['model']);
-        $this->assertSame(1, $this->imagenes_en($ultimo['messages']));
+        try {
+            (new AsistenteIaService())->responder($conversation, $assistant);
+        } finally {
+            $this->assertSame(['https://api.anthropic.com/v1/messages'], $llamadas);
+        }
     }
 
     /**
@@ -485,8 +447,8 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->dueno_en('deepseek', 'agil');
 
         Http::fake([
+            'api.anthropic.com/*' => Http::response($this->transcripcion("FOTO 1: Frente de una lata de arvejas.\n\n**FOTO 2:** Código de barras: 7 790580 123456")),
             'api.deepseek.com/*' => Http::sequence()
-                ->push($this->transcripcion("FOTO 1: Frente de una lata de arvejas.\n\n**FOTO 2:** Código de barras: 7 790580 123456"), 200)
                 ->push($this->end_turn('Son arvejas.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -519,8 +481,8 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         Http::swap(new \Tests\Fakes\HttpFactorySinSalida(app('events')));
 
         Http::fake([
+            'api.anthropic.com/*' => Http::response($this->transcripcion('FOTO 1: Frente de una lata de arvejas.')),
             'api.deepseek.com/*' => Http::sequence()
-                ->push($this->transcripcion('FOTO 1: Frente de una lata de arvejas.'), 200)
                 ->push($this->end_turn('Son arvejas.'), 200),
             '*'                  => Http::response(['error' => 'host sin stub'], 500),
         ]);
@@ -531,73 +493,14 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->guardar_foto($con_fotos, 2, 33);
         $assistant = $this->mensaje($otra, 'assistant', 'pendiente', ['acciones_habilitadas' => true]);
 
-        (new AsistenteIaService())->responder($otra, $assistant);
+        $this->expectException(AsistenteIaException::class);
+        $this->expectExceptionMessage('No se pudieron leer todas las');
 
-        $bodies = $this->bodies_enviados();
-        $ultimo = end($bodies);
-
-        $this->assertSame('deepseek-vision-p13', $ultimo['model'], 'Una transcripción a medias no se usa.');
-        $this->assertSame(2, $this->imagenes_en($ultimo['messages']));
-    }
-
-    /**
-     * Con el interruptor apagado, todo como antes de esta misión: una sola llamada al modelo con
-     * visión, con la foto y pensando. Es la mitad "B" de la comparación.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function con_el_interruptor_apagado_todo_como_antes()
-    {
-        config(['services.deepseek.pro_con_transcripcion' => false]);
-
-        $this->dueno_en('deepseek', 'profundo');
-
-        Http::fake([
-            'api.deepseek.com/*' => Http::response($this->end_turn('Veo un aceite.'), 200),
-            '*'                  => Http::response(['error' => 'host sin stub'], 500),
-        ]);
-
-        list($conversation, $assistant) = $this->turno_con_foto();
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        $bodies = $this->bodies_enviados();
-
-        $this->assertCount(1, $bodies);
-        $this->assertSame('deepseek-vision-p13', $bodies[0]['model']);
-        $this->assertSame('enabled', $bodies[0]['thinking']['type']);
-        $this->assertSame(1, $this->imagenes_en($bodies[0]['messages']));
-        $this->assertSame(0, AiTokenUsage::where('proceso', TranscripcionDeFotosIaHelper::PROCESO)
-            ->where('ai_conversation_id', $conversation->id)
-            ->count());
-    }
-
-    /**
-     * Anthropic, byte a byte igual: todos sus modelos ven, así que nunca transcribe.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function con_anthropic_nunca_se_transcribe()
-    {
-        $this->dueno_en('anthropic', 'profundo');
-
-        Http::fake([
-            'api.anthropic.com/*' => Http::response($this->end_turn('Veo un aceite.'), 200),
-            '*'                   => Http::response(['error' => 'host sin stub'], 500),
-        ]);
-
-        list($conversation, $assistant) = $this->turno_con_foto();
-
-        (new AsistenteIaService())->responder($conversation, $assistant);
-
-        $bodies = $this->bodies_enviados();
-
-        $this->assertCount(1, $bodies);
-        $this->assertSame('claude-profundo-p13', $bodies[0]['model']);
-        $this->assertArrayNotHasKey('thinking', $bodies[0]);
-        $this->assertSame(1, $this->imagenes_en($bodies[0]['messages']));
+        try {
+            (new AsistenteIaService())->responder($otra, $assistant);
+        } finally {
+            Http::assertSentCount(1);
+        }
     }
 
     /**
@@ -696,20 +599,15 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
         $this->assertSame('deepseek-flash-p13', $bodies[0]['model'], 'Una pregunta no escala aunque haya una tarjeta abierta.');
     }
 
-    /**
-     * Un turno que NO va escalado desde el arranque (dueño en "ágil", sin foto propia: sólo la
-     * reenviada de la tanda) no transcribe: un "gracias" no paga una lectura ni el modelo caro.
-     *
-     * @group asistente-whatsapp
-     * @test
-     */
-    public function un_turno_agil_con_la_foto_reenviada_no_transcribe()
+    /** @test */
+    public function un_turno_agil_con_la_foto_reenviada_transcribe_y_conserva_el_modo()
     {
         $this->dueno_en('deepseek', 'agil');
 
         Http::fake([
-            'api.deepseek.com/*' => Http::response($this->end_turn('De nada.'), 200),
-            '*'                  => Http::response(['error' => 'host sin stub'], 500),
+            'api.anthropic.com/*' => Http::response($this->transcripcion('FOTO 1: ' . self::TRANSCRIPCION)),
+            'api.deepseek.com/*' => Http::response($this->end_turn('De nada.')),
+            '*' => Http::response([], 500),
         ]);
 
         $conversation = $this->conversacion_whatsapp();
@@ -723,8 +621,10 @@ class Deepseek_pro_con_fotos_transcriptas_Test extends AsistenteWhatsappTestCase
 
         $bodies = $this->bodies_enviados();
 
-        $this->assertCount(1, $bodies);
-        $this->assertSame('deepseek-vision-p13', $bodies[0]['model']);
-        $this->assertSame('disabled', $bodies[0]['thinking']['type']);
+        $this->assertCount(2, $bodies);
+        $this->assertSame(ProveedorIaHelper::MODELO_HAIKU_IMAGENES, $bodies[0]['model']);
+        $this->assertSame('deepseek-flash-p13', $bodies[1]['model']);
+        $this->assertSame('disabled', $bodies[1]['thinking']['type']);
+        $this->assertSame(0, $this->imagenes_en($bodies[1]['messages']));
     }
 }

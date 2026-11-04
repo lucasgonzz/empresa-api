@@ -411,7 +411,7 @@ class AsistenteIaService
             return ProveedorIaHelper::hay_credenciales(ProveedorIaHelper::proveedor_de($owner));
         }
 
-        return count(ProveedorIaHelper::proveedores_disponibles()) > 0;
+        return ProveedorIaHelper::hay_credenciales(ProveedorIaHelper::DEEPSEEK);
     }
 
     /**
@@ -606,7 +606,6 @@ class AsistenteIaService
          * DeepSeek con ese pensamiento; el escalado de las cargas y de las fotos sigue igual.
          */
         $modelo_pedido = (string) $assistant_message->modelo_pedido;
-        $pedido_aplica = ProveedorIaHelper::modelo_pedido_aplica($modelo_pedido);
 
         /*
          * El PROVEEDOR se resuelve una sola vez y no cambia en todo el turno (con él, el cliente
@@ -663,28 +662,7 @@ class AsistenteIaService
         $es_una_correccion = $corrige_una_tarjeta
             && TarjetaPrometidaIaHelper::clase_del_pedido($this->pedido_de_la_persona($conversation, $assistant_message)) === 'otro';
 
-        /*
-         * 🔴 UN TURNO CON FOTO ARRANCA ESCALADO DESDE LA PRIMERA VUELTA (correcciones del 24/9/2026,
-         * decisión tomada por la misión asistente-fotos-barras-y-compras en nombre de Lucas). Las 17
-         * conversaciones reales mostraron que con el dueño en "ágil" las malas decisiones de un
-         * pedido con foto —cuestionar el emisor de la factura, pedir el precio de venta teniendo
-         * costo y margen, decir que no puede leer el código de barras— las toma el modelo rápido
-         * ANTES de llamar a cualquier tool de carga, así que el escalado por toca_una_carga() nunca
-         * llegaba a entrar. Con "profundo" salieron los cinco escenarios.
-         *
-         * Anthropic: el modelo de "profundo" desde la vuelta 0. DeepSeek: el Pro no ve imágenes, así
-         * que modelo_del_asistente() sigue eligiendo el modelo con visión, pero con el thinking
-         * ENABLED desde el inicio (el de profundo). Eso NO reabre el 400 de 1e9711bd: ese error era
-         * prender el thinking A MITAD de turno, con un tool_use previo sin bloque `thinking`; un turno
-         * que arranca pensando devuelve sus bloques `thinking` y thinking_apto_para_historial() los
-         * deja pasar. Se paga el modelo caro sólo en los turnos con foto, que son los de cargar algo.
-         *
-         * ⚠️ SÓLO SI LA FOTO LA TRAE EL MENSAJE ACTUAL DEL DUEÑO, no si viaja reenviada desde la última
-         * tanda (con_las_fotos_de_la_ultima_tanda). Con `$lleva_imagenes` (que las cuenta a las dos) un
-         * "gracias" o un "¿cuánto vendí hoy?" hasta tres mensajes después de una foto arrancaba en
-         * Opus, o en DeepSeek pensando (segundo chequeo adversarial, 24/9/2026). Las reenviadas viajan
-         * igual —y por eso `$lleva_imagenes` sigue eligiendo el modelo con visión—, pero no escalan.
-         */
+        /* Una foto nueva requiere razonamiento profundo. Las reenviadas conservan el modo del turno. */
         if ($this->el_mensaje_actual_trae_foto($conversation, $assistant_message)) {
             $toco_una_carga = true;
         }
@@ -697,49 +675,14 @@ class AsistenteIaService
          */
         $inicio_del_loop = $this->ahora();
 
-        /*
-         * 🔴 MISIÓN asistente-deepseek-pro-razona (24/9/2026): CON DEEPSEEK, UN TURNO ESCALADO CON
-         * FOTOS RAZONA EN PRO. Pedido de Lucas: cuando hay que razonar más, DeepSeek Pro y no Claude.
-         * Pro no ve imágenes (medido: con una foto contesta "No puedo ver la imagen"), así que las
-         * fotos se le pasan como TEXTO: el modelo con visión (Flash, sin pensar) las transcribe en
-         * UNA llamada acá, antes de la vuelta 0, y los bloques `image` del payload se reemplazan por
-         * esa transcripción (TranscripcionDeFotosIaHelper). Desde ahí el turno entero corre en Pro
-         * con el thinking prendido: `$lleva_imagenes` pasa a false (ya no hay imágenes que proteger)
-         * y `$turno_transcripto` fuerza el Profundo en TODAS las vueltas.
-         *
-         * Sólo si el turno va escalado DESDE EL ARRANQUE (Profundo elegido, foto propia en el
-         * mensaje, o carga ya confirmada por el sí): el modelo y el thinking quedan fijos desde la
-         * vuelta 0 y ninguna vuelta cambia de modelo con tool_use previos sin `thinking`, que es el
-         * 400 de 1e9711bd. El escalado a mitad de turno sigue como antes.
-         *
-         * Si la transcripción falla, `$messages` no se toca y el turno sigue exactamente como antes
-         * de esta misión (Flash con visión y el thinking del turno escalado). Anthropic nunca entra.
-         */
-        $turno_transcripto = false;
-
-        /*
-         * Con el modelo pedido desde la app, el pensamiento del turno es el que eligió el dueño y no el de
-         * su configuración: Pensamiento arranca escalado (transcribe las fotos y corre en Pro, el camino de
-         * siempre) y Rápido no transcribe salvo que el turno ya venga escalado por una foto o una carga.
-         */
-        $transcribe_las_fotos = $lleva_imagenes && (
-            ($pedido_aplica && $modelo_pedido === ProveedorIaHelper::MODELO_PEDIDO_RAPIDO && ! $toco_una_carga)
-                ? false
-                : TranscripcionDeFotosIaHelper::corresponde(
-                    $owner,
-                    $proveedor,
-                    $toco_una_carga || ($pedido_aplica && $modelo_pedido === ProveedorIaHelper::MODELO_PEDIDO_PENSAMIENTO)
-                )
-        );
-
-        if ($transcribe_las_fotos) {
+        if ($lleva_imagenes) {
             $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation);
 
-            if (! is_null($transcriptos)) {
-                $messages          = $transcriptos;
-                $lleva_imagenes    = false;
-                $turno_transcripto = true;
+            if (is_null($transcriptos) || $this->lleva_imagenes($transcriptos)) {
+                throw AsistenteIaException::falla_tecnica('No se pudieron leer todas las imágenes del turno con Haiku.');
             }
+
+            $messages = $transcriptos;
         }
 
         $iterations = 0;
@@ -979,29 +922,8 @@ class AsistenteIaService
 
             $iterations++;
 
-            /*
-             * EL MODELO SE RECALCULA EN CADA VUELTA (misión asistente-capacidades-y-hilos,
-             * 22/9/2026). Pedido de Lucas: "las acciones contra deepseek pro a ver si cambia". El
-             * turno arranca en el Ágil y, en cuanto tocó una carga, el resto de las vueltas van con
-             * el Profundo (Anthropic: Haiku → Opus; DeepSeek: Flash → Pro). El PROVEEDOR no cambia
-             * —proveedor_de() no mira estos flags—, así que `$http` y `$url` siguen valiendo; lo
-             * único que se mueve es el id del modelo y su bloque `thinking`, que viajan juntos para
-             * que el techo de `max_tokens` que sube agregar_thinking() acompañe al modelo que
-             * efectivamente corre.
-             *
-             * 🔴 CAMBIAR DE MODELO TIRA EL CACHÉ DE PROMPT DE ESA LLAMADA, Y ESTÁ ACEPTADO. El caché
-             * de Anthropic es por (modelo + prefijo de bytes): la vuelta en la que se escala paga el
-             * system y las tools enteros de nuevo. Se paga UNA vez por turno y SOLO en los turnos
-             * que cargan —una consulta de solo lectura nunca escala—, y lo que compra es que la
-             * decisión de ejecutar y el texto que la cuenta los tome el modelo grande. 🔴 Si alguien
-             * viene a "optimizar" esto volviendo a calcular el modelo una sola vez afuera del loop,
-             * está sacando la misión entera: el escalado es esto.
-             *
-             * 🔴 Y CON FOTOS MANDA LA VISIÓN, NO EL ESCALADO: `$lleva_imagenes` viaja igual, así que
-             * el Pro de DeepSeek —que no ve imágenes y no lo avisa con un error— nunca recibe una.
-             * Con el turno transcripto ya no hay imágenes en el payload y va Pro desde la vuelta 0.
-             */
-            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, $lleva_imagenes, $toco_una_carga || $turno_transcripto, $modelo_pedido);
+            /* Las cargas pueden escalar el modelo dentro de DeepSeek a partir de la próxima vuelta. */
+            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, false, $toco_una_carga, $modelo_pedido);
             $model    = $eleccion['modelo'];
 
             /*
