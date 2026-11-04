@@ -143,4 +143,23 @@ class AsistenteDeLaDemoEnPruebaTest extends TestCase
             return $request->url() === 'https://admin.test/api/demo-chat';
         });
     }
+
+    /**
+     * El marcador de la sesión se conserva en una prueba: la sesión del link sigue exenta del candado
+     * de sesión única. Si el candado la tomara, entrar por el link con otro dispositivo abierto daría
+     * 403 (se rompió una vez en el desarrollo de este arreglo).
+     */
+    public function test_en_una_prueba_la_sesion_del_link_sigue_sin_tomar_el_candado_de_sesion_unica()
+    {
+        config(['app.FOR_USER' => 'prueba']);
+
+        $this->dueno->session_id = 'otro-dispositivo';
+        $this->dueno->last_activity = now();
+        $this->dueno->save();
+
+        $respuesta = $this->sesion_de_link_magico()->getJson('/api/user');
+
+        $respuesta->assertStatus(200);
+        $this->assertNotNull($respuesta->json('user'));
+    }
 }
