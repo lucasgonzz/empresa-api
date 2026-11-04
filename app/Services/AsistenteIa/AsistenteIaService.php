@@ -4590,7 +4590,9 @@ CONFIRMACION;
                 'error'              => $e->getMessage(),
             ]);
 
-            return $http->post($url, $body);
+            return ProgresoIaHelper::durante_reintento($assistant_message, ProgresoIaHelper::REINTENTO_CONEXION, function () use ($http, $url, $body) {
+                return $http->post($url, $body);
+            });
         }
 
         if ($response->successful() || ! $puede_reintentar || ! ProveedorIaHelper::es_error_transitorio($response)
@@ -4604,7 +4606,9 @@ CONFIRMACION;
         ]);
 
         try {
-            return $http->post($url, $body);
+            return ProgresoIaHelper::durante_reintento($assistant_message, ProgresoIaHelper::REINTENTO_PROVEEDOR, function () use ($http, $url, $body) {
+                return $http->post($url, $body);
+            });
         } catch (\Throwable $e) {
             /* El reintento no puede dejar un error peor que el original: vuelve la respuesta de antes. */
             Log::warning('AsistenteIaService: falló el reintento ante el error transitorio; se sigue con la respuesta original.', [

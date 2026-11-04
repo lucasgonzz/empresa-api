@@ -2,12 +2,16 @@
 
 namespace App\Models;
 
+use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use Illuminate\Database\Eloquent\Model;
 
 /**
@@ -119,7 +123,36 @@ class AiMessage extends Model
         'archivos' => 'array',
         // Cuándo valoró el dueño la respuesta (misión agente-mejoras-uso-real).
         'valorado_at' => 'datetime',
+        'respuesta_publicada_at' => 'datetime',
+        'demora_respuesta_seg' => 'integer',
     ];
+
+    protected static function booted()
+    {
+        static::updating(function (AiMessage $message) {
+            if ($message->rol !== 'assistant' || $message->canal !== self::CANAL_SISTEMA
+                || !$message->isDirty('estado') || $message->getOriginal('estado') !== 'pendiente'
+                || !in_array($message->estado, ['listo', 'error'], true)
+                || !ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'respuesta_publicada_at')) {
+                return;
+            }
+
+            // El mensaje del dueño que originó el turno, con el mismo criterio que usa el job.
+            $pedido = static::where('ai_conversation_id', $message->ai_conversation_id)
+                ->where('rol', 'user')
+                ->where('id', '<', $message->id)
+                ->latest('id')
+                ->first(['created_at']);
+
+            $publicada_at = now();
+            $message->respuesta_publicada_at = $publicada_at;
+
+            if ($pedido && $pedido->created_at
+                && ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'demora_respuesta_seg')) {
+                $message->demora_respuesta_seg = max(0, $publicada_at->timestamp - $pedido->created_at->timestamp);
+            }
+        });
+    }
 
     /**
      * 🔴 `menciones` va en $appends ADEMÁS de ser una columna, y no es redundante: el
@@ -286,7 +319,55 @@ class AiMessage extends Model
         $array['audio']         = AudioDelMensajeIaHelper::para_la_respuesta($this);
         $array['archivos']      = ArchivosAdjuntosIaHelper::para_la_respuesta($this);
 
+        if ($this->rol === 'assistant' && $this->canal === self::CANAL_SISTEMA) {
+            $array['detalle_fallo'] = $this->detalle_fallo_para_la_persona();
+        }
+
         return $array;
+    }
+
+    protected function detalle_fallo_para_la_persona(): ?string
+    {
+        if ($this->estado === 'pendiente') {
+            return ProgresoIaHelper::DETALLES_REINTENTO[$this->progreso] ?? null;
+        }
+
+        if ($this->estado !== 'error') {
+            if ($this->estado === 'listo' && $this->error_mensaje
+                && strpos((string) $this->contenido, AvisosDeTurnosIaHelper::CIERRE_SIN_TERMINAR) !== false) {
+                return 'La generación se interrumpió antes de completar la respuesta.';
+            }
+
+            return null;
+        }
+
+        // Las excepciones y los cuerpos HTTP se conservan para soporte. Acá solo salen textos fijos.
+        $motivos = [
+            'pendiente vencido:' => 'La generación quedó pendiente y venció el tiempo de espera.',
+            'no se pudo encolar el job de respuesta:' => 'El sistema no pudo iniciar la generación de la respuesta.',
+            'extension agentes_ia no activa' => 'El asistente estaba deshabilitado para esta cuenta.',
+            'sin clave de ' => 'La cuenta no tenía configurado un proveedor de IA.',
+            'cURL error 28:' => 'El proveedor de IA tardó demasiado en responder.',
+            'cURL error ' => 'No se pudo completar la conexión con el proveedor de IA.',
+        ];
+        foreach ($motivos as $prefijo => $detalle) {
+            if (strpos((string) $this->error_mensaje, $prefijo) === 0) {
+                return $detalle;
+            }
+        }
+
+        $motivos = [
+            AsistenteIaException::MOTIVO_TIEMPO_AGOTADO => 'Se agotó el tiempo para completar la respuesta.',
+            AsistenteIaException::MOTIVO_SOBRECARGADO => 'El proveedor de IA estaba sobrecargado o no estaba disponible.',
+            AsistenteIaException::MOTIVO_SIN_RESPUESTA => 'El proveedor de IA terminó sin devolver un texto de respuesta.',
+        ];
+        foreach ($motivos as $motivo => $detalle) {
+            if (strpos((string) $this->contenido, AsistenteIaException::MENSAJES[$motivo]) === 0) {
+                return $detalle;
+            }
+        }
+
+        return 'Ocurrió una falla técnica durante la generación de la respuesta.';
     }
 
     /**

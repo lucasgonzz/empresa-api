@@ -24,6 +24,13 @@ class ProgresoIaHelper
     /** Techo de la columna. */
     const MAX = 120;
 
+    const REINTENTO_CONEXION = 'Reintentando la conexión…';
+    const REINTENTO_PROVEEDOR = 'Reintentando la respuesta…';
+    const DETALLES_REINTENTO = [
+        self::REINTENTO_CONEXION => 'Se cortó la conexión con el proveedor de IA.',
+        self::REINTENTO_PROVEEDOR => 'El proveedor de IA devolvió un error temporal.',
+    ];
+
     /**
      * Etiqueta por herramienta. Las que no están caen en las reglas por prefijo de etiqueta() y, si
      * no, en POR_DEFECTO.
@@ -118,6 +125,23 @@ class ProgresoIaHelper
         self::escribir($assistant_message, null);
     }
 
+    /** Muestra el reintento mientras dura la llamada, sin cambiar su resultado ni sus excepciones. */
+    public static function durante_reintento(AiMessage $message, string $etiqueta, callable $reintentar)
+    {
+        if ($message->canal !== AiMessage::CANAL_SISTEMA) {
+            return $reintentar();
+        }
+
+        $anterior = $message->progreso;
+        self::escribir($message, $etiqueta);
+
+        try {
+            return $reintentar();
+        } finally {
+            self::escribir($message, $anterior);
+        }
+    }
+
     /**
      * El UPDATE de la columna, y el mismo valor en el modelo en memoria como ORIGINAL (para que un
      * save() posterior del job con `progreso = null` sí lo escriba, y uno que no lo toca no lo pise).
@@ -141,7 +165,9 @@ class ProgresoIaHelper
 
         try {
 
-            AiMessage::where('id', (int) $assistant_message->id)->update(['progreso' => $valor]);
+            AiMessage::where('id', (int) $assistant_message->id)
+                ->where('estado', 'pendiente')
+                ->update(['progreso' => $valor]);
 
             $assistant_message->progreso = $valor;
             $assistant_message->syncOriginalAttribute('progreso');

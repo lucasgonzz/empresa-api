@@ -135,6 +135,11 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
 
         list($conversation, $assistant) = $this->conversacion_con_pendiente();
 
+        // La demora se mide desde la pregunta, aunque el placeholder se haya creado después.
+        $pregunta = AiMessage::where('ai_conversation_id', $conversation->id)->where('rol', 'user')->firstOrFail();
+        $pregunta->created_at = now()->subSeconds(12);
+        $pregunta->save();
+
         (new ResponderMensajeChatIaJob($assistant->id))->handle();
 
         $assistant->refresh();
@@ -142,6 +147,14 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
         $this->assertEquals('listo', $assistant->estado);
         $this->assertEquals('Tenés 12 unidades de tornillos.', $assistant->contenido);
         $this->assertNull($assistant->error_mensaje);
+        $publicada_at = $assistant->respuesta_publicada_at;
+        $this->assertNotNull($publicada_at);
+        $this->assertSame($publicada_at->timestamp - $pregunta->created_at->timestamp, $assistant->toArray()['demora_respuesta_seg']);
+        $this->assertGreaterThanOrEqual(12, $assistant->demora_respuesta_seg);
+
+        $assistant->updated_at = $publicada_at->copy()->addMinutes(5);
+        $assistant->save();
+        $this->assertSame($publicada_at->timestamp, $assistant->fresh()->respuesta_publicada_at->timestamp);
 
         Event::assertDispatched(ChatIaMensajeActualizado::class, function ($evento) use ($conversation, $assistant) {
             return $evento->auth_user_id === $this->empleado->id
@@ -161,13 +174,17 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
         Event::fake([ChatIaMensajeActualizado::class]);
 
-        Http::fake([
-            'api.anthropic.com/*' => Http::response([
-                'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded'],
-            ], 529),
-        ]);
-
         list($conversation, $assistant) = $this->conversacion_con_pendiente();
+
+        $motivos_durante_las_llamadas = [];
+        Http::fake([
+            'api.anthropic.com/*' => function () use ($assistant, &$motivos_durante_las_llamadas) {
+                $motivos_durante_las_llamadas[] = $assistant->fresh()->toArray()['detalle_fallo'];
+                return Http::response([
+                    'error' => ['type' => 'overloaded_error', 'message' => 'Overloaded'],
+                ], 529);
+            },
+        ]);
 
         (new ResponderMensajeChatIaJob($assistant->id))->handle();
 
@@ -176,6 +193,9 @@ class Jobs_respuesta_y_titulo_Test extends TestCase
         $this->assertEquals('error', $assistant->estado);
         $this->assertNotEquals('', trim((string) $assistant->contenido), 'El usuario nunca ve un globo vacío: el contenido amigable es obligatorio.');
         $this->assertNotNull($assistant->error_mensaje, 'El detalle técnico va en su columna, no se pierde.');
+        $this->assertSame([null, 'El proveedor de IA devolvió un error temporal.'], $motivos_durante_las_llamadas);
+        $this->assertNull($assistant->progreso);
+        $this->assertSame('El proveedor de IA estaba sobrecargado o no estaba disponible.', $assistant->toArray()['detalle_fallo']);
 
         // El evento sale TAMBIÉN en error: es lo que corta la espera de la SPA.
         Event::assertDispatched(ChatIaMensajeActualizado::class, function ($evento) use ($assistant) {

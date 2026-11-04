@@ -370,6 +370,9 @@ class AiConversationController extends Controller
         if (ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'progreso')) {
             $cierre_del_huerfano['progreso'] = null;
         }
+        if (ColumnasDeLaAppIaHelper::hay_columna('ai_messages', 'respuesta_publicada_at')) {
+            $cierre_del_huerfano['respuesta_publicada_at'] = now();
+        }
 
         AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('rol', 'assistant')
