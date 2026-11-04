@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\DemoEvento;
 use App\Services\DemoMediaUrlsFetcher;
 use Illuminate\Http\Request;
@@ -32,6 +33,15 @@ class DemoPlanController extends Controller
          * eventos. Sin el, no hay nada que devolver.
          */
         if (!$request->hasSession() || empty($request->session()->get('demo_ingreso_token_id'))) {
+            return response(null, 204);
+        }
+
+        /**
+         * Una PRUEBA GRATUITA no tiene el recorrido de videos de la demo (4/11/2026): entra por el mismo
+         * link y lleva el mismo marcador, pero el panel no se monta (`es_sesion_demo` va en false).
+         * Esto cubre a un SPA en caché que lo siga pidiendo.
+         */
+        if (PruebaHelper::puede_haber_prueba()) {
             return response(null, 204);
         }
 

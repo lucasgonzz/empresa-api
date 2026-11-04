@@ -610,7 +610,7 @@ class AuthController extends Controller
              * Marcador de sesion de demo (mision 52). Va en las DOS ramas de este metodo: esta
              * es la del bypass de login maestro, que es justo la que menos se prueba.
              */
-            $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
+            $user->es_sesion_demo = $this->es_sesion_de_demo();
             /**
              * Marcador de acceso de soporte (misión acceso-soporte-firmado). Va en las DOS ramas, y
              * esta es la que realmente lo recibe: la sesión de soporte está eximida del candado. Clave
@@ -646,7 +646,7 @@ class AuthController extends Controller
              * cargo--. Y sobrevive al F5 por construccion, porque la fuente es la cookie de
              * sesion y no una variable de JavaScript.
              */
-            $user->es_sesion_demo = session()->has('demo_ingreso_token_id');
+            $user->es_sesion_demo = $this->es_sesion_de_demo();
             // Marcador de acceso de soporte (misión acceso-soporte-firmado), en las DOS ramas. Hoy acá
             // da siempre false (la sesión de soporte entra por la rama eximida de arriba), pero se
             // calcula igual en vez de fijarlo, por lo mismo que `es_acceso_maestro` más abajo.
@@ -782,9 +782,21 @@ class AuthController extends Controller
      * sesión. Es el mismo que ya se usa para `es_sesion_demo` en `get_user()`: sobrevive al F5
      * porque vive en la cookie de sesión y no en una variable de JavaScript.
      *
+     * 🔴 En una PRUEBA GRATUITA (`FOR_USER=prueba`) da siempre false (4/11/2026, misión
+     * prueba-defectos-asistente-y-vender). La prueba entra por el mismo link mágico que una demo, así
+     * que su sesión lleva el marcador y el SPA montaba «Tu asistente de la demo» y la guía de videos de
+     * un lead. Ese chat vive en el admin y solo atiende a un lead de demo: para una prueba contestaba
+     * 503 en cada intento, y con texto de demo. El marcador de la sesión se conserva (el corte por
+     * revocación de DemoSessionVigente y los hitos de la prueba lo siguen usando); lo que se apaga es
+     * lo que se le ANUNCIA al SPA.
+     *
      * @return bool
      */
     function es_sesion_de_demo() {
+        if (PruebaHelper::puede_haber_prueba()) {
+            return false;
+        }
+
         return session()->has('demo_ingreso_token_id');
     }
 
