@@ -252,7 +252,7 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
         $this->assertSame('deepseek-flash-test', $pedidos[0]['body']['model']);
     }
 
-    public function test_sin_clave_de_deepseek_el_modelo_pedido_cae_a_la_configuracion_del_dueno()
+    public function test_sin_clave_de_deepseek_el_turno_no_llama_a_claude()
     {
         $this->claves(false);
         $this->fakes();
@@ -263,17 +263,16 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
 
         $conversation = $this->conversacion(['titulo' => 'Ventas']);
 
-        $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
+        $respuesta = $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
             'contenido' => 'Analizame las ventas',
             'modelo'    => 'pensamiento',
         ], $this->de_la_app())->assertStatus(201);
 
         $this->assertCount(0, $this->pedidos_a('api.deepseek.com'));
 
-        $pedidos = $this->pedidos_a('api.anthropic.com');
-
-        $this->assertCount(1, $pedidos);
-        $this->assertSame('claude-agil-test', $pedidos[0]['body']['model']);
+        $this->assertCount(0, $this->pedidos_a('api.anthropic.com'));
+        $mensaje = AiMessage::findOrFail($respuesta->json('assistant_message.id'));
+        $this->assertSame('error', $mensaje->estado);
     }
 
     public function test_un_modelo_que_no_existe_da_422_con_code()
@@ -323,10 +322,14 @@ class Mensajes_desde_la_app_Test extends IaAppTestCase
 
         $this->assertCount(1, $respuesta->json('user_message.imagenes'));
 
-        // La foto le llegó al modelo con visión.
-        $pedidos = $this->pedidos_a('api.deepseek.com');
-        $this->assertNotEmpty($pedidos);
-        $this->assertStringContainsString('"type":"image"', json_encode($pedidos[0]['body']['messages']));
+        $vision = $this->pedidos_a('api.anthropic.com');
+        $this->assertCount(1, $vision);
+        $this->assertSame('claude-haiku-4-5-20251001', $vision[0]['body']['model']);
+        $this->assertStringContainsString('"type":"image"', json_encode($vision[0]['body']['messages']));
+
+        $chat = $this->pedidos_a('api.deepseek.com');
+        $this->assertCount(1, $chat);
+        $this->assertStringNotContainsString('"type":"image"', json_encode($chat[0]['body']['messages']));
     }
 
     public function test_mas_de_tres_fotos_o_un_archivo_que_no_se_lee_dan_422_sin_crear_nada()

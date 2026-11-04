@@ -19,21 +19,11 @@ use Illuminate\Http\Request;
  *
  * 🔴 LA CONFIG SE GUARDA Y SE LEE DEL DUEÑO, NO DE LA PERSONA. A diferencia de
  * UserController::set_chat_ia_preferencias() —que guarda con Auth::user() porque una coordenada de
- * pantalla es de cada persona—, la confianza, el proveedor y el modelo del agente son del COMERCIO:
+ * pantalla es de cada persona—, la confianza y el modo de pensamiento del agente son del COMERCIO:
  * el asistente contesta lo mismo abra quien lo abra. Por eso se resuelve con UserHelper::user(true),
  * que devuelve el dueño aunque quien esté autenticado sea un admin_access.
  *
- * Misión proveedores-ia-deepseek (22/9/2026): se suma el PROVEEDOR (`users.agente_proveedor`,
- * Claude o DeepSeek). Los enums de proveedor y de pensamiento POR proveedor viven en
- * ProveedorIaHelper y no se duplican acá: DeepSeek no tiene `equilibrado`, y un proveedor sin clave
- * en la instalación no se puede elegir (422 con mensaje). `proveedor` es OPCIONAL en el PUT porque
- * una SPA vieja no lo manda y tiene que seguir guardando confianza y pensamiento sin tocarlo.
- *
- * Misión asistente-capacidades-y-hilos (22/9/2026): la confianza pasa a tener TRES niveles, con
- * `directo` como el más suelto (ver ConfianzaDelAgenteIaHelper). El enum y el default no se
- * duplican acá: salen de ese helper, que es el que además leen la puerta de auto-confirmación y el
- * prompt. El default sigue siendo `resuelto`, así que ninguna cuenta cambia de comportamiento sin
- * que alguien prenda el modo directo a mano.
+ * El agente usa DeepSeek. La API conserva el campo proveedor para las versiones anteriores de la SPA.
  */
 class AsistenteConfigController extends Controller
 {
@@ -72,13 +62,8 @@ class AsistenteConfigController extends Controller
     /**
      * PUT api/user/asistente-config → valida los enums y guarda en el dueño.
      *
-     * `confianza` y `pensamiento` son obligatorias: el modal las manda juntas. `proveedor` es
-     * opcional (una SPA vieja no lo manda y se conserva el guardado). Todo se valida ANTES de
-     * guardar nada: un valor fuera del enum, un proveedor sin clave en la instalación o un
-     * pensamiento que ese proveedor no tiene cortan con 422 y la config queda como estaba.
-     *
-     * @param  Request  $request
-     * @return JsonResponse
+     * La confianza y el pensamiento son obligatorios. Las SPA anteriores pueden seguir
+     * enviando el proveedor y el modo Equilibrado.
      */
     public function update(Request $request): JsonResponse
     {
@@ -95,42 +80,13 @@ class AsistenteConfigController extends Controller
             return response()->json(['message' => 'No se pudo resolver el dueño de la cuenta.'], 409);
         }
 
-        /*
-         * El proveedor resultante: el que vino, o el guardado si la SPA no lo manda. Si vino uno
-         * sin clave en esta instalación, no se puede elegir (el modal lo muestra como no disponible;
-         * esto es la guarda del lado del servidor).
-         */
-        $vino_proveedor = $request->filled('proveedor');
-        $proveedor      = $vino_proveedor
-            ? (string) $request->input('proveedor')
-            : ProveedorIaHelper::proveedor_elegido($owner);
-
-        if ($vino_proveedor && ! ProveedorIaHelper::hay_credenciales($proveedor)) {
-
-            return response()->json([
-                'message' => ProveedorIaHelper::nombre_de($proveedor)
-                           . ' no está disponible en esta instalación: falta cargar la clave de la API.',
-            ], 422);
-        }
-
+        // Los clientes anteriores todavía pueden enviar proveedor y el modo Equilibrado.
         $pensamiento = (string) $request->input('pensamiento');
-
-        if (! in_array($pensamiento, ProveedorIaHelper::pensamientos_de($proveedor), true)) {
-
-            return response()->json([
-                'message' => ProveedorIaHelper::nombre_de($proveedor) . ' no tiene el modo de pensamiento "'
-                           . $pensamiento . '". Elegí uno de: '
-                           . implode(', ', ProveedorIaHelper::pensamientos_de($proveedor)) . '.',
-            ], 422);
-        }
-
         $owner->agente_confianza = (string) $request->input('confianza');
-        $owner->agente_pensamiento = $pensamiento;
-
-        if ($vino_proveedor) {
-            $owner->agente_proveedor = $proveedor;
-        }
-
+        $owner->agente_pensamiento = $pensamiento === 'equilibrado'
+            ? ProveedorIaHelper::PENSAMIENTO_POR_DEFECTO
+            : $pensamiento;
+        $owner->agente_proveedor = ProveedorIaHelper::DEEPSEEK;
         $owner->save();
 
         return response()->json($this->config_de($owner), 200);
@@ -212,10 +168,7 @@ class AsistenteConfigController extends Controller
      *     pensamientos_por_proveedor: {anthropic: [...], deepseek: [...]},
      *     modelo: {proveedor, modelo, pensamiento} }
      *
-     * `proveedor` es el ELEGIDO (lo que el dueño guardó); `modelo` es con lo que efectivamente
-     * corre el asistente (si el elegido no tiene clave, ahí se ve al que cayó). Las dos listas son
-     * para que el modal deshabilite lo que no está disponible y filtre las variantes por proveedor
-     * sin tener la lista duplicada del lado de la SPA.
+     * Los campos de proveedor se conservan para las versiones anteriores de la SPA.
      *
      * @param  \App\Models\User  $owner
      * @return array
@@ -228,7 +181,9 @@ class AsistenteConfigController extends Controller
             'confianza'                  => $this->confianza_de($owner),
             'pensamiento'                => $this->pensamiento_de($owner),
             'proveedor'                  => ProveedorIaHelper::proveedor_elegido($owner),
-            'proveedores_disponibles'    => ProveedorIaHelper::proveedores_disponibles(),
+            'proveedores_disponibles'    => ProveedorIaHelper::hay_credenciales(ProveedorIaHelper::DEEPSEEK)
+                ? [ProveedorIaHelper::DEEPSEEK]
+                : [],
             'pensamientos_por_proveedor' => ProveedorIaHelper::PENSAMIENTOS_POR_PROVEEDOR,
             'modelo'                     => [
                 'proveedor'   => $modelo['proveedor'],
