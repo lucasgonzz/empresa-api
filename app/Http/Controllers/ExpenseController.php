@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
 use App\Http\Controllers\Helpers\expense\ExpenseCajaHelper;
@@ -100,6 +101,9 @@ class ExpenseController extends Controller
         $model = ExpenseHelper::crear($data, $this->userId(), function () {
             return $this->num('expenses');
         });
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.gasto', ['id' => (int) $model->id]);
 
         return response()->json(['model' => $this->fullModel('Expense', $model->id)], 201);
     }  

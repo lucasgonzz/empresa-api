@@ -6,6 +6,7 @@ use App\Events\ChatIaMensajeActualizado;
 use App\Exceptions\AsistenteIaException;
 use App\Http\Controllers\AdminSync\AsistenteController;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
@@ -126,6 +127,12 @@ class ResponderMensajeChatIaJob implements ShouldQueue
          * mensaje queda en error amigable sin gastar una llamada a la API.
          */
         $owner = User::find($conversation->user_id);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): el negocio le habló al agente,
+        // por el chat del sistema o por WhatsApp. Cero costo fuera de una prueba.
+        if ($owner) {
+            PruebaHitosHelper::emitir('prueba.agente', ['id' => (int) $message->id], (int) $owner->id);
+        }
 
         if (!$owner || !UserHelper::hasExtencion('agentes_ia', $owner)) {
             $this->marcar_error(

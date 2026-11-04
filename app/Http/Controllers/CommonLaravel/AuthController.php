@@ -5,6 +5,8 @@ namespace App\Http\Controllers\CommonLaravel;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
 use App\Notifications\SessionForcedLogoutNotification;
@@ -58,6 +60,20 @@ class AuthController extends Controller
                            'password' => $request->password], $request->remember)) {
             /** Limpia bypass en logins normales. */
             session()->forget($this->master_login_bypass_activity_key);
+
+            /*
+             * Prueba gratuita vencida (misión prueba-experiencia-empresa, 3/11/2026): la credencial es
+             * correcta, pero la prueba terminó. Se contesta el mismo 403 `prueba_vencida` que el middleware
+             * (con el WhatsApp de soporte) y NO `login: false`: el negocio tiene que ver la pantalla «Tu
+             * prueba terminó», no «credenciales incorrectas». Antes del candado de sesión única a propósito:
+             * una prueba vencida no tiene por qué ocupar el candado.
+             */
+            if (PruebaHelper::vencida_para(Auth::user())) {
+                $owner_id = PruebaHelper::owner_id_de(Auth::user());
+                Auth::logout();
+
+                return PruebaHelper::respuesta_vencida($owner_id);
+            }
             
             if ($this->checkUserLastActivity()) {
 
@@ -73,6 +89,9 @@ class AuthController extends Controller
                  * nunca tira una excepción: no puede frenar el login.
                  */
                 LocalActividad::login_de($user);
+
+                // Hito de la prueba gratuita (C2): cada ingreso. Cero costo fuera de una instancia de prueba.
+                PruebaHitosHelper::emitir('prueba.ingreso', ['user_id' => (int) $user->id, 'via' => 'login'], PruebaHelper::owner_id_de($user));
 
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} entro desde: ".$request->header('referer'));
             } else {
@@ -97,6 +116,8 @@ class AuthController extends Controller
              * frontend viejo la ignora.
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            // `user.prueba` (misión prueba-experiencia-empresa): null fuera del modo prueba.
+            PruebaHelper::adjuntar_resumen($user);
         }
 
         return response()->json([
@@ -134,6 +155,14 @@ class AuthController extends Controller
 
             $auth_user = Auth()->user();
 
+            // Prueba gratuita vencida: mismo 403 que en login() (misión prueba-experiencia-empresa).
+            if (PruebaHelper::vencida_para($auth_user)) {
+                $owner_id = PruebaHelper::owner_id_de($auth_user);
+                Auth::logout();
+
+                return PruebaHelper::respuesta_vencida($owner_id);
+            }
+
             /**
              * Libera el candado que tenía tomado el otro dispositivo. Mismo método que ya usan
              * logout() y create_version_session_token() -no hay una segunda forma de liberarlo.
@@ -165,6 +194,8 @@ class AuthController extends Controller
                 $login = true;
                 /** «El local» del admin: mismo aviso que en `login()`, ver el motivo ahí. */
                 LocalActividad::login_de($user);
+                PruebaHitosHelper::emitir('prueba.ingreso', ['user_id' => (int) $user->id, 'via' => 'login'], PruebaHelper::owner_id_de($user));
+
                 Log::info("Usuario {$user->name}, doc: {$user->doc_number} forzo el ingreso expulsando otro dispositivo, desde: ".$request->header('referer'));
             } else {
                 /** Paridad con login(): si por una carrera el candado no queda libre, no dejar la sesión autenticada a medias. */
@@ -177,6 +208,7 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = false;
             $user->master_login_mode = null;
+            PruebaHelper::adjuntar_resumen($user);
         }
 
         return response()->json([
@@ -584,6 +616,8 @@ class AuthController extends Controller
              * Una sesión de soporte NO es acceso maestro: esto da false para ella.
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
+            PruebaHelper::adjuntar_resumen($user);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -614,6 +648,8 @@ class AuthController extends Controller
             // siempre false (el maestro entra por la rama de arriba), pero se calcula igual en vez
             // de fijarlo: si mañana cambia la condición de esa rama, el flag sigue diciendo la verdad.
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
+            PruebaHelper::adjuntar_resumen($user);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -712,6 +748,7 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = false;
             $user->master_login_mode = null;
+            PruebaHelper::adjuntar_resumen($user);
         }
 
         return response()->json([

@@ -10,6 +10,7 @@ use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CurrentAcountController;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CajaHelper;
 use App\Http\Controllers\Helpers\ComercioCityMailHelper;
@@ -760,6 +761,9 @@ class SaleController extends Controller
              * emisor mira el marcador de sesion de demo y sale.
              */
             DemoEventoEmitter::emitir('venta.creada', null, ['id' => $model->id]);
+
+            // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+            PruebaHitosHelper::emitir('prueba.venta', ['id' => (int) $model->id]);
 
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
 

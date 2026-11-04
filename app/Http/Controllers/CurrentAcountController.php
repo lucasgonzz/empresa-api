@@ -6,6 +6,7 @@ use App\Http\Controllers\ClientController;
 use App\Http\Controllers\CommissionController;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\caja\DeleteCajaCompensacionHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\ChequeHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\currentAcount\CurrentAcountCajaHelper;
@@ -232,6 +233,9 @@ class CurrentAcountController extends Controller
          * cualquier otro medio de pago; lo que se guarda aca es el papel.
          */
         $this->guardar_retenciones_sufridas($pago, $request->current_acount_payment_methods, $request->model_name, $request->model_id);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
+        PruebaHitosHelper::emitir('prueba.pago_cc', ['id' => (int) $pago->id, 'model_name' => (string) $request->model_name]);
 
         $this->sendAddModelNotification($request->model_name, $request->model_id);
         Log::info('Terminando de guardar pago');

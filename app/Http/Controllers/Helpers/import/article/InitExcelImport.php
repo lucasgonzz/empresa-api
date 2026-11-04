@@ -4,6 +4,9 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\SemillaRegistroHelper;
+use App\Jobs\BorrarSemillaDePruebaJob;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
@@ -89,6 +92,8 @@ class InitExcelImport
         $this->user                     = $data['user'];
         $this->auth_user_id             = $data['auth_user_id'];
         $this->archivo_excel_path       = $data['archivo_excel_path'];
+        // De dónde viene esta importación para la prueba gratuita (excel | pdf | martin); opcional.
+        $this->prueba_origen            = isset($data['prueba_origen']) ? $data['prueba_origen'] : null;
         $this->registrar_art_cre        = $data['registrar_art_cre'];
         $this->registrar_art_act        = $data['registrar_art_act'];
 
@@ -323,6 +328,23 @@ class InitExcelImport
             $this->import_history->id,
             $this->import_status->id
         );
+
+        /*
+         * Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el PRIMER import de artículos de
+         * un negocio en prueba borra todos sus datos de ejemplo. Va al FRENTE de la cadena, antes de los
+         * chunks: con los artículos de ejemplo todavía en la base, un código repetido actualizaría el de
+         * ejemplo en vez de crear el real. Este es el punto único por el que pasan el importador clásico,
+         * Importar con IA y el import remoto del admin. Solo en modo prueba y solo mientras haya semilla;
+         * en una demo o en un cliente real no agrega nada.
+         */
+        if (PruebaHelper::activa($this->user->id) && SemillaRegistroHelper::semilla_presente($this->user->id)) {
+            array_unshift($jobs, new BorrarSemillaDePruebaJob(
+                $this->user->id,
+                $this->import_history->id,
+                $this->import_status->id,
+                $this->prueba_origen
+            ));
+        }
 
         Bus::chain($jobs)->dispatch();
     }

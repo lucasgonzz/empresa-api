@@ -59,6 +59,13 @@ class Kernel extends HttpKernel
             \App\Http\Middleware\DemoSessionVigente::class,
             /* Solo actúa en terminate(), con la respuesta ya enviada (misión el-local-fase-2, 3/11/2026). */
             \App\Http\Middleware\AvisarActividadAlLocal::class,
+            /**
+             * La prueba gratuita vencida (misión prueba-experiencia-empresa, 3/11/2026): 403 `prueba_vencida`
+             * en toda ruta con sesión de una instancia de prueba cuando pasó `users.expired_at`. Va después
+             * de DemoSessionVigente por el mismo motivo: necesita la sesión que Sanctum ya estableció. Corte
+             * temprano propio: en un cliente real no toca nada.
+             */
+            \App\Http\Middleware\PruebaVencida::class,
         ],
     ];
 

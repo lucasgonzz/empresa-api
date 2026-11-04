@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Models\User;
 use App\Services\DemoEventoEmitter;
 use Illuminate\Http\Request;
@@ -33,6 +35,19 @@ class DemoIngresoController extends Controller
      */
     public function store(Request $request)
     {
+        /*
+         * Prueba gratuita vencida (misión prueba-experiencia-empresa, 3/11/2026): el link de ingreso de una
+         * prueba vencida contesta el mismo 403 `prueba_vencida` que el login y el middleware, ANTES de mirar el
+         * token (que además suele estar vencido: el SPA diría «token inválido» y el negocio no sabría por qué).
+         */
+        if (PruebaHelper::puede_haber_prueba()) {
+            $dueno = PruebaHelper::dueno();
+
+            if (!is_null($dueno) && PruebaHelper::vencida($dueno->id)) {
+                return PruebaHelper::respuesta_vencida($dueno->id);
+            }
+        }
+
         /** Token en claro recibido desde el lead (acepta 't' o 'token'). */
         $plain_token = trim((string) $request->input('t', $request->input('token', '')));
 
@@ -71,6 +86,9 @@ class DemoIngresoController extends Controller
          * que pulsar el boton habia dejado en `parcial`.
          */
         DemoEventoEmitter::emitir('demo.ingreso', null, ['user_id' => $user->id]);
+
+        // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): el primer ingreso llega por este token.
+        PruebaHitosHelper::emitir('prueba.ingreso', ['user_id' => (int) $user->id, 'via' => 'token'], (int) $user->id);
 
         return response()->json(['ok' => true], 200);
     }

@@ -17,6 +17,12 @@ use Illuminate\Support\Facades\Log;
  * Replica el mismo comportamiento del form legacy en /demo/setup pero
  * entregando el input como JSON y respondiendo status JSON para que el
  * admin-api pueda reflejar éxito/error en el Lead.
+ *
+ * Prueba gratuita de 7 días (C1, misión prueba-experiencia-empresa, 3/11/2026): tres campos opcionales
+ * más en el payload, `password` (string de 8 o más: queda como contraseña del dueño), `prueba`
+ * (`{dias, vence_at, video_url, whatsapp_soporte}`: fija `users.expired_at` y prende el modo prueba) y
+ * el rubro, que sigue llamándose `demo_industria`. Un `password` corto o un `prueba` que no es objeto
+ * contesta 422 ANTES del `migrate:fresh`. La respuesta no cambia.
  */
 class DemoSetupController extends Controller
 {
@@ -72,7 +78,17 @@ class DemoSetupController extends Controller
         }
 
         try {
-            $user = DemoSetupHelper::run($request->all());
+            $datos = $request->all();
+
+            /*
+             * Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): si el POST trae la
+             * X-Admin-Api-Key de esta instancia, run() puede rearmar una instancia de prueba que ya
+             * tiene datos; sin ella, con datos, se niega (409). Se escribe SIEMPRE desde el header y se
+             * pisa lo que venga en el body: un `con_clave_de_admin: true` en el JSON no es una clave.
+             */
+            $datos['con_clave_de_admin'] = $this->trae_la_clave_de_la_instancia($request);
+
+            $user = DemoSetupHelper::run($datos);
         } catch (BaseConDatosException $e) {
             /*
              * La guarda de instancia de DemoSetupHelper::run() (10/10/2026) se negó ANTES del
@@ -117,5 +133,24 @@ class DemoSetupController extends Controller
                 'company_name' => $user->company_name,
             ],
         ], 200);
+    }
+
+    /**
+     * ¿El POST trae la clave de admin de esta instancia (`ADMIN_API_INBOUND_KEY`)? Mismo criterio que el
+     * trait ClaveEstrictaDeAdmin: sin clave cargada o sin header, NO (nunca es pase libre).
+     *
+     * @param Request $request
+     * @return bool
+     */
+    private function trae_la_clave_de_la_instancia(Request $request)
+    {
+        $recibida = (string) $request->header('X-Admin-Api-Key');
+        $esperada = (string) config('services.admin_api.api_key');
+
+        if ($esperada === '' || $recibida === '') {
+            return false;
+        }
+
+        return hash_equals($esperada, $recibida);
     }
 }

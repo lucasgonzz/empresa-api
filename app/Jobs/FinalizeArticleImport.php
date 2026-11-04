@@ -3,6 +3,8 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\PruebaHitosHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -251,6 +253,16 @@ class FinalizeArticleImport implements ShouldQueue
             ['import_history_id' => $import_history->id],
             (string) $import_history->id
         );
+
+        /*
+         * Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa, 3/11/2026): la importación
+         * TERMINÓ. `origen` (excel | pdf | martin) lo dejó BorrarSemillaDePruebaJob en prueba_config al
+         * arrancar la cadena. `prueba_hitos` lo hace único por su cuenta; cero costo fuera de una prueba.
+         */
+        PruebaHitosHelper::emitir('prueba.importo', [
+            'origen'            => PruebaHelper::origen_de_importacion($user->id),
+            'import_history_id' => (int) $import_history->id,
+        ], (int) $user->id);
 
         $this->generar_embeddings_de_lo_importado();
     }

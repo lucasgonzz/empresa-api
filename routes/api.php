@@ -73,6 +73,13 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
         sesion no tocaria la cookie y no serviria para nada.
     */
     Route::post('demo/heartbeat', 'DemoEventoController@heartbeat');
+    /*
+        Prueba gratuita de 7 días (misión prueba-experiencia-empresa, 3/11/2026): el estado que el Listado
+        vuelve a pedir después de importar, y la marca del modal de primer ingreso. Fuera del modo prueba
+        contestan `{prueba: null}` sin escribir nada: este SPA se despliega en los ~40 clientes reales.
+    */
+    Route::get('prueba/estado', 'PruebaController@estado');
+    Route::post('prueba/modal-visto', 'PruebaController@modal_visto');
 
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
@@ -1683,6 +1690,11 @@ Route::middleware('admin.api.key')
         // Mensualidad: consulta y actualización desde admin (capa opcional de sincronización, ver prompt 326)
         Route::get('mensualidad-info/{user_id?}', 'AdminSync\\MensualidadController@show');
         Route::put('mensualidad-update/{user_id?}', 'AdminSync\\MensualidadController@update');
+        // Prueba gratuita de 7 días (C3, misión prueba-experiencia-empresa, 3/11/2026): el admin fija o saca el
+        // vencimiento (`{vence_at: ISO|null}` → `{vence_at}`) y lee el estado (`{vence_at, vencida,
+        // semilla_presente, hitos: {tipo: ISO|null}}`). Un empresa viejo contesta 404 y el admin lo tolera.
+        Route::post('prueba/vencimiento', 'AdminSync\\PruebaController@vencimiento');
+        Route::get('prueba/estado', 'AdminSync\\PruebaController@estado');
         // Contacto del dueño (misión aviso-de-actualizacion-al-cliente): el admin necesita su
         // casilla para mandarle el mail con las novedades cuando le actualiza el sistema. Hoy el
         // único endpoint del canal que devuelve `email` es mostrador/duenos, que filtra por la
