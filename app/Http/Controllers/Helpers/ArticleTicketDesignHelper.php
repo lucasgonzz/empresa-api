@@ -518,13 +518,12 @@ class ArticleTicketDesignHelper
             }
 
             /*
-             * Misión prueba-listas-siempre (3/11/2026): todo negocio trabaja con listas, pero la
-             * interfaz de listas aparece desde la SEGUNDA (como las sucursales). Con UNA sola lista
-             * —la «Precio final», que es el precio del artículo— el dueño tiene la etiqueta genérica
-             * de siempre, con el precio final, y no una "por lista" que diría lo mismo. Mismo
+             * Misión prueba-listas-siempre (3/11/2026): todo negocio trabaja con listas, pero si la
+             * única es la «Precio final», que es el precio del artículo, el dueño tiene la etiqueta
+             * genérica de siempre, con el precio final, y no una "por lista" que diría lo mismo. Mismo
              * criterio que PriceTypeHelper::muestra_listas() y que `muestra_listas` de la SPA.
              */
-            if (count($listas) < 2) {
+            if (count($listas) === 1 && PriceTypeHelper::es_lista_precio_final($listas[0])) {
                 $listas = array();
             }
 
@@ -579,14 +578,14 @@ class ArticleTicketDesignHelper
             }
 
             /*
-             * Misión prueba-listas-siempre (3/11/2026): los diseños por lista existen desde la
-             * SEGUNDA lista (ver crear_disenos_del_sistema()). Con la primera no se crea nada (queda
-             * la etiqueta genérica); cuando llega la segunda, se completan los de TODAS las listas
-             * del dueño que no lo tengan, así la primera no queda sin el suyo.
+             * Misión prueba-listas-siempre (3/11/2026): con la «Precio final» sola no se crea nada
+             * (ver crear_disenos_del_sistema(), queda la etiqueta genérica); cuando llega otra lista,
+             * se completan los de TODAS las listas del dueño que no lo tengan, así esa no queda sin
+             * el suyo.
              */
             $listas = PriceType::where('user_id', $owner_id)->orderBy('position')->orderBy('id')->get();
 
-            if (count($listas) < 2) {
+            if (count($listas) === 1 && PriceTypeHelper::es_lista_precio_final($listas[0])) {
                 return null;
             }
 
