@@ -264,6 +264,46 @@ class Cheque_y_permisos_de_empleado_Test extends EmpresaTestCase
     // (f) El cheque — el #46
     // =====================================================================
 
+    /** @test */
+    public function pago_mixto_a_proveedor_con_cheque_vencido_conserva_todas_las_filas()
+    {
+        $proveedor = \App\Models\Provider::where('user_id', $this->dueno->id)->where('name', TestingFerreteriaSeeder::PROVIDER_BSAS)->firstOrFail();
+        $cheque = $this->metodo_cheque();
+        $transferencia = $this->resolver_metodo_pago_por_nombre('Transferencia');
+        $efectivo = $this->resolver_metodo_pago_por_nombre('Efectivo');
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $pagos = [];
+        for ($i = 0; $i < 5; $i++) {
+            $pagos[] = ['metodo_de_pago_id' => $cheque->id, 'monto' => 1000, 'cheque' => [
+                'numero' => '9000000'.$i, 'banco' => 'Banco de prueba',
+                'fecha_pago' => now()->addDays($i === 0 ? -1 : $i)->format('Y-m-d'), 'es_echeq' => true,
+            ]];
+        }
+        $pagos[] = ['metodo_de_pago_id' => $transferencia->id, 'monto' => 1000, 'caja_id' => $caja->id];
+        $pagos[] = ['metodo_de_pago_id' => $efectivo->id, 'monto' => 0.02, 'caja_id' => $caja->id];
+        list($conversation, $assistant) = $this->conversacion('Registrá el pago mixto');
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_pago', [
+            'tipo' => 'proveedor', 'id' => $proveedor->id, 'monto' => 6000.02, 'pagos' => $pagos,
+        ]);
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $accion = AiMessageAction::findOrFail($respuesta['tarjeta_id']);
+        $this->assertCount(7, $accion->datos['current_acount_payment_methods']);
+        $this->assertNull($accion->datos['current_acount_payment_methods'][0]['fecha_emision']);
+        $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
+        $accion->refresh();
+        $this->assertSame(AiMessageAction::ESTADO_CONFIRMADA, $accion->estado_guardado(), (string) $accion->error_mensaje);
+        $this->assertStringContainsString('Pago N°', $accion->resultado->texto);
+        $pago = CurrentAcount::where('provider_id', $proveedor->id)->orderBy('id', 'DESC')->firstOrFail();
+        $this->assertEqualsWithDelta(6000.02, (float) $pago->haber, 0.001);
+        $this->assertCount(7, \DB::table('current_acount_current_acount_payment_method')->where('current_acount_id', $pago->id)->get());
+        $cheques = Cheque::where('provider_id', $proveedor->id)->whereIn('numero', ['90000000', '90000001', '90000002', '90000003', '90000004'])->get();
+        $this->assertCount(5, $cheques);
+        $vencido = $cheques->firstWhere('numero', '90000000');
+        $this->assertNull($vencido->fecha_emision);
+        $this->assertSame($pagos[0]['cheque']['fecha_pago'], Carbon::parse($vencido->fecha_pago)->format('Y-m-d'));
+        $this->assertNull($vencido->caja_id);
+    }
+
     /**
      * 🔴 EL CAMINO CRÍTICO: un pago con cheque queda con su cheque cargado, y sin mover caja.
      *

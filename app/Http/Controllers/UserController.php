@@ -331,9 +331,22 @@ class UserController extends Controller
 
         $model->save();
 
+        /*
+         * Misión prueba-listas-siempre (3/11/2026): todo negocio trabaja con listas, así que el flag
+         * solo puede PRENDERSE desde acá, nunca apagarse. La tilde ya no está en el formulario, pero
+         * una SPA vieja cacheada en la PWA sigue mandando el modelo entero con `listas_de_precio: 0`
+         * para un dueño que el seeder acaba de prender, y el 1 → 0 de más abajo
+         * (check_update_articles_price_types_relations_on_lists_de_precio) BORRA todos los pivotes
+         * de listas del catálogo. Un 0 se ignora y queda anotado.
+         */
         if ($owner_user && $request->has('listas_de_precio')) {
-            $owner_user->listas_de_precio = (int) $request->listas_de_precio;
-            $owner_user->save();
+
+            if ((int) $request->listas_de_precio === 1) {
+                $owner_user->listas_de_precio = 1;
+                $owner_user->save();
+            } else if ((int) $owner_user->listas_de_precio === 1) {
+                Log::info('UserController::update: se ignora listas_de_precio = 0 para el dueño '.$owner_user->id.' (todo negocio trabaja con listas, misión prueba-listas-siempre)');
+            }
         }
 
         /**

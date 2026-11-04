@@ -30,7 +30,7 @@ class ContextoDeCargaIa
     /** @var int */
     public $owner_id;
 
-    /** @var bool La cuenta tiene la extensión ventas_en_dolares. */
+    /** @var bool El negocio opera en dólares (UserHelper::opera_en_dolares(), desde el 3/11/2026). */
     public $usa_dolares;
 
     /** @var \Carbon\Carbon Hoy en la zona de la app (America/Argentina/Buenos_Aires). */
@@ -49,7 +49,7 @@ class ContextoDeCargaIa
         $contexto->owner_id = (int) $conversation->user_id;
         $contexto->owner = User::find($conversation->user_id);
         $contexto->persona = is_null($persona) ? User::find($conversation->auth_user_id) : $persona;
-        $contexto->usa_dolares = !is_null($contexto->owner) && UserHelper::hasExtencion('ventas_en_dolares', $contexto->owner);
+        $contexto->usa_dolares = UserHelper::opera_en_dolares($contexto->owner);
         $contexto->hoy = Carbon::today();
 
         return $contexto;

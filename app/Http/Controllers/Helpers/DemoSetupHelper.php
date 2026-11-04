@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\EsquemaDemoSnapshotHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\SemillaRegistroHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Http\Controllers\ZipnovaIntegracionController;
 use App\Models\Address;
@@ -462,18 +463,18 @@ class DemoSetupHelper
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
 
-        if (!empty($data['use_price_lists'])) {
-            $user->listas_de_precio = 1;
-            $user->save();
-        }
+        // M1 (misión prueba-listas-siempre, 3/11/2026): todo negocio trabaja con listas; el flag va
+        // siempre (create_demo_user() ya lo deja en 1; acá queda explícito por si el seeder lo pisa).
+        $user->listas_de_precio = 1;
+        $user->save();
 
         // Sucursales y listas de precios dependen de inputs del formulario
         if (!empty($data['use_deposits'])) {
             self::crear_depositos($data);
         }
-        if (!empty($data['use_price_lists'])) {
-            self::crear_price_types($data);
-        }
+
+        // M1: las listas del formulario, o «Precio final» si no viene ninguna (ver crear_price_types()).
+        self::crear_price_types($data);
 
         // Seeders específicos de producción van DESPUÉS de las extensiones
         if (!empty($data['produccion'])) {
@@ -1030,7 +1031,8 @@ class DemoSetupHelper
             // SERPER_API_KEY del .env (ImageSearchProviderFactory::clave_serper_para()). 🔴 Es un
             // secreto: User::$hidden la saca de toda respuesta al navegador.
             'serper_api_key'                => ImageSearchProviderFactory::clave_serper_del_payload($data),
-            'listas_de_precio'              => !empty($data['use_price_lists']) ? 1 : 0,
+            // M1 (misión prueba-listas-siempre, 3/11/2026): siempre con listas (antes, solo con use_price_lists).
+            'listas_de_precio'              => 1,
             // Pedido de Lucas (25/8/2026): en la demo estos avisos al iniciar sesion quedan apagados por defecto.
             'show_stock_min_al_iniciar'     => 0,
             'show_afip_errors_al_iniciar'   => 0,
@@ -1549,12 +1551,12 @@ class DemoSetupHelper
         if (!empty($data['use_deposits'])) {
             $extencions[] = 'deposit_movements';
         }
-        
-        if (!empty($data['use_price_lists'])) {
-            $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
-            $extencions[] = 'cambiar_price_type_en_vender';
-            $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
-        }
+
+        // M1 (misión prueba-listas-siempre, 3/11/2026): las tres extensiones de listas van siempre,
+        // igual que en UserSetupHelper::apply_flag_rules() (todo negocio trabaja con listas).
+        $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
+        $extencions[] = 'cambiar_price_type_en_vender';
+        $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
 
         // if (empty($data['usar_codigos_de_barra'])) {
         //     $extencions[] = 'no_usar_codigos_de_barra';
@@ -2455,10 +2457,28 @@ class DemoSetupHelper
     /**
      * Persiste hasta 3 listas de precios a partir de los campos price_type_1..3.
      *
+     * M1 (misión prueba-listas-siempre, 3/11/2026): si el payload no trae ninguna, nace la lista
+     * «Precio final» (ver PriceTypeHelper::crear_lista_precio_final() y UserSetupHelper).
+     *
      * @param array<string, mixed> $data
      */
     private static function crear_price_types(array $data)
     {
+        $trae_listas = false;
+
+        for ($i = 1; $i <= 3; $i++) {
+            if (isset($data['price_type_'.$i]) && trim((string) $data['price_type_'.$i]) !== '') {
+                $trae_listas = true;
+            }
+        }
+
+        // Las listas del payload valen solo con `use_price_lists` (como siempre).
+        if (empty($data['use_price_lists']) || !$trae_listas) {
+            Log::info('DemoSetupHelper: el payload no trae listas; se crea la lista «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'»');
+            PriceTypeHelper::crear_lista_precio_final((int) config('app.USER_ID'));
+            return;
+        }
+
         for ($i = 1; $i <= 3; $i++) {
             $price_type = $data['price_type_'.$i] ?? null;
             if (!empty($price_type)) {

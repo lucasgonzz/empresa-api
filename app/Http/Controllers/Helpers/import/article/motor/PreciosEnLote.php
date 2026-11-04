@@ -134,6 +134,10 @@ class PreciosEnLote
         'percentage',
         'final_price',
         'updated_at',
+        // El espejo de la lista «Precio final» por moneda (misión prueba-listas-siempre, 3/11/2026)
+        // decide cuál de las dos filas manda y cuál se cotiza desde la otra, también en modo lote.
+        'setear_precio_final',
+        'cotizar_desde_otra_moneda',
     ];
 
     /** Filas por INSERT multi-fila. */

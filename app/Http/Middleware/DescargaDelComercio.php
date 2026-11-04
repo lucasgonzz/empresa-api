@@ -2,6 +2,7 @@
 
 namespace App\Http\Middleware;
 
+use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\PdfLinkHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\User;
@@ -109,7 +110,7 @@ class DescargaDelComercio
             abort(404);
         }
 
-        $sesion = UserHelper::user();
+        $sesion = $this->usuario_de_la_sesion($request);
 
         // 1. Sesión del dueño de todo lo pedido.
         if (!is_null($sesion) && $this->son_todos_de($duenios, (int) $sesion->id)) {
@@ -147,7 +148,7 @@ class DescargaDelComercio
      */
     protected function sin_recurso(Request $request, Closure $next)
     {
-        if (!is_null(UserHelper::user())) {
+        if (!is_null($this->usuario_de_la_sesion($request))) {
             return $next($request);
         }
 
@@ -160,6 +161,30 @@ class DescargaDelComercio
         }
 
         abort(404);
+    }
+
+    /**
+     * El usuario de la sesión, o null si la sesión es de una demo que ya no está vigente (misión
+     * vigencia-token-demo-rojos, 3/11/2026).
+     *
+     * `DemoSessionVigente` solo corre en el grupo `api`, y estas rutas van por `web`: medido por HTTP
+     * real, una demo revocada seguía descargando. Se la trata como a alguien sin sesión y sigue el camino
+     * normal (token, ventana, 404). No se cierra la sesión acá: eso lo hace la próxima ruta de `api`.
+     *
+     * Sin marcador de demo (todos los clientes reales) no le pega a la base.
+     *
+     * @param  Request  $request
+     * @return \App\Models\User|null
+     */
+    protected function usuario_de_la_sesion(Request $request)
+    {
+        $token_id = $request->hasSession() ? $request->session()->get('demo_ingreso_token_id') : null;
+
+        if (!empty($token_id) && !DemoIngresoTokenHelper::sesion_demo_vigente($token_id)) {
+            return null;
+        }
+
+        return UserHelper::user();
     }
 
     /**

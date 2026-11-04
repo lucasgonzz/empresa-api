@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\PruebaHitosHelper;
@@ -366,11 +367,18 @@ class AuthController extends Controller
          */
         $master_login_bypass = $this->is_master_login_activity_bypass_enabled();
         $skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
+        /**
+         * Marcador de demo de esta sesión (misión vigencia-token-demo-rojos, 3/11/2026). Viaja con el
+         * token porque sin marcador `DemoSessionVigente` no mira nada: la sesión destino sobrevivía a
+         * la revocación. Que esté revocada ya lo frenó `demo.session.vigente` en la ruta.
+         */
+        $demo_ingreso_token_id = session('demo_ingreso_token_id');
 
         $plain_token = VersionSessionTransferHelper::create_for_user(
             $auth_user->id,
             $master_login_bypass,
-            $skip_offline_articles_sync
+            $skip_offline_articles_sync,
+            $demo_ingreso_token_id
         );
 
         /**
@@ -438,8 +446,26 @@ class AuthController extends Controller
             /** Modelo a autenticar en esta API. */
             $candidate = User::find($transfer['user_id']);
 
+            /**
+             * La sesión destino sigue siendo de demo: la revocación la corta igual que a la de
+             * origen (misión vigencia-token-demo-rojos, 3/11/2026).
+             */
+            $es_transferencia_de_demo = !empty($transfer['demo_ingreso_token_id']);
+
+            /**
+             * El token se emitió con la demo vigente y la revocaron antes de consumirlo (dura 5 minutos):
+             * no se abre sesión. Sale por el mismo `login: false` de un token vencido, que la SPA ya maneja.
+             */
+            if ($es_transferencia_de_demo && !DemoIngresoTokenHelper::sesion_demo_vigente($transfer['demo_ingreso_token_id'])) {
+                $candidate = null;
+            }
+
             if ($candidate) {
                 Auth::login($candidate, false);
+
+                if ($es_transferencia_de_demo) {
+                    session()->put('demo_ingreso_token_id', $transfer['demo_ingreso_token_id']);
+                }
 
                 if ($transfer['master_login_bypass']) {
                     /**
@@ -462,7 +488,12 @@ class AuthController extends Controller
                     session()->forget($this->master_login_bypass_activity_key);
                     session()->put('skip_offline_articles_sync', $transfer['skip_offline_articles_sync']);
 
-                    if ($this->checkUserLastActivity()) {
+                    /**
+                     * Una demo está eximida del candado (`debe_omitir_candado_de_actividad()`), y
+                     * `checkUserLastActivity()` no mira eso: sin este corte el lead se quedaría
+                     * afuera si otra sesión tiene el candado tomado.
+                     */
+                    if ($es_transferencia_de_demo || $this->checkUserLastActivity()) {
                         $user = $this->procesar_login();
                         $login = true;
                         Log::info(
@@ -486,6 +517,9 @@ class AuthController extends Controller
                     // Mismo flag que login() y get_user() (misión imagenes-catalogo-completo): el
                     // SPA destino usa este `user` directo, sin pasar por auth/me.
                     $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+                    // Mismo flag que get_user(): el SPA destino usa este `user` directo y con él
+                    // decide si muestra el panel de la demo.
+                    $user->es_sesion_demo = $this->es_sesion_de_demo();
                 }
             }
         }

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers;
 use App\Exceptions\BaseConDatosException;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
 use App\Http\Controllers\Helpers\PdfColumnProfileWhatsappDefaultHelper;
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Models\Address;
 use App\Models\ExtencionEmpresa;
 use App\Models\OnlineConfiguration;
@@ -146,10 +147,15 @@ class UserSetupHelper
         $extModels = ExtencionEmpresa::whereIn('slug', $extencions)->get();
         $user->extencions()->sync($extModels->pluck('id'));
 
-        if (!empty($data['use_price_lists'])) {
-            $user->listas_de_precio = 1;
-            $user->save();
-        }
+        /*
+            Listas de precios (misión prueba-listas-siempre, 3/11/2026): todo negocio trabaja con
+            listas, así que el flag se prende SIEMPRE (antes, solo con `use_price_lists`). Con una
+            sola lista la interfaz se comporta como la de un negocio sin listas (la SPA muestra la
+            interfaz de listas desde la segunda). Ver crear_price_types(): si el formulario no trae
+            listas, nace la lista «Precio final».
+        */
+        $user->listas_de_precio = 1;
+        $user->save();
 
         /*
             Sucursales (misión sucursal-siempre, 23/10/2026, D10): el sistema nace SIEMPRE con al menos
@@ -160,9 +166,9 @@ class UserSetupHelper
         */
         self::crear_sucursales($data, $user);
 
-        if (!empty($data['use_price_lists'])) {
-            self::crear_price_types($data);
-        }
+        // Las listas del formulario, o «Precio final» si no viene ninguna. Siempre ANTES del foreach
+        // de seeders: ArticleTicketDesignSeeder crea un diseño de etiquetas por lista.
+        self::crear_price_types($data);
 
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
@@ -533,11 +539,17 @@ class UserSetupHelper
         if (!empty($data['use_deposits'])) {
             $extencions[] = 'deposit_movements';
         }
-        if (!empty($data['use_price_lists'])) {
-            $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
-            $extencions[] = 'cambiar_price_type_en_vender';
-            $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
-        }
+
+        /*
+            Listas de precios (misión prueba-listas-siempre, 3/11/2026): todo negocio trabaja con
+            listas, así que las tres extensiones que acompañaban a `use_price_lists` van SIEMPRE.
+            `articulo_margen_de_ganancia_segun_lista_de_precios` es la marca vieja de "usa listas"
+            (la SPA ya no la lee: mira el flag y la cantidad de listas), y las dos de Vender son las
+            que dejan cambiar la lista del comprobante y la de cada renglón.
+        */
+        $extencions[] = 'articulo_margen_de_ganancia_segun_lista_de_precios';
+        $extencions[] = 'cambiar_price_type_en_vender';
+        $extencions[] = 'cambiar_price_type_en_vender_item_por_item';
 
         // Costos en dolares: habilita marcar el costo de un articulo en dolares y cotizarlo al precio de venta.
         if (!empty($data['costos_en_dolares'])) {
@@ -726,10 +738,23 @@ class UserSetupHelper
      * Preferir price_lists_detail (nombre + margen, formulario nuevo); si no viene, caer a
      * price_type_1..3 (solo nombres, formulario/cliente viejo) con margen null.
      *
+     * Misión prueba-listas-siempre (3/11/2026): si el formulario NO trae ninguna lista, nace la lista
+     * «Precio final» (`PriceTypeHelper::crear_lista_precio_final()`): es el precio del artículo de
+     * siempre, espejado en una lista, para que todo negocio trabaje con listas sin que cambie nada
+     * de lo que ve. Con listas en el formulario se crean esas, como siempre, y no la «Precio final».
+     *
      * @param array<string, mixed> $data
      */
     private static function crear_price_types(array $data)
     {
+        // Las listas del formulario valen solo con `use_price_lists` (como siempre): sin la tilde, o
+        // con la tilde pero sin nombres cargados, nace la «Precio final».
+        if (empty($data['use_price_lists']) || !self::el_formulario_trae_listas($data)) {
+            Log::info('UserSetupHelper: el formulario no trae listas; se crea la lista «'.PriceTypeHelper::NOMBRE_PRECIO_FINAL.'»');
+            PriceTypeHelper::crear_lista_precio_final((int) config('app.USER_ID'));
+            return;
+        }
+
         // Importamos PriceType aquí para no cargarlo si no se usa
         $priceTypeClass = '\App\Models\PriceType';
 
@@ -775,6 +800,33 @@ class UserSetupHelper
             ]);
             $index++;
         }
+    }
+
+    /**
+     * ¿El formulario trae al menos una lista con nombre? (`price_lists_detail` del formulario nuevo
+     * o `price_type_1..3` del viejo). Misma lectura que crear_price_types(), para decidir si en vez
+     * de esas nace la «Precio final».
+     *
+     * @param array<string, mixed> $data
+     * @return bool
+     */
+    private static function el_formulario_trae_listas(array $data)
+    {
+        if (isset($data['price_lists_detail']) && is_array($data['price_lists_detail'])) {
+            foreach ($data['price_lists_detail'] as $row) {
+                if (is_array($row) && trim((string) (isset($row['name']) ? $row['name'] : '')) !== '') {
+                    return true;
+                }
+            }
+        }
+
+        for ($i = 1; $i <= 3; $i++) {
+            if (isset($data['price_type_'.$i]) && trim((string) $data['price_type_'.$i]) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

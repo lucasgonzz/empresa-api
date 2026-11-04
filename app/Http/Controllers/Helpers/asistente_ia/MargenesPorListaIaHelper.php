@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Catalogo;
 use App\Models\PriceType;
@@ -111,6 +112,9 @@ class MargenesPorListaIaHelper
      * `users.listas_de_precio` (UserHelper::uses_listas_de_precio, la misma pregunta que se hace
      * setFinalPrice) y SIN ventas en dólares (ver EXTENSION_DOLARES).
      *
+     * Con UNA sola lista, la «Precio final» (misión prueba-listas-siempre, 3/11/2026), no aplica: esa
+     * cuenta se ve y se carga como un negocio sin listas, y el margen es el del artículo.
+     *
      * @param  \App\Models\User|null  $owner
      * @return bool
      */
@@ -121,13 +125,29 @@ class MargenesPorListaIaHelper
             return false;
         }
 
-        return UserHelper::uses_listas_de_precio($owner) && !UserHelper::hasExtencion(self::EXTENSION_DOLARES, $owner);
+        return self::el_precio_va_por_lista($owner) && !UserHelper::hasExtencion(self::EXTENSION_DOLARES, $owner);
+    }
+
+    /**
+     * ¿El precio de este negocio se carga POR LISTA? El flag prendido, salvo la cuenta que tiene una
+     * sola lista y es la «Precio final» (PriceTypeHelper::solo_lista_precio_final()), donde la ficha
+     * muestra el recuadro de siempre y mandan el margen y el precio manual del artículo.
+     *
+     * @param  \App\Models\User|null  $owner
+     * @return bool
+     */
+    protected static function el_precio_va_por_lista($owner): bool
+    {
+        return !is_null($owner)
+            && UserHelper::uses_listas_de_precio($owner)
+            && !PriceTypeHelper::solo_lista_precio_final($owner);
     }
 
     /**
      * true cuando la ficha del artículo ESCONDE `percentage_gain`: con listas por artículo o con la
      * extensión de márgenes por categoría. Es el mismo criterio que `if_has_not_extencions` de
-     * `src/models/article.js` (la SPA traduce el slug viejo de listas a `owner.listas_de_precio`).
+     * `src/models/article.js` (la SPA traduce el slug viejo de listas a `muestra_listas`: con una sola
+     * lista, la «Precio final», la ficha los muestra y acá se aceptan).
      *
      * @param  \App\Models\User|null  $owner
      * @return bool
@@ -139,7 +159,7 @@ class MargenesPorListaIaHelper
             return false;
         }
 
-        return UserHelper::uses_listas_de_precio($owner) || UserHelper::hasExtencion(self::EXTENSION_POR_CATEGORIA, $owner);
+        return self::el_precio_va_por_lista($owner) || UserHelper::hasExtencion(self::EXTENSION_POR_CATEGORIA, $owner);
     }
 
     /**
@@ -200,7 +220,7 @@ class MargenesPorListaIaHelper
             return null;
         }
 
-        if (!is_null($owner) && UserHelper::uses_listas_de_precio($owner)) {
+        if (self::el_precio_va_por_lista($owner)) {
 
             return 'este negocio vende en dólares: el margen de cada lista va por lista y por moneda, y eso se carga desde la ficha del artículo, no desde acá. '
                 . 'Decile a la persona que el margen no queda cargado por el asistente.';
@@ -259,7 +279,7 @@ class MargenesPorListaIaHelper
 
         $cuales = implode(', ', $vinieron);
 
-        if (!UserHelper::uses_listas_de_precio($owner)) {
+        if (!self::el_precio_va_por_lista($owner)) {
 
             return self::rechazo(
                 'en este negocio el margen de cada lista sale de la categoría del artículo (ABM > Categorías). ' . $cuales
@@ -410,7 +430,7 @@ class MargenesPorListaIaHelper
             return [];
         }
 
-        $motivo = UserHelper::uses_listas_de_precio($owner)
+        $motivo = self::el_precio_va_por_lista($owner)
             ? 'No aplica en este negocio: el precio va por lista (el margen de cada lista va en margenes_por_lista). Se rechaza.'
             : 'No aplica en este negocio: el margen de cada lista sale de la categoría del artículo. Se rechaza.';
 
@@ -1230,9 +1250,25 @@ class MargenesPorListaIaHelper
 
             try {
 
+                $lista_precio_final = PriceTypeHelper::lista_precio_final((int) $contexto->owner_id);
+
                 foreach ($margenes as $margen) {
 
                     $id = (int) $margen['price_type_id'];
+
+                    /*
+                     * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026) es el precio
+                     * del artículo: su pivote lo pisa el espejo de setFinalPrice(), así que el margen
+                     * va al artículo, igual que cuando se guarde de verdad
+                     * (ArticlePriceTypeHelper::write_through_precio_final()). Sin esto, el "después"
+                     * de la tarjeta decía que el precio no cambiaba.
+                     */
+                    if (!is_null($lista_precio_final) && $id === (int) $lista_precio_final->id) {
+                        $articulo->percentage_gain = (float) $margen['margen'];
+                        $articulo->price = null;
+                        $articulo->save();
+                        continue;
+                    }
 
                     $articulo->price_types()->syncWithoutDetaching([$id]);
                     $articulo->price_types()->updateExistingPivot($id, [
@@ -1550,7 +1586,7 @@ class MargenesPorListaIaHelper
         $motivo = self::motivo_si_no_aplica($owner);
 
         return [
-            'trabaja_con_listas' => !is_null($owner) && UserHelper::uses_listas_de_precio($owner),
+            'trabaja_con_listas' => self::el_precio_va_por_lista($owner),
             'el_margen_va'       => self::margen_suelto_prohibido($owner) ? $motivo : 'en percentage_gain (margen de ganancia): este negocio no trabaja con listas de precio por artículo.',
         ];
     }

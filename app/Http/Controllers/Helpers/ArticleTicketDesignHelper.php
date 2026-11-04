@@ -517,6 +517,16 @@ class ArticleTicketDesignHelper
                                     ->get();
             }
 
+            /*
+             * Misión prueba-listas-siempre (3/11/2026): todo negocio trabaja con listas, pero si la
+             * única es la «Precio final», que es el precio del artículo, el dueño tiene la etiqueta
+             * genérica de siempre, con el precio final, y no una "por lista" que diría lo mismo. Mismo
+             * criterio que PriceTypeHelper::muestra_listas() y que `muestra_listas` de la SPA.
+             */
+            if (count($listas) === 1 && PriceTypeHelper::es_lista_precio_final($listas[0])) {
+                $listas = array();
+            }
+
             if (count($listas) == 0) {
                 if (ArticleTicketDesign::where('user_id', $owner_id)->exists()) {
                     return 0;
@@ -567,7 +577,34 @@ class ArticleTicketDesignHelper
                 return null;
             }
 
-            return self::crear_diseno_de_lista_sin_candado($owner_id, $lista);
+            /*
+             * Misión prueba-listas-siempre (3/11/2026): con la «Precio final» sola no se crea nada
+             * (ver crear_disenos_del_sistema(), queda la etiqueta genérica); cuando llega otra lista,
+             * se completan los de TODAS las listas del dueño que no lo tengan, así esa no queda sin
+             * el suyo.
+             */
+            $listas = PriceType::where('user_id', $owner_id)->orderBy('position')->orderBy('id')->get();
+
+            if (count($listas) === 1 && PriceTypeHelper::es_lista_precio_final($listas[0])) {
+                return null;
+            }
+
+            $creado = null;
+
+            foreach ($listas as $una) {
+
+                // La lista que se recibió va con SUS atributos en memoria (es la que acaba de
+                // crearse, o la que el llamador editó); las demás, como están en la base.
+                $es_la_recibida = (int) $una->id === (int) $lista->id;
+
+                $diseno = self::crear_diseno_de_lista_sin_candado($owner_id, $es_la_recibida ? $lista : $una);
+
+                if ($es_la_recibida) {
+                    $creado = $diseno;
+                }
+            }
+
+            return $creado;
         };
 
         /*

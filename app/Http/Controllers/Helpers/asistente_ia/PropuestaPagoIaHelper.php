@@ -16,7 +16,7 @@ use Carbon\Carbon;
  * `CurrentAcountController::pago()` mudado sin cambios: el mismo create, la misma imputación FIFO,
  * los mismos movimientos de caja y el mismo recálculo de saldos que el modal de Pago de la pantalla.
  *
- * Fuera de alcance (lo dice el asistente y manda a la pantalla): cheques, tarjeta de crédito,
+ * Fuera de alcance (lo dice el asistente y manda a la pantalla): endoso, tarjeta de crédito,
  * cobros en otra moneda que la de la cuenta (cotización) e imputar a un comprobante o cuota puntual.
  */
 class PropuestaPagoIaHelper {
@@ -210,7 +210,7 @@ class PropuestaPagoIaHelper {
 
         /*
          * Misión agente-mejoras-uso-real (29/10/2026, CONV 23 de Ferre Total): lo de los cheques que no vino
-         * de la persona —la fecha de emisión que se puso de hoy, los números cortos y correlativos que
+         * de la persona —la fecha de emisión que quedó vacía, los números cortos y correlativos que
          * parecen numerados a mano— se dice en la tarjeta (PagosIaHelper::avisos_de_cheques).
          */
         $avisos_de_cheques = isset($pagos['avisos_de_cheques']) ? $pagos['avisos_de_cheques'] : [];
@@ -347,9 +347,11 @@ class PropuestaPagoIaHelper {
         ]);
 
         $saldo = CreditAccount::where('id', $cuenta->id)->value('saldo');
+        $moneda_id = self::moneda_de_la_cuenta($cuenta);
 
         return [
-            'texto' => 'Pago N° '.$pago->num_receipt.' registrado. Saldo de '.$modelo->name.': '.FormatoIaHelper::monto($saldo, self::moneda_de_la_cuenta($cuenta)),
+            'texto' => 'Pago N° '.$pago->num_receipt.' registrado por '.FormatoIaHelper::monto($pago->haber, $moneda_id)
+                .'. Saldo de '.$modelo->name.': '.FormatoIaHelper::monto($saldo, $moneda_id),
             'ruta'  => null,
         ];
     }

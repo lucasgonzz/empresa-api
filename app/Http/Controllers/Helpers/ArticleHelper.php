@@ -300,18 +300,49 @@ class ArticleHelper {
         // NO participan del precio de la lista. Intercalarlos haria creer que si.
         $des_lista = [];
 
+        /*
+         * El usuario se resuelve ANTES del retorno temprano de abajo (misión prueba-listas-siempre,
+         * 3/11/2026): ese retorno ahora pregunta por la lista «Precio final» de la cuenta y, si la
+         * tiene, espeja el precio final que el artículo conserva. Hasta ahora se resolvía después del
+         * retorno; para quien llega con $user cargado no cambia nada, y para quien llega con null es
+         * la misma búsqueda, un renglón antes.
+         */
+        if (is_null($user)) {
+            if (is_null($user_id)) {
+                $user = UserHelper::user();
+            } else {
+                $user = User::find($user_id);
+            }
+        }
+
         if (
             is_null($article->cost)
             && is_null($article->price)
             && (
-                !UserHelper::uses_listas_de_precio($user)
-                && !UserHelper::hasExtencion('ventas_en_dolares', $user)
+                (
+                    !UserHelper::uses_listas_de_precio($user)
+                    && !UserHelper::hasExtencion('ventas_en_dolares', $user)
+                )
+                /*
+                 * Misión prueba-listas-siempre (3/11/2026): una cuenta con lista «Precio final» es una
+                 * cuenta que hasta ayer no tenía listas, y para ella un artículo sin costo ni precio
+                 * conservaba el precio final que tuviera (este mismo retorno). Con el flag prendido
+                 * la cadena de abajo lo dejaría en 0,00 (ver el comentario sobre round(null) más
+                 * abajo): el número que el cliente veía cambiaría. Se conserva el retorno, y la lista
+                 * «Precio final» espeja lo que el artículo tiene. Las demás listas de esa cuenta, si
+                 * las hubiera, no se tocan para este artículo (sin costo no hay nada que calcular).
+                 */
+                || PriceTypeHelper::tiene_lista_precio_final($user)
             )
         ) {
 
+            if (PriceTypeHelper::tiene_lista_precio_final($user)) {
+                Self::espejar_lista_precio_final($article, $user, $article->final_price);
+            }
+
             if ($guardar_cambios) {
                 return $article;
-            } 
+            }
             return [
                 'costo_real'            => $costo_real,
                 'final_price'           => null,
@@ -319,14 +350,6 @@ class ArticleHelper {
                 'base_margen'           => null,
                 'base_margen_final'     => null,
             ];
-        }
-        
-        if (is_null($user)) {
-            if (is_null($user_id)) {
-                $user = UserHelper::user();
-            } else {
-                $user = User::find($user_id);
-            }
         }
 
 
@@ -415,12 +438,21 @@ class ArticleHelper {
 
         if (
             (
-                is_null($article->price) 
+                is_null($article->price)
                 || $article->price == ''
             )
             || (
                 UserHelper::uses_listas_de_precio($user)
                 // && UserHelper::hasExtencion('ventas_en_dolares', $user)
+
+                /*
+                 * Misión prueba-listas-siempre (3/11/2026): con listas, el precio manual del artículo
+                 * se ignoraba (el precio de cada lista vive en su pivote). La cuenta con lista «Precio
+                 * final» es la excepción: esa lista ES el precio del artículo, y un precio cargado a
+                 * mano tiene que seguir mandando, como mandaba sin listas (decisión D2 del plan). Para
+                 * una cuenta con listas propias y sin «Precio final» no cambia nada.
+                 */
+                && !PriceTypeHelper::tiene_lista_precio_final($user)
             )
         ) {
 
@@ -466,6 +498,30 @@ class ArticleHelper {
                     $des  = $res['des'];
                 }
 
+                // La base que reciben los motores de listas: la de siempre (sin cotizar en el motor por
+                // moneda, que cotiza cada fila por su cuenta).
+                $base_para_las_listas = $cost;
+
+                /*
+                 * Misión prueba-listas-siempre (3/11/2026): en una cuenta con el motor por moneda, la
+                 * cadena del ARTÍCULO no cotizaba el costo en dólares (el if de arriba) porque
+                 * `articles.final_price` no se usaba: cada fila por moneda se cotiza sola. Con la lista
+                 * «Precio final» ese precio vuelve a ser el que se cobra, así que la cadena del artículo
+                 * cotiza como en una cuenta sin listas; los motores siguen recibiendo la base sin
+                 * cotizar ($base_para_las_listas), exactamente como hasta hoy. Sin esto, migrar una
+                 * cuenta que vende en dólares y tiene costos en dólares (2R) dejaba el precio final en
+                 * dólares en vez de en pesos: otro número.
+                 */
+                if (
+                    UserHelper::uses_listas_de_precio($user)
+                    && UserHelper::hasExtencion('ventas_en_dolares', $user)
+                    && PriceTypeHelper::tiene_lista_precio_final($user)
+                ) {
+                    $res = Self::cotizar($article, $user, $cost, $des);
+                    $cost = $res['price'];
+                    $des  = $res['des'];
+                }
+
                 // Se le pasa a las listas la base SIN IVA ($cost todavia no paso por
                 // aplicar_iva() de mas abajo). Si se le pasara con IVA, aplicar_precios_segun_listas_de_precios()
                 // se lo volveria a sumar y se reproduce el mismo bug adentro de cada lista.
@@ -475,16 +531,16 @@ class ArticleHelper {
                         // Calculamos por tipo de precio y por moneda. El bug propio de este camino
                         // (no aplica IVA ni consulta iva_va_al_costo) lo arregla el prompt 02 de
                         // este grupo; aca solo se preserva el mismo ruteo que el modo normal.
-                        ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $cost, $user);
+                        ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $base_para_las_listas, $user);
 
                         // El "?" de la tarjeta de una lista en una cuenta con dolares: se narra lo que
                         // el calculo de arriba acaba de dejar (no se vuelve a calcular nada).
                         if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
-                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $cost, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $base_para_las_listas, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
                         }
 
                     } else {
-                        $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $cost, $user, $price_types, $price_type_id_para_descripcion);
+                        $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $base_para_las_listas, $user, $price_types, $price_type_id_para_descripcion);
                     }
 
                 } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
@@ -492,7 +548,7 @@ class ArticleHelper {
                     // El $des_lista se captura igual que en el camino principal: sin esto, el "?"
                     // de la tarjeta de una lista en una cuenta de margenes por categoria devolvia
                     // el desglose del precio final UNICO (16/9/2026).
-                    $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $cost, $user, $price_type_id_para_descripcion);
+                    $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $base_para_las_listas, $user, $price_type_id_para_descripcion);
                 }
 
                 $res = ArticlePricesHelper::aplicar_iva($article, $cost, $user, $des);
@@ -536,6 +592,28 @@ class ArticleHelper {
                 //     Log::info('Costo cotizado: '.$final_price);
                 // }
 
+                // La base que reciben los motores de listas: la de siempre (sin cotizar en el motor por
+                // moneda, que cotiza cada fila por su cuenta).
+                $base_para_las_listas = $final_price;
+
+                /*
+                 * Misión prueba-listas-siempre (3/11/2026): con el motor por moneda,
+                 * calcular_base_antes_de_listas() no cotiza el costo en dólares (cada fila por moneda
+                 * se cotiza sola) y `articles.final_price` quedaba en dólares, que no le importaba a
+                 * nadie. Con la lista «Precio final» ese precio vuelve a ser el que se cobra, así que la
+                 * cadena del artículo cotiza acá, como en una cuenta sin listas; los motores siguen
+                 * recibiendo la base sin cotizar. Ver el mismo bloque en la rama de arriba.
+                 */
+                if (
+                    UserHelper::uses_listas_de_precio($user)
+                    && UserHelper::hasExtencion('ventas_en_dolares', $user)
+                    && PriceTypeHelper::tiene_lista_precio_final($user)
+                ) {
+                    $res = Self::cotizar($article, $user, $final_price, $des);
+                    $final_price = $res['price'];
+                    $des = $res['des'];
+                }
+
 
                 if (UserHelper::uses_listas_de_precio($user)) {
 
@@ -543,24 +621,24 @@ class ArticleHelper {
 
                     if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
                         // Calculamos por tipo de precio y por moneda
-                        ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $final_price, $user);
+                        ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $base_para_las_listas, $user);
 
                         // Idem la rama de arriba: desglose de la lista y moneda pedidas.
                         if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
-                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $final_price, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                            $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $base_para_las_listas, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
                         }
-                        
+
                     } else {
                         // El desglose de la lista pedida se concatena al $des que se viene armando,
                         // para que el front reciba un solo array con la cadena entera. Sin
                         // $price_type_id_para_descripcion esto devuelve [] y no cambia nada.
-                        $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $final_price, $user, $price_types, $price_type_id_para_descripcion);
+                        $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $base_para_las_listas, $user, $price_types, $price_type_id_para_descripcion);
                     }
 
                 } else if (UserHelper::hasExtencion('lista_de_precios_por_categoria', $user)) {
 
                     // Mismo motivo que en la rama gemela de mas arriba (16/9/2026).
-                    $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $final_price, $user, $price_type_id_para_descripcion);
+                    $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios_y_categorias($article, $base_para_las_listas, $user, $price_type_id_para_descripcion);
 
                 }
 
@@ -611,6 +689,34 @@ class ArticleHelper {
             );
             $final_price = $article->price;
             $es_precio_manual = true;
+
+            /*
+             * Misión prueba-listas-siempre (3/11/2026): hasta acá solo llegaba una cuenta SIN listas.
+             * Ahora llega también la cuenta con lista «Precio final» (ver la condición del if), que
+             * puede tener además otras listas: esas se calculan igual que en el modo normal, desde la
+             * base de antes de los márgenes, porque el precio manual es del artículo —o sea, de la
+             * lista «Precio final», que se espeja al final de este método— y no de las demás. Sin
+             * esto, un artículo con precio manual dejaría los pivotes de las otras listas sin
+             * recalcular. El desglose de esa base se descarta a propósito, como el de más abajo.
+             */
+            if (UserHelper::uses_listas_de_precio($user)) {
+
+                $base_para_las_listas = Self::calcular_base_antes_de_listas($article, $user);
+                $base_para_las_listas = $base_para_las_listas['price'];
+
+                if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
+
+                    ArticlePriceTypeMonedaHelper::aplicar_precios_por_price_type_y_moneda($article, $base_para_las_listas, $user);
+
+                    if (!is_null($price_type_id_para_descripcion) && !is_null($moneda_id_para_descripcion)) {
+                        $des_lista = ArticlePriceTypeMonedaHelper::describir_lista_en_moneda($article, $base_para_las_listas, $user, $price_type_id_para_descripcion, $moneda_id_para_descripcion);
+                    }
+
+                } else {
+                    $des_lista = ArticlePricesHelper::aplicar_precios_segun_listas_de_precios($article, $base_para_las_listas, $user, $price_types, $price_type_id_para_descripcion);
+                }
+            }
+
             $des[] = DesglosePrecioHelper::linea(
                 DesglosePrecioHelper::PRECIO_MANUAL,
                 'Precio fijado a mano',
@@ -820,7 +926,18 @@ class ArticleHelper {
 
         $article->final_price = $final_price;
 
-
+        /*
+         * La lista «Precio final» (misión prueba-listas-siempre, 3/11/2026): su pivote se escribe ACÁ,
+         * con el precio final ya calculado y redondeado, y no en los motores de listas de más arriba
+         * (que la saltean). Es un ESPEJO: el número es exactamente `articles.final_price`, con los
+         * cuatro márgenes (proveedor, categoría, artículo, manual), los recargos, los impuestos, el
+         * IVA, el redondeo y la cotización del dólar adentro, porque es el mismo número. Ver
+         * espejar_lista_precio_final(). Una cuenta sin esa lista no entra (el helper devuelve sin
+         * hacer nada).
+         */
+        if (UserHelper::uses_listas_de_precio($user)) {
+            Self::espejar_lista_precio_final($article, $user, $final_price);
+        }
 
         // if (
         //     !is_null($current_final_price)
@@ -940,6 +1057,112 @@ class ArticleHelper {
             ];
         }
 
+    }
+
+    /**
+     * Escribe el pivote de la lista «Precio final» del dueño como espejo del precio del artículo
+     * (misión prueba-listas-siempre, 3/11/2026, decisión D1 del plan).
+     *
+     * ─── Por qué un espejo y no una cadena de listas ──────────────────────────────────────────
+     *
+     * La cadena de una lista común arranca de la base de ANTES de los márgenes del proveedor, de la
+     * categoría y del artículo, e ignora el precio manual. Para un negocio que nunca tuvo listas,
+     * `articles.final_price` sale de todo eso. Si la lista «Precio final» se calculara como las
+     * demás, daría otro número en cuanto el artículo tuviera cualquiera de esos cuatro márgenes (o
+     * recargos, descuentos, vinoteca, costo en dólares sin cotizar); y "meter" esos márgenes en la
+     * cadena de listas le cambiaría el precio a todo cliente que ya trabaja con listas. Espejar es lo
+     * único que da el MISMO número en todos los casos, también cuando un margen cambie mañana: el
+     * precio final se recalcula como siempre y la lista lo sigue.
+     *
+     * ─── Qué escribe ─────────────────────────────────────────────────────────────────────────
+     *
+     *  - `final_price`: `articles.final_price`, tal cual (en la moneda nativa del artículo, igual
+     *    que la columna: ver PriceTypeHelper::moneda_nativa_del_precio()).
+     *  - `percentage`: el margen del artículo (`percentage_gain`), que es lo que la tarjeta de la
+     *    lista muestra como "Margen de X%" cuando hay dos o más listas.
+     *  - `setear_precio_final`: 1 si el artículo tiene precio manual (`articles.price`), que es el
+     *    "precio fijado a mano" de esa lista.
+     *  - `previus_final_price`: lo que el pivote tenía.
+     *  - `precio_luego_de_recargos` y `monto_ganancia`: por aplicar_price_type_surchages(), igual
+     *    que las demás listas (recargos de la lista, si los tuviera; ganancia neta de IVA e
+     *    impuestos contra la misma base que usan las otras listas). Sin costo real, ganancia null.
+     *  - `incluir_en_excel_para_clientes`: solo al crear la fila, el default de la lista.
+     *
+     * Con la extensión `ventas_en_dolares` además deja las dos filas de `article_price_type_monedas`
+     * (ArticlePriceTypeMonedaHelper::espejar_precio_final_en_monedas()).
+     *
+     * Se escribe aunque $guardar_cambios sea false, como el resto de los pivotes de listas (ver el
+     * docblock de setFinalPrice()), y en modo lote se registra para el volcado en bloque
+     * (escribir_pivot_de_lista() lo resuelve).
+     *
+     * @param  \App\Models\Article  $article
+     * @param  \App\Models\User     $user         El dueño (o un usuario que resuelve a él).
+     * @param  float|null           $final_price  El precio final ya calculado y redondeado.
+     * @return void
+     */
+    static function espejar_lista_precio_final($article, $user, $final_price) {
+
+        $lista = PriceTypeHelper::lista_precio_final($user);
+
+        if (is_null($lista) || is_null($article) || empty($article->id)) {
+            return;
+        }
+
+        $final_price = is_null($final_price) ? null : (float) $final_price;
+
+        $percentage = (is_null($article->percentage_gain) || $article->percentage_gain === '')
+                        ? null
+                        : (float) $article->percentage_gain;
+
+        $manual = !is_null($article->price) && $article->price !== '';
+
+        $relacion = PreciosEnLote::esta_activo()
+                        ? PreciosEnLote::pivot_actual($article, $lista->id)
+                        : $article->price_types()->find($lista->id);
+
+        $previus_final_price = (is_null($relacion) || !isset($relacion->pivot)) ? null : $relacion->pivot->final_price;
+
+        /*
+         * La base contra la que las demás listas miden su ganancia (la de antes de los márgenes):
+         * misma vara para todas. Sin costo real no hay base y la ganancia queda en null, que es lo
+         * que la tarjeta lee como "nada que mostrar".
+         */
+        $base = null;
+
+        if (!is_null($article->costo_real) && (float) $article->costo_real != 0.0) {
+            $res_base = Self::calcular_base_antes_de_listas($article, $user);
+            $base = $res_base['price'];
+        }
+
+        $res = ArticlePricesHelper::aplicar_price_type_surchages(
+            $lista,
+            $final_price,
+            is_null($base) ? 0 : $base,
+            null,
+            is_null($base) ? null : $article,
+            $user
+        );
+
+        $columnas_del_pivot = [
+            'percentage'                => $percentage,
+            'final_price'               => $final_price,
+            'previus_final_price'       => $previus_final_price,
+            'setear_precio_final'       => $manual ? 1 : 0,
+            'precio_luego_de_recargos'  => $res['precio_luego_de_recargos'],
+            'monto_ganancia'            => is_null($base) ? null : $res['monto_ganancia'],
+        ];
+
+        if (is_null($relacion)) {
+            $columnas_del_pivot['incluir_en_excel_para_clientes'] = is_null($lista->incluir_en_lista_de_precios_de_excel)
+                ? 1
+                : (int) $lista->incluir_en_lista_de_precios_de_excel;
+        }
+
+        ArticlePricesHelper::escribir_pivot_de_lista($article, $lista->id, $columnas_del_pivot, true);
+
+        if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
+            ArticlePriceTypeMonedaHelper::espejar_precio_final_en_monedas($article, $user, $lista, $final_price, $percentage, $manual);
+        }
     }
 
     /**
