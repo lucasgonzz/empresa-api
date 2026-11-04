@@ -2420,14 +2420,16 @@ class SaleHelper extends Controller {
         Self::deleteSellerCommissionsFromSale($sale);
 
         /*
-            Los motores que comisionan por renglón (ros_mar, golonorte, truvari) leen
-            `$sale->articles`, y en la edición esa relación se cargó ANTES de reescribir los
-            pivotes: se la vuelve a leer para que la comisión salga de los precios nuevos.
+            Los motores leen relaciones de la venta: ros_mar, golonorte y truvari comisionan por
+            renglón (`articles`, `promocion_vinotecas`), fenix pregunta por `current_acount` y todos
+            por `seller`. Se las descarta para que cada motor las lea de la base con lo que la
+            edición acaba de escribir, y no de una copia cargada antes (defensivo: hoy la venta que
+            llega a este método no las trae cargadas, pero el día que alguien las cargue en el
+            medio la comisión saldría de datos viejos).
         */
-        $sale->unsetRelation('articles');
-        $sale->unsetRelation('combos');
-        $sale->unsetRelation('promocion_vinotecas');
-        $sale->unsetRelation('services');
+        foreach (['articles', 'combos', 'promocion_vinotecas', 'services', 'current_acount', 'seller'] as $relacion) {
+            $sale->unsetRelation($relacion);
+        }
 
         Self::crear_comision($sale);
     }

@@ -276,7 +276,7 @@ class Comision_de_venta_de_mostrador_al_editar_y_confirmar_Test extends EmpresaT
     }
 
     /**
-     * Test 6 — confirmar con el total cambiado (las unidades chequeadas difieren de las pedidas):
+     * Test 6 — confirmar con el total cambiado (el total confirmado puede diferir del de la venta en depósito):
      * la comisión nace sobre el total confirmado.
      *
      * @group comisiones
@@ -479,5 +479,110 @@ class Comision_de_venta_de_mostrador_al_editar_y_confirmar_Test extends EmpresaT
 
         $this->assertEquals(1, SellerCommission::where('sale_id', $sale->id)->count());
         $this->assertEqualsWithDelta(100.00, $this->saldo_del_vendedor($seller), self::DELTA);
+    }
+
+    /**
+     * Test 15 — TRANSICIÓN: una venta con cliente, con vendedor que cobra "después de que paguen"
+     * (comisión pendiente), editada para quedar SIN cliente: una sola comisión y ya activa (no hay
+     * pago que esperar).
+     *
+     * @group comisiones
+     * @test
+     */
+    public function pasar_una_venta_con_cliente_a_mostrador_deja_una_sola_comision_activa()
+    {
+        $seller = $this->vendedor();
+        $seller->commission_after_pay_sale = 1;
+        $seller->save();
+
+        $client = Client::where('name', TestingFerreteriaSeeder::CLIENTE_CONTADO)->first();
+        $sale = $this->venta($seller, $client, ['save_current_acount' => 1]);
+
+        (new ComisionesHelper(Sale::find($sale->id)))->crear_comision();
+
+        $this->assertEquals('inactive', SellerCommission::where('sale_id', $sale->id)->value('status'), 'Precondición: con cliente que paga después, la comisión espera.');
+
+        $this->putJson('api/sale/'.$sale->id, $this->payload($sale, 1000, ['client_id' => null]))->assertStatus(200);
+
+        $this->assertNull(Sale::find($sale->id)->client_id, 'Precondición: la venta quedó sin cliente.');
+        $this->assertEquals(1, SellerCommission::where('sale_id', $sale->id)->count(), 'una sola comisión');
+        $this->assertEquals('active', SellerCommission::where('sale_id', $sale->id)->value('status'));
+        $this->assertEqualsWithDelta(100.00, $this->saldo_del_vendedor($seller), self::DELTA);
+    }
+
+    /**
+     * Test 16 — TRANSICIÓN: una venta de mostrador a la que la edición le pone cliente: sigue
+     * habiendo una sola comisión (la rehace el camino de siempre, el nuevo no corre).
+     *
+     * @group comisiones
+     * @test
+     */
+    public function pasar_una_venta_de_mostrador_a_con_cliente_deja_una_sola_comision()
+    {
+        $seller = $this->vendedor();
+        $client = Client::where('name', TestingFerreteriaSeeder::CLIENTE_CONTADO)->first();
+        $sale = $this->venta_con_comision($seller, null);
+
+        $this->putJson('api/sale/'.$sale->id, $this->payload($sale, 2000, ['client_id' => $client->id]))->assertStatus(200);
+
+        $this->assertEquals($client->id, Sale::find($sale->id)->client_id, 'Precondición: la venta quedó con cliente.');
+        $this->assertEquals(1, SellerCommission::where('sale_id', $sale->id)->count(), 'una sola comisión, sin duplicado');
+        $this->assertEqualsWithDelta(200.00, $this->saldo_del_vendedor($seller), self::DELTA);
+    }
+
+    /**
+     * Test 17 — "Actualizar precios" sobre una venta de mostrador que sigue en depósito no genera
+     * comisión.
+     *
+     * @group comisiones
+     * @test
+     */
+    public function actualizar_precios_de_una_venta_de_mostrador_en_deposito_no_genera_comision()
+    {
+        $seller = $this->vendedor('ros_mar');
+        $sale = $this->venta($seller, null, ['to_check' => 1, 'checked' => 0]);
+        $fila = DB::table('article_sale')->where('sale_id', $sale->id)->first();
+
+        $respuesta = $this->putJson('api/sale/update-prices/'.$sale->id, [
+            'items' => [['is_article' => true, 'id' => (int) $fila->article_id, 'price_vender' => 2000]],
+        ]);
+
+        $this->assertContains($respuesta->getStatusCode(), [200, 409], 'Precondición: el endpoint responde.');
+        $this->assertEquals(0, SellerCommission::where('sale_id', $sale->id)->count());
+    }
+
+    /**
+     * Test 18 — los pagos al vendedor (filas con `haber`) no se tocan al recalcular la comisión de
+     * una venta de mostrador, y el saldo acumulado los descuenta.
+     *
+     * @group comisiones
+     * @test
+     */
+    public function editar_una_venta_de_mostrador_no_toca_los_pagos_al_vendedor()
+    {
+        $seller = $this->vendedor();
+        $sale = $this->venta_con_comision($seller, null);
+
+        $pago = SellerCommission::create([
+            'num'        => 910005,
+            'seller_id'  => $seller->id,
+            'haber'      => 30,
+            'status'     => 'active',
+            'moneda_id'  => 1,
+            'user_id'    => $seller->user_id,
+            'description' => 'Pago al vendedor',
+        ]);
+
+        $this->putJson('api/sale/'.$sale->id, $this->payload($sale, 2000))->assertStatus(200);
+
+        $this->assertNotNull(SellerCommission::find($pago->id), 'el pago al vendedor sigue');
+        $this->assertEquals(1, SellerCommission::where('sale_id', $sale->id)->count());
+        $this->assertEqualsWithDelta(200.00, (float) SellerCommission::where('sale_id', $sale->id)->value('debe'), self::DELTA);
+        $this->assertEqualsWithDelta(
+            170.00,
+            (float) SellerCommission::where('seller_id', $seller->id)->orderBy('id', 'desc')->value('saldo'),
+            self::DELTA,
+            'saldo = 200 de comisión - 30 pagados'
+        );
     }
 }
