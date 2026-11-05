@@ -302,6 +302,26 @@ class CodigosPorProveedorTest extends ComprasTestCase
         ])->assertOk()->assertJsonPath('models.data.0.id', $article->id)->assertJsonPath('models.data.0.provider_code', null);
     }
 
+    public function test_busqueda_de_revision_muestra_el_codigo_y_proveedor_principales()
+    {
+        $article = $this->producto('Taladro para vincular', 'FICHA-B07');
+        $article->providers()->attach($this->proveedor_a->id, ['provider_code' => 'REFERENCIA-A']);
+
+        $payload = [
+            'query_value' => 'FICHA-B07', 'props' => ['name', 'bar_code', 'provider_code'],
+            'contexto' => 'provider_order', 'mostrar_codigo_principal' => true,
+        ];
+        $this->postJson('/api/global-search/article', $payload)->assertOk()
+            ->assertJsonPath('models.data.0.id', $article->id)
+            ->assertJsonPath('models.data.0.provider_id', $this->proveedor_b->id)
+            ->assertJsonPath('models.data.0.provider_code', 'FICHA-B07');
+
+        $payload['query_value'] = 'REFERENCIA-A';
+        $payload['provider_id'] = $this->proveedor_a->id;
+        $this->postJson('/api/global-search/article', $payload)->assertOk()
+            ->assertJsonPath('models.data.0.provider_code', 'REFERENCIA-A');
+    }
+
     public function test_formulario_anterior_no_copia_codigo_de_otro_proveedor_al_crear_o_editar_compra()
     {
         foreach ([null, 'CODIGO-A'] as $codigo_a) {

@@ -599,6 +599,7 @@ class SearchController extends Controller
         $usar_contexto_vender = $model_name_param == 'article' && VenderSearchHelper::is_valid_contexto($contexto);
         $es_compra = $model_name_param === 'article' && $contexto === 'provider_order';
         $provider_id_compra = $es_compra ? (int) $request->input('provider_id', 0) : 0;
+        $mostrar_codigo_principal = $request->boolean('mostrar_codigo_principal');
         if ($provider_id_compra && !Provider::where('user_id', $this->userId())->where('id', $provider_id_compra)->exists()) {
             return response()->json(['message' => 'El proveedor no pertenece a este comercio.'], 422);
         }
@@ -875,13 +876,13 @@ class SearchController extends Controller
 
             // El orden final es el de los descriptores (Fase 1), no el de whereIn (Fase 2, sin
             // garantía de orden): se arma buscando cada artículo completo por id.
-            $results = $page_descriptors->map(function ($descriptor) use ($full_articles, $es_compra, $provider_id_compra) {
+            $results = $page_descriptors->map(function ($descriptor) use ($full_articles, $es_compra, $provider_id_compra, $mostrar_codigo_principal) {
                             $article = $full_articles->get($descriptor->article_id);
 
                             if (is_null($article)) {
                                 return null;
                             }
-                            if ($es_compra) {
+                            if ($es_compra && ($provider_id_compra || !$mostrar_codigo_principal)) {
                                 $article->provider_code = CodigosDeProveedor::codigo_para($article, $provider_id_compra);
                             }
 
