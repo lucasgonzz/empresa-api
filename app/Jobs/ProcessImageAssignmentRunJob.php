@@ -253,7 +253,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
              * ya está acotado por el tope (ImagenesAutomaticasHelper::cuota_de) y el motivo que
              * corresponde es este. Fuera de una demo agotado() da false sin consultar nada.
              */
-            if (TopeSerperDemo::agotado($run->user_id)) {
+            if (TopeSerperDemo::agotado($run->user_id, true)) {
                 $this->cortar_por_tope_demo($run);
 
                 return;
@@ -261,7 +261,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
 
             // El cupo se mira DESPUÉS de saber que queda algo por hacer: si el último artículo gastó
             // la última búsqueda del día, la asignación terminó bien y no por falta de cupo.
-            if ($run->aplica_tope_diario && (int) ImagenesAutomaticasHelper::cuota_de($owner)['disponibles'] <= 0) {
+            if (ImagenesAutomaticasHelper::aplica_tope_diario($run) && (int) ImagenesAutomaticasHelper::cuota_de($owner)['disponibles'] <= 0) {
                 $this->cortar_por_cupo($run);
 
                 return;
@@ -310,7 +310,9 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             if ($resultado['cupo_agotado']) {
                 // El motor se quedó sin las búsquedas de la demo a mitad del artículo: se corta igual,
                 // con el motivo de la demo (sin reintentar ni dejar nada en proceso).
-                if (!empty($resultado['tope_demo'])) {
+                if (!empty($resultado['limite_prueba'])) {
+                    $this->cortar_por_tope_demo($run, $resultado['limite_prueba']);
+                } elseif (!empty($resultado['tope_demo'])) {
                     $this->cortar_por_tope_demo($run);
                 } else {
                     $this->cortar_por_cupo($run);
@@ -688,7 +690,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
      * @param  \App\Models\ImageAssignmentRun $run
      * @return void
      */
-    protected function cortar_por_tope_demo(ImageAssignmentRun $run)
+    protected function cortar_por_tope_demo(ImageAssignmentRun $run, ?string $limite_prueba = null)
     {
         $ahora = Carbon::now();
 
@@ -698,7 +700,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             ->update([
                 'status'         => ImageAssignmentItem::STATUS_SIN_PROCESAR,
                 'motivo'         => 'sin_cupo',
-                'motivo_detalle' => TopeSerperDemo::DETALLE_SIN_BUSCAR,
+                'motivo_detalle' => $limite_prueba ?? TopeSerperDemo::DETALLE_SIN_BUSCAR,
                 'updated_at'     => $ahora,
             ]);
 
@@ -707,10 +709,9 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             ->count();
 
         $limite = 'Llegaste al límite de búsquedas de la demo ('.TopeSerperDemo::TOPE.')';
-
-        $motivo = $sin_procesar > 0
+        $motivo = $limite_prueba ?? ($sin_procesar > 0
             ? $limite.': '.($sin_procesar === 1 ? '1 artículo quedó' : $sin_procesar.' artículos quedaron').' sin procesar. Podés cargar las fotos a mano.'
-            : $limite.' con el último artículo. Podés cargar las fotos a mano.';
+            : $limite.' con el último artículo. Podés cargar las fotos a mano.');
 
         ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, $motivo, true);
     }

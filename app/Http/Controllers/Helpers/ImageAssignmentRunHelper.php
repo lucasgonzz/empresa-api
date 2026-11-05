@@ -14,6 +14,7 @@ use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
 use App\Services\ImageAssignment\CandidateImageProcessor;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\ProductFacts\TopeSerperDemo;
@@ -474,8 +475,9 @@ class ImageAssignmentRunHelper
     {
         $tope    = self::tope_del_catalogo();
         $conteos = self::conteos_del_catalogo((int) $owner->id);
+        $tope_demo = CupoImagenesDePrueba::estado_para_busqueda((int) $owner->id);
 
-        $a_buscar  = min($tope, $conteos['candidatos']);
+        $a_buscar = min($tope, $conteos['candidatos'], isset($tope_demo['unidad']) ? $tope_demo['restantes'] : $tope);
         $busquedas = (int) round($a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO);
 
         // Con el dueño (misión serper-en-user-setup, 28/9/2026): alcanza con la clave del comercio,
@@ -511,8 +513,6 @@ class ImageAssignmentRunHelper
         // Aditivo y OPCIONAL (misión tope-serper-demos): solo en una demo, cuántas búsquedas de Serper
         // le quedan al dueño (con 0 el POST da 422). Fuera de una demo la previa queda exactamente como
         // antes, sin el campo; la SPA toma su ausencia como "sin tope".
-        $tope_demo = TopeSerperDemo::estado($owner);
-
         if ($tope_demo['aplica']) {
             $previa['tope_demo'] = $tope_demo;
         }
@@ -533,11 +533,11 @@ class ImageAssignmentRunHelper
      */
     public static function crear_del_catalogo(User $owner, $auth_user_id = null)
     {
-        // Misión tope-serper-demos: una demo sin búsquedas no lanza nada (ni con Serper ni con Google).
-        if (TopeSerperDemo::agotado($owner)) {
+        $sin_cupo = CupoImagenesDePrueba::mensaje_si_agotado((int) $owner->id);
+        if (!is_null($sin_cupo)) {
             return [
                 'status'  => 422,
-                'message' => TopeSerperDemo::MENSAJE,
+                'message' => $sin_cupo,
                 'run'     => null,
             ];
         }
@@ -578,7 +578,16 @@ class ImageAssignmentRunHelper
                 ];
             }
 
-            $ids = self::ids_del_catalogo((int) $owner->id, self::tope_del_catalogo());
+            $tope = self::tope_del_catalogo();
+            $cupo = CupoImagenesDePrueba::estado_para_busqueda((int) $owner->id);
+            if (isset($cupo['unidad'])) {
+                $tope = min($tope, $cupo['restantes']);
+                if ($tope <= 0) {
+                    return ['status' => 422, 'message' => CupoImagenesDePrueba::MENSAJE_AGOTADO, 'run' => null];
+                }
+            }
+
+            $ids = self::ids_del_catalogo((int) $owner->id, $tope);
 
             if (empty($ids)) {
                 return [
@@ -1805,7 +1814,7 @@ class ImageAssignmentRunHelper
 
         // Con sujeto explícito: la corrida entera se llama "asignación" en todo lo que ve el usuario
         // ("búsqueda" es cada consulta al buscador).
-        $motivo = $run->origen === ImageAssignmentRun::ORIGEN_CATALOGO
+        $motivo = $run->origen === ImageAssignmentRun::ORIGEN_CATALOGO && self::es_acceso_maestro()
             ? 'La asignación se detuvo desde el acceso maestro. Los artículos que faltaban quedaron pendientes: se puede reanudar.'
             : 'La asignación se detuvo a mano. Los artículos que faltaban quedaron pendientes: se puede reanudar.';
 
@@ -1828,8 +1837,8 @@ class ImageAssignmentRunHelper
      */
     public static function reanudar(ImageAssignmentRun $run)
     {
-        // Misión tope-serper-demos: en una demo sin búsquedas, reanudar solo volvería a cortarse.
-        if (TopeSerperDemo::agotado((int) $run->user_id)) {
+        // La prueba puede reanudar un ítem que ya descontó su búsqueda antes de un fallo técnico.
+        if (TopeSerperDemo::agotado((int) $run->user_id, true)) {
             return ['status' => 422, 'message' => TopeSerperDemo::MENSAJE];
         }
 
@@ -2041,7 +2050,9 @@ class ImageAssignmentRunHelper
 
         if ($run->status === ImageAssignmentRun::STATUS_DETENIDA) {
             $etapa = 'Detenida';
-        } elseif ($cupo_agotado && TopeSerperDemo::agotado((int) $run->user_id)) {
+        } elseif ($cupo_agotado && PruebaHelper::tiene_periodo_de_prueba($run->user_id)) {
+            $etapa = $run->motivo_estado;
+        } elseif ($cupo_agotado && TopeSerperDemo::agotado((int) $run->user_id, true)) {
             // Misión tope-serper-demos: el cupo que se agotó es el de la demo, no el diario.
             $etapa = 'Llegaste al límite de búsquedas de la demo';
         } elseif ($cupo_agotado) {

@@ -5,7 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
 use App\Models\GeocoderCounter;
 use App\Models\User;
-use App\Services\ProductFacts\TopeSerperDemo;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -46,11 +46,15 @@ class GoogleController extends Controller
 
         // Misión tope-serper-demos (23/10/2026): una demo sin búsquedas no encola nada. Mismo 422
         // {message} que ya muestra la SPA para este botón.
-        if (TopeSerperDemo::agotado($owner)) {
-            return response()->json(['message' => TopeSerperDemo::MENSAJE], 422);
+        $sin_cupo = CupoImagenesDePrueba::mensaje_si_agotado((int) $owner->id);
+        if (!is_null($sin_cupo)) {
+            return response()->json(['message' => $sin_cupo], 422);
         }
 
         $encolado = ImagenesAutomaticasHelper::encolar($owner, $request->article_ids, $this->userId(false));
+        if (!empty($encolado['sin_cupo_prueba'])) {
+            return response()->json(['message' => CupoImagenesDePrueba::MENSAJE_AGOTADO], 422);
+        }
 
         /*
          * 23/10/2026: los que ya tienen imagen no se buscan. Si eran TODOS, no se creó ninguna
@@ -77,6 +81,7 @@ class GoogleController extends Controller
             'batch_uuid'          => $encolado['batch_uuid'],
             'articulos'           => (int) $encolado['articulos'],
             'saltados_con_imagen' => (int) $encolado['saltados_con_imagen'],
+            'saltados_por_cupo'   => (int) $encolado['saltados_por_cupo'],
         ], 200);
     }
 

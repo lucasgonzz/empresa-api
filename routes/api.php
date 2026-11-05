@@ -1016,8 +1016,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
             Asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026):
             Alertas → Imágenes. Las rutas fijas (resumen, catalogo, por-uuid, aprobar-varios) van ANTES
             de las que llevan {id}, y los {id} van restringidos a números: si no, "resumen" o "catalogo"
-            se leerían como un id y responderían 404. catalogo/*, detener y reanudar son solo para la
-            sesión del acceso maestro (lo valida ImageAssignmentRunController, 403 sin ella).
+            se leerían como un id y responderían 404. El controlador habilita las acciones de
+            catálogo para el acceso maestro y para el dueño de una cuenta que empezó como prueba.
         */
         Route::get('image-assignment-runs', 'ImageAssignmentRunController@index');
         Route::get('image-assignment-runs/resumen', 'ImageAssignmentRunController@resumen');
@@ -1671,6 +1671,7 @@ Route::middleware('admin.api.key:siempre')
         // puede decidir de qué comercio se habla. Un cliente viejo sin esta ruta responde 404/405 SIN `code` y el
         // admin lo muestra como «versión vieja».
         Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
+        Route::post('prueba/cupo-imagenes', 'AdminSync\\PruebaController@cupo_imagenes');
     });
 
 Route::middleware('admin.api.key')
