@@ -767,12 +767,13 @@ class ConsolidarFacturacionHelper extends Controller
      *
      * @param Sale       $consolidada       Venta contenedora destino.
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'combos'.
+     * @param array      $factores          Ajustes por venta, si ya se calcularon.
      */
-    private static function copiar_combos(Sale $consolidada, $ventas_originales, array $factores): void
+    private static function copiar_combos(Sale $consolidada, $ventas_originales, array $factores = []): void
     {
         $relacion = $consolidada->combos();
         foreach ($ventas_originales as $venta) {
-            $factor = $factores[$venta->id]['combos'];
+            $factor = $factores[$venta->id]['combos'] ?? self::factores_de_recargo($venta)['combos'];
             foreach ($venta->combos as $combo) {
                 $pivot = $combo->pivot;
                 $relacion->attach($combo->id, $relacion->conservar_precision([
