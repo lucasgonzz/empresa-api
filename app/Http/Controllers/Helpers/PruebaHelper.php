@@ -176,6 +176,16 @@ class PruebaHelper
         return self::puede_haber_prueba() && !is_null(self::config($owner_id));
     }
 
+    public static function tiene_periodo_de_prueba($owner_id): bool
+    {
+        return self::activa($owner_id) && !is_null(self::vence_at($owner_id));
+    }
+
+    public static function en_periodo_vigente($owner_id): bool
+    {
+        return self::activa($owner_id) && optional(self::vence_at($owner_id))->isFuture() === true;
+    }
+
     /**
      * Valida los campos de la prueba del payload del demo setup ANTES de vaciar nada (misma regla que
      * `demo_industria`: un admin anterior no los manda y el setup sigue igual).
@@ -423,6 +433,8 @@ class PruebaHelper
         try {
             $analisis = ExcelAnalysisRun::where('user_id', (int) $owner_id)
                 ->where('excel_path', $excel_path)
+                // La recomendación usa la misma planilla, pero el origen viene de su análisis inicial.
+                ->where('tipo', 'analisis')
                 ->orderBy('id', 'DESC')
                 ->first();
         } catch (\Throwable $e) {
@@ -514,15 +526,19 @@ class PruebaHelper
 
         $config = self::config($owner_id);
         $vence_at = self::vence_at($owner_id);
+        $vigente = self::en_periodo_vigente($owner_id);
 
         return [
-            'activa'           => true,
-            'vence_at'         => is_null($vence_at) ? null : self::iso($vence_at),
-            'vencida'          => self::vencida($owner_id),
-            'video_url'        => $config->video_url,
-            'whatsapp_soporte' => $config->whatsapp_soporte,
-            'modal_visto'      => !is_null($config->modal_visto_at),
-            'semilla_presente' => SemillaRegistroHelper::semilla_presente($owner_id),
+            'activa'             => true,
+            'imagenes_catalogo'  => true,
+            'puede_simular_agente' => $vigente,
+            'puede_importar_pdf' => $vigente,
+            'vence_at'           => is_null($vence_at) ? null : self::iso($vence_at),
+            'vencida'            => self::vencida($owner_id),
+            'video_url'          => $config->video_url,
+            'whatsapp_soporte'   => $config->whatsapp_soporte,
+            'modal_visto'        => !is_null($config->modal_visto_at),
+            'semilla_presente'   => SemillaRegistroHelper::semilla_presente($owner_id),
         ];
     }
 

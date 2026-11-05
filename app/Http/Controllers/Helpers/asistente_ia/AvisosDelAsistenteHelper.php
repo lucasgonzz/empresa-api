@@ -334,7 +334,7 @@ class AvisosDelAsistenteHelper
 
             foreach (AvisosDeImportacionHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
 
-                $ruta = AvisosDeImportacionHelper::ruta($fila->uuid);
+                $ruta = $fila->support_ticket_id ? null : AvisosDeImportacionHelper::ruta($fila->uuid);
 
                 $avisos[] = [
                     'id'                 => AvisosDeImportacionHelper::TIPO . ':' . (string) $fila->uuid,
@@ -344,8 +344,12 @@ class AvisosDelAsistenteHelper
                     'texto'              => (string) $fila->texto,
                     'resumen'            => (string) $fila->texto,
                     'ruta'               => $ruta,
-                    'url'                => is_null($base) ? null : $base . $ruta,
+                    'url'                => is_null($base) || is_null($ruta) ? null : $base . $ruta,
                 ];
+
+                if ($fila->support_ticket_id) {
+                    $avisos[count($avisos) - 1]['support_ticket_id'] = (int) $fila->support_ticket_id;
+                }
 
                 $orden[] = [self::momento($fila->created_at), 3, (int) $fila->id];
             }

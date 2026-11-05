@@ -12,8 +12,10 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\ImportHistory;
+use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\User;
+use App\Services\CupoEmbeddingsDePrueba;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
@@ -23,6 +25,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class FinalizeArticleImport implements ShouldQueue
 {
@@ -204,7 +207,12 @@ class FinalizeArticleImport implements ShouldQueue
          */
         $this->completar_proceso_en_segundo_plano();
 
-        ArticleImportHelper::enviar_notificacion($user, $import_history);
+        $automatica = PruebaHelper::puede_haber_prueba() && Schema::hasTable('importaciones_de_prueba')
+            ? ImportacionDePrueba::where('import_history_id', $import_history->id)->first()
+            : null;
+        if ($automatica === null) {
+            ArticleImportHelper::enviar_notificacion($user, $import_history);
+        }
 
         Log::info('Se envio notificacion');
 
@@ -264,7 +272,11 @@ class FinalizeArticleImport implements ShouldQueue
             'import_history_id' => (int) $import_history->id,
         ], (int) $user->id);
 
-        $this->generar_embeddings_de_lo_importado();
+        if ($automatica !== null) {
+            AvanzarImportacionDePrueba::dispatch((int) $automatica->id);
+        } else {
+            $this->generar_embeddings_de_lo_importado();
+        }
     }
 
     /**
@@ -375,13 +387,13 @@ class FinalizeArticleImport implements ShouldQueue
     {
         /*
          * EMBEDDINGS_OMITIR_IMPORTACION corta esto ANTES del Artisan::call, misma variable que
-         * apaga el scheduler en Kernel.php. Pensada para las instancias de demo: un lead que
+         * apaga el scheduler en Kernel.php. Pensada para las demos por turno: un lead que
          * prueba importar un Excel de miles de artículos no tiene que generarle embeddings a
          * ninguno de ellos. La creación manual de un artículo no pasa por acá (vive en
          * ArticleObserver/DescriptionObserver) y sigue embebiendo al toque, con o sin esta
-         * variable. Default false: ningún cliente real nota que existe.
+         * variable. Las pruebas de siete días usan su presupuesto de indexación.
          */
-        if (filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)) {
+        if (CupoEmbeddingsDePrueba::omitir_importacion($this->user_id)) {
             Log::info('FinalizeArticleImport: se omitió la generación de embeddings post-importación (EMBEDDINGS_OMITIR_IMPORTACION).', [
                 'import_history_id' => $this->import_history_id,
             ]);

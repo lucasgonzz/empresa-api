@@ -943,6 +943,10 @@ class SaleHelper extends Controller {
             return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
         }
 
+        if ($sale->is_consolidacion_facturacion && !empty($sale->ajustes_consolidados_en_renglones)) {
+            return 'Esta venta consolidada conserva los importes de las ventas originales y no se puede modificar.';
+        }
+
         if ($sale->is_cerrada) {
 
             return 'La venta esta cerrada y no se puede modificar.';
@@ -3323,7 +3327,9 @@ class SaleHelper extends Controller {
      */
     static function get_forzar_total_monto($model) {
 
-        if (is_null($model) || !isset($model->forzar_total_monto)) {
+        // En las consolidaciones nuevas el importe es histórico. Prorratearlo otra vez
+        // cambiaría el total y el comprobante fiscal.
+        if (is_null($model) || !isset($model->forzar_total_monto) || !empty($model->ajustes_consolidados_en_renglones)) {
             return 0.0;
         }
 

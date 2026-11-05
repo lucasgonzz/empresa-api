@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\CategoryProposals;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\AuditLog;
 use App\Models\Category;
 use App\Models\CategoryProposal;
@@ -80,6 +81,27 @@ class Ingesta_de_propuestas_Test extends CategoryProposalsTestCase
     // ------------------------------------------------------------------------------------------
     // El camino feliz
     // ------------------------------------------------------------------------------------------
+
+    /** @group categorias_ia */
+    public function test_la_categorizacion_automatica_se_habilita_al_contratar_despues_de_la_prueba()
+    {
+        config(['app.FOR_USER' => 'prueba']);
+        PruebaHelper::olvidar_cache();
+        PruebaHelper::activar_desde_payload($this->owner, ['dias' => 7]);
+        $this->crear_articulos_en_masa(3);
+        $cuerpo = $this->cuerpo($this->propuestas_de_ejemplo(true));
+
+        $this->post_admin('categorias/propuestas', $cuerpo)
+            ->assertStatus(403)
+            ->assertJsonPath('codigo', 'categorizacion_despues_de_contratar');
+        $this->assertSame(0, $this->corridas_de());
+
+        $this->withHeaders($this->cabeceras_de_admin())
+            ->postJson('/api/admin-sync/prueba/vencimiento', ['vence_at' => null])
+            ->assertOk();
+        $this->post_admin('categorias/propuestas', $cuerpo)->assertStatus(201);
+        PruebaHelper::olvidar_cache();
+    }
 
     /**
      * @group categorias_ia

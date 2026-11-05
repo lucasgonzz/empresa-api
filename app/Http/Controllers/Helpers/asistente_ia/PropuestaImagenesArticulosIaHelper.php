@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 
@@ -100,9 +101,14 @@ class PropuestaImagenesArticulosIaHelper
 
         $cuota = ImagenesAutomaticasHelper::cuota_de($contexto->owner);
 
-        if ((int) $cuota['disponibles'] <= 0) {
+        if (!is_null($cuota['disponibles']) && $cuota['disponibles'] <= 0) {
 
-            return RespuestaDeCargaIa::error(self::MENSAJE_SIN_CUOTA);
+            return RespuestaDeCargaIa::error(self::mensaje_sin_cupo($cuota));
+        }
+
+        if (isset($cuota['tope_demo']['unidad'])) {
+            $a_procesar = min($a_procesar, $cuota['disponibles']);
+            $parametros['limite'] = $a_procesar;
         }
 
         $renglones = [
@@ -114,7 +120,12 @@ class PropuestaImagenesArticulosIaHelper
             $renglones[] = $renglon;
         }
 
-        $renglones[] = ['etiqueta' => 'Búsquedas disponibles hoy', 'valor' => $cuota['disponibles'] . ' de ' . $cuota['cuota']];
+        if (!is_null($cuota['disponibles'])) {
+            $renglones[] = [
+                'etiqueta' => isset($cuota['tope_demo']['unidad']) ? 'Búsquedas gratuitas de la prueba' : 'Búsquedas disponibles hoy',
+                'valor'    => $cuota['disponibles'] . ' de ' . $cuota['cuota'],
+            ];
+        }
 
         $datos = [
             'filtros'         => $parametros['filtros'],
@@ -141,8 +152,8 @@ class PropuestaImagenesArticulosIaHelper
             [
                 'articulos'                 => $a_procesar,
                 'total_del_filtro'          => $total,
-                'busquedas_disponibles_hoy' => $cuota['disponibles'],
-                'cuota_diaria'              => $cuota['cuota'],
+                'busquedas_disponibles_hoy' => isset($cuota['tope_demo']['unidad']) ? null : $cuota['disponibles'],
+                'cuota_diaria'              => isset($cuota['tope_demo']['unidad']) ? null : $cuota['cuota'],
             ]
         );
     }
@@ -205,9 +216,14 @@ class PropuestaImagenesArticulosIaHelper
         // Se re-mira la cuota al confirmar: la tarjeta pudo quedar propuesta a la mañana y el lote
         // del listado gastar las búsquedas del día en el medio. Encolar con cuota cero es decir
         // "mandé a buscar" y que el job termine al toque con todo sin procesar.
-        if ((int) ImagenesAutomaticasHelper::cuota_de($contexto->owner)['disponibles'] <= 0) {
+        $cuota = ImagenesAutomaticasHelper::cuota_de($contexto->owner);
+        if (!is_null($cuota['disponibles']) && $cuota['disponibles'] <= 0) {
 
-            throw new AccionIaException(422, self::MENSAJE_SIN_CUOTA);
+            throw new AccionIaException(422, self::mensaje_sin_cupo($cuota));
+        }
+
+        if (isset($cuota['tope_demo']['unidad'])) {
+            $ids = array_slice($ids, 0, $cuota['disponibles']);
         }
 
         $persona = $contexto->persona;
@@ -224,6 +240,13 @@ class PropuestaImagenesArticulosIaHelper
                 'texto'  => 'Ver el listado',
             ],
         ];
+    }
+
+    protected static function mensaje_sin_cupo(array $cuota): string
+    {
+        return isset($cuota['tope_demo']['unidad'])
+            ? CupoImagenesDePrueba::MENSAJE_AGOTADO
+            : self::MENSAJE_SIN_CUOTA;
     }
 
     /**

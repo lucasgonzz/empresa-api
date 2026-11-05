@@ -34,6 +34,12 @@ use Illuminate\Support\Facades\Log;
  */
 class AccesoSoporteController extends Controller
 {
+    /** Permite al monitor identificar un frente con el acceso maestro aislado. */
+    public function capacidad_verificacion_perfil()
+    {
+        return response()->json(['verificacion_perfil' => 1])->header('Cache-Control', 'no-store');
+    }
+
     /**
      * Valida el token, lo consume e inicia la sesión del dueño.
      *

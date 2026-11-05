@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
+use App\Http\Controllers\Helpers\client\AcopioPendienteClientesHelper;
 use App\Models\CurrentAcount;
 use App\Models\Provider;
 use App\Services\Compras\CodigosDeProveedor;
@@ -173,6 +174,14 @@ class SearchController extends Controller
             }
 
             $models = $models->paginate($per_page, ['*'], 'page', $pagina_pedida);
+
+            if ($model_name_param === 'client'
+                && !$return_raw_models
+                && !$return_used_filters
+                && !$request->papelera
+                && $request->boolean('clientes_acopio_pendiente')) {
+                AcopioPendienteClientesHelper::agregar_a_pagina($models->getCollection());
+            }
         } else {
             $models = $models->get();
         }
@@ -590,6 +599,7 @@ class SearchController extends Controller
         $usar_contexto_vender = $model_name_param == 'article' && VenderSearchHelper::is_valid_contexto($contexto);
         $es_compra = $model_name_param === 'article' && $contexto === 'provider_order';
         $provider_id_compra = $es_compra ? (int) $request->input('provider_id', 0) : 0;
+        $mostrar_codigo_principal = $request->boolean('mostrar_codigo_principal');
         if ($provider_id_compra && !Provider::where('user_id', $this->userId())->where('id', $provider_id_compra)->exists()) {
             return response()->json(['message' => 'El proveedor no pertenece a este comercio.'], 422);
         }
@@ -866,13 +876,13 @@ class SearchController extends Controller
 
             // El orden final es el de los descriptores (Fase 1), no el de whereIn (Fase 2, sin
             // garantía de orden): se arma buscando cada artículo completo por id.
-            $results = $page_descriptors->map(function ($descriptor) use ($full_articles, $es_compra, $provider_id_compra) {
+            $results = $page_descriptors->map(function ($descriptor) use ($full_articles, $es_compra, $provider_id_compra, $mostrar_codigo_principal) {
                             $article = $full_articles->get($descriptor->article_id);
 
                             if (is_null($article)) {
                                 return null;
                             }
-                            if ($es_compra) {
+                            if ($es_compra && ($provider_id_compra || !$mostrar_codigo_principal)) {
                                 $article->provider_code = CodigosDeProveedor::codigo_para($article, $provider_id_compra);
                             }
 
@@ -897,6 +907,10 @@ class SearchController extends Controller
             // donde se calcula $page_actual. El 3er argumento es el nombre del parámetro, que se
             // mantiene en 'page' para que los links del paginador salgan iguales que siempre.
             $models = $models->paginate($per_page, ['*'], 'page', $page_actual);
+        }
+
+        if ($model_name_param === 'client' && $request->boolean('clientes_acopio_pendiente')) {
+            AcopioPendienteClientesHelper::agregar_a_pagina($models->getCollection());
         }
 
         // Historial de filtrados (Grupo 273, Prompt 02): `search()` ya lo registraba para article,

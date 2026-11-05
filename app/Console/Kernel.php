@@ -16,6 +16,7 @@ use App\Models\PlatformConnector;
 use App\Models\SyncToMeliArticle;
 use App\Models\SyncToTNArticle;
 use App\Models\User;
+use App\Services\CupoEmbeddingsDePrueba;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
 use Illuminate\Support\Facades\Cache;
@@ -219,11 +220,11 @@ class Kernel extends ConsoleKernel
         // (primer índice completo de catálogos grandes) con margen antes del próximo ciclo de 30 min.
         //
         // EMBEDDINGS_OMITIR_IMPORTACION apaga este scheduler entero (además del disparo post-import
-        // de FinalizeArticleImport, ver ese archivo). Existe para las instancias de demo: un lead
+        // de FinalizeArticleImport, ver ese archivo). Existe para las demos por turno: un lead
         // que sube un Excel de prueba de miles de artículos no tiene que generarle embeddings a
         // ninguno — la creación manual de un artículo sigue embebiendo al toque igual, porque eso
         // vive en ArticleObserver/DescriptionObserver y no pasa por acá. Default false: ningún
-        // cliente real nota que esta variable existe.
+        // cliente real nota que esta variable existe. Las pruebas de siete días usan su presupuesto.
         //
         // EMBEDDINGS_GENERACION_PAUSADA (misión busqueda-lenta-y-pausa-embeddings) es OTRO
         // interruptor, con OTRO propósito: no es por instancia de demo, es la pausa global de
@@ -239,7 +240,7 @@ class Kernel extends ConsoleKernel
         if (
             $company_owner
             && UserHelper::hasExtencion('agentes_ia', $company_owner)
-            && ! filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)
+            && ! CupoEmbeddingsDePrueba::omitir_importacion((int) $company_owner->id)
             && ! config('services.openai.embeddings_generacion_pausada')
         ) {
             $schedule->command('articles:generate-embeddings')
@@ -421,6 +422,20 @@ class Kernel extends ConsoleKernel
             ->when(function () {
                 return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
             });
+
+        $schedule->call(function () {
+            if (!$this->tabla_existe_para_el_schedule('importaciones_de_prueba')) {
+                return;
+            }
+            \App\Models\ImportacionDePrueba::whereIn('estado', \App\Models\ImportacionDePrueba::EN_CURSO)
+                ->orderBy('id')->chunkById(100, function ($corridas) {
+                    foreach ($corridas as $corrida) {
+                        \App\Jobs\AvanzarImportacionDePrueba::dispatch((int) $corrida->id);
+                    }
+                });
+        })->name('prueba:avanzar-importaciones')->everyMinute()->withoutOverlapping(3)->when(function () {
+            return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
+        });
 
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.

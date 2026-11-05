@@ -27,6 +27,8 @@ class ImageAssignmentRun extends Model
     const ORIGEN_SELECCION = 'seleccion';
     const ORIGEN_ASISTENTE = 'asistente';
 
+    const PREFIJO_PROCESO_SERPER = 'imagenes_';
+
     const PROVEEDOR_SERPER = 'serper';
     const PROVEEDOR_GOOGLE = 'google';
 

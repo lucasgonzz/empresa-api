@@ -146,7 +146,7 @@ class FinalizeEmbeddingRun implements ShouldQueue
              * hasta agotar los 120 `tries`: media hora de intentos que no pueden terminar en
              * nada, porque no hay nadie que vaya a mover ese status.
              */
-            if (Carbon::now()->greaterThanOrEqualTo($this->vence_at($run))) {
+            if (Carbon::now()->greaterThanOrEqualTo(self::vence_at($run))) {
                 Log::channel('daily')->warning('FinalizeEmbeddingRun: la tanda quedó trabada en despachando y venció.', [
                     'embedding_run_id' => $run->id,
                 ]);
@@ -162,7 +162,7 @@ class FinalizeEmbeddingRun implements ShouldQueue
         }
 
         if ((int) $run->terminados < (int) $run->total_jobs) {
-            if (Carbon::now()->lessThan($this->vence_at($run))) {
+            if (Carbon::now()->lessThan(self::vence_at($run))) {
                 $this->volver_a_intentar();
 
                 return;
@@ -200,8 +200,14 @@ class FinalizeEmbeddingRun implements ShouldQueue
      *
      * @return \Carbon\Carbon
      */
-    protected function vence_at(EmbeddingRun $run)
+    public static function vence_at(EmbeddingRun $run)
     {
+        // Una prueba puede encolar miles de artículos. Mientras la tanda avance, su
+        // duración total no indica que esté trabada; los jobs actualizan el sello por resultado.
+        if ($run->origen === 'prueba' && $run->status === 'en_proceso') {
+            return Carbon::parse($run->updated_at)->addMinutes(60);
+        }
+
         return Carbon::parse($run->created_at)->addMinutes(self::MINUTOS_PARA_VENCER);
     }
 
@@ -232,6 +238,9 @@ class FinalizeEmbeddingRun implements ShouldQueue
          * sin gastar una llamada porque el texto no cambió. Notificar ahí sería abrirle un aviso
          * al comerciante cada media hora para decirle que no pasó nada.
          */
+        if ((string) $run->origen === 'prueba') {
+            return;
+        }
         if ((int) $run->generados < 1) {
             Log::channel('daily')->info('FinalizeEmbeddingRun: la tanda cerró sin vectores nuevos, no se notifica.', [
                 'embedding_run_id' => $run->id,

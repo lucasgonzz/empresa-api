@@ -200,6 +200,11 @@ class AiExcelAnalyzer
         $this->user_id = $user_id;
     }
 
+    public static function propiedades_importables(): array
+    {
+        return self::SYSTEM_PROPERTIES;
+    }
+
     /**
      * Analiza el Excel recibido y devuelve el mapeo de columnas sugerido por Claude.
      *

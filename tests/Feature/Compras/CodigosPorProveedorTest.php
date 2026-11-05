@@ -106,7 +106,7 @@ class CodigosPorProveedorTest extends ComprasTestCase
         $this->assertNull($this->coincidencia($scan, 'NUEVO', 'Piña natural')['article_id']);
     }
 
-    public function test_confirmar_vinculo_aprende_codigo_aun_sin_actualizar_precios_y_es_idempotente()
+    protected function habilitar_escaneo()
     {
         // ExtencionEmpresa no tiene $fillable: firstOrCreate() tira MassAssignmentException en una base
         // recién sembrada sin la fila (gate 4.3.25). Mismo patrón que la prueba de variantes de abajo.
@@ -116,6 +116,11 @@ class CodigosPorProveedorTest extends ComprasTestCase
         }
         auth()->user()->extencions()->syncWithoutDetaching([$extencion->id]);
         auth()->user()->load('extencions');
+    }
+
+    public function test_confirmar_vinculo_aprende_codigo_aun_sin_actualizar_precios_y_es_idempotente()
+    {
+        $this->habilitar_escaneo();
         $article = $this->producto();
         $article->providers()->attach($this->proveedor_b->id, ['provider_code' => 'ULTIMO-B', 'cost' => 100]);
         $scan = $this->escaneo($this->compra());
@@ -131,6 +136,99 @@ class CodigosPorProveedorTest extends ComprasTestCase
         $this->assertSame('ULTIMO-B', $article->fresh()->provider_code);
         $this->postJson('/api/provider-order-scan/' . $scan->uuid . '/confirmar', $payload)->assertStatus(409);
         $this->assertSame($article->id, $this->coincidencia($this->escaneo($scan->provider_order), 'NUEVO-A')['article_id']);
+    }
+
+    public function test_revision_muestra_el_proveedor_principal_vigente_de_coincidencias_y_sugerencias()
+    {
+        $this->habilitar_escaneo();
+        $article = $this->producto();
+        $scan = $this->escaneo($this->compra());
+        $scan->update(['resultado' => ['articulos' => [
+            ['match' => ['article_id' => $article->id]],
+            ['match' => ['article_id' => null, 'candidatos' => [['article_id' => $article->id]]]],
+        ]]]);
+
+        $url = '/api/provider-order-scan/' . $scan->uuid;
+        $this->getJson($url)->assertOk()
+            ->assertJsonPath('provider_id', $this->proveedor_a->id)
+            ->assertJsonPath('resultado.articulos.0.match.provider_id', $this->proveedor_b->id)
+            ->assertJsonPath('resultado.articulos.1.match.candidatos.0.provider_id', $this->proveedor_b->id);
+
+        $article->update(['provider_id' => $this->proveedor_a->id]);
+        $this->getJson($url)->assertOk()
+            ->assertJsonPath('resultado.articulos.0.match.provider_id', $this->proveedor_a->id)
+            ->assertJsonPath('resultado.articulos.1.match.candidatos.0.provider_id', $this->proveedor_a->id);
+    }
+
+    public function test_decision_explicita_se_respeta_con_stock_y_precios_y_se_conserva_al_editar()
+    {
+        $this->habilitar_escaneo();
+
+        foreach ([[false, true], [true, true], [true, false], [false, false]] as [$actualizar_proveedor, $actualizar_precios]) {
+            $article = $this->producto();
+            $compra = $this->compra();
+            $compra->update(['update_stock' => 1, 'update_prices' => $actualizar_precios]);
+            $scan = $this->escaneo($compra);
+            $codigo_a = 'ESCANEO-A-' . $article->id;
+
+            $this->postJson('/api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+                'articulos' => [[
+                    'article_id' => $article->id, 'update_provider' => $actualizar_proveedor,
+                    'codigo_proveedor' => $codigo_a, 'cantidad' => 2, 'costo_unitario' => 75, 'iva_id' => $article->iva_id,
+                ]],
+            ])->assertOk();
+
+            $proveedor_principal = $actualizar_proveedor ? $this->proveedor_a : $this->proveedor_b;
+            $codigo_principal = $actualizar_proveedor ? $codigo_a : 'ULTIMO-B';
+            $this->assertEquals($proveedor_principal->id, $article->fresh()->provider_id);
+            $this->assertSame($codigo_principal, $article->fresh()->provider_code);
+            $this->assertEquals(2, $article->fresh()->stock);
+            $this->assertEquals($actualizar_precios ? 75 : 100, $article->fresh()->cost);
+            $this->assertDatabaseHas('article_provider', ['article_id' => $article->id, 'provider_id' => $this->proveedor_a->id, 'provider_code' => $codigo_a]);
+            $this->assertDatabaseHas('article_provider', ['article_id' => $article->id, 'provider_id' => $this->proveedor_b->id, 'provider_code' => 'ULTIMO-B']);
+
+            $url_compra = '/api/provider-order/' . $compra->id;
+            $fila = $this->getJson($url_compra)->assertOk()->json('model.articles.0');
+            $this->assertEquals(1, $fila['pivot']['update_provider_explicit']);
+            $this->assertEquals((int) $actualizar_proveedor, $fila['pivot']['update_provider']);
+            $this->assertSame($codigo_a, $fila['provider_code']);
+
+            // Un formulario anterior omite el indicador explícito y puede mandar un flag por defecto.
+            unset($fila['pivot']['update_provider_explicit']);
+            $fila['pivot']['update_provider'] = 0;
+            $this->putJson($url_compra, $this->payload_compra([
+                'provider_id' => $this->proveedor_a->id, 'modo_facturacion' => 'manual',
+                'update_stock' => 1, 'update_prices' => 1, 'generate_current_acount' => 0,
+                'moneda_id' => 1, 'articles' => [$fila],
+            ]))->assertOk();
+            $this->assertEquals($proveedor_principal->id, $article->fresh()->provider_id);
+            $this->assertSame($codigo_principal, $article->fresh()->provider_code);
+            $this->assertEquals(2, $article->fresh()->stock);
+            $this->assertDatabaseHas('article_provider_order', [
+                'provider_order_id' => $compra->id, 'article_id' => $article->id,
+                'update_provider' => $actualizar_proveedor, 'update_provider_explicit' => true,
+            ]);
+        }
+    }
+
+    public function test_codigo_del_mismo_proveedor_se_actualiza_en_ficha_sin_cambiar_precios()
+    {
+        $this->habilitar_escaneo();
+        $article = $this->producto();
+        $compra = $this->compra();
+        $compra->update(['provider_id' => $this->proveedor_b->id]);
+        $scan = $this->escaneo($compra);
+
+        $this->postJson('/api/provider-order-scan/' . $scan->uuid . '/confirmar', [
+            'articulos' => [[
+                'article_id' => $article->id, 'codigo_proveedor' => 'NUEVO-B',
+                'cantidad' => 2, 'costo_unitario' => 75, 'iva_id' => $article->iva_id,
+            ]],
+        ])->assertOk();
+
+        $this->assertEquals($this->proveedor_b->id, $article->fresh()->provider_id);
+        $this->assertSame('NUEVO-B', $article->fresh()->provider_code);
+        $this->assertEquals(100, $article->fresh()->cost);
     }
 
     public function test_compra_guarda_codigo_sin_costo_y_conserva_costo_anterior()
@@ -202,6 +300,26 @@ class CodigosPorProveedorTest extends ComprasTestCase
             'query_value' => 'LEGADO-A7', 'props' => ['name', 'provider_code'],
             'contexto' => 'provider_order', 'provider_id' => null,
         ])->assertOk()->assertJsonPath('models.data.0.id', $article->id)->assertJsonPath('models.data.0.provider_code', null);
+    }
+
+    public function test_busqueda_de_revision_muestra_el_codigo_y_proveedor_principales()
+    {
+        $article = $this->producto('Taladro para vincular', 'FICHA-B07');
+        $article->providers()->attach($this->proveedor_a->id, ['provider_code' => 'REFERENCIA-A']);
+
+        $payload = [
+            'query_value' => 'FICHA-B07', 'props' => ['name', 'bar_code', 'provider_code'],
+            'contexto' => 'provider_order', 'mostrar_codigo_principal' => true,
+        ];
+        $this->postJson('/api/global-search/article', $payload)->assertOk()
+            ->assertJsonPath('models.data.0.id', $article->id)
+            ->assertJsonPath('models.data.0.provider_id', $this->proveedor_b->id)
+            ->assertJsonPath('models.data.0.provider_code', 'FICHA-B07');
+
+        $payload['query_value'] = 'REFERENCIA-A';
+        $payload['provider_id'] = $this->proveedor_a->id;
+        $this->postJson('/api/global-search/article', $payload)->assertOk()
+            ->assertJsonPath('models.data.0.provider_code', 'REFERENCIA-A');
     }
 
     public function test_formulario_anterior_no_copia_codigo_de_otro_proveedor_al_crear_o_editar_compra()

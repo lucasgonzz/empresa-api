@@ -80,6 +80,11 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     */
     Route::get('prueba/estado', 'PruebaController@estado');
     Route::post('prueba/modal-visto', 'PruebaController@modal_visto');
+    Route::get('implementacion', 'ImplementacionController@index');
+    Route::post('implementacion/{id}/visto', 'ImplementacionController@visto');
+    Route::post('implementacion/{id}/aprobar', 'ImplementacionController@aprobar');
+    Route::post('prueba/simular-agente', 'PruebaController@simular_agente')
+        ->middleware(['check_extencion_empresa:agentes_ia', 'throttle:prueba-simular-agente']);
 
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------
@@ -533,6 +538,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     // Consolidación de ventas para facturación
     Route::get('sales/por-consolidar', 'SaleController@ventasPorConsolidar');
     Route::post('sales/consolidar-facturacion', 'SaleController@consolidarFacturacion');
+    Route::post('sales/consolidar-facturacion/vista-previa', 'SaleController@vistaPreviaConsolidarFacturacion');
 
     // Article Performance
     Route::get('article-performance/{article_id}', 'ArticlePerformanceController@index');
@@ -1016,8 +1022,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
             Asignaciones inteligentes de imágenes (misión imagenes-catalogo-completo, 27/9/2026):
             Alertas → Imágenes. Las rutas fijas (resumen, catalogo, por-uuid, aprobar-varios) van ANTES
             de las que llevan {id}, y los {id} van restringidos a números: si no, "resumen" o "catalogo"
-            se leerían como un id y responderían 404. catalogo/*, detener y reanudar son solo para la
-            sesión del acceso maestro (lo valida ImageAssignmentRunController, 403 sin ella).
+            se leerían como un id y responderían 404. El controlador habilita las acciones de
+            catálogo para el acceso maestro y para el dueño de una cuenta que empezó como prueba.
         */
         Route::get('image-assignment-runs', 'ImageAssignmentRunController@index');
         Route::get('image-assignment-runs/resumen', 'ImageAssignmentRunController@resumen');
@@ -1647,6 +1653,7 @@ Route::post('demo/ingreso', 'DemoIngresoController@store');
 // cualquier rechazo (no filtra el motivo) y `throttle:10,1` contra quien pruebe tokens. Declarada en el
 // guardián Seguridad/RutasPublicas con este motivo.
 Route::post('acceso-soporte/canjear', 'AccesoSoporteController@canjear')->middleware('throttle:10,1');
+Route::get('acceso-soporte/verificacion-perfil', 'AccesoSoporteController@capacidad_verificacion_perfil');
 
 // Acceso de un solo uso al configurador de extensiones, pedido por el admin (misión extensiones-desde-el-admin,
 // 15/10/2026). `admin.api.key:siempre`: exige X-Admin-Api-Key aunque la instancia no tenga clave cargada,
@@ -1671,6 +1678,9 @@ Route::middleware('admin.api.key:siempre')
         // puede decidir de qué comercio se habla. Un cliente viejo sin esta ruta responde 404/405 SIN `code` y el
         // admin lo muestra como «versión vieja».
         Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
+        Route::post('prueba/cupo-imagenes', 'AdminSync\\PruebaController@cupo_imagenes');
+        Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
+        Route::post('ai-excel-import/prueba-resolver/{uuid}', 'AdminSync\\ImportacionDePruebaController@resolver');
     });
 
 Route::middleware('admin.api.key')

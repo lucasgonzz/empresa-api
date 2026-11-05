@@ -3,8 +3,12 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Models\Article;
+use App\Services\WhatsappBotAiService;
 use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
 
 /**
  * La prueba gratuita vista desde el SPA (misión prueba-experiencia-empresa, 3/11/2026).
@@ -42,5 +46,56 @@ class PruebaController extends Controller
         return response()->json([
             'prueba' => PruebaHelper::resumen_para_spa($owner_id),
         ], 200);
+    }
+
+    public function simular_agente(Request $request, WhatsappBotAiService $agente): JsonResponse
+    {
+        $dueno = $request->user();
+        if (!empty($dueno->owner_id)) {
+            return response()->json(['message' => 'Solo el dueño puede probar el agente.'], 403);
+        }
+
+        $owner_id = (int) $dueno->id;
+        if (!PruebaHelper::en_periodo_vigente($owner_id)) {
+            return response()->json(['message' => 'La simulación está disponible durante la prueba gratuita.'], 403);
+        }
+
+        $datos = $request->validate([
+            'pregunta' => 'required|string|max:500',
+        ], [
+            'pregunta.required' => 'Escribí una pregunta para el agente.',
+            'pregunta.string'   => 'La pregunta tiene que ser un texto.',
+            'pregunta.max'      => 'La pregunta puede tener hasta 500 caracteres.',
+        ]);
+
+        if (SemillaRegistroHelper::semilla_presente($owner_id)) {
+            return response()->json([
+                'code'    => 'catalogo_de_ejemplo',
+                'message' => 'Importá tu catálogo para probar el agente con tus productos.',
+            ], 422);
+        }
+
+        // El sello se escribe al generar el vector. Alcanza con saber si hay un artículo listo, sin leer el vector.
+        if (!Article::where('user_id', $owner_id)->where('status', 'active')->whereNotNull('embedding_generated_at')->exists()) {
+            return response()->json([
+                'code'    => 'catalogo_sin_indexar',
+                'message' => 'Todavía no hay artículos listos para responder. Si recién importaste tu catálogo, esperá unos minutos y volvé a probar.',
+            ], 422);
+        }
+
+        $resultado = $agente->simular_respuesta($owner_id, trim($datos['pregunta']));
+        if ($resultado['body'] !== '') {
+            return response()->json(['respuesta' => $resultado['body']]);
+        }
+
+        if ($resultado['motivo'] === 'solo_foto') {
+            return response()->json([
+                'message' => 'El agente sugeriría una foto. Esta simulación muestra respuestas de texto. Probá con otra pregunta.',
+            ], 422);
+        }
+
+        return response()->json([
+            'message' => 'El agente no pudo responder en este momento. Probá de nuevo en unos minutos.',
+        ], 503);
     }
 }

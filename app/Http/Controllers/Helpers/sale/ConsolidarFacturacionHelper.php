@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Helpers\sale;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\Sale;
 use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Helper que gestiona la consolidación de varias ventas individuales en una
@@ -28,20 +30,112 @@ class ConsolidarFacturacionHelper extends Controller
 
     private const ESCALA_PRECIO_CONSOLIDADO = 12;
 
-    /**
-     * Valida que las ventas indicadas puedan consolidarse.
-     * Lanza una Exception si alguna condición no se cumple.
-     *
-     * 🔴 La llama `consolidar()` (misión cc-reactivar-validar-consolidacion, 23/10/2026). Estuvo
-     * comentada desde el commit original (27/4/2026), y sin ella el endpoint no rechazaba una venta
-     * ya consolidada, una con factura autorizada ni una de otro cliente: un doble envío o un POST
-     * armado a mano consolidaba dos veces la misma venta y emitía dos facturas.
-     *
-     * @param array $sale_ids       IDs de ventas a consolidar.
-     * @param int   $client_id      Cliente esperado para todas las ventas.
-     * @param int   $user_id        Usuario autenticado; todas las ventas deben pertenecer a él.
-     * @throws Exception
-     */
+    public static function vista_previa(array $sale_ids, int $client_id, int $user_id): array
+    {
+        $consulta = Sale::whereIn('id', $sale_ids)
+            ->where('user_id', $user_id)
+            ->where('client_id', $client_id);
+        self::aplicar_alcance_de_ventas($consulta);
+        $ventas = $consulta
+            ->with('articles.iva', 'combos', 'services', 'promocion_vinotecas', 'discounts', 'surchages', 'current_acount_payment_methods')
+            ->orderBy('id')
+            ->get();
+        if ($ventas->count() !== count(array_unique(array_map('intval', $sale_ids)))) {
+            throw new Exception('Una o más ventas de la selección ya no están disponibles.');
+        }
+        self::validar($sale_ids, $client_id, $user_id);
+        self::validar_moneda($ventas);
+
+        return [
+            'ventas' => $ventas->map(function (Sale $venta) {
+                return [
+                    'id' => $venta->id,
+                    'num' => $venta->num,
+                    'total_antes_de_ajustes' => self::importe_de_renglones($venta, [
+                        'articles' => 1, 'combos' => 1, 'services' => 1, 'promocion_vinotecas' => 1,
+                    ]),
+                    'total' => (float) $venta->total,
+                ];
+            }),
+            'moneda_id' => (int) ($ventas->first()->moneda_id ?? 1),
+            'total' => round((float) $ventas->sum('total'), 2),
+            'firma_vista_previa' => self::firma_vista_previa($ventas),
+            'avisos' => $ventas->map(function (Sale $venta) {
+                return self::aviso_de_importes($venta, self::factores_de_recargo($venta));
+            })->filter()->values(),
+        ];
+    }
+
+    private static function importe_de_renglones(Sale $venta, array $factores): float
+    {
+        $importe = 0;
+        foreach ($factores as $relacion => $factor) {
+            foreach ($venta->{$relacion} as $renglon) {
+                $importe += SaleHelper::getTotalItem($renglon) * $factor;
+            }
+        }
+        return round($importe, 2);
+    }
+
+    private static function aviso_de_importes(Sale $venta, array $factores): ?string
+    {
+        if (self::importe_de_renglones($venta, $factores) !== round((float) $venta->total, 2)) {
+            $numero = $venta->num ?? $venta->id;
+            return "Los renglones de la venta N° {$numero} no llegan a su total con los ajustes disponibles. Revisá esa venta antes de consolidar.";
+        }
+        return null;
+    }
+
+    private static function firma_vista_previa($ventas): string
+    {
+        $datos = $ventas->sortBy('id')->values()->map(function (Sale $venta) {
+            $renglones = [];
+            foreach (['articles', 'combos', 'services', 'promocion_vinotecas'] as $relacion) {
+                $renglones[$relacion] = $venta->{$relacion}->map(function ($item) {
+                    return [
+                        $item->id,
+                        $item->pivot->price,
+                        $item->pivot->amount,
+                        $item->pivot->discount,
+                        $item->pivot->iva_percentage ?? ($item->iva->percentage ?? null),
+                        $item->pivot->returned_amount,
+                    ];
+                })->sortBy(function ($renglon) {
+                    return json_encode($renglon);
+                })->values()->all();
+            }
+            return [
+                $venta->id, $venta->total, $venta->moneda_id, $venta->valor_dolar,
+                $venta->forzar_total_monto, self::factores_de_recargo($venta), $renglones,
+            ];
+        });
+
+        return hash_hmac('sha256', $datos->toJson(), config('app.key'));
+    }
+
+    private static function validar_moneda($ventas): void
+    {
+        if ($ventas->isEmpty()) {
+            throw new Exception('Ya no hay ventas disponibles para consolidar.');
+        }
+        $primera = $ventas->first();
+        foreach ($ventas as $venta) {
+            if ((int) ($venta->moneda_id ?? 1) !== (int) ($primera->moneda_id ?? 1)
+                || ($primera->moneda_id == 2 && (float) $venta->valor_dolar !== (float) $primera->valor_dolar)) {
+                throw new Exception('Para consolidar, las ventas deben tener la misma moneda y cotización.');
+            }
+        }
+    }
+
+    private static function aplicar_alcance_de_ventas($consulta): void
+    {
+        ListadoVentasHelper::aplicar_alcance($consulta);
+        if (ListadoVentasHelper::solo_hoy_permitido()) {
+            $consulta->whereDate('sales.created_at', Carbon::today()->toDateString());
+        }
+    }
+
+    /** Valida existencia, dueño, cliente y estado antes de incluir cada venta. */
     public static function validar(array $sale_ids, int $client_id, int $user_id): void
     {
         /** La misma venta elegida dos veces cuenta una sola: no es una venta inexistente. */
@@ -61,9 +155,9 @@ class ConsolidarFacturacionHelper extends Controller
         }
 
         /** Carga las ventas a validar con relaciones mínimas necesarias. */
-        $sales = Sale::whereIn('id', $sale_ids)
-                     ->with('afip_tickets')
-                     ->get();
+        $consulta = Sale::whereIn('id', $sale_ids);
+        self::aplicar_alcance_de_ventas($consulta);
+        $sales = $consulta->with('afip_tickets')->get();
 
         if ($sales->count() !== count($sale_ids)) {
             throw new Exception('Una o más ventas indicadas no existen.');
@@ -202,42 +296,25 @@ class ConsolidarFacturacionHelper extends Controller
             /** Carga las ventas con sus artículos y datos de pivot para copiarlos. */
             $ventas_originales = Sale::whereIn('id', $sale_ids)
                                      /* articles.iva: la alicuota actual del articulo, para la clave de agrupacion (ver clave_de_agrupacion). */
-                                     ->with('articles.iva', 'combos', 'services', 'discounts', 'surchages', 'client')
+                                     ->with('articles.iva', 'combos', 'services', 'promocion_vinotecas', 'discounts', 'surchages', 'current_acount_payment_methods', 'client')
                                      ->get();
+            self::validar_moneda($ventas_originales);
+            if (isset($afip_data['firma_vista_previa'])
+                && !hash_equals(self::firma_vista_previa($ventas_originales), (string) $afip_data['firma_vista_previa'])) {
+                throw new Exception('Las ventas cambiaron desde la vista previa. Volvé a revisar los importes antes de confirmar.');
+            }
 
             /** Acumula los totales de las ventas originales para el campo total de la consolidada. */
-            $total_consolidado  = $ventas_originales->sum('total');
+            $total_consolidado  = round((float) $ventas_originales->sum('total'), 2);
             $sub_total_consolid = $ventas_originales->sum('sub_total');
-
-            /**
-             * El monto del total forzado de la consolidada es la SUMA de los montos de las ventas
-             * originales (mision forzar-total-por-monto, 17/9/2026).
-             *
-             * ─────────────────────────────────────────────────────────────────────────────
-             *  🔴 POR QUE ESTA LINEA NO ES OPCIONAL
-             * ─────────────────────────────────────────────────────────────────────────────
-             *
-             *  `$total_consolidado` ya viene con los forzados adentro, porque suma `sales.total` de
-             *  cada venta. Pero los renglones se copian con su `price` CRUDO. Sin el monto, la
-             *  consolidada queda con `total` = 4.000 y renglones que suman 4.012: el factor de
-             *  `AfipItemCalculator` da 1 y a un emisor Responsable Inscripto se le facturan los
-             *  4.012 — 12 pesos mas de lo que el cliente pago, en un comprobante fiscal.
-             *
-             *  Es la misma clase de error que esta mision vino a cerrar: un camino que escribe
-             *  `sales.total` sin escribir `forzar_total_monto`. Los dos campos se escriben juntos.
-             *
-             * El cero se guarda como null, igual que `SaleHelper::normalized_forzar_total_monto()`:
-             * ninguna de las ventas forzo nada, y "no se forzo" es null, no 0.
-             */
-            $forzado_consolidado = (float) $ventas_originales->sum('forzar_total_monto');
-
-            if ($forzado_consolidado == 0) {
-                $forzado_consolidado = null;
-            }
 
             $factores = [];
             foreach ($ventas_originales as $venta) {
                 $factores[$venta->id] = self::factores_de_recargo($venta);
+                $aviso = self::aviso_de_importes($venta, $factores[$venta->id]);
+                if ($emitir_afip && $aviso !== null) {
+                    throw new Exception($aviso);
+                }
             }
 
             /** Usa el sale_type_id de la primera venta como referencia; todas deben ser del mismo tipo. */
@@ -255,8 +332,21 @@ class ConsolidarFacturacionHelper extends Controller
             /** Crea el correlativo usando la lógica estándar del sistema. */
             $num = (new self())->num('sales', $user_id);
 
+            $ajustes_consolidados = [];
+            if (ForzarTotalEsquemaHelper::hay_columna_en_sales()
+                && Schema::hasColumn('sales', 'ajustes_consolidados_en_renglones')) {
+                // El ajuste firmado queda para auditoría. Los precios de abajo ya lo incorporan.
+                $monto = round($ventas_originales->sum(function (Sale $venta) {
+                    return SaleHelper::get_forzar_total_monto($venta);
+                }), 2);
+                $ajustes_consolidados = [
+                    'forzar_total_monto' => $monto == 0 ? null : $monto,
+                    'ajustes_consolidados_en_renglones' => $monto != 0,
+                ];
+            }
+
             /** Crea la venta contenedora marcada para excluirla de reportes y cuentas. */
-            $venta_consolidada = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna(ForzarTotalEsquemaHelper::agregar_al_payload([
+            $venta_consolidada = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna([
                 'num'                           => $num,
                 'client_id'                     => $client_id,
                 'user_id'                       => $user_id,
@@ -280,20 +370,16 @@ class ConsolidarFacturacionHelper extends Controller
                 'terminada'                     => 1,
                 'terminada_at'                  => Carbon::now(),
                 'descuento'                     => 0,
-            /**
-             * Ver el bloque de arriba: va junto con `total`, o la factura sale por el bruto.
-             *
-             * ⚠️ Entra por la guarda de esquema, como los otros seis puntos de escritura: en la
-             * ventana entre que el deploy sube los archivos y corre las migraciones, la clave
-             * viajaria igual al INSERT —con `$guarded = []` Eloquent la manda aunque valga null— y
-             * la consolidacion moriria con `Unknown column`. Ver `ForzarTotalEsquemaHelper`.
-             */
-            ], $forzado_consolidado, 'sales'), 'sales'));
+            ] + $ajustes_consolidados, 'sales'));
 
             /** Copia los ítems de todas las ventas originales a la consolidada. */
             self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items, $factores);
-            self::copiar_combos($venta_consolidada, $ventas_originales);
+            self::copiar_combos($venta_consolidada, $ventas_originales, $factores);
             self::copiar_services($venta_consolidada, $ventas_originales, $factores);
+
+            if ($emitir_afip) {
+                MakeAfipTicket::validar_total_consolidado($venta_consolidada, $afip_information_id, $afip_tipo_comprobante_id);
+            }
 
             /** Vincula cada venta original con la consolidada para trazabilidad. */
             Sale::whereIn('id', $sale_ids)->update([
@@ -365,8 +451,8 @@ class ConsolidarFacturacionHelper extends Controller
     }
 
     /**
-     * Materializa los ajustes que forman el recargo de cada remito sobre su propia base.
-     * Los recargos directos ya vienen en el precio y las ventas sin recargo global se copian tal cual.
+     * Materializa los ajustes de cada remito sobre su propia base.
+     * Los ajustes directos ya vienen en el precio de los renglones originales.
      */
     private static function factores_de_recargo(Sale $venta): array
     {
@@ -377,11 +463,6 @@ class ConsolidarFacturacionHelper extends Controller
             }
         }
 
-        $recargo_en_descuento = min(0, (float) $venta->descuento);
-        if ($recargo == 1.0 && $recargo_en_descuento == 0.0) {
-            return ['articles' => 1.0, 'combos' => 1.0, 'services' => 1.0];
-        }
-
         $descuento = 1.0;
         if (!$venta->aplicar_descuentos_directo_a_items) {
             foreach ($venta->discounts as $discount) {
@@ -389,12 +470,32 @@ class ConsolidarFacturacionHelper extends Controller
             }
         }
 
+        $factor_total = self::factor_de_ajustes_por_importe($venta);
+
         return [
-            'articles' => $recargo * $descuento * (1 - (float) $venta->descuento / 100),
-            'combos' => $recargo * $descuento,
-            'services' => ($venta->surchages_in_services ? $recargo : 1.0)
+            'articles' => $recargo * $descuento * $factor_total * (1 - (float) $venta->descuento / 100),
+            'combos' => $recargo * $descuento * $factor_total,
+            'services' => $factor_total * ($venta->surchages_in_services ? $recargo : 1.0)
                 * ($venta->discounts_in_services ? $descuento : 1.0),
         ];
+    }
+
+    private static function factor_de_ajustes_por_importe(Sale $venta): float
+    {
+        $descuento_pago = $venta->current_acount_payment_methods->sum('pivot.discount_amount');
+        $forzado = SaleHelper::get_forzar_total_monto($venta);
+        if ($descuento_pago == 0 && $forzado == 0) {
+            return 1.0;
+        }
+
+        // Cada importe fijo se reparte solo entre los renglones de su venta.
+        $base = SaleHelper::getTotalSale($venta) - $forzado;
+        $total = (float) $venta->total;
+        if ($base <= 0 || $total < 0 || round($base - $descuento_pago + $forzado, 2) !== round($total, 2)) {
+            return 1.0;
+        }
+
+        return $total / $base;
     }
 
     private static function precio_con_recargo($precio, float $factor): float
@@ -680,12 +781,13 @@ class ConsolidarFacturacionHelper extends Controller
      *
      * @param Sale       $consolidada       Venta contenedora destino.
      * @param Collection $ventas_originales Colección de ventas originales cargadas con 'combos'.
+     * @param array      $factores          Ajustes por venta, si ya se calcularon.
      */
-    private static function copiar_combos(Sale $consolidada, $ventas_originales): void
+    private static function copiar_combos(Sale $consolidada, $ventas_originales, array $factores = []): void
     {
         $relacion = $consolidada->combos();
         foreach ($ventas_originales as $venta) {
-            $factor = self::factores_de_recargo($venta)['combos'];
+            $factor = $factores[$venta->id]['combos'] ?? self::factores_de_recargo($venta)['combos'];
             foreach ($venta->combos as $combo) {
                 $pivot = $combo->pivot;
                 $relacion->attach($combo->id, $relacion->conservar_precision([

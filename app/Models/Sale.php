@@ -85,7 +85,21 @@ class Sale extends Model
     protected $casts = [
         // Bitácora detallada de auditoría enviada desde el módulo vender.
         'log' => 'array',
+        'ajustes_consolidados_en_renglones' => 'boolean',
     ];
+
+    public function attributesToArray()
+    {
+        $atributos = parent::attributesToArray();
+        if (!empty($atributos['ajustes_consolidados_en_renglones']) && array_key_exists('forzar_total_monto', $atributos)) {
+            // Las SPA instaladas todavía suman el campo original como ajuste pendiente.
+            $atributos['forzar_total_monto_historico'] = $atributos['forzar_total_monto'];
+            $atributos['forzar_total_monto'] = null;
+        }
+        unset($atributos['ajustes_consolidados_en_renglones']);
+
+        return $atributos;
+    }
 
     public function current_acount_payment_methods(){
         return $this->belongsToMany(CurrentAcountPaymentMethod::class)->withPivot('amount', 'discount_percentage', 'discount_amount', 'caja_id', 'amount_cotizado', 'cotizacion', 'moneda_id', 'cuota_id');
