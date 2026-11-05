@@ -354,4 +354,28 @@ class Los_otros_caminos_que_escriben_el_total_Test extends ForzarTotalTestCase
         $this->assertEqualsWithDelta(self::MONTO, (float) $serializada['forzar_total_monto'], self::DELTA);
         $this->assertArrayNotHasKey('forzar_total_monto_historico', $serializada);
     }
+
+    /** @test */
+    public function no_se_pueden_editar_los_importes_de_una_consolidacion_nueva_sin_cae()
+    {
+        $venta = $this->crear_venta_en_base([
+            'is_consolidacion_facturacion' => 1,
+            'ajustes_consolidados_en_renglones' => true,
+        ]);
+        $this->enganchar_articulo($venta, TestingFerreteriaSeeder::ARTICULO_CENTINELA, self::FORZADO, 1);
+        $mensaje = 'Esta venta consolidada conserva los importes de las ventas originales y no se puede modificar.';
+
+        $this->putJson('api/sale/' . $venta->id, ['forzar_total_monto' => 99, 'total' => 100])
+            ->assertStatus(409)->assertJson(['message' => $mensaje]);
+        $this->putJson('api/sale/update-prices/' . $venta->id, ['items' => []])
+            ->assertStatus(409)->assertJson(['message' => $mensaje]);
+
+        $venta->refresh();
+        $this->assertEqualsWithDelta(self::MONTO, (float) $venta->forzar_total_monto, self::DELTA);
+        $this->assertEqualsWithDelta(self::FORZADO, (float) $venta->total, self::DELTA);
+        $this->assertEqualsWithDelta(self::FORZADO, (float) $venta->articles->sole()->pivot->price, self::DELTA);
+
+        $venta->forzar_total_monto = null;
+        $this->assertNull(SaleHelper::motivo_por_el_que_no_se_puede_editar($venta));
+    }
 }
