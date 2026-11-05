@@ -31,6 +31,13 @@ class SetProvider  {
                 'amount'        => $stock_movement->amount,
             ];
 
+            if (array_key_exists('provider_code_de_compra', $data)) {
+                unset($pivot_data['provider_code']);
+                if (!is_null($data['provider_code_de_compra'])) {
+                    $pivot_data['provider_code'] = $data['provider_code_de_compra'];
+                }
+            }
+
             $provider_id = $stock_movement->provider_id;
 
             $existe_relacion = $article->providers()
