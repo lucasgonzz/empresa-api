@@ -221,6 +221,7 @@ class ProviderOrderScanController extends Controller
         return response()->json([
             'uuid'              => $scan->uuid,
             'provider_order_id' => $scan->provider_order_id,
+            'provider_id'       => optional($scan->provider_order)->provider_id,
             'estado'            => $scan->estado,
             'progreso'          => $scan->progreso,
             'paso'              => $scan->paso,
@@ -239,8 +240,47 @@ class ProviderOrderScanController extends Controller
              * El resultado completo va SOLO cuando el escaneo terminó bien; en cualquier otro
              * estado va null (mismo criterio que AiExcelImportController::analysisStatus).
              */
-            'resultado'         => $scan->estado === 'listo' ? $scan->resultado : null,
+            'resultado'         => $scan->estado === 'listo' ? $this->resultado_con_proveedores_vigentes($scan) : null,
         ], 200);
+    }
+
+    protected function resultado_con_proveedores_vigentes(ProviderOrderScan $scan)
+    {
+        $resultado = $scan->resultado;
+        $articulos = $this->articulos_del_resultado($resultado);
+        $ids = [];
+
+        foreach ($articulos as $articulo) {
+            $match = $articulo['match'] ?? [];
+            if (isset($match['article_id'])) {
+                $ids[] = $match['article_id'];
+            }
+            foreach ($match['candidatos'] ?? [] as $candidato) {
+                $ids[] = $candidato['article_id'];
+            }
+        }
+
+        if (!$ids) {
+            return $resultado;
+        }
+
+        // El principal se consulta ahora: puede haber cambiado desde que se leyó la factura.
+        $proveedores = Article::where('user_id', $scan->user_id)
+            ->whereIn('id', array_unique($ids))->pluck('provider_id', 'id');
+
+        foreach ($articulos as &$articulo) {
+            if (isset($articulo['match']['article_id'])) {
+                $articulo['match']['provider_id'] = $proveedores->get($articulo['match']['article_id']);
+            }
+            foreach ($articulo['match']['candidatos'] ?? [] as $indice => $candidato) {
+                $articulo['match']['candidatos'][$indice]['provider_id'] = $proveedores->get($candidato['article_id']);
+            }
+        }
+        unset($articulo);
+
+        $resultado['articulos'] = $articulos;
+
+        return $resultado;
     }
 
     /**
@@ -957,6 +997,11 @@ class ProviderOrderScanController extends Controller
                 continue;
             }
 
+            // Sin el campo se conserva el comportamiento de las revisiones anteriores.
+            $actualizar_proveedor = isset($item['update_provider'])
+                ? filter_var($item['update_provider'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE)
+                : null;
+
             /* La forma del array es la que espera NewProviderOrderHelper, no una propia. */
             $articles[] = [
                 'id'            => $article->id,
@@ -992,7 +1037,8 @@ class ProviderOrderScanController extends Controller
                      */
                     'iva_id'          => is_null($iva_id_del_item) ? $article->iva_id : $iva_id_del_item,
                     'cost_in_dollars' => $article->cost_in_dollars,
-                    'update_provider' => 0,
+                    'update_provider' => $actualizar_proveedor ?? 0,
+                    'update_provider_explicit' => is_null($actualizar_proveedor) ? null : true,
                 ],
             ];
 

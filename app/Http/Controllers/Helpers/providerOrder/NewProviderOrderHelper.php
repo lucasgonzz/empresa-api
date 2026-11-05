@@ -24,6 +24,7 @@ use App\Models\MovimientoCaja;
 use App\Models\Provider;
 use App\Models\ProviderOrderDiscount;
 use App\Models\ProviderOrderExtraCost;
+use App\Services\Compras\CodigosDeProveedor;
 use App\Services\Compras\OfertasDeProveedorService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -2086,27 +2087,55 @@ class NewProviderOrderHelper {
                 }
             }
 
+            if (filter_var(GeneralHelper::getPivotValue($new_article, 'update_provider_explicit'), FILTER_VALIDATE_BOOLEAN)) {
+                $pivotData['update_provider_explicit'] = true;
+                $pivotData['update_provider'] = filter_var($pivotData['update_provider'] ?? false, FILTER_VALIDATE_BOOLEAN);
+            }
+
             $syncData[$new_article['id']] = $pivotData;
         }
 
+        $articles = $this->provider_order->articles();
+        if ($syncData) {
+            // Una edición anterior a esta función puede devolver el flag viejo u omitir ambos.
+            // En ese caso prevalece la decisión explícita que ya quedó grabada para la fila.
+            $decisiones = $articles->newPivotQuery()
+                ->whereIn('article_id', array_keys($syncData))
+                ->where('update_provider_explicit', true)
+                ->pluck('update_provider', 'article_id');
+
+            foreach ($decisiones as $article_id => $actualizar) {
+                if (empty($syncData[$article_id]['update_provider_explicit'])) {
+                    $syncData[$article_id]['update_provider_explicit'] = true;
+                    $syncData[$article_id]['update_provider'] = (bool) $actualizar;
+                }
+            }
+        }
+
         if ($overwrite_articles) {
-            $this->provider_order->articles()->sync($syncData);
+            $articles->sync($syncData);
         } else {
-            $this->provider_order->articles()->syncWithoutDetaching($syncData);
+            $articles->syncWithoutDetaching($syncData);
         }
 
         foreach ($this->new_articles as $new_article) {
+            $datos_guardados = $syncData[$new_article['id']];
+            if (!empty($datos_guardados['update_provider_explicit'])) {
+                // El pivot representa una sola fila por artículo, igual que la decisión.
+                $new_article['pivot']['update_provider_explicit'] = true;
+                $new_article['pivot']['update_provider'] = $datos_guardados['update_provider'];
+            }
             $this->update_article($new_article);
         }
     }
 
     function update_article($new_article) {
 
-        $article = Article::find($new_article['id']);
+        $article = Article::lockForUpdate()->find($new_article['id']);
 
         if (!is_null($article)) {
 
-            \App\Services\Compras\CodigosDeProveedor::resguardar_referencia_actual($article);
+            CodigosDeProveedor::resguardar_referencia_actual($article);
             $article = $this->update_iva($article, $new_article);
             
             if ($this->provider_order->update_prices) {
@@ -2145,29 +2174,18 @@ class NewProviderOrderHelper {
         }
     }
 
-    /**
-     * Prompt 306 — Tarea 4: linkea el artículo al proveedor de la compra.
-     *
-     * Desde este prompt, cuando la orden tiene `update_prices` ON (el flujo principal,
-     * "actualizar precios" tildado), el artículo pasa a pertenecer al proveedor de ESTA compra sin
-     * importar el flag `update_provider` del pivot — con `update_prices` ON el artículo ya está
-     * recibiendo el costo bruto (update_cost()) y los descuentos materializados (article_discounts
-     * tagueados, ver materializar_descuentos_proveedor_en_articulos()) de este mismo proveedor, así
-     * que su `provider_id` debe quedar consistente con esos datos.
-     *
-     * Con `update_prices` OFF se conserva el comportamiento previo (anterior a este prompt): el
-     * proveedor solo se linkea si el usuario tildó explícitamente `update_provider` en el pivot de
-     * este artículo puntual.
-     */
     function update_article_provider($article, $new_article) {
 
-        $tilda_update_provider = isset($new_article['pivot']['update_provider']) && (bool)$new_article['pivot']['update_provider'];
+        $provider_id = $this->provider_order->provider_id;
+        $actualizar_proveedor = !empty($new_article['pivot']['update_provider']);
+        // Compras anteriores y otros importadores siguen la regla histórica de Actualizar precios.
+        if (empty($new_article['pivot']['update_provider_explicit'])) {
+            $actualizar_proveedor = $actualizar_proveedor || $this->provider_order->update_prices;
+        }
 
-        if ($this->provider_order->update_prices || $tilda_update_provider) {
-
-            $codigo_del_proveedor = \App\Services\Compras\CodigosDeProveedor::codigo_para($article, $this->provider_order->provider_id);
-            $article->provider_id = $this->provider_order->provider_id;
-            $article->provider_code = $codigo_del_proveedor;
+        if ($actualizar_proveedor || ($provider_id && (int) $article->provider_id === (int) $provider_id)) {
+            $article->provider_code = CodigosDeProveedor::codigo_para($article, $provider_id);
+            $article->provider_id = $provider_id;
             $article->timestamps = false;
             $article->save();
         }
@@ -2296,7 +2314,11 @@ class NewProviderOrderHelper {
         if ($article->status == 'inactive') {
 
             $article->bar_code          = $new_article['bar_code'];
-            $article->provider_code     = $new_article['provider_code'];
+            if (isset($new_article['provider_code']) && (
+                !$article->provider_id || (int) $article->provider_id === (int) $this->provider_order->provider_id
+            )) {
+                $article->provider_code = $new_article['provider_code'];
+            }
             $article->save();
 
         }
@@ -2378,10 +2400,9 @@ class NewProviderOrderHelper {
                     $data['to_address_id'] = $this->provider_order->address_id;
                 } 
 
-                if (!$new_article['pivot']['update_provider']) {
-
-                    $data['not_save_provider'] = true;
-                } 
+                // El movimiento registra el proveedor de origen. La compra decide si pasa a ser principal.
+                $data['not_save_provider'] = true;
+                $data['provider_code_de_compra'] = CodigosDeProveedor::codigo_para($article, $this->provider_order->provider_id);
 
                 $data['amount'] = $amount;
 
