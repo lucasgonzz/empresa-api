@@ -88,6 +88,28 @@ class CupoImagenesDePruebaTest extends ImagenesInteligentesTestCase
             ->assertOk()->assertJson(['articulos' => 1, 'saltados_por_cupo' => 1]);
     }
 
+    public function test_agotar_el_cupo_espera_una_busqueda_que_otro_tramo_ya_inicio()
+    {
+        $this->cambiar_tope(1)->assertOk();
+        $primero = $this->nuevo_articulo('Pinza de punta');
+        $segundo = $this->nuevo_articulo('Martillo');
+        $run = $this->asignacion([$primero, $segundo]);
+        $reclamado = ImageAssignmentItem::where('run_id', $run->id)->where('article_id', $primero->id)->firstOrFail();
+        $reclamado->status = ImageAssignmentItem::STATUS_PROCESANDO;
+        $reclamado->save();
+        $this->assertNull(CupoImagenesDePrueba::reservar($this->owner->id, $reclamado));
+
+        (new ProcessImageAssignmentRunJob($run->id))->handle();
+        $this->assertSame(ImageAssignmentRun::STATUS_EN_PROCESO, $run->fresh()->status);
+        $this->assertCount(0, $this->consultas_serper);
+
+        $this->procesar($run, $primero);
+        (new ProcessImageAssignmentRunJob($run->id))->handle();
+        $this->assertSame(ImageAssignmentRun::STATUS_TERMINADA, $run->fresh()->status);
+        $this->assertSame(CupoImagenesDePrueba::MENSAJE_AGOTADO, $run->fresh()->motivo_estado);
+        $this->assertCount(1, $this->consultas_serper);
+    }
+
     public function test_al_contratar_el_dueno_puede_seguir_buscando_con_el_cupo_agotado()
     {
         $this->cambiar_tope(0)->assertOk();

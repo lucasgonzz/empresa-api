@@ -6,11 +6,13 @@ use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\Concerns\InstrumentaMemoria;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
 use App\Services\ImageAssignment\ArticleImageAssignmentEngine;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use App\Services\ImageAssignment\ImageServiceCallLogger;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\ProductFacts\TopeSerperDemo;
@@ -240,7 +242,13 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                     ->exists();
 
                 if (!$en_curso) {
-                    ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, null);
+                    $limite_prueba = PruebaHelper::puede_haber_prueba()
+                        ? ImageAssignmentItem::where('run_id', $run->id)
+                            ->where('status', ImageAssignmentItem::STATUS_SIN_PROCESAR)
+                            ->whereIn('motivo_detalle', [CupoImagenesDePrueba::MENSAJE_AGOTADO, PruebaHelper::MENSAJE_VENCIDA])
+                            ->value('motivo_detalle')
+                        : null;
+                    ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, $limite_prueba, !is_null($limite_prueba));
                 }
 
                 return;
@@ -311,7 +319,8 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
                 // El motor se quedó sin las búsquedas de la demo a mitad del artículo: se corta igual,
                 // con el motivo de la demo (sin reintentar ni dejar nada en proceso).
                 if (!empty($resultado['limite_prueba'])) {
-                    $this->cortar_por_tope_demo($run, $resultado['limite_prueba']);
+                    $this->marcar_sin_cupo_de_prueba($run, $resultado['limite_prueba']);
+                    continue;
                 } elseif (!empty($resultado['tope_demo'])) {
                     $this->cortar_por_tope_demo($run);
                 } else {
@@ -690,7 +699,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
      * @param  \App\Models\ImageAssignmentRun $run
      * @return void
      */
-    protected function cortar_por_tope_demo(ImageAssignmentRun $run, ?string $limite_prueba = null)
+    protected function cortar_por_tope_demo(ImageAssignmentRun $run)
     {
         $ahora = Carbon::now();
 
@@ -700,7 +709,7 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             ->update([
                 'status'         => ImageAssignmentItem::STATUS_SIN_PROCESAR,
                 'motivo'         => 'sin_cupo',
-                'motivo_detalle' => $limite_prueba ?? TopeSerperDemo::DETALLE_SIN_BUSCAR,
+                'motivo_detalle' => TopeSerperDemo::DETALLE_SIN_BUSCAR,
                 'updated_at'     => $ahora,
             ]);
 
@@ -709,11 +718,27 @@ class ProcessImageAssignmentRunJob implements ShouldQueue
             ->count();
 
         $limite = 'Llegaste al límite de búsquedas de la demo ('.TopeSerperDemo::TOPE.')';
-        $motivo = $limite_prueba ?? ($sin_procesar > 0
+        $motivo = $sin_procesar > 0
             ? $limite.': '.($sin_procesar === 1 ? '1 artículo quedó' : $sin_procesar.' artículos quedaron').' sin procesar. Podés cargar las fotos a mano.'
-            : $limite.' con el último artículo. Podés cargar las fotos a mano.');
+            : $limite.' con el último artículo. Podés cargar las fotos a mano.';
 
         ImageAssignmentRunHelper::terminar($run, ImageAssignmentRun::STATUS_TERMINADA, $motivo, true);
+    }
+
+    protected function marcar_sin_cupo_de_prueba(ImageAssignmentRun $run, string $motivo): void
+    {
+        // Una búsqueda ya iniciada puede terminar en otro tramo o volver a pendiente por un fallo.
+        // Solo se saltean los pendientes que aún no descontaron su búsqueda.
+        DB::table('image_assignment_items')
+            ->where('run_id', $run->id)
+            ->where('status', ImageAssignmentItem::STATUS_PENDIENTE)
+            ->where('consumio_cupo_de_prueba', false)
+            ->update([
+                'status'         => ImageAssignmentItem::STATUS_SIN_PROCESAR,
+                'motivo'         => 'sin_cupo',
+                'motivo_detalle' => $motivo,
+                'updated_at'     => Carbon::now(),
+            ]);
     }
 
     /**

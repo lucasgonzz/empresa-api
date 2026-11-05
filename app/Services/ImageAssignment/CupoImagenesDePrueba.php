@@ -84,6 +84,10 @@ class CupoImagenesDePrueba
             }
 
             $guardado = ImageAssignmentItem::whereKey($item->id)->lockForUpdate()->firstOrFail();
+            if ($guardado->status !== ImageAssignmentItem::STATUS_PROCESANDO || (string) $guardado->tramo !== (string) $item->tramo) {
+                throw new \RuntimeException('El artículo '.$item->article_id.' ya no pertenece a este tramo.');
+            }
+
             if ($guardado->consumio_cupo_de_prueba) {
                 return null;
             }

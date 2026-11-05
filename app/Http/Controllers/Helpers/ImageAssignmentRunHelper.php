@@ -2050,7 +2050,7 @@ class ImageAssignmentRunHelper
 
         if ($run->status === ImageAssignmentRun::STATUS_DETENIDA) {
             $etapa = 'Detenida';
-        } elseif ($cupo_agotado && PruebaHelper::tiene_periodo_de_prueba($run->user_id)) {
+        } elseif ($cupo_agotado && in_array($run->motivo_estado, [CupoImagenesDePrueba::MENSAJE_AGOTADO, PruebaHelper::MENSAJE_VENCIDA], true)) {
             $etapa = $run->motivo_estado;
         } elseif ($cupo_agotado && TopeSerperDemo::agotado((int) $run->user_id, true)) {
             // Misión tope-serper-demos: el cupo que se agotó es el de la demo, no el diario.
