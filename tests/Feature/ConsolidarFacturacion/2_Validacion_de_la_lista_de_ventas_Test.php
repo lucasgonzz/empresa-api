@@ -261,6 +261,26 @@ class Validacion_de_la_lista_de_ventas_Test extends EmpresaTestCase
         $this->assertTextoContiene('al menos una venta', $respuesta->json('message'));
     }
 
+    /** @test */
+    public function la_vista_previa_no_vincula_y_si_cambia_la_venta_se_rechaza_la_confirmacion()
+    {
+        $venta = $this->venta(['total' => 9000]);
+        $datos = ['client_id' => $this->cliente()->id, 'sale_ids' => [$venta->id]];
+        $previa = $this->postJson('api/sales/consolidar-facturacion/vista-previa', $datos);
+        $previa->assertOk()->assertJsonPath('total', 9000);
+        $this->assertTextoContiene('no llegan a su total', $previa->json('avisos.0'));
+        $this->assertNull($venta->fresh()->consolidacion_facturacion_id);
+
+        $venta->update(['total' => 8000]);
+        $confirmacion = $this->postJson('api/sales/consolidar-facturacion', $datos + [
+            'firma_vista_previa' => $previa->json('firma_vista_previa'),
+            'afip_information_id' => 0,
+        ]);
+        $confirmacion->assertStatus(422);
+        $this->assertTextoContiene('cambiaron desde la vista previa', $confirmacion->json('message'));
+        $this->assertNull($venta->fresh()->consolidacion_facturacion_id);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     //  Helpers
     // ─────────────────────────────────────────────────────────────────────────

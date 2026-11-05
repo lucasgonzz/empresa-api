@@ -14,6 +14,7 @@ use App\Models\AfipTicket;
 use App\Models\Client;
 use App\Models\Combo;
 use App\Models\CurrentAcount;
+use App\Models\CurrentAcountPaymentMethod;
 use App\Models\IvaCondition;
 use App\Models\Sale;
 use App\Models\Service;
@@ -119,6 +120,69 @@ class Agrupar_articulos_iguales_Test extends EmpresaTestCase
     public function opciones_de_agrupacion(): array
     {
         return ['agrupada' => [true], 'sin agrupar' => [false]];
+    }
+
+    /**
+     * @test
+     * @dataProvider opciones_de_agrupacion
+     */
+    public function conserva_descuentos_por_remito_y_medio_de_pago_con_iva_mixto($agrupar)
+    {
+        $articulo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+        $venta_a = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1, 'price' => 1210, 'iva_percentage' => '21']],
+        ]);
+        $venta_b = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1, 'price' => 1210, 'iva_percentage' => '21']],
+        ]);
+        $venta_c = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1, 'price' => 1105, 'iva_percentage' => '10.5']],
+        ]);
+        $venta_a->update(['descuento' => 10, 'total' => 1089]);
+        $venta_c->update(['descuento' => 20, 'total' => 839.80]);
+        $venta_c->current_acount_payment_methods()->attach(CurrentAcountPaymentMethod::firstOrFail()->id, [
+            'amount' => 884,
+            'discount_amount' => 44.20,
+        ]);
+
+        $ids = [$venta_a->id, $venta_b->id, $venta_c->id];
+        $preview = ConsolidarFacturacionHelper::vista_previa($ids, $venta_a->client_id, $this->comercio()->id);
+        $this->assertSame(3138.8, $preview['total']);
+        $this->assertSame([1089.0, 1210.0, 839.8], $preview['ventas']->pluck('total')->all());
+        $this->assertSame([1210.0, 1210.0, 1105.0], $preview['ventas']->pluck('total_antes_de_ajustes')->all());
+        $this->assertNull($venta_a->fresh()->consolidacion_facturacion_id);
+
+        $consolidada = $this->consolidar_venta($ids, $agrupar);
+        $this->assertEqualsWithDelta($preview['total'], $consolidada->total, self::DELTA);
+        $this->assertCount(3, $consolidada->articles);
+
+        $ticket = new AfipTicket(['cbte_letra' => 'A', 'cbte_tipo' => 1]);
+        $informacion = new AfipInformation();
+        $informacion->setRelation('iva_condition', IvaCondition::where('name', 'Responsable inscripto')->firstOrFail());
+        $ticket->setRelation('afip_information', $informacion);
+        $importes = (new AfipHelper($ticket, null, null, $this->comercio(), $consolidada))->getImportes();
+        $this->assertEqualsWithDelta(3138.8, $importes['total'], self::DELTA);
+        $this->assertEqualsWithDelta(1900, $importes['ivas']['21']['BaseImp'], self::DELTA);
+        $this->assertEqualsWithDelta(760, $importes['ivas']['10']['BaseImp'], self::DELTA);
+    }
+
+    /** @test */
+    public function dos_totales_forzados_opuestos_se_aplican_a_sus_propios_renglones()
+    {
+        $articulo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+        $a = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1, 'price' => 1210, 'iva_percentage' => '21']],
+        ]);
+        $b = $this->venta_con_renglones([
+            [$articulo->id, ['amount' => 1, 'price' => 1105, 'iva_percentage' => '10.5']],
+        ]);
+        $a->update(['total' => 1089, 'forzar_total_monto' => -121]);
+        $b->update(['total' => 1226, 'forzar_total_monto' => 121]);
+
+        $consolidada = $this->consolidar_venta([$a->id, $b->id], true);
+        $this->assertEqualsWithDelta(2315, $consolidada->total, self::DELTA);
+        $this->assertEqualsCanonicalizing([1089, 1226], $consolidada->articles->pluck('pivot.price')->all());
+        $this->assertNull($consolidada->forzar_total_monto);
     }
 
     /** @test */

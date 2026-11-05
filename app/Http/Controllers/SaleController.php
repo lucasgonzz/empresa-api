@@ -206,6 +206,44 @@ class SaleController extends Controller
     }
 
     function show($id) {
+        if (request()->boolean('vinculos_consolidacion')) {
+            $ventas_visibles = function ($query) {
+                $query->where('sales.user_id', $this->userId());
+                ListadoVentasHelper::aplicar_alcance($query);
+                if (ListadoVentasHelper::solo_hoy_permitido()) {
+                    $query->whereDate('sales.created_at', Carbon::today()->toDateString());
+                }
+            };
+
+            $query = Sale::whereKey($id)->withAll();
+            $ventas_visibles($query);
+            SaleArticlesEagerLoadHelper::apply_images_if_preferred($query, $this->userId());
+            $venta = $query->firstOrFail();
+            $datos_del_vinculo = function ($query) use ($ventas_visibles) {
+                $ventas_visibles($query);
+                $query->select('sales.id', 'sales.num', 'sales.consolidacion_facturacion_id');
+            };
+
+            $vinculos = [];
+            if ($venta->is_consolidacion_facturacion) {
+                $venta->load(['ventas_consolidadas' => $datos_del_vinculo]);
+                $vinculos['ventas_de_origen'] = $venta->ventas_consolidadas;
+                $venta->unsetRelation('ventas_consolidadas');
+            } elseif ($venta->consolidacion_facturacion_id) {
+                $venta->load(['consolidacion_facturacion' => $datos_del_vinculo]);
+                if ($venta->consolidacion_facturacion) {
+                    $venta->consolidacion_facturacion->load(['afip_tickets' => function ($query) {
+                        $query->select('id', 'sale_id', 'cbte_numero')->whereNotNull('cae')->where('cae', '<>', '');
+                    }]);
+                }
+                $vinculos['consolidada'] = $venta->consolidacion_facturacion;
+                $venta->unsetRelation('consolidacion_facturacion');
+            }
+
+            $venta->vinculos_consolidacion = $vinculos;
+            return response()->json(['model' => $venta], 200);
+        }
+
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
     }
 
@@ -2551,6 +2589,18 @@ class SaleController extends Controller
      * @param  Request $request
      * @return \Illuminate\Http\JsonResponse
      */
+    function vistaPreviaConsolidarFacturacion(Request $request) {
+        try {
+            return response()->json(ConsolidarFacturacionHelper::vista_previa(
+                (array) $request->sale_ids,
+                (int) $request->client_id,
+                $this->userId()
+            ));
+        } catch (\Exception $e) {
+            return response()->json(['error' => true, 'message' => $e->getMessage()], 422);
+        }
+    }
+
     function consolidarFacturacion(Request $request) {
         try {
             /** Construye el array de datos AFIP extra a partir del request. */
@@ -2559,6 +2609,7 @@ class SaleController extends Controller
                 'forma_de_pago'                  => $request->forma_de_pago,
                 'permiso_existente'              => $request->permiso_existente,
                 'incoterms'                      => $request->incoterms,
+                'firma_vista_previa'              => $request->firma_vista_previa,
             ];
 
             /** Llamada con argumentos posicionales (compatible con PHP 7.3; los nombres solo existen desde PHP 8.0). */
@@ -2576,8 +2627,11 @@ class SaleController extends Controller
             return response()->json(['model' => $this->fullModel('Sale', $venta_consolidada->id)], 201);
 
         } catch (\Throwable $e) {
-            Log::error('consolidarFacturacion error: ' . $e->getMessage());
-            return response()->json(['error' => true, 'message' => $e->getMessage()], 422);
+            $mensaje = $e instanceof \Illuminate\Validation\ValidationException
+                ? ($e->errors()['message'][0] ?? $e->getMessage())
+                : $e->getMessage();
+            Log::error('consolidarFacturacion error: ' . $mensaje);
+            return response()->json(['error' => true, 'message' => $mensaje], 422);
         }
     }
 

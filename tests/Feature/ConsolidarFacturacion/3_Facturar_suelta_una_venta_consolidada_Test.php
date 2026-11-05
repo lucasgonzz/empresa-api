@@ -2,12 +2,16 @@
 
 namespace Tests\Feature\ConsolidarFacturacion;
 
+use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
+use App\Models\AfipInformation;
 use App\Models\AfipTicket;
+use App\Models\AfipTipoComprobante;
 use App\Models\Client;
 use App\Models\Sale;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Validation\ValidationException;
 use Tests\EmpresaTestCase;
 
 /**
@@ -43,6 +47,26 @@ use Tests\EmpresaTestCase;
  */
 class Facturar_suelta_una_venta_consolidada_Test extends EmpresaTestCase
 {
+    /** @test */
+    public function la_guarda_fiscal_rechaza_una_consolidada_si_el_importe_no_coincide()
+    {
+        $contenedora = $this->contenedora(['total' => 9000]);
+        $punto = AfipInformation::where('user_id', $this->comercio()->id)->firstOrFail();
+        $tipo = AfipTipoComprobante::where('codigo', 1)->firstOrFail();
+        $this->assertSame('Responsable inscripto', $punto->iva_condition->name);
+
+        // La validación directa calcula los importes del fixture local sin entrar al emisor.
+        try {
+            MakeAfipTicket::validar_total_consolidado($contenedora, $punto->id, $tipo->id);
+            $this->fail('La venta suma 9000 pero sus renglones fiscales suman cero.');
+        } catch (ValidationException $e) {
+            $this->assertSame(422, $e->response->getStatusCode());
+            $this->assertStringContainsString('no coincide con el total', $e->errors()['message'][0]);
+        }
+
+        $this->assertSame(0, AfipTicket::where('sale_id', $contenedora->id)->count());
+    }
+
     /**
      * Test 1 — Una original con la contenedora viva se rechaza con 422 y el mensaje nombra la
      * consolidacion; no se crea ningun comprobante.

@@ -535,6 +535,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     // Consolidación de ventas para facturación
     Route::get('sales/por-consolidar', 'SaleController@ventasPorConsolidar');
     Route::post('sales/consolidar-facturacion', 'SaleController@consolidarFacturacion');
+    Route::post('sales/consolidar-facturacion/vista-previa', 'SaleController@vistaPreviaConsolidarFacturacion');
 
     // Article Performance
     Route::get('article-performance/{article_id}', 'ArticlePerformanceController@index');

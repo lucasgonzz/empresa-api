@@ -10,6 +10,7 @@ use App\Models\AfipTicket;
 use App\Models\AfipTipoComprobante;
 use App\Models\Sale;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class MakeAfipTicket {
 	
@@ -23,6 +24,13 @@ class MakeAfipTicket {
         $facturar_importe_personalizado     = isset($data['facturar_importe_personalizado']) && $data['facturar_importe_personalizado'] > 0 ? $data['facturar_importe_personalizado'] : null;
         $forma_de_pago                      = isset($data['forma_de_pago']) && $data['forma_de_pago'] != '' ? $data['forma_de_pago'] : null;
         $permiso_existente 	                = isset($data['permiso_existente']) && $data['permiso_existente'] != '' ? $data['permiso_existente'] : 'N';
+
+        if ($sale->is_consolidacion_facturacion) {
+            if ($facturar_importe_personalizado !== null) {
+                self::rechazar_consolidada('La factura consolidada debe emitirse por el total de la venta.');
+            }
+            self::validar_total_consolidado($sale, (int) $data['afip_information_id'], (int) $data['afip_tipo_comprobante_id']);
+        }
 
 		$afip_ticket = AfipTicket::create([
             'cuit_negocio'      				=> $afip_information->cuit,
@@ -275,6 +283,37 @@ class MakeAfipTicket {
      *
      * @return float|null Total en pesos que se facturaria sin importe personalizado, o null.
      */
+    public static function validar_total_consolidado(Sale $sale, int $afip_information_id, int $afip_tipo_comprobante_id): void
+    {
+        $tipo = AfipTipoComprobante::find($afip_tipo_comprobante_id);
+        if (!$tipo || !AfipInformation::where('user_id', $sale->user_id)->find($afip_information_id)) {
+            self::rechazar_consolidada('Elegí un punto de venta y un tipo de comprobante válidos.');
+        }
+
+        if ($tipo->codigo == 19) {
+            // Factura E envía los importes en la moneda de venta y toma los renglones sin IVA.
+            $total_fiscal = $sale->articles->concat($sale->services)->sum(function ($item) {
+                return $item->pivot->price * $item->pivot->amount;
+            });
+            $cotizacion = 1;
+        } else {
+            $total_fiscal = self::get_tope_en_pesos($sale, $afip_information_id, $afip_tipo_comprobante_id);
+            $cotizacion = $sale->moneda_id == 2 ? (float) $sale->valor_dolar : 1;
+        }
+
+        $total_esperado = round((float) $sale->total * $cotizacion, 2);
+        if ($total_fiscal === null || $cotizacion <= 0 || round($total_fiscal, 2) !== $total_esperado) {
+            self::rechazar_consolidada('El importe de la factura no coincide con el total de la venta consolidada. Revisá los ajustes de las ventas antes de facturar.');
+        }
+    }
+
+    private static function rechazar_consolidada(string $mensaje): void
+    {
+        $error = ValidationException::withMessages(['message' => $mensaje]);
+        $error->response = response()->json(['error' => true, 'message' => $mensaje], 422);
+        throw $error;
+    }
+
     public static function get_tope_en_pesos($sale, $afip_information_id, $afip_tipo_comprobante_id)
     {
         if (is_null(AfipInformation::find($afip_information_id))) {
