@@ -5514,10 +5514,24 @@ class ProcessRow {
      */
     private function get_provider_discounts_to_tag($row, $provider_id, $existing_article = null)
     {
+        $provider_id = $this->normalizar_provider_id($provider_id);
+        $columna_lateral = \App\Services\Importacion\PlanillaDePrueba::DESCUENTOS_LATERALES;
+        $porcentajes_laterales = ImportHelper::getColumnValue($row, $columna_lateral, $this->columns);
+        if ($provider_id !== null && $porcentajes_laterales !== null
+            && $provider_id === $this->provider_id_efectivo_del_caso_a($provider_id, $existing_article)) {
+            // El bloque solo informa porcentajes de este proveedor para los artículos alcanzados.
+            return [
+                'items' => array_map(function ($porcentaje) {
+                    return ['percentage' => (float) $porcentaje];
+                }, explode('_', $porcentajes_laterales)),
+                'origen' => ArticleDiscount::ORIGEN_IMPORT,
+                'barrido' => 'porcentajes_del_proveedor',
+                'provider_id' => $provider_id,
+                'provider_id_anterior' => null,
+            ];
+        }
         $col_percent_ignorada = ImportHelper::isIgnoredColumn('descuentos', $this->columns);
         $col_amount_ignorada  = ImportHelper::isIgnoredColumn('descuentos_montos', $this->columns);
-
-        $provider_id = $this->normalizar_provider_id($provider_id);
 
         /*
          * CASO A (ninguna columna de descuentos mapeada): el proveedor que manda es el que va a

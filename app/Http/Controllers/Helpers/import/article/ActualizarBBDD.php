@@ -964,8 +964,17 @@ class ActualizarBBDD {
 
             ArticleProviderDiscountHelper::create_tagged_discounts($article_model, $provider_id, $items, 0, $origen);
 
+        } elseif ($barrido === 'porcentajes_del_proveedor') {
+            // El bloque lateral solo reemplaza porcentajes del proveedor de la fila.
+            DB::transaction(function () use ($article_model, $provider_id, $items, $origen) {
+                ArticleDiscount::where('article_id', $article_model->id)
+                    ->where('provider_id', $provider_id)
+                    ->whereNotNull('percentage')
+                    ->whereNull('amount')
+                    ->delete();
+                ArticleProviderDiscountHelper::create_tagged_discounts($article_model, $provider_id, $items, 0, $origen);
+            });
         } else {
-
             ArticleProviderDiscountHelper::sync_provider_discounts($article_model, $provider_id, $items, $origen);
         }
 
