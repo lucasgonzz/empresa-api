@@ -1109,7 +1109,19 @@ class Cierre_con_lo_hecho_Test extends TestCase
 
         (new ResponderMensajeChatIaJob($assistant->id))->handle();
 
-        $this->assertSame(2, $contador->llamadas);
+        /*
+         * Pedido 1: la carga. Pedido 2: la vuelta que falla con 503. Pedido 3: el reintento de siempre
+         * del MISMO modelo (post_al_proveedor): después de una herramienta que escribe no hay variante
+         * alternativa a la que ir, pero el reintento del mismo pedido sigue existiendo y no duplica nada
+         * (la tarea se cargó en el pedido 1; el reintento solo repite la llamada al modelo).
+         */
+        $this->assertSame(3, $contador->llamadas);
+        $modelos = [];
+        foreach (Http::recorded() as $par) {
+            $modelos[] = $par[0]['model'];
+        }
+        /* La carga escala a Pro desde la vuelta siguiente (modelo_del_asistente, de siempre); el reintento repite ESE mismo modelo, no el de respaldo. */
+        $this->assertSame(['deepseek-flash', 'deepseek-v4-pro', 'deepseek-v4-pro'], $modelos);
         $this->assertSame('listo', $assistant->fresh()->estado);
         $tarjetas = AiMessageAction::where('ai_message_id', $assistant->id)->get();
         $this->assertCount(1, $tarjetas);

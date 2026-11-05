@@ -974,18 +974,30 @@ class AsistenteIaService
             }
 
             try {
-                if ($proveedor === ProveedorIaHelper::DEEPSEEK) {
-                    $puede_cambiar_modelo = $modelo_de_respaldo_del_turno === null
-                        && $historial_admite_otro_modelo
-                        && $texto_antes_del_reintento === null
-                        && $confirmacion_determinista === null
-                        && ! $cerrando
-                        && $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message);
+                /*
+                 * 🔴 El respaldo de otra variante de DeepSeek REEMPLAZA al reintento del mismo modelo solo
+                 * donde hay una variante a la que ir. Donde no la hay (a mitad de turno después de una
+                 * herramienta que escribe, con un bloque `thinking` en el historial, con una imagen,
+                 * en la llamada de cierre, en el reintento de la tarjeta, con un modelo sin alternativa)
+                 * sigue el camino de siempre: post_al_proveedor(), con su único reintento, su techo de
+                 * tiempo, la espera del admin por WhatsApp y el mensaje amable. Como mucho 2 pedidos por vuelta.
+                 */
+                $segundos_de_la_vuelta = $cerrando ? $segundos_del_cierre : self::TIMEOUT_SEGUNDOS;
+                $puede_cambiar_modelo  = $proveedor === ProveedorIaHelper::DEEPSEEK
+                    && $modelo_de_respaldo_del_turno === null
+                    && $historial_admite_otro_modelo
+                    && $texto_antes_del_reintento === null
+                    && $confirmacion_determinista === null
+                    && ! $cerrando
+                    && $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)
+                    && ProveedorIaHelper::tiene_respaldo($proveedor, $segundos_de_la_vuelta, $body);
+
+                if ($puede_cambiar_modelo) {
                     [$response, $model] = ProveedorIaHelper::pedir_mensaje(
                         $proveedor,
-                        $cerrando ? $segundos_del_cierre : self::TIMEOUT_SEGUNDOS,
+                        $segundos_de_la_vuelta,
                         $body,
-                        $puede_cambiar_modelo,
+                        true,
                         static function ($reintentar, $falla_de_conexion) use ($assistant_message) {
                             $etiqueta = $falla_de_conexion ? ProgresoIaHelper::REINTENTO_CONEXION : ProgresoIaHelper::REINTENTO_PROVEEDOR;
                             return ProgresoIaHelper::durante_reintento($assistant_message, $etiqueta, $reintentar);

@@ -348,9 +348,7 @@ class ProveedorIaHelper
     public static function pedir_mensaje($proveedor, int $timeout, array $payload, bool $permitir_respaldo = true, ?callable $durante_respaldo = null): array
     {
         $modelo = (string) $payload['model'];
-        $alternativo = $proveedor === self::DEEPSEEK && $permitir_respaldo && $timeout >= 2
-            ? self::alternativo_de_deepseek($modelo, $payload)
-            : null;
+        $alternativo = self::variante_de_respaldo($proveedor, $timeout, $payload, $permitir_respaldo);
         $url = self::url_messages($proveedor);
 
         if ($alternativo === null) {
@@ -414,6 +412,25 @@ class ProveedorIaHelper
             throw $error_inicial;
         }
         return [$respuesta, $modelo];
+    }
+
+    /**
+     * true si pedir_mensaje() mandaría este pedido a una variante alternativa cuando el modelo falla.
+     * Los llamadores que ya tienen su propio reintento del MISMO modelo (el asistente, con su presupuesto
+     * de tiempo y su aviso de progreso) lo usan para decidir: con variante alternativa usan el respaldo;
+     * sin ella, conservan su camino de siempre. Es la misma decisión que toma pedir_mensaje().
+     */
+    public static function tiene_respaldo($proveedor, int $timeout, array $payload, bool $permitir_respaldo = true): bool
+    {
+        return self::variante_de_respaldo($proveedor, $timeout, $payload, $permitir_respaldo) !== null;
+    }
+
+    private static function variante_de_respaldo($proveedor, int $timeout, array $payload, bool $permitir_respaldo): ?string
+    {
+        if ($proveedor !== self::DEEPSEEK || ! $permitir_respaldo || $timeout < 2 || ! isset($payload['model'])) {
+            return null;
+        }
+        return self::alternativo_de_deepseek((string) $payload['model'], $payload);
     }
 
     public static function segundos_restantes($inicio, int $timeout): int
