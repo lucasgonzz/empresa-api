@@ -28,17 +28,20 @@ class ImplementacionController extends Controller
 
         if ($corridas->isEmpty()) {
             $hitos[] = $this->etapa('migracion', 4, 'file-earmark-arrow-up', 'Migración de datos', 'pendiente', 'Vamos a cargar tu catálogo cuando recibamos el archivo.');
-            $hitos[] = $this->etapa('imagenes', 6, 'images', 'Imágenes del catálogo', 'pendiente', 'Buscaremos imágenes de tus artículos más nuevos.');
+            $hitos[] = $this->etapa('imagenes', 5, 'images', 'Imágenes del catálogo', 'pendiente', 'Buscaremos imágenes de tus artículos más nuevos.');
             $hitos[] = $this->etapa('agente', 6, 'robot', 'Agente de WhatsApp', 'pendiente', 'El agente va a analizar tus artículos para responder sobre tu catálogo.');
         }
 
         foreach ($corridas as $run) {
             $registrados = $run->hitos ?? [];
+            if (isset($registrados['imagenes'])) {
+                $registrados['imagenes']['etapa'] = 5;
+            }
             $hitos[] = $registrados['migracion'] ?? $this->etapa($run->uuid . '-migracion', 4, 'file-earmark-arrow-up', 'Migración de datos', 'en_curso',
                 in_array($run->estado, ['columnas', 'repetidos'], true)
                     ? 'Estamos esperando tu respuesta por WhatsApp para seguir.'
                     : 'Estamos preparando la carga de tus artículos.');
-            $hitos[] = $registrados['imagenes'] ?? $this->etapa($run->uuid . '-imagenes', 6, 'images', 'Imágenes del catálogo',
+            $hitos[] = $registrados['imagenes'] ?? $this->etapa($run->uuid . '-imagenes', 5, 'images', 'Imágenes del catálogo',
                 $run->estado === 'imagenes' ? 'en_curso' : 'pendiente',
                 $run->estado === 'imagenes' ? 'Estamos buscando imágenes.' : 'La búsqueda empieza después de la carga.');
             $hitos[] = $registrados['agente'] ?? $this->etapa($run->uuid . '-agente', 6, 'robot', 'Agente de WhatsApp',

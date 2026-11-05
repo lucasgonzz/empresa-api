@@ -2,6 +2,7 @@
 
 namespace App\Services\Importacion;
 
+use App\Events\ImplementacionActualizada;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
@@ -19,11 +20,15 @@ use App\Services\CupoEmbeddingsDePrueba;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use RuntimeException;
+use Throwable;
 
 class ImportacionDePruebaService
 {
+    public const LIMITE_PREGUNTAS_POR_AVISO = 6;
+
     public function avanzar(ImportacionDePrueba $run): void
     {
         if (!PruebaHelper::en_periodo_vigente((int) $run->user_id) && in_array($run->estado, ['analizar', 'preparar'], true)) {
@@ -153,12 +158,18 @@ class ImportacionDePruebaService
             'preguntas' => $preguntas, 'decisiones' => $decisiones,
         ]);
 
-        $mensajes = array_column(array_slice($preguntas, 0, 6), 'texto');
-        $texto = 'Para seguir con «' . mb_substr($run->nombre, 0, 110) . '» (referencia ' . substr($run->uuid, 0, 8)
-            . '), necesito aclarar ' . (count($preguntas) === 1 ? 'esto' : 'estos datos') . '. ';
-        $texto .= $prefacio !== '' ? $prefacio . "\n\n" : "\n\n";
-        $texto .= implode("\n\n", $mensajes) . "\n\nRespondeme por acá y sigo con la carga.";
-        if (count($preguntas) > 6) {
+        $mensajes = array_column(array_slice($preguntas, 0, self::LIMITE_PREGUNTAS_POR_AVISO), 'texto');
+        $texto = $prefacio !== '' ? $prefacio . ' ' : '';
+        $texto .= count($mensajes) > 1 ? "Para seguir con la carga de tu Excel, necesito aclarar estos datos.\n\n" : '';
+        $texto .= implode("\n\n", $mensajes);
+        if (ImportacionDePrueba::where('user_id', $run->user_id)
+            ->where('support_ticket_id', $run->support_ticket_id)
+            ->where('id', '!=', $run->id)
+            ->whereIn('estado', array_merge(ImportacionDePrueba::EN_CURSO, ImportacionDePrueba::ESPERANDO_RESPUESTA))
+            ->exists()) {
+            $texto .= "\n\nArchivo «" . mb_substr($run->nombre, 0, 110) . '» (' . substr($run->uuid, 0, 8) . ').';
+        }
+        if (count($preguntas) > self::LIMITE_PREGUNTAS_POR_AVISO) {
             $texto .= ' Después te consulto lo que falte.';
         }
         $run->aviso('pregunta-' . $run->revision, $texto);
@@ -179,6 +190,9 @@ class ImportacionDePruebaService
 
         DB::transaction(function () use ($run, $historial) {
             $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
+            if ($run->estado !== 'importando') {
+                return;
+            }
             $creados = (int) $historial->created_models;
             $actualizados = (int) $historial->updated_models;
             $problemas = ArticleImportHelper::contar_filas_con_problemas($historial->id);
@@ -229,13 +243,13 @@ class ImportacionDePruebaService
                 $run->image_assignment_run_id = $lote->id;
             } else {
                 $run->hito('imagenes', [
-                    'etapa' => 6, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
+                    'etapa' => 5, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
                     'estado' => 'parcial', 'detalle' => 'No había artículos nuevos sin imagen o ya no quedaban búsquedas disponibles.',
                     'siguientes' => [], 'accion' => null, 'avisar' => false,
                 ]);
             }
             $run->estado = $lote !== null ? 'imagenes' : ($vigente ? 'indexar' : 'terminado');
-            $run->save();
+            $this->guardar_hitos($run);
         });
     }
 
@@ -252,8 +266,14 @@ class ImportacionDePruebaService
             return null;
         }
 
-        $ids = $historial->articulos_creados()
-            ->where('articles.user_id', $owner_id)->where('articles.status', 'active')->whereDoesntHave('images')
+        $creados_por_lote = $historial->chunks()
+            ->join('article_creados_article_import_result as creados', 'creados.article_import_result_id', '=', 'article_import_results.id')
+            ->select('creados.article_id');
+        $creados_legacy = $historial->articulos_creados()->select('articles.id');
+        $ids = Article::where('articles.user_id', $owner_id)->where('articles.status', 'active')->whereDoesntHave('images')
+            ->where(function ($consulta) use ($creados_por_lote, $creados_legacy) {
+                $consulta->whereIn('articles.id', $creados_por_lote)->orWhereIn('articles.id', $creados_legacy);
+            })
             ->orderByDesc('articles.id')->limit($limite)->pluck('articles.id')->all();
 
         return $ids === [] ? null : ImageAssignmentRunHelper::crear(
@@ -282,14 +302,14 @@ class ImportacionDePruebaService
         DB::transaction(function () use ($run, $lote, $asignadas, $total, $vigente, $detalle) {
             $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
             $run->hito('imagenes', [
-                'etapa' => 6, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
+                'etapa' => 5, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
                 'estado' => $total > 0 && $asignadas === $total ? 'completado' : 'parcial',
                 'detalle' => $detalle,
                 'siguientes' => $vigente ? ['Ahora el agente de WhatsApp va a analizar tus artículos.'] : [],
                 'accion' => $lote !== null ? ['tipo' => 'imagenes', 'lote_id' => (int) $lote->id, 'lote_uuid' => $lote->uuid] : null,
             ]);
             $run->estado = $vigente ? 'indexar' : 'terminado';
-            $run->save();
+            $this->guardar_hitos($run);
         });
     }
 
@@ -351,7 +371,7 @@ class ImportacionDePruebaService
                 'aprobado' => false,
             ]);
             $run->estado = 'terminado';
-            $run->save();
+            $this->guardar_hitos($run);
         });
     }
 
@@ -363,7 +383,7 @@ class ImportacionDePruebaService
             if (isset($hitos['migracion'])) {
                 $imagenes = $run->estado === 'imagenes';
                 $run->hito($imagenes ? 'imagenes' : 'agente', [
-                    'etapa' => 6, 'icono' => $imagenes ? 'images' : 'robot',
+                    'etapa' => $imagenes ? 5 : 6, 'icono' => $imagenes ? 'images' : 'robot',
                     'titulo' => $imagenes ? 'Imágenes del catálogo' : 'Agente de WhatsApp',
                     'implementacion' => $imagenes ? 'sistema' : 'agente',
                     'estado' => 'error', 'detalle' => 'No pudimos terminar esta etapa.',
@@ -378,7 +398,28 @@ class ImportacionDePruebaService
                 $run->aviso('error', $detalle);
                 $run->estado = 'error';
             }
-            $run->save();
+            $this->guardar_hitos($run);
+        });
+    }
+
+    private function guardar_hitos(ImportacionDePrueba $run): void
+    {
+        $cambiaron_hitos = $run->isDirty('hitos');
+        if (!$run->save() || !$cambiaron_hitos) {
+            return;
+        }
+
+        $usuario_id = (int) $run->user_id;
+        // Al recibir el aviso, la SPA vuelve a leer el avance por API.
+        DB::afterCommit(function () use ($usuario_id) {
+            try {
+                ImplementacionActualizada::dispatch($usuario_id);
+            } catch (Throwable $error) {
+                Log::warning('No se pudo avisar el avance de implementación por socket.', [
+                    'usuario_id' => $usuario_id,
+                    'tipo_error' => get_class($error),
+                ]);
+            }
         });
     }
 }

@@ -17,20 +17,92 @@ class ExpenseController extends Controller
 {
 
     public function index($from_date = null, $until_date = null) {
-        $models = Expense::where('user_id', $this->userId())
-                        ->orderBy('created_at', 'DESC')
-                        ->withAll();
+        $models = $this->gastosDelRango($from_date, $until_date)->withAll()->get();
+        return response()->json(['models' => $models], 200);
+    }
+
+    private function gastosDelRango($from_date, $until_date)
+    {
+        $models = Expense::where('expenses.user_id', $this->userId())
+            ->orderBy('expenses.created_at', 'DESC');
         if (!is_null($from_date)) {
             if (!is_null($until_date)) {
-                $models = $models->whereDate('created_at', '>=', $from_date)
-                                ->whereDate('created_at', '<=', $until_date);
+                $models->whereDate('expenses.created_at', '>=', $from_date)
+                    ->whereDate('expenses.created_at', '<=', $until_date);
             } else {
-                $models = $models->whereDate('created_at', $from_date);
+                $models->whereDate('expenses.created_at', $from_date);
             }
         }
 
-        $models = $models->get();
-        return response()->json(['models' => $models], 200);
+        return $models;
+    }
+
+    public function exportData(Request $request)
+    {
+        $persona = $this->user(false);
+        abort_unless($persona && (
+            empty($persona->owner_id) || $persona->admin_access || $persona->permissions->contains('slug', 'expense.index')
+        ), 403);
+
+        $fechas = $request->validate([
+            'from_date' => 'required|date_format:Y-m-d',
+            'until_date' => 'required|date_format:Y-m-d|after_or_equal:from_date',
+        ]);
+
+        $models = $this->datosDeExportacion($fechas['from_date'], $fechas['until_date']);
+
+        return response()->json(['models' => $models]);
+    }
+
+    private function datosDeExportacion($desde, $hasta)
+    {
+        // Con READ COMMITTED, una sola consulta mantiene juntos los montos del gasto y sus pagos.
+        $filas = $this->gastosDelRango($desde, $hasta)
+            ->select('expenses.id', 'expenses.num', 'expenses.expense_concept_id',
+                'expenses.amount', 'expenses.moneda_id', 'expenses.importe_iva', 'expenses.observations',
+                'expenses.current_acount_payment_method_id', 'conceptos.name as concepto',
+                'categorias.name as categoria', 'metodo_legacy.name as metodo_legacy',
+                'pagos.id as pago_id', 'pagos.current_acount_payment_method_id as pago_metodo_id',
+                'pagos.moneda_id as pago_moneda_id', 'pagos.amount as pago_importe', 'metodos.name as pago_metodo')
+            ->selectRaw('DATE(expenses.created_at) as fecha_gasto')
+            ->selectRaw('COALESCE(expenses.expense_category_id, conceptos.expense_category_id) as categoria_id')
+            ->leftJoin('expense_concepts as conceptos', function ($join) {
+                $join->on('conceptos.id', '=', 'expenses.expense_concept_id')
+                    ->on('conceptos.user_id', '=', 'expenses.user_id');
+            })
+            ->leftJoin('expense_categories as categorias', function ($join) {
+                $join->on('categorias.id', '=', DB::raw('COALESCE(expenses.expense_category_id, conceptos.expense_category_id)'))
+                    ->on('categorias.user_id', '=', 'expenses.user_id');
+            })
+            ->leftJoin('current_acount_payment_methods as metodo_legacy', 'metodo_legacy.id', '=', 'expenses.current_acount_payment_method_id')
+            ->leftJoin('expense_current_acount_payment_method as pagos', 'pagos.expense_id', '=', 'expenses.id')
+            // El método puede haberse borrado y el pago seguir guardado en el pivot.
+            ->leftJoin('current_acount_payment_methods as metodos', 'metodos.id', '=', 'pagos.current_acount_payment_method_id')
+            ->orderBy('pagos.id')
+            ->toBase()
+            ->get();
+
+        $gastos = [];
+        foreach ($filas as $fila) {
+            $id = $fila->id;
+            $pago = $fila->pago_id === null ? null : [
+                'expense_id' => $id,
+                'current_acount_payment_method_id' => $fila->pago_metodo_id,
+                'moneda_id' => $fila->pago_moneda_id,
+                'amount' => $fila->pago_importe,
+                'name' => $fila->pago_metodo,
+            ];
+            if (!isset($gastos[$id])) {
+                unset($fila->pago_id, $fila->pago_metodo_id, $fila->pago_moneda_id, $fila->pago_importe, $fila->pago_metodo);
+                $fila->pagos_exportacion = [];
+                $gastos[$id] = $fila;
+            }
+            if ($pago !== null) {
+                $gastos[$id]->pagos_exportacion[] = $pago;
+            }
+        }
+
+        return array_values($gastos);
     }
 
     public function store(Request $request) {

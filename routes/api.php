@@ -526,6 +526,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
 
     
     // Expenses | Gastos
+    Route::get('expense/export/data', 'ExpenseController@exportData');
     Route::resource('expense', 'ExpenseController');
     Route::get('expense/from-date/{from_date?}/{until_date?}', 'ExpenseController@index');
 

@@ -12,6 +12,7 @@ use App\Models\Address;
 use App\Models\ImportacionDePrueba;
 use App\Models\PriceType;
 use App\Models\Provider;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 use PhpOffice\PhpSpreadsheet\IOFactory;
@@ -21,6 +22,7 @@ class PlanillaDePrueba
 {
     private const CONFIANZA_MINIMA = 0.90;
     public const SEPARAR_CODIGO = '__prueba_separar_codigo';
+    public const DESCUENTOS_LATERALES = '__prueba_descuentos_laterales';
 
     private $run;
     private $propiedades;
@@ -109,20 +111,47 @@ class PlanillaDePrueba
                 continue;
             }
 
+            $titulos = $encabezado['columnas'];
+            $sin_nombre = array_fill_keys($resultado['columnas_sin_nombre'] ?? [], true);
+            $titulos = array_diff_key($titulos, $sin_nombre);
+            // Una columna puede estar vacía en la muestra y recién tener datos más abajo.
+            $datos_hoja = $this->leer_datos_de_hoja($ruta, $indice, $inicio);
+            $muestras = array_diff_key($datos_hoja['muestras'], $datos_hoja['columnas_del_bloque']);
+
             $mapeo = [];
             foreach ($resultado['column_mapping'] as $columna) {
                 $posicion = (int) $columna['excel_column_index'];
+                if (!isset($muestras[$posicion])) {
+                    continue;
+                }
                 if (isset($mapeo[$posicion])) {
                     $mapeo[$posicion]['confidence'] = 0;
                     continue;
                 }
+                $columna['system_property'] = ArticleImportColumnsNormalizer::normalize_property_key($columna['system_property'] ?? null);
                 $mapeo[$posicion] = $columna;
             }
 
-            foreach ($encabezado['columnas'] as $posicion => $titulo) {
-                if (!isset($mapeo[$posicion]) && trim((string) $titulo) !== '') {
+            foreach ($titulos as $posicion => $titulo) {
+                if (isset($muestras[$posicion]) && !isset($mapeo[$posicion]) && trim((string) $titulo) !== '') {
                     $mapeo[$posicion] = ['excel_column' => $titulo, 'confidence' => 0];
                 }
+            }
+            foreach (array_keys($muestras) as $posicion) {
+                if (!isset($mapeo[$posicion])) {
+                    $mapeo[$posicion] = ['excel_column' => '', 'confidence' => 0];
+                }
+            }
+            ksort($mapeo);
+
+            $descripcion_como_nombre = $this->descripcion_como_nombre($titulos, $mapeo, $muestras);
+            if ($descripcion_como_nombre !== null) {
+                $mapeo[$descripcion_como_nombre]['system_property'] = 'nombre';
+                $mapeo[$descripcion_como_nombre]['confidence'] = 1;
+            }
+            $precio_sin_tipo = $this->precio_de_proveedor_sin_tipo($titulos, $mapeo, $muestras);
+            if ($precio_sin_tipo !== null) {
+                $mapeo[$precio_sin_tipo]['confidence'] = 0;
             }
 
             $propiedades = array_count_values(array_filter(array_column($mapeo, 'system_property'), 'is_string'));
@@ -134,14 +163,14 @@ class PlanillaDePrueba
                 $columnas[$posicion] = [
                     'campo' => $campo,
                     'segura' => $segura,
-                    'titulo' => mb_substr(trim((string) $columna['excel_column']), 0, 100),
-                    'muestra' => $this->muestra($resultado['preview_rows'] ?? [], $posicion),
+                    'titulo' => mb_substr(trim((string) ($titulos[$posicion] ?? $columna['excel_column'])), 0, 100),
+                    'muestra' => $muestras[$posicion],
                 ];
             }
 
             foreach ($resultado['columnas_ambiguas'] ?? [] as $ambigua) {
                 foreach ($ambigua['columnas'] as $posicion) {
-                    if (isset($columnas[$posicion])) {
+                    if (isset($columnas[$posicion]) && $posicion !== $descripcion_como_nombre) {
                         $columnas[$posicion]['segura'] = false;
                     }
                 }
@@ -156,21 +185,142 @@ class PlanillaDePrueba
             $hojas[] = [
                 'indice' => $indice, 'nombre' => $hoja['nombre'], 'inicio' => $inicio, 'columnas' => $columnas,
                 'proveedor' => $this->proveedores[$proveedor] ?? null,
+                'bloque_descuentos' => $datos_hoja['descuentos'],
             ];
         }
 
         return $hojas;
     }
 
-    private function muestra(array $filas, int $columna): string
+    private function descripcion_como_nombre(array $titulos, array $mapeo, array $muestras): ?int
     {
-        foreach ($filas as $fila) {
-            if (isset($fila[$columna]) && trim((string) $fila[$columna]) !== '') {
-                return mb_substr((string) $fila[$columna], 0, 55);
+        $descripciones = [];
+        foreach (array_intersect_key($titulos, $muestras) as $posicion => $titulo) {
+            $titulo = self::titulo_comparable($titulo);
+            if (preg_match('/^(?:nombre(?: (?:del )?(?:articulo|producto|item))?|articulo|producto|item)$/', $titulo)) {
+                return null;
+            }
+            if (preg_match('/^descripcion(?: (?:del )?(?:articulo|producto|item))?$/', $titulo)) {
+                $descripciones[] = $posicion;
+            }
+        }
+        if (count($descripciones) !== 1) {
+            return null;
+        }
+        foreach ($mapeo as $posicion => $columna) {
+            if ($posicion !== $descripciones[0] && ($columna['system_property'] ?? null) === 'nombre') {
+                return null;
             }
         }
 
-        return '';
+        return $descripciones[0];
+    }
+
+    private static function titulo_comparable($titulo): string
+    {
+        return trim(preg_replace('/[^a-z0-9]+/', ' ', strtolower(Str::ascii((string) $titulo))));
+    }
+
+    private function precio_de_proveedor_sin_tipo(array $titulos, array $mapeo, array $muestras): ?int
+    {
+        if (!in_array('proveedor', array_column($mapeo, 'system_property'), true)) {
+            return null;
+        }
+
+        $precios = [];
+        foreach (array_intersect_key($titulos, $muestras) as $posicion => $titulo) {
+            $titulo = self::titulo_comparable($titulo);
+            if (preg_match('/^(?:costo(?: .*|$)|precio (?:de )?(?:venta|costo|publico|compra)(?: .*|$))/', $titulo)) {
+                return null;
+            }
+            if ($titulo === 'precio') {
+                $precios[] = $posicion;
+            }
+        }
+
+        // Con proveedores, «Precio» también puede ser el precio de compra de la lista recibida.
+        return count($precios) === 1 ? $precios[0] : null;
+    }
+
+    private function leer_datos_de_hoja(string $ruta, int $indice, int $inicio): array
+    {
+        $muestras = [];
+        $bloques = [];
+        $ultima_columna_del_encabezado = -1;
+        foreach ($this->filas_crudas($ruta, $indice, max(1, $inicio - 1)) as $numero => $fila) {
+            if ($numero < $inicio) {
+                foreach ($fila as $posicion => $valor) {
+                    if (trim((string) $valor) !== '') {
+                        $ultima_columna_del_encabezado = $posicion;
+                    }
+                }
+                continue;
+            }
+
+            // El encabezado del bloque está a la derecha de la tabla, con el importe al lado.
+            foreach ($fila as $posicion => $valor) {
+                $valor = trim((string) $valor);
+                if ($valor === '') {
+                    continue;
+                }
+                if ($ultima_columna_del_encabezado >= 0 && $posicion > $ultima_columna_del_encabezado
+                    && !isset($muestras[$posicion]) && !isset($muestras[$posicion + 1])
+                    && trim((string) ($fila[$posicion + 1] ?? '')) === ''
+                    && in_array(self::titulo_comparable($valor), ['descuentos', 'descuentos por proveedor'], true)) {
+                    $bloques[$posicion] = ['fila' => $numero, 'descuentos' => []];
+                }
+                $muestras[$posicion] = $muestras[$posicion] ?? mb_substr($valor, 0, 55);
+            }
+
+            foreach ($bloques as $posicion => &$bloque) {
+                if ($bloque['fila'] === $numero) {
+                    continue;
+                }
+                $proveedor = self::texto_comparable($fila[$posicion] ?? null);
+                $valor = trim((string) ($fila[$posicion + 1] ?? ''));
+                if ($proveedor === null && $valor === '') {
+                    continue;
+                }
+                $descuento = self::porcentajes_del_bloque($valor);
+                if ($proveedor === null || $descuento === null
+                    || (($bloque['descuentos'][$proveedor] ?? $descuento) !== $descuento)) {
+                    unset($bloques[$posicion]);
+                    continue;
+                }
+                $bloque['descuentos'][$proveedor] = $descuento;
+            }
+            unset($bloque);
+        }
+
+        $descuentos = [];
+        $columnas_del_bloque = [];
+        if (count($bloques) === 1) {
+            $posicion = array_key_first($bloques);
+            $descuentos = $bloques[$posicion]['descuentos'];
+            if ($descuentos !== []) {
+                $columnas_del_bloque = [$posicion => true, $posicion + 1 => true];
+            }
+        }
+
+        return compact('muestras', 'descuentos', 'columnas_del_bloque');
+    }
+
+    private static function porcentajes_del_bloque(string $valor): ?string
+    {
+        $partes = preg_split('/\s*(?:\by\b|[+_])\s*/iu', $valor);
+        $porcentajes = [];
+        foreach ($partes as $parte) {
+            if (!preg_match('/^(\d{1,3}(?:[.,]\d+)?)\s*%?$/', $parte, $coincidencia)) {
+                return null;
+            }
+            $porcentaje = (float) str_replace(',', '.', $coincidencia[1]);
+            if ($porcentaje <= 0 || $porcentaje > 100) {
+                return null;
+            }
+            $porcentajes[] = $porcentaje;
+        }
+
+        return implode('_', $porcentajes);
     }
 
     public function preguntas_columnas(array $hojas): array
@@ -191,9 +341,14 @@ class PlanillaDePrueba
                 $clave = self::clave_columna($hoja, (int) $posicion);
                 $letra = Coordinate::stringFromColumnIndex((int) $posicion + 1);
                 $referencia = 'columna ' . $letra . ' de «' . $hoja['nombre'] . '»';
-                $referencia .= $columna['titulo'] !== '' ? ' (' . $columna['titulo'] . ')' : '';
-                $referencia .= $columna['muestra'] !== '' ? ', por ejemplo «' . $columna['muestra'] . '»' : '';
-                $preguntas[$clave] = self::pregunta($clave, '¿Qué dato trae la ' . $referencia . '?', array_filter($opciones, 'is_string'));
+                if (self::titulo_comparable($columna['titulo']) === 'precio' && isset($opciones['precio'], $opciones['costo'])) {
+                    $texto = '¿Me confirmás si el precio de la ' . $referencia . ' es de venta o es el costo?';
+                } else {
+                    $referencia .= $columna['titulo'] !== '' ? ' (' . $columna['titulo'] . ')' : '';
+                    $referencia .= $columna['muestra'] !== '' ? ', por ejemplo «' . $columna['muestra'] . '»' : '';
+                    $texto = '¿Qué dato querés cargar con la ' . $referencia . '?';
+                }
+                $preguntas[$clave] = self::pregunta($clave, $texto, array_filter($opciones, 'is_string'));
             }
         }
 
@@ -231,6 +386,7 @@ class PlanillaDePrueba
                 $mapeo[$propiedad] = (int) $posicion;
             }
             $hoja['mapeo'] = ArticleImportColumnsNormalizer::normalize($mapeo);
+            $hoja['descuentos_por_proveedor'] = $this->resolver_descuentos($hoja);
         }
         unset($hoja);
 
@@ -239,35 +395,81 @@ class PlanillaDePrueba
         }));
     }
 
+    private function resolver_descuentos(array $hoja): array
+    {
+        $bloque = $hoja['bloque_descuentos'] ?? [];
+        if ($bloque === [] || isset($hoja['mapeo']['descuentos']) || isset($hoja['mapeo']['descuentos_montos'])) {
+            return [];
+        }
+
+        $proveedores = [];
+        $aliases = [];
+        $ruta = $this->ruta();
+        ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
+        foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $fila) {
+            $valor = ImportHelper::getColumnValue($fila, 'proveedor', $hoja['mapeo']);
+            $proveedor = self::texto_comparable($valor ?: $hoja['proveedor']);
+            if ($proveedor === null || isset($proveedores[$proveedor])) {
+                continue;
+            }
+            $proveedores[$proveedor] = true;
+            $base = preg_replace('/\s+\([^()]+\)$/u', '', $proveedor);
+            $aliases[$base][] = $proveedor;
+        }
+
+        $descuentos = array_intersect_key($bloque, $proveedores);
+        foreach (array_diff_key($bloque, $proveedores) as $alias => $valores) {
+            if (count($aliases[$alias] ?? []) === 1) {
+                $descuentos[$aliases[$alias][0]] = $descuentos[$aliases[$alias][0]] ?? $valores;
+            }
+        }
+
+        return $descuentos;
+    }
+
+    private function filas_crudas(string $ruta, int $indice, int $inicio): \Generator
+    {
+        $csv = fopen(CsvDeHoja::ruta_csv($ruta, $indice), 'rb');
+        if ($csv === false) {
+            throw new RuntimeException('No se pudo abrir la hoja del Excel.');
+        }
+
+        try {
+            if (fread($csv, 3) !== CsvDeHoja::BOM_UTF8) {
+                rewind($csv);
+            }
+            $numero = 0;
+            while (($fila = fgetcsv($csv, 0, ',', '"', '')) !== false) {
+                if (++$numero >= $inicio) {
+                    yield $numero => $fila;
+                }
+            }
+        } finally {
+            fclose($csv);
+        }
+    }
+
     public function filas(array $hojas): \Generator
     {
         $ruta = $this->ruta();
         foreach ($hojas as $hoja) {
-            $meta = ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
-            $csv = fopen(CsvDeHoja::ruta_csv($ruta, $meta['indice']), 'rb');
-            if ($csv === false) {
-                throw new RuntimeException('No se pudo abrir la hoja del Excel.');
-            }
-
-            try {
-                $numero = 0;
-                while (($fila = fgetcsv($csv, 0, ',', '"', '')) !== false) {
-                    if (++$numero < $hoja['inicio']) {
-                        continue;
-                    }
-                    $datos = [];
-                    foreach ($hoja['mapeo'] as $campo => $posicion) {
-                        $datos[$campo] = ImportHelper::getColumnValue($fila, $campo, $hoja['mapeo']);
-                    }
-                    if (array_filter($datos, function ($valor) { return $valor !== null && $valor !== ''; }) !== []) {
-                        if (empty($datos['proveedor']) && $hoja['proveedor'] !== null) {
-                            $datos['proveedor'] = $hoja['proveedor'];
-                        }
-                        yield $hoja['indice'] . ':' . $numero => $datos;
-                    }
+            ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
+            foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
+                $datos = [];
+                foreach ($hoja['mapeo'] as $campo => $posicion) {
+                    $datos[$campo] = ImportHelper::getColumnValue($fila, $campo, $hoja['mapeo']);
                 }
-            } finally {
-                fclose($csv);
+                if (array_filter($datos, function ($valor) { return $valor !== null && $valor !== ''; }) === []) {
+                    continue;
+                }
+                if (empty($datos['proveedor']) && $hoja['proveedor'] !== null) {
+                    $datos['proveedor'] = $hoja['proveedor'];
+                }
+                $proveedor = self::texto_comparable($datos['proveedor'] ?? null);
+                if (isset($hoja['descuentos_por_proveedor'][$proveedor])) {
+                    $datos[self::DESCUENTOS_LATERALES] = $hoja['descuentos_por_proveedor'][$proveedor];
+                }
+                yield $hoja['indice'] . ':' . $numero => $datos;
             }
         }
     }
@@ -393,6 +595,9 @@ class PlanillaDePrueba
         $campos = ['proveedor' => true, self::SEPARAR_CODIGO => true];
         foreach ($hojas as $hoja) {
             $campos += $hoja['mapeo'];
+            if (!empty($hoja['descuentos_por_proveedor'])) {
+                $campos[self::DESCUENTOS_LATERALES] = true;
+            }
         }
         $columnas = array_keys($campos);
         $ruta = storage_path('app/imported_files/prueba_' . $this->run->uuid . '.preparado');
