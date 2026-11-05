@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ImagenesAutomaticasHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\GeocoderCounter;
 use App\Models\User;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
@@ -76,13 +77,17 @@ class GoogleController extends Controller
          * reemplazan nada: un frontend viejo los ignora y sigue funcionando igual que antes. Ver el
          * porqué del uuid en el helper.
          */
-        return response()->json([
+        $respuesta = [
             'status'              => 'processing',
             'batch_uuid'          => $encolado['batch_uuid'],
             'articulos'           => (int) $encolado['articulos'],
             'saltados_con_imagen' => (int) $encolado['saltados_con_imagen'],
-            'saltados_por_cupo'   => (int) $encolado['saltados_por_cupo'],
-        ], 200);
+        ];
+        if (PruebaHelper::tiene_periodo_de_prueba((int) $owner->id)) {
+            $respuesta['saltados_por_cupo'] = (int) $encolado['saltados_por_cupo'];
+        }
+
+        return response()->json($respuesta, 200);
     }
 
     function aumentar_contador_custom_search() {

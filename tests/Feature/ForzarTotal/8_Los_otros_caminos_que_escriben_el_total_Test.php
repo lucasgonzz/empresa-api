@@ -3,6 +3,9 @@
 namespace Tests\Feature\ForzarTotal;
 
 use App\Http\Controllers\Helpers\BudgetHelper;
+use App\Http\Controllers\Helpers\AfipHelper;
+use App\Http\Controllers\Helpers\AfipHelper\AfipItemCalculator;
+use App\Http\Controllers\Helpers\SaleHelper;
 use App\Http\Controllers\Helpers\sale\ConsolidarFacturacionHelper;
 use App\Models\AfipInformation;
 use App\Models\Budget;
@@ -258,10 +261,9 @@ class Los_otros_caminos_que_escriben_el_total_Test extends ForzarTotalTestCase
     /**
      * Test 4 — CONSOLIDAR FACTURACION: la venta consolidada se lleva la suma de los montos.
      *
-     * `total` suma los `sales.total` de las originales, que ya vienen forzados, pero los renglones
-     * se copian con su precio CRUDO. Sin el monto, la consolidada queda diciendo 8.000 con
-     * renglones que suman 8.024: el factor de AFIP da 1 y a un Responsable Inscripto se le facturan
-     * los 8.024 — mas de lo que el cliente pago, en un comprobante fiscal.
+     * Las originales sumaban 8.024 antes de los ajustes. La consolidada guarda el -24 para
+     * auditoría y copia los renglones ya ajustados. El monto histórico permite recuperar
+     * aquel bruto sin volver a descontarlo en los cálculos ni en la respuesta para la SPA.
      *
      * @group forzar_total
      * @test
@@ -318,15 +320,38 @@ class Los_otros_caminos_que_escriben_el_total_Test extends ForzarTotalTestCase
         );
 
         /*
-         * 🔴 LA COHERENCIA QUE IMPORTA: el total menos el monto tiene que dar lo que suman los
-         * renglones copiados. Es exactamente la cuenta que hace el factor de AFIP para decidir
-         * cuanto escalar, y es la que estaba rota.
+         * El total menos el monto histórico reconstruye el bruto original.
          */
         $this->assertEqualsWithDelta(
             self::BRUTO * 2,
             (float) $fila->total - (float) $fila->forzar_total_monto,
             self::DELTA,
-            'total - monto tiene que dar el bruto de los renglones copiados (8.024)'
+            'total - monto histórico tiene que dar el bruto original (8.024)'
         );
+
+        $this->assertTrue($fila->ajustes_consolidados_en_renglones);
+        $this->assertSame(0.0, SaleHelper::get_forzar_total_monto($fila));
+        $this->assertEqualsWithDelta(self::FORZADO * 2, SaleHelper::getTotalSale($fila), self::DELTA);
+        $calculador = new AfipItemCalculator(new AfipHelper((object) ['sale' => $fila], null, null, $this->comercio()));
+        $this->assertSame(1.0, $calculador->get_factor_total_forzado());
+
+        $serializada = $fila->toArray();
+        $this->assertNull($serializada['forzar_total_monto']);
+        $this->assertEqualsWithDelta(self::MONTO * 2, (float) $serializada['forzar_total_monto_historico'], self::DELTA);
+    }
+
+    /** @test */
+    public function la_consolidacion_historica_sigue_aplicando_el_ajuste_sobre_el_precio_crudo()
+    {
+        $venta = $this->crear_venta_en_base(['is_consolidacion_facturacion' => 1]);
+        $this->enganchar_articulo($venta, TestingFerreteriaSeeder::ARTICULO_CENTINELA, self::BRUTO, 1);
+        $venta->refresh();
+
+        $this->assertFalse($venta->ajustes_consolidados_en_renglones);
+        $this->assertSame(self::MONTO, SaleHelper::get_forzar_total_monto($venta));
+        $this->assertEqualsWithDelta(self::FORZADO, SaleHelper::getTotalSale($venta), self::DELTA);
+        $serializada = $venta->toArray();
+        $this->assertEqualsWithDelta(self::MONTO, (float) $serializada['forzar_total_monto'], self::DELTA);
+        $this->assertArrayNotHasKey('forzar_total_monto_historico', $serializada);
     }
 }

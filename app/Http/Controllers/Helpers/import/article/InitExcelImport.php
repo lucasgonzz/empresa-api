@@ -29,6 +29,8 @@ class InitExcelImport
      */
     protected $chunk_offsets = [];
 
+    protected ?array $planilla_de_prueba = null;
+
     /**
      * Decisiones del paso 3 sobre nombres parecidos (`equivalencias` del POST). Ver importar() y
      * guardar_equivalencias_en_archivo(): saneadas son un array; a los lotes les llega la ruta del

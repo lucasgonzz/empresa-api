@@ -11,6 +11,7 @@ use Carbon\Carbon;
 use Exception;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Helper que gestiona la consolidación de varias ventas individuales en una
@@ -331,6 +332,19 @@ class ConsolidarFacturacionHelper extends Controller
             /** Crea el correlativo usando la lógica estándar del sistema. */
             $num = (new self())->num('sales', $user_id);
 
+            $ajustes_consolidados = [];
+            if (ForzarTotalEsquemaHelper::hay_columna_en_sales()
+                && Schema::hasColumn('sales', 'ajustes_consolidados_en_renglones')) {
+                // El ajuste firmado queda para auditoría. Los precios de abajo ya lo incorporan.
+                $monto = round($ventas_originales->sum(function (Sale $venta) {
+                    return SaleHelper::get_forzar_total_monto($venta);
+                }), 2);
+                $ajustes_consolidados = [
+                    'forzar_total_monto' => $monto == 0 ? null : $monto,
+                    'ajustes_consolidados_en_renglones' => true,
+                ];
+            }
+
             /** Crea la venta contenedora marcada para excluirla de reportes y cuentas. */
             $venta_consolidada = Sale::create(IvaEnArticulosSinIvaEsquemaHelper::quitar_si_no_hay_columna([
                 'num'                           => $num,
@@ -356,7 +370,7 @@ class ConsolidarFacturacionHelper extends Controller
                 'terminada'                     => 1,
                 'terminada_at'                  => Carbon::now(),
                 'descuento'                     => 0,
-            ], 'sales'));
+            ] + $ajustes_consolidados, 'sales'));
 
             /** Copia los ítems de todas las ventas originales a la consolidada. */
             self::copiar_articulos($venta_consolidada, $ventas_originales, $agrupar_items, $factores);
