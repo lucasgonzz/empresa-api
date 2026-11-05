@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDeImportacionHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
@@ -14,12 +15,14 @@ use App\Http\Controllers\Helpers\import\relaciones\RelacionesParecidasChequeo;
 use App\Models\ExcelAnalysisRun;
 use App\Models\User;
 use App\Notifications\GlobalNotification;
+use App\Services\Importacion\CatalogoPdf;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 
 /**
  * Job que ejecuta en segundo plano el análisis (y, desde el prompt 03, también la
@@ -130,6 +133,40 @@ class RunExcelAnalysisJob implements ShouldQueue
         $this->queue = config('app.VPS') ? null : 'excel';
     }
 
+    protected function preparar_planilla_del_pdf(ExcelAnalysisRun $run, string $excel_full_path): array
+    {
+        $payload = $run->payload;
+        $pdf = Storage::disk('local');
+
+        try {
+            // El worker puede seguir vivo entre trabajos y el estado de la prueba cambiar mientras la corrida espera.
+            PruebaHelper::olvidar_cache();
+            if (!PruebaHelper::en_periodo_vigente((int) $run->user_id)) {
+                throw new \RuntimeException('La prueba gratuita ya terminó. La lectura de este PDF no se inició.');
+            }
+
+            $run->update(['paso' => 'Leyendo el catálogo PDF con IA…', 'progreso' => 10]);
+            $this->etapa_del_proceso_en_segundo_plano($run, 'Leyendo el catálogo PDF con IA…', 10);
+
+            $filas = app(CatalogoPdf::class)->convertir($pdf->path($payload['pdf_path']), $excel_full_path, (int) $run->user_id);
+
+            // El archivo resultante tiene una sola hoja y el encabezado siempre está en la primera fila.
+            $payload = array_replace($payload, [
+                'start_row'      => 2,
+                'finish_row'     => $filas + 1,
+                'has_header_row' => 1,
+                'hoja'           => 0,
+                'hoja_nombre'    => null,
+                'header_row'     => 1,
+            ]);
+            $run->update(['payload' => $payload]);
+
+            return $payload;
+        } finally {
+            $pdf->delete($payload['pdf_path']);
+        }
+    }
+
     /**
      * Ejecuta la corrida (análisis o recomendación, según `tipo`) y persiste el
      * resultado.
@@ -155,6 +192,16 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'excel_analysis_run_id' => $this->excel_analysis_run_id,
             ]);
             return;
+        }
+
+        if (!empty($run->payload['pdf_path'])) {
+            // Si se entrega el mismo job otra vez, solo la primera entrega puede llamar a Anthropic.
+            $inicio = ExcelAnalysisRun::whereKey($run->id)
+                ->where('estado', 'pendiente')
+                ->update(['estado' => 'procesando']);
+            if ($inicio === 0) {
+                return;
+            }
         }
 
         /*
@@ -187,7 +234,7 @@ class RunExcelAnalysisJob implements ShouldQueue
         /* Ruta absoluta del Excel, guardado previamente por el controller. */
         $excel_full_path = storage_path('app/' . $run->excel_path);
 
-        if (!file_exists($excel_full_path)) {
+        if (empty($run->payload['pdf_path']) && !file_exists($excel_full_path)) {
             $this->finalizar_con_error($run, 'El archivo Excel indicado no existe o ha expirado.');
             return;
         }
@@ -223,6 +270,10 @@ class RunExcelAnalysisJob implements ShouldQueue
         $original_filename = (string) ($payload['original_filename'] ?? '');
 
         try {
+            if (!empty($payload['pdf_path'])) {
+                $payload = $this->preparar_planilla_del_pdf($run, $excel_full_path);
+            }
+
             /*
              * Hoja elegida y fila de encabezado, resueltas antes de tocar el analyzer.
              *
@@ -328,7 +379,9 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'encabezado_detectado'  => $analysis['encabezado_detectado'] ?? null,
                 'columnas_sin_nombre'   => $analysis['columnas_sin_nombre'] ?? [],
                 'fusiones_aplicadas'    => $analysis['fusiones_aplicadas'] ?? 0,
-            ];
+            ] + (!empty($payload['pdf_path']) ? [
+                'filas_del_pdf' => $payload['finish_row'] - 1,
+            ] : []);
 
             /*
              * (grupo 291, prompt 03) Persistimos la lista de provider_codes distintos
@@ -916,7 +969,7 @@ class RunExcelAnalysisJob implements ShouldQueue
 
             $titulo = $run->tipo === 'recomendacion'
                 ? 'Recomendación de importación'
-                : 'Análisis del Excel con IA';
+                : (empty($run->payload['pdf_path']) ? 'Análisis del Excel con IA' : 'Análisis del PDF con IA');
 
             BackgroundProcessHelper::iniciar($run->user_id, 'analisis_excel', $titulo, [
                 'auth_user_id' => empty($run->auth_user_id) ? null : $run->auth_user_id,
@@ -1169,6 +1222,10 @@ class RunExcelAnalysisJob implements ShouldQueue
         ]);
 
         $run = ExcelAnalysisRun::find($this->excel_analysis_run_id);
+
+        if (!is_null($run) && !empty($run->payload['pdf_path'])) {
+            Storage::disk('local')->delete($run->payload['pdf_path']);
+        }
 
         /* Si por alguna carrera rarísima ya quedó "listo", no lo pisamos con error. */
         if (!is_null($run) && $run->estado !== 'listo') {

@@ -3,9 +3,10 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
-use App\Services\ProductFacts\TopeSerperDemo;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Illuminate\Http\Request;
 
 /**
@@ -15,10 +16,9 @@ use Illuminate\Http\Request;
  * Solo traduce a HTTP: la lógica vive en ImageAssignmentRunHelper.
  *
  * Todo filtrado por el DUEÑO (`$this->userId()`): un empleado ve las asignaciones de su comercio, y
- * un id de otro comercio responde 404 (no existe para él). "Todo el catálogo" es solo para la sesión
- * del acceso maestro (decisión de Lucas): sin ella, 403 con `{message}`. Detener y reanudar también,
- * pero SOLO las de catálogo (plan §13, B7): las de selección o del asistente las puede detener o
- * reanudar cualquiera del comercio que las ve.
+ * un id de otro comercio responde 404. El catálogo lo gestiona el acceso maestro o el dueño de una
+ * cuenta que empezó como prueba. Las asignaciones por selección o del asistente las puede detener
+ * o reanudar cualquiera del comercio que las ve.
  */
 class ImageAssignmentRunController extends Controller
 {
@@ -210,7 +210,7 @@ class ImageAssignmentRunController extends Controller
      */
     public function tope_demo()
     {
-        return response()->json(TopeSerperDemo::estado((int) $this->userId()), 200);
+        return response()->json(CupoImagenesDePrueba::estado_para_busqueda((int) $this->userId()), 200);
     }
 
     /**
@@ -220,7 +220,7 @@ class ImageAssignmentRunController extends Controller
      */
     public function previa_catalogo()
     {
-        if (!ImageAssignmentRunHelper::es_acceso_maestro()) {
+        if (!$this->puede_gestionar_catalogo()) {
             return $this->solo_acceso_maestro();
         }
 
@@ -240,7 +240,7 @@ class ImageAssignmentRunController extends Controller
      */
     public function crear_catalogo()
     {
-        if (!ImageAssignmentRunHelper::es_acceso_maestro()) {
+        if (!$this->puede_gestionar_catalogo()) {
             return $this->solo_acceso_maestro();
         }
 
@@ -324,7 +324,15 @@ class ImageAssignmentRunController extends Controller
      */
     protected function puede_detener_o_reanudar(ImageAssignmentRun $run)
     {
-        return $run->origen !== ImageAssignmentRun::ORIGEN_CATALOGO || ImageAssignmentRunHelper::es_acceso_maestro();
+        return $run->origen !== ImageAssignmentRun::ORIGEN_CATALOGO || $this->puede_gestionar_catalogo();
+    }
+
+    protected function puede_gestionar_catalogo(): bool
+    {
+        $owner_id = (int) $this->userId();
+
+        return ImageAssignmentRunHelper::es_acceso_maestro()
+            || ($owner_id > 0 && (int) $this->userId(false) === $owner_id && PruebaHelper::activa($owner_id));
     }
 
     /**

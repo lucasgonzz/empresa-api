@@ -218,7 +218,7 @@ class ArticleImageAssignmentEngine
                 'user_id' => $this->user_id,
                 'auth_user_id' => $person ? $person->id : null,
                 'auth_user_name' => $person ? $person->name : null,
-                'process' => 'imagenes_' . $run->origen,
+                'process' => ImageAssignmentRun::PREFIJO_PROCESO_SERPER . $run->origen,
             ]);
         }
 
@@ -357,6 +357,17 @@ class ArticleImageAssignmentEngine
             ]);
         }
 
+        $limite_prueba = CupoImagenesDePrueba::reservar($this->user_id, $item);
+        if (!is_null($limite_prueba)) {
+            $resultado = $this->cerrar($item, $contexto, [
+                'status'         => ImageAssignmentItem::STATUS_SIN_PROCESAR,
+                'motivo'         => 'sin_cupo',
+                'motivo_detalle' => $limite_prueba,
+            ], false);
+
+            return array_merge($resultado, ['cupo_agotado' => true, 'limite_prueba' => $limite_prueba]);
+        }
+
         // Criterio 1: código de barras, solo si es REAL (pedido de Lucas).
         if ($codigo['real']) {
             $this->buscar_por_criterio(self::CRITERIO_CODIGO, $codigo['normalizado'], $contexto);
@@ -455,13 +466,13 @@ class ArticleImageAssignmentEngine
          * TopeSerperDemo::agotado() da false sin consultar nada. El proveedor de Serper tiene además
          * su propia guarda, bajo candado, para la carrera entre dos procesos (ver más abajo).
          */
-        if (TopeSerperDemo::agotado($this->user_id)) {
+        if (TopeSerperDemo::agotado($this->user_id, true)) {
             $this->marcar_tope_demo($criterio, $consulta, $contexto);
 
             return;
         }
 
-        if ($this->run->aplica_tope_diario && !$this->queda_cupo()) {
+        if (ImagenesAutomaticasHelper::aplica_tope_diario($this->run) && !$this->queda_cupo()) {
             $contexto['cupo_agotado'] = true;
             $contexto['diagnostico'][$criterio] = $this->criterio_no_usado($criterio, $consulta, 'No se buscó: se agotó el cupo diario de búsquedas.');
 
@@ -1699,7 +1710,7 @@ class ArticleImageAssignmentEngine
      */
     protected function descontar_del_cupo_diario()
     {
-        if (!$this->run->aplica_tope_diario) {
+        if (!ImagenesAutomaticasHelper::aplica_tope_diario($this->run)) {
             return;
         }
 

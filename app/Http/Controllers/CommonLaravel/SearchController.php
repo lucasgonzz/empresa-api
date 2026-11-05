@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
+use App\Http\Controllers\Helpers\client\AcopioPendienteClientesHelper;
 use App\Models\CurrentAcount;
 use App\Models\Provider;
 use App\Services\Compras\CodigosDeProveedor;
@@ -173,6 +174,14 @@ class SearchController extends Controller
             }
 
             $models = $models->paginate($per_page, ['*'], 'page', $pagina_pedida);
+
+            if ($model_name_param === 'client'
+                && !$return_raw_models
+                && !$return_used_filters
+                && !$request->papelera
+                && $request->boolean('clientes_acopio_pendiente')) {
+                AcopioPendienteClientesHelper::agregar_a_pagina($models->getCollection());
+            }
         } else {
             $models = $models->get();
         }
@@ -897,6 +906,10 @@ class SearchController extends Controller
             // donde se calcula $page_actual. El 3er argumento es el nombre del parámetro, que se
             // mantiene en 'page' para que los links del paginador salgan iguales que siempre.
             $models = $models->paginate($per_page, ['*'], 'page', $page_actual);
+        }
+
+        if ($model_name_param === 'client' && $request->boolean('clientes_acopio_pendiente')) {
+            AcopioPendienteClientesHelper::agregar_a_pagina($models->getCollection());
         }
 
         // Historial de filtrados (Grupo 273, Prompt 02): `search()` ya lo registraba para article,

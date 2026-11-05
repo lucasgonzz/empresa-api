@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\ImportHistory;
 use App\Models\ImportStatus;
 use App\Models\User;
+use App\Services\CupoEmbeddingsDePrueba;
 use App\Services\DemoEventoEmitter;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
@@ -375,13 +376,13 @@ class FinalizeArticleImport implements ShouldQueue
     {
         /*
          * EMBEDDINGS_OMITIR_IMPORTACION corta esto ANTES del Artisan::call, misma variable que
-         * apaga el scheduler en Kernel.php. Pensada para las instancias de demo: un lead que
+         * apaga el scheduler en Kernel.php. Pensada para las demos por turno: un lead que
          * prueba importar un Excel de miles de artículos no tiene que generarle embeddings a
          * ninguno de ellos. La creación manual de un artículo no pasa por acá (vive en
          * ArticleObserver/DescriptionObserver) y sigue embebiendo al toque, con o sin esta
-         * variable. Default false: ningún cliente real nota que existe.
+         * variable. Las pruebas de siete días usan su presupuesto de indexación.
          */
-        if (filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN)) {
+        if (CupoEmbeddingsDePrueba::omitir_importacion($this->user_id)) {
             Log::info('FinalizeArticleImport: se omitió la generación de embeddings post-importación (EMBEDDINGS_OMITIR_IMPORTACION).', [
                 'import_history_id' => $this->import_history_id,
             ]);

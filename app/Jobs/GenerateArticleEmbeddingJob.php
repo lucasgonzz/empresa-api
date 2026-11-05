@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Exceptions\CupoEmbeddingsDePruebaException;
 use App\Models\Article;
 use App\Services\ArticleEmbeddingService;
 use Illuminate\Bus\Queueable;
@@ -189,6 +190,8 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
 
                 $this->registrar_resultado('salteados');
             }
+        } catch (CupoEmbeddingsDePruebaException $exception) {
+            $this->registrar_resultado('salteados');
         } catch (\Throwable $exception) {
             Log::channel('daily')->error('GenerateArticleEmbeddingJob: error al generar embedding.', [
                 'article_id' => $this->article_id,
