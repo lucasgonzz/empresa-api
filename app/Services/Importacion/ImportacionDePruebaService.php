@@ -190,6 +190,9 @@ class ImportacionDePruebaService
 
         DB::transaction(function () use ($run, $historial) {
             $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
+            if ($run->estado !== 'importando') {
+                return;
+            }
             $creados = (int) $historial->created_models;
             $actualizados = (int) $historial->updated_models;
             $problemas = ArticleImportHelper::contar_filas_con_problemas($historial->id);
@@ -240,7 +243,7 @@ class ImportacionDePruebaService
                 $run->image_assignment_run_id = $lote->id;
             } else {
                 $run->hito('imagenes', [
-                    'etapa' => 6, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
+                    'etapa' => 5, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
                     'estado' => 'parcial', 'detalle' => 'No había artículos nuevos sin imagen o ya no quedaban búsquedas disponibles.',
                     'siguientes' => [], 'accion' => null, 'avisar' => false,
                 ]);
@@ -263,8 +266,14 @@ class ImportacionDePruebaService
             return null;
         }
 
-        $ids = $historial->articulos_creados()
-            ->where('articles.user_id', $owner_id)->where('articles.status', 'active')->whereDoesntHave('images')
+        $creados_por_lote = $historial->chunks()
+            ->join('article_creados_article_import_result as creados', 'creados.article_import_result_id', '=', 'article_import_results.id')
+            ->select('creados.article_id');
+        $creados_legacy = $historial->articulos_creados()->select('articles.id');
+        $ids = Article::where('articles.user_id', $owner_id)->where('articles.status', 'active')->whereDoesntHave('images')
+            ->where(function ($consulta) use ($creados_por_lote, $creados_legacy) {
+                $consulta->whereIn('articles.id', $creados_por_lote)->orWhereIn('articles.id', $creados_legacy);
+            })
             ->orderByDesc('articles.id')->limit($limite)->pluck('articles.id')->all();
 
         return $ids === [] ? null : ImageAssignmentRunHelper::crear(
@@ -293,7 +302,7 @@ class ImportacionDePruebaService
         DB::transaction(function () use ($run, $lote, $asignadas, $total, $vigente, $detalle) {
             $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
             $run->hito('imagenes', [
-                'etapa' => 6, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
+                'etapa' => 5, 'icono' => 'images', 'titulo' => 'Imágenes del catálogo',
                 'estado' => $total > 0 && $asignadas === $total ? 'completado' : 'parcial',
                 'detalle' => $detalle,
                 'siguientes' => $vigente ? ['Ahora el agente de WhatsApp va a analizar tus artículos.'] : [],
@@ -374,7 +383,7 @@ class ImportacionDePruebaService
             if (isset($hitos['migracion'])) {
                 $imagenes = $run->estado === 'imagenes';
                 $run->hito($imagenes ? 'imagenes' : 'agente', [
-                    'etapa' => 6, 'icono' => $imagenes ? 'images' : 'robot',
+                    'etapa' => $imagenes ? 5 : 6, 'icono' => $imagenes ? 'images' : 'robot',
                     'titulo' => $imagenes ? 'Imágenes del catálogo' : 'Agente de WhatsApp',
                     'implementacion' => $imagenes ? 'sistema' : 'agente',
                     'estado' => 'error', 'detalle' => 'No pudimos terminar esta etapa.',

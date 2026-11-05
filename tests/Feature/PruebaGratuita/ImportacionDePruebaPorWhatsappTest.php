@@ -279,6 +279,13 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $servicio->avanzar($run);
         $run->refresh();
         $this->assertSame('indexar', $run->estado);
+        $hitos = $run->hitos;
+        $this->assertSame(5, $hitos['imagenes']['etapa']);
+        $hitos['imagenes']['etapa'] = 6;
+        $run->update(['hitos' => $hitos]);
+        $this->getJson('/api/implementacion')->assertOk()->assertJsonFragment([
+            'id' => $run->uuid . '-imagenes', 'etapa' => 5,
+        ]);
         $id = $run->uuid . '-migracion';
         $this->getJson('/api/implementacion')->assertOk()->assertJsonFragment(['id' => $id, 'visto' => false]);
         Event::assertNotDispatched(ImplementacionActualizada::class);
@@ -302,6 +309,7 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->postJson($agente)->assertOk()->assertJson(['aprobado' => true]);
         $this->postJson($agente)->assertOk()->assertJson(['aprobado' => true]);
         $this->assertTrue($run->fresh()->hitos['agente']['aprobado']);
+        $this->assertSame(6, $run->fresh()->hitos['agente']['etapa']);
     }
 
     public function test_usa_el_saldo_para_buscar_imagenes_de_los_mas_nuevos_antes_de_indexar(): void
@@ -310,14 +318,16 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $run = $this->corrida($this->planilla([[['Nombre'], ['Artículo']]]), 'importando');
         $historial = ImportHistory::create([
             'user_id' => $this->dueno->id, 'status' => 'terminado', 'model_name' => 'article',
-            'created_models' => 3, 'updated_models' => 0, 'processed_chunks' => 1, 'total_chunks' => 1,
+            'created_models' => 3, 'updated_models' => 0, 'processed_chunks' => 2, 'total_chunks' => 2,
             'matching_counts_json' => '{}',
         ]);
         $ids = [];
         foreach (['Primero', 'Segundo', 'Tercero'] as $nombre) {
             $ids[] = Article::create(['user_id' => $this->dueno->id, 'status' => 'active', 'name' => $nombre])->id;
         }
-        $historial->articulos_creados()->attach($ids);
+        $historial->articulos_creados()->attach($ids[0]);
+        $historial->chunks()->create(['import_uuid' => $run->uuid])->articulos_creados()->attach($ids[1]);
+        $historial->chunks()->create(['import_uuid' => $run->uuid])->articulos_creados()->attach($ids[2]);
         $run->update(['import_history_id' => $historial->id]);
         $servicio = app(ImportacionDePruebaService::class);
         $servicio->avanzar($run);
@@ -336,6 +346,7 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $servicio->avanzar($run);
         $run->refresh();
         $this->assertSame('indexar', $run->estado);
+        $this->assertSame(5, $run->hitos['imagenes']['etapa']);
         $this->assertSame((int) $lote->id, $run->hitos['imagenes']['accion']['lote_id']);
         $this->assertStringContainsString('1 imagen asignada. 1 sugerencia', $run->hitos['imagenes']['detalle']);
     }
