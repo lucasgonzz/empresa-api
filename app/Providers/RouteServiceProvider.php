@@ -59,6 +59,18 @@ class RouteServiceProvider extends ServiceProvider
             return Limit::perMinute(120)->by($token ? sha1($token) : $request->ip());
         });
 
+        RateLimiter::for('prueba-simular-agente', function (Request $request) {
+            // Solo puede simular el dueño. Un empleado rechazado no debe gastar su cupo.
+            $usuario = $request->user();
+
+            return Limit::perMinute(10)->by($usuario ? (string) $usuario->id : $request->ip())
+                ->response(function (Request $request, array $headers) {
+                    return response()->json([
+                        'message' => 'Hiciste varias consultas seguidas. Esperá un minuto y volvé a probar.',
+                    ], 429, $headers);
+                });
+        });
+
         $this->definir_limites_de_recuperar_clave();
 
         $this->routes(function () {

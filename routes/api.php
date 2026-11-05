@@ -80,6 +80,8 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     */
     Route::get('prueba/estado', 'PruebaController@estado');
     Route::post('prueba/modal-visto', 'PruebaController@modal_visto');
+    Route::post('prueba/simular-agente', 'PruebaController@simular_agente')
+        ->middleware(['check_extencion_empresa:agentes_ia', 'throttle:prueba-simular-agente']);
 
     // CommonLaravel
     // ----------------------------------------------------------------------------------------------------

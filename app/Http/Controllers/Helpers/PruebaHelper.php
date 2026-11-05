@@ -181,6 +181,11 @@ class PruebaHelper
         return self::activa($owner_id) && !is_null(self::vence_at($owner_id));
     }
 
+    public static function en_periodo_vigente($owner_id): bool
+    {
+        return self::activa($owner_id) && optional(self::vence_at($owner_id))->isFuture() === true;
+    }
+
     /**
      * Valida los campos de la prueba del payload del demo setup ANTES de vaciar nada (misma regla que
      * `demo_industria`: un admin anterior no los manda y el setup sigue igual).
@@ -525,6 +530,7 @@ class PruebaHelper
         return [
             'activa'             => true,
             'imagenes_catalogo'  => true,
+            'puede_simular_agente' => self::en_periodo_vigente($owner_id),
             'puede_importar_pdf' => $vence_at !== null && $vence_at->isFuture(),
             'vence_at'           => is_null($vence_at) ? null : self::iso($vence_at),
             'vencida'            => self::vencida($owner_id),
