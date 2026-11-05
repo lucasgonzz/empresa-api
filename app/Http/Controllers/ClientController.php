@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\CreditAccountHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ClienteDeMencionIaHelper;
+use App\Http\Controllers\Helpers\client\AcopioPendienteClientesHelper;
 use App\Http\Controllers\Helpers\client\SincronizacionOfflineClientesHelper;
 use App\Http\Controllers\Pdf\ClientsPdf;
 use App\Imports\ClientImport;
@@ -41,6 +42,8 @@ class ClientController extends Controller
                             ->orderBy('created_at', 'DESC')
                             ->withAll()
                             ->paginate($per_page);
+        AcopioPendienteClientesHelper::agregar_a_pagina($models->getCollection());
+
         return response()->json(['models' => $models], 200);
     }
 
