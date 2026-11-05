@@ -1298,6 +1298,8 @@ class ProcessRow {
         */
         $this->iniciar();
         $ya_estaba_en_excel = $this->ya_estaba_en_el_excel($data);
+        $columna_de_prueba = \App\Services\Importacion\PlanillaDePrueba::SEPARAR_CODIGO;
+        $separar_codigo_en_prueba = ImportHelper::getColumnValue($row, $columna_de_prueba, $this->columns) === '1';
 
         /*
          * 'productos_distintos' (prompt 04, grupo 265): el usuario pidió tratar las
@@ -1314,7 +1316,7 @@ class ProcessRow {
         $tratar_repeticion_como_producto_distinto = (
             $ya_estaba_en_excel
             && $this->escalon_repeticion === 'provider_code'
-            && $this->filas_repetidas_del_archivo === 'productos_distintos'
+            && ($separar_codigo_en_prueba || $this->filas_repetidas_del_archivo === 'productos_distintos')
         );
 
         if ($ya_estaba_en_excel && !$tratar_repeticion_como_producto_distinto) {
@@ -1389,7 +1391,7 @@ class ProcessRow {
             $data,
             $this->article_index,
             $this->user->id,
-            $this->provider_id,
+            isset($this->columns[$columna_de_prueba]) ? $provider_id : $this->provider_id,
             
             $this->permitir_provider_code_repetido,
             $this->permitir_provider_code_repetido_en_multi_providers,
@@ -1401,7 +1403,7 @@ class ProcessRow {
              * fake de este mismo chunk no cuentan para el escalon provider_code -- el
              * archivo habla de si mismo, no de la base.
              */
-            $this->filas_repetidas_del_archivo === 'productos_distintos',
+            $separar_codigo_en_prueba || $this->filas_repetidas_del_archivo === 'productos_distintos',
             /*
              * Incidente Servian (grupo 294): para que la cascada pueda distinguir un
              * match contra un articulo que YA EXISTIA antes de esta importacion de uno
@@ -1414,6 +1416,7 @@ class ProcessRow {
              * con el que corresponde a ESTA fila.
              */
             $this->desempatar_por_nombre,
+            $separar_codigo_en_prueba,
         );
         /*
          * Escalon de la cadena que produjo la coincidencia (o null si no hubo

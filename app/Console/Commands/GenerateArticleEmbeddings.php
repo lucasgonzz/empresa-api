@@ -4,15 +4,18 @@ namespace App\Console\Commands;
 
 use App\Exceptions\CupoEmbeddingsDePruebaException;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
+use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\User;
 use App\Services\CupoEmbeddingsDePrueba;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Comando Artisan para mantener los embeddings vectoriales del catálogo actualizados.
@@ -40,7 +43,8 @@ class GenerateArticleEmbeddings extends Command
     protected $signature = 'articles:generate-embeddings
                             {--all : Regenerar embeddings incluso para artículos que ya los tienen}
                             {--origen=scheduler : De dónde salió esta corrida (scheduler|importacion|manual)}
-                            {--ignorar-importacion-en-curso : Ver FinalizeArticleImport; NO usar a mano}';
+                            {--ignorar-importacion-en-curso : Ver FinalizeArticleImport; NO usar a mano}
+                            {--importacion-prueba= : Corrida automática que ya terminó la etapa de imágenes}';
 
     /**
      * Descripción que aparece en php artisan list.
@@ -71,6 +75,20 @@ class GenerateArticleEmbeddings extends Command
         if (is_null($user)) {
             $this->warn("articles:generate-embeddings: usuario ID {$user_id} no encontrado. Se omite.");
             return 0;
+        }
+
+        $importacion_de_prueba = null;
+        if (PruebaHelper::puede_haber_prueba() && Schema::hasTable('importaciones_de_prueba')) {
+            $id = $this->option('importacion-prueba');
+            $corridas = ImportacionDePrueba::where('user_id', $user_id);
+            if ($id !== null) {
+                $importacion_de_prueba = $corridas->where('estado', 'indexar')->find((int) $id);
+                if ($importacion_de_prueba === null || !PruebaHelper::en_periodo_vigente($user_id)) {
+                    return 0;
+                }
+            } elseif ($corridas->whereIn('estado', ['importando', 'imagenes', 'indexar', 'indexando'])->exists()) {
+                return 0;
+            }
         }
 
         /*
@@ -213,8 +231,7 @@ class GenerateArticleEmbeddings extends Command
 
         if (!is_null($run_abierta)) {
             /** Momento a partir del cual una tanda abierta se considera abandonada. */
-            $vence_at = Carbon::parse($run_abierta->created_at)
-                ->addMinutes(FinalizeEmbeddingRun::MINUTOS_PARA_VENCER);
+            $vence_at = FinalizeEmbeddingRun::vence_at($run_abierta);
 
             if (Carbon::now()->lessThan($vence_at)) {
                 $this->info('articles:generate-embeddings: ya hay una tanda en curso (id '.$run_abierta->id.'). Se omite.');
@@ -242,6 +259,11 @@ class GenerateArticleEmbeddings extends Command
             'status'     => 'despachando',
             'total_jobs' => 0,
         ]);
+        if ($importacion_de_prueba !== null) {
+            $importacion_de_prueba->update([
+                'estado' => 'indexando', 'embedding_run_id' => $run->id,
+            ]);
+        }
 
         // Contador de jobs despachados para mostrar progreso.
         $dispatched = 0;

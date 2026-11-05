@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
+use App\Http\Middleware\AdminApiKey;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
 use App\Jobs\RunExcelAnalysisJob;
@@ -53,6 +54,17 @@ class AiExcelImportController extends Controller
      */
     public function analyze(Request $request): JsonResponse
     {
+        if ($this->bandera($request->input('automatizar_prueba'))) {
+            return app(AdminApiKey::class)->handle($request, function (Request $request) {
+                return $this->analizar_archivo($request, true);
+            }, AdminApiKey::MODO_SIEMPRE);
+        }
+
+        return $this->analizar_archivo($request, false);
+    }
+
+    protected function analizar_archivo(Request $request, bool $automatizar): JsonResponse
+    {
         /* Validamos user_id y model antes de procesar el archivo. */
         $user_validation = $this->resolve_owner_user($request);
         if ($user_validation instanceof JsonResponse) {
@@ -70,6 +82,10 @@ class AiExcelImportController extends Controller
         $excel_validation = $this->validate_excel_file($request);
         if ($excel_validation instanceof JsonResponse) {
             return $excel_validation;
+        }
+
+        if ($model === 'article' && $automatizar) {
+            return ImportacionDePruebaController::iniciar($request, $user_id);
         }
 
         try {

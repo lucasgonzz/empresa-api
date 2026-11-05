@@ -12,6 +12,7 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Models\ImportHistory;
+use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\User;
 use App\Services\CupoEmbeddingsDePrueba;
@@ -24,6 +25,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 class FinalizeArticleImport implements ShouldQueue
 {
@@ -205,7 +207,12 @@ class FinalizeArticleImport implements ShouldQueue
          */
         $this->completar_proceso_en_segundo_plano();
 
-        ArticleImportHelper::enviar_notificacion($user, $import_history);
+        $automatica = PruebaHelper::puede_haber_prueba() && Schema::hasTable('importaciones_de_prueba')
+            ? ImportacionDePrueba::where('import_history_id', $import_history->id)->first()
+            : null;
+        if ($automatica === null) {
+            ArticleImportHelper::enviar_notificacion($user, $import_history);
+        }
 
         Log::info('Se envio notificacion');
 
@@ -265,7 +272,11 @@ class FinalizeArticleImport implements ShouldQueue
             'import_history_id' => (int) $import_history->id,
         ], (int) $user->id);
 
-        $this->generar_embeddings_de_lo_importado();
+        if ($automatica !== null) {
+            AvanzarImportacionDePrueba::dispatch((int) $automatica->id);
+        } else {
+            $this->generar_embeddings_de_lo_importado();
+        }
     }
 
     /**

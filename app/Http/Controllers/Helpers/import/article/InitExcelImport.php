@@ -14,6 +14,7 @@ use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\ImportHistory;
+use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\Provider;
 use Illuminate\Bus\Batch;
@@ -41,6 +42,7 @@ class InitExcelImport
     {
         $this->import_uuid              = $data['import_uuid'];
         $this->archivo_excel            = $data['archivo_excel'];
+        $this->planilla_de_prueba        = $data['planilla_de_prueba'] ?? null;
         /*
          * Normalizamos claves del mapeo (p. ej. importación con IA: codigo_proveedor → codigo_de_proveedor).
          */
@@ -228,6 +230,12 @@ class InitExcelImport
         $this->chunk_offsets = $this->build_csv_chunk_offsets();
         $this->crear_import_status();
         $this->crear_import_history();
+        if ($this->planilla_de_prueba !== null) {
+            ImportacionDePrueba::whereKey($this->planilla_de_prueba['id'])->update([
+                'import_history_id' => $this->import_history->id,
+                'estado' => 'importando',
+            ]);
+        }
         $this->guardar_equivalencias_en_archivo();
         $this->armar_jobs_de_chunks();
 
@@ -346,6 +354,9 @@ class InitExcelImport
             ));
         }
 
+        if ($this->planilla_de_prueba !== null) {
+            $jobs[0]->afterCommit();
+        }
         Bus::chain($jobs)->dispatch();
     }
 
@@ -409,6 +420,15 @@ class InitExcelImport
         $this->csv_full_path = storage_path('app/' . $csv_relative_path);
 
         try {
+            if ($this->planilla_de_prueba !== null) {
+                if (!copy($this->planilla_de_prueba['ruta'], $this->csv_full_path)) {
+                    throw new \RuntimeException('No se pudo copiar la planilla de la prueba.');
+                }
+
+                $this->ajustar_finish_row_segun_excel_real($this->planilla_de_prueba['filas'] + 1);
+                return true;
+            }
+
             $conversion_inicio = microtime(true);
 
             Log::info('Iniciando conversión de XLSX a CSV. Origen: ' . $this->archivo_excel);

@@ -1605,7 +1605,8 @@ class ArticleIndexCache
          * Va ULTIMO y con default false a proposito: una SPA vieja que no lo manda, y
          * cualquier otro llamador, obtienen el comportamiento de siempre bit por bit.
          */
-        bool $desempatar_por_nombre = false
+        bool $desempatar_por_nombre = false,
+        bool $separar_codigo_en_prueba = false
     ) {
         if (!is_array($index) || empty($index)) {
             $index = self::get_index($user_id, $provider_id);
@@ -1860,6 +1861,24 @@ class ArticleIndexCache
                 $article_ids = array_merge($article_ids, $article_ids_other_providers);
             }
             $article_ids = array_values(array_unique($article_ids));
+
+            if ($separar_codigo_en_prueba) {
+                // El archivo trae productos distintos con el mismo código. Para editar uno
+                // existente exigimos sus datos distintivos; actualizar todos los del código los fusionaría.
+                $candidatos = self::collection_from_index_article_ids($article_ids, $relations, $user_id)
+                    ->filter(function (Article $articulo) use ($data) {
+                        return self::normalize_name_for_match($articulo->name) === self::normalize_name_for_match($data['name'] ?? null)
+                            && (!isset($data['cost']) || (float) $articulo->cost === (float) $data['cost'])
+                            && (!isset($data['price']) || (float) $articulo->price === (float) $data['price'])
+                            && (!isset($data['cost_in_dollars']) || (int) $articulo->cost_in_dollars === (int) $data['cost_in_dollars']);
+                    })->values();
+
+                if ($candidatos->count() > 1) {
+                    return self::con_escalon(null, new AmbiguousMatch('provider_code', $provider_code, $candidatos->pluck('id')->all()));
+                }
+
+                return self::con_escalon($candidatos->isEmpty() ? null : 'provider_code', $candidatos->first());
+            }
 
             if (!empty($article_ids)) {
 

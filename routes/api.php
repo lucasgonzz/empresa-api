@@ -80,6 +80,9 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     */
     Route::get('prueba/estado', 'PruebaController@estado');
     Route::post('prueba/modal-visto', 'PruebaController@modal_visto');
+    Route::get('implementacion', 'ImplementacionController@index');
+    Route::post('implementacion/{id}/visto', 'ImplementacionController@visto');
+    Route::post('implementacion/{id}/aprobar', 'ImplementacionController@aprobar');
     Route::post('prueba/simular-agente', 'PruebaController@simular_agente')
         ->middleware(['check_extencion_empresa:agentes_ia', 'throttle:prueba-simular-agente']);
 
@@ -1676,6 +1679,8 @@ Route::middleware('admin.api.key:siempre')
         // admin lo muestra como «versión vieja».
         Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
         Route::post('prueba/cupo-imagenes', 'AdminSync\\PruebaController@cupo_imagenes');
+        Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
+        Route::post('ai-excel-import/prueba-resolver/{uuid}', 'AdminSync\\ImportacionDePruebaController@resolver');
     });
 
 Route::middleware('admin.api.key')

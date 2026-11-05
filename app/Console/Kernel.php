@@ -423,6 +423,20 @@ class Kernel extends ConsoleKernel
                 return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
             });
 
+        $schedule->call(function () {
+            if (!$this->tabla_existe_para_el_schedule('importaciones_de_prueba')) {
+                return;
+            }
+            \App\Models\ImportacionDePrueba::whereIn('estado', \App\Models\ImportacionDePrueba::EN_CURSO)
+                ->orderBy('id')->chunkById(100, function ($corridas) {
+                    foreach ($corridas as $corrida) {
+                        \App\Jobs\AvanzarImportacionDePrueba::dispatch((int) $corrida->id);
+                    }
+                });
+        })->name('prueba:avanzar-importaciones')->everyMinute()->withoutOverlapping(3)->when(function () {
+            return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
+        });
+
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.
         $schedule->command('debt:snapshot')->dailyAt('23:59');
