@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Exceptions\CupoEmbeddingsDePruebaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
@@ -9,6 +10,7 @@ use App\Models\Article;
 use App\Models\EmbeddingRun;
 use App\Models\ImportStatus;
 use App\Models\User;
+use App\Services\CupoEmbeddingsDePrueba;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 
@@ -115,6 +117,13 @@ class GenerateArticleEmbeddings extends Command
          */
         if (trim((string) config('services.openai.api_key')) === '') {
             $this->warn('articles:generate-embeddings: no hay OPENAI_API_KEY configurada. No se despacha ningún job hasta que se cargue.');
+            return 0;
+        }
+
+        try {
+            CupoEmbeddingsDePrueba::comprobar((int) $user_id);
+        } catch (CupoEmbeddingsDePruebaException $exception) {
+            $this->info($exception->getMessage());
             return 0;
         }
 

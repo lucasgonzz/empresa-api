@@ -418,6 +418,7 @@ return [
          * en producción (ver CompanyPerformanceController::check_tiempo_ultima_creada()).
          */
         'embeddings_generacion_pausada' => filter_var(env('EMBEDDINGS_GENERACION_PAUSADA', false), FILTER_VALIDATE_BOOLEAN),
+        'embeddings_omitir_importacion' => filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN),
 
         /*
          * Modelo con que se pasan a texto los audios del dueño en la app «ComercioCity IA» (misión

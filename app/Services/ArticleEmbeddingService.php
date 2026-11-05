@@ -75,7 +75,7 @@ class ArticleEmbeddingService
      * Modelo de embeddings a usar. text-embedding-3-small produce
      * vectores de 1536 dimensiones con buena relación costo/calidad.
      */
-    private const EMBEDDING_MODEL = 'text-embedding-3-small';
+    const EMBEDDING_MODEL = 'text-embedding-3-small';
 
     /**
      * Techo de caracteres del bloque de descripciones dentro del texto a vectorizar.
@@ -133,6 +133,9 @@ class ArticleEmbeddingService
         }
 
         $http = $this->build_http_client();
+        $reserva = $proceso === self::PROCESO_ARTICULOS
+            ? CupoEmbeddingsDePrueba::comprobar((int) $user_id, true)
+            : null;
 
         $response = $http->post(self::OPENAI_EMBEDDINGS_URL, [
             'model' => self::EMBEDDING_MODEL,
@@ -140,6 +143,11 @@ class ArticleEmbeddingService
         ]);
 
         if ($response->failed()) {
+            // Solo se libera la reserva si OpenAI rechazó la llamada de forma explícita.
+            if ($reserva !== null && in_array($response->status(), [400, 401, 403, 404, 413, 422, 429], true)) {
+                CupoEmbeddingsDePrueba::conciliar($reserva, 0);
+            }
+
             // Extraer mensaje de error de OpenAI si está disponible.
             $error_body  = $response->json();
             $error_msg   = '';
@@ -165,6 +173,11 @@ class ArticleEmbeddingService
          * tres. Un contador "por artículo" mostraría un tercio del gasto real.
          */
         $this->registrar_consumo($response->json(), $user_id, $proceso, $referencia_id);
+
+        $tokens = $response->json('usage.prompt_tokens');
+        if ($reserva !== null && is_int($tokens) && $tokens > 0) {
+            CupoEmbeddingsDePrueba::conciliar($reserva, $tokens);
+        }
 
         // El vector viene en data[0].embedding
         $embedding = $response->json('data.0.embedding');
