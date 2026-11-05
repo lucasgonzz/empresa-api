@@ -139,7 +139,11 @@ class Imagen_prometida_Test extends IaAppTestCase
 
         Http::fake([
             'api.deepseek.com/*'  => $secuencia,
-            'admin.ia-app.test/*' => Http::response(['ok' => true, 'estado' => 'pendiente'], 201),
+            'admin.ia-app.test/*' => function ($request) {
+                return isset($request['consultar_capacidades'])
+                    ? Http::response(['proveedor' => 'openai', 'acepta_referencia' => true], 200)
+                    : Http::response(['ok' => true, 'estado' => 'pendiente', 'proveedor' => 'openai'], 201);
+            },
         ]);
 
         $respuesta = $this->postJson('api/ai-conversations/' . $conversation->id . '/messages', [
@@ -414,7 +418,8 @@ class Imagen_prometida_Test extends IaAppTestCase
     public function test_con_la_clave_de_salida_el_pedido_sale_como_hoy()
     {
         Http::fake([
-            'admin.ia-app.test/*' => Http::response(['ok' => true, 'estado' => 'pendiente'], 201),
+            'admin.ia-app.test/*' => Http::sequence()->push(['proveedor' => 'openai', 'acepta_referencia' => true], 200)
+                ->push(['ok' => true, 'estado' => 'pendiente', 'proveedor' => 'openai'], 201),
         ]);
 
         $mensaje = $this->mensaje_para_la_imagen('Con clave');

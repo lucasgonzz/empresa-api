@@ -3,8 +3,11 @@
 namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaFotoArticuloIaHelper;
 use App\Models\AiConversation;
+use App\Models\AiMessage;
 
 /**
  * Las herramientas que el agente tiene SOLO en la app «ComercioCity IA» (misión app-ia-y-memoria,
@@ -27,14 +30,16 @@ class HerramientasDeLaApp
 
     const PEDIR_IMAGEN = 'pedir_imagen';
 
+    const PROPONER_PUBLICAR_IMAGEN = 'proponer_publicar_imagen';
+
     /**
      * Las definiciones para la API, en orden fijo.
      *
      * @return array<int, array<string, mixed>>
      */
-    public static function definiciones(): array
+    public static function definiciones($con_acciones = false): array
     {
-        return [
+        $herramientas = [
             [
                 'name'         => self::MOSTRAR_GRAFICO,
                 'description'  => 'Muestra un GRÁFICO debajo de tu respuesta en la app. Usalo cuando un gráfico se entiende mejor que los números sueltos: '
@@ -131,7 +136,10 @@ class HerramientasDeLaApp
                     . 'los colores, el estilo y para qué es. Si es para el negocio, usá su nombre. La imagen aparece sola en este mismo mensaje cuando esté lista: '
                     . 'después de llamarla decí en una línea «la pedí; aparece acá cuando esté lista», sin prometer tiempos ni decir que ya está; si la respuesta dice que no se pudo, contalo tal cual. '
                     . 'Pedir una imagen NO autoriza a preparar promociones, envíos ni mensajes a clientes: si te parece útil, ofrecelo en una línea y no armes la tarjeta hasta que la persona lo pida. '
-                    . 'No sirve para editar una foto que mandó la persona ni para las fotos de los artículos o las categorías del catálogo.',
+                    . 'Para editar una foto adjunta usá su imagen_id. Para generar otra imagen de un artículo basándote en su foto actual, usá su articulo_id real. '
+                    . 'Para un lote, consultá primero los filtros del catálogo, identificá cada artículo y pedí una imagen por artículo. Si hay más de tres, proponé revisar hasta tres muestras antes de seguir. '
+                    . 'Si el dueño pidió usar la cantidad de la presentación de cada artículo, mandá usar_presentacion. '
+                    . 'No publiques la imagen en el mismo turno: primero mostrá la vista previa y esperá que el dueño te pida agregarla o ponerla como principal.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -142,21 +150,44 @@ class HerramientasDeLaApp
                             'description' => 'cuadrada (posteo de Instagram), vertical (historia o estado de WhatsApp) u horizontal (portada, banner).',
                         ],
                         'estilo' => ['type' => 'string', 'description' => 'Opcional: fotografía, ilustración, minimalista, etc. (hasta 200).'],
+                        'imagen_id' => ['type' => 'integer', 'description' => 'Foto que mandó el dueño en esta conversación. Excluye articulo_id.'],
+                        'articulo_id' => ['type' => 'integer', 'description' => 'ID real del artículo del negocio cuya foto principal se usa como referencia. Excluye imagen_id.'],
+                        'usar_presentacion' => ['type' => 'boolean', 'description' => 'Con articulo_id, agregá la cantidad del pack registrada en el artículo. Usalo si el dueño pidió esa cantidad y no indicó un número.'],
                     ],
                     'required'   => ['prompt', 'tamano'],
                 ],
             ],
         ];
+
+        if ($con_acciones) {
+            $herramientas[] = [
+                'name' => self::PROPONER_PUBLICAR_IMAGEN,
+                'description' => 'Prepara una tarjeta para que el dueño confirme publicar una imagen generada. '
+                    . 'Usala solamente después de mostrar la imagen lista y cuando la persona pidió aplicarla. '
+                    . 'La imagen queda asociada al artículo para el que se generó.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'pedido_imagen_uuid' => ['type' => 'string', 'description' => 'UUID de la imagen lista en esta conversación.'],
+                        'como_principal' => ['type' => 'boolean', 'description' => 'True la pone como principal y conserva la anterior. False la agrega a la galería.'],
+                        'articulo_id' => ['type' => 'integer', 'description' => 'Opcional. ID del artículo para el que se generó la imagen.'],
+                    ],
+                    'required' => ['pedido_imagen_uuid'],
+                ],
+            ];
+        }
+
+        return $herramientas;
     }
 
     /**
-     * Los nombres de las tres herramientas.
+     * Los nombres de las herramientas de la app.
      *
      * @return array<int, string>
      */
     public static function nombres(): array
     {
-        return [self::MOSTRAR_GRAFICO, self::MOSTRAR_TABLA, self::PEDIR_IMAGEN];
+        return [self::MOSTRAR_GRAFICO, self::MOSTRAR_TABLA, self::PEDIR_IMAGEN, self::PROPONER_PUBLICAR_IMAGEN];
     }
 
     /**
@@ -184,6 +215,17 @@ class HerramientasDeLaApp
      */
     public static function ejecutar($tool_name, array $input, AiConversation $conversation, $assistant_message, $bloques_ya_puestos): array
     {
+        if ($tool_name === self::PROPONER_PUBLICAR_IMAGEN) {
+            if (!($assistant_message instanceof AiMessage) || !$assistant_message->es_de_la_app() || !$assistant_message->acciones_habilitadas) {
+                return self::resultado('No están habilitadas las acciones para publicar imágenes en esta conversación.', true);
+            }
+
+            $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
+            $respuesta = PropuestaFotoArticuloIaHelper::proponer_generada($contexto, $assistant_message, $input);
+
+            return ['content' => self::json($respuesta), 'is_error' => false, 'bloque' => null, 'pedido_id' => null];
+        }
+
         if ((int) $bloques_ya_puestos >= BloquesIaHelper::MAX_BLOQUES) {
 
             return self::resultado(

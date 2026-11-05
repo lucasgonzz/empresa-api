@@ -534,10 +534,9 @@ RULE;
 
             $proveedor = $eleccion['proveedor'];
             $model     = $eleccion['modelo'];
-            $http      = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
 
             // El mismo payload para los dos proveedores; `thinking` solo viaja con DeepSeek.
-            $response = $http->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
+            [$response, $model] = ProveedorIaHelper::pedir_mensaje($proveedor, self::TIMEOUT_SEGUNDOS, ProveedorIaHelper::agregar_thinking([
                 'model'      => $model,
                 'max_tokens' => 500,
                 'system'     => $system_prompt,
@@ -1027,9 +1026,8 @@ RULE;
             }
 
             $model = $eleccion['modelo'];
-            $http  = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS);
 
-            $response = $http->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
+            [$response, $model] = ProveedorIaHelper::pedir_mensaje($proveedor, self::TIMEOUT_SEGUNDOS, ProveedorIaHelper::agregar_thinking([
                 'model'      => $model,
                 'max_tokens' => 400,
                 'system'     => self::SUMMARY_SYSTEM_PROMPT,

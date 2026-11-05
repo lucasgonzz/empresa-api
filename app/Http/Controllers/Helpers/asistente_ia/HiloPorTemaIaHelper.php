@@ -334,17 +334,12 @@ class HiloPorTemaIaHelper
                 . "\n\n<mensaje_nuevo>\n" . mb_substr($texto, 0, self::MAX_LARGO_MENSAJE) . "\n</mensaje_nuevo>";
 
             /* El mismo payload para los dos proveedores; `thinking` solo viaja con DeepSeek. */
-            $response = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS)
-                ->post(ProveedorIaHelper::url_messages($proveedor), ProveedorIaHelper::agregar_thinking([
-                    'model'      => $eleccion['modelo'],
-                    'max_tokens' => self::MAX_TOKENS,
-                    'messages'   => [
-                        [
-                            'role'    => 'user',
-                            'content' => $prompt,
-                        ],
-                    ],
-                ], $eleccion['thinking']));
+            $payload = ProveedorIaHelper::agregar_thinking([
+                'model'      => $eleccion['modelo'],
+                'max_tokens' => self::MAX_TOKENS,
+                'messages'   => [['role' => 'user', 'content' => $prompt]],
+            ], $eleccion['thinking']);
+            [$response, $modelo] = ProveedorIaHelper::pedir_mensaje($proveedor, self::TIMEOUT_SEGUNDOS, $payload);
 
             if (!$response->successful()) {
 
@@ -364,7 +359,7 @@ class HiloPorTemaIaHelper
                 'auth_user_id'       => $vigente->auth_user_id,
                 'proceso'            => self::PROCESO,
                 'proveedor'          => $proveedor,
-                'modelo'             => $eleccion['modelo'],
+                'modelo'             => $modelo,
                 'body'               => $body,
                 'ai_conversation_id' => $vigente->id,
             ]);

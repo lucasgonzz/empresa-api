@@ -1925,8 +1925,9 @@ PROMPT;
     protected function call_claude(string $prompt): string
     {
         $cortada = false;
+        $inicio = hrtime(true);
 
-        $text = $this->call_claude_con_techo($prompt, 1, $cortada);
+        $text = $this->call_claude_con_techo($prompt, 1, $cortada, $inicio);
 
         if (!$cortada) {
             return $text;
@@ -1938,7 +1939,7 @@ PROMPT;
          * Los errores HTTP y de conexión no pasan por acá: salen de call_claude_con_techo() con sus
          * mismos mensajes, sin reintento propio.
          */
-        $text = $this->call_claude_con_techo($prompt, 2, $cortada);
+        $text = $this->call_claude_con_techo($prompt, 2, $cortada, $inicio);
 
         if ($cortada) {
             throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
@@ -1959,7 +1960,7 @@ PROMPT;
      *
      * @throws \RuntimeException  Si la llamada falla o la API devuelve error
      */
-    protected function call_claude_con_techo(string $prompt, int $factor, bool &$cortada): string
+    protected function call_claude_con_techo(string $prompt, int $factor, bool &$cortada, $inicio): string
     {
         $cortada = false;
 
@@ -1984,9 +1985,14 @@ PROMPT;
         $modelo    = $ia['modelo'];
 
         $timeout = (int) config('services.importacion_excel_ia.timeout', 120);
-
-        /* Cliente HTTP del proveedor: clave, headers y TLS (ca_bundle / verify_ssl) de su bloque de config. */
-        $http = ProveedorIaHelper::cliente_http($proveedor, $timeout > 0 ? $timeout : 120);
+        $timeout = $timeout > 0 ? $timeout : 120;
+        if ($factor > 1 && $proveedor === ProveedorIaHelper::DEEPSEEK) {
+            // El reintento por techo de salida usa el remanente de este análisis.
+            $timeout = ProveedorIaHelper::segundos_restantes($inicio, $timeout);
+            if ($timeout < 1) {
+                throw new \RuntimeException(self::MENSAJE_IA_SIN_RESPUESTA);
+            }
+        }
 
         /*
          * Con DeepSeek Pro viaja `thinking: enabled` (y el techo de salida sube al de profundo:
@@ -2034,11 +2040,11 @@ PROMPT;
          * segundo intento.
          */
         try {
-            $response = $http->post(ProveedorIaHelper::url_messages($proveedor), $payload);
+            [$response, $modelo] = ProveedorIaHelper::pedir_mensaje($proveedor, $timeout, $payload);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
             Log::error('AiExcelAnalyzer: no hubo respuesta de la IA', [
                 'proveedor' => $proveedor,
-                'message'   => $e->getMessage(),
+                'modelo'    => $modelo,
             ]);
 
             throw new \RuntimeException(self::MENSAJE_IA_SIN_RESPUESTA);
@@ -2047,8 +2053,8 @@ PROMPT;
         if (!$response->successful()) {
             Log::error('AiExcelAnalyzer: error en respuesta de la IA', [
                 'proveedor' => $proveedor,
+                'modelo'    => $modelo,
                 'status'    => $response->status(),
-                'body'      => $response->body(),
             ]);
 
             /*
@@ -2063,8 +2069,7 @@ PROMPT;
 
             /*
              * Otros errores (auth, saldo, request inválido). El JSON de error crudo del proveedor
-             * NUNCA va a la pantalla del comerciante: el status y el body están completos en el
-             * Log::error de arriba.
+             * no va a la pantalla ni al log: para rastrear la falla alcanza con proveedor y status.
              */
             throw new \RuntimeException(self::MENSAJE_IA_RECHAZO);
         }
@@ -2108,12 +2113,17 @@ PROMPT;
          * (se pagó igual).
          */
         if (is_array($response_data) && isset($response_data['stop_reason']) && (string) $response_data['stop_reason'] === 'max_tokens') {
-            Log::warning('AiExcelAnalyzer: la respuesta de la IA se cortó por el techo de salida (stop_reason = max_tokens)' . ($factor === 1 ? ': se reintenta una vez con el doble de techo' : ': segundo corte, se desiste'), [
+            Log::warning('AiExcelAnalyzer: la respuesta de la IA se cortó por el techo de salida (stop_reason = max_tokens)', [
                 'proveedor'     => $proveedor,
                 'modelo'        => $modelo,
                 'max_tokens'    => isset($payload['max_tokens']) ? (int) $payload['max_tokens'] : null,
                 'output_tokens' => isset($response_data['usage']['output_tokens']) ? (int) $response_data['usage']['output_tokens'] : null,
             ]);
+
+            // El modelo de respaldo ya tuvo su único intento para este análisis.
+            if ($modelo !== $ia['modelo']) {
+                throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
+            }
 
             $cortada = true;
 
@@ -2125,15 +2135,15 @@ PROMPT;
         if (is_null($text)) {
             Log::error('AiExcelAnalyzer: la IA devolvió una respuesta sin contenido de texto', [
                 'proveedor' => $proveedor,
-                'body'      => $response->body(),
+                'modelo'    => $modelo,
             ]);
 
             throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
         }
 
         Log::info('AiExcelAnalyzer: respuesta de la IA recibida', [
-            'proveedor'        => $proveedor,
-            'response_preview' => substr($text, 0, 300),
+            'proveedor' => $proveedor,
+            'modelo'    => $modelo,
         ]);
 
         return $text;

@@ -347,7 +347,13 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
 
         $this->falsear_ia(null, 500);
 
-        $this->assertFallback($this->chequear());
+        /*
+         * Un 500 de DeepSeek es transitorio: desde el respaldo con la otra variante (4.3.30, pedido de Lucas)
+         * la corrida consulta una segunda vez, a la variante alternativa del modelo, y recién si esa también
+         * falla cae al fallback. Por eso son 2 llamadas y no 1. El fallback en sí no cambia: mismas claves,
+         * mismas opciones y mismo cartel (todo eso lo sigue verificando assertFallback()).
+         */
+        $this->assertFallback($this->chequear(), 2);
     }
 
     public function test_un_json_roto_cae_al_fallback()
@@ -363,12 +369,13 @@ class ChequeoConIaTest extends RelacionesParecidasTestCase
      * "Ferret. del Norte" (0,92) y "Martillo" (0,89) pasan el 0,85; "Bosh" (0,80) no.
      *
      * @param  array $relaciones
+     * @param  int   $llamadas_a_la_ia  Cuántas veces se le consultó a la IA antes de caer al fallback.
      * @return void
      */
-    protected function assertFallback(array $relaciones)
+    protected function assertFallback(array $relaciones, $llamadas_a_la_ia = 1)
     {
         $this->assertFalse($relaciones['ia_consultada']);
-        $this->assertCount(1, $this->llamadas_relaciones);
+        $this->assertCount($llamadas_a_la_ia, $this->llamadas_relaciones);
 
         $esperadas = array_merge($this->claves_deterministas(), [
             'proveedor|Ferret. del Norte',

@@ -397,7 +397,7 @@ class BloquesIaHelper
             $tamano = 'cuadrada';
         }
 
-        return [
+        $bloque = [
             'tipo'   => self::TIPO_IMAGEN,
             'uuid'   => $uuid,
             'estado' => $estado,
@@ -406,6 +406,11 @@ class BloquesIaHelper
             'url'    => $estado === 'lista' ? 'ia-imagenes/' . $uuid : null,
             'error'  => self::texto_o_null($entrada['error'] ?? null, self::MAX_ERROR),
         ];
+        if ((int) ($entrada['articulo_id'] ?? 0) > 0) {
+            $bloque['articulo_id'] = (int) $entrada['articulo_id'];
+        }
+
+        return $bloque;
     }
 
     /**
@@ -481,7 +486,10 @@ class BloquesIaHelper
             } elseif ($tipo === self::TIPO_TABLA) {
                 $lineas[] = '[Mostraste la tabla «' . (string) ($bloque['tabla']['titulo'] ?? '') . '»]';
             } elseif ($tipo === self::TIPO_IMAGEN) {
-                $lineas[] = '[Pediste una imagen: «' . mb_substr((string) ($bloque['prompt'] ?? ''), 0, 120) . '» · estado: ' . (string) ($bloque['estado'] ?? '') . ']';
+                $articulo = empty($bloque['articulo_id']) ? '' : ' · articulo_id ' . (int) $bloque['articulo_id']
+                    . ' · pedido_imagen_uuid ' . (string) $bloque['uuid'];
+                $lineas[] = '[Pediste una imagen: «' . mb_substr((string) ($bloque['prompt'] ?? ''), 0, 120)
+                    . '» · estado: ' . (string) ($bloque['estado'] ?? '') . $articulo . ']';
             }
         }
 

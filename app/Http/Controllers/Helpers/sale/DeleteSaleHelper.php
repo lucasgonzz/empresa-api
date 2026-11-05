@@ -258,6 +258,18 @@ class DeleteSaleHelper {
 		$h = new ArticlePurchaseHelper();
 		$h->borrar_article_purchase_actuales($model);
 		
+		/*
+			🔴 Las comisiones del vendedor se borran SIEMPRE, tenga o no cliente la venta (misión
+			afip-combos-y-comision-mostrador, 4/11/2026). Hasta acá esta llamada vivía adentro del
+			`if ($model->client_id)` de abajo, que es el bloque de la cuenta corriente: una venta de
+			mostrador con vendedor genera comisión (nace `active`, ver `comisiones\Helper::get_status()`)
+			pero al borrarla nadie la sacaba, y la comisión seguía sumando en el saldo del vendedor,
+			colgada de una venta que ya no existe. Va ANTES del bloque del cliente: no depende de la
+			cuenta corriente (se borra por `sale_id`) y así queda a salvo de que ese bloque se saltee.
+			Su par es `RestoreSaleFromPapeleraHelper::restaurar_comisiones_si_corresponde()`.
+		*/
+		SaleHelper::deleteSellerCommissionsFromSale($model);
+
 		if ($model->client_id) {
 
 		    /** Cuenta de la que salió el movimiento de la venta, si salió de alguna. */
@@ -275,8 +287,6 @@ class DeleteSaleHelper {
 
 		        $credit_account_id_del_movimiento = SaleHelper::deleteCurrentAcountFromSale($model);
 		    }
-
-		    SaleHelper::deleteSellerCommissionsFromSale($model);
 
 		    if (is_null($model->client->deleted_at)) {
 

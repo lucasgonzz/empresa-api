@@ -273,7 +273,6 @@ PROMPT;
 
         $timeout = (int) config('services.importacion_excel_ia.timeout', 120);
 
-        $http = ProveedorIaHelper::cliente_http($proveedor, $timeout > 0 ? $timeout : 120);
 
         $payload = ProveedorIaHelper::agregar_thinking([
             'model'      => $modelo,
@@ -298,7 +297,7 @@ PROMPT;
             }
         }
 
-        $response = $http->post(ProveedorIaHelper::url_messages($proveedor), $payload);
+        [$response, $modelo] = ProveedorIaHelper::pedir_mensaje($proveedor, $timeout > 0 ? $timeout : 120, $payload);
 
         if (!$response->successful()) {
             Log::warning('RelacionesParecidasIa: la IA devolvió un error', [

@@ -54,8 +54,35 @@ class AfipItemCalculator
      */
     public function get_combo_iva($combo)
     {
+        /**
+         * 🔴 EL RENGLÓN EN CURSO TIENE QUE SER EL COMBO (misión afip-combos-y-comision-mostrador,
+         * 4/11/2026). `get_article_price_with_discounts()` lee `$afip_helper->article`, y hasta acá
+         * los artículos y los servicios se asignaban a ese campo antes de calcularse pero los combos
+         * y las promociones NO: el combo se liquidaba con el precio (y las banderas) del ÚLTIMO
+         * artículo de la venta, y una venta de solo combos reventaba con «Trying to get property
+         * 'is_description' of non-object». Medido en producción (Golonorte y Trama, comprobantes de
+         * Responsable inscripto): la factura salía con el combo al precio del último artículo.
+         *
+         * Los servicios llegan acá con `article` ya asignado y no se tocan. A los combos y a las
+         * promociones se les asigna, y al salir se restaura el renglón que estaba en curso para no
+         * cambiarle el estado a nadie. Que un renglón sea combo o promoción se decide por su CLASE
+         * (`es_renglon_de_combo_o_promocion()`), nunca por una marca escrita en el modelo ni por
+         * identidad de objeto: un helper que ya trae ese mismo combo en `article` (lo deja una fila de
+         * PDF) tiene que calcular igual.
+         *
+         * @var object|null $article_original Renglón que estaba en curso antes de entrar.
+         */
+        $article_original = $this->afip_helper->article;
+
+        if ($this->es_combo_o_promocion($combo)) {
+            $this->afip_helper->article = $combo;
+        }
+
         /** @var float $price Precio unitario del ítem con descuentos/recargos aplicados. */
         $price = $this->get_article_price_with_discounts();
+
+        $this->afip_helper->article = $article_original;
+
         /** @var float $total_combo Total bruto del ítem por cantidad. */
         $total_combo = $price * $combo->pivot->amount;
         /** @var float $iva Alícuota aplicada para este flujo. */
@@ -196,6 +223,32 @@ class AfipItemCalculator
     }
 
     /**
+     * Si un ítem es un combo o una promoción de vinoteca, por su clase. Es la única forma de
+     * reconocerlos: no se escriben marcas (`is_combo`) en el modelo, que es el de la relación de la
+     * venta y se podría guardar después.
+     *
+     * @param object|null $item
+     * @return bool
+     */
+    private function es_combo_o_promocion($item)
+    {
+        return $item instanceof \App\Models\Combo
+            || $item instanceof \App\Models\PromocionVinoteca;
+    }
+
+    /**
+     * Si el renglón en curso es un combo o una promoción de vinoteca. Esos renglones reciben los
+     * descuentos y recargos de LISTA de la venta (como en el front) pero no el «descuento %»
+     * global, que es solo de artículos.
+     *
+     * @return bool
+     */
+    private function es_renglon_de_combo_o_promocion()
+    {
+        return $this->es_combo_o_promocion($this->afip_helper->article);
+    }
+
+    /**
      * Retorna precio del ítem aplicando descuentos y recargos de venta.
      *
      * @return float
@@ -250,6 +303,7 @@ class AfipItemCalculator
                 foreach ($discounts as $discount) {
                     if (
                         $this->afip_helper->article->is_article
+                        || $this->es_renglon_de_combo_o_promocion()
                         || (
                             $this->afip_helper->article->is_service
                             && $this->afip_helper->sale->discounts_in_services
@@ -266,6 +320,7 @@ class AfipItemCalculator
                 foreach ($surchages as $surchage) {
                     if (
                         $this->afip_helper->article->is_article
+                        || $this->es_renglon_de_combo_o_promocion()
                         || (
                             $this->afip_helper->article->is_service
                             && $this->afip_helper->sale->surchages_in_services
@@ -278,7 +333,16 @@ class AfipItemCalculator
                 }
             }
 
-            if ($this->afip_helper->sale->descuento > 0) {
+            /*
+             * 🔴 El «descuento %» global de la venta cae SOLO sobre los artículos (y, por herencia
+             * del calculador, sobre los servicios): el front lo aplica a `total_articles`
+             * (`vender_set_total.js::aplicar_descuento()`) y `SaleHelper::getTotalSale()` también. Los
+             * combos y las promociones no lo llevan: aplicárselo facturaría de menos que lo cobrado.
+             */
+            if (
+                $this->afip_helper->sale->descuento > 0
+                && !$this->es_renglon_de_combo_o_promocion()
+            ) {
                 $price -= $price * $this->afip_helper->sale->descuento / 100;
             }
 
@@ -630,13 +694,12 @@ class AfipItemCalculator
      * devolvería el canje completo por una devolución parcial.
      *
      * 🔴 EL RECORRIDO ES EL MISMO QUE `AfipImportesCalculator::calculate_from_sale_items()`, EN EL
-     * MISMO ORDEN (artículos, combos, servicios, promociones), y a propósito NO se le setea
-     * `$afip_helper->article` a los combos ni a las promociones: allá tampoco se les setea, así
-     * que su renglón se liquida con el precio del ÚLTIMO ítem del bloque anterior. Es una rareza
-     * preexistente y está fuera del alcance de este arreglo — pero replicarla acá es lo que
-     * garantiza que `porcentaje * bruto` sea exactamente los pesos que se descuentan del total
-     * que sale hacia ARCA. Si algún día se corrige allá, hay que corregirla acá en el mismo
-     * commit.
+     * MISMO ORDEN (artículos, combos, servicios, promociones), y los combos y las promociones se
+     * asignan a `$afip_helper->article` igual que allá (`get_combo_iva()`). Hasta el 4/11/2026 ni
+     * acá ni allá se les asignaba y su renglón se liquidaba con el precio del ÚLTIMO ítem del
+     * bloque anterior; las dos puntas se corrigieron en el mismo commit porque
+     * `porcentaje * bruto` tiene que ser exactamente los pesos que se descuentan del total que
+     * sale hacia ARCA.
      *
      * Las descripciones quedan afuera porque `get_description_iva()` no pasa por
      * `get_article_price_with_discounts()`: tampoco reciben `sales.descuento`.
@@ -663,14 +726,7 @@ class AfipItemCalculator
         }
 
         foreach ($sale->combos as $combo) {
-            // Sin reasignar `article`: ver la nota de arriba. El guard es para no convertir en un
-            // fatal un flujo que hoy no lo es: una venta de solo combos ya revienta en
-            // `calculate_from_sale_items()` por este mismo motivo, y no es este el lugar donde
-            // tiene que aparecer el error.
-            if (is_null($this->afip_helper->article)) {
-                continue;
-            }
-
+            $this->afip_helper->article = $combo;
             $bruto += $this->get_article_price_with_discounts() * $combo->pivot->amount;
         }
 
@@ -681,11 +737,7 @@ class AfipItemCalculator
         }
 
         foreach ($sale->promocion_vinotecas as $promo) {
-            // Sin reasignar `article`: ver la nota de arriba (y el mismo guard que en combos).
-            if (is_null($this->afip_helper->article)) {
-                continue;
-            }
-
+            $this->afip_helper->article = $promo;
             $bruto += $this->get_article_price_with_discounts() * $promo->pivot->amount;
         }
 

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Services\DemoChatProxy;
 use Illuminate\Http\Request;
 
@@ -66,8 +67,17 @@ class DemoChatController extends Controller
         return $proxy->solicitar('POST', '/videos/omitir', $datos);
     }
 
+    /**
+     * Solo una demo tiene este chat. Una PRUEBA GRATUITA entra por el mismo link mágico y lleva el mismo
+     * marcador de sesión, pero su negocio no es un lead de demo: el admin le contestaba 401 y el proxy lo
+     * convertía en 503 (4/11/2026). Responde 204 mudo, como fuera de una demo, sin hablarle al admin.
+     */
     private function en_demo(Request $request)
     {
+        if (PruebaHelper::puede_haber_prueba()) {
+            return false;
+        }
+
         return $request->hasSession() && !empty($request->session()->get('demo_ingreso_token_id'));
     }
 }

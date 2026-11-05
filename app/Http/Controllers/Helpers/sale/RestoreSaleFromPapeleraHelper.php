@@ -262,7 +262,11 @@ class RestoreSaleFromPapeleraHelper {
     }
 
     /**
-     * Vuelve a generar comisiones de vendedor si destroy las había borrado (solo cuando hay cliente).
+     * Vuelve a generar comisiones de vendedor si destroy las había borrado.
+     *
+     * Con cliente o sin él: desde el 4/11/2026 la baja borra la comisión de TODA venta con vendedor
+     * (antes la de mostrador quedaba colgada), así que la restauración tiene que devolvérsela a las
+     * dos. `crear_comision()` no hace nada si la venta no tiene vendedor.
      *
      * Evita duplicar si ya existen líneas debe activas para la venta.
      *
@@ -270,10 +274,6 @@ class RestoreSaleFromPapeleraHelper {
      * @return void
      */
     public static function restaurar_comisiones_si_corresponde(Sale $sale) {
-
-        if (is_null($sale->client_id)) {
-            return;
-        }
 
         $hay_comision_debe = SellerCommission::where('sale_id', $sale->id)
             ->whereNull('haber')

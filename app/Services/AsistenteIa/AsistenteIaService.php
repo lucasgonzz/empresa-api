@@ -774,6 +774,8 @@ class AsistenteIaService
          * hecho que contar.
          */
         $rondas_de_herramientas = 0;
+        $modelo_de_respaldo_del_turno = null;
+        $historial_admite_otro_modelo = true;
 
         /*
          * true cuando la vuelta en curso es la LLAMADA DE CIERRE (ver el 🔴 de abajo). Queda prendido
@@ -924,7 +926,7 @@ class AsistenteIaService
 
             /* Las cargas pueden escalar el modelo dentro de DeepSeek a partir de la próxima vuelta. */
             $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, false, $toco_una_carga, $modelo_pedido);
-            $model    = $eleccion['modelo'];
+            $model    = $modelo_de_respaldo_del_turno ?? $eleccion['modelo'];
 
             /*
              * 🔴 El escalado puede prender el thinking DESPUÉS de una vuelta que no lo tenía, y con
@@ -972,10 +974,44 @@ class AsistenteIaService
             }
 
             try {
-                $response = $this->post_al_proveedor(
-                    $cerrando ? ProveedorIaHelper::cliente_http($proveedor, $segundos_del_cierre) : $http,
-                    $url, $body, $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message
-                );
+                /*
+                 * 🔴 El respaldo de otra variante de DeepSeek REEMPLAZA al reintento del mismo modelo solo
+                 * donde hay una variante a la que ir. Donde no la hay (a mitad de turno después de una
+                 * herramienta que escribe, con un bloque `thinking` en el historial, con una imagen,
+                 * en la llamada de cierre, en el reintento de la tarjeta, con un modelo sin alternativa)
+                 * sigue el camino de siempre: post_al_proveedor(), con su único reintento, su techo de
+                 * tiempo, la espera del admin por WhatsApp y el mensaje amable. Como mucho 2 pedidos por vuelta.
+                 */
+                $segundos_de_la_vuelta = $cerrando ? $segundos_del_cierre : self::TIMEOUT_SEGUNDOS;
+                $puede_cambiar_modelo  = $proveedor === ProveedorIaHelper::DEEPSEEK
+                    && $modelo_de_respaldo_del_turno === null
+                    && $historial_admite_otro_modelo
+                    && $texto_antes_del_reintento === null
+                    && $confirmacion_determinista === null
+                    && ! $cerrando
+                    && $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)
+                    && ProveedorIaHelper::tiene_respaldo($proveedor, $segundos_de_la_vuelta, $body);
+
+                if ($puede_cambiar_modelo) {
+                    [$response, $model] = ProveedorIaHelper::pedir_mensaje(
+                        $proveedor,
+                        $segundos_de_la_vuelta,
+                        $body,
+                        true,
+                        static function ($reintentar, $falla_de_conexion) use ($assistant_message) {
+                            $etiqueta = $falla_de_conexion ? ProgresoIaHelper::REINTENTO_CONEXION : ProgresoIaHelper::REINTENTO_PROVEEDOR;
+                            return ProgresoIaHelper::durante_reintento($assistant_message, $etiqueta, $reintentar);
+                        }
+                    );
+                    if ($response->successful() && $model !== $body['model']) {
+                        $modelo_de_respaldo_del_turno = $model;
+                    }
+                } else {
+                    $response = $this->post_al_proveedor(
+                        $cerrando ? ProveedorIaHelper::cliente_http($proveedor, $segundos_del_cierre) : $http,
+                        $url, $body, $inicio_del_loop, is_null($texto_antes_del_reintento), $assistant_message
+                    );
+                }
             } catch (\Throwable $e) {
                 /* Si falla la llamada de cierre, lo hecho armado sin el modelo (ver respuesta_sin_terminar()). */
                 if ($cerrando) {
@@ -1147,8 +1183,14 @@ class AsistenteIaService
 
             if ($pide_herramientas) {
                 foreach ($content_blocks as $block) {
-                    if (is_array($block) && ($block['type'] ?? '') === 'tool_use') {
-                        $herramientas_pedidas[] = (string) ($block['name'] ?? '');
+                    $tipo = is_array($block) ? ($block['type'] ?? '') : '';
+                    if ($tipo === 'tool_use') {
+                        $herramienta = (string) ($block['name'] ?? '');
+                        $herramientas_pedidas[] = $herramienta;
+                        $historial_admite_otro_modelo = $historial_admite_otro_modelo && $this->es_lectura_sin_efectos($herramienta);
+                    } elseif (in_array($tipo, ['thinking', 'redacted_thinking'], true)) {
+                        // Una firma opaca del modelo anterior no se reenvía a otra variante.
+                        $historial_admite_otro_modelo = false;
                     }
                 }
 
@@ -2174,6 +2216,12 @@ Estás hablando desde la app ComercioCity IA (el teléfono o la compu del dueño
   pedir_imagen con un prompt detallado. Después decí en una línea que la pediste y que
   aparece acá cuando esté lista: sin prometer tiempos ni decir que ya está. Nunca digas
   que la pediste o que se está generando si no llamaste a pedir_imagen en este mensaje.
+- Si te piden crear una foto nueva desde la que tiene un artículo, usá pedir_imagen
+  con su articulo_id. Para varios artículos, primero consultá los filtros y pedí
+  una por artículo. Si son más de tres, acordá primero cuáles mostrar como muestra.
+  Decí en qué orden aparecen para poder identificar cada una. Cuando el dueño ya
+  vio una imagen y pide usarla, usá proponer_publicar_imagen con su pedido_imagen_uuid
+  si las acciones están habilitadas.
 - Pedir una imagen no autoriza a preparar promociones, envíos ni mensajes a clientes: si
   te parece útil, ofrecelo en una línea y no armes la tarjeta hasta que la persona lo pida.
 - Si la persona te dijo cómo prefiere que le respondas (más breve, más explicado, con
@@ -3627,7 +3675,8 @@ CONFIRMACION;
         $de_carga = [];
 
         foreach ($herramientas as $nombre) {
-            if (HerramientasDeCarga::es_de_carga($nombre) && ! in_array($nombre, $de_carga, true)) {
+            if ((HerramientasDeCarga::es_de_carga($nombre) || $nombre === HerramientasDeLaApp::PROPONER_PUBLICAR_IMAGEN)
+                && ! in_array($nombre, $de_carga, true)) {
                 $de_carga[] = $nombre;
             }
         }
@@ -4876,7 +4925,7 @@ CONFIRMACION;
         }
 
         if ($es_app) {
-            foreach (HerramientasDeLaApp::definiciones() as $definicion) {
+            foreach (HerramientasDeLaApp::definiciones($con_acciones) as $definicion) {
                 $tools[] = $definicion;
             }
         }
@@ -5886,6 +5935,16 @@ CONFIRMACION;
     public function maneja_lectura($tool_name): bool
     {
         return in_array((string) $tool_name, $this->nombres_de_lectura(), true);
+    }
+
+    protected function es_lectura_sin_efectos(string $herramienta): bool
+    {
+        // Aunque se ofrecen con las consultas, estas herramientas guardan archivos, tokens o contexto.
+        if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'], true)) {
+            return false;
+        }
+        return $this->handler_de_lectura($herramienta) !== null
+            || HerramientasDeConversaciones::maneja($herramienta);
     }
 
     /**

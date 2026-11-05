@@ -1415,6 +1415,18 @@ class SaleController extends Controller
                 SaleHelper::sacar_de_la_cuenta_corriente($model);
             }
 
+            /*
+             * 🔴 La comisión del vendedor NO depende del cliente (misión
+             * comision-mostrador-edicion-y-confirmacion, 4/11/2026). Una venta de MOSTRADOR (sin
+             * cliente) con vendedor tiene comisión, y el `if` de arriba —que protege la cuenta
+             * corriente— la dejaba afuera: editar la venta no la recalculaba y confirmar una venta de
+             * depósito no la generaba. Cubre también la venta a la que la edición le sacó el cliente.
+             * Misma foto que el camino con cliente: si el hecho económico no cambió, no se toca.
+             */
+            if (!$model->client_id && !$model->to_check && !$model->checked) {
+                SaleHelper::actualizar_comisiones($model, $efectos_financieros_previos);
+            }
+
             /**
              * Reconciliación de los puntos GANADOS por esta venta. Va acá y no adentro de
              * attachProperies() porque en el update attachProperies corre con
@@ -1773,6 +1785,10 @@ class SaleController extends Controller
             SaleHelper::updateItemsPrices($model, $request->items);
             if ($model->client_id) {
                 SaleHelper::updateCurrentAcountsAndCommissions($model);
+            } else if (!$model->to_check && !$model->checked) {
+                // Venta de mostrador: sin cuenta corriente que rehacer, pero la comisión del
+                // vendedor sale de los precios de los renglones (ros_mar, golonorte, truvari).
+                SaleHelper::actualizar_comisiones($model);
             }
 
             /*
