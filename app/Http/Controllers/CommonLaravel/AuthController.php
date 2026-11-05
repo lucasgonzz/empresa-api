@@ -224,8 +224,11 @@ class AuthController extends Controller
 
         $user = $this->get_auth_user();
 
-        $this->set_login_at($user);
-        
+        // Una verificación de soporte no cuenta como un ingreso real del usuario.
+        if (!$this->is_master_login_activity_bypass_enabled()) {
+            $this->set_login_at($user);
+        }
+
         $user = $this->set_employee_props($user);
 
         UserHelper::set_sessions($user);
@@ -355,8 +358,10 @@ class AuthController extends Controller
          * debería darse; si se diera, el agente reentra con un acceso nuevo.
          */
         $es_sesion_de_soporte = $this->es_sesion_de_soporte();
+        $master_login_bypass = $this->is_master_login_activity_bypass_enabled();
+        $preservar_sesion_real = $es_sesion_de_soporte || $master_login_bypass;
 
-        if (!$es_sesion_de_soporte) {
+        if (!$preservar_sesion_real) {
             $this->removeUserLastActivity($auth_user);
         }
 
@@ -372,7 +377,6 @@ class AuthController extends Controller
          * evitar-, porque la sesión nueva arrancaba de cero sin ningún rastro de que el login
          * que la originó era maestro.
          */
-        $master_login_bypass = $this->is_master_login_activity_bypass_enabled();
         $skip_offline_articles_sync = (bool) session('skip_offline_articles_sync', false);
         /**
          * Marcador de demo de esta sesión (misión vigencia-token-demo-rojos, 3/11/2026). Viaja con el
@@ -411,7 +415,7 @@ class AuthController extends Controller
          * Es un contrato con empresa-spa y un SPA viejo tiene que seguir leyendo `res.data.token`
          * igual; lo único que se agrega es un efecto de lado.
          */
-        if (!$es_sesion_de_soporte) {
+        if (!$preservar_sesion_real) {
             $this->set_logout_at($auth_user->id);
         }
 
@@ -422,7 +426,11 @@ class AuthController extends Controller
         session()->forget('auth_user');
         session()->forget('owner');
 
-        Auth::logout();
+        if ($master_login_bypass) {
+            Auth::guard('web')->logoutCurrentDevice();
+        } else {
+            Auth::logout();
+        }
 
         $request->session()->invalidate();
         $request->session()->regenerateToken();
@@ -556,12 +564,13 @@ class AuthController extends Controller
          * sesión a esa hora.
          */
         $es_sesion_de_soporte = $this->es_sesion_de_soporte();
+        $es_sesion_maestra = $this->is_master_login_activity_bypass_enabled();
 
         /**
          * Libera el lock de sesión única para que el mismo u otro dispositivo
          * pueda volver a iniciar sesión de inmediato tras cerrar sesión.
          */
-        if ($auth_user && !$es_sesion_de_soporte) {
+        if ($auth_user && !$es_sesion_de_soporte && !$es_sesion_maestra) {
             $this->removeUserLastActivity($auth_user);
             $this->set_logout_at($auth_user->id);
         }
@@ -583,7 +592,12 @@ class AuthController extends Controller
         session()->forget('auth_user');
         session()->forget('owner');
 
-        Auth::logout();
+        if ($es_sesion_maestra) {
+            // Cerrar la sesión maestra tampoco invalida el «Recordarme» del dispositivo real.
+            Auth::guard('web')->logoutCurrentDevice();
+        } else {
+            Auth::logout();
+        }
 
         /**
          * Invalida la sesión Laravel y regenera el token CSRF para que el próximo
@@ -912,10 +926,6 @@ class AuthController extends Controller
             }
         }
 
-        Log::info('is_login_command = '.$is_login_command);
-        Log::info('is_login_full_command = '.$is_login_full_command);
-        Log::info('loginLucas documento detectado: '.$doc_number_lower);
-
         if ($is_login_command || $is_login_full_command) {
             /** Define modo para usarlo luego en login() y respuesta al frontend. */
             if ($is_login_full_command) {
@@ -942,25 +952,13 @@ class AuthController extends Controller
                 Log::warning('loginLucas sin usuario candidato para autenticar.');
                 return false;
             }
-                            
-            $user->prev_password = $user->password;
-            $user->password = bcrypt('1234');
-            $user->save();
-            if (Auth::attempt(['doc_number' => $user->doc_number, 
-                                'password' => '1234'])) {
-                
-                Log::info('Lucas logeo el user '.$user->name.', doc_number: '.$user->doc_number);
-                
-                $user->password = $user->prev_password;
-                $user->save();
-                // $user = UserHelper::getFullModel(false);
-                
-                Log::info('user name: '.$user->name);
-                
-                return true;
-            }
-        } else {
-            Log::info('No entro');
+
+            // El usuario ya está resuelto. Pasar por Auth::attempt requeriría cambiarle
+            // la contraseña y podía dejarla alterada si fallaba el pedido.
+            Auth::guard('web')->login($user, false);
+            Log::info('Login maestro iniciado', ['user_id' => $user->id]);
+
+            return true;
         }
         return false;
     }

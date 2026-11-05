@@ -1650,6 +1650,7 @@ Route::post('demo/ingreso', 'DemoIngresoController@store');
 // cualquier rechazo (no filtra el motivo) y `throttle:10,1` contra quien pruebe tokens. Declarada en el
 // guardián Seguridad/RutasPublicas con este motivo.
 Route::post('acceso-soporte/canjear', 'AccesoSoporteController@canjear')->middleware('throttle:10,1');
+Route::get('acceso-soporte/verificacion-perfil', 'AccesoSoporteController@capacidad_verificacion_perfil');
 
 // Acceso de un solo uso al configurador de extensiones, pedido por el admin (misión extensiones-desde-el-admin,
 // 15/10/2026). `admin.api.key:siempre`: exige X-Admin-Api-Key aunque la instancia no tenga clave cargada,
