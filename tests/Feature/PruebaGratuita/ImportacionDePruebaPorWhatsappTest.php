@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\PruebaGratuita;
 
+use App\Events\ImplementacionActualizada;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
@@ -17,6 +18,8 @@ use App\Services\Importacion\ImportacionDePruebaService;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
 use Mockery;
@@ -151,6 +154,7 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
 
     public function test_hitos_persisten_lectura_y_aprobacion_al_avanzar(): void
     {
+        Event::fake([ImplementacionActualizada::class]);
         CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
         $run = $this->corrida($this->planilla([[['Nombre'], ['Artículo']]]), 'importando');
         $historial = ImportHistory::create([
@@ -165,6 +169,15 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->assertSame('indexar', $run->estado);
         $id = $run->uuid . '-migracion';
         $this->getJson('/api/implementacion')->assertOk()->assertJsonFragment(['id' => $id, 'visto' => false]);
+        Event::assertNotDispatched(ImplementacionActualizada::class);
+        // Ejecutamos los callbacks sin confirmar la transacción que aísla este test.
+        $this->app->make('db.transactions')->commit(DB::connection()->getName());
+        Event::assertDispatchedTimes(ImplementacionActualizada::class, 1);
+        Event::assertDispatched(ImplementacionActualizada::class, function ($evento) {
+            return $evento->broadcastOn()->name === 'private-implementacion.user.' . $this->dueno->id
+                && $evento->broadcastAs() === 'ImplementacionActualizada'
+                && $evento->broadcastWith() === [];
+        });
         $this->postJson('/api/implementacion/' . $id . '/visto')->assertOk()->assertJson(['visto' => true]);
         $this->postJson('/api/implementacion/' . $id . '/aprobar')->assertStatus(409);
         Article::create([

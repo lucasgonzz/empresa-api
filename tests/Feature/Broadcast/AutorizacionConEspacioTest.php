@@ -199,6 +199,19 @@ class AutorizacionConEspacioTest extends TestCase
         $this->autorizar($canal)->assertStatus(200)->assertJson(['auth' => $this->firma_esperada($canal)]);
     }
 
+    public function test_el_canal_de_implementacion_es_privado_del_usuario_y_del_sistema(): void
+    {
+        $canal = 'private-implementacion.user.' . $this->dueno->id;
+        $propio = $canal . '@' . $this->espacio;
+
+        $this->actingAs($this->dueno, 'web');
+        $this->autorizar($propio)->assertOk()->assertJson(['auth' => $this->firma_esperada($propio)]);
+        $this->autorizar($canal . '@' . $this->otro_espacio)->assertStatus(403);
+
+        $this->actingAs($this->empleado, 'web');
+        $this->autorizar($propio)->assertStatus(403);
+    }
+
     /**
      * Con sufijo propio, el callback de `routes/channels.php` sigue mandando.
      *

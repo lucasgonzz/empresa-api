@@ -37,6 +37,10 @@ Broadcast::channel('App.Models.User.{id}', function ($user, $id) {
     return (int) $user->id === (int) $id;
 });
 
+Broadcast::channel('implementacion.user.{id}', function ($user, $id) {
+    return (string) $user->id === $id;
+});
+
 /**
  * Canal privado del módulo de WhatsApp con clientes (grupo 137). Autoriza al dueño
  * (owner_id null cuyo id matchea) y a sus empleados (owner_id === $owner_id) a

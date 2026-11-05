@@ -2,6 +2,7 @@
 
 namespace App\Services\Importacion;
 
+use App\Events\ImplementacionActualizada;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
@@ -19,8 +20,10 @@ use App\Services\CupoEmbeddingsDePrueba;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
 use RuntimeException;
+use Throwable;
 
 class ImportacionDePruebaService
 {
@@ -235,7 +238,7 @@ class ImportacionDePruebaService
                 ]);
             }
             $run->estado = $lote !== null ? 'imagenes' : ($vigente ? 'indexar' : 'terminado');
-            $run->save();
+            $this->guardar_hitos($run);
         });
     }
 
@@ -289,7 +292,7 @@ class ImportacionDePruebaService
                 'accion' => $lote !== null ? ['tipo' => 'imagenes', 'lote_id' => (int) $lote->id, 'lote_uuid' => $lote->uuid] : null,
             ]);
             $run->estado = $vigente ? 'indexar' : 'terminado';
-            $run->save();
+            $this->guardar_hitos($run);
         });
     }
 
@@ -351,7 +354,7 @@ class ImportacionDePruebaService
                 'aprobado' => false,
             ]);
             $run->estado = 'terminado';
-            $run->save();
+            $this->guardar_hitos($run);
         });
     }
 
@@ -378,7 +381,28 @@ class ImportacionDePruebaService
                 $run->aviso('error', $detalle);
                 $run->estado = 'error';
             }
-            $run->save();
+            $this->guardar_hitos($run);
+        });
+    }
+
+    private function guardar_hitos(ImportacionDePrueba $run): void
+    {
+        $cambiaron_hitos = $run->isDirty('hitos');
+        if (!$run->save() || !$cambiaron_hitos) {
+            return;
+        }
+
+        $usuario_id = (int) $run->user_id;
+        // Al recibir el aviso, la SPA vuelve a leer el avance por API.
+        DB::afterCommit(function () use ($usuario_id) {
+            try {
+                ImplementacionActualizada::dispatch($usuario_id);
+            } catch (Throwable $error) {
+                Log::warning('No se pudo avisar el avance de implementación por socket.', [
+                    'usuario_id' => $usuario_id,
+                    'tipo_error' => get_class($error),
+                ]);
+            }
         });
     }
 }
