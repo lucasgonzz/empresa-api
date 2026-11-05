@@ -3,7 +3,6 @@
 namespace App\Services\Importacion;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
-use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\import\excel\OpenSpoutCompatible;
 use Illuminate\Support\Facades\Log;
@@ -22,13 +21,6 @@ class CatalogoPdf
     public const MAX_PAGINAS = 30;
 
     private const ERROR_COMPLETITUD = 'No pudimos leer el catálogo PDF completo. Probá dividir el archivo en partes más chicas o subirlo en Excel.';
-
-    public static function disponible_para(int $owner_id): bool
-    {
-        return PruebaHelper::activa($owner_id)
-            && PruebaHelper::vence_at($owner_id) !== null
-            && !PruebaHelper::vencida($owner_id);
-    }
 
     public function convertir(string $pdf_full_path, string $excel_full_path, int $owner_id): int
     {

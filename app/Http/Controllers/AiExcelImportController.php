@@ -64,7 +64,7 @@ class AiExcelImportController extends Controller
         $model = (string) $request->input('model', 'article');
         $owner_id = $this->userId();
 
-        if ($es_pdf && ($model !== 'article' || !CatalogoPdf::disponible_para($owner_id))) {
+        if ($es_pdf && ($model !== 'article' || !PruebaHelper::en_periodo_vigente($owner_id))) {
             return response()->json([
                 'message' => 'La carga directa de PDF está disponible para artículos durante la prueba gratuita.',
             ], 422);

@@ -526,12 +526,13 @@ class PruebaHelper
 
         $config = self::config($owner_id);
         $vence_at = self::vence_at($owner_id);
+        $vigente = self::en_periodo_vigente($owner_id);
 
         return [
             'activa'             => true,
             'imagenes_catalogo'  => true,
-            'puede_simular_agente' => self::en_periodo_vigente($owner_id),
-            'puede_importar_pdf' => $vence_at !== null && $vence_at->isFuture(),
+            'puede_simular_agente' => $vigente,
+            'puede_importar_pdf' => $vigente,
             'vence_at'           => is_null($vence_at) ? null : self::iso($vence_at),
             'vencida'            => self::vencida($owner_id),
             'video_url'          => $config->video_url,

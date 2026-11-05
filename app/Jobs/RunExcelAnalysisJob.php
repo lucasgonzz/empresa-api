@@ -141,7 +141,7 @@ class RunExcelAnalysisJob implements ShouldQueue
         try {
             // El worker puede seguir vivo entre trabajos y el estado de la prueba cambiar mientras la corrida espera.
             PruebaHelper::olvidar_cache();
-            if (!CatalogoPdf::disponible_para((int) $run->user_id)) {
+            if (!PruebaHelper::en_periodo_vigente((int) $run->user_id)) {
                 throw new \RuntimeException('La prueba gratuita ya terminó. La lectura de este PDF no se inició.');
             }
 
