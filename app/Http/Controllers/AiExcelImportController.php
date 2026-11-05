@@ -13,8 +13,12 @@ use App\Jobs\RunExcelAnalysisJob;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\ExcelAnalysisRun;
 use App\Models\User;
+use App\Services\Importacion\CatalogoPdf;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 
@@ -48,26 +52,38 @@ class AiExcelImportController extends Controller
      */
     public function analyze(Request $request)
     {
-        /*
-         * Validamos que venga un archivo y que sea un Excel (.xlsx, .xls).
-         * En este proyecto la validación en backend se hace solo cuando es necesaria
-         * por integridad mínima inevitable (el formato incorrecto rompería OpenSpout).
-         * Esta validación sigue siendo síncrona: es instantánea y rechaza el caso
-         * más común de error de uso antes de tocar storage o la cola.
-         */
-        if (!$request->hasFile('excel_file') || !$request->file('excel_file')->isValid()) {
+        $archivo = $request->file('excel_file');
+        if (!$archivo instanceof UploadedFile || !$archivo->isValid()) {
             return response()->json([
                 'message' => 'Se requiere un archivo Excel válido en el campo "excel_file".',
             ], 422);
         }
 
-        /* Verificamos la extensión del archivo para rechazar formatos no soportados. */
-        $extension = strtolower($request->file('excel_file')->getClientOriginalExtension());
-        if (!in_array($extension, ['xlsx', 'xls'])) {
+        $extension = strtolower($archivo->getClientOriginalExtension());
+        $es_pdf = $extension === 'pdf';
+        $model = (string) $request->input('model', 'article');
+        $owner_id = $this->userId();
+
+        if ($es_pdf && ($model !== 'article' || !CatalogoPdf::disponible_para($owner_id))) {
+            return response()->json([
+                'message' => 'La carga directa de PDF está disponible para artículos durante la prueba gratuita.',
+            ], 422);
+        }
+
+        if ($es_pdf && ($archivo->getMimeType() !== 'application/pdf' || $archivo->getSize() > CatalogoPdf::MAX_BYTES)) {
+            return response()->json([
+                'message' => 'Elegí un archivo PDF válido de hasta 10 MB.',
+            ], 422);
+        }
+
+        if (!$es_pdf && !in_array($extension, ['xlsx', 'xls'], true)) {
             return response()->json([
                 'message' => 'El archivo debe ser un Excel válido (.xlsx o .xls).',
             ], 422);
         }
+
+        $pdf_path = null;
+        $run = null;
 
         try {
             /*
@@ -78,10 +94,16 @@ class AiExcelImportController extends Controller
              * Nombre original del archivo subido (p. ej. "Lista_Distribuidora_X.xlsx").
              * Se envía a Claude para inferir el proveedor; el guardado en disco usa otro nombre.
              */
-            $original_filename = (string) $request->file('excel_file')->getClientOriginalName();
+            $original_filename = (string) $archivo->getClientOriginalName();
 
             $filename   = 'ai_import_' . time() . '_' . Str::random(8) . '.xlsx';
-            $excel_path = $request->file('excel_file')->storeAs('imported_files', $filename);
+            $excel_path = $es_pdf ? 'imported_files/' . $filename : $archivo->storeAs('imported_files', $filename);
+            if ($es_pdf) {
+                $pdf_path = $archivo->storeAs('imported_files', pathinfo($filename, PATHINFO_FILENAME) . '.pdf', 'local');
+                if (!$pdf_path) {
+                    throw new \RuntimeException('No se pudo guardar el PDF para analizar.');
+                }
+            }
 
             Log::info('AiExcelImportController::analyze - archivo guardado', [
                 'excel_path'         => $excel_path,
@@ -89,21 +111,14 @@ class AiExcelImportController extends Controller
             ]);
 
             /*
-             * Modelo de análisis indicado en el request (article/client/provider).
-             * El default es 'article' para mantener compatibilidad con llamadas que no envían model.
-             * La elección real del analyzer ahora ocurre dentro del job.
-             */
-            $model = (string) $request->input('model', 'article');
-
-            /*
              * Creamos la corrida en estado "pendiente". guarded está vacío en el
              * modelo, así que el create() de abajo asigna todos estos campos.
              * payload guarda lo mínimo que el job necesita para reconstruir el
              * mismo comportamiento que antes tenía este método.
              */
-            $run = ExcelAnalysisRun::create([
+            $datos = [
                 'uuid'       => Str::uuid()->toString(),
-                'user_id'    => $this->userId(),
+                'user_id'    => $owner_id,
                 /*
                  * Quién disparó la corrida, para dirigirle el aviso de "terminó"
                  * cuando el job la complete. El canal de global_notification es
@@ -150,8 +165,20 @@ class AiExcelImportController extends Controller
                     'hoja'              => self::normalizar_hoja($request->input('hoja')),
                     'hoja_nombre'       => self::normalizar_hoja_nombre($request->input('hoja_nombre')),
                     'header_row'        => self::normalizar_header_row($request->input('header_row')),
-                ],
-            ]);
+                ] + ($es_pdf ? [
+                    'pdf_path' => $pdf_path,
+                    'origen'   => 'pdf',
+                ] : []),
+            ];
+
+            $run = $es_pdf ? $this->crear_corrida_pdf($datos) : ExcelAnalysisRun::create($datos);
+            if ($run === null) {
+                Storage::disk('local')->delete($pdf_path);
+
+                return response()->json([
+                    'message' => 'Ya estamos analizando un PDF de tu negocio. Podés subir otro cuando termine.',
+                ], 409);
+            }
 
             /* Encolamos el job pasando solo el id, no el modelo (ver RunExcelAnalysisJob). */
             RunExcelAnalysisJob::dispatch($run->id);
@@ -162,11 +189,12 @@ class AiExcelImportController extends Controller
              */
             return response()->json([
                 'analysis_uuid' => $run->uuid,
-                'excel_path'    => $excel_path,
+                'excel_path'    => $es_pdf ? null : $excel_path,
                 'estado'        => $run->estado,
             ], 202);
 
         } catch (\Illuminate\Database\QueryException $e) {
+            $this->descartar_pdf_sin_encolar($pdf_path, $run);
             /*
              * 🔴 VA ANTES DEL \Throwable Y ANTES DE CUALQUIER \RuntimeException.
              * QueryException extiende PDOException, que extiende RuntimeException: su
@@ -183,6 +211,7 @@ class AiExcelImportController extends Controller
             ], 500);
 
         } catch (\Throwable $e) {
+            $this->descartar_pdf_sin_encolar($pdf_path, $run);
             Log::error('AiExcelImportController::analyze - error al encolar el análisis', [
                 'message' => $e->getMessage(),
                 'trace'   => $e->getTraceAsString(),
@@ -200,6 +229,58 @@ class AiExcelImportController extends Controller
                 'message' => 'Ocurrió un error inesperado al iniciar el análisis. Volvé a intentar en unos minutos; si sigue pasando, avisanos.',
             ], 500);
         }
+    }
+
+    private function descartar_pdf_sin_encolar(?string $pdf_path, ?ExcelAnalysisRun $run): void
+    {
+        if (!$pdf_path) {
+            return;
+        }
+
+        Storage::disk('local')->delete($pdf_path);
+        if ($run === null) {
+            return;
+        }
+
+        try {
+            ExcelAnalysisRun::whereKey($run->id)->where('estado', 'pendiente')->update([
+                'estado' => 'error',
+                'error'  => 'No se pudo encolar el análisis del PDF.',
+            ]);
+        } catch (\Throwable $error) {
+            Log::warning('Catálogo PDF: no se pudo cerrar la corrida sin encolar.', ['run_id' => $run->id]);
+        }
+    }
+
+    private function crear_corrida_pdf(array $datos): ?ExcelAnalysisRun
+    {
+        return DB::transaction(function () use ($datos) {
+            $owner_id = $datos['user_id'];
+
+            // El chequeo y el alta van juntos: dos empleados del mismo dueño no pueden encolar un PDF a la vez.
+            User::whereKey($owner_id)->lockForUpdate()->first(['id']);
+            $pdf_en_curso = ExcelAnalysisRun::where('user_id', $owner_id)
+                ->whereIn('estado', ['pendiente', 'procesando'])
+                ->whereNotNull('payload->pdf_path')
+                ->first();
+
+            if ($pdf_en_curso !== null) {
+                if ($pdf_en_curso->estado === 'procesando' || Storage::disk('local')->exists($pdf_en_curso->payload['pdf_path'])) {
+                    return null;
+                }
+
+                // Si se cayó la cola junto con la base, el upload fallido puede haber quedado pendiente sin su archivo.
+                $cerrada = ExcelAnalysisRun::whereKey($pdf_en_curso->id)->where('estado', 'pendiente')->update([
+                    'estado' => 'error',
+                    'error'  => 'El archivo PDF ya no está disponible.',
+                ]);
+                if ($cerrada === 0) {
+                    return null;
+                }
+            }
+
+            return ExcelAnalysisRun::create($datos);
+        });
     }
 
     /**

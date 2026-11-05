@@ -428,6 +428,8 @@ class PruebaHelper
         try {
             $analisis = ExcelAnalysisRun::where('user_id', (int) $owner_id)
                 ->where('excel_path', $excel_path)
+                // La recomendación usa la misma planilla, pero el origen viene de su análisis inicial.
+                ->where('tipo', 'analisis')
                 ->orderBy('id', 'DESC')
                 ->first();
         } catch (\Throwable $e) {
