@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\AdminSync\Concerns\ClaveEstrictaDeAdmin;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\category_proposal\CategoryProposalIngestaHelper;
 use Illuminate\Http\Request;
@@ -37,7 +38,16 @@ class CatalogoCategoriasController extends Controller
             return $rechazo;
         }
 
-        return $this->responder(CategoryProposalIngestaHelper::crear(AsistenteCanalHelper::dueno(), $request->all()));
+        $dueno = AsistenteCanalHelper::dueno();
+
+        if (!is_null($dueno) && PruebaHelper::tiene_periodo_de_prueba($dueno->id)) {
+            return response()->json([
+                'codigo' => 'categorizacion_despues_de_contratar',
+                'message' => 'La categorización automática está disponible después de contratar ComercioCity.',
+            ], 403);
+        }
+
+        return $this->responder(CategoryProposalIngestaHelper::crear($dueno, $request->all()));
     }
 
     /**

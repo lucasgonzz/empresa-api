@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -480,6 +481,28 @@ RULE;
      */
     public function generate_response_with_photo(WhatsappChat $chat, WhatsappBotConfig $config, $proceso = 'whatsapp_respuesta', $auth_user_id = null): array
     {
+        return $this->generar_respuesta($chat, $config, $proceso, $auth_user_id);
+    }
+
+    /**
+     * Simula un solo mensaje. El chat y el historial viven en memoria, sin teléfono ni envío.
+     */
+    public function simular_respuesta(int $owner_id, string $pregunta): array
+    {
+        $config = WhatsappBotConfig::firstOrNew(['user_id' => $owner_id]);
+        $chat = new WhatsappChat(['user_id' => $owner_id]);
+        $historial = collect([new WhatsappChatMessage(['direction' => 'in', 'body' => $pregunta])]);
+
+        return $this->generar_respuesta($chat, $config, 'whatsapp_simulacion_prueba', $owner_id, $historial);
+    }
+
+    private function generar_respuesta(
+        WhatsappChat $chat,
+        WhatsappBotConfig $config,
+        $proceso,
+        $auth_user_id,
+        ?Collection $historial = null
+    ): array {
         try {
             /*
              * El modelo del bot lo elige el admin por cliente (misión modelos-ia-por-cliente):
@@ -495,7 +518,7 @@ RULE;
             }
 
             // Últimos N mensajes del chat, en orden cronológico (el más viejo primero).
-            $history = $this->fetch_recent_messages($chat, self::HISTORY_LIMIT);
+            $history = $historial ?? $this->fetch_recent_messages($chat, self::HISTORY_LIMIT);
             if ($history->isEmpty()) {
                 return $this->empty_response('sin_historial');
             }
@@ -564,7 +587,7 @@ RULE;
                 'proveedor'     => $proveedor,
                 'modelo'        => $model,
                 'auth_user_id'  => $auth_user_id,
-                'referencia_id' => (int) $chat->id,
+                'referencia_id' => $chat->exists ? (int) $chat->id : null,
             ]);
 
             $resultado = $this->split_markers($this->extract_text($body));

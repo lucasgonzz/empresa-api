@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Validator;
@@ -66,6 +67,28 @@ class PruebaController extends Controller
             return response()->json(['code' => 'dueno_no_resoluble', 'message' => 'La instancia no tiene dueño.'], 409);
         }
 
-        return response()->json(PruebaHelper::estado_para_admin($dueno->id), 200);
+        $estado = PruebaHelper::estado_para_admin($dueno->id);
+        if (PruebaHelper::tiene_periodo_de_prueba($dueno->id)) {
+            $estado['imagenes'] = CupoImagenesDePrueba::estado((int) $dueno->id);
+        }
+
+        return response()->json($estado, 200);
+    }
+
+    public function cupo_imagenes(Request $request): JsonResponse
+    {
+        $datos = $request->validate(['tope' => 'required|integer|min:0|max:'.CupoImagenesDePrueba::TOPE_MAXIMO]);
+        $dueno = PruebaHelper::dueno();
+
+        if (is_null($dueno)) {
+            return response()->json(['code' => 'dueno_no_resoluble', 'message' => 'La instancia no tiene dueño.'], 409);
+        }
+
+        $imagenes = CupoImagenesDePrueba::editar((int) $dueno->id, (int) $datos['tope']);
+        if (is_null($imagenes)) {
+            return response()->json(['message' => 'El negocio ya no está en período de prueba.'], 409);
+        }
+
+        return response()->json(['imagenes' => $imagenes], 200);
     }
 }

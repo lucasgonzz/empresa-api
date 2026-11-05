@@ -186,6 +186,11 @@ return [
         'verify_ssl' => filter_var(env('ANTHROPIC_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
     ],
 
+    // Extracción de catálogos PDF en la prueba, con la API de Anthropic.
+    'importacion_pdf_ia' => [
+        'model' => env('IMPORTACION_PDF_IA_MODEL', 'claude-sonnet-5-5'),
+    ],
+
     /*
      * API de DeepSeek — el segundo proveedor del asistente (misión proveedores-ia-deepseek,
      * 22/9/2026). El DUEÑO del negocio elige entre Claude y DeepSeek (`users.agente_proveedor`) y el

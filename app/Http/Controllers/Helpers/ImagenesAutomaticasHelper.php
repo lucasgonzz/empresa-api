@@ -6,7 +6,7 @@ use App\Models\BackgroundProcess;
 use App\Models\GeocoderCounter;
 use App\Models\ImageAssignmentRun;
 use App\Models\User;
-use App\Services\ProductFacts\TopeSerperDemo;
+use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Carbon\Carbon;
 
 /**
@@ -91,6 +91,17 @@ class ImagenesAutomaticasHelper
      */
     public static function cuota_de(User $owner, $con_tope_demo = true)
     {
+        if ($con_tope_demo && PruebaHelper::activa($owner->id)) {
+            $cupo = CupoImagenesDePrueba::estado_para_busqueda((int) $owner->id);
+
+            return [
+                'cuota'       => $cupo['tope'],
+                'usadas_hoy'  => null,
+                'disponibles' => $cupo['restantes'],
+                'tope_demo'   => $cupo,
+            ];
+        }
+
         $cuota = self::credenciales($owner)['cuota'];
 
         $contador = GeocoderCounter::where('user_id', $owner->id)
@@ -109,7 +120,7 @@ class ImagenesAutomaticasHelper
             return $resultado;
         }
 
-        $tope_demo = TopeSerperDemo::estado($owner);
+        $tope_demo = CupoImagenesDePrueba::estado_para_busqueda((int) $owner->id);
 
         if ($tope_demo['aplica']) {
             $resultado['disponibles'] = min($resultado['disponibles'], (int) $tope_demo['restantes']);
@@ -161,6 +172,7 @@ class ImagenesAutomaticasHelper
             : ImageAssignmentRun::ORIGEN_SELECCION;
 
         $saltados_con_imagen = 0;
+        $saltados_por_cupo = 0;
 
         if ($origen === ImageAssignmentRun::ORIGEN_SELECCION) {
             $separados           = ImageAssignmentRunHelper::separar_con_imagen((int) $owner->id, $article_ids);
@@ -183,10 +195,20 @@ class ImagenesAutomaticasHelper
             if (!empty($separados['sin_imagen'])) {
                 $article_ids = $separados['sin_imagen'];
             }
+
+            if (PruebaHelper::tiene_periodo_de_prueba($owner->id)) {
+                $cupo = CupoImagenesDePrueba::estado((int) $owner->id)['restantes'];
+                if ($cupo <= 0) {
+                    return ['batch_uuid' => null, 'sin_cupo_prueba' => true];
+                }
+
+                $saltados_por_cupo = max(0, count($article_ids) - $cupo);
+                $article_ids = array_slice($article_ids, 0, $cupo);
+            }
         }
 
         $run = ImageAssignmentRunHelper::crear($owner, $article_ids, $origen, $auth_user_id, [
-            'aplica_tope_diario' => true,
+            'aplica_tope_diario' => !PruebaHelper::activa($owner->id),
         ]);
 
         $proceso = is_null($run->background_process_id) ? null : BackgroundProcess::find($run->background_process_id);
@@ -196,6 +218,13 @@ class ImagenesAutomaticasHelper
             'proceso'             => $proceso,
             'articulos'           => (int) $run->total_articulos,
             'saltados_con_imagen' => $saltados_con_imagen,
+            'saltados_por_cupo'   => $saltados_por_cupo,
         ];
+    }
+
+    public static function aplica_tope_diario(ImageAssignmentRun $run): bool
+    {
+        // También cubre corridas encoladas por una versión anterior a este cupo.
+        return $run->aplica_tope_diario && !PruebaHelper::activa($run->user_id);
     }
 }

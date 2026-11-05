@@ -127,7 +127,8 @@ class SerperImageSearchProvider implements ImageSearchProvider
                     } finally {
                         SerperUsageService::record($this->usage_context, 'images', $consulta, $respuesta, $inicio);
                     }
-                }
+                },
+                true
             );
         } catch (TopeSerperDemoAgotado $e) {
             // Sin red: el motor lo trata como cupo agotado (corta la corrida, no cuenta como error).

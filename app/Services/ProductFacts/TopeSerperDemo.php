@@ -2,6 +2,8 @@
 
 namespace App\Services\ProductFacts;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Models\ImageAssignmentRun;
 use App\Models\SerperUsageEvent;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -66,11 +68,12 @@ class TopeSerperDemo
      *
      * @return bool
      */
-    public static function aplica()
+    public static function aplica($dueno = null, bool $asignacion_de_imagenes = false)
     {
-        // `prueba` desde la misión prueba-experiencia-empresa (3/11/2026): la instancia de la prueba
-        // gratuita usa la misma clave de Serper que las demos y lleva el mismo tope por dueño.
-        return in_array(config('app.FOR_USER'), ['demo', 'prueba'], true);
+        // Las asignaciones de la prueba se miden por producto. Las otras consultas de Serper
+        // mantienen su tope por llamada hasta que la prueba pasa a ser un cliente.
+        return config('app.FOR_USER') === 'demo'
+            || (!$asignacion_de_imagenes && PruebaHelper::tiene_periodo_de_prueba(self::dueno_id($dueno)));
     }
 
     /**
@@ -91,6 +94,15 @@ class TopeSerperDemo
         $query = SerperUsageEvent::where('user_id', $dueno_id)
             ->where('process', '<>', SerperLinkResolver::PROCESO);
 
+        if (PruebaHelper::puede_haber_prueba()) {
+            $prefijo = ImageAssignmentRun::PREFIJO_PROCESO_SERPER;
+            $query->whereNotIn('process', [
+                $prefijo . ImageAssignmentRun::ORIGEN_SELECCION,
+                $prefijo . ImageAssignmentRun::ORIGEN_ASISTENTE,
+                $prefijo . ImageAssignmentRun::ORIGEN_CATALOGO,
+            ]);
+        }
+
         // El dueño se recrea en cada setup de la demo: lo de antes de su alta es de otro lead.
         $alta = DB::table('users')->where('id', $dueno_id)->value('created_at');
 
@@ -107,9 +119,9 @@ class TopeSerperDemo
      * @param  \App\Models\User|int|null $dueno
      * @return int|null
      */
-    public static function restantes($dueno = null)
+    public static function restantes($dueno = null, bool $asignacion_de_imagenes = false)
     {
-        if (!self::aplica()) {
+        if (!self::aplica($dueno, $asignacion_de_imagenes)) {
             return null;
         }
 
@@ -123,9 +135,9 @@ class TopeSerperDemo
      * @param  \App\Models\User|int|null $dueno
      * @return bool
      */
-    public static function agotado($dueno = null)
+    public static function agotado($dueno = null, bool $asignacion_de_imagenes = false)
     {
-        return self::aplica() && self::restantes($dueno) <= 0;
+        return self::aplica($dueno, $asignacion_de_imagenes) && self::restantes($dueno, $asignacion_de_imagenes) <= 0;
     }
 
     /**
@@ -135,9 +147,9 @@ class TopeSerperDemo
      * @param  \App\Models\User|int|null $dueno
      * @return array  {aplica: bool, tope: int|null, usadas: int|null, restantes: int|null}
      */
-    public static function estado($dueno = null)
+    public static function estado($dueno = null, bool $asignacion_de_imagenes = false)
     {
-        if (!self::aplica()) {
+        if (!self::aplica($dueno, $asignacion_de_imagenes)) {
             return ['aplica' => false, 'tope' => null, 'usadas' => null, 'restantes' => null];
         }
 
@@ -167,9 +179,9 @@ class TopeSerperDemo
      * @throws \App\Services\ProductFacts\TopeSerperDemoAgotado
      * @throws \App\Services\ProductFacts\ProductFactsException
      */
-    public static function ejecutar($dueno, callable $llamada)
+    public static function ejecutar($dueno, callable $llamada, bool $asignacion_de_imagenes = false)
     {
-        if (!self::aplica()) {
+        if (!self::aplica($dueno, $asignacion_de_imagenes)) {
             return $llamada();
         }
 
@@ -185,7 +197,7 @@ class TopeSerperDemo
         }
 
         try {
-            if (self::restantes($dueno_id) <= 0) {
+            if (self::restantes($dueno_id, $asignacion_de_imagenes) <= 0) {
                 throw new TopeSerperDemoAgotado(self::MENSAJE);
             }
 
