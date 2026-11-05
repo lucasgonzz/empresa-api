@@ -25,7 +25,8 @@ class Exportar_Gastos_Test extends TestCase
         $empleado = User::factory()->create(['owner_id' => $dueno->id, 'admin_access' => false]);
         $this->actingAs($empleado, 'web')->getJson(self::URL)->assertStatus(403);
 
-        $permiso = PermissionEmpresa::where('slug', 'expense.index')->firstOrFail();
+        $permiso = PermissionEmpresa::where('slug', 'expense.index')->first()
+            ?? PermissionEmpresa::forceCreate(['slug' => 'expense.index', 'name' => 'Ver gastos', 'model_name' => 'Gastos']);
         $empleado->permissions()->attach($permiso->id);
         $this->getJson('/api/expense/export/data?from_date=2026-10-31&until_date=2026-10-01')
             ->assertStatus(422)->assertJsonValidationErrors('until_date');

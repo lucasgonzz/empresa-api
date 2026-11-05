@@ -39,15 +39,25 @@ class ExpenseController extends Controller
 
     public function exportData(Request $request)
     {
-        abort_unless($this->is_admin() || $this->user(false)->permissions->contains('slug', 'expense.index'), 403);
+        $persona = $this->user(false);
+        abort_unless(empty($persona->owner_id) || $persona->admin_access || $persona->permissions->contains('slug', 'expense.index'), 403);
 
         $fechas = $request->validate([
             'from_date' => 'required|date_format:Y-m-d',
             'until_date' => 'required|date_format:Y-m-d|after_or_equal:from_date',
         ]);
 
-        $consulta = $this->gastosDelRango($fechas['from_date'], $fechas['until_date']);
-        $models = $consulta
+        $models = DB::transaction(function () use ($fechas) {
+            return $this->datosDeExportacion($fechas['from_date'], $fechas['until_date']);
+        });
+
+        return response()->json(['models' => $models]);
+    }
+
+    private function datosDeExportacion($desde, $hasta)
+    {
+        // MySQL toma una sola instantánea para ambas lecturas dentro de la transacción.
+        $models = $this->gastosDelRango($desde, $hasta)
             ->select('expenses.id', 'expenses.num', 'expenses.expense_concept_id',
                 'expenses.amount', 'expenses.moneda_id', 'expenses.importe_iva', 'expenses.observations',
                 'expenses.current_acount_payment_method_id', 'conceptos.name as concepto',
@@ -79,7 +89,7 @@ class ExpenseController extends Controller
             $gasto->setRelation('pagos_exportacion', $pagos->get($gasto->id, collect()));
         }
 
-        return response()->json(['models' => $models]);
+        return $models;
     }
 
     public function store(Request $request) {
