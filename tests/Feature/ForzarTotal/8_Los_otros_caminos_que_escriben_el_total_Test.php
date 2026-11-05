@@ -374,8 +374,30 @@ class Los_otros_caminos_que_escriben_el_total_Test extends ForzarTotalTestCase
         $this->assertEqualsWithDelta(self::MONTO, (float) $venta->forzar_total_monto, self::DELTA);
         $this->assertEqualsWithDelta(self::FORZADO, (float) $venta->total, self::DELTA);
         $this->assertEqualsWithDelta(self::FORZADO, (float) $venta->articles->sole()->pivot->price, self::DELTA);
+    }
 
-        $venta->forzar_total_monto = null;
+    /** @test */
+    public function los_ajustes_que_se_compensan_no_marcan_la_consolidacion()
+    {
+        $cliente = $this->cliente(TestingFerreteriaSeeder::CLIENTE_CC);
+        $afip = AfipInformation::where('user_id', $this->comercio()->id)->firstOrFail();
+        $ids = [];
+        foreach ([self::MONTO, -self::MONTO] as $monto) {
+            $venta = $this->crear_venta_en_base([
+                'client_id' => $cliente->id,
+                'omitir_en_cuenta_corriente' => 1,
+                'total' => self::BRUTO + $monto,
+                'forzar_total_monto' => $monto,
+            ]);
+            $this->enganchar_articulo($venta, TestingFerreteriaSeeder::ARTICULO_CENTINELA, self::BRUTO, 1);
+            $ids[] = $venta->id;
+        }
+
+        $venta = ConsolidarFacturacionHelper::consolidar($ids, $cliente->id, $this->comercio()->id, $afip->id, 1, false, [], false);
+
+        $this->assertFalse($venta->ajustes_consolidados_en_renglones);
+        $this->assertNull($venta->forzar_total_monto);
         $this->assertNull(SaleHelper::motivo_por_el_que_no_se_puede_editar($venta));
+        $this->assertEqualsWithDelta(self::BRUTO * 2, SaleHelper::getTotalSale($venta), self::DELTA);
     }
 }

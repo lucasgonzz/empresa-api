@@ -341,7 +341,7 @@ class ConsolidarFacturacionHelper extends Controller
                 }), 2);
                 $ajustes_consolidados = [
                     'forzar_total_monto' => $monto == 0 ? null : $monto,
-                    'ajustes_consolidados_en_renglones' => true,
+                    'ajustes_consolidados_en_renglones' => $monto != 0,
                 ];
             }
 

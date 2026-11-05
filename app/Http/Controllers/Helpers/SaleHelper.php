@@ -943,8 +943,7 @@ class SaleHelper extends Controller {
             return 'La venta ya fue facturada. Una venta con comprobante AFIP emitido no se puede modificar.';
         }
 
-        if ($sale->is_consolidacion_facturacion && !empty($sale->ajustes_consolidados_en_renglones)
-            && (float) ($sale->forzar_total_monto ?? 0) != 0.0) {
+        if ($sale->is_consolidacion_facturacion && !empty($sale->ajustes_consolidados_en_renglones)) {
             return 'Esta venta consolidada conserva los importes de las ventas originales y no se puede modificar.';
         }
 
