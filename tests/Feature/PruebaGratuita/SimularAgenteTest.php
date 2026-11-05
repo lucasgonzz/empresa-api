@@ -133,6 +133,33 @@ class SimularAgenteTest extends EmpresaTestCase
         Http::assertNothingSent();
     }
 
+    public function test_el_limite_de_treinta_consultas_se_acumula_en_distintos_minutos(): void
+    {
+        $this->crear_articulo_indexado($this->dueno, 'Tuerca para estantes');
+        $inicio = now();
+
+        try {
+            for ($tanda = 0; $tanda < 3; $tanda++) {
+                $this->travelTo($inicio->copy()->addSeconds($tanda * 61));
+                for ($intento = 0; $intento < 10; $intento++) {
+                    $this->postJson(self::RUTA, ['pregunta' => self::PREGUNTA])->assertOk();
+                }
+            }
+
+            $this->travelTo($inicio->copy()->addSeconds(183));
+            $this->postJson(self::RUTA, ['pregunta' => self::PREGUNTA])
+                ->assertStatus(429)
+                ->assertHeader('Retry-After')
+                ->assertJsonPath('message', 'Alcanzaste el límite de 30 consultas en 24 horas para el simulador. Podés volver a probar cuando se renueve el cupo.');
+
+            Http::assertSentCount(60);
+            $this->travelTo($inicio->copy()->addDay()->addSecond());
+            $this->postJson(self::RUTA, ['pregunta' => self::PREGUNTA])->assertOk();
+        } finally {
+            $this->travelBack();
+        }
+    }
+
     private function crear_usuario(?int $owner_id = null): User
     {
         return User::create([
