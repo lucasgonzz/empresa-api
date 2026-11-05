@@ -9,6 +9,7 @@ use App\Models\AiAvisoDelAsistente;
 use App\Models\ImportacionDePrueba;
 use App\Models\Provider;
 use App\Models\User;
+use App\Services\Importacion\ImportacionDePruebaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -92,12 +93,20 @@ class ImportacionDePruebaController extends Controller
                 ->whereNull('avisado_por_whatsapp_at')->where('created_at', '>=', now()->subDay())->exists();
 
         return response()->json(['en_proceso' => $en_proceso, 'pendientes' => $corridas->map(function (ImportacionDePrueba $run) {
+            $preguntas = $run->preguntas ?? [];
+            $consultadas = array_slice($preguntas, 0, ImportacionDePruebaService::LIMITE_PREGUNTAS_POR_AVISO, true);
+            $pendientes = array_diff_key($preguntas, $run->decisiones ?? []);
+            foreach ($pendientes as $clave => &$pregunta) {
+                $pregunta['ya_consultada'] = isset($consultadas[$clave]);
+            }
+            unset($pregunta);
+
             return [
                 'analysis_uuid' => $run->uuid,
                 'filename' => $run->nombre,
                 'revision' => (int) $run->revision,
                 'tipo' => $run->estado,
-                'preguntas' => array_values(array_diff_key($run->preguntas ?? [], $run->decisiones ?? [])),
+                'preguntas' => array_values($pendientes),
             ];
         })]);
     }

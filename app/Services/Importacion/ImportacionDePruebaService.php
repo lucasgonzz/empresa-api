@@ -27,6 +27,8 @@ use Throwable;
 
 class ImportacionDePruebaService
 {
+    public const LIMITE_PREGUNTAS_POR_AVISO = 6;
+
     public function avanzar(ImportacionDePrueba $run): void
     {
         if (!PruebaHelper::en_periodo_vigente((int) $run->user_id) && in_array($run->estado, ['analizar', 'preparar'], true)) {
@@ -156,12 +158,18 @@ class ImportacionDePruebaService
             'preguntas' => $preguntas, 'decisiones' => $decisiones,
         ]);
 
-        $mensajes = array_column(array_slice($preguntas, 0, 6), 'texto');
-        $texto = 'Para seguir con «' . mb_substr($run->nombre, 0, 110) . '» (referencia ' . substr($run->uuid, 0, 8)
-            . '), necesito aclarar ' . (count($preguntas) === 1 ? 'esto' : 'estos datos') . '. ';
-        $texto .= $prefacio !== '' ? $prefacio . "\n\n" : "\n\n";
-        $texto .= implode("\n\n", $mensajes) . "\n\nRespondeme por acá y sigo con la carga.";
-        if (count($preguntas) > 6) {
+        $mensajes = array_column(array_slice($preguntas, 0, self::LIMITE_PREGUNTAS_POR_AVISO), 'texto');
+        $texto = $prefacio !== '' ? $prefacio . ' ' : '';
+        $texto .= count($mensajes) > 1 ? "Para seguir con la carga de tu Excel, necesito aclarar estos datos.\n\n" : '';
+        $texto .= implode("\n\n", $mensajes);
+        if (ImportacionDePrueba::where('user_id', $run->user_id)
+            ->where('support_ticket_id', $run->support_ticket_id)
+            ->where('id', '!=', $run->id)
+            ->whereIn('estado', array_merge(ImportacionDePrueba::EN_CURSO, ImportacionDePrueba::ESPERANDO_RESPUESTA))
+            ->exists()) {
+            $texto .= "\n\nArchivo «" . mb_substr($run->nombre, 0, 110) . '» (' . substr($run->uuid, 0, 8) . ').';
+        }
+        if (count($preguntas) > self::LIMITE_PREGUNTAS_POR_AVISO) {
             $texto .= ' Después te consulto lo que falte.';
         }
         $run->aviso('pregunta-' . $run->revision, $texto);

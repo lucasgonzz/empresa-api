@@ -17,6 +17,7 @@ use App\Models\ImportHistory;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\Provider;
+use App\Services\Importacion\PlanillaDePrueba;
 use Illuminate\Bus\Batch;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\Log;
@@ -51,6 +52,9 @@ class InitExcelImport
         $this->columns                  = ArticleImportColumnsNormalizer::normalize(
             is_array($data['columns'] ?? null) ? $data['columns'] : []
         );
+        if ($this->planilla_de_prueba === null) {
+            unset($this->columns[PlanillaDePrueba::DESCUENTOS_LATERALES]);
+        }
         /*
          * Prompt 310: flags "permitir_valores_en_blanco" por columna mapeada, normalizados con
          * los mismos alias que $this->columns para que ProcessRow los pueda cruzar por clave.

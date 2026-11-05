@@ -6,14 +6,17 @@ use App\Events\ImplementacionActualizada;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
+use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\Article;
+use App\Models\ArticleDiscount;
 use App\Models\EmbeddingRun;
 use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\Provider;
 use App\Services\Importacion\ImportacionDePruebaService;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
 use Illuminate\Http\UploadedFile;
@@ -152,6 +155,115 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->assertSame('Fila final por barras', Article::where('user_id', $this->dueno->id)->where('bar_code', '000123')->value('name'));
     }
 
+    public function test_importa_descripcion_y_descuentos_laterales_con_una_sola_consulta(): void
+    {
+        $proveedor_ajeno = Provider::create(['name' => 'Otro proveedor', 'user_id' => $this->dueno->id]);
+        $articulo_ajeno = Article::create([
+            'name' => 'Artículo existente', 'user_id' => $this->dueno->id, 'status' => 'active',
+            'provider_id' => $proveedor_ajeno->id, 'provider_code' => 'O-1',
+        ]);
+        $descuento_ajeno = $articulo_ajeno->article_discounts()->create([
+            'provider_id' => $proveedor_ajeno->id, 'percentage' => 9, 'origen' => ArticleDiscount::ORIGEN_COMPRA,
+        ]);
+        $divo = Provider::create(['name' => 'DIVO', 'user_id' => $this->dueno->id]);
+        $divo_existente = Article::create([
+            'name' => 'Cerradura zincada', 'user_id' => $this->dueno->id, 'status' => 'active',
+            'provider_id' => $divo->id, 'provider_code' => 'D-1',
+        ]);
+        $porcentaje_anterior = $divo_existente->article_discounts()->create([
+            'provider_id' => $divo->id, 'percentage' => 8, 'origen' => ArticleDiscount::ORIGEN_IMPORT,
+        ]);
+        $monto_previo = $divo_existente->article_discounts()->create([
+            'provider_id' => $divo->id, 'amount' => 37, 'origen' => ArticleDiscount::ORIGEN_COMPRA,
+        ]);
+        $bonificacion_de_otro_proveedor = $divo_existente->article_discounts()->create([
+            'provider_id' => $proveedor_ajeno->id, 'percentage' => 4, 'origen' => ArticleDiscount::ORIGEN_COMPRA,
+        ]);
+
+        $archivo = $this->planilla([[
+            ['proveedor', 'código', 'descripción', 'precio', null, null, 'moneda'],
+            ['DIVO', 'D-1', 'Cerradura zincada', 8989.30, null, null, 'pesos', 'DESCUENTOS'],
+            ['DIVO', 'D-2', 'Cerrojo', 9580, null, null, 'pesos', 'DIVO', '15 Y 22'],
+            ['TOUZON (FARK)', 'T-1', 'Giratorio', 84873, null, null, 'pesos', 'TOUZON', 5],
+            ['Otro proveedor', 'O-1', 'Artículo existente', 150, null, null, 'pesos'],
+        ]]);
+        $run = $this->corrida($archivo, 'analizar');
+        $this->analizador([[
+            'proveedor' => 0.99, 'codigo_de_proveedor' => 0.99, 'descripcion' => 0.60,
+            'precio' => 0.97, 'columna_e' => 0, 'columna_f' => 0,
+            'moneda' => 0.99, 'columna_h' => 0, 'columna_i' => 0,
+        ]], true);
+        $servicio = app(ImportacionDePruebaService::class);
+        $servicio->avanzar($run);
+        $run->refresh();
+
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_3'], array_keys($run->preguntas));
+        $aviso = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 20)->firstOrFail();
+        $this->assertSame('¿Me confirmás si el precio de la columna D de «Hoja 0» es de venta o es el costo?', $aviso->texto);
+
+        $this->postJson(self::BASE . 'prueba-resolver/' . $run->uuid, [
+            'user_id' => $this->dueno->id, 'support_ticket_id' => 20, 'revision' => 1,
+            'respuestas' => ['columna_0_3' => 'costo'],
+        ], ['X-Admin-Api-Key' => self::CLAVE])->assertStatus(202);
+        Bus::fake();
+        $servicio->avanzar($run->fresh());
+        $job = Bus::dispatched(ProcessArticleChunk::class)->first();
+        $this->assertInstanceOf(ProcessArticleChunk::class, $job);
+        $job->handle();
+
+        foreach ([
+            ['D-1', 'Cerradura zincada', 'DIVO', [15.0, 22.0]],
+            ['D-2', 'Cerrojo', 'DIVO', [15.0, 22.0]],
+            ['T-1', 'Giratorio', 'TOUZON (FARK)', [5.0]],
+        ] as [$codigo, $nombre, $proveedor, $porcentajes]) {
+            $articulo = Article::where('user_id', $this->dueno->id)->where('provider_code', $codigo)->firstOrFail();
+            $this->assertSame($nombre, $articulo->name);
+            $this->assertSame($proveedor, $articulo->provider->name);
+            $descuentos = $articulo->article_discounts()->where('provider_id', $articulo->provider_id)
+                ->whereNotNull('percentage')->orderBy('id')->get();
+            $this->assertSame($porcentajes, $descuentos->pluck('percentage')->map(function ($porcentaje) {
+                return (float) $porcentaje;
+            })->all());
+            $this->assertSame([$articulo->provider_id], $descuentos->pluck('provider_id')->unique()->values()->all());
+            $this->assertSame([ArticleDiscount::ORIGEN_IMPORT], $descuentos->pluck('origen')->unique()->values()->all());
+        }
+        $this->assertDatabaseHas('article_discounts', ['id' => $descuento_ajeno->id, 'origen' => ArticleDiscount::ORIGEN_COMPRA]);
+        $this->assertDatabaseHas('article_discounts', ['id' => $monto_previo->id, 'amount' => 37]);
+        $this->assertDatabaseHas('article_discounts', ['id' => $bonificacion_de_otro_proveedor->id, 'percentage' => 4]);
+        $this->assertDatabaseMissing('article_discounts', ['id' => $porcentaje_anterior->id]);
+    }
+
+    public function test_pendientes_indica_cuales_preguntas_quedaron_fuera_del_aviso(): void
+    {
+        $run = $this->corrida($this->planilla([[['Nombre'], ['Martillo']]]), 'columnas');
+        $preguntas = [];
+        for ($indice = 0; $indice < 7; $indice++) {
+            $clave = 'columna_0_' . $indice;
+            $preguntas[$clave] = ['clave' => $clave, 'texto' => '¿Qué dato es?', 'opciones' => [['valor' => 'ignorar', 'etiqueta' => 'Ignorar']]];
+        }
+        $run->update(['preguntas' => $preguntas, 'decisiones' => ['columna_0_0' => 'ignorar'], 'revision' => 1]);
+        $consulta = self::BASE . 'prueba-pendientes?user_id=' . $this->dueno->id . '&support_ticket_id=20';
+        $respuesta = $this->getJson($consulta, ['X-Admin-Api-Key' => self::CLAVE])->assertOk();
+        $this->assertSame([true, true, true, true, true, false], array_column($respuesta->json('pendientes.0.preguntas'), 'ya_consultada'));
+    }
+
+    public function test_conserva_nombre_y_descripcion_si_existen_y_consulta_una_columna_con_datos_tardios(): void
+    {
+        $filas = [['Nombre', 'Descripción', '', 'Código de proveedor']];
+        $filas[] = ['Cerradura', 'Detalle del acabado', '', 'D-1'];
+        $filas = array_merge($filas, array_fill(0, 80, [null]), [['Cerrojo', 'Otro acabado', 'Dato tardío', 'D-2']]);
+        $run = $this->corrida($this->planilla([$filas]), 'analizar');
+        $this->analizador([['nombre' => 0.99, 'descripcion' => 0.99, 'columna_c' => null, 'codigo_de_proveedor' => 0.99]], true);
+        app(ImportacionDePruebaService::class)->avanzar($run);
+        $run->refresh();
+
+        $this->assertSame('nombre', $run->hojas[0]['columnas'][0]['campo']);
+        $this->assertSame('descripcion', $run->hojas[0]['columnas'][1]['campo']);
+        $this->assertSame(['columna_0_2'], array_keys($run->preguntas));
+        $this->assertStringContainsString('Dato tardío', $run->preguntas['columna_0_2']['texto']);
+    }
+
     public function test_hitos_persisten_lectura_y_aprobacion_al_avanzar(): void
     {
         Event::fake([ImplementacionActualizada::class]);
@@ -266,18 +378,27 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         return $archivo;
     }
 
-    private function analizador(array $por_hoja): void
+    private function analizador(array $por_hoja, bool $encabezado_real = false): void
     {
         $analizador = Mockery::mock(AiExcelAnalyzer::class);
-        $analizador->shouldReceive('analyze')->times(count($por_hoja))->andReturnUsing(function ($ruta, $nombre, array $opciones) use ($por_hoja) {
+        $analizador->shouldReceive('analyze')->times(count($por_hoja))->andReturnUsing(function ($ruta, $nombre, array $opciones) use ($por_hoja, $encabezado_real) {
+            $columnas = $por_hoja[$opciones['hoja']];
+            $encabezado = $encabezado_real ? ExcelHeaderDetector::detectar_en($ruta, $opciones['hoja'])
+                : ['fila' => 1, 'columnas' => array_keys($columnas)];
             $mapeo = [];
-            foreach ($por_hoja[$opciones['hoja']] as $campo => $confianza) {
+            foreach (array_keys($columnas) as $posicion => $campo) {
+                if ($columnas[$campo] === null) {
+                    continue;
+                }
                 $mapeo[] = [
-                    'system_property' => $campo, 'confidence' => $confianza,
-                    'excel_column_index' => count($mapeo), 'excel_column' => $campo,
+                    'system_property' => $campo, 'confidence' => $columnas[$campo],
+                    'excel_column_index' => $posicion, 'excel_column' => $campo,
                 ];
             }
-            return ['column_mapping' => $mapeo, 'encabezado_detectado' => ['fila' => 1, 'columnas' => array_keys($por_hoja[$opciones['hoja']])]];
+            return [
+                'column_mapping' => $mapeo, 'encabezado_detectado' => $encabezado,
+                'columnas_sin_nombre' => $encabezado['columnas_sin_nombre'] ?? [],
+            ];
         });
         $this->app->bind(AiExcelAnalyzer::class, function () use ($analizador) { return $analizador; });
     }
