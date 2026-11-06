@@ -8,6 +8,8 @@ use Illuminate\Http\Request;
 
 class DemoChatController extends Controller
 {
+    private const PASOS_GUIA_VENDER = ['abrir_buscador', 'escribir_nombre', 'buscar_nombre', 'elegir_resultado', 'codigo_barras'];
+
     public function index(Request $request, DemoChatProxy $proxy)
     {
         return $this->en_demo($request) ? $proxy->solicitar('GET') : response(null, 204);
@@ -27,6 +29,17 @@ class DemoChatController extends Controller
             'contenido' => 'required|string|max:4000',
             'cliente_uuid' => 'required|uuid',
         ]);
+        $guia = $request->input('guia');
+        if (is_array($guia) && ($guia['version'] ?? null) === 1 && ($guia['pantalla'] ?? null) === 'vender') {
+            $paso = $guia['paso'] ?? null;
+            if ($paso === null || in_array($paso, self::PASOS_GUIA_VENDER, true)) {
+                $datos['guia'] = ['version' => 1, 'pantalla' => 'vender'];
+                if ($paso !== null) {
+                    $datos['guia']['paso'] = $paso;
+                }
+            }
+        }
+
         return $proxy->solicitar('POST', '/mensajes', $datos);
     }
 

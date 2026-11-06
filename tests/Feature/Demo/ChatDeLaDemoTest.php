@@ -83,6 +83,19 @@ class ChatDeLaDemoTest extends TestCase
         $this->demo()->getJson('/api/demo/chat')->assertOk()->assertExactJson(['disponible' => false]);
     }
 
+    public function test_mensaje_reenvia_el_contexto_valido_de_guia_y_descarta_el_invalido()
+    {
+        Http::fake(['admin.test/*' => Http::response($this->snapshot(), 202)]);
+        $mensaje = ['contenido' => 'Busco por nombre', 'cliente_uuid' => '7c3f10ec-a624-4357-b30a-95186697001a'];
+        $guia = ['version' => 1, 'pantalla' => 'vender', 'paso' => 'escribir_nombre'];
+        $this->demo()->postJson('/api/demo/chat/mensajes', $mensaje + ['guia' => $guia + ['selector' => 'body']])->assertStatus(202);
+        $this->postJson('/api/demo/chat/mensajes', $mensaje + ['guia' => ['version' => 1, 'pantalla' => 'vender', 'paso' => 'body']])->assertStatus(202);
+        $this->postJson('/api/demo/chat/mensajes', $mensaje + ['guia' => 'vender'])->assertStatus(202);
+
+        $datos = Http::recorded()->map(function ($par) { return $par[0]->data(); })->all();
+        $this->assertSame([$mensaje + ['guia' => $guia], $mensaje, $mensaje], $datos);
+    }
+
     public function test_seleccionar_reenvia_solo_clave_y_uuid_con_la_sesion_del_servidor()
     {
         $snapshot = $this->snapshot();
