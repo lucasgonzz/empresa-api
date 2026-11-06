@@ -8,6 +8,7 @@ use App\Models\PruebaConfig;
 use App\Models\PruebaHito;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -185,6 +186,25 @@ class PruebaHelper
     public static function en_periodo_vigente($owner_id): bool
     {
         return self::activa($owner_id) && optional(self::vence_at($owner_id))->isFuture() === true;
+    }
+
+    /**
+     * El hilo pertenece al dueño que pidió la prueba. Las sesiones de soporte y las cuentas de
+     * empleados pueden trabajar en el sistema, pero no se hacen pasar por él en esta conversación.
+     */
+    public static function puede_usar_chat(User $user, Request $request): bool
+    {
+        if (!self::puede_haber_prueba() || !empty($user->owner_id) || !$request->hasSession()) {
+            return false;
+        }
+
+        $sesion = $request->session();
+        $dueno_web = $request->user('web');
+
+        return $dueno_web !== null && (int) $dueno_web->id === (int) $user->id
+            && !$sesion->has('acceso_soporte_token_id')
+            && !$sesion->get('master_login_bypass_user_last_activity', false)
+            && self::en_periodo_vigente((int) $user->id);
     }
 
     public static function error_catalogo_para_probar_agente(int $owner_id): ?array
@@ -577,6 +597,7 @@ class PruebaHelper
         }
 
         $user->prueba = self::resumen_para_spa(self::owner_id_de($user));
+        $user->puede_usar_chat_prueba = self::puede_usar_chat($user, request());
 
         return $user;
     }

@@ -11,21 +11,44 @@ class DemoChatProxy
 {
     public function solicitar($metodo, $sufijo = '', array $datos = [])
     {
+        return $this->enviar($metodo, $sufijo, $datos, 'demo-chat');
+    }
+
+    public function solicitar_prueba($metodo, $sufijo = '', array $datos = [])
+    {
+        return $this->enviar($metodo, $sufijo, $datos, 'prueba-chat');
+    }
+
+    private function enviar($metodo, $sufijo, array $datos, $canal)
+    {
         $config = DemoTrackingConfigHelper::actual();
         if (!$config || !$config->eventos_token) {
             return response()->json(['disponible' => false]);
         }
 
-        $url = self::url($config->eventos_url, $sufijo);
+        $es_prueba = $canal === 'prueba-chat';
+        $url = $es_prueba ? self::url_prueba($sufijo) : self::url($config->eventos_url, $sufijo);
         if (!$url) {
             return response()->json(['disponible' => false]);
         }
 
+        $headers = [
+            'Accept' => 'application/json',
+            'X-Demo-Eventos-Key' => $config->eventos_token,
+        ];
+        $clave_instancia = $es_prueba ? trim((string) config('services.admin_api.inbound_key')) : '';
+        if ($es_prueba) {
+            if ($clave_instancia === '') {
+                return response()->json(['disponible' => false]);
+            }
+            $headers['X-Admin-Api-Key'] = $clave_instancia;
+        }
+
         try {
-            $http = Http::withHeaders([
-                'Accept' => 'application/json',
-                'X-Demo-Eventos-Key' => $config->eventos_token,
-            ])->timeout(8);
+            $http = Http::withHeaders($headers)->timeout(8);
+            if ($es_prueba) {
+                $http->withoutRedirecting();
+            }
             $respuesta = $metodo === 'GET' ? $http->get($url) : $http->post($url, $datos);
 
             // Una actualización por etapas conserva el recorrido de la API anterior.
@@ -43,9 +66,23 @@ class DemoChatProxy
             }
             return response()->json($cuerpo, $respuesta->status());
         } catch (\Throwable $e) {
-            Log::warning('DemoChatProxy: no se pudo consultar al asistente: ' . DemoTrackingConfigHelper::ocultar_token($e->getMessage(), $config->eventos_token));
+            $error = DemoTrackingConfigHelper::ocultar_token($e->getMessage(), $config->eventos_token);
+            Log::warning('DemoChatProxy: no se pudo consultar al asistente: ' . DemoTrackingConfigHelper::ocultar_token($error, $clave_instancia));
             return response()->json(['message' => 'No pudimos conectar con el asistente. Volvé a intentar.'], 503);
         }
+    }
+
+    private static function url_prueba($sufijo)
+    {
+        // La clave de la instancia solo se envía al Admin del entorno, nunca a una URL del setup.
+        $base = rtrim(trim((string) config('services.admin_api.url')), '/');
+        if ($base === '') {
+            return null;
+        }
+        if (substr($base, -4) !== '/api') {
+            $base .= '/api';
+        }
+        return $base . '/prueba-chat' . $sufijo;
     }
 
     public static function url($eventos_url, $sufijo = '')

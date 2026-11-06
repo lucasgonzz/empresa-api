@@ -12,8 +12,8 @@ use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
 /**
- * El asistente lateral y la guía de la demo NO existen en una prueba gratuita (4/11/2026, misión
- * prueba-defectos-asistente-y-vender).
+ * El asistente de demo no se activa en una prueba gratuita. La prueba tiene su propio chat de ayuda
+ * para el dueño mientras su período siga vigente.
  *
  * La prueba entra por el mismo link mágico que una demo, así que su sesión lleva el marcador
  * `demo_ingreso_token_id` y el SPA montaba «Tu asistente de la demo». Ese chat vive del lado del
@@ -42,8 +42,8 @@ class AsistenteDeLaDemoEnPruebaTest extends TestCase
         config(['broadcasting.default' => 'null']);
 
         $this->dueno = User::create([
-            'name'     => 'Prueba sin asistente',
-            'email'    => uniqid('prueba-sin-asistente-') . '@test.local',
+            'name'     => 'Prueba del asistente lateral',
+            'email'    => uniqid('prueba-asistente-') . '@test.local',
             'password' => bcrypt('prueba-local'),
         ]);
 
@@ -161,5 +161,119 @@ class AsistenteDeLaDemoEnPruebaTest extends TestCase
 
         $respuesta->assertStatus(200);
         $this->assertNotNull($respuesta->json('user'));
+    }
+
+    private function activar_prueba()
+    {
+        config([
+            'app.FOR_USER' => 'prueba',
+            'services.admin_api.url' => 'https://admin.test',
+            'services.admin_api.inbound_key' => 'clave-interna-de-la-instancia',
+        ]);
+        PruebaHelper::activar_desde_payload($this->dueno, ['dias' => 7]);
+        DemoTrackingConfigHelper::guardar('clave-interna-de-prueba', 'https://tracking.test/api/demo-eventos');
+    }
+
+    public function test_el_dueno_de_prueba_activa_ve_el_chat_con_o_sin_link_magico()
+    {
+        $this->activar_prueba();
+        $this->getJson('/api/user')->assertOk()
+            ->assertJsonPath('user.puede_usar_chat_prueba', true)
+            ->assertJsonPath('user.es_sesion_demo', false);
+        $this->sesion_de_link_magico()->getJson('/api/user')->assertOk()
+            ->assertJsonPath('user.puede_usar_chat_prueba', true)
+            ->assertJsonPath('user.es_sesion_demo', false);
+    }
+
+    public function test_chat_propio_de_prueba_usa_el_canal_autenticado_sin_datos_de_demo()
+    {
+        $this->activar_prueba();
+        Http::fake(['admin.test/*' => Http::response($this->snapshot(), 200)]);
+        $uuid = 'c7bbd2f1-87f8-4f48-a534-319f43e33d7b';
+
+        $this->getJson('/api/prueba/chat')->assertOk()->assertExactJson($this->snapshot());
+        $this->postJson('/api/prueba/chat/iniciar')->assertOk()->assertExactJson($this->snapshot());
+        $this->postJson('/api/prueba/chat/mensajes', [
+            'contenido' => '¿Cómo cargo mis artículos?',
+            'cliente_uuid' => $uuid,
+            'lead_id' => 42,
+            'guia' => ['version' => 1, 'pantalla' => 'vender'],
+        ])->assertOk()->assertExactJson($this->snapshot());
+        $this->postJson('/api/prueba/chat/mensajes', ['contenido' => 'Falta el UUID'])->assertStatus(422);
+        Http::assertSentCount(3);
+        Http::assertSent(function ($request) use ($uuid) {
+            return $request->url() === 'https://admin.test/api/prueba-chat/mensajes'
+                && $request->hasHeader('X-Demo-Eventos-Key', 'clave-interna-de-prueba')
+                && $request->hasHeader('X-Admin-Api-Key', 'clave-interna-de-la-instancia')
+                && $request->data() === ['contenido' => '¿Cómo cargo mis artículos?', 'cliente_uuid' => $uuid];
+        });
+        Http::assertSent(function ($request) {
+            return $request->url() === 'https://admin.test/api/prueba-chat/iniciar'
+                && $request->method() === 'POST';
+        });
+        Http::assertSent(function ($request) {
+            return $request->url() === 'https://admin.test/api/prueba-chat' && $request->method() === 'GET';
+        });
+        Http::assertNotSent(function ($request) {
+            return strpos($request->url(), 'https://tracking.test/') === 0;
+        });
+    }
+
+    public function test_un_admin_viejo_no_rebota_al_canal_demo()
+    {
+        $this->activar_prueba();
+        Http::fake(['admin.test/*' => Http::response([], 404)]);
+        $this->postJson('/api/prueba/chat/iniciar')->assertOk()->assertExactJson(['disponible' => false]);
+        Http::assertSentCount(1);
+    }
+
+    public function test_la_prueba_vencida_conserva_la_respuesta_de_vencimiento()
+    {
+        $this->activar_prueba();
+        PruebaHelper::fijar_vencimiento($this->dueno->id, now()->subMinute());
+        Http::fake();
+
+        $this->getJson('/api/prueba/chat')->assertForbidden()->assertJsonPath('error', 'prueba_vencida');
+        Http::assertNothingSent();
+    }
+
+    public function test_cuenta_convertida_a_pago_no_conserva_el_chat()
+    {
+        $this->activar_prueba();
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        Http::fake();
+
+        $this->getJson('/api/user')->assertOk()->assertJsonPath('user.puede_usar_chat_prueba', false);
+        $this->getJson('/api/prueba/chat')->assertStatus(204);
+        Http::assertNothingSent();
+    }
+
+    public function test_solo_el_dueno_puede_leer_el_hilo_de_la_prueba()
+    {
+        $this->activar_prueba();
+        $empleado = User::create([
+            'name' => 'Empleado',
+            'email' => uniqid('empleado-prueba-') . '@test.local',
+            'password' => bcrypt('prueba-local'),
+            'owner_id' => $this->dueno->id,
+        ]);
+        Http::fake();
+
+        $this->actingAs($empleado, 'web')->getJson('/api/prueba/chat')->assertStatus(204);
+        $this->actingAs($this->dueno, 'web')->withSession(['master_login_bypass_user_last_activity' => true])
+            ->getJson('/api/prueba/chat')->assertStatus(204);
+        Http::assertNothingSent();
+    }
+
+    public function test_demo_y_visita_anonima_no_usan_el_chat_de_prueba()
+    {
+        config(['app.FOR_USER' => 'demo']);
+        Http::fake();
+        $this->sesion_de_link_magico()->getJson('/api/prueba/chat')->assertStatus(204);
+
+        auth()->guard('web')->logout();
+        auth()->forgetGuards();
+        $this->getJson('/api/prueba/chat')->assertUnauthorized();
+        Http::assertNothingSent();
     }
 }
