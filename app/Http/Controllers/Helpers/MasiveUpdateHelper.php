@@ -166,6 +166,10 @@ class MasiveUpdateHelper
             return self::respuesta_de_encolado(422, ['message' => 'La configuración de WhatsApp no se actualiza en forma masiva.']);
         }
 
+        if (strtolower($formated_model_name) === strtolower(\App\Models\WhatsappChat::class)) {
+            return self::respuesta_de_encolado(422, ['message' => 'Los chats de WhatsApp se administran desde su conversación.']);
+        }
+
         $from_filter = (boolean) $from_filter;
         $models_id = is_array($models_id) ? $models_id : [];
         // Un filter_form ausente entra al search como lista vacía (sin filtros efectivos → 422),

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Models\Article;
 use App\Models\ExcelAnalysisRun;
 use App\Models\PruebaConfig;
 use App\Models\PruebaHito;
@@ -184,6 +185,26 @@ class PruebaHelper
     public static function en_periodo_vigente($owner_id): bool
     {
         return self::activa($owner_id) && optional(self::vence_at($owner_id))->isFuture() === true;
+    }
+
+    public static function error_catalogo_para_probar_agente(int $owner_id): ?array
+    {
+        if (SemillaRegistroHelper::semilla_presente($owner_id)) {
+            return [
+                'code' => 'catalogo_de_ejemplo',
+                'message' => 'Importá tu catálogo para probar el agente con tus productos.',
+            ];
+        }
+
+        // El sello se escribe al generar el vector, que no hace falta leer para validar la prueba.
+        if (! Article::where('user_id', $owner_id)->where('status', 'active')->whereNotNull('embedding_generated_at')->exists()) {
+            return [
+                'code' => 'catalogo_sin_indexar',
+                'message' => 'Todavía no hay artículos listos para responder. Si recién importaste tu catálogo, esperá unos minutos y volvé a probar.',
+            ];
+        }
+
+        return null;
     }
 
     /**

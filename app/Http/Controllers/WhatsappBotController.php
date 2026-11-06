@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\User;
@@ -164,7 +165,7 @@ class WhatsappBotController extends Controller
      *                             la vista.
      * @return void
      */
-    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false, $media = null, &$stored_message = null): void
+    public function process_inbound(WhatsappBotConfig $config, $from, $body, array $payload, $is_simulated = false, $media = null, &$stored_message = null, ?WhatsappChat $test_chat = null): void
     {
         $user_id = (int) $config->user_id;
 
@@ -178,7 +179,7 @@ class WhatsappBotController extends Controller
         ]);
 
         // Persiste el chat (con auto-vinculación de cliente si corresponde) y el mensaje 'in'.
-        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated, $media, $stored_message);
+        $chat = WhatsappChatHelper::store_inbound_message($user_id, $from, (string) $body, $payload, $config, (bool) $is_simulated, $media, $stored_message, $test_chat);
 
         // El scheduler aplica el debounce configurado: descarta lo que quedó pendiente de
         // confirmación, bumpea el token y encola el job que genera la respuesta.
@@ -465,13 +466,27 @@ class WhatsappBotController extends Controller
         }
 
         $request->validate([
-            'phone' => 'required|string|max:40',
+            'phone' => 'required_without:chat_id|nullable|string|max:40',
+            'chat_id' => 'nullable|integer',
             'body'  => 'required|string|max:2000',
         ]);
 
         $user_id = (int) $this->userId();
 
-        $config = WhatsappBotConfig::where('user_id', $user_id)->first();
+        $chat = null;
+        if ($request->filled('chat_id')) {
+            $chat = WhatsappChat::where('user_id', $user_id)->find($request->input('chat_id'));
+            if (is_null($chat)) {
+                return response()->json(['message' => 'Chat no encontrado.'], 404);
+            }
+        }
+
+        $test_chat = $chat && $chat->is_test ? $chat : null;
+        if ($test_chat && PruebaHelper::vencida_para($request->user())) {
+            return response()->json(['message' => 'La prueba gratuita ya terminó.'], 403);
+        }
+
+        $config = $chat ? $chat->bot_config() : WhatsappBotConfig::where('user_id', $user_id)->first();
         if (is_null($config)) {
             return response()->json(['message' => 'Todavía no hay una configuración de WhatsApp para esta empresa.'], 422);
         }
@@ -479,13 +494,16 @@ class WhatsappBotController extends Controller
         // El checkbox de la pantalla de Configuración solo esconde el botón: si el endpoint
         // igual aceptara la llamada, cualquiera con Postman podría simular con el toggle
         // "apagado". Este guard es lo que hace que el checkbox sea honesto.
-        if (! $config->chat_simulation_enabled) {
+        if (! $test_chat && ! $config->chat_simulation_enabled) {
             return response()->json([
                 'message' => 'La simulación de mensajes está desactivada. Activala en Configuración del agente.',
             ], 422);
         }
 
-        $phone = trim((string) $request->phone);
+        $phone = $chat ? $chat->phone : trim((string) $request->phone);
+        if (! $test_chat && WhatsappPhoneHelper::normalize($phone) === '') {
+            return response()->json(['message' => 'Teléfono inválido.'], 422);
+        }
         $body  = trim((string) $request->body);
 
         if ($body === '') {
@@ -519,14 +537,10 @@ class WhatsappBotController extends Controller
         // Kapso de verdad para el mismo chat en el medio. Ahi se le devolveria a la SPA un mensaje
         // que no es el que se simulo, con 201 y sin ningun error a la vista.
         $mensaje = null;
-        $this->process_inbound($config, $phone, $body, $payload, true, null, $mensaje);
-
-        $chat = WhatsappChat::where('user_id', $user_id)
-            ->where('phone', WhatsappPhoneHelper::normalize($phone))
-            ->first();
+        $this->process_inbound($config, $phone, $body, $payload, true, null, $mensaje, $test_chat);
 
         return response()->json([
-            'model'   => is_null($chat) ? null : $this->fullModel('WhatsappChat', $chat->id),
+            'model'   => $mensaje ? $this->fullModel('WhatsappChat', $mensaje->whatsapp_chat_id) : null,
             'message' => $mensaje,
         ], 201);
     }

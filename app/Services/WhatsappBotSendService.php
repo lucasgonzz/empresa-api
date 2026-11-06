@@ -37,6 +37,11 @@ class WhatsappBotSendService
         return is_string($wa_message_id) && strpos($wa_message_id, self::PREFIJO_ID_SIMULADO) === 0;
     }
 
+    public static function id_de_prueba(): string
+    {
+        return self::PREFIJO_ID_SIMULADO.bin2hex(random_bytes(12));
+    }
+
     /**
      * Envía un mensaje de texto al número destino usando la configuración del bot.
      *

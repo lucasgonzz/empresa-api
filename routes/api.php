@@ -84,6 +84,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::post('implementacion/{id}/visto', 'ImplementacionController@visto');
     Route::post('implementacion/{id}/aprobar', 'ImplementacionController@aprobar');
     Route::post('prueba/simular-agente', 'PruebaController@simular_agente')
+        ->name('prueba.simular-agente')
         ->middleware(['check_extencion_empresa:agentes_ia', 'throttle:prueba-simular-agente']);
 
     // CommonLaravel
@@ -1288,9 +1289,12 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
     Route::get('whatsapp-chats/{id}/messages', 'WhatsappChatController@messages');
     Route::post('whatsapp-chats', 'WhatsappChatController@store');
     Route::post('whatsapp-chats/{id}/messages', 'WhatsappChatController@send_message');
-    Route::post('whatsapp-chats/{id}/suggest', 'WhatsappChatController@suggest');
+    Route::post('whatsapp-chats/{id}/suggest', 'WhatsappChatController@suggest')
+        ->name('whatsapp.suggest')
+        ->middleware('throttle:prueba-simular-agente');
     Route::post('whatsapp-chats/{id}/summary', 'WhatsappChatController@summary');
     Route::put('whatsapp-chats/{id}/toggle-ai', 'WhatsappChatController@toggle_ai');
+    Route::put('whatsapp-chats/{id}/ai-mode', 'WhatsappChatController@set_ai_mode');
     Route::put('whatsapp-chats/{id}/link-client', 'WhatsappChatController@link_client');
     Route::put('whatsapp-chats/{id}/read', 'WhatsappChatController@mark_read');
     // Misión senal-pedidos-y-consultas-del-agente: «Ya lo atendí», apaga el pedido o la consulta que el agente dejó marcados.
@@ -1349,7 +1353,7 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
     // La respuesta que genera el agente para un entrante simulado NO sale por Kapso: la frena
     // WhatsappBotSendService::chat_en_simulacion(), y el porqué está escrito ahí.
     Route::post('whatsapp-bot/simulate-inbound', 'WhatsappBotController@simulate_inbound')
-        ->middleware('throttle:10,1');
+        ->middleware('throttle:prueba-simular-agente');
 });
 
 // Callback público Mercado Libre (notificaciones); sin auth Sanctum.

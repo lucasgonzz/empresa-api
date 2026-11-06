@@ -1188,7 +1188,7 @@ class RecordatorioCobroSenderService
      */
     public static function buscar_chat($owner_id, Client $client)
     {
-        $chat = WhatsappChat::where('user_id', $owner_id)
+        $chat = WhatsappChat::where('user_id', $owner_id)->realContacts()
             ->where('client_id', $client->id)
             ->first();
 

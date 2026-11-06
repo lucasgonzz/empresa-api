@@ -25,6 +25,12 @@ class WhatsappChat extends Model
     const FOLLOW_UP_PEDIDO = 'pedido';
     const FOLLOW_UP_CONSULTA = 'consulta';
 
+    const MODE_AUTOMATIC = 'automatic';
+    const MODE_SEMI_AUTOMATIC = 'semi_automatic';
+    const MODE_MANUAL = 'manual';
+    const TEST_PHONE_PREFIX = 'test-';
+    const TRIAL_TEST_PHONE = 'test-trial';
+
     /**
      * Resultado memoizado de `follow_up_available()`: solo se guarda el `true` (ver ese método).
      *
@@ -34,19 +40,48 @@ class WhatsappChat extends Model
 
     protected $guarded = [];
 
+    protected $appends = ['is_test', 'ai_mode'];
+
     protected $casts = [
-        // Respuesta automática de IA prendida/apagada para este chat puntual.
         'ai_enabled' => 'boolean',
         'last_message_at' => 'datetime',
         'last_inbound_at' => 'datetime',
-        // Desde cuándo espera el seguimiento (misión senal-pedidos-y-consultas-del-agente).
         'follow_up_at' => 'datetime',
-        // Contador del debounce del agente (misión whatsapp-agente). Lo escribe y lo lee
-        // `WhatsappAgentScheduler` por query builder crudo, no por el modelo; el cast está
-        // para que si alguna vez sale serializado en una respuesta o en un broadcast salga
-        // como número y no como el string que devuelve el driver de MySQL.
         'ai_schedule_token' => 'integer',
     ];
+
+    public function getIsTestAttribute(): bool
+    {
+        return strpos((string) $this->phone, self::TEST_PHONE_PREFIX) === 0;
+    }
+
+    public function getAiModeAttribute(): string
+    {
+        return $this->configured_ai_mode ?: ($this->ai_enabled ? self::MODE_AUTOMATIC : self::MODE_MANUAL);
+    }
+
+    public static function configured_ai_mode_available(): bool
+    {
+        return Schema::hasColumn('whatsapp_chats', 'configured_ai_mode');
+    }
+
+    public function scopeRealContacts($query)
+    {
+        return $query->where('phone', 'not like', self::TEST_PHONE_PREFIX.'%');
+    }
+
+    public function bot_config(): ?WhatsappBotConfig
+    {
+        $config = WhatsappBotConfig::where('user_id', $this->user_id)->first();
+
+        // La prueba usa el catálogo y el perfil del comercio aunque no conectó su línea.
+        return $config ?? ($this->is_test ? new WhatsappBotConfig(['user_id' => $this->user_id]) : null);
+    }
+
+    public function can_generate_ai(WhatsappBotConfig $config): bool
+    {
+        return ($this->is_test || $config->is_active) && $this->ai_mode !== self::MODE_MANUAL;
+    }
 
     /**
      * Relaciones a precargar cuando el controller pide el modelo completo vía
@@ -94,6 +129,10 @@ class WhatsappChat extends Model
      */
     public function is_within_service_window()
     {
+        if ($this->is_test) {
+            return true;
+        }
+
         if (is_null($this->last_inbound_at)) {
             return false;
         }

@@ -585,7 +585,7 @@ class SaleWhatsappSenderService
     {
         $chat = null;
         if (! is_null($client)) {
-            $chat = WhatsappChat::where('user_id', $owner_id)
+            $chat = WhatsappChat::where('user_id', $owner_id)->realContacts()
                 ->where('client_id', $client->id)
                 ->first();
         }

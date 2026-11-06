@@ -47,8 +47,32 @@ class WhatsappAiAutoSendScheduler
         }
 
         $message_id = (int) $message->id;
-        $token = $this->bump_token($message_id);
-        $delay = (int) $config->ai_confirm_delay_seconds;
+        $schedule = DB::transaction(function () use ($message, $config, $message_id) {
+            $chat = WhatsappChat::whereKey($message->whatsapp_chat_id)->lockForUpdate()->first();
+            if (! $chat || $chat->ai_mode !== WhatsappChat::MODE_AUTOMATIC) {
+                return null;
+            }
+
+            $current = WhatsappChatMessage::whereKey($message_id)->lockForUpdate()->first();
+            if (! $current || $current->ai_status !== 'a_confirmar') {
+                return null;
+            }
+
+            $token = $this->bump_token($message_id);
+            // El modo elegido en el chat manda. Los chats viejos conservan su demora global.
+            $delay = $chat->configured_ai_mode === null ? (int) $config->ai_confirm_delay_seconds : 0;
+            if ($delay > 0) {
+                $current->ai_auto_send_at = now()->addSeconds($delay);
+                $current->save();
+            }
+
+            return [$token, $delay, $current];
+        });
+        if ($schedule === null) {
+            return;
+        }
+
+        [$token, $delay, $message] = $schedule;
 
         if ($delay <= 0) {
             // Demora 0 = comportamiento de siempre: sale sin pasar por ninguna confirmación.
@@ -66,10 +90,7 @@ class WhatsappAiAutoSendScheduler
             return;
         }
 
-        $auto_send_at = now()->addSeconds($delay);
-
-        $message->ai_auto_send_at = $auto_send_at;
-        $message->save();
+        $auto_send_at = $message->ai_auto_send_at;
 
         AutoSendWhatsappAiMessageJob::dispatch($message_id, $token)->delay($auto_send_at);
 
