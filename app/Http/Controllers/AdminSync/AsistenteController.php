@@ -15,6 +15,7 @@ use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiMessage;
 use App\Models\MostradorReporte;
+use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -89,6 +90,28 @@ class AsistenteController extends Controller
      * de la lista sigue siendo `avisado_at`.
      */
     const DIAS_DE_INFORMES_PENDIENTES = 3;
+
+    /** Confirma que el admin puede ofrecer el canal de WhatsApp a este dueño. */
+    public function disponibilidad(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+        if ($rechazo !== null) {
+            return $rechazo;
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+        if (!(new AsistenteIaService())->hay_credenciales($dueno)) {
+            return response()->json(['disponible' => false, 'motivo' => 'ia_sin_credenciales'], 503);
+        }
+
+        // El escaneo posterior de la factura usa Anthropic, incluso si responde DeepSeek.
+        if (trim((string) config('services.anthropic.api_key')) === '') {
+            return response()->json(['disponible' => false, 'motivo' => 'escaneo_factura_sin_credenciales'], 503);
+        }
+
+        // Los embeddings del agente de ventas no condicionan al asistente personal.
+        return response()->json(['disponible' => true, 'user_id' => (int) $dueno->id]);
+    }
 
     /**
      * POST admin-sync/asistente/mensajes  (multipart/form-data)
