@@ -13,7 +13,7 @@ class Orden_de_listas_Test extends ListasSiempreTestCase
         Queue::fake();
         [$dueno, $base] = $this->con_precio_final($this->dueno_nuevo());
         $mayorista = $this->otra_lista($dueno, 'Mayorista', 20, 6);
-        $articulo = $this->articulo($dueno, 'artículo abierto', ['cost' => 1000]);
+        $articulo = $this->articulo($dueno, 'artículo abierto', ['cost' => 1000, 'aplicar_iva' => 0]);
         $this->actingAs($dueno, 'web');
 
         $respuesta = $this->postJson('api/price-type', [
