@@ -4,7 +4,6 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
-use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAiAutoSendScheduler;
@@ -101,7 +100,7 @@ class AutoSendWhatsappAiMessageJob implements ShouldQueue
                 return;
             }
 
-            $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+            $config = $chat->bot_config();
             if (is_null($config)) {
                 Log::channel('daily')->warning('AutoSendWhatsappAiMessageJob: sin configuración de WhatsApp para la empresa.', [
                     'message_id' => $this->message_id,
@@ -119,7 +118,11 @@ class AutoSendWhatsappAiMessageJob implements ShouldQueue
             // plazo, encima del que ya había mandado el operador a mano.
             // No se borra la respuesta pendiente: apagar el bot no es descartarla. Queda en
             // 'a_confirmar' con el motivo escrito, y el operador decide si la manda o no.
-            if (! $config->is_active || ! $chat->ai_enabled) {
+            if ($chat->ai_mode === WhatsappChat::MODE_SEMI_AUTOMATIC) {
+                return;
+            }
+
+            if (! $chat->can_generate_ai($config)) {
                 $message->send_error = 'No se envió automáticamente: la respuesta con IA quedó apagada en este chat o en la empresa. Confirmalo a mano si querés mandarlo igual.';
                 $message->save();
 
@@ -158,7 +161,7 @@ class AutoSendWhatsappAiMessageJob implements ShouldQueue
             // vive en el helper, compartido con el endpoint de confirmación del operador. Es
             // el único lugar donde se resuelve quién de los dos manda, así que no se puede
             // volver a un `send_text()` suelto acá: serían dos envíos al cliente.
-            $resultado = WhatsappChatHelper::send_pending_ai_message($message, $chat, $config);
+            $resultado = WhatsappChatHelper::send_pending_ai_message($message, $chat, $config, $this->auto_send_token);
 
             if ($resultado === WhatsappChatHelper::ENVIO_YA_TOMADO) {
                 Log::channel('daily')->info('AutoSendWhatsappAiMessageJob: omitido (el operador lo confirmó justo antes).', [

@@ -82,6 +82,9 @@ class WhatsappChatUpdated implements ShouldBroadcastNow
             'message' => $this->message,
             'chat' => [
                 'id' => $this->chat->id,
+                'is_test' => $this->chat->is_test,
+                'ai_enabled' => $this->chat->ai_enabled,
+                'ai_mode' => $this->chat->ai_mode,
                 'unread_count' => $this->chat->unread_count,
                 'last_message_at' => $this->chat->last_message_at,
                 'estado_pendiente' => $this->chat->estado_pendiente(),

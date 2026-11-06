@@ -3,9 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
-use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Models\Article;
 use App\Services\WhatsappBotAiService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -68,19 +66,9 @@ class PruebaController extends Controller
             'pregunta.max'      => 'La pregunta puede tener hasta 500 caracteres.',
         ]);
 
-        if (SemillaRegistroHelper::semilla_presente($owner_id)) {
-            return response()->json([
-                'code'    => 'catalogo_de_ejemplo',
-                'message' => 'Importá tu catálogo para probar el agente con tus productos.',
-            ], 422);
-        }
-
-        // El sello se escribe al generar el vector. Alcanza con saber si hay un artículo listo, sin leer el vector.
-        if (!Article::where('user_id', $owner_id)->where('status', 'active')->whereNotNull('embedding_generated_at')->exists()) {
-            return response()->json([
-                'code'    => 'catalogo_sin_indexar',
-                'message' => 'Todavía no hay artículos listos para responder. Si recién importaste tu catálogo, esperá unos minutos y volvé a probar.',
-            ], 422);
+        $error_catalogo = PruebaHelper::error_catalogo_para_probar_agente($owner_id);
+        if ($error_catalogo !== null) {
+            return response()->json($error_catalogo, 422);
         }
 
         $resultado = $agente->simular_respuesta($owner_id, trim($datos['pregunta']));

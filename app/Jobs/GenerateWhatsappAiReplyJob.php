@@ -5,7 +5,6 @@ namespace App\Jobs;
 use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Models\Article;
-use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Services\WhatsappAgentScheduler;
@@ -16,6 +15,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -99,7 +99,7 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return;
             }
 
-            $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+            $config = $chat->bot_config();
             if (is_null($config)) {
                 Log::channel('daily')->warning('GenerateWhatsappAiReplyJob: sin configuración de WhatsApp para la empresa.', [
                     'chat_id' => $this->chat_id,
@@ -111,7 +111,7 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
 
             // Se vuelve a chequear porque durante la espera pudieron apagar el bot de la
             // empresa o la IA de este chat puntual.
-            if (! $config->is_active || ! $chat->ai_enabled) {
+            if (! $chat->can_generate_ai($config)) {
                 Log::channel('daily')->debug('GenerateWhatsappAiReplyJob: omitido (bot inactivo o IA apagada en el chat).', [
                     'chat_id' => $this->chat_id,
                 ]);
@@ -172,7 +172,8 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             // marcador: el recorte lo hace el service, que es el único que produce el texto, y
             // así ningún otro consumidor (hoy `suggest()`, mañana lo que aparezca) puede
             // filtrarlo.
-            $respuesta = (new WhatsappBotAiService())->generate_response_with_photo($chat, $config);
+            $proceso = $chat->is_test ? 'whatsapp_simulacion_prueba' : 'whatsapp_respuesta';
+            $respuesta = (new WhatsappBotAiService())->generate_response_with_photo($chat, $config, $proceso);
             $texto     = $respuesta['body'];
 
             // El corte es contra la respuesta ENTERA, cuerpo y marcador: si el modelo contestó
@@ -248,13 +249,21 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             // persona pudo apagar el seguimiento («Ya lo atendí») o contestarle al cliente. `store_pending_ai_message()`
             // emite el broadcast con el chat que tiene en la mano, así que sin releerlo reenviaría un `follow_up` viejo
             // y la pantalla volvería a mostrar lo que la persona ya había dado por atendido.
-            $chat->refresh();
+            $message = DB::transaction(function () use ($chat, $config, $texto, $extra) {
+                $chat = WhatsappChat::whereKey($chat->id)->lockForUpdate()->first();
+                if (! $chat || $chat->ai_schedule_token !== $this->schedule_token || ! $chat->can_generate_ai($config)
+                    || $chat->is_esperando_aprobacion() || ! $this->has_unanswered_inbound($chat)) {
+                    return null;
+                }
 
-            $message = WhatsappChatHelper::store_pending_ai_message($chat, $texto, $extra);
+                return WhatsappChatHelper::store_pending_ai_message($chat, $texto, $extra);
+            });
 
             // El auto-envío decide si sale al instante (ai_confirm_delay_seconds = 0) o si
             // espera la confirmación de una persona.
-            (new WhatsappAiAutoSendScheduler())->schedule_for_message($message, $config);
+            if ($message) {
+                (new WhatsappAiAutoSendScheduler())->schedule_for_message($message, $config);
+            }
         } catch (\Throwable $exception) {
             // No se re-lanza: el job no declara $tries, así que re-lanzar solo lo marcaría
             // como fallido sin reintentar nada. Todo lo caro (Anthropic, Kapso) ya tiene su

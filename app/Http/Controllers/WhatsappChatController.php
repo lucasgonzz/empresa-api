@@ -2,19 +2,24 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\WhatsappTemplateHelper;
+use App\Models\Client;
+use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
 use App\Models\WhatsappTemplate;
+use App\Services\WhatsappAgentScheduler;
 use App\Services\WhatsappAiAutoSendScheduler;
 use App\Services\WhatsappBotAiService;
 use App\Services\WhatsappBotSendService;
 use App\Services\WhatsappInboundMediaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 
@@ -144,6 +149,7 @@ class WhatsappChatController extends Controller
 
         $paginator = WhatsappChatMessage::where('whatsapp_chat_id', $chat->id)
             ->orderBy('created_at', 'DESC')
+            ->orderBy('id', 'DESC')
             ->paginate($per_page, ['*'], 'page', $page);
 
         return response()->json(['models' => $paginator], 200);
@@ -172,9 +178,19 @@ class WhatsappChatController extends Controller
         // mandan lo que tienen a mano y un pedido de la tienda puede no tener comprador cargado.
         $request->validate([
             'display_name' => 'nullable|string|max:120',
+            'is_test' => 'sometimes|boolean',
+            'trial_demo' => 'sometimes|boolean',
         ]);
 
         $user_id = $this->userId();
+        if ($request->boolean('is_test')) {
+            return $this->store_test_chat($request, $user_id);
+        }
+
+        if ($request->boolean('trial_demo')) {
+            return response()->json(['message' => 'La recorrida necesita un chat de prueba.'], 422);
+        }
+
         $phone = WhatsappPhoneHelper::normalize($request->phone);
 
         if ($phone === '') {
@@ -215,6 +231,66 @@ class WhatsappChatController extends Controller
         return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 201);
     }
 
+    private function store_test_chat(Request $request, int $user_id): JsonResponse
+    {
+        if (! $this->is_owner()) {
+            return response()->json(['message' => 'Solo el dueño puede crear chats de prueba.'], 403);
+        }
+
+        if (PruebaHelper::vencida_para($request->user())) {
+            return response()->json(['message' => 'La prueba gratuita ya terminó.'], 403);
+        }
+
+        if (! WhatsappChat::configured_ai_mode_available()) {
+            return response()->json(['message' => 'WhatsApp se está actualizando. Volvé a intentar en unos minutos.'], 503);
+        }
+
+        $request->validate(['client_id' => 'nullable|integer']);
+        $client_id = $request->input('client_id');
+        if ($client_id !== null && ! Client::where('user_id', $user_id)->whereKey($client_id)->exists()) {
+            return response()->json(['message' => 'Cliente no encontrado.'], 422);
+        }
+
+        $trial_demo = $request->boolean('trial_demo');
+        if ($trial_demo) {
+            if (! PruebaHelper::en_periodo_vigente($user_id)) {
+                return response()->json(['message' => 'La recorrida está disponible para el dueño durante la prueba gratuita.'], 403);
+            }
+
+            $error_catalogo = PruebaHelper::error_catalogo_para_probar_agente($user_id);
+            if ($error_catalogo !== null) {
+                return response()->json($error_catalogo, 422);
+            }
+        }
+
+        $display_name = trim((string) $request->input('display_name'));
+        $attributes = [
+            'user_id' => $user_id,
+            // Sin dígitos: la identidad no se puede normalizar a un teléfono real.
+            'phone' => $trial_demo ? WhatsappChat::TRIAL_TEST_PHONE : WhatsappChat::TEST_PHONE_PREFIX.strtr(bin2hex(random_bytes(12)), '0123456789', 'ghijklmnop'),
+        ];
+        $values = [
+            'client_id' => $client_id,
+            'display_name' => $display_name !== '' ? $display_name : ($client_id === null ? 'Cliente de prueba' : null),
+            'ai_enabled' => true,
+            'configured_ai_mode' => WhatsappChat::MODE_AUTOMATIC,
+            'unread_count' => 0,
+            'last_inbound_simulated' => true,
+        ];
+
+        if ($trial_demo) {
+            $chat = DB::transaction(function () use ($user_id, $attributes, $values) {
+                User::whereKey($user_id)->lockForUpdate()->first();
+
+                return WhatsappChat::firstOrCreate($attributes, $values);
+            });
+        } else {
+            $chat = WhatsappChat::create($attributes + $values);
+        }
+
+        return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 201);
+    }
+
     /**
      * Manda un mensaje de texto libre a un chat. Solo funciona dentro de la ventana de
      * 24 h de Meta (`is_within_service_window()`); si está cerrada devuelve 422 con
@@ -244,7 +320,7 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'El mensaje no puede estar vacío.'], 422);
         }
 
-        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        $config = $chat->bot_config();
         if (is_null($config)) {
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
@@ -259,8 +335,9 @@ class WhatsappChatController extends Controller
         // auto-envío puede arrancar mientras este request está esperando a Kapso.
         WhatsappChatHelper::discard_pending_ai_messages($chat);
 
-        $send_service = new WhatsappBotSendService();
-        $wa_message_id = $send_service->send_text($chat->phone, $body, $config);
+        $wa_message_id = $chat->is_test
+            ? WhatsappBotSendService::id_de_prueba()
+            : (new WhatsappBotSendService())->send_text($chat->phone, $body, $config);
 
         // Empleado autenticado (sin resolver al owner) que efectivamente mandó el mensaje.
         $sent_by_user_id = $this->userId(false);
@@ -385,7 +462,7 @@ class WhatsappChatController extends Controller
             ], 422);
         }
 
-        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        $config = $chat->bot_config();
         if (is_null($config)) {
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
@@ -422,7 +499,9 @@ class WhatsappChatController extends Controller
         $frenado_por_simulacion = (bool) $chat->last_inbound_simulated && ! $config->esta_en_modo_demostracion();
         $wa_message_id = null;
 
-        if (! $frenado_por_simulacion) {
+        if ($chat->is_test) {
+            $wa_message_id = WhatsappBotSendService::id_de_prueba();
+        } elseif (! $frenado_por_simulacion) {
             $send_service = new WhatsappBotSendService();
             $media_id = $send_service->upload_media(
                 Storage::disk('local')->path($stored_path),
@@ -521,7 +600,7 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => $validation_error], 422);
         }
 
-        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        $config = $chat->bot_config();
         if (is_null($config)) {
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
@@ -531,8 +610,9 @@ class WhatsappChatController extends Controller
         // mandar nada. Si no, el cliente recibe la plantilla y después la respuesta de la IA.
         WhatsappChatHelper::discard_pending_ai_messages($chat);
 
-        $send_service = new WhatsappBotSendService();
-        $wa_message_id = $send_service->send_template($chat->phone, $template, $variables, $config);
+        $wa_message_id = $chat->is_test
+            ? WhatsappBotSendService::id_de_prueba()
+            : (new WhatsappBotSendService())->send_template($chat->phone, $template, $variables, $config);
 
         // Cuerpo final ya con las variables reemplazadas, para mostrarlo como cualquier otro mensaje del chat.
         $rendered_body = $template->render_body($variables);
@@ -576,19 +656,63 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'Chat no encontrado.'], 404);
         }
 
-        $chat->ai_enabled = ! $chat->ai_enabled;
-        $chat->save();
+        return $this->save_ai_mode($chat, null, true);
+    }
 
-        if (! $chat->ai_enabled) {
-            // 🔴 Apagar la IA del chat también es una intervención humana: el operador vio la
-            // respuesta que el agente dejó esperando, no le gustó, y se hace cargo él de la
-            // conversación. Si la pendiente quedara viva, el job de auto-envío la mandaría
-            // igual al vencer el plazo y el cliente terminaría con dos respuestas.
-            // Solo al apagar: al prender no hay nada del agente esperando que descartar.
-            WhatsappChatHelper::discard_pending_ai_messages($chat);
+    public function set_ai_mode(Request $request, $id): JsonResponse
+    {
+        $chat = $this->find_owned_chat($id);
+        if (is_null($chat)) {
+            return response()->json(['message' => 'Chat no encontrado.'], 404);
         }
 
-        return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 200);
+        $validated = $request->validate(['ai_mode' => 'required|in:automatic,semi_automatic,manual']);
+
+        if (! WhatsappChat::configured_ai_mode_available()) {
+            return response()->json(['message' => 'WhatsApp se está actualizando. Volvé a intentar en unos minutos.'], 503);
+        }
+
+        return $this->save_ai_mode($chat, $validated['ai_mode']);
+    }
+
+    private function save_ai_mode(WhatsappChat $chat, ?string $mode, bool $legacy_toggle = false): JsonResponse
+    {
+        $pending_ids = DB::transaction(function () use ($chat, $mode, $legacy_toggle) {
+            $chat = WhatsappChat::whereKey($chat->id)->lockForUpdate()->firstOrFail();
+            if ($legacy_toggle) {
+                $mode = $chat->ai_enabled ? WhatsappChat::MODE_MANUAL : null;
+            }
+            if (WhatsappChat::configured_ai_mode_available()) {
+                $chat->configured_ai_mode = $mode;
+            }
+            // La bandera anterior autorizaba envíos. Un worker viejo debe tratar semi como apagado.
+            $chat->ai_enabled = $mode === null || $mode === WhatsappChat::MODE_AUTOMATIC;
+            $chat->save();
+
+            if ($mode === WhatsappChat::MODE_MANUAL) {
+                (new WhatsappAgentScheduler())->cancel((int) $chat->id);
+                WhatsappChatHelper::discard_pending_ai_messages($chat);
+            } elseif ($mode === WhatsappChat::MODE_SEMI_AUTOMATIC) {
+                $scheduler = new WhatsappAiAutoSendScheduler();
+                $pending_ids = WhatsappChatMessage::where('whatsapp_chat_id', $chat->id)
+                    ->where('ai_status', 'a_confirmar')->pluck('id');
+                foreach ($pending_ids as $pending_id) {
+                    $scheduler->cancel_for_message((int) $pending_id);
+                }
+
+                return $pending_ids->all();
+            }
+
+            return [];
+        });
+
+        $model = $this->fullModel('WhatsappChat', $chat->id);
+        WhatsappChatHelper::broadcast_update((int) $chat->user_id, $model);
+        foreach (WhatsappChatMessage::whereIn('id', $pending_ids)->where('ai_status', 'a_confirmar')->get() as $pending) {
+            WhatsappChatHelper::broadcast_update((int) $chat->user_id, $model, $pending);
+        }
+
+        return response()->json(['model' => $model], 200);
     }
 
     /**
@@ -605,7 +729,13 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'Chat no encontrado.'], 404);
         }
 
-        $chat->client_id = $request->client_id ?: null;
+        $request->validate(['client_id' => 'nullable|integer']);
+        $client_id = $request->input('client_id');
+        if ($client_id !== null && ! Client::where('user_id', $chat->user_id)->whereKey($client_id)->exists()) {
+            return response()->json(['message' => 'Cliente no encontrado.'], 422);
+        }
+
+        $chat->client_id = $client_id;
         $chat->save();
 
         return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 200);
@@ -706,7 +836,7 @@ class WhatsappChatController extends Controller
             return response()->json(['message' => 'Chat no encontrado.'], 404);
         }
 
-        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        $config = $chat->bot_config();
         if (is_null($config)) {
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }
@@ -842,7 +972,7 @@ class WhatsappChatController extends Controller
             return response()->json(['code' => 'fuera_de_ventana'], 422);
         }
 
-        $config = WhatsappBotConfig::where('user_id', $chat->user_id)->first();
+        $config = $chat->bot_config();
         if (is_null($config)) {
             return response()->json(['message' => 'No hay una configuración de WhatsApp activa para esta empresa.'], 422);
         }

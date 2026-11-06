@@ -61,7 +61,7 @@ class WhatsappAgentScheduler
         // Misma condición que hasta esta misión corría inline en WhatsappBotController:
         // la IA solo responde si el bot está activo a nivel empresa Y el chat puntual no la
         // tiene apagada. Si no, no se encola nada.
-        if (! $config->is_active || ! $chat->ai_enabled) {
+        if (! $chat->can_generate_ai($config)) {
             Log::channel('daily')->debug('WhatsappAgentScheduler: omitido (bot inactivo o IA apagada en el chat).', [
                 'chat_id'    => $chat->id,
                 'is_active'  => (bool) $config->is_active,
@@ -71,13 +71,22 @@ class WhatsappAgentScheduler
             return;
         }
 
-        // El cliente siguió escribiendo: la respuesta que estaba esperando confirmación ya no
-        // sirve y se borra (decisión D2 del plan). Si quedara, la IA la leería como un 'out'
-        // que nunca se envió y creería que ya contestó.
-        WhatsappChatHelper::discard_pending_ai_messages($chat);
+        $token = DB::transaction(function () use ($chat, $config) {
+            $current = WhatsappChat::whereKey($chat->id)->lockForUpdate()->first();
+            if (! $current || ! $current->can_generate_ai($config)) {
+                return null;
+            }
 
-        $token = $this->bump_token((int) $chat->id);
-        $delay = (int) $config->ai_reply_delay_seconds;
+            // El cliente siguió escribiendo: el borrador anterior ya no responde al turno completo.
+            WhatsappChatHelper::discard_pending_ai_messages($current);
+
+            return $this->bump_token((int) $current->id);
+        });
+        if ($token === null) {
+            return;
+        }
+
+        $delay = $chat->is_test ? 0 : (int) $config->ai_reply_delay_seconds;
 
         $pending_dispatch = GenerateWhatsappAiReplyJob::dispatch((int) $chat->id, $token);
 

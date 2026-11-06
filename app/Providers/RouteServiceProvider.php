@@ -2,6 +2,7 @@
 
 namespace App\Providers;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
 use Illuminate\Http\Request;
@@ -62,22 +63,36 @@ class RouteServiceProvider extends ServiceProvider
         RateLimiter::for('prueba-simular-agente', function (Request $request) {
             // Solo puede simular el dueño. Un empleado rechazado no debe gastar su cupo.
             $usuario = $request->user();
+            $es_sugerencia = $request->routeIs('whatsapp.suggest');
+            $owner_id = $usuario ? ($usuario->owner_id ?: $usuario->id) : null;
+            $prueba_vigente = $owner_id && PruebaHelper::en_periodo_vigente($owner_id);
             $cuenta = $usuario ? (string) $usuario->id : $request->ip();
+            if ($es_sugerencia && ! $prueba_vigente) {
+                return Limit::none();
+            }
+            if ($es_sugerencia) {
+                $cuenta = (string) $owner_id;
+            }
 
-            return [
+            $limits = [
                 Limit::perMinute(10)->by('minuto:' . $cuenta)
                     ->response(function (Request $request, array $headers) {
                         return response()->json([
                             'message' => 'Hiciste varias consultas seguidas. Esperá un minuto y volvé a probar.',
                         ], 429, $headers);
                     }),
-                Limit::perDay(30)->by('dia:' . $cuenta)
+            ];
+
+            if ($request->routeIs('prueba.simular-agente') || $prueba_vigente) {
+                $limits[] = Limit::perDay(30)->by('dia:' . $cuenta)
                     ->response(function (Request $request, array $headers) {
                         return response()->json([
                             'message' => 'Alcanzaste el límite de 30 consultas en 24 horas para el simulador. Podés volver a probar cuando se renueve el cupo.',
                         ], 429, $headers);
-                    }),
-            ];
+                    });
+            }
+
+            return $limits;
         });
 
         $this->definir_limites_de_recuperar_clave();

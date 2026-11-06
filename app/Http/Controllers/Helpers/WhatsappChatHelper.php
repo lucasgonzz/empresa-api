@@ -120,13 +120,13 @@ class WhatsappChatHelper
      *                             seis o siete argumentos posicionales.
      * @return WhatsappChat  El chat (nuevo o existente) ya persistido con el mensaje aplicado.
      */
-    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null, &$stored_message = null)
+    public static function store_inbound_message($user_id, $from, $body, array $payload, WhatsappBotConfig $config, $is_simulated = false, $media = null, &$stored_message = null, ?WhatsappChat $test_chat = null)
     {
         // Teléfono siempre normalizado (solo dígitos) al persistirlo, así el listado y el
         // matching de auto-vinculación son consistentes.
         $phone = WhatsappPhoneHelper::normalize($from);
 
-        $chat = WhatsappChat::where('user_id', $user_id)
+        $chat = $test_chat ?? WhatsappChat::where('user_id', $user_id)
             ->where('phone', $phone)
             ->first();
 
@@ -282,11 +282,24 @@ class WhatsappChatHelper
      * @param  WhatsappChatMessage  $message  Mensaje con `ai_status = 'a_confirmar'`.
      * @param  WhatsappChat  $chat  Chat al que pertenece (ya validado por el caller).
      * @param  WhatsappBotConfig  $config  Configuración del bot del dueño del chat.
+     * @param  int|null  $auto_send_token  Token vigente si el envío lo ejecuta un job.
      * @return string  Una de las constantes ENVIO_HECHO | ENVIO_YA_TOMADO | ENVIO_FALLIDO.
      */
-    public static function send_pending_ai_message(WhatsappChatMessage $message, WhatsappChat $chat, WhatsappBotConfig $config)
+    public static function send_pending_ai_message(WhatsappChatMessage $message, WhatsappChat $chat, WhatsappBotConfig $config, ?int $auto_send_token = null)
     {
-        if (! self::claim_ai_message_for_send($message)) {
+        if ($auto_send_token === null) {
+            $claimed = self::claim_ai_message_for_send($message);
+        } else {
+            // El cambio de modo y el autoenvío compiten por el mismo lock del chat.
+            $claimed = DB::transaction(function () use ($message, $chat, $config, $auto_send_token) {
+                $current_chat = WhatsappChat::whereKey($chat->id)->lockForUpdate()->first();
+
+                return $current_chat && $current_chat->ai_mode === WhatsappChat::MODE_AUTOMATIC
+                    && $current_chat->can_generate_ai($config) && self::claim_ai_message_for_send($message, $auto_send_token);
+            });
+        }
+
+        if (! $claimed) {
             Log::channel('daily')->info('WhatsappChatHelper: envío omitido, la respuesta del agente ya la estaba mandando otro.', [
                 'message_id' => $message->id,
                 'chat_id'    => $chat->id,
@@ -309,6 +322,12 @@ class WhatsappChatHelper
         // En modo demostración (misión whatsapp-envio-simulado-demos) este corte no aplica: el
         // `send_text()` de abajo no sale a Kapso, devuelve un id ficticio y la respuesta queda
         // enviada y entregada (con la etiqueta «Simulado», porque responde a un entrante simulado).
+        if ($chat->is_test) {
+            self::mark_ai_message_sent($message, WhatsappBotSendService::id_de_prueba());
+
+            return self::ENVIO_HECHO;
+        }
+
         if ($chat->last_inbound_simulated && ! $config->esta_en_modo_demostracion()) {
             Log::channel('daily')->info('WhatsappChatHelper: respuesta del agente NO enviada, el chat está en modo simulación.', [
                 'message_id' => $message->id,
@@ -392,9 +411,12 @@ class WhatsappChatHelper
      * @param  WhatsappChatMessage  $message
      * @return bool  true si esta punta se quedó con el envío; false si lo agarró la otra.
      */
-    private static function claim_ai_message_for_send(WhatsappChatMessage $message)
+    private static function claim_ai_message_for_send(WhatsappChatMessage $message, ?int $auto_send_token = null)
     {
         $claimed = WhatsappChatMessage::where('id', $message->id)
+            ->when($auto_send_token !== null, function ($query) use ($auto_send_token) {
+                $query->where('ai_auto_send_token', $auto_send_token);
+            })
             ->where(function ($query) {
                 $query->where('ai_status', 'a_confirmar')
                     // 🔴 RESCATE DE HUÉRFANOS. Sin esta rama, un worker que se muere de golpe
@@ -736,7 +758,7 @@ class WhatsappChatHelper
             'consultas_pendientes'       => 0,
         ];
 
-        $chat_ids = WhatsappChat::where('user_id', $owner_id)->pluck('id')->all();
+        $chat_ids = WhatsappChat::where('user_id', $owner_id)->realContacts()->pluck('id')->all();
 
         if ($chat_ids === []) {
             return $resumen;
@@ -751,7 +773,7 @@ class WhatsappChatHelper
         // Sin las columnas (el código llegó antes que la migración) se queda en 0 y no rompe el resumen
         // que pide la SPA en cada pantalla.
         if (WhatsappChat::follow_up_available()) {
-            $por_tipo = WhatsappChat::where('user_id', $owner_id)
+            $por_tipo = WhatsappChat::where('user_id', $owner_id)->realContacts()
                 ->whereNotNull('follow_up')
                 ->selectRaw('follow_up, COUNT(*) as total')
                 ->groupBy('follow_up')
