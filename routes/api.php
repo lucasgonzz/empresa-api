@@ -1765,6 +1765,7 @@ Route::middleware('admin.api.key')
         // carga compras, gastos y pagos y no puede quedar abierto. Y el gate de la extensión
         // agentes_ia va a mano, porque admin-sync no pasa por auth:sanctum.
         Route::post('asistente/mensajes', 'AdminSync\\AsistenteController@mensajes');
+        Route::get('asistente/disponibilidad', 'AdminSync\\AsistenteController@disponibilidad');
         Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
         // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
         // propósito: el admin pide los pendientes (con su link ya emitido) y recién DESPUÉS de que

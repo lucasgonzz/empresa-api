@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -63,6 +64,37 @@ class WhatsappChat extends Model
     public static function configured_ai_mode_available(): bool
     {
         return Schema::hasColumn('whatsapp_chats', 'configured_ai_mode');
+    }
+
+    public static function crear_de_prueba(
+        int $user_id,
+        bool $trial_demo,
+        ?int $client_id = null,
+        string $display_name = ''
+    ): self {
+        $attributes = [
+            'user_id' => $user_id,
+            // Sin dígitos: la identidad no se puede normalizar a un teléfono real.
+            'phone' => $trial_demo ? self::TRIAL_TEST_PHONE : self::TEST_PHONE_PREFIX.strtr(bin2hex(random_bytes(12)), '0123456789', 'ghijklmnop'),
+        ];
+        $values = [
+            'client_id' => $client_id,
+            'display_name' => $display_name !== '' ? $display_name : ($client_id === null ? 'Cliente de prueba' : null),
+            'ai_enabled' => true,
+            'configured_ai_mode' => self::MODE_AUTOMATIC,
+            'unread_count' => 0,
+            'last_inbound_simulated' => true,
+        ];
+
+        if (! $trial_demo) {
+            return self::create($attributes + $values);
+        }
+
+        return DB::transaction(function () use ($user_id, $attributes, $values) {
+            User::whereKey($user_id)->lockForUpdate()->first();
+
+            return self::firstOrCreate($attributes, $values);
+        });
     }
 
     public function scopeRealContacts($query)

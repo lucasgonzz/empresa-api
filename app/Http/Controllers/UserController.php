@@ -113,7 +113,13 @@ class UserController extends Controller
         $model->iva_included                    = $request->iva_included;
         $model->ask_amount_in_vender            = $request->ask_amount_in_vender;
         $model->sale_ticket_width               = $request->sale_ticket_width;
-        $model->default_current_acount_payment_method_id               = $request->default_current_acount_payment_method_id;
+        if ($request->has('default_current_acount_payment_method_id')) {
+            $model->default_current_acount_payment_method_id = $request->default_current_acount_payment_method_id;
+        }
+        if (is_null($model->owner_id) && $request->has('vender_exigir_eleccion_medio_pago')) {
+            $request->validate(['vender_exigir_eleccion_medio_pago' => 'required|boolean']);
+            $model->vender_exigir_eleccion_medio_pago = $request->boolean('vender_exigir_eleccion_medio_pago');
+        }
         $model->discount_stock_from_recipe_after_advance_to_next_status               = $request->discount_stock_from_recipe_after_advance_to_next_status;
         $model->article_ticket_info_id          = $request->article_ticket_info_id;
 
