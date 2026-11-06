@@ -13,7 +13,9 @@ use App\Jobs\ProcessSetFinalPrices;
 use App\Models\Article;
 use App\Models\PriceType;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class PriceTypeController extends Controller
 {
@@ -37,8 +39,7 @@ class PriceTypeController extends Controller
          */
         $notifications = [];
 
-        $model = PriceType::create([
-            'num'                   => $this->num('price_types'),
+        $attributes = [
             'name'                  => $request->name,
             'percentage'            => $request->percentage,
             'apply_percentage_on_existing_articles' => 1,
@@ -59,19 +60,29 @@ class PriceTypeController extends Controller
                 ? CatalogoPorListaHelper::interruptor_de_lista($request->input('catalogo_restringido_en_tienda'))
                 : null,
             'user_id'               => $this->userId(),
-        ]);
+        ];
 
-        if ($this->user()->listas_de_precio) {
-            // Solo aplica el nuevo tipo de precio a artículos existentes cuando el usuario lo pidió.
-            $this->agregar_a_articulos_existentes($model, $request);
+        $request->validate(['articulo_abierto_id' => 'nullable|integer|min:1']);
+        [$model, $posiciones] = DB::transaction(function () use ($request, $attributes) {
+            [$lista, $posiciones] = $this->guardar_con_orden($request, null, function ($posicion) use ($attributes) {
+                return PriceType::create(array_merge($attributes, [
+                    'num' => $this->num('price_types'),
+                    'position' => $posicion,
+                ]));
+            });
 
-            // Feedback inmediato: el recálculo se ejecuta en segundo plano y puede demorar.
-            $notifications[] = [
-                'message' => 'Se inició la actualización de precios en segundo plano. Te avisaremos cuando termine.',
-                'type'    => 'info',
-            ];
-        }
+            $this->updateRelationsCreated('price_type', $lista->id, $request->childrens);
+            GeneralHelper::attachModels($lista, 'categories', $request->categories, ['percentage']);
+            GeneralHelper::attachModels($lista, 'sub_categories', $request->sub_categories, ['percentage']);
 
+            if ($request->filled('articulo_abierto_id')) {
+                // El artículo abierto necesita el pivote antes de que el catálogo se recalcule en cola.
+                $articulo = Article::where('user_id', $lista->user_id)->lockForUpdate()->findOrFail($request->articulo_abierto_id);
+                ArticleHelper::setFinalPrice($articulo, $lista->user_id);
+            }
+
+            return [$lista, $posiciones];
+        });
 
         $this->sendAddModelNotification('price_type', $model->id);
 
@@ -94,15 +105,19 @@ class PriceTypeController extends Controller
             Log::warning('PriceTypeController@store: no se pudo avisar el diseño de etiquetas de la lista '.$model->id.': '.$e->getMessage());
         }
 
-        $this->updateRelationsCreated('price_type', $model->id, $request->childrens);
-        
-        GeneralHelper::attachModels($model, 'categories', $request->categories, ['percentage']);
-        GeneralHelper::attachModels($model, 'sub_categories', $request->sub_categories, ['percentage']);
+        if ($this->user()->listas_de_precio) {
+            // El recálculo ya puede leer los recargos y márgenes por categoría de la lista.
+            $this->agregar_a_articulos_existentes($model, $request);
+            $notifications[] = [
+                'message' => 'Se inició la actualización de precios en segundo plano. Te avisaremos cuando termine.',
+                'type'    => 'info',
+            ];
+        }
 
-        return response()->json([
+        return response()->json(array_merge([
             'model' => $this->fullModel('PriceType', $model->id),
             'notifications' => $notifications,
-        ], 201);
+        ], $posiciones), 201);
     }  
 
     /**
@@ -189,7 +204,9 @@ class PriceTypeController extends Controller
          */
         $notifications = [];
 
-        $model = PriceType::find($id);
+        $model = $request->exists('orden_listas')
+            ? PriceType::where('user_id', $this->userId())->findOrFail($id)
+            : PriceType::find($id);
         // El margen GUARDADO antes de este request: contra él se mide "coinciden con el actual"
         // al sincronizar, y con él decide el camino de compatibilidad del SPA viejo.
         $old_percentage = $model->percentage;
@@ -200,7 +217,6 @@ class PriceTypeController extends Controller
         // guardara, la fila arrastraría un 'all' viejo que el SPA nuevo ya no muestra ni deja
         // cambiar. Lo que el SPA viejo mande en ESTE guardado se honra abajo, sin guardarlo.
         $model->update_existing_articles_percentage_mode = 'none';
-        $model->position            = $request->position;
         $model->ocultar_al_publico  = $request->ocultar_al_publico;
         $model->incluir_en_lista_de_precios_de_excel  = $request->incluir_en_lista_de_precios_de_excel;
         $model->setear_precio_final  = $request->setear_precio_final;
@@ -240,7 +256,16 @@ class PriceTypeController extends Controller
             $model->catalogo_restringido_en_tienda = $interruptor;
         }
 
-        $model->save();
+        [$model, $posiciones] = $this->guardar_con_orden($request, (int) $model->id, function ($posicion, $lista_bloqueada = null) use ($model, &$old_percentage) {
+            if ($lista_bloqueada) {
+                $old_percentage = $lista_bloqueada->percentage;
+                $lista_bloqueada->fill($model->getDirty());
+                $model = $lista_bloqueada;
+            }
+            $model->position = $posicion;
+            $model->save();
+            return $model;
+        });
 
         /*
          * Sincronizar el margen con los artículos (misión sincronizar-margen-lista-precios,
@@ -310,10 +335,64 @@ class PriceTypeController extends Controller
         // `combos.price`; el porcentaje cambia el precio de los componentes. Ver el método.
         $this->recalcular_combos_calculados();
 
-        return response()->json([
+        return response()->json(array_merge([
             'model'         => $this->fullModel('PriceType', $model->id),
             'notifications' => $notifications,
-        ], 200);
+        ], $posiciones), 200);
+    }
+
+    /** Guarda la lista y las posiciones de mayor a menor prioridad en la misma transacción. */
+    private function guardar_con_orden(Request $request, $id_actual, callable $guardar_lista): array {
+        if (!$request->exists('orden_listas')) {
+            return [$guardar_lista($request->position), []];
+        }
+
+        $request->validate([
+            'orden_listas' => 'required|array',
+            'orden_listas.*' => 'nullable|integer|min:1',
+        ]);
+
+        $orden = array_values(array_map(function ($id) {
+            return is_null($id) ? null : (int) $id;
+        }, $request->input('orden_listas')));
+
+        return DB::transaction(function () use ($orden, $id_actual, $guardar_lista) {
+            $dueno_id = $this->userId();
+            // El numerador también bloquea al dueño antes de consultar sus listas.
+            DB::table('users')->where('id', $dueno_id)->lockForUpdate()->first();
+            $listas = PriceType::where('user_id', $dueno_id)->orderBy('id')->lockForUpdate()->get()->keyBy('id');
+            $ids = array_values(array_filter($orden, function ($id) {
+                return !is_null($id);
+            }));
+            $ids_ordenados = $ids;
+            sort($ids_ordenados, SORT_NUMERIC);
+
+            $indice_actual = array_search($id_actual, $orden, true);
+            $cantidad_esperada = $listas->count() + (is_null($id_actual) ? 1 : 0);
+            if ($indice_actual === false || $ids_ordenados !== array_map('intval', $listas->keys()->all()) || count($orden) !== $cantidad_esperada) {
+                throw ValidationException::withMessages([
+                    'orden_listas' => 'Las listas de precios cambiaron. Actualizá el orden y volvé a guardar.',
+                ]);
+            }
+
+            $model = $guardar_lista($cantidad_esperada - $indice_actual, $listas->get($id_actual));
+            $posiciones = [];
+            foreach ($orden as $indice => $id) {
+                $posicion = $cantidad_esperada - $indice;
+                $posiciones[] = ['id' => $id ?? $model->id, 'position' => $posicion];
+                if ($id === $id_actual) {
+                    continue;
+                }
+
+                $lista = $listas->get($id);
+                if ((int) $lista->position !== $posicion) {
+                    $lista->position = $posicion;
+                    $lista->save();
+                }
+            }
+
+            return [$model, ['posiciones_listas' => $posiciones]];
+        });
     }
 
     public function destroy($id) {
