@@ -7,7 +7,6 @@ use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\WhatsappTemplateHelper;
 use App\Models\Client;
-use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
@@ -263,30 +262,12 @@ class WhatsappChatController extends Controller
             }
         }
 
-        $display_name = trim((string) $request->input('display_name'));
-        $attributes = [
-            'user_id' => $user_id,
-            // Sin dígitos: la identidad no se puede normalizar a un teléfono real.
-            'phone' => $trial_demo ? WhatsappChat::TRIAL_TEST_PHONE : WhatsappChat::TEST_PHONE_PREFIX.strtr(bin2hex(random_bytes(12)), '0123456789', 'ghijklmnop'),
-        ];
-        $values = [
-            'client_id' => $client_id,
-            'display_name' => $display_name !== '' ? $display_name : ($client_id === null ? 'Cliente de prueba' : null),
-            'ai_enabled' => true,
-            'configured_ai_mode' => WhatsappChat::MODE_AUTOMATIC,
-            'unread_count' => 0,
-            'last_inbound_simulated' => true,
-        ];
-
-        if ($trial_demo) {
-            $chat = DB::transaction(function () use ($user_id, $attributes, $values) {
-                User::whereKey($user_id)->lockForUpdate()->first();
-
-                return WhatsappChat::firstOrCreate($attributes, $values);
-            });
-        } else {
-            $chat = WhatsappChat::create($attributes + $values);
-        }
+        $chat = WhatsappChat::crear_de_prueba(
+            $user_id,
+            $trial_demo,
+            $client_id,
+            trim((string) $request->input('display_name'))
+        );
 
         return response()->json(['model' => $this->fullModel('WhatsappChat', $chat->id)], 201);
     }

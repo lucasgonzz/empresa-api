@@ -28,6 +28,7 @@ use App\Models\PlatformConnector;
 use App\Models\PriceType;
 use App\Models\StockMovement;
 use App\Models\User;
+use App\Models\WhatsappChat;
 use App\Services\DemoEventoEmitter;
 use App\Services\DemoIndustriaService;
 use App\Services\DemoIndustriaAssets;
@@ -709,14 +710,11 @@ class DemoSetupHelper
         $etapas['tienda'] = self::cronometrar($t_etapa);
 
         /**
-         * WhatsApp en modo de ENVÍO SIMULADO (misión whatsapp-envio-simulado-demos, 15/10/2026).
+         * La prueba gratuita arranca con un chat para escribir como cliente y conserva la conexión
+         * de WhatsApp del negocio para mensajes reales.
          *
-         * Hasta esta misión el demo setup dejaba el módulo de WhatsApp sin configuración (el
-         * menú aparecía, pero ningún envío podía salir): el comprobante por WhatsApp y los
-         * recordatorios de cobro no se podían mostrar ni filmar. Ahora la demo queda con la
-         * conexión activa en modo simulado (nada sale a Kapso: ver
-         * `WhatsappBotConfig::esta_en_modo_demostracion()`), las 6 plantillas estándar
-         * aprobadas y cinco chats de ejemplo.
+         * Las demos comunes usan el modo de envío simulado para mostrar comprobantes y recordatorios
+         * de cobro. Quedan con seis plantillas estándar aprobadas y cinco chats de ejemplo.
          *
          * 🔴 VA DESPUÉS DE `semilla:datos` (necesita los clientes y las ventas sin cobrar para
          * armar los chats) y NO LEE NADA DEL PAYLOAD: a diferencia de Zipnova y Mercado Pago, no
@@ -858,10 +856,11 @@ class DemoSetupHelper
     }
 
     /**
-     * Deja el módulo de WhatsApp de la demo en modo de envío simulado, con plantillas aprobadas y
+     * En la prueba gratuita crea un chat de prueba para que el dueño pueda escribir como cliente.
+     * En una demo común deja el módulo en modo de envío simulado, con plantillas aprobadas y
      * chats de ejemplo (ver `WhatsappDemoHelper`).
      *
-     * 🔴 No frena nunca el setup: a esta altura la instancia ya está armada, y un error de base
+     * 🔴 En una demo común no frena el setup: a esta altura la instancia ya está armada, y un error de base
      * en los chats de ejemplo no justifica dar la demo por fallida. Se loguea y sigue. Y solo corre
      * en una instancia de demo: en la instalación de un cliente real este mismo helper no tiene que
      * dejar una configuración de WhatsApp con clave ficticia ni plantillas «aprobadas» que Meta
@@ -872,8 +871,13 @@ class DemoSetupHelper
      */
     private static function preparar_whatsapp_de_la_demo(User $user)
     {
-        // En la prueba gratuita el WhatsApp del negocio es real: ni clave ficticia ni chats de ejemplo.
-        if (! self::es_instancia_de_demo() || self::es_instancia_de_prueba()) {
+        if (self::es_instancia_de_prueba()) {
+            WhatsappChat::crear_de_prueba($user->id, true);
+
+            return;
+        }
+
+        if (! self::es_instancia_de_demo()) {
             return;
         }
 

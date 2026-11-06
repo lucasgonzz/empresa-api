@@ -7,6 +7,8 @@ use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\PruebaConfig;
 use App\Models\User;
+use App\Models\WhatsappBotConfig;
+use App\Models\WhatsappChat;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -183,6 +185,31 @@ class DemoSetupDeLaPruebaTest extends EmpresaTestCase
 
         $this->assertFalse(PruebaHelper::activa($dueno->id));
         $this->assertNull(PruebaHelper::resumen_para_spa($dueno->id));
+    }
+
+    public function test_el_setup_de_whatsapp_deja_un_chat_listo_para_escribir_como_cliente()
+    {
+        $dueno = User::where('email', \Database\Seeders\testing\TestingFerreteriaSeeder::USER_EMAIL)->firstOrFail();
+        $config = WhatsappBotConfig::where('user_id', $dueno->id)->first();
+
+        // Probamos la etapa de WhatsApp del alta sin volver a ejecutar migrate:fresh.
+        $preparar = new ReflectionMethod(DemoSetupHelper::class, 'preparar_whatsapp_de_la_demo');
+        $preparar->setAccessible(true);
+        $preparar->invoke(null, $dueno);
+        $preparar->invoke(null, $dueno);
+
+        $chats = WhatsappChat::where('user_id', $dueno->id)->get();
+        $this->assertCount(1, $chats);
+        $chat = $chats->first();
+        $this->assertSame(WhatsappChat::TRIAL_TEST_PHONE, $chat->phone);
+        $this->assertSame('Cliente de prueba', $chat->display_name);
+        $this->assertTrue($chat->is_test);
+        $this->assertSame(WhatsappChat::MODE_AUTOMATIC, $chat->ai_mode);
+        $this->assertFalse($chat->messages()->exists());
+        $this->assertSame(
+            $config ? $config->getAttributes() : null,
+            optional(WhatsappBotConfig::where('user_id', $dueno->id)->first())->getAttributes()
+        );
     }
 
     /*
