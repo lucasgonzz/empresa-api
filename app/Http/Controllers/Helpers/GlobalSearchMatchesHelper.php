@@ -11,10 +11,9 @@ use Illuminate\Support\Facades\Schema;
  * `GlobalSearchQueryHelper::apply` arma el WHERE que decide QUE filas devuelve el buscador, pero
  * el usuario no tiene forma de saber POR QUE aparecio cada una: con varias propiedades tildadas y
  * modo distribuido, una palabra puede haberla aportado el nombre y otra el codigo de proveedor.
- * Este helper es un observador puro sobre las filas YA traidas de la pagina actual (nunca participa
- * del armado de la query ni agrega consultas nuevas, salvo el loadMissing de relaciones que
- * withAll() no hubiera traido): recorre cada fila y cada propiedad tildada en PHP y cuenta cuantas
- * filas aporto cada una.
+ * Este helper no interviene en la consulta que elige las filas. Valida las propiedades contra el
+ * esquema y carga las relaciones faltantes antes de recorrer la página en PHP para contar cuántas
+ * filas aportó cada propiedad.
  *
  * La metrica NO es exclusiva: un mismo registro puede contar para dos o mas propiedades a la vez
  * (por eso `con_multiples`), y puede no coincidir por ninguna tildada aunque el SQL lo haya traido
@@ -87,6 +86,7 @@ class GlobalSearchMatchesHelper
         // cumplio sola todo el criterio" -- un registro traido por el grupo estricto tambien aporto
         // sus palabras desde esa propiedad, asi que la cuenta es correcta en los dos modos.
         $own_entries = [];
+        $numeric_columns = [];
         foreach ((array) $props as $prop) {
             $key = is_array($prop) ? (isset($prop['key']) ? $prop['key'] : null) : $prop;
 
@@ -94,6 +94,9 @@ class GlobalSearchMatchesHelper
                 // Prop inexistente en la tabla, o payload malformado: se ignora (no rompe nada).
                 continue;
             }
+
+            // El tipo depende de la columna, así que se consulta una sola vez por búsqueda.
+            $numeric_columns[$key] ??= $key === 'id' || $key === 'num' || ExtraFiltersHelper::is_numeric_column($table, $key);
 
             $own_entries[] = [
                 'kind'     => 'own',
@@ -148,7 +151,7 @@ class GlobalSearchMatchesHelper
             $matched_count = 0;
 
             foreach ($own_entries as &$entry) {
-                if (self::own_prop_matches($row, $entry['key'], $keywords, $table)) {
+                if (self::own_prop_matches($row, $entry['key'], $keywords, $numeric_columns[$entry['key']])) {
                     $entry['cantidad']++;
                     $matched_count++;
                 }
@@ -271,10 +274,10 @@ class GlobalSearchMatchesHelper
      * @param \Illuminate\Database\Eloquent\Model $row
      * @param string $key
      * @param array $keywords
-     * @param string $table
+     * @param bool $is_numeric_column
      * @return bool
      */
-    protected static function own_prop_matches($row, $key, $keywords, $table)
+    protected static function own_prop_matches($row, $key, $keywords, $is_numeric_column)
     {
         $value = $row->getAttribute($key);
 
@@ -282,10 +285,6 @@ class GlobalSearchMatchesHelper
         if ($value === null || $value === '') {
             return false;
         }
-
-        // Guard numerico identico al de GlobalSearchQueryHelper: id, num, o cualquier columna
-        // numerica segun information_schema.
-        $is_numeric_column = ($key === 'id' || $key === 'num' || ExtraFiltersHelper::is_numeric_column($table, $key));
 
         foreach ($keywords as $keyword) {
             if ($is_numeric_column) {

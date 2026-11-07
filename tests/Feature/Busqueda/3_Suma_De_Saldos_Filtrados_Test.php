@@ -6,6 +6,7 @@ use App\Models\Client;
 use App\Models\Provider;
 use App\Models\User;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Feature tests de la suma de saldos que devuelve `globalSearch()` (pedido de Lucas,
@@ -120,6 +121,46 @@ class Suma_De_Saldos_Filtrados_Test extends BusquedaTestCase
         // La suma, en cambio, tiene que ver los 5 -- no los 2 de la pagina.
         $this->assertEqualsWithDelta(5601.00, $response->json('saldos.saldo_pesos'), 0.01, 'saldo_pesos deberia sumar los 5 clientes filtrados, no solo la pagina');
         $this->assertEqualsWithDelta(65.75, $response->json('saldos.saldo_dolares'), 0.01, 'saldo_dolares deberia sumar los 5 clientes filtrados, no solo la pagina');
+    }
+
+    /**
+     * @group busqueda
+     * @test
+     */
+    public function el_desglose_de_clientes_no_consulta_el_tipo_de_columna_por_cada_fila()
+    {
+        $prefijo = 'zz-desglose-cli-' . uniqid();
+        $this->crear_clientes_con_saldo($prefijo, array_fill(0, 50, [
+            'saldo_pesos' => 0,
+            'saldo_dolares' => 0,
+        ]));
+
+        $consultas_de_tipo = [];
+        foreach ([1, 50] as $per_page) {
+            DB::flushQueryLog();
+            DB::enableQueryLog();
+            try {
+                $response = $this->postJson('api/global-search/client', $this->payload_global_search([
+                    'query_value' => $prefijo,
+                    'props'       => ['name'],
+                    'per_page'    => $per_page,
+                ]));
+                $consultas_de_tipo[] = collect(DB::getQueryLog())->filter(function ($consulta) {
+                    return stripos($consulta['query'], 'SELECT DATA_TYPE as data_type FROM information_schema.COLUMNS') !== false
+                        && $consulta['bindings'] === ['clients', 'name'];
+                })->count();
+            } finally {
+                DB::disableQueryLog();
+                DB::flushQueryLog();
+            }
+
+            $response->assertOk()
+                ->assertJsonPath('matches.propiedades.0.key', 'name')
+                ->assertJsonPath('matches.propiedades.0.cantidad', $per_page);
+        }
+
+        $this->assertSame($consultas_de_tipo[0], $consultas_de_tipo[1]);
+        $this->assertLessThanOrEqual(2, $consultas_de_tipo[1]);
     }
 
     /**
