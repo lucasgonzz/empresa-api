@@ -346,6 +346,33 @@ class AiConversationController extends Controller
             return response()->json(['code' => 'adjunto_invalido', 'message' => $motivo], 422);
         }
 
+        $guardar = function (AiConversation $hilo) use ($request, $contenido, $imagenes, $archivos, $audio) {
+            return $this->guardar_turno($request, $hilo, $contenido, $imagenes, $archivos, $audio);
+        };
+
+        if ($conversation->origen === AiConversation::ORIGEN_PRUEBA_TRASLADADA) {
+            $turno = DB::transaction(function () use ($id, $guardar) {
+                // El traslado toma el mismo lock. Ningún mensaje viejo puede quedar entre
+                // el pedido y su respuesta, porque el job resuelve el pedido por el id previo.
+                $hilo = $this->conversaciones_de_la_persona()->where('id', $id)->lockForUpdate()->first();
+
+                return $hilo ? $guardar($hilo) : response()->json(['message' => 'Conversación no encontrada.'], 404);
+            });
+        } else {
+            $turno = $guardar($conversation);
+        }
+
+        if ($turno instanceof JsonResponse) {
+            return $turno;
+        }
+
+        // Los workers pueden leer ambos mensajes apenas se encola el turno.
+        return $this->despachar_turno($turno, $contenido);
+    }
+
+    /** @return array|JsonResponse Los mensajes guardados o una respuesta sin job. */
+    private function guardar_turno(Request $request, AiConversation $conversation, string $contenido, array $imagenes, array $archivos, $audio)
+    {
         $limite_pendiente_vigente = now()->subMinutes(self::MINUTOS_VENCIMIENTO_PENDIENTE);
 
         /*
@@ -520,6 +547,13 @@ class AiConversationController extends Controller
             ], 201);
         }
 
+        return [$user_message, $assistant_message, $inferir_titulo];
+    }
+
+    private function despachar_turno(array $turno, string $contenido): JsonResponse
+    {
+        [$user_message, $assistant_message, $inferir_titulo] = $turno;
+
         /*
          * Red de seguridad del encolado (arreglo post-chequeo): si dispatch()
          * lanza (tabla jobs caída, driver mal configurado), el assistant NO
@@ -550,10 +584,10 @@ class AiConversationController extends Controller
             // muestra "Nueva conversación"): una falla al encolarlo no puede
             // voltear un POST cuyo job de respuesta ya quedó despachado.
             try {
-                dispatch(new InferirTituloConversacionIaJob($conversation->id, $contenido));
+                dispatch(new InferirTituloConversacionIaJob($assistant_message->ai_conversation_id, $contenido));
             } catch (\Throwable $e) {
                 Log::warning('AiConversationController: no se pudo encolar la inferencia del título', [
-                    'ai_conversation_id' => $conversation->id,
+                    'ai_conversation_id' => $assistant_message->ai_conversation_id,
                     'message'            => $e->getMessage(),
                 ]);
             }

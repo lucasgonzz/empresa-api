@@ -5,6 +5,7 @@ namespace Tests\Feature\PruebaGratuita;
 use App\Http\Controllers\Helpers\DemoTrackingConfigHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper;
+use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
 use App\Models\DemoIngresoToken;
 use App\Models\DemoTrackingConfig;
@@ -14,6 +15,8 @@ use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientaDeManualDePrueba;
 use App\Services\DemoChatProxy;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\Bus;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Tests\TestCase;
 
@@ -157,6 +160,40 @@ class AsistenteUnificadoDePruebaTest extends TestCase
         $this->assertFalse(AiConversation::where('user_id', $this->dueno->id)->exists());
         $this->postJson('/api/prueba/chat/trasladar')->assertOk()->assertJsonPath('disponible', true);
         $this->assertTrue(AiConversation::where('user_id', $this->dueno->id)->exists());
+    }
+
+    public function test_el_turno_personal_bloquea_el_hilo_antes_de_guardar_el_pedido_y_su_respuesta()
+    {
+        Http::fake([self::ADMIN => Http::response($this->snapshot())]);
+        $id = $this->postJson('/api/prueba/chat/trasladar')->assertOk()->json('conversacion_id');
+        Bus::fake();
+
+        $nivel_del_test = DB::transactionLevel();
+        $escrituras = [];
+        DB::listen(function ($consulta) use (&$escrituras) {
+            if (stripos($consulta->sql, 'from `ai_conversations`') !== false && stripos($consulta->sql, 'for update') !== false) {
+                $escrituras[] = ['lock del hilo', $consulta->connection->transactionLevel()];
+            }
+            if (stripos($consulta->sql, 'insert into `ai_messages`') !== false) {
+                $escrituras[] = ['mensaje', $consulta->connection->transactionLevel()];
+            }
+        });
+
+        $respuesta = $this->postJson('/api/ai-conversations/' . $id . '/messages', ['contenido' => '¿Y cómo lo cambio?'])
+            ->assertCreated();
+        $this->assertSame([
+            ['lock del hilo', $nivel_del_test + 1],
+            ['mensaje', $nivel_del_test + 1],
+            ['mensaje', $nivel_del_test + 1],
+        ], $escrituras);
+
+        $respuesta->assertJsonPath('user_message.contenido', '¿Y cómo lo cambio?')
+            ->assertJsonPath('assistant_message.estado', 'pendiente');
+        Bus::assertDispatchedTimes(ResponderMensajeChatIaJob::class, 1);
+
+        $this->postJson('/api/ai-conversations/' . $id . '/messages', ['contenido' => 'Otra consulta'])
+            ->assertStatus(409)->assertJsonPath('code', 'respuesta_en_curso');
+        $this->assertDatabaseMissing('ai_messages', ['ai_conversation_id' => $id, 'contenido' => 'Otra consulta']);
     }
 
     /**
