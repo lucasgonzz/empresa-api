@@ -397,6 +397,7 @@ class FotosDeLaConversacionIaHelper
 
         $consulta = AiConversation::where('user_id', (int) $contexto->owner_id)
                                     ->where('auth_user_id', (int) $actual->auth_user_id)
+                                    ->sinHiloPrivadoDePrueba((int) $actual->id)
                                     ->whereExists(function ($q) use ($desde) {
                                         $q->selectRaw('1')
                                           ->from('ai_messages')

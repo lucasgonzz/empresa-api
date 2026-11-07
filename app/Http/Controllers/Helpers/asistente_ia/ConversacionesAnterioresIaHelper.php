@@ -573,6 +573,9 @@ class ConversacionesAnterioresIaHelper
         $query = AiConversation::query()
             ->where('ai_conversations.user_id', (int) $actual->user_id)
             ->where('ai_conversations.auth_user_id', (int) $actual->auth_user_id)
+            // Los trabajos de respuesta corren sin sesión. Solo el mismo hilo puede
+            // leer su historial privado, porque su apertura ya se autorizó por API.
+            ->sinHiloPrivadoDePrueba((int) $actual->id)
             ->where(function ($sin_mcp) {
                 $sin_mcp->whereNull('ai_conversations.origen')
                         ->orWhere('ai_conversations.origen', '!=', AiConversation::ORIGEN_MCP);

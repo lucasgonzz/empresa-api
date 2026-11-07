@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
@@ -22,6 +23,7 @@ use App\Models\AiMessageImagen;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Facades\Validator;
@@ -82,8 +84,7 @@ class AiConversationController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = AiConversation::where('auth_user_id', UserHelper::userId(false))
-            ->where('user_id', UserHelper::userId(true));
+        $query = $this->conversaciones_de_la_persona();
 
         $buscar = mb_substr(trim((string) $request->query('buscar', '')), 0, self::MAX_BUSCAR);
 
@@ -196,18 +197,21 @@ class AiConversationController extends Controller
      */
     public function destroy($id): JsonResponse
     {
-        $conversation = $this->conversacion_de_la_persona($id);
+        return DB::transaction(function () use ($id) {
+            // El traslado también bloquea el hilo antes de agregar mensajes.
+            $conversation = $this->conversaciones_de_la_persona()->where('id', $id)->lockForUpdate()->first();
 
-        if (is_null($conversation)) {
-            return response()->json(['message' => 'Conversación no encontrada.'], 404);
-        }
+            if (is_null($conversation)) {
+                return response()->json(['message' => 'Conversación no encontrada.'], 404);
+            }
 
-        // Las tarjetas de carga se van con la conversación (misión asistente-ia-acciones).
-        AccionesIaHelper::borrar_de_conversacion($conversation->id);
-        AiMessage::where('ai_conversation_id', $conversation->id)->delete();
-        $conversation->delete();
+            // Las tarjetas de carga se van con la conversación (misión asistente-ia-acciones).
+            AccionesIaHelper::borrar_de_conversacion($conversation->id);
+            AiMessage::where('ai_conversation_id', $conversation->id)->delete();
+            $conversation->delete();
 
-        return response()->json(['deleted' => true], 200);
+            return response()->json(['deleted' => true], 200);
+        });
     }
 
     /**
@@ -889,10 +893,23 @@ class AiConversationController extends Controller
      */
     protected function conversacion_de_la_persona($id)
     {
-        return AiConversation::where('auth_user_id', UserHelper::userId(false))
-            ->where('user_id', UserHelper::userId(true))
+        return $this->conversaciones_de_la_persona()
             ->where('id', $id)
             ->first();
+    }
+
+    private function conversaciones_de_la_persona()
+    {
+        $query = AiConversation::where('auth_user_id', UserHelper::userId(false))
+            ->where('user_id', UserHelper::userId(true));
+
+        $request = request();
+        $persona = $request->user();
+        if (!$persona instanceof User || !PruebaHelper::es_sesion_web_del_dueno($persona, $request)) {
+            $query->sinHiloPrivadoDePrueba();
+        }
+
+        return $query;
     }
 
     /**
@@ -905,12 +922,7 @@ class AiConversationController extends Controller
      */
     protected function mensaje_de_la_persona($message_id)
     {
-        return AiMessage::whereIn('ai_conversation_id', function ($query) {
-            $query->select('id')
-                ->from('ai_conversations')
-                ->where('auth_user_id', UserHelper::userId(false))
-                ->where('user_id', UserHelper::userId(true));
-        })
+        return AiMessage::whereIn('ai_conversation_id', $this->conversaciones_de_la_persona()->select('id'))
             ->where('id', (int) $message_id)
             ->first();
     }

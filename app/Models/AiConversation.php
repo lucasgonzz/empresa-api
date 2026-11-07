@@ -29,6 +29,8 @@ use Illuminate\Database\Eloquent\Model;
  *   conversación que después lee alguien más que la persona: la skill /mostrador
  *   la recibe por admin-sync/mostrador/contexto para saber qué le importa al dueño
  *   (MostradorReporte::ORIGEN_CONVERSACION).
+ * - 'prueba_trasladada': conserva la charla que el dueño tenía en el asistente de ayuda de la prueba.
+ *   Solo la sesión web del dueño puede leerla o continuarla. Se excluye de la memoria de otros hilos.
  * - 'whatsapp': la abrió el dueño escribiéndole al asistente desde WhatsApp (misión
  *   asistente-por-whatsapp, 16/9/2026). No hay tabla nueva ni columna de canal en la
  *   conversación: es un valor nuevo de esta columna, que ya existía. `referencia_id`
@@ -65,6 +67,9 @@ class AiConversation extends Model
     /** Origen de las conversaciones que abre un cliente MCP externo al inicializar su sesión (misión asistente-mcp). */
     const ORIGEN_MCP = 'mcp';
 
+    /** Hilo recuperado del chat de la prueba. Solo se abre desde la sesión web del dueño. */
+    const ORIGEN_PRUEBA_TRASLADADA = 'prueba_trasladada';
+
     protected $guarded = [];
 
     /**
@@ -73,6 +78,18 @@ class AiConversation extends Model
     protected $casts = [
         'fijada' => 'boolean',
     ];
+
+    public function scopeSinHiloPrivadoDePrueba($query, $conversacion_actual_id = null)
+    {
+        return $query->where(function ($donde) use ($conversacion_actual_id) {
+            $donde->whereNull('ai_conversations.origen')
+                ->orWhere('ai_conversations.origen', '!=', self::ORIGEN_PRUEBA_TRASLADADA);
+
+            if ($conversacion_actual_id !== null) {
+                $donde->orWhere('ai_conversations.id', $conversacion_actual_id);
+            }
+        });
+    }
 
     /**
      * Titulo de una conversacion que nace de una sugerencia terminada: el nombre del tipo
