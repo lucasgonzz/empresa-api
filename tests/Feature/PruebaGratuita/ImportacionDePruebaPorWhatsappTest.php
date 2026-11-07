@@ -4,10 +4,14 @@ namespace Tests\Feature\PruebaGratuita;
 
 use App\Events\ImplementacionActualizada;
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Jobs\ProcessArticleChunk;
+use App\Jobs\BorrarSemillaDePruebaJob;
+use App\Jobs\FinalizeArticleImport;
+use App\Jobs\RegistrarHitoDePruebaJob;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -16,6 +20,7 @@ use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\PruebaHito;
 use App\Models\Provider;
 use App\Services\Importacion\ImportacionDePruebaService;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
@@ -357,6 +362,168 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->postJson(self::BASE . 'analyze', ['automatizar_prueba' => 1])->assertStatus(401);
         $this->getJson(self::BASE . 'prueba-pendientes', ['X-Admin-Api-Key' => 'incorrecta'])->assertStatus(401);
         $this->postJson(self::BASE . 'prueba-resolver/' . Str::uuid(), [])->assertStatus(401);
+    }
+
+    public function test_soporte_importa_despues_de_confirmar_y_no_borra_datos_de_ejemplo_del_negocio_convertido(): void
+    {
+        $cabeceras = ['X-Admin-Api-Key' => self::CLAVE, 'Accept' => 'application/json'];
+        $consulta = self::BASE . 'prueba-pendientes?automatizar_soporte=1&user_id=' . $this->dueno->id . '&support_ticket_id=';
+        $this->getJson($consulta . '42', $cabeceras)->assertStatus(409);
+
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        SemillaRegistroHelper::abrir_lote($this->dueno->id, 'test');
+        $ejemplo = Article::create(['user_id' => $this->dueno->id, 'name' => 'Ejemplo a conservar', 'status' => 'active']);
+        SemillaRegistroHelper::cerrar_lote();
+        $this->assertTrue(SemillaRegistroHelper::semilla_presente($this->dueno->id));
+
+        $archivo = $this->planilla([[['Nombre', 'Barras'], ['Artículo desde soporte', '789123']]]);
+        $datos = [
+            'user_id' => $this->dueno->id, 'model' => 'article', 'automatizar_soporte' => 1,
+            'support_ticket_id' => 42, 'importacion_clave' => hash_file('sha256', $archivo),
+        ];
+        $subir = function () use ($datos, $archivo, $cabeceras) {
+            return $this->post(self::BASE . 'analyze', $datos + [
+                'excel_file' => new UploadedFile($archivo, 'catalogo.xlsx', null, null, true),
+            ], $cabeceras)->assertStatus(202)->assertJsonPath('automatizar_soporte', true);
+        };
+        $uuid = $subir()->json('analysis_uuid');
+        $this->assertSame($uuid, $subir()->json('analysis_uuid'));
+        $run = ImportacionDePrueba::where('uuid', $uuid)->firstOrFail();
+        $this->archivos[] = storage_path('app/' . $run->archivo);
+        $this->archivos[] = storage_path('app/imported_files/prueba_' . $uuid . '_');
+        $this->analizador([['nombre' => 0.99, 'codigo_de_barras' => 0.99]]);
+        $servicio = app(ImportacionDePruebaService::class);
+        $servicio->avanzar($run);
+        $run->refresh();
+        $this->assertSame('confirmacion', $run->estado);
+        $this->assertNull($run->import_history_id);
+        $this->assertDatabaseMissing('articles', ['user_id' => $this->dueno->id, 'bar_code' => '789123']);
+
+        $pregunta = $this->getJson($consulta . '42', $cabeceras)->assertOk()->assertJsonPath('automatizar_soporte', true)
+            ->assertJsonPath('pendientes.0.tipo', 'confirmacion')->json('pendientes.0.preguntas.0');
+        $this->assertSame('confirmacion', $pregunta['clave']);
+        $this->assertStringContainsString('CONFIRMAR ' . $pregunta['codigo_confirmacion'], $pregunta['texto']);
+        $this->assertArrayNotHasKey('huella_plan', $pregunta);
+        $this->getJson($consulta . '43', $cabeceras)->assertOk()->assertJsonPath('pendientes', []);
+        $this->getJson(str_replace('automatizar_soporte=1&', '', $consulta . '42'), $cabeceras)->assertStatus(409);
+
+        $resolver = self::BASE . 'prueba-resolver/' . $uuid;
+        $decision = ['automatizar_soporte' => 1, 'user_id' => $this->dueno->id, 'support_ticket_id' => 42,
+            'revision' => $run->revision, 'respuestas' => ['confirmacion' => 'confirmar']];
+        $this->postJson($resolver, array_replace($decision, ['support_ticket_id' => 43]), $cabeceras)->assertNotFound();
+        $this->postJson($resolver, array_replace($decision, ['revision' => $run->revision + 1]), $cabeceras)->assertStatus(409);
+        $this->postJson($resolver, $decision, $cabeceras)->assertStatus(202);
+        $this->postJson($resolver, $decision, $cabeceras)->assertOk();
+
+        Bus::fake();
+        $servicio->avanzar($run->fresh());
+        $run->refresh();
+        $this->assertSame('importando', $run->estado);
+        Bus::assertNotDispatched(BorrarSemillaDePruebaJob::class);
+        $job = Bus::dispatched(ProcessArticleChunk::class)->first();
+        $this->assertInstanceOf(ProcessArticleChunk::class, $job);
+        $job->handle();
+        $historial = ImportHistory::findOrFail($run->import_history_id);
+        (new FinalizeArticleImport($this->dueno->id, $historial->id, $historial->import_status_id))->handle();
+        Bus::assertNotDispatched(RegistrarHitoDePruebaJob::class, function ($job) {
+            return $job->tipo === 'prueba.importo';
+        });
+        $servicio->avanzar($run->fresh());
+
+        $this->assertSame('terminado', $run->fresh()->estado);
+        $this->assertNull($run->fresh()->hitos);
+        $this->assertDatabaseHas('articles', ['id' => $ejemplo->id]);
+        $this->assertDatabaseHas('articles', ['user_id' => $this->dueno->id, 'bar_code' => '789123']);
+        $this->assertDatabaseMissing((new PruebaHito())->getTable(), ['owner_id' => $this->dueno->id, 'tipo' => 'prueba.importo']);
+        $resultado = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 42)->firstOrFail();
+        $this->assertStringContainsString('1 artículo creado', $resultado->texto);
+    }
+
+    public function test_soporte_cancela_la_corrida_y_acepta_dueños_con_vencimiento_historico(): void
+    {
+        config(['app.FOR_USER' => null, 'services.admin_api.require_api_key' => false]);
+        PruebaHelper::fijar_vencimiento($this->dueno->id, now()->subDay());
+        $base = ['automatizar_soporte' => 1, 'user_id' => $this->dueno->id, 'support_ticket_id' => 20];
+        $cabeceras = ['X-Admin-Api-Key' => self::CLAVE];
+        $this->postJson(self::BASE . 'analyze', $base)->assertStatus(401);
+        $this->getJson(self::BASE . 'prueba-pendientes?' . http_build_query($base), $cabeceras)
+            ->assertOk()->assertJsonPath('automatizar_soporte', true);
+        $this->getJson(self::BASE . 'prueba-pendientes?' . http_build_query(array_replace($base, ['user_id' => $this->dueno->id + 1])), $cabeceras)
+            ->assertStatus(409);
+
+        $run = $this->corrida($this->planilla([[['Nombre'], ['Cerradura']]]), 'analizar');
+        $run->update(['modo_soporte' => true]);
+        $this->analizador([['nombre' => 0.99]]);
+        app(ImportacionDePruebaService::class)->avanzar($run);
+        $run->refresh();
+        $resolver = self::BASE . 'prueba-resolver/' . $run->uuid;
+        $decision = $base + ['revision' => $run->revision, 'respuestas' => ['confirmacion' => 'cancelar']];
+        $this->postJson($resolver, $decision, $cabeceras)->assertOk()->assertJsonPath('estado', 'cancelado');
+        $this->postJson($resolver, $decision, $cabeceras)->assertOk()->assertJsonPath('estado', 'cancelado');
+        $this->postJson($resolver, array_replace($decision, ['respuestas' => ['confirmacion' => 'confirmar']]), $cabeceras)->assertStatus(409);
+        $this->assertNull($run->fresh()->import_history_id);
+        $this->getJson(self::BASE . 'prueba-pendientes?' . http_build_query($base), $cabeceras)
+            ->assertOk()->assertJsonPath('en_proceso', false);
+    }
+
+    public function test_si_cambia_el_plan_entre_la_confirmacion_y_el_inicio_soporte_vuelve_a_preguntar(): void
+    {
+        config(['app.FOR_USER' => null]);
+        $run = $this->corrida($this->planilla([[['Nombre'], ['Cerradura']]]), 'analizar');
+        $run->update(['modo_soporte' => true]);
+        $this->analizador([['nombre' => 0.99]]);
+        $servicio = app(ImportacionDePruebaService::class);
+        $servicio->avanzar($run);
+        $run->refresh();
+        $codigo_anterior = $run->preguntas['confirmacion']['codigo_confirmacion'];
+        $revision_anterior = $run->revision;
+
+        $this->postJson(self::BASE . 'prueba-resolver/' . $run->uuid, [
+            'automatizar_soporte' => 1, 'user_id' => $this->dueno->id, 'support_ticket_id' => 20,
+            'revision' => $revision_anterior, 'respuestas' => ['confirmacion' => 'confirmar'],
+        ], ['X-Admin-Api-Key' => self::CLAVE])->assertStatus(202);
+        copy($this->planilla([[['Nombre'], ['Cerrojo'], ['Candado']]]), storage_path('app/' . $run->archivo));
+        $servicio->avanzar($run->fresh());
+
+        $run->refresh();
+        $this->assertSame('confirmacion', $run->estado);
+        $this->assertSame($revision_anterior + 1, $run->revision);
+        $this->assertNotSame($codigo_anterior, $run->preguntas['confirmacion']['codigo_confirmacion']);
+        $this->assertArrayNotHasKey('confirmacion', $run->decisiones);
+        $this->assertNull($run->import_history_id);
+    }
+
+    public function test_los_avisos_de_soporte_funcionan_sin_extension_y_no_exponen_otros_avisos(): void
+    {
+        $this->dueno->extencions()->detach();
+        $run = $this->corrida($this->planilla([[['Nombre'], ['Cerradura']]]), 'confirmacion');
+        $run->update(['modo_soporte' => true]);
+        $run->aviso('resultado', 'Aviso de soporte');
+        AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 20)
+            ->update(['created_at' => now()->subDays(2)]);
+        $otro = AiAvisoDelAsistente::create([
+            'owner_id' => $this->dueno->id, 'tipo' => AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA,
+            'uuid' => Str::uuid()->toString(), 'texto' => 'Aviso de prueba', 'support_ticket_id' => 20,
+        ]);
+        AiAvisoDelAsistente::create([
+            'owner_id' => $this->dueno->id, 'tipo' => AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA,
+            'uuid' => Str::uuid()->toString(), 'texto' => 'Aviso de otro ticket', 'support_ticket_id' => 21,
+            'modo_soporte' => true,
+        ]);
+        $base = '/api/admin-sync/asistente/avisos';
+        $cabeceras = ['X-Admin-Api-Key' => self::CLAVE];
+        $this->getJson($base . '-pendientes', $cabeceras)->assertStatus(403);
+        $this->getJson($base . '-pendientes?solo_importaciones_de_soporte=1')->assertStatus(401);
+        $this->getJson($base . '-pendientes?solo_importaciones_de_soporte=1', $cabeceras)->assertStatus(422);
+        $pendientes = $base . '-pendientes?' . http_build_query(['solo_importaciones_de_soporte' => 1, 'support_ticket_ids' => [20]]);
+        $aviso = $this->getJson($pendientes, $cabeceras)
+            ->assertOk()->assertJsonCount(1, 'avisos')->assertJsonPath('avisos.0.support_ticket_id', 20)->json('avisos.0');
+        $marca = ['solo_importaciones_de_soporte' => 1, 'whatsapp_message_id' => 'id-enviado'];
+        $this->postJson($base . '/avisado', $marca + ['id' => 'importacion_lista:' . $otro->uuid], $cabeceras)->assertNotFound();
+        $this->postJson($base . '/avisado', $marca + ['id' => $aviso['id']], $cabeceras)->assertOk();
+        $this->postJson($base . '/avisado', $marca + ['id' => $aviso['id']], $cabeceras)->assertOk();
+        $this->getJson($pendientes, $cabeceras)->assertOk()->assertJsonPath('avisos', []);
+        $this->assertNull($otro->fresh()->avisado_por_whatsapp_at);
     }
 
     private function corrida(string $archivo, string $estado): ImportacionDePrueba

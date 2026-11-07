@@ -351,7 +351,8 @@ class InitExcelImport
          * Importar con IA y el import remoto del admin. Solo en modo prueba y solo mientras haya semilla;
          * en una demo o en un cliente real no agrega nada.
          */
-        if (PruebaHelper::activa($this->user->id) && SemillaRegistroHelper::semilla_presente($this->user->id)) {
+        if (empty($this->planilla_de_prueba['modo_soporte']) && PruebaHelper::activa($this->user->id)
+            && SemillaRegistroHelper::semilla_presente($this->user->id)) {
             array_unshift($jobs, new BorrarSemillaDePruebaJob(
                 $this->user->id,
                 $this->import_history->id,

@@ -207,7 +207,7 @@ class FinalizeArticleImport implements ShouldQueue
          */
         $this->completar_proceso_en_segundo_plano();
 
-        $automatica = PruebaHelper::puede_haber_prueba() && Schema::hasTable('importaciones_de_prueba')
+        $automatica = Schema::hasTable('importaciones_de_prueba')
             ? ImportacionDePrueba::where('import_history_id', $import_history->id)->first()
             : null;
         if ($automatica === null) {
@@ -255,26 +255,25 @@ class FinalizeArticleImport implements ShouldQueue
          * Corre en el worker, sin sesión HTTP, así que el emisor resuelve la configuración
          * contra la base: una query por importación terminada, no por request.
          */
-        DemoEventoEmitter::emitir(
-            'importacion.completada',
-            null,
-            ['import_history_id' => $import_history->id],
-            (string) $import_history->id
-        );
+        if ($automatica === null || !$automatica->modo_soporte) {
+            DemoEventoEmitter::emitir(
+                'importacion.completada',
+                null,
+                ['import_history_id' => $import_history->id],
+                (string) $import_history->id
+            );
 
-        /*
-         * Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa, 3/11/2026): la importación
-         * TERMINÓ. `origen` (excel | pdf | martin) lo dejó BorrarSemillaDePruebaJob en prueba_config al
-         * arrancar la cadena. `prueba_hitos` lo hace único por su cuenta; cero costo fuera de una prueba.
-         */
-        PruebaHitosHelper::emitir('prueba.importo', [
-            'origen'            => PruebaHelper::origen_de_importacion($user->id),
-            'import_history_id' => (int) $import_history->id,
-        ], (int) $user->id);
+            // El origen lo dejó BorrarSemillaDePruebaJob. PruebaHitosHelper emite el hito una sola vez.
+            PruebaHitosHelper::emitir('prueba.importo', [
+                'origen'            => PruebaHelper::origen_de_importacion($user->id),
+                'import_history_id' => (int) $import_history->id,
+            ], (int) $user->id);
+        }
 
         if ($automatica !== null) {
             AvanzarImportacionDePrueba::dispatch((int) $automatica->id);
-        } else {
+        }
+        if ($automatica === null || $automatica->modo_soporte) {
             $this->generar_embeddings_de_lo_importado();
         }
     }

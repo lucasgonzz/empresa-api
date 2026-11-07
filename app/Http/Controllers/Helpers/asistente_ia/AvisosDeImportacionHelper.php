@@ -152,7 +152,7 @@ class AvisosDeImportacionHelper
      * @param  int  $tope
      * @return \Illuminate\Support\Collection
      */
-    public static function pendientes_de_aviso(User $dueno, $tope)
+    public static function pendientes_de_aviso(User $dueno, $tope, ?array $tickets_soporte = null)
     {
         if (!AvisosDeTurnosIaHelper::hay_tabla()) {
 
@@ -162,7 +162,13 @@ class AvisosDeImportacionHelper
         return AiAvisoDelAsistente::where('owner_id', (int) $dueno->id)
                                     ->where('tipo', self::TIPO)
                                     ->whereNull('avisado_por_whatsapp_at')
-                                    ->where('created_at', '>=', Carbon::now()->subHours(AvisosDeTurnosIaHelper::HORAS_DEL_AVISO))
+                                    ->when($tickets_soporte !== null, function ($consulta) use ($tickets_soporte) {
+                                        // La ventana de WhatsApp la valida el admin al enviar. Si el cliente vuelve a
+                                        // escribir, la pregunta por el Excel todavía tiene que estar disponible.
+                                        $consulta->where('modo_soporte', true)->whereIn('support_ticket_id', $tickets_soporte);
+                                    }, function ($consulta) {
+                                        $consulta->where('created_at', '>=', Carbon::now()->subHours(AvisosDeTurnosIaHelper::HORAS_DEL_AVISO));
+                                    })
                                     ->orderBy('created_at')
                                     ->orderBy('id')
                                     ->limit((int) $tope)

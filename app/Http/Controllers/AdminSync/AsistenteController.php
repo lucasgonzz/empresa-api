@@ -634,7 +634,8 @@ class AsistenteController extends Controller
      */
     public function avisos_pendientes(Request $request): JsonResponse
     {
-        $rechazo = $this->rechazo_de_acceso($request);
+        $solo_soporte = $request->boolean('solo_importaciones_de_soporte');
+        $rechazo = $this->rechazo_de_acceso($request, !$solo_soporte);
 
         if (!is_null($rechazo)) {
 
@@ -642,9 +643,17 @@ class AsistenteController extends Controller
         }
 
         $dueno = AsistenteCanalHelper::dueno();
+        $tickets_soporte = null;
+        if ($solo_soporte) {
+            $datos = $request->validate([
+                'support_ticket_ids' => 'required|array|min:1|max:100',
+                'support_ticket_ids.*' => 'required|integer|min:1',
+            ]);
+            $tickets_soporte = $datos['support_ticket_ids'];
+        }
 
         return response()->json([
-            'avisos' => AvisosDelAsistenteHelper::pendientes($dueno, $request->query('spa_url')),
+            'avisos' => AvisosDelAsistenteHelper::pendientes($dueno, $request->query('spa_url'), $tickets_soporte),
         ], 200);
     }
 
@@ -662,7 +671,8 @@ class AsistenteController extends Controller
      */
     public function aviso_avisado(Request $request): JsonResponse
     {
-        $rechazo = $this->rechazo_de_acceso($request);
+        $solo_soporte = $request->boolean('solo_importaciones_de_soporte');
+        $rechazo = $this->rechazo_de_acceso($request, !$solo_soporte);
 
         if (!is_null($rechazo)) {
 
@@ -675,7 +685,8 @@ class AsistenteController extends Controller
             $dueno,
             $request->input('id'),
             $request->input('url'),
-            $request->input('whatsapp_message_id')
+            $request->input('whatsapp_message_id'),
+            $solo_soporte
         );
 
         if (!$encontrado) {
@@ -779,7 +790,7 @@ class AsistenteController extends Controller
      * @param  Request  $request
      * @return JsonResponse|null
      */
-    protected function rechazo_de_acceso(Request $request)
+    protected function rechazo_de_acceso(Request $request, bool $requiere_extension = true)
     {
         if (!$this->clave_valida($request)) {
 
@@ -796,7 +807,7 @@ class AsistenteController extends Controller
             ], 409);
         }
 
-        if (!AsistenteCanalHelper::tiene_extension($dueno)) {
+        if ($requiere_extension && !AsistenteCanalHelper::tiene_extension($dueno)) {
 
             return response()->json([
                 'message' => 'No tenés acceso a esta funcionalidad. Extensión requerida: ' . AsistenteCanalHelper::EXTENSION,

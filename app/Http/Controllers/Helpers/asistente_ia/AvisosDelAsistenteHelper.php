@@ -199,8 +199,15 @@ class AvisosDelAsistenteHelper
      * @param  mixed  $spa_url_pedida  La `spa_url` de la query, o null.
      * @return array<int, array<string, mixed>>
      */
-    public static function pendientes(User $dueno, $spa_url_pedida = null): array
+    public static function pendientes(User $dueno, $spa_url_pedida = null, ?array $tickets_soporte = null): array
     {
+        if ($tickets_soporte !== null) {
+            return AvisosDeImportacionHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS, $tickets_soporte)
+                ->map(function (AiAvisoDelAsistente $fila) {
+                    return self::formato_de_importacion($fila, null);
+                })->all();
+        }
+
         $base = self::base_del_link((int) $dueno->id, $spa_url_pedida);
 
         $scans = ProviderOrderScan::where('user_id', (int) $dueno->id)
@@ -334,22 +341,7 @@ class AvisosDelAsistenteHelper
 
             foreach (AvisosDeImportacionHelper::pendientes_de_aviso($dueno, self::TOPE_AVISOS) as $fila) {
 
-                $ruta = $fila->support_ticket_id ? null : AvisosDeImportacionHelper::ruta($fila->uuid);
-
-                $avisos[] = [
-                    'id'                 => AvisosDeImportacionHelper::TIPO . ':' . (string) $fila->uuid,
-                    'tipo'               => AvisosDeImportacionHelper::TIPO,
-                    'uuid'               => (string) $fila->uuid,
-                    'ai_conversation_id' => null,
-                    'texto'              => (string) $fila->texto,
-                    'resumen'            => (string) $fila->texto,
-                    'ruta'               => $ruta,
-                    'url'                => is_null($base) || is_null($ruta) ? null : $base . $ruta,
-                ];
-
-                if ($fila->support_ticket_id) {
-                    $avisos[count($avisos) - 1]['support_ticket_id'] = (int) $fila->support_ticket_id;
-                }
+                $avisos[] = self::formato_de_importacion($fila, $base);
 
                 $orden[] = [self::momento($fila->created_at), 3, (int) $fila->id];
             }
@@ -414,8 +406,13 @@ class AvisosDelAsistenteHelper
      * @param  mixed  $whatsapp_message_id  El wamid del WhatsApp que salió, o null.
      * @return bool  false si el aviso no existe o no es de este dueño (el 404 del contrato).
      */
-    public static function marcar_avisado(User $dueno, $id, $url = null, $whatsapp_message_id = null): bool
+    public static function marcar_avisado(User $dueno, $id, $url = null, $whatsapp_message_id = null, bool $solo_soporte = false): bool
     {
+        if ($solo_soporte) {
+            $uuid = self::uuid_del_tipo($id, AvisosDeImportacionHelper::TIPO);
+            return $uuid !== null && self::marcar_importacion_avisada($dueno, $uuid, $whatsapp_message_id, true);
+        }
+
         $uuid_de_envio = self::uuid_del_tipo($id, self::TIPO_ENVIO_FALLIDO);
 
         if (!is_null($uuid_de_envio)) {
@@ -481,6 +478,26 @@ class AvisosDelAsistenteHelper
         });
     }
 
+    private static function formato_de_importacion(AiAvisoDelAsistente $fila, ?string $base): array
+    {
+        $ruta = $fila->support_ticket_id ? null : AvisosDeImportacionHelper::ruta($fila->uuid);
+        $aviso = [
+            'id'                 => AvisosDeImportacionHelper::TIPO . ':' . (string) $fila->uuid,
+            'tipo'               => AvisosDeImportacionHelper::TIPO,
+            'uuid'               => (string) $fila->uuid,
+            'ai_conversation_id' => null,
+            'texto'              => (string) $fila->texto,
+            'resumen'            => (string) $fila->texto,
+            'ruta'               => $ruta,
+            'url'                => $base === null || $ruta === null ? null : $base . $ruta,
+        ];
+        if ($fila->support_ticket_id) {
+            $aviso['support_ticket_id'] = (int) $fila->support_ticket_id;
+        }
+
+        return $aviso;
+    }
+
     /**
      * Sella el aviso de una importación lista (misión prueba-martin-importacion, 3/11/2026). Mismas
      * garantías que el del turno: dentro del dueño, la fila bloqueada y el sello mirado adentro de la
@@ -492,18 +509,21 @@ class AvisosDelAsistenteHelper
      * @param  mixed  $whatsapp_message_id
      * @return bool  false si no existe o no es de este dueño (el 404 del contrato).
      */
-    protected static function marcar_importacion_avisada(User $dueno, $uuid, $whatsapp_message_id): bool
+    protected static function marcar_importacion_avisada(User $dueno, $uuid, $whatsapp_message_id, bool $solo_soporte = false): bool
     {
         if (!AvisosDeTurnosIaHelper::hay_tabla()) {
 
             return false;
         }
 
-        return DB::transaction(function () use ($dueno, $uuid, $whatsapp_message_id) {
+        return DB::transaction(function () use ($dueno, $uuid, $whatsapp_message_id, $solo_soporte) {
 
             $fila = AiAvisoDelAsistente::where('owner_id', (int) $dueno->id)
                                         ->where('tipo', AvisosDeImportacionHelper::TIPO)
                                         ->where('uuid', $uuid)
+                                        ->when($solo_soporte, function ($consulta) {
+                                            $consulta->where('modo_soporte', true)->whereNotNull('support_ticket_id');
+                                        })
                                         ->lockForUpdate()
                                         ->first();
 
