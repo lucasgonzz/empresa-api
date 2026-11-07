@@ -14,12 +14,12 @@ class DemoChatProxy
         return $this->enviar($metodo, $sufijo, $datos, 'demo-chat');
     }
 
-    public function solicitar_prueba($metodo, $sufijo = '', array $datos = [])
+    public function solicitar_prueba($metodo, $sufijo = '', array $datos = [], $timeout = 8)
     {
-        return $this->enviar($metodo, $sufijo, $datos, 'prueba-chat');
+        return $this->enviar($metodo, $sufijo, $datos, 'prueba-chat', $timeout);
     }
 
-    private function enviar($metodo, $sufijo, array $datos, $canal)
+    private function enviar($metodo, $sufijo, array $datos, $canal, $timeout = 8)
     {
         $config = DemoTrackingConfigHelper::actual();
         if (!$config || !$config->eventos_token) {
@@ -45,11 +45,11 @@ class DemoChatProxy
         }
 
         try {
-            $http = Http::withHeaders($headers)->timeout(8);
+            $http = Http::withHeaders($headers)->timeout($timeout);
             if ($es_prueba) {
                 $http->withoutRedirecting();
             }
-            $respuesta = $metodo === 'GET' ? $http->get($url) : $http->post($url, $datos);
+            $respuesta = $metodo === 'GET' ? $http->get($url, $datos) : $http->post($url, $datos);
 
             // Una actualización por etapas conserva el recorrido de la API anterior.
             if (in_array($respuesta->status(), [404, 405], true)) {

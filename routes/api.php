@@ -81,6 +81,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::get('prueba/estado', 'PruebaController@estado');
     Route::post('prueba/modal-visto', 'PruebaController@modal_visto');
     Route::get('prueba/chat', 'PruebaChatController@index');
+    Route::post('prueba/chat/trasladar', 'PruebaChatController@trasladar')->middleware('throttle:30,1');
     Route::post('prueba/chat/iniciar', 'PruebaChatController@iniciar')->middleware('throttle:30,1');
     Route::post('prueba/chat/mensajes', 'PruebaChatController@mensaje')->middleware('throttle:30,1');
     Route::get('implementacion', 'ImplementacionController@index');

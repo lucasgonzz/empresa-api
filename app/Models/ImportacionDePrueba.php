@@ -15,11 +15,12 @@ class ImportacionDePrueba extends Model
         'preguntas' => 'array',
         'decisiones' => 'array',
         'hitos' => 'array',
+        'modo_soporte' => 'boolean',
     ];
 
     public const EN_CURSO = ['analizar', 'preparar', 'importando', 'imagenes', 'indexar', 'indexando'];
 
-    public const ESPERANDO_RESPUESTA = ['columnas', 'repetidos'];
+    public const ESPERANDO_RESPUESTA = ['columnas', 'repetidos', 'confirmacion'];
 
     public function scopeWithAll($query)
     {
@@ -34,6 +35,7 @@ class ImportacionDePrueba extends Model
             'tipo' => AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA,
         ], [
             'support_ticket_id' => $this->support_ticket_id,
+            'modo_soporte' => (bool) $this->modo_soporte,
             'texto' => $texto,
         ]);
     }

@@ -11,8 +11,8 @@ use Illuminate\Database\Eloquent\Model;
  * presencia es lo que prende el "modo prueba" (modal de primer ingreso, botón de importar, borrado de lo
  * sembrado al primer import, hitos al admin). El vencimiento NO está acá: es `users.expired_at`.
  *
- * `owner_id` y no `user_id`: ver la migración `create_prueba_gratuita_tables`. Solo lo escribe
- * `PruebaHelper`.
+ * `owner_id` y no `user_id`: ver la migración `create_prueba_gratuita_tables`. El traslado de chat
+ * conserva en `chat_trasladado_id` el hilo que recibió el historial, aunque el dueño lo haya borrado.
  */
 class PruebaConfig extends Model
 {

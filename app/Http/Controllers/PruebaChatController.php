@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Services\AsistenteUnificadoDePrueba;
 use App\Services\DemoChatProxy;
 use Illuminate\Http\Request;
 
@@ -18,6 +19,16 @@ class PruebaChatController extends Controller
     {
         return PruebaHelper::puede_usar_chat($request->user(), $request)
             ? $proxy->solicitar_prueba('POST', '/iniciar') : response(null, 204);
+    }
+
+    public function trasladar(Request $request, AsistenteUnificadoDePrueba $asistente)
+    {
+        $dueno = $request->user();
+        if (!PruebaHelper::puede_usar_chat($dueno, $request) || !$asistente->tiene_acceso_personal($dueno)) {
+            return response(null, 204);
+        }
+
+        return response()->json($asistente->trasladar($dueno));
     }
 
     public function mensaje(Request $request, DemoChatProxy $proxy)

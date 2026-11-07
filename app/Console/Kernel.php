@@ -433,9 +433,7 @@ class Kernel extends ConsoleKernel
                         \App\Jobs\AvanzarImportacionDePrueba::dispatch((int) $corrida->id);
                     }
                 });
-        })->name('prueba:avanzar-importaciones')->everyMinute()->withoutOverlapping(3)->when(function () {
-            return \App\Http\Controllers\Helpers\PruebaHelper::puede_haber_prueba();
-        });
+        })->name('prueba:avanzar-importaciones')->everyMinute()->withoutOverlapping(3);
 
         // Captura el snapshot de deuda diario (clientes y proveedores) a las 23:59.
         // Registra los saldos actuales de credit_accounts para análisis histórico.

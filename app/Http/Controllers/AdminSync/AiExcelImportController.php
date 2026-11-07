@@ -54,7 +54,7 @@ class AiExcelImportController extends Controller
      */
     public function analyze(Request $request): JsonResponse
     {
-        if ($this->bandera($request->input('automatizar_prueba'))) {
+        if ($this->bandera($request->input('automatizar_prueba')) || $request->boolean('automatizar_soporte')) {
             return app(AdminApiKey::class)->handle($request, function (Request $request) {
                 return $this->analizar_archivo($request, true);
             }, AdminApiKey::MODO_SIEMPRE);
@@ -84,8 +84,12 @@ class AiExcelImportController extends Controller
             return $excel_validation;
         }
 
+        if ($request->boolean('automatizar_soporte') && ($model !== 'article' || $this->bandera($request->input('automatizar_prueba')))) {
+            return response()->json(['message' => 'El modo soporte es para importar artículos de un negocio activo.'], 422);
+        }
+
         if ($model === 'article' && $automatizar) {
-            return ImportacionDePruebaController::iniciar($request, $user_id);
+            return ImportacionDePruebaController::iniciar($request, $user_id, $request->boolean('automatizar_soporte'));
         }
 
         try {

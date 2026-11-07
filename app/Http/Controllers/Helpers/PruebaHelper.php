@@ -7,6 +7,7 @@ use App\Models\ExcelAnalysisRun;
 use App\Models\PruebaConfig;
 use App\Models\PruebaHito;
 use App\Models\User;
+use App\Services\AsistenteUnificadoDePrueba;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -194,7 +195,15 @@ class PruebaHelper
      */
     public static function puede_usar_chat(User $user, Request $request): bool
     {
-        if (!self::puede_haber_prueba() || !empty($user->owner_id) || !$request->hasSession()) {
+        return self::puede_haber_prueba()
+            && self::es_sesion_web_del_dueno($user, $request)
+            && self::en_periodo_vigente((int) $user->id);
+    }
+
+    /** La conversación trasladada sigue siendo privada aunque termine la prueba. */
+    public static function es_sesion_web_del_dueno(User $user, Request $request): bool
+    {
+        if (!empty($user->owner_id) || !$request->hasSession()) {
             return false;
         }
 
@@ -203,8 +212,7 @@ class PruebaHelper
 
         return $dueno_web !== null && (int) $dueno_web->id === (int) $user->id
             && !$sesion->has('acceso_soporte_token_id')
-            && !$sesion->get('master_login_bypass_user_last_activity', false)
-            && self::en_periodo_vigente((int) $user->id);
+            && !$sesion->get('master_login_bypass_user_last_activity', false);
     }
 
     public static function error_catalogo_para_probar_agente(int $owner_id): ?array
@@ -598,6 +606,8 @@ class PruebaHelper
 
         $user->prueba = self::resumen_para_spa(self::owner_id_de($user));
         $user->puede_usar_chat_prueba = self::puede_usar_chat($user, request());
+        $user->puede_unificar_chat_prueba = $user->puede_usar_chat_prueba
+            && app(AsistenteUnificadoDePrueba::class)->disponible_para($user);
 
         return $user;
     }

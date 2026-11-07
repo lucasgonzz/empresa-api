@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\ArticleImportHelper;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Jobs\FinalizeEmbeddingRun;
@@ -29,11 +30,24 @@ class ImportacionDePruebaService
 {
     public const LIMITE_PREGUNTAS_POR_AVISO = 6;
 
+    public static function dueno_activo(int $user_id): bool
+    {
+        $dueno = AsistenteCanalHelper::dueno();
+
+        return $dueno !== null && (int) $dueno->id === $user_id
+            && !PruebaHelper::tiene_periodo_de_prueba($user_id) && !PruebaHelper::vencida_para($dueno);
+    }
+
     public function avanzar(ImportacionDePrueba $run): void
     {
-        if (!PruebaHelper::en_periodo_vigente((int) $run->user_id) && in_array($run->estado, ['analizar', 'preparar'], true)) {
-            $this->fallar($run, 'La prueba terminó antes de empezar a importar el archivo.');
-            return;
+        if (in_array($run->estado, ['analizar', 'preparar'], true)) {
+            $habilitado = $run->modo_soporte ? self::dueno_activo((int) $run->user_id)
+                : PruebaHelper::en_periodo_vigente((int) $run->user_id);
+            if (!$habilitado) {
+                $this->fallar($run, $run->modo_soporte ? 'El negocio dejó de estar habilitado antes de empezar la importación.'
+                    : 'La prueba terminó antes de empezar a importar el archivo.');
+                return;
+            }
         }
 
         if ($run->estado === 'analizar') {
@@ -103,13 +117,23 @@ class ImportacionDePruebaService
 
         $plan = $planilla->escribir($hojas, $coincidencias);
         if ($plan['filas'] === 0) {
+            @unlink($plan['ruta']);
             $this->fallar($run, 'El archivo no tiene filas con artículos para importar.');
+            return;
+        }
+
+        if ($run->modo_soporte && !$this->confirmar_plan($run, $plan, $hojas)) {
+            @unlink($plan['ruta']);
             return;
         }
 
         $owner = User::findOrFail($run->user_id);
         $resultado = DB::transaction(function () use ($run, $owner, $plan, $hojas) {
             User::whereKey($owner->id)->lockForUpdate()->firstOrFail();
+            $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
+            if ($run->estado !== 'preparar') {
+                return null;
+            }
             if (ImportHistory::where('user_id', $owner->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->exists()) {
                 // Otra importación ya está en marcha. El barrido retoma esta cuando termina.
                 return null;
@@ -121,7 +145,7 @@ class ImportacionDePruebaService
                 'import_uuid' => $run->uuid,
                 'archivo_excel' => storage_path('app/' . $run->archivo),
                 'archivo_excel_path' => $run->archivo,
-                'planilla_de_prueba' => $plan + ['id' => $run->id],
+                'planilla_de_prueba' => $plan + ['id' => $run->id, 'modo_soporte' => $run->modo_soporte],
                 'columns' => $plan['columnas'],
                 'create_and_edit' => true,
                 'start_row' => 2,
@@ -145,6 +169,42 @@ class ImportacionDePruebaService
         if ($resultado !== null && $resultado['hubo_un_error']) {
             throw new RuntimeException('El motor de importación no pudo preparar el archivo.');
         }
+    }
+
+    private function confirmar_plan(ImportacionDePrueba $run, array $plan, array $hojas): bool
+    {
+        $huella = hash_file('sha256', $plan['ruta']);
+        if ($huella === false) {
+            throw new RuntimeException('No se pudo verificar el archivo preparado.');
+        }
+        if (($run->decisiones['confirmacion'] ?? null) === 'confirmar'
+            && ($run->preguntas['confirmacion']['huella_plan'] ?? null) === $huella) {
+            return true;
+        }
+
+        $codigo = strtoupper(substr(hash('sha256', $run->uuid . ':' . ($run->revision + 1)), 0, 8));
+        $campos = [];
+        foreach ($hojas as $hoja) {
+            $campos += $hoja['mapeo'] ?? [];
+        }
+        $detalle = str_replace('_', ' ', implode(', ', array_keys($campos)));
+        $archivo = mb_substr(preg_replace('/\s+/u', ' ', $run->nombre), 0, 110);
+        $texto = 'Preparé «' . $archivo . '» con ' . $plan['filas'] . ' filas para importar al catálogo.'
+            . ($detalle !== '' ? ' Datos del archivo: ' . $detalle . '.' : '')
+            . ' Se actualizarán los artículos que coincidan y se crearán los que falten.'
+            . "\n\nPara aprobar la carga respondé CONFIRMAR " . $codigo . '. Para cancelarla, respondé CANCELAR ' . $codigo . '.';
+        $pregunta = PlanillaDePrueba::pregunta('confirmacion', $texto, ['confirmar' => 'Confirmar', 'cancelar' => 'Cancelar']);
+        $pregunta['codigo_confirmacion'] = $codigo;
+        $pregunta['huella_plan'] = $huella;
+
+        DB::transaction(function () use ($run, $pregunta) {
+            $decisiones = $run->decisiones ?? [];
+            unset($decisiones['confirmacion']);
+            $run->decisiones = $decisiones;
+            $this->consultar($run, 'confirmacion', ['confirmacion' => $pregunta]);
+        });
+
+        return false;
     }
 
     private function consultar(ImportacionDePrueba $run, string $tipo, array $preguntas, string $prefacio = ''): void
@@ -209,6 +269,13 @@ class ImportacionDePruebaService
                 $detalle .= ' ' . $problemas['para_revisar'] . ' filas quedaron con datos para revisar.';
             }
 
+            $texto = ($estado === 'completado' ? 'Terminé de importar tu catálogo. ' : 'Procesé tu catálogo y quedaron datos para revisar. ') . $detalle;
+            if ($run->modo_soporte) {
+                $run->aviso('resultado', 'Archivo «' . mb_substr($run->nombre, 0, 110) . '». ' . $texto);
+                $run->update(['estado' => 'terminado']);
+                return;
+            }
+
             $lote = $this->iniciar_imagenes($run, $historial);
             $vigente = PruebaHelper::en_periodo_vigente((int) $run->user_id);
             $siguientes = [];
@@ -226,7 +293,6 @@ class ImportacionDePruebaService
                 'estado' => $estado, 'detalle' => $detalle, 'siguientes' => $siguientes, 'accion' => null,
                 'creados' => $creados, 'actualizados' => $actualizados,
             ]);
-            $texto = ($estado === 'completado' ? 'Terminé de importar tu catálogo. ' : 'Procesé tu catálogo y quedaron datos para revisar. ') . $detalle;
             $campos = [];
             foreach ($run->hojas ?? [] as $hoja) {
                 $campos += $hoja['mapeo'] ?? [];
@@ -379,6 +445,11 @@ class ImportacionDePruebaService
     {
         DB::transaction(function () use ($run, $detalle) {
             $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
+            if ($run->modo_soporte) {
+                $run->aviso('error', $detalle);
+                $run->update(['estado' => 'error']);
+                return;
+            }
             $hitos = $run->hitos ?? [];
             if (isset($hitos['migracion'])) {
                 $imagenes = $run->estado === 'imagenes';

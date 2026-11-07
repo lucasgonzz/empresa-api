@@ -17,9 +17,9 @@ use Illuminate\Support\Str;
 
 class ImportacionDePruebaController extends Controller
 {
-    public static function iniciar(Request $request, int $user_id): JsonResponse
+    public static function iniciar(Request $request, int $user_id, bool $modo_soporte = false): JsonResponse
     {
-        self::comprobar_prueba($user_id);
+        self::comprobar_dueno($user_id, $modo_soporte);
         $datos = $request->validate([
             'excel_file' => 'required|file|max:10240',
             'support_ticket_id' => 'required|integer|min:1',
@@ -33,13 +33,13 @@ class ImportacionDePruebaController extends Controller
             abort(422, 'El proveedor no pertenece al negocio.');
         }
 
-        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor) {
+        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte) {
             // Serializa reenvíos simultáneos del mismo adjunto, antes de escribir otro archivo.
             User::whereKey($user_id)->lockForUpdate()->firstOrFail();
             $origen = [
                 'user_id' => $user_id,
                 'support_ticket_id' => $datos['support_ticket_id'],
-                'clave' => $datos['importacion_clave'],
+                'clave' => $modo_soporte ? hash('sha256', 'soporte:' . $datos['importacion_clave']) : $datos['importacion_clave'],
             ];
             $run = ImportacionDePrueba::where($origen)->first();
             if ($run !== null) {
@@ -61,6 +61,7 @@ class ImportacionDePruebaController extends Controller
                 'origen' => $datos['origen'] ?? 'martin',
                 'provider_id' => $proveedor,
                 'estado' => 'analizar',
+                'modo_soporte' => $modo_soporte,
             ]);
         });
 
@@ -71,7 +72,7 @@ class ImportacionDePruebaController extends Controller
         return response()->json([
             'analysis_uuid' => $run->uuid,
             'estado' => $run->estado,
-            'automatizar_prueba' => true,
+            ($modo_soporte ? 'automatizar_soporte' : 'automatizar_prueba') => true,
         ], 202);
     }
 
@@ -81,16 +82,20 @@ class ImportacionDePruebaController extends Controller
             'user_id' => 'required|integer|min:1',
             'support_ticket_id' => 'required|integer|min:1',
         ]);
-        self::comprobar_prueba((int) $datos['user_id']);
+        $modo_soporte = $request->boolean('automatizar_soporte');
+        self::comprobar_dueno((int) $datos['user_id'], $modo_soporte);
 
         $del_ticket = ImportacionDePrueba::where('user_id', $datos['user_id'])
-            ->where('support_ticket_id', $datos['support_ticket_id']);
+            ->where('support_ticket_id', $datos['support_ticket_id'])->where('modo_soporte', $modo_soporte);
         $corridas = (clone $del_ticket)->whereIn('estado', ImportacionDePrueba::ESPERANDO_RESPUESTA)->orderBy('id')->get();
         $en_proceso = $del_ticket->whereIn('estado', array_merge(ImportacionDePrueba::EN_CURSO, ImportacionDePrueba::ESPERANDO_RESPUESTA))->exists()
             || AiAvisoDelAsistente::where('owner_id', $datos['user_id'])
                 ->where('support_ticket_id', $datos['support_ticket_id'])
                 ->where('tipo', AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA)
-                ->whereNull('avisado_por_whatsapp_at')->where('created_at', '>=', now()->subDay())->exists();
+                ->where('modo_soporte', $modo_soporte)->whereNull('avisado_por_whatsapp_at')
+                ->when(!$modo_soporte, function ($consulta) {
+                    $consulta->where('created_at', '>=', now()->subDay());
+                })->exists();
 
         return response()->json(['en_proceso' => $en_proceso, 'pendientes' => $corridas->map(function (ImportacionDePrueba $run) {
             $preguntas = $run->preguntas ?? [];
@@ -98,6 +103,7 @@ class ImportacionDePruebaController extends Controller
             $pendientes = array_diff_key($preguntas, $run->decisiones ?? []);
             foreach ($pendientes as $clave => &$pregunta) {
                 $pregunta['ya_consultada'] = isset($consultadas[$clave]);
+                unset($pregunta['huella_plan']);
             }
             unset($pregunta);
 
@@ -108,7 +114,7 @@ class ImportacionDePruebaController extends Controller
                 'tipo' => $run->estado,
                 'preguntas' => array_values($pendientes),
             ];
-        })]);
+        })] + ($modo_soporte ? ['automatizar_soporte' => true] : []));
     }
 
     public function resolver(Request $request, string $uuid): JsonResponse
@@ -120,11 +126,13 @@ class ImportacionDePruebaController extends Controller
             'respuestas' => 'required|array|min:1',
             'respuestas.*' => 'required|string|max:120',
         ]);
-        self::comprobar_prueba((int) $datos['user_id']);
+        $modo_soporte = $request->boolean('automatizar_soporte');
+        self::comprobar_dueno((int) $datos['user_id'], $modo_soporte);
 
-        [$run, $continuar] = DB::transaction(function () use ($uuid, $datos) {
+        [$run, $continuar] = DB::transaction(function () use ($uuid, $datos, $modo_soporte) {
             $run = ImportacionDePrueba::where('uuid', $uuid)->where('user_id', $datos['user_id'])
-                ->where('support_ticket_id', $datos['support_ticket_id'])->lockForUpdate()->firstOrFail();
+                ->where('support_ticket_id', $datos['support_ticket_id'])->where('modo_soporte', $modo_soporte)
+                ->lockForUpdate()->firstOrFail();
             $guardadas = $run->decisiones ?? [];
             $revision_actual = (int) $run->revision === (int) $datos['revision'];
             if (!$revision_actual || !in_array($run->estado, ImportacionDePrueba::ESPERANDO_RESPUESTA, true)) {
@@ -150,7 +158,9 @@ class ImportacionDePruebaController extends Controller
             $run->decisiones = $guardadas;
             if ($continuar) {
                 $run->retirar_pregunta();
-                $run->estado = 'preparar';
+                $cancelar = $run->estado === 'confirmacion' && $guardadas['confirmacion'] === 'cancelar';
+                $run->estado = $cancelar ? 'cancelado' : 'preparar';
+                $continuar = !$cancelar;
             }
             $run->save();
 
@@ -164,8 +174,15 @@ class ImportacionDePruebaController extends Controller
         return response()->json(['estado' => $run->estado, 'analysis_uuid' => $run->uuid], $continuar ? 202 : 200);
     }
 
-    private static function comprobar_prueba(int $user_id): void
+    private static function comprobar_dueno(int $user_id, bool $modo_soporte): void
     {
+        if ($modo_soporte) {
+            abort_unless(ImportacionDePruebaService::dueno_activo($user_id), 409,
+                'La importación de soporte está disponible para el dueño de un negocio activo.');
+
+            return;
+        }
+
         $dueno = PruebaHelper::dueno();
         if ($dueno === null || (int) $dueno->id !== $user_id || !PruebaHelper::en_periodo_vigente($user_id)) {
             abort(409, 'La importación automática está disponible para el dueño de una prueba vigente.');
