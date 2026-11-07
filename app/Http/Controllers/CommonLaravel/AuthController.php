@@ -535,6 +535,7 @@ class AuthController extends Controller
                     // Mismo flag que get_user(): el SPA destino usa este `user` directo y con él
                     // decide si muestra el panel de la demo.
                     $user->es_sesion_demo = $this->es_sesion_de_demo_para_el_spa();
+                    PruebaHelper::adjuntar_resumen($user);
                 }
             }
         }
