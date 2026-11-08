@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Broadcast;
+use App\Services\SupportTourService;
 
 /*
 |--------------------------------------------------------------------------
@@ -39,6 +40,10 @@ Broadcast::channel('App.Models.User.{id}', function ($user, $id) {
 
 Broadcast::channel('implementacion.user.{id}', function ($user, $id) {
     return (string) $user->id === $id;
+});
+
+Broadcast::channel('support-tour.user.{id}', function ($user, $id) {
+    return (string) $user->id === $id && SupportTourService::sesion_web_propia(request(), $user);
 });
 
 /**
