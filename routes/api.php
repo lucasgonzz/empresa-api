@@ -1514,12 +1514,15 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
          * `mcp/conexion` es la administración de esa clave desde el modal de configuración del
          * asistente (crear, ver el estado, revocar); el token viaja UNA sola vez, al crearlo.
          */
-        Route::post('mcp', 'McpController@post');
-        Route::get('mcp', 'McpController@get');
-        Route::delete('mcp', 'McpController@delete');
-        Route::get('mcp/conexion', 'McpConexionController@estado');
-        Route::post('mcp/conexion', 'McpConexionController@crear');
-        Route::delete('mcp/conexion', 'McpConexionController@revocar');
+        // Un token MCP seguiría funcionando fuera de la sesión maestra que lo emitió.
+        Route::middleware('solo_el_dueno_ia:sesion_propia')->group(function () {
+            Route::post('mcp', 'McpController@post');
+            Route::get('mcp', 'McpController@get');
+            Route::delete('mcp', 'McpController@delete');
+            Route::get('mcp/conexion', 'McpConexionController@estado');
+            Route::post('mcp/conexion', 'McpConexionController@crear');
+            Route::delete('mcp/conexion', 'McpConexionController@revocar');
+        });
 
         /*
          * La memoria de contexto del agente y el cuestionario de inicio de la app (misión

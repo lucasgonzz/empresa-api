@@ -117,7 +117,7 @@ class MostradorController extends Controller
 
     private function puede_ver_reportes(): bool
     {
-        return !MostradorHelper::sesion_de_comerciocity(request()) && MostradorHelper::puede_ver();
+        return !MostradorHelper::sesion_restringida_para_asistente(request()) && MostradorHelper::puede_ver();
     }
 
     /**

@@ -4,7 +4,10 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\AiConversation;
 use App\Models\MostradorReporte;
+use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\RateLimiter;
 
 /**
  * Lógica del mostrador del módulo IA del lado del dueño (misión modulo-ia-mostrador):
@@ -16,6 +19,8 @@ use Illuminate\Http\Request;
  */
 class MostradorHelper
 {
+    public const AUTORIZACION_MAESTRA = 'asistente_personal_autorizacion_maestra';
+
     /** Techo de caracteres del contexto de la conversación de un informe. */
     const MAX_CARACTERES_CONTEXTO = 20000;
 
@@ -69,6 +74,83 @@ class MostradorHelper
 
         return $sesion->has('acceso_soporte_token_id')
             || (bool) $sesion->get('master_login_bypass_user_last_activity', false);
+    }
+
+    public static function sesion_restringida_para_asistente(Request $request): bool
+    {
+        return self::sesion_de_comerciocity($request) && !self::maestro_autorizado($request);
+    }
+
+    public static function autorizar_maestro(Request $request, ?string $documento): void
+    {
+        $hash = self::hash_para_dueno_maestro($request);
+        $clave = $request->input('password');
+        if ($hash === '' || !is_string($clave) || $clave === '' || strlen($clave) > 72) {
+            return;
+        }
+
+        $id = (int) $request->user('web')->id;
+        $limite = 'asistente-maestro:' . $id;
+        if (RateLimiter::tooManyAttempts($limite, 10)) {
+            return;
+        }
+        RateLimiter::hit($limite, 60);
+
+        if (password_verify($clave, $hash)) {
+            RateLimiter::clear($limite);
+            $dueno = $request->user('web');
+            // El comando genérico resuelve al primer dueño como respaldo. Para el chat privado
+            // hace falta el documento exacto, salvo cuando la base tiene un único dueño.
+            if ($documento === null
+                ? User::whereNull('owner_id')->limit(2)->pluck('id')->count() !== 1
+                : ($documento !== (string) $dueno->doc_number
+                    || User::where('doc_number', $documento)->limit(2)->pluck('id')->count() !== 1)) {
+                return;
+            }
+
+            $request->session()->put(self::AUTORIZACION_MAESTRA, self::firma_maestra($id, $hash));
+            Log::info('Login maestro autorizado para el asistente personal', ['user_id' => $id]);
+        }
+    }
+
+    public static function maestro_autorizado(Request $request): bool
+    {
+        $hash = self::hash_para_dueno_maestro($request);
+        if ($hash === '') {
+            return false;
+        }
+
+        // Volver a verificar el hash vigente corta el acceso al cambiar o quitar la clave de la instancia.
+        $id = (int) $request->user('web')->id;
+        return hash_equals(
+            self::firma_maestra($id, $hash),
+            (string) $request->session()->get(self::AUTORIZACION_MAESTRA, '')
+        );
+    }
+
+    private static function hash_para_dueno_maestro(Request $request): string
+    {
+        if (!$request->hasSession()
+            || $request->session()->has('acceso_soporte_token_id')
+            || $request->session()->has('demo_ingreso_token_id')
+            || !$request->session()->get('master_login_bypass_user_last_activity', false)) {
+            return '';
+        }
+
+        // La autorización pertenece al dueño resuelto por el guard web, también en bases compartidas.
+        $dueno = $request->user('web');
+        if (!$dueno instanceof User || $dueno->owner_id
+            || (int) UserHelper::userId(false) !== (int) $dueno->id
+            || (int) UserHelper::userId(true) !== (int) $dueno->id) {
+            return '';
+        }
+
+        return (string) config('acceso_soporte.asistente_maestro_password_hash', '');
+    }
+
+    private static function firma_maestra(int $id, string $hash): string
+    {
+        return hash_hmac('sha256', config('app.url') . ':' . $id . ':' . $hash, (string) config('app.key'));
     }
 
     /**
