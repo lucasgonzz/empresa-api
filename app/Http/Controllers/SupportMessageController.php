@@ -9,6 +9,8 @@ use App\Models\SupportMessage;
 use App\Models\SupportMessageAttachment;
 use App\Models\SupportTicket;
 use App\Models\SupportTypingState;
+use App\Models\User;
+use App\Services\SupportTourService;
 use Illuminate\Http\Request;
 
 class SupportMessageController extends Controller
@@ -46,14 +48,21 @@ class SupportMessageController extends Controller
         }
 
         // Crea mensaje base del usuario.
-        $message = SupportMessage::create([
+        $datos = [
             'support_ticket_id' => $ticket->id,
             'sender_type' => 'user',
             'sender_user_id' => $user_id,
             'kind' => $kind,
             'body' => $body,
             'delivered_at' => now(),
-        ]);
+        ];
+        $persona = $request->user();
+        if ($persona instanceof User && (int) $persona->id === (int) $user_id
+            && SupportTourService::sesion_web_propia($request, $persona)
+            && SupportTourService::tiene_chat_soporte($persona)) {
+            $datos['robotito_support_version'] = SupportTourService::VERSION_SOPORTE_WEB;
+        }
+        $message = SupportMessage::create($datos);
 
         // Si llega archivo, lo guarda en disco public y crea adjunto.
         if ($request->hasFile('attachment')) {

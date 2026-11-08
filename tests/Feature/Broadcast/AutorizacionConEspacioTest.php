@@ -136,6 +136,19 @@ class AutorizacionConEspacioTest extends TestCase
         $this->assertSame($this->firma_esperada($canal), $respuesta->json('auth'));
     }
 
+    public function test_el_canal_de_robotito_es_personal_y_exige_sesion_propia(): void
+    {
+        $this->actingAs($this->empleado, 'web');
+        $canal = 'private-support-tour.user.' . $this->empleado->id . '@' . $this->espacio;
+        $this->autorizar($canal)->assertOk()->assertJsonPath('auth', $this->firma_esperada($canal));
+
+        $this->autorizar('private-support-tour.user.' . $this->empleado->id . '@' . $this->otro_espacio)->assertForbidden();
+        $this->actingAs($this->dueno, 'web');
+        $this->autorizar($canal)->assertForbidden();
+        $this->actingAs($this->empleado, 'web')->withSession(['acceso_soporte_token_id' => 1]);
+        $this->autorizar($canal)->assertForbidden();
+    }
+
     /**
      * @test
      */

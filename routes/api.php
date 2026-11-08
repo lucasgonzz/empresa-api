@@ -222,6 +222,12 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::post('support-message/{id}/mark-read', 'SupportMessageController@mark_read');
     Route::post('support-message/typing', 'SupportMessageController@typing');
 
+    Route::get('support-tour/pending', 'SupportTourController@pending');
+    Route::post('support-tour/{uuid}/accept', 'SupportTourController@accept')->whereUuid('uuid');
+    Route::post('support-tour/{uuid}/event', 'SupportTourController@event')->whereUuid('uuid');
+    Route::post('support-tour/{uuid}/question', 'SupportTourController@question')->whereUuid('uuid')->middleware('throttle:15,1');
+    Route::post('support-tour/{uuid}/feedback', 'SupportTourController@feedback')->whereUuid('uuid');
+
     Route::get('online-template', 'OnlineTemplateController@index');
 
     Route::get('concepto-stock-movement', 'ConceptoStockMovementController@index');
@@ -1687,6 +1693,8 @@ Route::middleware('admin.api.key:siempre')
         // puede decidir de qué comercio se habla. Un cliente viejo sin esta ruta responde 404/405 SIN `code` y el
         // admin lo muestra como «versión vieja».
         Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
+        Route::post('support/tours', 'AdminSync\\SupportTourController@store');
+        Route::get('support/tours/{ticket_uuid}', 'AdminSync\\SupportTourController@index')->whereUuid('ticket_uuid');
         Route::post('prueba/cupo-imagenes', 'AdminSync\\PruebaController@cupo_imagenes');
         Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
         Route::post('ai-excel-import/prueba-resolver/{uuid}', 'AdminSync\\ImportacionDePruebaController@resolver');

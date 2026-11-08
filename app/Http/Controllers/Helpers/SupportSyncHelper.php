@@ -83,6 +83,9 @@ class SupportSyncHelper
             'body' => $message->body,
             'sent_at' => optional($message->created_at)->toIso8601String(),
         ];
+        if ($message->sender_type === 'user' && $message->robotito_support_version !== null) {
+            $payload['robotito_support_version'] = (int) $message->robotito_support_version;
+        }
 
         try {
             // Crea request hacia admin-api (header de clave opcional según config).
