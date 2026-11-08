@@ -13,6 +13,8 @@ class SupportMessageAttachment extends Model
      */
     protected $guarded = [];
 
+    protected $hidden = ['remote_id'];
+
     /**
      * Scope estándar para mantener compatibilidad con fullModel.
      */

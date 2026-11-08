@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Models\SupportMessage;
+use App\Models\SupportTicket;
+use App\Services\SupportAgentesSync;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -57,6 +59,14 @@ class SupportSyncHelper
         // Carga relaciones mínimas para construir payload robusto.
         $message->loadMissing('ticket', 'attachments', 'sender_user');
 
+        $traspaso = $message->ticket && $message->ticket->origen === SupportTicket::ORIGEN_WHATSAPP;
+        $identidad = $message->sender_user && (int) $message->agentes_version === SupportAgentesSync::VERSION
+            ? SupportAgentesSync::identidad($message->sender_user)
+            : null;
+        if ($traspaso && $identidad === null) {
+            return false;
+        }
+
         // Metadata de adjuntos (sin binarios).
         $attachments_meta = $message->attachments->map(function ($attachment) {
             return [
@@ -85,6 +95,13 @@ class SupportSyncHelper
         ];
         if ($message->sender_type === 'user' && $message->robotito_support_version !== null) {
             $payload['robotito_support_version'] = (int) $message->robotito_support_version;
+        }
+        if ($identidad !== null) {
+            $payload['agentes_version'] = SupportAgentesSync::VERSION;
+            $payload['es_dueno'] = $identidad['es_dueno'];
+        }
+        if ($traspaso) {
+            $payload['traspasar_a_sistema'] = 1;
         }
 
         try {
@@ -130,6 +147,14 @@ class SupportSyncHelper
 
             // Si fue exitoso, marca timestamp de sincronización y limpia fallo previo.
             if ($response->successful()) {
+                if ($traspaso) {
+                    $sistema_exclusivo_at = SupportAgentesSync::fecha_en_bd($response->json('sistema_exclusivo_at'));
+                    if (!$sistema_exclusivo_at) {
+                        return false;
+                    }
+                    SupportTicket::whereKey($message->ticket->id)->whereNull('sistema_exclusivo_at')
+                        ->update(['sistema_exclusivo_at' => $sistema_exclusivo_at]);
+                }
                 $message->synced_to_admin_at = now();
                 $message->remote_delivery_status = null;
                 $message->save();
@@ -166,6 +191,7 @@ class SupportSyncHelper
                 ->post(rtrim($admin_url, '/') . '/api/inbound/support/messages/read', [
                     'message_uuid' => $message->uuid,
                     'read_at' => optional($message->read_at)->toIso8601String(),
+                    'client_uuid' => config('services.admin_api.client_uuid'),
                 ]);
 
             return $response->successful();
@@ -197,6 +223,7 @@ class SupportSyncHelper
                     'ticket_uuid' => $ticket_uuid,
                     'actor_type' => 'user',
                     'actor_id' => $actor_id,
+                    'client_uuid' => config('services.admin_api.client_uuid'),
                 ]);
 
             return $response->successful();

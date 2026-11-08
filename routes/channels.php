@@ -1,6 +1,7 @@
 <?php
 
 use Illuminate\Support\Facades\Broadcast;
+use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Services\SupportTourService;
 
 /*
@@ -76,5 +77,11 @@ Broadcast::channel('tienda-mensajes.{owner_id}', function ($user, $owner_id) {
  * saldos de clientes) y el dueño no escucha las de sus empleados ni al revés.
  */
 Broadcast::channel('chat.user.{auth_user_id}', function ($user, $auth_user_id) {
-    return (int) $user->id === (int) $auth_user_id;
+    return (int) $user->id === (int) $auth_user_id
+        && !MostradorHelper::sesion_de_comerciocity(request());
+});
+
+Broadcast::channel('agentes.support.user.{user_id}', function ($user, $user_id) {
+    return (int) $user->id === (int) $user_id
+        && !MostradorHelper::sesion_de_comerciocity(request());
 });

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\AiConversation;
 use App\Models\MostradorReporte;
+use Illuminate\Http\Request;
 
 /**
  * Lógica del mostrador del módulo IA del lado del dueño (misión modulo-ia-mostrador):
@@ -55,6 +56,19 @@ class MostradorHelper
         }
 
         return (bool) $persona->admin_access;
+    }
+
+    /** El acceso de ComercioCity puede operar el ERP sin ver el chat privado de la persona. */
+    public static function sesion_de_comerciocity(Request $request): bool
+    {
+        if (!$request->hasSession()) {
+            return false;
+        }
+
+        $sesion = $request->session();
+
+        return $sesion->has('acceso_soporte_token_id')
+            || (bool) $sesion->get('master_login_bypass_user_last_activity', false);
     }
 
     /**

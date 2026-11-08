@@ -111,12 +111,13 @@ class AiMessage extends Model
     protected $guarded = [];
 
     // Contexto estructurado del agente; no forma parte de las burbujas ni del contrato público.
-    protected $hidden = ['busquedas_de_productos', 'prueba_mensaje_id'];
+    protected $hidden = ['busquedas_de_productos', 'prueba_mensaje_id', 'entrega_whatsapp_token', 'entrega_whatsapp_hasta'];
 
     /**
      * @var array<string,string>
      */
     protected $casts = [
+        'entrega_whatsapp_hasta' => 'datetime',
         'acciones_habilitadas' => 'boolean',
         'busquedas_de_productos' => 'array',
         'audio' => 'array',

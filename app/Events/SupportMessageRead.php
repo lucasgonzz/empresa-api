@@ -4,6 +4,7 @@ namespace App\Events;
 
 use App\Models\SupportMessage;
 use Illuminate\Broadcasting\Channel;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
@@ -50,6 +51,10 @@ class SupportMessageRead implements ShouldBroadcastNow
         if ($this->listener_user_id < 1) {
             return [];
         }
+        if ($this->message && $this->message->ticket && $this->message->ticket->requiere_canal_privado()) {
+            return [new PrivateChannel('agentes.support.user.' . $this->message->ticket->user_id)];
+        }
+
         return [new Channel('support.user.' . $this->listener_user_id)];
     }
 

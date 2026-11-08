@@ -3,6 +3,11 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Events\ChatIaMensajeActualizado;
+use App\Events\SupportMessageRead;
+use App\Events\SupportMessageReceived;
+use App\Events\SupportTicketUpdated;
+use App\Models\SupportMessage;
+use App\Models\SupportTicket;
 use App\Models\User;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -116,6 +121,46 @@ class Canal_privado_Test extends TestCase
         // La jerarquía tampoco corre al revés: el dueño no espía el chat del empleado.
         $this->autorizar_canal('private-chat.user.' . $this->empleado->id)
             ->assertStatus(403);
+    }
+
+    public function test_el_acceso_de_soporte_no_autoriza_el_canal_del_asistente_personal()
+    {
+        $this->actingAs($this->comercio, 'web')->withSession(['acceso_soporte_token_id' => 1]);
+
+        $this->autorizar_canal('private-chat.user.' . $this->comercio->id)->assertForbidden();
+    }
+
+    public function test_agentes_autoriza_el_canal_de_soporte_solo_a_la_persona()
+    {
+        $this->actingAs($this->comercio, 'web');
+        $canal = 'private-agentes.support.user.' . $this->comercio->id;
+        $this->autorizar_canal($canal)->assertOk();
+
+        $this->actingAs($this->empleado, 'web');
+        $this->autorizar_canal($canal)->assertForbidden();
+
+        $this->actingAs($this->comercio, 'web')->withSession(['acceso_soporte_token_id' => 1]);
+        $this->autorizar_canal($canal)->assertForbidden();
+    }
+
+    public function test_los_eventos_de_agentes_usan_el_canal_privado_y_el_legado_conserva_su_canal()
+    {
+        $usuario = $this->comercio->id;
+        foreach ([
+            ['whatsapp', false, 'private-agentes.support.user.'],
+            ['sistema', true, 'private-agentes.support.user.'],
+            ['sistema', false, 'support.user.'],
+        ] as [$origen, $desde_agentes, $canal]) {
+            $ticket = SupportTicket::create(['user_id' => $usuario, 'origen' => $origen, 'desde_agentes' => $desde_agentes]);
+            $mensaje = SupportMessage::create([
+                'support_ticket_id' => $ticket->id, 'sender_type' => 'user', 'sender_user_id' => $usuario,
+                'kind' => 'text', 'body' => 'Consulta de prueba',
+            ]);
+
+            $this->assertSame($canal . $usuario, (string) (new SupportMessageReceived($mensaje->id, $usuario))->broadcastOn());
+            $this->assertSame($canal . $usuario, (string) (new SupportMessageRead($mensaje->id))->broadcastOn()[0]);
+            $this->assertSame($canal . $usuario, (string) (new SupportTicketUpdated($usuario, $ticket->id))->broadcastOn()[0]);
+        }
     }
 
     /**

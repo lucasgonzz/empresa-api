@@ -78,7 +78,7 @@ class User extends Authenticatable
      *
      * @var array<int, string>
      */
-    protected $appends = ['modo_redondeo', 'canales_en_vivo'];
+    protected $appends = ['modo_redondeo', 'canales_en_vivo', 'soporte_agentes_privado'];
 
     /**
      * Columnas de redondeo, en el orden en que las aplica `ArticleHelper::redondear()`, con el
@@ -189,6 +189,11 @@ class User extends Authenticatable
                 'canales_viejos_de_tienda' => true,
             ];
         }
+    }
+
+    public function getSoporteAgentesPrivadoAttribute(): bool
+    {
+        return true;
     }
 
     function scopeWithAll($query) {

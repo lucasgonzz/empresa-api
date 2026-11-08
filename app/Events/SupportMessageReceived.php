@@ -4,6 +4,7 @@ namespace App\Events;
 
 use App\Models\SupportMessage;
 use Illuminate\Broadcasting\Channel;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
@@ -20,7 +21,7 @@ class SupportMessageReceived implements ShouldBroadcastNow
     public $message;
 
     /**
-     * Canal público por usuario para la sesión del cliente.
+     * Canal histórico por usuario.
      *
      * @var string
      */
@@ -63,6 +64,10 @@ class SupportMessageReceived implements ShouldBroadcastNow
      */
     public function broadcastOn()
     {
+        if ($this->message && $this->message->ticket && $this->message->ticket->requiere_canal_privado()) {
+            return new PrivateChannel('agentes.support.user.' . $this->message->ticket->user_id);
+        }
+
         return new Channel($this->channel_name);
     }
 

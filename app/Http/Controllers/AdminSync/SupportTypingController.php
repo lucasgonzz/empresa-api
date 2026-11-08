@@ -5,6 +5,7 @@ namespace App\Http\Controllers\AdminSync;
 use App\Http\Controllers\Controller;
 use App\Models\SupportTicket;
 use App\Models\SupportTypingState;
+use App\Services\SupportAgentesSync;
 use Illuminate\Http\Request;
 
 class SupportTypingController extends Controller
@@ -19,6 +20,7 @@ class SupportTypingController extends Controller
         if (is_null($ticket)) {
             return response()->json(['error' => 'ticket not found'], 404);
         }
+        SupportAgentesSync::validar_callback_admin($request, $ticket);
 
         // Persiste snapshot de "escribiendo" para actor remoto.
         $typing_state = SupportTypingState::firstOrNew([

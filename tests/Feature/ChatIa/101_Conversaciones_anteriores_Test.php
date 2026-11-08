@@ -4,6 +4,8 @@ namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
+use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Models\AiConversation;
@@ -70,6 +72,24 @@ class Conversaciones_anteriores_Test extends EmpresaTestCase
         ]);
 
         $this->service = new AsistenteIaService();
+    }
+
+    public function test_un_hilo_traspasado_queda_fuera_de_la_memoria_de_whatsapp()
+    {
+        [$traspasada] = $this->charla('Consulta del proveedor Oliva', [['user', 'Detalle de Oliva']], null, [
+            'sistema_exclusivo_at' => now(),
+        ]);
+        [$actual] = $this->charla('Nueva consulta', [['user', 'Otro tema']]);
+        $referencia = ['conversacion_id' => $traspasada->id];
+
+        $this->assertSame([], ConversacionesAnterioresIaHelper::buscar($actual, ['texto' => 'Oliva'], true)['conversaciones']);
+        $this->assertSame(['error' => ConversacionesAnterioresIaHelper::NO_ENCONTRADA],
+            ConversacionesAnterioresIaHelper::leer($actual, $referencia, true));
+        $this->assertStringNotContainsString('Oliva', ConversacionesAnterioresIaHelper::bloque_para_prompt($actual, true));
+        $this->assertArrayNotHasKey('error', ConversacionesAnterioresIaHelper::leer($actual, $referencia));
+
+        $contexto = ContextoDeCargaIa::de_la_conversacion($actual);
+        $this->assertNotContains($traspasada->id, FotosDeLaConversacionIaHelper::conversaciones_del_mismo_canal($contexto));
     }
 
     /**

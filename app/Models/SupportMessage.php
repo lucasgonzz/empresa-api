@@ -14,7 +14,7 @@ class SupportMessage extends Model
      */
     protected $guarded = [];
 
-    protected $hidden = ['robotito_support_version'];
+    protected $hidden = ['robotito_support_version', 'agentes_version'];
 
     /**
      * Casts de fechas de estado y sincronización.

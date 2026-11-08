@@ -32,7 +32,7 @@ class MostradorController extends Controller
      */
     public function index(): JsonResponse
     {
-        if (!MostradorHelper::puede_ver()) {
+        if (!$this->puede_ver_reportes()) {
             return $this->solo_el_dueno();
         }
 
@@ -46,7 +46,7 @@ class MostradorController extends Controller
      * GET mostrador/reportes/{id}
      *
      * El informe con su contenido. La primera apertura POR EL DUEÑO estampa leido_at:
-     * si lo abre alguien con admin_access (o el acceso maestro), el informe sigue
+     * si lo abre alguien con admin_access, el informe sigue
      * "sin leer" para el dueño y la skill lo sigue mencionando como no leído. 404 si no
      * es del dueño o no está 'listo'.
      *
@@ -55,7 +55,7 @@ class MostradorController extends Controller
      */
     public function show($id): JsonResponse
     {
-        if (!MostradorHelper::puede_ver()) {
+        if (!$this->puede_ver_reportes()) {
             return $this->solo_el_dueno();
         }
 
@@ -89,7 +89,7 @@ class MostradorController extends Controller
      */
     public function conversacion($id): JsonResponse
     {
-        if (!MostradorHelper::puede_ver()) {
+        if (!$this->puede_ver_reportes()) {
             return $this->solo_el_dueno();
         }
 
@@ -112,7 +112,12 @@ class MostradorController extends Controller
             UserHelper::userId(false)
         );
 
-        return response()->json(['model' => $resultado['model']], $resultado['creada'] ? 201 : 200);
+        return response()->json(['model' => $resultado['model']->append('origen_canal')], $resultado['creada'] ? 201 : 200);
+    }
+
+    private function puede_ver_reportes(): bool
+    {
+        return !MostradorHelper::sesion_de_comerciocity(request()) && MostradorHelper::puede_ver();
     }
 
     /**

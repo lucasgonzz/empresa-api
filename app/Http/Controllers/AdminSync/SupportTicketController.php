@@ -5,6 +5,7 @@ namespace App\Http\Controllers\AdminSync;
 use App\Events\SupportTicketUpdated;
 use App\Http\Controllers\Controller;
 use App\Models\SupportTicket;
+use App\Services\SupportAgentesSync;
 use Illuminate\Http\Request;
 
 class SupportTicketController extends Controller
@@ -21,6 +22,7 @@ class SupportTicketController extends Controller
 
         $existing = SupportTicket::where('uuid', $ticket_uuid)->first();
         if (!is_null($existing)) {
+            SupportAgentesSync::validar_callback_admin($request, $existing);
             return response()->json(['model' => $existing->load('messages.attachments')], 200);
         }
 
@@ -47,6 +49,7 @@ class SupportTicketController extends Controller
         if (is_null($ticket)) {
             return response()->json(['error' => 'ticket not found'], 404);
         }
+        SupportAgentesSync::validar_callback_admin($request, $ticket);
 
         // Nombre de ticket gestionado desde el centro de soporte.
         if ($request->has('name')) {

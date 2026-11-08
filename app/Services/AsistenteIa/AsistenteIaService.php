@@ -3256,7 +3256,7 @@ CONFIRMACION;
          * cacheado (cambia con cada conversación nueva); antes del contexto de fondo, que es de esta
          * charla. Sin conversaciones previas, o si la consulta falla, el helper devuelve '' y no va.
          */
-        $anteriores = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::bloque_para_prompt($conversation);
+        $anteriores = \App\Http\Controllers\Helpers\asistente_ia\ConversacionesAnterioresIaHelper::bloque_para_prompt($conversation, $es_whatsapp);
 
         if ($anteriores !== '') {
             $system[] = [
@@ -6205,7 +6205,8 @@ CONFIRMACION;
                     // Misión agente-memoria-y-sin-techo (30/10/2026): buscar y leer las conversaciones
                     // anteriores de la persona. La tenencia (mismo dueño Y misma persona) sale de la
                     // conversación del turno, nunca de Auth.
-                    $resultado_de_conversaciones = HerramientasDeConversaciones::ejecutar($tool_name, $tool_input, $conversation);
+                    $es_whatsapp = $assistant_message !== null && $assistant_message->canal === AiMessage::CANAL_WHATSAPP;
+                    $resultado_de_conversaciones = HerramientasDeConversaciones::ejecutar($tool_name, $tool_input, $conversation, $es_whatsapp);
                     $content = $resultado_de_conversaciones['content'];
                     $error_de_la_herramienta = (bool) $resultado_de_conversaciones['is_error'];
 

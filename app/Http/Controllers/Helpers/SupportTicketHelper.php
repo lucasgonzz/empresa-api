@@ -17,6 +17,7 @@ class SupportTicketHelper
         // Busca el último ticket abierto para reutilizar el hilo activo.
         $ticket = SupportTicket::where('user_id', $user_id)
             ->where('status', 'open')
+            ->where('origen', SupportTicket::ORIGEN_SISTEMA)
             ->orderBy('id', 'desc')
             ->first();
 

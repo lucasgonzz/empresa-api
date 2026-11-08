@@ -13,12 +13,16 @@ use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MostradorAccesoHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
+use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\MostradorReporte;
+use App\Models\User;
 use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 
 /**
  * El asistente del negocio, hablado desde WhatsApp (misión asistente-por-whatsapp, §3.2 del plan,
@@ -49,6 +53,8 @@ class AsistenteController extends Controller
 {
     /** Techo del texto de un mensaje, igual que el del chat de la pantalla (AiConversationController). */
     const MAX_TEXTO = 4000;
+
+    private const SEGUNDOS_DE_RESERVA_WHATSAPP = 120;
 
     /** Los tres tipos de mensaje que manda el admin. `audio` llega ya transcripto por Kapso. */
     const TIPOS = ['texto', 'audio', 'imagen'];
@@ -229,57 +235,35 @@ class AsistenteController extends Controller
          */
         $texto_del_tema = ($sin_transcribir || $supero_el_tope) ? '' : $texto;
 
-        $conversation = AsistenteCanalHelper::conversacion($dueno, $request->input('ai_conversation_id'), $texto_del_tema);
+        $cita = (int) $request->input('ai_conversation_id');
+        $seleccionada = AsistenteCanalHelper::elegir_conversacion($dueno, $cita, $texto_del_tema);
 
-        /*
-         * Mismo criterio que AiConversationController::send_message(): el título se infiere solo
-         * en el primer mensaje del dueño de una conversación sin título, y se decide ANTES de
-         * crear los mensajes para no contarse a sí mismo.
-         */
-        $inferir_titulo = is_null($conversation->titulo)
-            && !AiMessage::where('ai_conversation_id', $conversation->id)
-                ->where('rol', 'user')
-                ->exists();
+        $turno = DB::transaction(function () use ($dueno, $cita, $seleccionada, $whatsapp_message_id, $texto, $tipo, $imagenes) {
+            // Dos reintentos simultáneos del mismo wamid comparten esta reserva del dueño.
+            User::whereKey($dueno->id)->lockForUpdate()->firstOrFail();
+            $existente = $this->mensaje_ya_recibido($dueno, $whatsapp_message_id);
+            if ($existente) {
+                return $this->respuesta_del_turno($existente);
+            }
 
-        $user_message = AiMessage::create([
-            'ai_conversation_id'  => $conversation->id,
-            'rol'                 => 'user',
-            /*
-             * Una foto sin epígrafe deja el contenido vacío, no un texto inventado. Lo que hace que
-             * ese mensaje igual llegue al modelo es que AsistenteIaService::build_messages_payload()
-             * incluye los mensajes que tienen fotos aunque no tengan texto.
-             */
-            'contenido'           => $texto,
-            'estado'              => 'listo',
-            'canal'               => AiMessage::CANAL_WHATSAPP,
-            'tipo'                => $tipo,
-            'whatsapp_message_id' => $whatsapp_message_id,
-        ]);
+            $conversation = $seleccionada
+                ? AiConversation::whereKey($seleccionada->id)->lockForUpdate()->first()
+                : null;
+            if ($conversation && $conversation->sistema_exclusivo_at !== null && $cita === (int) $conversation->id) {
+                return $this->conversacion_solo_sistema();
+            }
+            if (!$conversation || $conversation->sistema_exclusivo_at !== null) {
+                $conversation = AsistenteCanalHelper::nueva_conversacion($dueno);
+            }
 
-        if (count($imagenes)) {
+            return $this->guardar_turno($dueno, $conversation, $whatsapp_message_id, $texto, $tipo, $imagenes);
+        });
 
-            /* Después de crear el mensaje: la ruta de la foto lleva su id. */
-            AsistenteImagenHelper::guardar($user_message, $imagenes, (int) $dueno->id);
+        if ($turno instanceof JsonResponse) {
+            return $turno;
         }
 
-        $assistant_message = AiMessage::create([
-            'ai_conversation_id'   => $conversation->id,
-            'rol'                  => 'assistant',
-            'estado'               => 'pendiente',
-            'canal'                => AiMessage::CANAL_WHATSAPP,
-            /* El mismo wamid en las dos filas del turno: es lo que hace idempotente el reintento. */
-            'whatsapp_message_id'  => $whatsapp_message_id,
-            /*
-             * Siempre con las herramientas de carga. En la pantalla el flag existe porque una
-             * pestaña vieja no sabe pintar tarjetas; acá el canal es nuevo entero y la
-             * confirmación es por texto (confirmar_carga_pendiente), así que no hay ningún
-             * consumidor viejo al que dejarle una tarjeta que no pueda resolver.
-             */
-            'acciones_habilitadas' => true,
-        ]);
-
-        $conversation->last_message_at = now();
-        $conversation->save();
+        [$conversation, $assistant_message, $inferir_titulo] = $turno;
 
         /*
          * 🔴 Un audio que llegó sin transcribir no sale a la IA: se contesta acá, con un texto fijo.
@@ -353,6 +337,61 @@ class AsistenteController extends Controller
         return $this->respuesta_del_turno($assistant_message);
     }
 
+    private function guardar_turno(User $dueno, AiConversation $conversation, ?string $whatsapp_message_id, string $texto, string $tipo, array $imagenes): array
+    {
+        /*
+         * Mismo criterio que AiConversationController::send_message(): el título se infiere solo
+         * en el primer mensaje del dueño de una conversación sin título, y se decide ANTES de
+         * crear los mensajes para no contarse a sí mismo.
+         */
+        $inferir_titulo = is_null($conversation->titulo)
+            && !AiMessage::where('ai_conversation_id', $conversation->id)
+                ->where('rol', 'user')
+                ->exists();
+
+        $user_message = AiMessage::create([
+            'ai_conversation_id'  => $conversation->id,
+            'rol'                 => 'user',
+            /*
+             * Una foto sin epígrafe deja el contenido vacío, no un texto inventado. Lo que hace que
+             * ese mensaje igual llegue al modelo es que AsistenteIaService::build_messages_payload()
+             * incluye los mensajes que tienen fotos aunque no tengan texto.
+             */
+            'contenido'           => $texto,
+            'estado'              => 'listo',
+            'canal'               => AiMessage::CANAL_WHATSAPP,
+            'tipo'                => $tipo,
+            'whatsapp_message_id' => $whatsapp_message_id,
+        ]);
+
+        if (count($imagenes)) {
+
+            /* Después de crear el mensaje: la ruta de la foto lleva su id. */
+            AsistenteImagenHelper::guardar($user_message, $imagenes, (int) $dueno->id);
+        }
+
+        $assistant_message = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'canal'                => AiMessage::CANAL_WHATSAPP,
+            /* El mismo wamid en las dos filas del turno: es lo que hace idempotente el reintento. */
+            'whatsapp_message_id'  => $whatsapp_message_id,
+            /*
+             * Siempre con las herramientas de carga. En la pantalla el flag existe porque una
+             * pestaña vieja no sabe pintar tarjetas; acá el canal es nuevo entero y la
+             * confirmación es por texto (confirmar_carga_pendiente), así que no hay ningún
+             * consumidor viejo al que dejarle una tarjeta que no pueda resolver.
+             */
+            'acciones_habilitadas' => true,
+        ]);
+
+        $conversation->last_message_at = now();
+        $conversation->save();
+
+        return [$conversation, $assistant_message, $inferir_titulo];
+    }
+
     /**
      * El 202 del contrato para un turno.
      *
@@ -367,6 +406,10 @@ class AsistenteController extends Controller
      */
     protected function respuesta_del_turno(AiMessage $assistant): JsonResponse
     {
+        if ($assistant->conversation()->whereNotNull('sistema_exclusivo_at')->exists()) {
+            return $this->conversacion_solo_sistema();
+        }
+
         return response()->json([
             'ai_conversation_id' => (int) $assistant->ai_conversation_id,
             'ai_message_id'      => (int) $assistant->id,
@@ -379,6 +422,14 @@ class AsistenteController extends Controller
              */
             'admite_avisos'      => true,
         ], 202);
+    }
+
+    private function conversacion_solo_sistema(): JsonResponse
+    {
+        return response()->json([
+            'code' => 'conversacion_solo_sistema',
+            'message' => 'Esta conversación se sigue desde el sistema.',
+        ], 409);
     }
 
     /**
@@ -468,30 +519,92 @@ class AsistenteController extends Controller
             return $rechazo;
         }
 
-        $dueno = AsistenteCanalHelper::dueno();
-
-        $mensaje = AiMessage::where('ai_messages.id', (int) $id)
-                            ->where('ai_messages.canal', AiMessage::CANAL_WHATSAPP)
-                            ->whereIn('ai_messages.ai_conversation_id', function ($query) use ($dueno) {
-                                $query->select('id')
-                                        ->from('ai_conversations')
-                                        ->where('user_id', $dueno->id)
-                                        ->where('auth_user_id', $dueno->id);
-                            })
-                            ->first();
+        $mensaje = $this->mensaje_de_whatsapp_del_dueno($id);
 
         if (is_null($mensaje)) {
 
             return response()->json(['message' => 'Mensaje no encontrado.'], 404);
         }
 
+        if ($request->header('X-Reservar-Entrega-Whatsapp') === '1') {
+            $estado = DB::transaction(function () use ($mensaje) {
+                $hilo = $mensaje->conversation()->lockForUpdate()->first();
+                if (!$hilo) {
+                    return response()->json(['message' => 'Mensaje no encontrado.'], 404);
+                }
+                if ($hilo->sistema_exclusivo_at !== null) {
+                    return $this->estado_solo_sistema();
+                }
+
+                $actual = AiMessage::whereKey($mensaje->id)->lockForUpdate()->firstOrFail();
+                if ($actual->entrega_whatsapp_hasta && $actual->entrega_whatsapp_hasta->isFuture()) {
+                    return response()->json(['estado' => 'pendiente', 'contenido' => null, 'adjuntos' => []], 200);
+                }
+                if ($actual->rol === 'assistant' && in_array($actual->estado, ['listo', 'error'], true)) {
+                    $actual->entrega_whatsapp_token = (string) Str::uuid();
+                    $actual->entrega_whatsapp_hasta = now()->addSeconds(self::SEGUNDOS_DE_RESERVA_WHATSAPP);
+                    $actual->save();
+
+                    return $this->estado_del_mensaje($actual, [
+                        'entrega_reservada' => true,
+                        'entrega_token' => $actual->entrega_whatsapp_token,
+                    ]);
+                }
+
+                return $this->estado_del_mensaje($actual);
+            });
+
+            return $estado->header('Cache-Control', 'private, no-store');
+        }
+
+        if ($mensaje->conversation()->whereNotNull('sistema_exclusivo_at')->exists()) {
+            return $this->estado_solo_sistema();
+        }
+
+        return $this->estado_del_mensaje($mensaje);
+    }
+
+    public function liberar_entrega(Request $request, $id): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+        if ($rechazo !== null) {
+            return $rechazo;
+        }
+
+        $datos = $request->validate(['entrega_token' => 'required|uuid']);
+        $mensaje = $this->mensaje_de_whatsapp_del_dueno($id);
+        abort_unless($mensaje, 404);
+        AiMessage::whereKey($mensaje->id)->where('entrega_whatsapp_token', $datos['entrega_token'])
+            ->update(['entrega_whatsapp_token' => null, 'entrega_whatsapp_hasta' => null]);
+
+        return response()->json(['ok' => true]);
+    }
+
+    private function mensaje_de_whatsapp_del_dueno($id): ?AiMessage
+    {
+        $dueno = AsistenteCanalHelper::dueno();
+
+        return AiMessage::whereKey((int) $id)->where('canal', AiMessage::CANAL_WHATSAPP)
+            ->whereHas('conversation', function ($consulta) use ($dueno) {
+                $consulta->where('user_id', $dueno->id)->where('auth_user_id', $dueno->id);
+            })->first();
+    }
+
+    private function estado_solo_sistema(): JsonResponse
+    {
+        return response()->json(['estado' => 'solo_sistema', 'contenido' => null, 'adjuntos' => []], 200)
+            ->header('Cache-Control', 'private, no-store');
+    }
+
+    private function estado_del_mensaje(AiMessage $mensaje, array $entrega = []): JsonResponse
+    {
         return response()->json([
             'estado'             => (string) $mensaje->estado,
             'contenido'          => is_null($mensaje->contenido) ? null : (string) $mensaje->contenido,
             'error_mensaje'      => is_null($mensaje->error_mensaje) ? null : (string) $mensaje->error_mensaje,
             'ai_conversation_id' => (int) $mensaje->ai_conversation_id,
             'adjuntos'           => AdjuntosIaHelper::para_el_admin($mensaje->adjuntos),
-        ], 200);
+        ] + $entrega, 200)->header('Cache-Control', 'private, no-store');
     }
 
     /**

@@ -210,7 +210,7 @@ class AvisosDelAsistenteHelper
 
         $base = self::base_del_link((int) $dueno->id, $spa_url_pedida);
 
-        $scans = ProviderOrderScan::where('user_id', (int) $dueno->id)
+        $scans = self::sin_conversaciones_trasladadas(ProviderOrderScan::where('user_id', (int) $dueno->id))
                                     ->where('avisar_por_whatsapp', 1)
                                     ->whereNull('avisado_por_whatsapp_at')
                                     ->whereNull('gestionado_at')
@@ -368,6 +368,17 @@ class AvisosDelAsistenteHelper
         }
 
         return array_slice($avisos, 0, self::TOPE_AVISOS);
+    }
+
+    public static function sin_conversaciones_trasladadas(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
+    {
+        $tabla_de_avisos = $query->getModel()->getTable();
+
+        return $query->whereNotExists(function ($hilo) use ($tabla_de_avisos) {
+            $hilo->selectRaw('1')->from('ai_conversations')
+                ->whereColumn('ai_conversations.id', $tabla_de_avisos . '.ai_conversation_id')
+                ->whereNotNull('ai_conversations.sistema_exclusivo_at');
+        });
     }
 
     /**
@@ -847,6 +858,8 @@ class AvisosDelAsistenteHelper
 
         $conversacion = AiConversation::where('id', (int) $ai_conversation_id)
                                         ->where('user_id', (int) $dueno->id)
+                                        ->whereNull('sistema_exclusivo_at')
+                                        ->lockForUpdate()
                                         ->first();
 
         if (is_null($conversacion)) {

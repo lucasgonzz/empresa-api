@@ -8,7 +8,10 @@ use App\Http\Controllers\Controller;
 use App\Models\SupportMessage;
 use App\Models\SupportMessageAttachment;
 use App\Models\SupportTicket;
+use App\Services\SupportAgentesSync;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SupportMessageController extends Controller
 {
@@ -27,59 +30,71 @@ class SupportMessageController extends Controller
         if (is_null($ticket)) {
             return response()->json(['error' => 'ticket not found'], 422);
         }
+        SupportAgentesSync::validar_callback_admin($request, $ticket);
 
-        // Idempotencia: si el UUID ya existe, devuelve el mensaje existente.
-        $existing = SupportMessage::where('uuid', $request->input('message_uuid'))->withAll()->first();
-        if (!is_null($existing)) {
-            return response()->json(['model' => $existing], 200);
-        }
-
-        // Crea mensaje recibido desde admin y lo marca como entregado.
-        $message = SupportMessage::create([
-            'uuid' => $request->input('message_uuid'),
-            'support_ticket_id' => $ticket->id,
-            'sender_type' => 'admin',
-            'sender_admin_uuid' => $request->input('sender_admin_uuid'),
-            'kind' => $kind,
-            'body' => $request->input('body'),
-            'delivered_at' => now(),
-            'synced_to_admin_at' => now(),
-        ]);
-
-        // Archivos binarios del multipart (prioridad sobre metadata remota).
-        $attachments_files = $request->file('attachments_files', []);
-        $has_uploaded_files = is_array($attachments_files) && count($attachments_files) > 0;
-
-        if ($has_uploaded_files) {
-            foreach ($attachments_files as $uploaded_file) {
-                $stored_path = $uploaded_file->store('support_messages/' . $ticket->id, 'public');
-                SupportMessageAttachment::create([
-                    'support_message_id' => $message->id,
-                    'disk' => 'public',
-                    'path' => $stored_path,
-                    'mime' => $uploaded_file->getMimeType(),
-                    'size' => $uploaded_file->getSize(),
-                ]);
+        $resultado = DB::transaction(function () use ($request, $ticket, $kind) {
+            // El detalle importado por Agentes usa el mismo lock y los mismos UUID.
+            SupportTicket::whereKey($ticket->id)->lockForUpdate()->firstOrFail();
+            // Idempotencia: si el UUID ya existe, devuelve el mensaje existente.
+            $existing = SupportMessage::where('uuid', $request->input('message_uuid'))->withAll()->first();
+            if (!is_null($existing)) {
+                abort_unless((int) $existing->support_ticket_id === (int) $ticket->id, 404);
+                return response()->json(['model' => $existing], 200);
             }
-        } else {
-            // Sin binarios: metadata JSON (multipart) o array (body JSON).
-            $attachments = $this->parse_attachments_input($request->input('attachments', []));
-            foreach ($attachments as $attachment) {
-                if (! is_array($attachment)) {
-                    continue;
+
+            // Crea mensaje recibido desde admin y lo marca como entregado.
+            $message = SupportMessage::create([
+                'uuid' => $request->input('message_uuid'),
+                'support_ticket_id' => $ticket->id,
+                'sender_type' => 'admin',
+                'sender_admin_uuid' => $request->input('sender_admin_uuid'),
+                'kind' => $kind,
+                'body' => $request->input('body'),
+                'delivered_at' => now(),
+                'synced_to_admin_at' => now(),
+            ]);
+
+            // Archivos binarios del multipart (prioridad sobre metadata remota).
+            $attachments_files = $request->file('attachments_files', []);
+            $has_uploaded_files = is_array($attachments_files) && count($attachments_files) > 0;
+
+            if ($has_uploaded_files) {
+                foreach ($attachments_files as $uploaded_file) {
+                    $stored_path = $uploaded_file->store('support_messages/' . $ticket->id, 'public');
+                    SupportMessageAttachment::create([
+                        'support_message_id' => $message->id,
+                        'disk' => 'public',
+                        'path' => $stored_path,
+                        'mime' => $uploaded_file->getMimeType(),
+                        'size' => $uploaded_file->getSize(),
+                    ]);
                 }
-                SupportMessageAttachment::create([
-                    'support_message_id' => $message->id,
-                    'disk' => $attachment['disk'] ?? 'public',
-                    'path' => $attachment['path'] ?? '',
-                    'mime' => $attachment['mime'] ?? null,
-                    'size' => $attachment['size'] ?? null,
-                ]);
+            } else {
+                // Sin binarios: metadata JSON (multipart) o array (body JSON).
+                $attachments = $this->parse_attachments_input($request->input('attachments', []));
+                foreach ($attachments as $attachment) {
+                    if (! is_array($attachment)) {
+                        continue;
+                    }
+                    SupportMessageAttachment::create([
+                        'support_message_id' => $message->id,
+                        'disk' => $attachment['disk'] ?? 'public',
+                        'path' => $attachment['path'] ?? '',
+                        'mime' => $attachment['mime'] ?? null,
+                        'size' => $attachment['size'] ?? null,
+                    ]);
+                }
             }
+
+            return $message;
+        });
+
+        if ($resultado instanceof JsonResponse) {
+            return $resultado;
         }
 
         // Recarga con relaciones para frontend y broadcast.
-        $message = SupportMessage::where('id', $message->id)->withAll()->first();
+        $message = SupportMessage::whereKey($resultado->id)->withAll()->first();
         // Emite evento realtime para usuario dueño del ticket.
         event(new SupportMessageReceived($message->id, (int) $ticket->user_id));
 
@@ -95,6 +110,8 @@ class SupportMessageController extends Controller
         if (is_null($message)) {
             return response()->json(['error' => 'message not found'], 404);
         }
+        abort_unless($message->ticket, 404);
+        SupportAgentesSync::validar_callback_admin($request, $message->ticket);
         $message->read_at = $request->input('read_at') ?: now();
         $message->save();
 
