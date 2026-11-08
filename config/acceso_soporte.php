@@ -36,4 +36,7 @@ return [
     // Hash bcrypt de una clave exclusiva de la instancia. Vacío deja el asistente fuera del login maestro.
     'asistente_maestro_password_hash' => env('ASISTENTE_MAESTRO_PASSWORD_HASH', ''),
 
+    // La app de IA comparte CORS, pero solo el SPA de este frente puede vincular navegadores.
+    'asistente_maestro_origen' => env('SANCTUM_STATEFUL_CORS', ''),
+
 ];
