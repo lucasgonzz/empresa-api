@@ -195,7 +195,8 @@ class SupportToursTest extends EmpresaTestCase
         $this->postJson($this->ruta($oferta, 'event'), ['event' => 'step', 'step' => 1])->assertOk();
 
         $pregunta = ['question' => '¿Dónde está ese botón?', 'step' => 1];
-        $this->postJson($this->ruta($oferta, 'question'), $pregunta)->assertStatus(502);
+        $this->postJson($this->ruta($oferta, 'question'), $pregunta)->assertStatus(502)
+            ->assertJsonPath('code', 'question_saved');
         $this->seguimiento($oferta)->assertJsonPath('model.0.question', $pregunta['question'])
             ->assertJsonPath('model.0.question_step', 1)->assertJsonPath('model.0.question_delivered_at', null);
         $status = 201;

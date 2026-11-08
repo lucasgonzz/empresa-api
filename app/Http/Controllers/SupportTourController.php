@@ -104,7 +104,11 @@ class SupportTourController extends Controller
         ]);
 
         if (!$service->preguntar($persona, $uuid, $datos['question'], $datos['step'] ?? null)) {
-            return response()->json(['ok' => false, 'message' => 'La pregunta quedó guardada y todavía no llegó a Soporte.'], 502);
+            return response()->json([
+                'ok' => false,
+                'code' => 'question_saved',
+                'message' => 'La pregunta quedó guardada y todavía no llegó a Soporte.',
+            ], 502);
         }
 
         return response()->json(['ok' => true]);
