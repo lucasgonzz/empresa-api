@@ -7,6 +7,7 @@ use App\Models\SupportTicket;
 use App\Models\SupportTypingState;
 use App\Services\SupportAgentesSync;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SupportTypingController extends Controller
 {
@@ -15,23 +16,22 @@ class SupportTypingController extends Controller
      */
     public function store(Request $request)
     {
-        // Ticket correlacionado por UUID compartido.
-        $ticket = SupportTicket::where('uuid', $request->input('ticket_uuid'))->first();
-        if (is_null($ticket)) {
-            return response()->json(['error' => 'ticket not found'], 404);
-        }
-        SupportAgentesSync::validar_callback_admin($request, $ticket);
+        return DB::transaction(function () use ($request) {
+            $ticket = SupportTicket::where('uuid', $request->input('ticket_uuid'))->lockForUpdate()->first();
+            if (!$ticket) {
+                return response()->json(['error' => 'ticket not found'], 404);
+            }
+            SupportAgentesSync::validar_callback_admin($request, $ticket);
+            $typing_state = SupportTypingState::firstOrNew([
+                'support_ticket_id' => $ticket->id,
+                'actor_type' => $request->input('actor_type', 'admin'),
+                'actor_id' => $request->input('actor_id'),
+            ]);
+            $typing_state->last_typing_at = now();
+            $typing_state->save();
 
-        // Persiste snapshot de "escribiendo" para actor remoto.
-        $typing_state = SupportTypingState::firstOrNew([
-            'support_ticket_id' => $ticket->id,
-            'actor_type' => $request->input('actor_type', 'admin'),
-            'actor_id' => $request->input('actor_id'),
-        ]);
-        $typing_state->last_typing_at = now();
-        $typing_state->save();
-
-        return response()->json(['ok' => true], 200);
+            return response()->json(['ok' => true], 200);
+        });
     }
 }
 

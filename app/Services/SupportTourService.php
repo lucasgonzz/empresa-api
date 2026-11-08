@@ -178,6 +178,9 @@ class SupportTourService
 
             // Conserva el hilo original si es web y sigue abierto. Un origen de WhatsApp se continúa en Soporte.
             $ticket = SupportTicket::where('uuid', $tour->ticket_uuid)->where('user_id', $persona->id)
+                ->where(function ($hilos) {
+                    $hilos->where('origen', SupportTicket::ORIGEN_SISTEMA)->orWhereNotNull('sistema_exclusivo_at');
+                })
                 ->where('status', 'open')->first() ?? SupportTicketHelper::get_or_create_open_ticket((int) $persona->id);
 
             $contexto = 'Pregunta para Robotito sobre «' . $tour->titulo . '»';
@@ -194,6 +197,7 @@ class SupportTourService
                 'delivered_at' => now(),
                 'remote_delivery_status' => 'not_received',
                 'robotito_support_version' => self::VERSION_SOPORTE_WEB,
+                'agentes_version' => $ticket->origen === SupportTicket::ORIGEN_WHATSAPP ? SupportAgentesSync::VERSION : null,
             ]);
 
             $tour->forceFill([

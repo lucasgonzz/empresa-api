@@ -8,6 +8,7 @@ use App\Models\AiMessage;
 use App\Models\MostradorReporte;
 use App\Models\SupportMessage;
 use App\Models\SupportTicket;
+use App\Models\SupportTour;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
@@ -202,6 +203,9 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
         $respuesta_de_soporte = ['ticket_uuid' => $ticket_uuid, 'message_uuid' => (string) Str::uuid(), 'body' => 'Soy Martín'];
         $this->postJson('/api/admin-sync/support/messages', $respuesta_de_soporte)->assertUnauthorized();
         $this->postJson('/api/admin-sync/support/messages', $respuesta_de_soporte, $this->headers())->assertCreated();
+        $this->putJson('/api/admin-sync/support/tickets/' . $ticket_uuid, ['name' => 'Consulta editada'])->assertUnauthorized();
+        $this->putJson('/api/admin-sync/support/tickets/' . $ticket_uuid, ['name' => 'Consulta editada'], $this->headers())
+            ->assertOk()->assertJsonPath('model.name', 'Consulta editada');
 
         Auth::forgetGuards();
         $this->actingAs($this->empleado, 'web')->getJson($ruta)->assertNotFound();
@@ -221,5 +225,58 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
         $this->assertSame(1, SupportMessage::where('support_ticket_id', $primero['support_ticket_id'])->count());
         $this->assertSame(2, SupportTicket::where('user_id', $this->comercio->id)->count());
         Http::assertSentCount(1);
+    }
+
+    public function test_el_reintento_del_uuid_reenvia_el_mismo_mensaje_si_no_hubo_acuse(): void
+    {
+        Http::fakeSequence(self::INBOUND . '/support/messages')->push([], 503)->push(['ok' => true], 201);
+        $uuid = (string) Str::uuid();
+        $datos = [
+            'body' => 'El primer envío se interrumpió', 'mensaje_uuid' => $uuid,
+            'agentes_version' => 1, 'nueva_conversacion' => 1,
+        ];
+
+        $mensaje = $this->postJson('/api/support-message', $datos)->assertCreated()
+            ->assertJsonPath('model.remote_delivery_status', 'not_received')->json('model');
+        $this->postJson('/api/support-message', $datos)->assertOk()
+            ->assertJsonPath('model.id', $mensaje['id'])->assertJsonPath('model.remote_delivery_status', null);
+
+        $this->assertSame(1, SupportTicket::where('user_id', $this->comercio->id)->count());
+        $this->assertSame([$uuid, $uuid], Http::recorded()->map(function ($registro) {
+            return $registro[0]['message_uuid'];
+        })->all());
+    }
+
+    public function test_robotito_conserva_el_hilo_solo_si_ya_esta_en_el_sistema(): void
+    {
+        Http::fake([
+            self::INBOUND . '/support/messages' => Http::response(['sistema_exclusivo_at' => now()->toIso8601String()]),
+        ]);
+        foreach ([null, now()] as $traspasado) {
+            $ticket = SupportTicket::create([
+                'user_id' => $this->comercio->id,
+                'origen' => 'whatsapp',
+                'status' => 'open',
+                'sistema_exclusivo_at' => $traspasado,
+            ]);
+            $tour = SupportTour::create([
+                'uuid' => (string) Str::uuid(),
+                'owner_id' => $this->comercio->id,
+                'recipient_id' => $this->comercio->id,
+                'ticket_uuid' => $ticket->uuid,
+                'origin_ticket_uuid' => $ticket->uuid,
+                'source' => 'whatsapp',
+                'tema' => 'crear_ticket',
+                'titulo' => 'Creá un ticket',
+                'textos' => [],
+                'total_steps' => 3,
+                'state' => 'accepted',
+                'steps_shown' => [1],
+            ]);
+            $this->postJson('/api/support-tour/' . $tour->uuid . '/question', [
+                'question' => '¿Cómo sigo?', 'step' => 1,
+            ])->assertOk();
+            $this->assertSame($traspasado !== null, $tour->fresh()->question_ticket_uuid === $ticket->uuid);
+        }
     }
 }

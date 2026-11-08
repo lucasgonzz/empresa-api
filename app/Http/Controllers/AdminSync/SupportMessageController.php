@@ -30,11 +30,10 @@ class SupportMessageController extends Controller
         if (is_null($ticket)) {
             return response()->json(['error' => 'ticket not found'], 422);
         }
-        SupportAgentesSync::validar_callback_admin($request, $ticket);
-
         $resultado = DB::transaction(function () use ($request, $ticket, $kind) {
             // El detalle importado por Agentes usa el mismo lock y los mismos UUID.
-            SupportTicket::whereKey($ticket->id)->lockForUpdate()->firstOrFail();
+            $ticket = SupportTicket::whereKey($ticket->id)->lockForUpdate()->firstOrFail();
+            SupportAgentesSync::validar_callback_admin($request, $ticket);
             // Idempotencia: si el UUID ya existe, devuelve el mensaje existente.
             $existing = SupportMessage::where('uuid', $request->input('message_uuid'))->withAll()->first();
             if (!is_null($existing)) {
@@ -110,10 +109,12 @@ class SupportMessageController extends Controller
         if (is_null($message)) {
             return response()->json(['error' => 'message not found'], 404);
         }
-        abort_unless($message->ticket, 404);
-        SupportAgentesSync::validar_callback_admin($request, $message->ticket);
-        $message->read_at = $request->input('read_at') ?: now();
-        $message->save();
+        DB::transaction(function () use ($request, $message) {
+            $ticket = SupportTicket::whereKey($message->support_ticket_id)->lockForUpdate()->firstOrFail();
+            SupportAgentesSync::validar_callback_admin($request, $ticket);
+            $message->read_at = $request->input('read_at') ?: now();
+            $message->save();
+        });
 
         // Aviso en tiempo real al usuario (canal support.user.*) de que su mensaje fue visto en admin.
         // El evento resuelve el user_id vía sender_user_id o, en su defecto, ticket.user_id.

@@ -26,7 +26,7 @@ class SupportMessageController extends Controller
         $agentes = $soporte_web && (int) $request->input('agentes_version') === SupportAgentesSync::VERSION;
         $uuid = $agentes ? ($request->validate(['mensaje_uuid' => 'nullable|uuid'])['mensaje_uuid'] ?? null) : null;
         if ($uuid && ($existente = $this->mensaje_reintentado($uuid, $user_id, $ticket_id))) {
-            return response()->json(['model' => $existente], 200);
+            return $this->responder_reintento($existente);
         }
 
         $ticket = $ticket_id === null
@@ -72,6 +72,7 @@ class SupportMessageController extends Controller
             $ticket = $ticket ?? ($agentes && $request->boolean('nueva_conversacion')
                 ? SupportTicket::create(['user_id' => $user_id, 'status' => 'open'])
                 : SupportTicketHelper::get_or_create_open_ticket($user_id));
+            $ticket = SupportTicket::whereKey($ticket->id)->lockForUpdate()->firstOrFail();
             if ($ticket->status !== 'open') {
                 return ['error' => 'ticket closed'];
             }
@@ -91,6 +92,9 @@ class SupportMessageController extends Controller
             ];
             if ($modo_firmado) {
                 $datos['agentes_version'] = SupportAgentesSync::VERSION;
+            }
+            if ($agentes) {
+                $datos['remote_delivery_status'] = 'not_received';
             }
             if ($soporte_web) {
                 $datos['robotito_support_version'] = SupportTourService::VERSION_SOPORTE_WEB;
@@ -116,7 +120,7 @@ class SupportMessageController extends Controller
         }
         $message = $resultado['model'];
         if ($resultado['repetido']) {
-            return response()->json(['model' => $message], 200);
+            return $this->responder_reintento($message);
         }
 
         if (!SupportSyncHelper::sync_message_to_admin($message)) {
@@ -138,6 +142,16 @@ class SupportMessageController extends Controller
         }
 
         return $existente;
+    }
+
+    private function responder_reintento(SupportMessage $message)
+    {
+        if ($message->synced_to_admin_at === null) {
+            SupportSyncHelper::sync_message_to_admin($message);
+            $message->refresh();
+        }
+
+        return response()->json(['model' => $message], 200);
     }
 
     /**
