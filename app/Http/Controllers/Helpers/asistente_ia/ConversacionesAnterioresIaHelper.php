@@ -168,7 +168,7 @@ class ConversacionesAnterioresIaHelper
      * @param  array  $input  {texto?: string, desde?: 'AAAA-MM-DD', hasta?: 'AAAA-MM-DD', limite?: int}
      * @return array
      */
-    public static function buscar(AiConversation $actual, array $input)
+    public static function buscar(AiConversation $actual, array $input, bool $es_whatsapp = false)
     {
         $texto = isset($input['texto']) && is_scalar($input['texto']) ? trim((string) $input['texto']) : '';
         $palabras = self::palabras($texto);
@@ -184,7 +184,7 @@ class ConversacionesAnterioresIaHelper
         $limite = isset($input['limite']) && is_numeric($input['limite']) ? (int) $input['limite'] : self::LIMITE_POR_DEFECTO;
         $limite = max(1, min(self::LIMITE_MAXIMO, $limite));
 
-        $query = self::con_mensajes(self::de_la_misma_persona($actual))
+        $query = self::con_mensajes(self::de_la_misma_persona($actual, $es_whatsapp))
             ->where('ai_conversations.id', '!=', (int) $actual->id);
 
         if (!is_null($desde) || !is_null($hasta)) {
@@ -265,7 +265,7 @@ class ConversacionesAnterioresIaHelper
      * @param  array  $input  {conversacion_id?: int, antes_de_mensaje?: int}
      * @return array
      */
-    public static function leer(AiConversation $actual, array $input)
+    public static function leer(AiConversation $actual, array $input, bool $es_whatsapp = false)
     {
         $id = self::entero($input, 'conversacion_id');
         $crudo = isset($input['conversacion_id']) ? $input['conversacion_id'] : null;
@@ -283,7 +283,7 @@ class ConversacionesAnterioresIaHelper
             $id = (int) $actual->id;
         }
 
-        $conversacion = self::de_la_misma_persona($actual)
+        $conversacion = self::de_la_misma_persona($actual, $es_whatsapp)
             ->where('ai_conversations.id', $id)
             ->first();
 
@@ -388,12 +388,12 @@ class ConversacionesAnterioresIaHelper
      * @param  \App\Models\AiConversation  $actual
      * @return string
      */
-    public static function bloque_para_prompt(AiConversation $actual)
+    public static function bloque_para_prompt(AiConversation $actual, bool $es_whatsapp = false)
     {
         try {
             $desde = Carbon::now()->subDays(self::DIAS_EN_EL_PROMPT);
 
-            $conversaciones = self::con_mensajes(self::de_la_misma_persona($actual))
+            $conversaciones = self::con_mensajes(self::de_la_misma_persona($actual, $es_whatsapp))
                 ->where('ai_conversations.id', '!=', (int) $actual->id)
                 ->whereRaw(self::ACTIVIDAD . ' >= ?', [$desde->toDateTimeString()])
                 ->orderByRaw(self::ACTIVIDAD . ' DESC')
@@ -568,7 +568,7 @@ class ConversacionesAnterioresIaHelper
      * @param  \App\Models\AiConversation  $actual
      * @return \Illuminate\Database\Eloquent\Builder
      */
-    protected static function de_la_misma_persona(AiConversation $actual)
+    protected static function de_la_misma_persona(AiConversation $actual, bool $es_whatsapp)
     {
         $query = AiConversation::query()
             ->where('ai_conversations.user_id', (int) $actual->user_id)
@@ -583,6 +583,10 @@ class ConversacionesAnterioresIaHelper
 
         if ((int) $actual->user_id <= 0 || (int) $actual->auth_user_id <= 0) {
             $query->whereRaw('1 = 0');
+        }
+
+        if ($es_whatsapp) {
+            $query->whereNull('ai_conversations.sistema_exclusivo_at');
         }
 
         return $query;

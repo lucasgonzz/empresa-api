@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
@@ -18,6 +19,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ValoracionIaHelper;
 use App\Jobs\InferirTituloConversacionIaJob;
 use App\Jobs\ResponderMensajeChatIaJob;
 use App\Models\AiConversation;
+use App\Models\MostradorReporte;
 use App\Models\AiMessage;
 use App\Models\AiMessageImagen;
 use App\Models\User;
@@ -107,10 +109,15 @@ class AiConversationController extends Controller
         }
 
         $models = $query
+            ->conCanalDelPrimerMensaje()
             ->orderByRaw('last_message_at IS NULL')
             ->orderBy('last_message_at', 'DESC')
             ->orderBy('id', 'DESC')
             ->get();
+
+        $models->each(function (AiConversation $conversation) {
+            $conversation->append('origen_canal');
+        });
 
         return response()->json(['models' => $models], 200);
     }
@@ -156,7 +163,7 @@ class AiConversationController extends Controller
 
         $conversation->save();
 
-        return response()->json(['model' => $conversation->fresh()], 200);
+        return response()->json(['model' => $conversation->fresh()->append('origen_canal')], 200);
     }
 
     /**
@@ -183,7 +190,7 @@ class AiConversationController extends Controller
          */
         $model->refresh();
 
-        return response()->json(['model' => $model], 201);
+        return response()->json(['model' => $model->append('origen_canal')], 201);
     }
 
     /**
@@ -350,10 +357,13 @@ class AiConversationController extends Controller
             return $this->guardar_turno($request, $hilo, $contenido, $imagenes, $archivos, $audio);
         };
 
-        if ($conversation->origen === AiConversation::ORIGEN_PRUEBA_TRASLADADA) {
+        if (in_array($conversation->origen, [
+            AiConversation::ORIGEN_PRUEBA_TRASLADADA,
+            AiConversation::ORIGEN_WHATSAPP,
+            MostradorReporte::ORIGEN_CONVERSACION,
+        ], true)) {
             $turno = DB::transaction(function () use ($id, $guardar) {
-                // El traslado toma el mismo lock. Ningún mensaje viejo puede quedar entre
-                // el pedido y su respuesta, porque el job resuelve el pedido por el id previo.
+                // Comparte el lock con la recepción por WhatsApp y el traslado de la prueba.
                 $hilo = $this->conversaciones_de_la_persona()->where('id', $id)->lockForUpdate()->first();
 
                 return $hilo ? $guardar($hilo) : response()->json(['message' => 'Conversación no encontrada.'], 404);
@@ -373,6 +383,16 @@ class AiConversationController extends Controller
     /** @return array|JsonResponse Los mensajes guardados o una respuesta sin job. */
     private function guardar_turno(Request $request, AiConversation $conversation, string $contenido, array $imagenes, array $archivos, $audio)
     {
+        $traspasa = $conversation->origen_canal === AiMessage::CANAL_WHATSAPP
+            && $conversation->sistema_exclusivo_at === null
+            && !IaAppHelper::es_pedido_de_la_app($request);
+        if ($traspasa && (int) $request->input('agentes_version') === 1 && !$request->boolean('traspasar_a_sistema')) {
+            return response()->json([
+                'code' => 'confirmar_traspaso_a_sistema',
+                'message' => 'Confirmá que querés continuar esta conversación solo desde el sistema.',
+            ], 409);
+        }
+
         $limite_pendiente_vigente = now()->subMinutes(self::MINUTOS_VENCIMIENTO_PENDIENTE);
 
         /*
@@ -447,7 +467,8 @@ class AiConversationController extends Controller
             ->where('created_at', '>=', $limite_pendiente_vigente)
             ->exists();
 
-        if ($hay_respuesta_en_curso) {
+        if ($hay_respuesta_en_curso || ($traspasa && AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('entrega_whatsapp_hasta', '>', now())->exists())) {
             return response()->json([
                 'code'    => 'respuesta_en_curso',
                 'message' => 'Todavía se está generando la respuesta anterior. Esperá a que llegue para mandar otro mensaje.',
@@ -522,6 +543,9 @@ class AiConversationController extends Controller
 
         $assistant_message = AiMessage::create($datos_del_assistant);
 
+        if ($traspasa) {
+            $conversation->sistema_exclusivo_at = now();
+        }
         $conversation->last_message_at = now();
         $conversation->save();
 
@@ -544,15 +568,16 @@ class AiConversationController extends Controller
             return response()->json([
                 'user_message'      => $user_message,
                 'assistant_message' => $assistant_message,
+                'sistema_exclusivo_at' => $conversation->sistema_exclusivo_at,
             ], 201);
         }
 
-        return [$user_message, $assistant_message, $inferir_titulo];
+        return [$user_message, $assistant_message, $inferir_titulo, $conversation->sistema_exclusivo_at];
     }
 
     private function despachar_turno(array $turno, string $contenido): JsonResponse
     {
-        [$user_message, $assistant_message, $inferir_titulo] = $turno;
+        [$user_message, $assistant_message, $inferir_titulo, $sistema_exclusivo_at] = $turno;
 
         /*
          * Red de seguridad del encolado (arreglo post-chequeo): si dispatch()
@@ -596,6 +621,7 @@ class AiConversationController extends Controller
         return response()->json([
             'user_message'      => $user_message,
             'assistant_message' => $assistant_message,
+            'sistema_exclusivo_at' => $sistema_exclusivo_at,
         ], 201);
     }
 
@@ -938,6 +964,10 @@ class AiConversationController extends Controller
             ->where('user_id', UserHelper::userId(true));
 
         $request = request();
+        if (MostradorHelper::sesion_de_comerciocity($request)) {
+            return $query->whereRaw('1 = 0');
+        }
+
         $persona = $request->user();
         if (!$persona instanceof User || !PruebaHelper::es_sesion_web_del_dueno($persona, $request)) {
             $query->sinHiloPrivadoDePrueba();

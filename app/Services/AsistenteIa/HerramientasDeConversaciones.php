@@ -135,14 +135,14 @@ class HerramientasDeConversaciones
      * @param  \App\Models\AiConversation  $conversation  La conversación del turno: define la tenencia.
      * @return array{content: string, is_error: bool, cargas_vistas: array<int, string>}
      */
-    public static function ejecutar($tool_name, array $input, AiConversation $conversation)
+    public static function ejecutar($tool_name, array $input, AiConversation $conversation, bool $es_whatsapp = false)
     {
         if ((string) $tool_name === self::BUSCAR) {
 
-            return self::resultado(ConversacionesAnterioresIaHelper::buscar($conversation, $input), false);
+            return self::resultado(ConversacionesAnterioresIaHelper::buscar($conversation, $input, $es_whatsapp), false);
         }
 
-        return self::resultado(ConversacionesAnterioresIaHelper::leer($conversation, $input), false);
+        return self::resultado(ConversacionesAnterioresIaHelper::leer($conversation, $input, $es_whatsapp), false);
     }
 
     /**

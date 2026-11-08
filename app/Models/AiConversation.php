@@ -77,7 +77,40 @@ class AiConversation extends Model
      */
     protected $casts = [
         'fijada' => 'boolean',
+        'sistema_exclusivo_at' => 'datetime',
     ];
+
+    protected $hidden = ['canal_del_primer_mensaje'];
+
+    public function scopeConCanalDelPrimerMensaje($query)
+    {
+        return $query->addSelect([
+            'canal_del_primer_mensaje' => AiMessage::select('canal')
+                ->whereColumn('ai_conversation_id', 'ai_conversations.id')
+                ->where('ai_conversations.origen', MostradorReporte::ORIGEN_CONVERSACION)
+                ->where('rol', 'user')
+                ->orderBy('id')
+                ->limit(1),
+        ]);
+    }
+
+    public function getOrigenCanalAttribute(): string
+    {
+        if ($this->origen === self::ORIGEN_WHATSAPP) {
+            return AiMessage::CANAL_WHATSAPP;
+        }
+
+        if ($this->origen === MostradorReporte::ORIGEN_CONVERSACION) {
+            $canal = array_key_exists('canal_del_primer_mensaje', $this->attributes)
+                ? $this->attributes['canal_del_primer_mensaje']
+                : $this->messages()->where('rol', 'user')->value('canal');
+            if ($canal === AiMessage::CANAL_WHATSAPP) {
+                return $canal;
+            }
+        }
+
+        return AiMessage::CANAL_SISTEMA;
+    }
 
     public function scopeSinHiloPrivadoDePrueba($query, $conversacion_actual_id = null)
     {

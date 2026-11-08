@@ -4,11 +4,12 @@ namespace App\Events;
 
 use App\Models\SupportTicket;
 use Illuminate\Broadcasting\Channel;
+use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcastNow;
 use Illuminate\Foundation\Events\Dispatchable;
 
 /**
- * Notifica al usuario de empresa (canal support.user.{id}) que el ticket cambió desde admin-api
+ * Notifica al usuario de empresa que el ticket cambió desde admin-api
  * (cierre, reapertura, nombre). Payload acotado para respetar el límite de Pusher (~10 KB).
  */
 class SupportTicketUpdated implements ShouldBroadcastNow
@@ -48,12 +49,20 @@ class SupportTicketUpdated implements ShouldBroadcastNow
     }
 
     /**
-     * Canal público por usuario (Echo en empresa-spa).
+     * Canal de la persona que abrió el ticket.
      *
      * @return array<int, \Illuminate\Broadcasting\Channel>
      */
     public function broadcastOn(): array
     {
+        $ticket = SupportTicket::find($this->support_ticket_id);
+        if (!$ticket) {
+            return [];
+        }
+        if ($ticket->requiere_canal_privado()) {
+            return [new PrivateChannel('agentes.support.user.' . $ticket->user_id)];
+        }
+
         return [
             new Channel('support.user.' . $this->listener_user_id),
         ];
@@ -82,6 +91,8 @@ class SupportTicketUpdated implements ShouldBroadcastNow
                 'user_id',
                 'name',
                 'status',
+                'origen',
+                'sistema_exclusivo_at',
                 'opened_at',
                 'closed_at',
                 'created_at',

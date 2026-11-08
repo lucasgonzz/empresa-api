@@ -7,12 +7,17 @@ use Illuminate\Support\Str;
 
 class SupportTicket extends Model
 {
+    const ORIGEN_SISTEMA = 'sistema';
+    const ORIGEN_WHATSAPP = 'whatsapp';
+
     /**
      * Campos asignables masivamente para alta velocidad en helpers.
      *
      * @var array<int, string>
      */
     protected $guarded = [];
+
+    protected $attributes = ['origen' => self::ORIGEN_SISTEMA];
 
     /**
      * Casts de fechas para serialización consistente en API.
@@ -22,6 +27,7 @@ class SupportTicket extends Model
     protected $casts = [
         'opened_at' => 'datetime',
         'closed_at' => 'datetime',
+        'sistema_exclusivo_at' => 'datetime',
     ];
 
     /**
@@ -70,12 +76,17 @@ class SupportTicket extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function requiere_canal_privado(): bool
+    {
+        return $this->origen === self::ORIGEN_WHATSAPP || (bool) $this->desde_agentes;
+    }
+
     /**
      * Mensajes de conversación ordenados por creación.
      */
     public function messages()
     {
-        return $this->hasMany(SupportMessage::class)->orderBy('id');
+        return $this->hasMany(SupportMessage::class)->orderBy('created_at')->orderBy('id');
     }
 }
 

@@ -213,6 +213,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::post('synced-version-notification/{id}/mark-read', 'SyncedVersionNotificationController@markRead');
 
     // Soporte tipo chat para clientes del sistema.
+    Route::get('agentes/canales', 'AgentesController@canales');
     Route::get('support-ticket', 'SupportTicketController@index');
     Route::post('support-ticket', 'SupportTicketController@store');
     Route::get('support-ticket/{id}', 'SupportTicketController@show');
@@ -1421,27 +1422,14 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
     // que ya gateaba el mostrador, porque es el mismo módulo y el chat contesta lo mismo que traen
     // los informes: cobranzas, deudas y compras. La tenencia doble del controller no se va a ningún
     // lado — un empleado ya no llega, pero la defensa en profundidad se queda.
-    Route::middleware('solo_el_dueno_ia')->group(function () {
+    Route::middleware('solo_el_dueno_ia:historial')->group(function () {
         Route::get('ai-conversations', 'AiConversationController@index');
-        Route::post('ai-conversations', 'AiConversationController@store');
         Route::delete('ai-conversations/{id}', 'AiConversationController@destroy');
         // Renombrar y fijar desde la barra lateral de la app (misión app-ia-y-memoria, contrato C5).
         Route::patch('ai-conversations/{id}', 'AiConversationController@update');
         Route::get('ai-conversations/{id}/messages', 'AiConversationController@messages');
         Route::post('ai-conversations/{id}/messages', 'AiConversationController@send_message');
         Route::get('ai-conversations/{id}/messages/{message_id}', 'AiConversationController@show_message');
-
-        /*
-         * La app «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026, contrato C5): quién es y qué sabe
-         * este sistema, y cerrar sesión (revocar su token). Mismo gate que el chat: la app es este chat
-         * visto desde otro lado. 🔴 La app nunca llama a `GET api/user` (corre el candado de sesión única).
-         */
-        Route::get('ia-app/yo', 'IaAppController@yo');
-        Route::delete('ia-app/token', 'IaAppController@revocar_token');
-        // El dictado del cuestionario de inicio: un audio que vuelve como texto (OpenAI).
-        Route::post('ia-app/transcribir', 'IaAppController@transcribir');
-        // La imagen que generó el agente (la `url` del bloque `imagen_generada`), con tenencia por dueño.
-        Route::get('ia-imagenes/{uuid}', 'IaAppController@imagen_generada');
 
         /*
          * El binario de una foto que el dueño mandó por WhatsApp (misión
@@ -1476,6 +1464,22 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
         // el resto del chat (AiConversationController::conversacion_de_la_persona()).
         Route::post('ai-conversations/{id}/acciones/{accion_id}/confirmar', 'AiConversationController@confirmar_accion');
         Route::post('ai-conversations/{id}/acciones/{accion_id}/cancelar', 'AiConversationController@cancelar_accion');
+    });
+
+    Route::middleware('solo_el_dueno_ia')->group(function () {
+        Route::post('ai-conversations', 'AiConversationController@store');
+
+        /*
+         * La app «ComercioCity IA» (misión app-ia-y-memoria, 29/10/2026, contrato C5): quién es y qué sabe
+         * este sistema, y cerrar sesión (revocar su token). Mismo gate que el chat: la app es este chat
+         * visto desde otro lado. 🔴 La app nunca llama a `GET api/user` (corre el candado de sesión única).
+         */
+        Route::get('ia-app/yo', 'IaAppController@yo');
+        Route::delete('ia-app/token', 'IaAppController@revocar_token');
+        // El dictado del cuestionario de inicio: un audio que vuelve como texto (OpenAI).
+        Route::post('ia-app/transcribir', 'IaAppController@transcribir');
+        // La imagen que generó el agente (la `url` del bloque `imagen_generada`), con tenencia por dueño.
+        Route::get('ia-imagenes/{uuid}', 'IaAppController@imagen_generada');
 
         /*
          * Lo que abren las menciones del chat (misión agente-ia-mano-derecha, §2 y §3 del
@@ -1779,6 +1783,7 @@ Route::middleware('admin.api.key')
         Route::post('asistente/mensajes', 'AdminSync\\AsistenteController@mensajes');
         Route::get('asistente/disponibilidad', 'AdminSync\\AsistenteController@disponibilidad');
         Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
+        Route::post('asistente/mensajes/{id}/liberar-entrega', 'AdminSync\\AsistenteController@liberar_entrega');
         // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
         // propósito: el admin pide los pendientes (con su link ya emitido) y recién DESPUÉS de que
         // el WhatsApp salió marca el aviso. Si el envío falla, el informe no queda marcado y sale

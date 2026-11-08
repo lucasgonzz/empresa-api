@@ -185,7 +185,7 @@ class AvisosDeTurnosIaHelper
             return collect();
         }
 
-        return AiAvisoDelAsistente::where('owner_id', (int) $dueno->id)
+        return AvisosDelAsistenteHelper::sin_conversaciones_trasladadas(AiAvisoDelAsistente::where('owner_id', (int) $dueno->id))
                                     ->whereNull('avisado_por_whatsapp_at')
                                     ->where('created_at', '>=', Carbon::now()->subHours(self::HORAS_DEL_AVISO))
                                     ->orderBy('created_at')

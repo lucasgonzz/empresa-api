@@ -538,7 +538,7 @@ class RecordatoriosDelAsistenteHelper
      */
     protected static function dejar_en_la_conversacion(User $dueno, $texto, Pending $tarea, $whatsapp_message_id)
     {
-        $conversacion = AsistenteCanalHelper::conversacion_vigente($dueno);
+        $conversacion = AsistenteCanalHelper::conversacion_vigente($dueno, true);
 
         if (is_null($conversacion)) {
 

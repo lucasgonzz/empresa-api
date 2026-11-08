@@ -393,7 +393,7 @@ class EnviosFallidosDelAsistenteHelper
     {
         $calma = Carbon::now()->subMinutes(self::MINUTOS_DE_CALMA_DEL_LOTE);
 
-        return AiEnvioFallido::where('owner_id', (int) $dueno->id)
+        return AvisosDelAsistenteHelper::sin_conversaciones_trasladadas(AiEnvioFallido::where('owner_id', (int) $dueno->id))
                                 ->where('avisar_por_whatsapp', 1)
                                 ->whereNull('avisado_por_whatsapp_at')
                                 ->whereNull('dicho_en_el_turno_at')

@@ -155,6 +155,32 @@ class Gate_solo_el_dueno_Test extends TestCase
         Queue::assertNothingPushed();
     }
 
+    /** @dataProvider sesiones_de_comerciocity */
+    public function test_comerciocity_no_accede_al_chat_privado(string $clave, $valor)
+    {
+        [$conversation, $message] = $this->conversacion($this->comercio);
+        $this->actingAs($this->comercio, 'web')
+            ->withHeader('Referer', rtrim((string) config('app.url'), '/') . '/')
+            ->withSession([$clave => $valor]);
+
+        $this->getJson('api/ai-conversations')->assertOk()->assertExactJson(['models' => []]);
+        $this->getJson("api/ai-conversations/{$conversation->id}/messages")->assertNotFound();
+        $this->getJson("api/ai-conversations/{$conversation->id}/messages/{$message->id}")->assertNotFound();
+        $this->getJson("api/ai-mensajes/{$message->id}/audio")->assertNotFound();
+        $this->postJson('api/ai-conversations')->assertForbidden();
+        $this->getJson('api/mostrador/reportes')->assertForbidden();
+        $this->getJson('api/user/asistente-config')->assertForbidden();
+        $this->getJson('api/mi-consumo-ia')->assertForbidden();
+    }
+
+    public function sesiones_de_comerciocity(): array
+    {
+        return [
+            'soporte firmado' => ['acceso_soporte_token_id', 1],
+            'acceso maestro' => ['master_login_bypass_user_last_activity', true],
+        ];
+    }
+
     /**
      * El dueño entra, que es el punto entero de la funcionalidad.
      *

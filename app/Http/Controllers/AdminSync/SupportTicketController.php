@@ -5,7 +5,9 @@ namespace App\Http\Controllers\AdminSync;
 use App\Events\SupportTicketUpdated;
 use App\Http\Controllers\Controller;
 use App\Models\SupportTicket;
+use App\Services\SupportAgentesSync;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class SupportTicketController extends Controller
 {
@@ -19,22 +21,29 @@ class SupportTicketController extends Controller
         // UUID compartido para correlación bi-direccional.
         $ticket_uuid = $request->input('ticket_uuid');
 
-        $existing = SupportTicket::where('uuid', $ticket_uuid)->first();
-        if (!is_null($existing)) {
-            return response()->json(['model' => $existing->load('messages.attachments')], 200);
+        [$ticket, $creado] = DB::transaction(function () use ($request, $ticket_uuid, $user_id) {
+            $existing = SupportTicket::where('uuid', $ticket_uuid)->lockForUpdate()->first();
+            if ($existing) {
+                SupportAgentesSync::validar_callback_admin($request, $existing);
+                return [$existing->load('messages.attachments'), false];
+            }
+
+            $ticket = SupportTicket::create([
+                'uuid' => $ticket_uuid,
+                'user_id' => $user_id,
+                'name' => $request->input('name'),
+                'status' => $request->input('status', 'open'),
+                'opened_at' => now(),
+            ]);
+
+            return [$ticket->load('messages.attachments'), true];
+        });
+
+        if ($creado) {
+            event(new SupportTicketUpdated((int) $ticket->user_id, (int) $ticket->id));
         }
 
-        $ticket = SupportTicket::create([
-            'uuid' => $ticket_uuid,
-            'user_id' => $user_id,
-            'name' => $request->input('name'),
-            'status' => $request->input('status', 'open'),
-            'opened_at' => now(),
-        ]);
-
-        event(new SupportTicketUpdated((int) $ticket->user_id, (int) $ticket->id));
-
-        return response()->json(['model' => $ticket->load('messages.attachments')], 201);
+        return response()->json(['model' => $ticket], $creado ? 201 : 200);
     }
 
     /**
@@ -42,33 +51,36 @@ class SupportTicketController extends Controller
      */
     public function update(Request $request, $ticket_uuid)
     {
-        // Busca ticket de empresa por UUID compartido con admin-api.
-        $ticket = SupportTicket::where('uuid', $ticket_uuid)->first();
+        $ticket = DB::transaction(function () use ($request, $ticket_uuid) {
+            $ticket = SupportTicket::where('uuid', $ticket_uuid)->lockForUpdate()->first();
+            if (!$ticket) {
+                return null;
+            }
+            SupportAgentesSync::validar_callback_admin($request, $ticket);
+
+            if ($request->has('name')) {
+                $ticket->name = $request->input('name');
+            }
+            if ($request->has('status')) {
+                $ticket->status = $request->input('status');
+            }
+            if ($ticket->status === 'closed') {
+                $ticket->closed_at = now();
+            }
+            if ($ticket->status === 'open') {
+                $ticket->closed_at = null;
+            }
+            $ticket->save();
+
+            return $ticket->load('messages.attachments');
+        });
         if (is_null($ticket)) {
             return response()->json(['error' => 'ticket not found'], 404);
         }
 
-        // Nombre de ticket gestionado desde el centro de soporte.
-        if ($request->has('name')) {
-            $ticket->name = $request->input('name');
-        }
-        // Estado de ciclo de vida del ticket.
-        if ($request->has('status')) {
-            $ticket->status = $request->input('status');
-        }
-        // Fecha de cierre coherente con estado solicitado.
-        if ($ticket->status === 'closed') {
-            $ticket->closed_at = now();
-        }
-        if ($ticket->status === 'open') {
-            $ticket->closed_at = null;
-        }
-
-        $ticket->save();
-
         event(new SupportTicketUpdated((int) $ticket->user_id, (int) $ticket->id));
 
-        return response()->json(['model' => $ticket->load('messages.attachments')], 200);
+        return response()->json(['model' => $ticket], 200);
     }
 }
 

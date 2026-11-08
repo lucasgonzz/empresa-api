@@ -420,6 +420,10 @@ class FotosDeLaConversacionIaHelper
             $consulta->where('origen', (string) $origen);
         }
 
+        if ($origen === AiConversation::ORIGEN_WHATSAPP && $actual->sistema_exclusivo_at === null) {
+            $consulta->whereNull('sistema_exclusivo_at');
+        }
+
         $ids = array_map('intval', $consulta->orderBy('id', 'DESC')->limit(50)->pluck('id')->all());
 
         if (!in_array((int) $actual->id, $ids, true)) {

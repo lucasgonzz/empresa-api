@@ -150,9 +150,9 @@ class AsistenteCanalHelper
      * @param  mixed  $ai_conversation_id  El que mandó el admin, o null.
      * @param  string  $texto  El texto del mensaje nuevo, con el que se decide si es otro tema.
      *                         Vacío (una foto sola, un audio sin transcribir) nunca corta.
-     * @return \App\Models\AiConversation
+     * @return \App\Models\AiConversation|null Null si hace falta crear un hilo al guardar.
      */
-    public static function conversacion(User $dueno, $ai_conversation_id = null, $texto = '')
+    public static function elegir_conversacion(User $dueno, $ai_conversation_id = null, $texto = ''): ?AiConversation
     {
         $pedida = self::conversacion_pedida($dueno, $ai_conversation_id);
 
@@ -175,12 +175,12 @@ class AsistenteCanalHelper
             return $reciente;
         }
 
-        /*
-         * Nace igual que una del panel: `titulo` null significa "se está infiriendo" y lo completa
-         * InferirTituloConversacionIaJob con el primer mensaje, exactamente como hoy. La persona
-         * es el dueño en las dos puntas (user_id y auth_user_id) porque en este canal solo habla
-         * él: el teléfono es el de la ficha del cliente y el admin ya descartó a los empleados.
-         */
+        return null;
+    }
+
+    public static function nueva_conversacion(User $dueno): AiConversation
+    {
+        // En este canal solo habla el dueño, en las dos puntas de la tenencia.
         return AiConversation::create([
             'user_id'      => $dueno->id,
             'auth_user_id' => $dueno->id,
@@ -199,16 +199,20 @@ class AsistenteCanalHelper
      * @param  \App\Models\User  $dueno
      * @return \App\Models\AiConversation|null
      */
-    public static function conversacion_vigente(User $dueno)
+    public static function conversacion_vigente(User $dueno, bool $bloquear = false)
     {
-        return AiConversation::where('user_id', $dueno->id)
+        $consulta = AiConversation::where('user_id', $dueno->id)
                                 ->where('auth_user_id', $dueno->id)
                                 ->where('origen', AiConversation::ORIGEN_WHATSAPP)
                                 ->whereNotNull('last_message_at')
                                 ->where('last_message_at', '>', Carbon::now()->subHours(self::HORAS_CORTE))
                                 ->orderBy('last_message_at', 'DESC')
-                                ->orderBy('id', 'DESC')
-                                ->first();
+                                ->orderBy('id', 'DESC');
+
+        $ultima = $bloquear ? $consulta->lockForUpdate()->first() : $consulta->first();
+
+        // Si el hilo más reciente se trasladó, no retoma un tema anterior por accidente.
+        return $ultima && $ultima->sistema_exclusivo_at === null ? $ultima : null;
     }
 
     /**
