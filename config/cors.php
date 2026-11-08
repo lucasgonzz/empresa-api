@@ -20,6 +20,8 @@ return [
         'login',
         'login-forzado',
         'logout',
+        'asistente-maestro/vinculacion',
+        'asistente-maestro/vinculacion/*',
         'version-session-token',
         'login-from-version-session-token',
         'sanctum/csrf-cookie',

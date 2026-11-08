@@ -49,6 +49,10 @@ Route::get('/platform-connector/tiendanube/callback', function (\Illuminate\Http
 Route::post('login', 'CommonLaravel\AuthController@login');
 Route::post('login-forzado', 'CommonLaravel\AuthController@login_forzado');
 Route::post('logout', 'CommonLaravel\AuthController@logout');
+Route::post('asistente-maestro/vinculacion', 'VinculacionMaestraController@iniciar')
+    ->middleware('throttle:4,1,vinculacion-maestra-inicio');
+Route::post('asistente-maestro/vinculacion/canjear', 'VinculacionMaestraController@canjear')
+    ->middleware('throttle:12,1,vinculacion-maestra-canje');
 // `demo.session.vigente`: una demo revocada no se lleva un token con el que abrir otra sesión (misión
 // vigencia-token-demo-rojos, 3/11/2026). Sin marcador de demo no hace nada ni le pega a la base.
 Route::post('version-session-token', 'CommonLaravel\AuthController@create_version_session_token')
