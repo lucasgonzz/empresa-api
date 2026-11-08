@@ -4,6 +4,7 @@ namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
+use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
@@ -27,6 +28,9 @@ class AuthController extends Controller
      */
     protected $master_login_mode = null;
 
+    /** @var string|null Documento antepuesto al comando maestro en este ingreso. */
+    protected $documento_login_maestro = null;
+
     /**
      * Clave de sesión para indicar que el login actual es maestro (loginLucas)
      * y no debe tomar el lock de sesión única por last_activity/session_id.
@@ -36,6 +40,8 @@ class AuthController extends Controller
     protected $master_login_bypass_activity_key = 'master_login_bypass_user_last_activity';
     
     function login(Request $request) {
+        $request->session()->forget(MostradorHelper::AUTORIZACION_MAESTRA);
+
         $login = false;
         $user = null;
         $user_last_activity = false;
@@ -51,8 +57,8 @@ class AuthController extends Controller
              * ocupar el lock de sesión única del usuario.
              */
             session()->put($this->master_login_bypass_activity_key, true);
-
             $user = $this->procesar_login();
+            MostradorHelper::autorizar_maestro($request, $this->documento_login_maestro);
             /** Solo en login maestro básico se omite descarga offline. */
             $skip_offline_articles_sync = $this->master_login_mode === 'login';
             
@@ -117,6 +123,7 @@ class AuthController extends Controller
              * frontend viejo la ignora.
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            $user->asistente_personal_autorizado = MostradorHelper::maestro_autorizado($request);
             // `user.prueba` (misión prueba-experiencia-empresa): null fuera del modo prueba.
             PruebaHelper::adjuntar_resumen($user);
         }
@@ -146,6 +153,8 @@ class AuthController extends Controller
      * @return \Illuminate\Http\JsonResponse Misma forma que `login()`.
      */
     function login_forzado(Request $request) {
+        $request->session()->forget(MostradorHelper::AUTORIZACION_MAESTRA);
+
         $login = false;
         $user = null;
         $user_last_activity = false;
@@ -209,6 +218,8 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = false;
             $user->master_login_mode = null;
+            $user->es_acceso_maestro = false;
+            $user->asistente_personal_autorizado = false;
             PruebaHelper::adjuntar_resumen($user);
         }
 
@@ -446,6 +457,8 @@ class AuthController extends Controller
      */
     public function login_from_version_session_token(Request $request)
     {
+        $request->session()->forget(MostradorHelper::AUTORIZACION_MAESTRA);
+
         $login = false;
         $user = null;
         $user_last_activity = false;
@@ -532,6 +545,7 @@ class AuthController extends Controller
                     // Mismo flag que login() y get_user() (misión imagenes-catalogo-completo): el
                     // SPA destino usa este `user` directo, sin pasar por auth/me.
                     $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+                    $user->asistente_personal_autorizado = false;
                     // Mismo flag que get_user(): el SPA destino usa este `user` directo y con él
                     // decide si muestra el panel de la demo.
                     $user->es_sesion_demo = $this->es_sesion_de_demo_para_el_spa();
@@ -632,6 +646,7 @@ class AuthController extends Controller
              * nueva y opcional: un SPA viejo la ignora.
              */
             $user->es_sesion_soporte = $this->es_sesion_de_soporte();
+            $user->asistente_personal_autorizado = MostradorHelper::maestro_autorizado(request());
             /**
              * Si la sesión entró por el login maestro (misión imagenes-catalogo-completo): con
              * esto la SPA muestra "Buscar imágenes para todo el catálogo". Va en las DOS ramas.
@@ -670,6 +685,7 @@ class AuthController extends Controller
             // siempre false (el maestro entra por la rama de arriba), pero se calcula igual en vez
             // de fijarlo: si mañana cambia la condición de esa rama, el flag sigue diciendo la verdad.
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
+            $user->asistente_personal_autorizado = false;
             // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
             PruebaHelper::adjuntar_resumen($user);
             UserHelper::set_sessions($user);
@@ -957,6 +973,7 @@ class AuthController extends Controller
             // El usuario ya está resuelto. Pasar por Auth::attempt requeriría cambiarle
             // la contraseña y podía dejarla alterada si fallaba el pedido.
             Auth::guard('web')->login($user, false);
+            $this->documento_login_maestro = $prefixed_doc_number;
             Log::info('Login maestro iniciado', ['user_id' => $user->id]);
 
             return true;

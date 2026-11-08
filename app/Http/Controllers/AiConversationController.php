@@ -964,7 +964,7 @@ class AiConversationController extends Controller
             ->where('user_id', UserHelper::userId(true));
 
         $request = request();
-        if (MostradorHelper::sesion_de_comerciocity($request)) {
+        if (MostradorHelper::sesion_restringida_para_asistente($request)) {
             return $query->whereRaw('1 = 0');
         }
 

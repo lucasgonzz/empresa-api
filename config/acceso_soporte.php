@@ -33,4 +33,7 @@ return [
     */
     'ttl_segundos' => (int) env('ACCESO_SOPORTE_TTL_SEGUNDOS', 120),
 
+    // Hash bcrypt de una clave exclusiva de la instancia. Vacío deja el asistente fuera del login maestro.
+    'asistente_maestro_password_hash' => env('ASISTENTE_MAESTRO_PASSWORD_HASH', ''),
+
 ];

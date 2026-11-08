@@ -8,7 +8,7 @@ use Illuminate\Http\Request;
 
 /**
  * Deja pasar al dueño y a los administradores del negocio en su propia sesión.
- * Las sesiones de ComercioCity quedan afuera del asistente personal.
+ * Las sesiones de ComercioCity necesitan autorización adicional para el asistente personal.
  *
  * Uso en rutas, SIEMPRE después de auth:sanctum (necesita la persona autenticada):
  *   ->middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia', 'solo_el_dueno_ia'])
@@ -32,7 +32,8 @@ class SoloElDuenoIa
     public function handle(Request $request, Closure $next, string $modo = 'privado')
     {
         // El historial conserva su respuesta de recurso inexistente para accesos delegados.
-        if ($modo === 'privado' && MostradorHelper::sesion_de_comerciocity($request)) {
+        if (($modo === 'privado' && MostradorHelper::sesion_restringida_para_asistente($request))
+            || ($modo === 'sesion_propia' && MostradorHelper::sesion_de_comerciocity($request))) {
             return response()->json(['message' => 'El asistente personal es privado.'], 403);
         }
 
