@@ -6,11 +6,14 @@ use Illuminate\Database\Eloquent\Model;
 
 class SupportTour extends Model
 {
+    public const REVERTIR_IMPORTACION_ARTICULOS = 'revertir_importacion_articulos';
+
     public const PASOS_POR_TEMA = [
         'crear_ticket' => 3,
         'buscar_articulo_nombre' => 3,
         'buscar_articulo_codigo' => 1,
         'centro_recursos' => 2,
+        self::REVERTIR_IMPORTACION_ARTICULOS => 3,
     ];
 
     public const MOTIVOS_POSITIVOS = ['claro', 'facil', 'ritmo', 'resolvio'];
@@ -19,6 +22,7 @@ class SupportTour extends Model
     protected $guarded = [];
 
     protected $casts = [
+        'import_history_id' => 'integer',
         'textos' => 'array',
         'total_steps' => 'integer',
         'shown_at' => 'datetime',
@@ -38,7 +42,12 @@ class SupportTour extends Model
 
     public function para_navegacion(): array
     {
-        return $this->only(['uuid', 'tema', 'titulo', 'textos']);
+        $datos = $this->only(['uuid', 'tema', 'titulo', 'textos']);
+        if ($this->tema === self::REVERTIR_IMPORTACION_ARTICULOS) {
+            $datos['import_history_id'] = $this->import_history_id;
+        }
+
+        return $datos;
     }
 
     public function para_seguimiento(): array

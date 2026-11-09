@@ -29,6 +29,8 @@ class SupportTourController extends Controller
             'titulo' => 'required|string|max:120',
             'textos' => 'sometimes|array',
             'textos.*' => 'required|string|max:240',
+            'import_history_id' => 'required_if:tema,' . SupportTour::REVERTIR_IMPORTACION_ARTICULOS
+                . '|prohibited_unless:tema,' . SupportTour::REVERTIR_IMPORTACION_ARTICULOS . '|integer|min:1|max:9007199254740991',
         ]);
 
         if (isset($datos['textos']) && array_keys($datos['textos']) !== range(0, SupportTour::PASOS_POR_TEMA[$datos['tema']] - 1)) {
@@ -55,6 +57,22 @@ class SupportTourController extends Controller
             ->get();
 
         return response()->json(['model' => $tours->map->para_seguimiento()]);
+    }
+
+    public function importaciones_candidatas(Request $request, SupportTourService $service): JsonResponse
+    {
+        $datos = $request->validate([
+            'user_id' => 'required|integer|min:1',
+            'import_history_id' => 'sometimes|required|integer|min:1|max:9007199254740991',
+        ]);
+        $persona = User::find($datos['user_id']);
+        $dueno = $this->dueno();
+        abort_unless($persona && (int) ($persona->owner_id ?: $persona->id) === (int) $dueno->id,
+            409, 'No se pudo identificar a la persona en este sistema.');
+
+        return response()->json(['model' => $service->importaciones_candidatas(
+            $persona, isset($datos['import_history_id']) ? (int) $datos['import_history_id'] : null
+        )]);
     }
 
     private function dueno(): User

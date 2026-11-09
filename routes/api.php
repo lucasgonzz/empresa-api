@@ -1701,6 +1701,7 @@ Route::middleware('admin.api.key:siempre')
         // admin lo muestra como «versión vieja».
         Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
         Route::post('support/tours', 'AdminSync\\SupportTourController@store');
+        Route::get('support/tours/importaciones/candidatas', 'AdminSync\\SupportTourController@importaciones_candidatas');
         Route::get('support/tours/{ticket_uuid}', 'AdminSync\\SupportTourController@index')->whereUuid('ticket_uuid');
         Route::post('prueba/cupo-imagenes', 'AdminSync\\PruebaController@cupo_imagenes');
         Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
