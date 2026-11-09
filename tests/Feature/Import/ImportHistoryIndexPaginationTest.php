@@ -92,6 +92,27 @@ class ImportHistoryIndexPaginationTest extends TestCase
         $this->assertSame(7, $pagina_2['pagination']['total']);
     }
 
+    public function test_pagina_de_una_importacion_concreta_y_rechazo_si_dejo_de_estar_disponible(): void
+    {
+        $objetivo = $this->crear_historial();
+        for ($i = 1; $i <= 6; $i++) {
+            $this->crear_historial();
+        }
+        $de_clientes = $this->crear_historial(['model_name' => 'client']);
+        $ruta = '/api/import-history/article?import_history_id=';
+
+        $this->getJson($ruta . $objetivo->id . '&page=1')->assertOk()
+            ->assertJsonPath('pagination.current_page', 2)
+            ->assertJsonPath('models.1.id', $objetivo->id)
+            ->assertJsonPath('models.1.can_revert', true);
+        $this->getJson($ruta . $de_clientes->id)->assertNotFound();
+        $objetivo->update(['rollback_status' => 'revertida', 'rolled_back_at' => now()]);
+        $this->getJson($ruta . $objetivo->id)->assertNotFound();
+        $this->getJson('/api/import-history/article?page=2')->assertOk()
+            ->assertJsonPath('models.1.id', $objetivo->id)
+            ->assertJsonPath('models.1.can_revert', false);
+    }
+
     /**
      * Un historial con chunks y observaciones reales (el caso que rompía en
      * producción) no trae esas relaciones en la respuesta: ni la key `chunks`, ni

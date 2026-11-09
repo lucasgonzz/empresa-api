@@ -9,6 +9,8 @@ use App\Http\Controllers\Helpers\SupportTicketHelper;
 use App\Http\Controllers\Helpers\TelefonoArgentinoHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
+use App\Models\ImportHistory;
+use App\Models\Provider;
 use App\Models\SupportMessage;
 use App\Models\SupportTicket;
 use App\Models\SupportTour;
@@ -68,8 +70,9 @@ class SupportTourService
 
         $textos = array_values($datos['textos'] ?? []);
         $total = SupportTour::PASOS_POR_TEMA[$datos['tema']];
+        $import_history_id = isset($datos['import_history_id']) ? (int) $datos['import_history_id'] : null;
 
-        [$tour, $nuevo] = DB::transaction(function () use ($dueno, $datos, $mensaje, $persona_id, $textos, $total) {
+        [$tour, $nuevo] = DB::transaction(function () use ($dueno, $datos, $mensaje, $persona_id, $textos, $total, $import_history_id) {
             // El mismo usuario puede recibir una sola oferta por mensaje, incluso con reintentos simultáneos.
             $persona = User::whereKey($persona_id)->lockForUpdate()->first();
             abort_unless($persona && (int) ($persona->owner_id ?: $persona->id) === (int) $dueno->id,
@@ -82,7 +85,8 @@ class SupportTourService
             if ($previo) {
                 abort_unless((int) $previo->recipient_id === (int) $persona_id
                     && $previo->ticket_uuid === $datos['ticket_uuid'] && $previo->source === $datos['source']
-                    && $previo->tema === $datos['tema'] && $previo->titulo === $datos['titulo'] && $previo->textos === $textos,
+                    && $previo->tema === $datos['tema'] && $previo->titulo === $datos['titulo'] && $previo->textos === $textos
+                    && $previo->import_history_id === $import_history_id,
                     409, 'Ese mensaje ya tiene una oferta de Robotito con otros datos.');
 
                 return [$previo, false];
@@ -95,6 +99,12 @@ class SupportTourService
                 abort_unless(PermisosIaHelper::tiene_extencion($dueno, 'comerciocity_interno')
                     && PermisosIaHelper::puede($persona, 'sale.store'),
                     409, 'La pantalla Vender no está disponible para esa persona.');
+            }
+            if ($datos['tema'] === SupportTour::REVERTIR_IMPORTACION_ARTICULOS) {
+                $importacion = ImportHistory::where('user_id', $dueno->id)->where('model_name', 'article')
+                    ->find($import_history_id);
+                abort_unless(self::puede_abrir_historial($persona) && $importacion && $importacion->puede_revertirse(),
+                    409, 'Esa importación ya no se puede señalar para revertir desde esta cuenta.');
             }
 
             $anterior = $mensaje ? self::de_la_persona($persona)
@@ -111,6 +121,7 @@ class SupportTourService
                 'tema' => $datos['tema'],
                 'titulo' => $datos['titulo'],
                 'textos' => $textos,
+                'import_history_id' => $import_history_id,
                 'total_steps' => $total,
                 'steps_shown' => [],
             ]);
@@ -136,6 +147,39 @@ class SupportTourService
         }
 
         return $tour;
+    }
+
+    public static function puede_abrir_historial(User $persona): bool
+    {
+        // Son el acceso a Listado y las mismas condiciones que muestran Crear en esa pantalla.
+        return PermisosIaHelper::puede($persona, 'article.index')
+            && (PermisosIaHelper::puede($persona, 'article.store')
+                || PermisosIaHelper::puede($persona, 'article.export_excel_clients'));
+    }
+
+    public function importaciones_candidatas(User $persona, ?int $import_history_id): array
+    {
+        abort_unless(self::puede_abrir_historial($persona), 409, 'El historial de Listado no está disponible para esa persona.');
+        $dueno_id = $persona->owner_id ?: $persona->id;
+        $consulta = ImportHistory::where('user_id', $dueno_id)->where('model_name', 'article');
+        if ($import_history_id !== null) {
+            $consulta->whereKey($import_history_id);
+        }
+
+        $historiales = $consulta->orderByDesc('id')->limit(30)
+            ->get(['id', 'created_at', 'provider_id', 'status', 'rollback_status', 'rolled_back_at'])
+            ->filter->puede_revertirse()->take(10);
+        $proveedores = Provider::where('user_id', $dueno_id)->whereIn('id', $historiales->pluck('provider_id')->filter())
+            ->pluck('name', 'id');
+
+        return $historiales->map(function (ImportHistory $historial) use ($proveedores) {
+            return [
+                'id' => (int) $historial->id,
+                'created_at' => optional($historial->created_at)->toDateTimeString(),
+                'provider_id' => $historial->provider_id === null ? null : (int) $historial->provider_id,
+                'provider_name' => $proveedores->get($historial->provider_id),
+            ];
+        })->values()->all();
     }
 
     private function validar_telefono_del_empleado(User $dueno, User $persona, string $remitente): void

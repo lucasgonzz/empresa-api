@@ -5,6 +5,8 @@ namespace Tests\Feature\SupportTours;
 use App\Events\SupportMessageReceived;
 use App\Events\SupportTourOffered;
 use App\Models\ExtencionEmpresa;
+use App\Models\ImportHistory;
+use App\Models\Provider;
 use App\Models\SupportMessage;
 use App\Models\User;
 use Illuminate\Broadcasting\PrivateChannel;
@@ -132,6 +134,56 @@ class SupportToursTest extends EmpresaTestCase
         Event::assertNotDispatched(SupportTourOffered::class);
     }
 
+    public function test_revertir_importacion_fija_un_historial_del_comercio_sin_ejecutar_la_reversion(): void
+    {
+        $importacion = $this->historial();
+        $otra_importacion = $this->historial();
+        $ajena = $this->historial(['user_id' => $this->persona()->id]);
+        $en_curso = $this->historial(['status' => 'en_proceso']);
+        $de_clientes = $this->historial(['model_name' => 'client']);
+        $oferta = $this->datos(['tema' => 'revertir_importacion_articulos', 'titulo' => 'Revertí la importación']);
+
+        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertJsonValidationErrors('import_history_id');
+        foreach ([$ajena, $en_curso, $de_clientes] as $no_disponible) {
+            $this->postJson(self::ADMIN_SYNC, $oferta + ['import_history_id' => $no_disponible->id], $this->clave())
+                ->assertStatus(409);
+        }
+        $this->postJson(self::ADMIN_SYNC, $this->datos(['import_history_id' => $importacion->id]), $this->clave())
+            ->assertJsonValidationErrors('import_history_id');
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['import_history_id' => $importacion->id, 'user_id' => $this->empleado->id,
+            'recipient_phone' => '5493454622139'], $this->clave())->assertStatus(409);
+
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['import_history_id' => $importacion->id], $this->clave())->assertOk();
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['import_history_id' => $otra_importacion->id], $this->clave())
+            ->assertStatus(409);
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['import_history_id' => $importacion->id], $this->clave())->assertOk();
+        $this->getJson('/api/support-tour/pending')->assertJsonPath('model.0.import_history_id', $importacion->id);
+        $this->postJson($this->ruta($oferta, 'accept'))->assertJsonPath('model.import_history_id', $importacion->id);
+        $this->assertNull($importacion->fresh()->rollback_status);
+        Event::assertDispatchedTimes(SupportTourOffered::class, 1);
+    }
+
+    public function test_candidatas_requiere_clave_destinatario_y_devuelve_solo_datos_utiles_del_comercio(): void
+    {
+        $proveedor = Provider::create(['user_id' => $this->dueno->id, 'name' => 'Proveedor del comercio']);
+        $importacion = $this->historial(['provider_id' => $proveedor->id]);
+        $this->historial(['rollback_status' => 'encolado']);
+        $ajena = $this->historial(['user_id' => $this->persona()->id]);
+        $ruta = self::ADMIN_SYNC . '/importaciones/candidatas?user_id=';
+        $this->getJson($ruta . $this->dueno->id)->assertUnauthorized();
+        $this->getJson($ruta . $this->empleado->id, $this->clave())->assertStatus(409);
+        $this->getJson($ruta . $ajena->user_id, $this->clave())->assertStatus(409);
+        $this->getJson($ruta . $this->dueno->id . '&import_history_id=' . $ajena->id, $this->clave())
+            ->assertExactJson(['model' => []]);
+        $this->getJson($ruta . $this->dueno->id . '&import_history_id=' . $importacion->id, $this->clave())
+            ->assertExactJson(['model' => [[
+                'id' => $importacion->id,
+                'created_at' => $importacion->created_at->toDateTimeString(),
+                'provider_id' => $proveedor->id,
+                'provider_name' => 'Proveedor del comercio',
+            ]]]);
+    }
+
     public function test_el_final_exige_todos_los_pasos_y_la_valoracion_distingue_la_polaridad(): void
     {
         $oferta = $this->datos(['textos' => ['Abrí Soporte', 'Creá un ticket', 'Escribí y enviá']]);
@@ -241,6 +293,15 @@ class SupportToursTest extends EmpresaTestCase
             'tema' => 'crear_ticket',
             'titulo' => 'Creá un ticket',
         ];
+    }
+
+    private function historial(array $cambios = []): ImportHistory
+    {
+        return ImportHistory::create($cambios + [
+            'user_id' => $this->dueno->id,
+            'model_name' => 'article',
+            'status' => 'terminado',
+        ]);
     }
 
     private function clave(): array

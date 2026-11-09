@@ -7,10 +7,16 @@ use App\Models\Article;
 use App\Models\ArticleImportResult;
 use App\Models\ImportConflict;
 use App\Models\ImportHistory;
+use App\Services\SupportTourService;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class ImportHistoryController extends Controller
 {
+    private const POR_PAGINA = 5;
+
     /**
      * Encola un rollback de importación para ejecutar en background.
      *
@@ -126,7 +132,7 @@ class ImportHistoryController extends Controller
             $pagina_pedida = 1;
         }
 
-        $models = ImportHistory::select([
+        $historial = ImportHistory::select([
                                     'id', 'created_at', 'terminado_at', 'status', 'user_id',
                                     'employee_id', 'filas_procesadas', 'created_models',
                                     'updated_models', 'articles_match', 'articles_repetidos',
@@ -137,9 +143,16 @@ class ImportHistoryController extends Controller
                                     'matching_counts_json', 'model_name',
                                 ])
                                 ->where('user_id', $this->userId())
-                                ->where('model_name', $model_name)
-                                ->orderBy('id', 'DESC')
-                                ->paginate(5, ['*'], 'page', $pagina_pedida);
+                                ->where('model_name', $model_name);
+
+        $historial->orderByDesc('id');
+        if ($request->has('import_history_id')) {
+            $datos = $request->validate(['import_history_id' => 'required|integer|min:1|max:9007199254740991']);
+            abort_unless($model_name === 'article' && SupportTourService::puede_abrir_historial($request->user()), 403);
+            $models = $this->pagina_con_importacion($historial, (int) $datos['import_history_id']);
+        } else {
+            $models = $historial->paginate(self::POR_PAGINA, ['*'], 'page', $pagina_pedida);
+        }
 
         /*
          * matching_counts_json se guarda como texto plano (json_encode) en BD, igual que
@@ -166,6 +179,20 @@ class ImportHistoryController extends Controller
                 'per_page'     => $models->perPage(),
             ],
         ], 200);
+    }
+
+    private function pagina_con_importacion(Builder $historial, int $objetivo): LengthAwarePaginator
+    {
+        return DB::transaction(function () use ($historial, $objetivo) {
+            // La posición se cuenta en el mismo historial que ve la persona y con el mismo orden.
+            $mas_nuevas = (clone $historial)->reorder()->where('id', '>', $objetivo)->count();
+            $pagina = intdiv($mas_nuevas, self::POR_PAGINA) + 1;
+            $filas = $historial->paginate(self::POR_PAGINA, ['*'], 'page', $pagina);
+            $importacion = $filas->getCollection()->firstWhere('id', $objetivo);
+            abort_unless($importacion && $importacion->puede_revertirse(), 404, 'Esta importación ya no está disponible para revertir.');
+
+            return $filas;
+        });
     }
 
     /**
