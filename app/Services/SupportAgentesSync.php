@@ -74,6 +74,7 @@ class SupportAgentesSync
     public function actualizar_lista(User $persona): array
     {
         $respuesta = $this->consultar($persona, 'soporte');
+        $this->guardar_referencias_erp($persona, $respuesta['ticket_numbers'] ?? []);
         $ids = [];
 
         foreach ($respuesta['models'] ?? [] as $modelo) {
@@ -84,6 +85,42 @@ class SupportAgentesSync
         }
 
         return $ids;
+    }
+
+    public function actualizar_referencias_erp(User $persona): void
+    {
+        if (!$this->tickets_erp_sin_referencia($persona)->exists()) {
+            return;
+        }
+        $respuesta = $this->consultar($persona, 'soporte', ['solo_referencias_erp' => 1]);
+        // Las sesiones que solo pueden ver ERP no importan conversaciones de WhatsApp.
+        $this->guardar_referencias_erp($persona, $respuesta['ticket_numbers'] ?? []);
+    }
+
+    private function guardar_referencias_erp(User $persona, $referencias): void
+    {
+        if (!is_array($referencias) || $referencias === []) {
+            return;
+        }
+
+        foreach ($this->tickets_erp_sin_referencia($persona)->pluck('uuid') as $uuid) {
+            $numero = $referencias[$uuid] ?? null;
+            if (!is_int($numero) || $numero < 1) {
+                continue;
+            }
+
+            $this->tickets_erp_sin_referencia($persona)
+                ->where('uuid', $uuid)
+                ->update(['admin_ticket_id' => $numero]);
+        }
+    }
+
+    private function tickets_erp_sin_referencia(User $persona)
+    {
+        return DB::table('support_tickets')
+            ->where('user_id', $persona->id)
+            ->where('origen', SupportTicket::ORIGEN_SISTEMA)
+            ->whereNull('admin_ticket_id');
     }
 
     public function actualizar_conversacion(User $persona, SupportTicket $ticket): bool
@@ -107,7 +144,7 @@ class SupportAgentesSync
         });
     }
 
-    private function consultar(User $persona, string $recurso): array
+    private function consultar(User $persona, string $recurso, array $opciones = []): array
     {
         $identidad = self::identidad($persona);
         $url = rtrim((string) config('services.admin_api.url'), '/');
@@ -119,7 +156,7 @@ class SupportAgentesSync
             $respuesta = Http::acceptJson()
                 ->withHeaders(['X-Admin-Api-Key' => config('services.admin_api.inbound_key')])
                 ->timeout(5)
-                ->get($url . '/api/inbound/agentes/' . $recurso, $identidad);
+                ->get($url . '/api/inbound/agentes/' . $recurso, $identidad + $opciones);
 
             return $respuesta->successful() && is_array($respuesta->json()) ? $respuesta->json() : [];
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
@@ -160,6 +197,15 @@ class SupportAgentesSync
             if ($ticket) {
                 $ticket->fill($datos);
                 $ticket->sistema_exclusivo_at = $ticket->sistema_exclusivo_at ?? self::fecha_en_bd($modelo['sistema_exclusivo_at'] ?? null);
+                $numero = $modelo['admin_ticket_id'] ?? null;
+                if (is_int($numero) && $numero > 0) {
+                    $ticket->admin_ticket_id = $numero;
+                }
+                $ultima_fecha = self::fecha_en_bd($modelo['last_message_at'] ?? null);
+                $fecha_guardada = $ticket->getRawOriginal('remote_last_message_at');
+                if ($ultima_fecha !== null && ($fecha_guardada === null || $ultima_fecha > $fecha_guardada)) {
+                    $ticket->remote_last_message_at = $ultima_fecha;
+                }
                 if ($ticket->isDirty()) {
                     $ticket->save();
                 }
