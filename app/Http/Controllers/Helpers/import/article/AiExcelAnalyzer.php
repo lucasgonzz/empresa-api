@@ -2045,7 +2045,8 @@ PROMPT;
          * segundo intento.
          */
         try {
-            [$response, $modelo] = ProveedorIaHelper::pedir_mensaje($proveedor, $timeout, $payload);
+            // Pro con timeout completo y, si falla de forma transitoria, un único reintento con Flash (ver ModelosIaHelper::pedir_importacion()).
+            [$response, $modelo] = ModelosIaHelper::pedir_importacion($ia, $timeout, $payload, self::MAX_TOKENS * $factor);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
             Log::error('AiExcelAnalyzer: no hubo respuesta de la IA', [
                 'proveedor' => $proveedor,
