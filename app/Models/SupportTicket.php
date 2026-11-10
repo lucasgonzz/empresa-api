@@ -19,6 +19,10 @@ class SupportTicket extends Model
 
     protected $attributes = ['origen' => self::ORIGEN_SISTEMA];
 
+    protected $appends = ['last_message_at'];
+
+    protected $hidden = ['admin_ticket_id', 'local_last_message_at', 'remote_last_message_at'];
+
     /**
      * Casts de fechas para serialización consistente en API.
      *
@@ -28,6 +32,9 @@ class SupportTicket extends Model
         'opened_at' => 'datetime',
         'closed_at' => 'datetime',
         'sistema_exclusivo_at' => 'datetime',
+        'admin_ticket_id' => 'integer',
+        'local_last_message_at' => 'datetime',
+        'remote_last_message_at' => 'datetime',
     ];
 
     /**
@@ -66,6 +73,19 @@ class SupportTicket extends Model
                 $sub->where('sender_type', 'admin')->whereNull('read_at');
             },
         ]);
+    }
+
+    public function scopeWithLastMessageAt($query)
+    {
+        return $query->withMax('messages as local_last_message_at', 'created_at');
+    }
+
+    public function getLastMessageAtAttribute()
+    {
+        $local = $this->local_last_message_at;
+        $remota = $this->remote_last_message_at;
+
+        return $remota !== null && ($local === null || $remota->gt($local)) ? $remota : $local;
     }
 
     /**

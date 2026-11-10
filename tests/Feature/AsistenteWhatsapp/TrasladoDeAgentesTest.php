@@ -144,6 +144,53 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
         });
     }
 
+    public function test_el_listado_relaciona_numeros_de_admin_y_ordena_whatsapp_antes_de_abrirlo(): void
+    {
+        $ticket_erp = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'open']);
+        $ticket_ajeno = SupportTicket::create(['user_id' => $this->empleado->id, 'status' => 'open']);
+        SupportMessage::create([
+            'support_ticket_id' => $ticket_erp->id, 'sender_type' => 'user', 'kind' => 'text', 'body' => 'Pregunta ERP',
+            'created_at' => '2026-11-08 11:00:00',
+        ]);
+        $ticket_wa = [
+            'uuid' => (string) Str::uuid(), 'origen' => 'whatsapp', 'status' => 'open',
+            'opened_at' => '2026-11-07T10:00:00-03:00', 'admin_ticket_id' => 83,
+            'last_message_at' => '2026-11-08T12:00:00-03:00',
+        ];
+        Http::fake([
+            self::INBOUND . '/agentes/soporte*' => Http::response([
+                'models' => [$ticket_wa], 'ticket_numbers' => [$ticket_erp->uuid => 82, $ticket_ajeno->uuid => 88],
+            ]),
+        ]);
+
+        $this->getJson('/api/support-ticket?agentes=1')->assertOk()
+            ->assertJsonPath('models.0.admin_ticket_id', 83)
+            ->assertJsonPath('models.0.messages', [])
+            ->assertJsonPath('models.1.admin_ticket_id', 82);
+        $this->getJson('/api/support-ticket/' . $ticket_erp->id)->assertOk()->assertJsonPath('model.admin_ticket_id', 82);
+        $this->assertNull($ticket_ajeno->fresh()->admin_ticket_id);
+    }
+
+    public function test_la_sesion_tecnica_lee_solo_las_referencias_de_sus_tickets_erp(): void
+    {
+        $ticket_erp = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'open']);
+        $ticket_wa = ['uuid' => (string) Str::uuid(), 'origen' => 'whatsapp', 'status' => 'open'];
+        Http::fake([
+            self::INBOUND . '/agentes/soporte*' => Http::response([
+                'models' => [$ticket_wa], 'ticket_numbers' => [$ticket_erp->uuid => 82],
+            ]),
+        ]);
+
+        $this->withSession(['master_login_bypass_user_last_activity' => true])
+            ->getJson('/api/support-ticket?agentes=1')->assertOk()
+            ->assertJsonCount(1, 'models')->assertJsonPath('models.0.admin_ticket_id', 82);
+        $this->assertDatabaseMissing('support_tickets', ['uuid' => $ticket_wa['uuid']]);
+        Http::assertSent(function (Request $pedido) {
+            return $pedido->hasHeader('X-Admin-Api-Key', self::CLAVE)
+                && strpos($pedido->url(), 'solo_referencias_erp=1') !== false;
+        });
+    }
+
     public function test_soporte_importa_sin_duplicar_y_espera_confirmacion_de_admin_para_marcar_traslado(): void
     {
         $ticket_uuid = (string) Str::uuid();
@@ -245,6 +292,64 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
         $this->assertSame([$uuid, $uuid], Http::recorded()->map(function ($registro) {
             return $registro[0]['message_uuid'];
         })->all());
+    }
+
+    public function test_el_envio_implicito_reutiliza_solo_el_ticket_abierto_del_usuario(): void
+    {
+        Http::fake([self::INBOUND . '/support/messages' => Http::response(['ok' => true], 201)]);
+        $abierto = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'open']);
+        SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'closed']);
+        SupportTicket::create(['user_id' => $this->empleado->id, 'status' => 'open']);
+
+        foreach (['Primera consulta', 'Sigo en el mismo hilo'] as $texto) {
+            $this->postJson('/api/support-message', [
+                'body' => $texto, 'mensaje_uuid' => (string) Str::uuid(), 'agentes_version' => 1,
+            ])->assertCreated()->assertJsonPath('model.support_ticket_id', $abierto->id);
+        }
+
+        $this->assertSame(1, SupportTicket::where('user_id', $this->comercio->id)->where('status', 'open')->count());
+        $this->assertSame(2, $abierto->messages()->count());
+    }
+
+    public function test_el_orden_no_cambia_al_leer_cerrar_o_descargar_el_historial_remoto(): void
+    {
+        $fecha_vieja = now()->subDays(3);
+        $fecha_reciente = now()->subDay();
+        $uuid_whatsapp = (string) Str::uuid();
+        $modelo_whatsapp = [
+            'uuid' => $uuid_whatsapp, 'origen' => 'whatsapp', 'status' => 'closed',
+            'opened_at' => $fecha_vieja->toIso8601String(), 'last_message_at' => $fecha_reciente->toIso8601String(),
+        ];
+        Http::fake([
+            self::INBOUND . '/agentes/soporte/' . $uuid_whatsapp . '*' => Http::response(['model' => $modelo_whatsapp + [
+                'messages' => [[
+                    'uuid' => (string) Str::uuid(), 'sender_type' => 'admin',
+                    'body' => 'Respuesta de WhatsApp', 'created_at' => $fecha_reciente->toIso8601String(),
+                ]],
+            ]]),
+            self::INBOUND . '/agentes/soporte*' => Http::response(['models' => [$modelo_whatsapp]]),
+            self::INBOUND . '/*' => Http::response(['ok' => true]),
+        ]);
+
+        $ticket = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'open']);
+        $mensaje = $ticket->messages()->create(['sender_type' => 'admin', 'body' => 'Respuesta anterior', 'created_at' => $fecha_vieja]);
+        $sin_mensajes = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'closed']);
+        SupportTicket::create(['user_id' => $this->empleado->id, 'status' => 'open']);
+
+        $lista = '/api/support-ticket?agentes=1';
+        $whatsapp_id = $this->getJson($lista)->assertOk()->assertJsonCount(3, 'models')
+            ->assertJsonPath('models.0.uuid', $uuid_whatsapp)->assertJsonCount(0, 'models.0.messages')
+            ->assertJsonPath('models.1.id', $ticket->id)->assertJsonPath('models.2.id', $sin_mensajes->id)->json('models.0.id');
+
+        $this->getJson('/api/support-ticket/' . $whatsapp_id . '?agentes=1')->assertOk()->assertJsonCount(1, 'model.messages');
+        $this->postJson('/api/support-message/' . $mensaje->id . '/mark-read')->assertOk();
+        $this->putJson('/api/support-ticket/' . $ticket->id, ['status' => 'closed'])->assertOk();
+        $this->getJson($lista)->assertOk()->assertJsonPath('models.0.id', $whatsapp_id)
+            ->assertJsonPath('models.1.id', $ticket->id)->assertJsonPath('models.1.unread_messages_count', 0);
+
+        $ticket->messages()->create(['sender_type' => 'admin', 'body' => 'Respuesta nueva']);
+        $this->getJson($lista)->assertOk()->assertJsonPath('models.0.id', $ticket->id)
+            ->assertJsonPath('models.1.id', $whatsapp_id)->assertJsonPath('models.2.id', $sin_mensajes->id);
     }
 
     public function test_robotito_conserva_el_hilo_solo_si_ya_esta_en_el_sistema(): void

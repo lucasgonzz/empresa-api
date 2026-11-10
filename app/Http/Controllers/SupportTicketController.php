@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\SupportTicketHelper;
 use App\Models\SupportTicket;
+use App\Models\User;
 use App\Services\SupportAgentesSync;
 use Illuminate\Http\Request;
 
@@ -20,6 +21,12 @@ class SupportTicketController extends Controller
         $persona = SupportAgentesSync::persona_propia($request);
         $incluye_whatsapp = $request->boolean('agentes') && SupportAgentesSync::puede_usar_soporte($persona);
         $autorizados_por_admin = $incluye_whatsapp ? $sync->actualizar_lista($persona) : [];
+        if ($request->boolean('agentes') && !$incluye_whatsapp) {
+            $usuario = $request->user();
+            if ($usuario instanceof User && (int) $usuario->id === (int) $user_id && SupportAgentesSync::puede_usar_soporte($usuario)) {
+                $sync->actualizar_referencias_erp($usuario);
+            }
+        }
 
         $models = SupportTicket::where('user_id', $user_id)
             ->where(function ($query) use ($incluye_whatsapp, $autorizados_por_admin) {
@@ -30,11 +37,13 @@ class SupportTicketController extends Controller
             })
             ->withAll()
             ->withUnreadMessagesCount()
-            ->when($incluye_whatsapp, function ($query) { $query->orderByDesc('opened_at'); })
-            ->orderByDesc('id')
-            ->get();
+            ->withLastMessageAt()
+            ->get()
+            ->sort(function (SupportTicket $a, SupportTicket $b) {
+                return ($b->last_message_at <=> $a->last_message_at) ?: ($b->id <=> $a->id);
+            })->values();
 
-        return response()->json(['models' => $models], 200);
+        return response()->json(['models' => $models->makeVisible('admin_ticket_id')], 200);
     }
 
     /**
@@ -55,9 +64,10 @@ class SupportTicketController extends Controller
             ->where('user_id', $user_id)
             ->withAll()
             ->withUnreadMessagesCount()
+            ->withLastMessageAt()
             ->first();
 
-        return response()->json(['model' => $model], 201);
+        return response()->json(['model' => $model->makeVisible('admin_ticket_id')], 201);
     }
 
     /**
@@ -77,9 +87,9 @@ class SupportTicketController extends Controller
             abort_unless($autorizado || $ticket->sistema_exclusivo_at !== null, 404);
         }
 
-        $model = SupportTicket::whereKey($ticket->id)->withAll()->withUnreadMessagesCount()->firstOrFail();
+        $model = SupportTicket::whereKey($ticket->id)->withAll()->withUnreadMessagesCount()->withLastMessageAt()->firstOrFail();
 
-        return response()->json(['model' => $model], 200);
+        return response()->json(['model' => $model->makeVisible('admin_ticket_id')], 200);
     }
 
     /**
