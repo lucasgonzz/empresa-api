@@ -237,6 +237,68 @@ class FilaSinIdentificadorTest extends ImportTestCase
     }
 
     /**
+     * Un sku repetido se tiene que detectar aunque el código venga en espacios y no haya columna
+     * de nombre: sin el sku en la clave de ya_estaba_en_el_excel(), la clave queda vacía y la
+     * repetición no se detecta ni se reporta. Es el test que sostiene esa línea.
+     *
+     * @return void
+     */
+    public function test_un_sku_repetido_sin_codigo_ni_columna_de_nombre_se_detecta()
+    {
+        $import = $this->importar_xlsx($this->xlsx([
+            [null, 'SKU-PESCA-REPETIDO', self::CODIGO_CON_ESPACIOS, 'Primero', 100, null, null, null],
+            [null, 'SKU-PESCA-REPETIDO', self::CODIGO_CON_ESPACIOS, 'Segundo', 200, null, null, null],
+        ]), [
+            'prop_nombre' => -1,
+            'prop_precio' => -1,
+            'prop_stock_actual' => -1,
+            'prop_iva' => -1,
+        ]);
+
+        $this->assertSame('terminado', (string) $import->fresh()->status);
+
+        $this->assertBuckets($import, [
+            'creado_nuevo'        => 1,
+            'merge_fila_repetida' => 1,
+        ]);
+
+        $this->assertSame([2 => 3], $this->sobrescrituras($import), 'La repetición por sku se tiene que reportar.');
+
+        $this->assertSame(
+            1,
+            Article::where('user_id', $this->tenant->id)->where('sku', 'SKU-PESCA-REPETIDO')->count(),
+            'Las dos filas con el mismo sku son un solo artículo.'
+        );
+    }
+
+    /**
+     * Un nombre hecho solo de espacios duros (NBSP) cuenta como vacío: trim() no los saca y la
+     * fila creaba un artículo que en pantalla se ve sin nombre.
+     *
+     * @return void
+     */
+    public function test_un_nombre_con_espacio_duro_y_sin_codigo_no_crea_un_articulo()
+    {
+        $articulos_antes = Article::where('user_id', $this->tenant->id)->count();
+
+        $import = $this->importar_xlsx($this->xlsx([
+            [null, null, self::CODIGO_CON_ESPACIOS, "\xC2\xA0", 77, null, null, null],
+        ]));
+
+        $this->assertSame('terminado', (string) $import->fresh()->status);
+
+        $this->assertBuckets($import, ['sin_match_no_creado' => 1]);
+
+        $this->assertSame([2], $this->filas_de_conflictos($import, 'sin_identificador'));
+
+        $this->assertSame(
+            $articulos_antes,
+            Article::where('user_id', $this->tenant->id)->count(),
+            'Un nombre con espacios duros no alcanza para crear un artículo.'
+        );
+    }
+
+    /**
      * Guarda del comportamiento que no cambia: una fila con nombre y sin código se sigue creando
      * y se sigue reportando como fila sin identificador.
      *

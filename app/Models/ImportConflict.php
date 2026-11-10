@@ -49,7 +49,8 @@ use Illuminate\Database\Eloquent\Model;
  *   - Con el resto de los tipos que cuentan, el DATO se descarta y la fila SIGUE:
  *     'numero_invalido' y 'numero_fuera_de_rango' (ese campo no se toca),
  *     'placeholder_descartado' (ese código se anula), 'sin_identificador' (sin códigos,
- *     se busca por nombre), 'identificador_sin_asignar' (ese código único no se asigna)
+ *     se busca por nombre; si tampoco trae nombre, la fila se saltea y no sigue),
+ *     'identificador_sin_asignar' (ese código único no se asigna)
  *     y 'desempate_por_nombre_sin_resolver' (se aplica a todos los candidatos). Después
  *     la fila se crea, se actualiza o NO, según el resto de la importación: "Solo
  *     actualizar" sin match, artículo de otro proveedor, fila repetida por nombre o por
@@ -89,6 +90,9 @@ class ImportConflict extends Model
      * que seguro deja la fila afuera, y el mensaje del resultado cuenta estas filas como
      * "no se importó porque no se pudo saber a qué artículo corresponde"
      * (ArticleImportHelper::contar_filas_con_problemas()).
+     *
+     * 'sin_identificador' no va en esta lista porque solo saltea la fila cuando tampoco trae
+     * nombre: con nombre, la fila sigue y se busca por él. El tipo solo no alcanza para saberlo.
      */
     public const TIPOS_QUE_SALTEAN_LA_FILA = ['ambiguo'];
 

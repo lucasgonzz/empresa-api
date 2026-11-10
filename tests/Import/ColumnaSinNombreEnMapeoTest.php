@@ -134,12 +134,22 @@ class ColumnaSinNombreEnMapeoTest extends TestCase
      */
     public function test_un_nombre_null_o_ausente_tambien_es_una_columna_sin_titulo($clase)
     {
-        $mapeo = $this->items(['CODIGO', 'Anzuelos serie 92611 importado Surfish', null]);
-        unset($mapeo[2]['excel_column']);
+        $con_null = $this->items(['CODIGO', 'Anzuelos serie 92611 importado Surfish', null]);
 
-        $enriquecido = $this->enriquecer($clase, $mapeo, $this->encabezados_de_pesca());
+        // Premisa: la clave existe y vale null de verdad.
+        $this->assertArrayHasKey('excel_column', $con_null[2]);
+        $this->assertNull($con_null[2]['excel_column']);
 
-        $this->assertSame(3, $enriquecido[2]['excel_column_index']);
+        $enriquecido = $this->enriquecer($clase, $con_null, $this->encabezados_de_pesca());
+
+        $this->assertSame(3, $enriquecido[2]['excel_column_index'], 'excel_column null.');
+
+        $sin_clave = $con_null;
+        unset($sin_clave[2]['excel_column']);
+
+        $enriquecido = $this->enriquecer($clase, $sin_clave, $this->encabezados_de_pesca());
+
+        $this->assertSame(3, $enriquecido[2]['excel_column_index'], 'excel_column ausente.');
     }
 
     /**

@@ -1179,8 +1179,12 @@ class ProcessRow {
              * queda sin código recién al normalizar. Seguir de largo encolaba un artículo vacío
              * (misión importacion-fila-sin-identificador, 10/11/2026). El conflicto
              * sin_identificador registrado arriba es lo que la deja a la vista del usuario.
+             *
+             * Se usa \s con /u y no trim() para que un nombre de espacios duros (NBSP) cuente como
+             * vacío. Con UTF-8 inválido preg_replace() devuelve null, que no es '': ante la duda
+             * la fila NO se saltea.
              */
-            if (trim((string) ($data['name'] ?? '')) === '') {
+            if (preg_replace('/\s+/u', '', (string) ($data['name'] ?? '')) === '') {
                 $this->contar_fila('sin_match_no_creado');
                 $this->sumar_durations();
                 return $this->observations;
@@ -2952,8 +2956,8 @@ class ProcessRow {
     function ya_estaba_en_el_excel($data) {
 
         // Verificamos si ya existe un artículo con este identificador en el mismo archivo
-        // El nombre también puede faltar: el mapeo puede no traer columna de nombre.
-        $key = $data['id'] ?? $data['bar_code'] ?? $data['provider_code'] ?? $data['name'] ?? null;
+        // Mismo orden que esta_repetido(). El nombre también puede faltar: el mapeo puede no traer esa columna.
+        $key = $data['id'] ?? $data['bar_code'] ?? $data['sku'] ?? $data['provider_code'] ?? $data['name'] ?? null;
 
 
         if ($key) {
