@@ -449,6 +449,23 @@ class SupportToursTest extends EmpresaTestCase
         $this->assertContains('caja.reabrir_apertura', $catalogo);
     }
 
+    public function test_el_catalogo_ofrece_editar_porcentajes_segun_el_acceso_a_abm(): void
+    {
+        $ruta = self::ADMIN_SYNC . '/catalogo?user_id=' . $this->empleado->id;
+        $pasos = ['abm.editar_recargo', 'abm.porcentaje_recargo', 'abm.editar_descuento', 'abm.porcentaje_descuento'];
+        $claves = function () use ($ruta): array {
+            return $this->getJson($ruta, $this->clave())->assertOk()->json('pasos.*.clave');
+        };
+
+        $this->assertEmpty(array_intersect($pasos, $claves()));
+        $permiso = PermissionEmpresa::unguarded(function () {
+            return PermissionEmpresa::firstOrCreate(['slug' => 'abm'], ['name' => 'ABM']);
+        });
+        $this->empleado->permissions()->attach($permiso->id);
+        $this->assertSame($pasos, array_values(array_intersect($pasos, $claves())));
+        $this->assertNotContains('vender.recargos', $claves());
+    }
+
     public function test_la_repregunta_se_reintenta_sin_duplicar_y_la_nueva_guia_conserva_el_origen(): void
     {
         $status = 503;
@@ -488,7 +505,8 @@ class SupportToursTest extends EmpresaTestCase
             ->assertJsonPath('model.0.state', 'reformulated')->assertJsonPath('model.0.question_ticket_uuid', $mensaje->ticket->uuid)
             ->assertJsonPath('model.1.previous_uuid', $oferta['uuid'])->assertJsonPath('model.1.origin_ticket_uuid', $oferta['ticket_uuid']);
         $this->seguimiento($reformulada)->assertJsonCount(2, 'model');
-        $this->getJson('/api/support-tour/pending')->assertJsonCount(1, 'model')->assertJsonPath('model.0.uuid', $mensaje->uuid);
+        $this->getJson('/api/support-tour/pending')->assertJsonCount(1, 'model')->assertJsonPath('model.0.uuid', $mensaje->uuid)
+            ->assertJsonPath('model.0.previous_uuid', $oferta['uuid']);
     }
 
     private function persona(array $datos = []): User
