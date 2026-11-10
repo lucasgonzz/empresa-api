@@ -67,13 +67,14 @@ class DemoIngresoController extends Controller
             return response()->json(['error' => 'token_invalido'], 401);
         }
 
+        // El enlace inicia un ingreso propio. Rotar el ID solo conservaría los permisos de la sesión anterior.
+        $session = $request->session();
+        $session->invalidate();
         Auth::login($user, false);
-
-        /** Regenerar la sesión después del login es obligatorio contra fijación de sesión. */
-        $request->session()->regenerate();
+        $session->regenerateToken();
 
         /** Marcador que lee el middleware del prompt 03 para identificar sesiones de demo por token. */
-        $request->session()->put('demo_ingreso_token_id', $registro->id);
+        $session->put('demo_ingreso_token_id', $registro->id);
 
         Log::info('Demo ingreso: sesion iniciada para user_id: '.$user->id);
 
