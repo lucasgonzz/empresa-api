@@ -4,6 +4,8 @@ namespace Tests\Feature\SupportTours;
 
 use App\Events\SupportMessageReceived;
 use App\Events\SupportTourOffered;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Models\DemoIngresoToken;
 use App\Models\ExtencionEmpresa;
 use App\Models\ImportHistory;
 use App\Models\PermissionEmpresa;
@@ -107,6 +109,42 @@ class SupportToursTest extends EmpresaTestCase
         $oferta = $this->datos(['source' => 'sistema', 'uuid' => $mensaje['uuid'], 'ticket_uuid' => $mensaje['ticket']['uuid']]);
         $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertStatus(409);
         Event::assertNotDispatched(SupportTourOffered::class);
+    }
+
+    public function test_sesion_de_prueba_vigente_anuncia_robotito_y_marca_el_mensaje_firmado(): void
+    {
+        PruebaHelper::olvidar_cache();
+        config(['app.FOR_USER' => 'prueba', 'services.admin_api.inbound_key' => self::CLAVE]);
+        PruebaHelper::activar_desde_payload($this->dueno, ['vence_at' => now()->addDays(7)->toIso8601String()]);
+        $token = DemoIngresoToken::create([
+            'token_hash' => hash('sha256', (string) Str::uuid()), 'user_id' => $this->dueno->id,
+            'expires_at' => now()->addHours(2),
+        ]);
+        $this->withSession(['demo_ingreso_token_id' => $token->id]);
+
+        try {
+            $this->getJson('/api/user')->assertOk()
+                ->assertJsonPath('user.es_sesion_demo', false)
+                ->assertJsonPath('user.robotito_soporte_habilitado', true);
+            $this->getJson('/api/support-tour/pending')->assertExactJson(['model' => []]);
+            Http::fake([self::INBOUND => Http::response(['ok' => true], 201)]);
+            $this->postJson('/api/support-message', [
+                'body' => '¿Cómo aplico un recargo?',
+                'agentes_version' => 1,
+            ])->assertCreated();
+            Http::assertSent(static function (Request $pedido) {
+                return $pedido->url() === self::INBOUND && $pedido['robotito_support_version'] === 1
+                    && $pedido['agentes_version'] === 1;
+            });
+
+            config(['app.FOR_USER' => 'demo']);
+            $this->getJson('/api/user')->assertOk()
+                ->assertJsonPath('user.es_sesion_demo', true)
+                ->assertJsonPath('user.robotito_soporte_habilitado', false);
+            $this->getJson('/api/support-tour/pending')->assertForbidden();
+        } finally {
+            PruebaHelper::olvidar_cache();
+        }
     }
 
     public function test_whatsapp_valida_el_numero_vigente_y_unico_del_empleado(): void
@@ -288,6 +326,26 @@ class SupportToursTest extends EmpresaTestCase
         $this->postJson($this->ruta($oferta, 'accept'))->assertJsonPath('model.pasos', $pasos);
         $historial->update(['rollback_status' => 'revertida', 'rolled_back_at' => now()]);
         $this->postJson($this->ruta($oferta, 'accept'))->assertJsonValidationErrors('pasos.1.destino');
+    }
+
+    public function test_catalogo_separa_exportacion_de_importacion_y_exige_permisos_del_menu(): void
+    {
+        $ruta = self::ADMIN_SYNC . '/catalogo?user_id=' . $this->empleado->id;
+        $claves = function () use ($ruta): array {
+            return $this->getJson($ruta, $this->clave())->assertOk()->json('pasos.*.clave');
+        };
+        $permisos = ['article.index', 'article.export_excel_clients', 'article.excel.export'];
+        foreach ($permisos as $slug) {
+            $permiso = PermissionEmpresa::unguarded(static function () use ($slug) {
+                return PermissionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+            });
+            $this->assertNotContains('listado.opcion_nueva_exportacion', $claves());
+            $this->empleado->permissions()->attach($permiso->id);
+        }
+        $disponibles = $claves();
+        foreach (['listado.submenu_exportacion', 'listado.opcion_nueva_exportacion', 'listado.opcion_historial_exportaciones', 'listado.historial_importaciones'] as $clave) {
+            $this->assertContains($clave, $disponibles);
+        }
     }
 
     public function test_el_final_exige_todos_los_pasos_y_la_valoracion_distingue_la_polaridad(): void

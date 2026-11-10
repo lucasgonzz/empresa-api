@@ -13,6 +13,7 @@ use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
 use App\Models\User;
 use App\Notifications\SessionForcedLogoutNotification;
 use App\Services\LocalActividad;
+use App\Services\SupportTourService;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -125,7 +126,7 @@ class AuthController extends Controller
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
             $user->asistente_personal_autorizado = MostradorHelper::maestro_autorizado($request);
             // `user.prueba` (misión prueba-experiencia-empresa): null fuera del modo prueba.
-            PruebaHelper::adjuntar_resumen($user);
+            $this->adjuntar_contexto_de_sesion($user);
         }
 
         return response()->json([
@@ -220,7 +221,7 @@ class AuthController extends Controller
             $user->master_login_mode = null;
             $user->es_acceso_maestro = false;
             $user->asistente_personal_autorizado = false;
-            PruebaHelper::adjuntar_resumen($user);
+            $this->adjuntar_contexto_de_sesion($user);
         }
 
         return response()->json([
@@ -549,7 +550,7 @@ class AuthController extends Controller
                     // Mismo flag que get_user(): el SPA destino usa este `user` directo y con él
                     // decide si muestra el panel de la demo.
                     $user->es_sesion_demo = $this->es_sesion_de_demo_para_el_spa();
-                    PruebaHelper::adjuntar_resumen($user);
+                    $this->adjuntar_contexto_de_sesion($user);
                 }
             }
         }
@@ -654,7 +655,7 @@ class AuthController extends Controller
              */
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
             // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
-            PruebaHelper::adjuntar_resumen($user);
+            $this->adjuntar_contexto_de_sesion($user);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -687,7 +688,7 @@ class AuthController extends Controller
             $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
             $user->asistente_personal_autorizado = false;
             // `user.prueba` (misión prueba-experiencia-empresa, 3/11/2026): null fuera del modo prueba.
-            PruebaHelper::adjuntar_resumen($user);
+            $this->adjuntar_contexto_de_sesion($user);
             UserHelper::set_sessions($user);
             return response()->json(['user' => $user], 200);
         }
@@ -786,7 +787,7 @@ class AuthController extends Controller
         if ($user) {
             $user->skip_offline_articles_sync = false;
             $user->master_login_mode = null;
-            PruebaHelper::adjuntar_resumen($user);
+            $this->adjuntar_contexto_de_sesion($user);
         }
 
         return response()->json([
@@ -841,6 +842,12 @@ class AuthController extends Controller
         }
 
         return $this->es_sesion_de_demo();
+    }
+
+    private function adjuntar_contexto_de_sesion(User $user): void
+    {
+        PruebaHelper::adjuntar_resumen($user);
+        $user->robotito_soporte_habilitado = SupportTourService::sesion_web_propia(request(), $user);
     }
 
     /**

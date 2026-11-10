@@ -37,9 +37,15 @@ class SupportTourService
 
         $sesion = $request->session();
 
-        return !$sesion->has('acceso_soporte_token_id')
-            && !$sesion->get('master_login_bypass_user_last_activity', false)
-            && (!$sesion->has('demo_ingreso_token_id') || PruebaHelper::puede_haber_prueba());
+        if ($sesion->has('acceso_soporte_token_id') || $sesion->get('master_login_bypass_user_last_activity', false)) {
+            return false;
+        }
+
+        if (PruebaHelper::puede_haber_prueba()) {
+            return PruebaHelper::en_periodo_vigente(PruebaHelper::owner_id_de($persona));
+        }
+
+        return !$sesion->has('demo_ingreso_token_id');
     }
 
     public static function tiene_chat_soporte(User $persona): bool
@@ -104,7 +110,7 @@ class SupportTourService
                 abort_unless($this->puede_vender($dueno, $persona), 409, 'La pantalla Vender no está disponible para esa persona.');
             }
             if ($datos['tema'] === SupportTour::REVERTIR_IMPORTACION_ARTICULOS) {
-                abort_unless(self::puede_abrir_historial($persona) && $this->importacion_reversible($dueno, $import_history_id),
+                abort_unless(self::puede_abrir_menu_de_listado($persona) && $this->importacion_reversible($dueno, $import_history_id),
                     409, 'Esa importación ya no se puede señalar para revertir desde esta cuenta.');
             }
             if ($pasos !== null) {
@@ -154,7 +160,7 @@ class SupportTourService
         return $tour;
     }
 
-    public static function puede_abrir_historial(User $persona): bool
+    public static function puede_abrir_menu_de_listado(User $persona): bool
     {
         // Son el acceso a Listado y las mismas condiciones que muestran Crear en esa pantalla.
         return PermisosIaHelper::puede($persona, 'article.index')
@@ -240,10 +246,15 @@ class SupportTourService
                 $pasos['compras.nueva'] = 'Señalar el botón para abrir el formulario de una compra nueva.';
             }
         }
-        if (self::puede_abrir_historial($persona)) {
+        if (self::puede_abrir_menu_de_listado($persona)) {
             $pasos['listado.crear'] = 'Señalar la flechita de Crear en Listado de artículos para desplegar el menú.';
             $pasos['listado.historial_importaciones'] = 'Señalar Historial de importaciones en el submenú Importación del Listado.';
             $pasos['listado.revertir_importacion'] = 'Señalar el botón Revertir o Reintentar de un historial de artículos validado por su ID. El cliente revisa la confirmación habitual.';
+            if (PermisosIaHelper::puede($persona, 'article.excel.export')) {
+                $pasos['listado.submenu_exportacion'] = 'Señalar Exportación dentro del menú Crear del Listado de artículos.';
+                $pasos['listado.opcion_nueva_exportacion'] = 'Señalar Nueva exportación en Exportación del Listado. La persona elige si iniciar el Excel.';
+                $pasos['listado.opcion_historial_exportaciones'] = 'Señalar Historial de exportaciones en Exportación del Listado para consultar o descargar Excel ya exportados.';
+            }
         }
         if ($this->puede_vender($dueno, $persona)) {
             $pasos['vista.vender'] = 'Abrir Vender y mostrar una indicación textual, conservando la venta en curso.';
@@ -321,7 +332,7 @@ class SupportTourService
 
     public function importaciones_candidatas(User $persona, ?int $import_history_id): array
     {
-        abort_unless(self::puede_abrir_historial($persona), 409, 'El historial de Listado no está disponible para esa persona.');
+        abort_unless(self::puede_abrir_menu_de_listado($persona), 409, 'El historial de Listado no está disponible para esa persona.');
         $dueno_id = $persona->owner_id ?: $persona->id;
         $consulta = ImportHistory::where('user_id', $dueno_id)->where('model_name', 'article');
         if ($import_history_id !== null) {

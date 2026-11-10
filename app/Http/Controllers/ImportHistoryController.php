@@ -148,7 +148,7 @@ class ImportHistoryController extends Controller
         $historial->orderByDesc('id');
         if ($request->has('import_history_id')) {
             $datos = $request->validate(['import_history_id' => 'required|integer|min:1|max:9007199254740991']);
-            abort_unless($model_name === 'article' && SupportTourService::puede_abrir_historial($request->user()), 403);
+            abort_unless($model_name === 'article' && SupportTourService::puede_abrir_menu_de_listado($request->user()), 403);
             $models = $this->pagina_con_importacion($historial, (int) $datos['import_history_id']);
         } else {
             $models = $historial->paginate(self::POR_PAGINA, ['*'], 'page', $pagina_pedida);
