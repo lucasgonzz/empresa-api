@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class SupportTour extends Model
 {
     public const REVERTIR_IMPORTACION_ARTICULOS = 'revertir_importacion_articulos';
+    public const GUIA_DINAMICA = 'guia_dinamica';
 
     public const PASOS_POR_TEMA = [
         'crear_ticket' => 3,
@@ -24,6 +25,7 @@ class SupportTour extends Model
     protected $casts = [
         'import_history_id' => 'integer',
         'textos' => 'array',
+        'pasos_programados' => 'array',
         'total_steps' => 'integer',
         'shown_at' => 'datetime',
         'accepted_at' => 'datetime',
@@ -45,6 +47,9 @@ class SupportTour extends Model
         $datos = $this->only(['uuid', 'tema', 'titulo', 'textos']);
         if ($this->tema === self::REVERTIR_IMPORTACION_ARTICULOS) {
             $datos['import_history_id'] = $this->import_history_id;
+        }
+        if ($this->tema === self::GUIA_DINAMICA) {
+            $datos['pasos'] = $this->pasos_programados;
         }
 
         return $datos;
