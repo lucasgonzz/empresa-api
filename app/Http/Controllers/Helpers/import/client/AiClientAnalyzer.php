@@ -68,16 +68,16 @@ class AiClientAnalyzer
      */
 
     /** La API contestó un error que no es transitorio (auth, rate limit, request inválido). */
-    const MENSAJE_IA_RECHAZO = 'El servicio de IA rechazó el pedido. Volvé a intentar en unos minutos; si sigue pasando, avisanos.';
+    const MENSAJE_IA_RECHAZO = 'El servicio de IA rechazó el pedido. Puede ser algo pasajero o un archivo que no puede leer. Cerrá el Excel y guardalo, sacá las filas, columnas y hojas vacías o que no uses, o dividilo en archivos más chicos, y volvé a intentar en unos minutos; si sigue pasando, avisá a soporte.';
 
     /** Error transitorio del proveedor de IA (ver ModelosIaHelper::error_transitorio_de_importacion()). */
-    const MENSAJE_IA_NO_DISPONIBLE = 'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.';
+    const MENSAJE_IA_NO_DISPONIBLE = 'El servicio de IA no está disponible en este momento, algo que suele ser pasajero. Esperá unos minutos y volvé a intentarlo. Si el problema es el archivo, probá cerrar el Excel y guardarlo, o dividirlo en archivos más chicos; si sigue pasando, avisá a soporte.';
 
     /** La conexión con la IA se cortó o venció el timeout (services.importacion_excel_ia.timeout). */
-    const MENSAJE_IA_SIN_RESPUESTA = 'El servicio de IA no respondió a tiempo. Probá de nuevo en un minuto: los archivos grandes a veces necesitan un segundo intento.';
+    const MENSAJE_IA_SIN_RESPUESTA = 'La IA no respondió a tiempo. Puede pasar con archivos muy pesados o con muchas filas, o por mucha demanda del servicio. Probá cerrar el Excel y guardarlo, sacar las filas, columnas y hojas vacías o que no uses, o dividirlo en archivos más chicos; si sigue pasando, avisá a soporte.';
 
     /** Contestó, pero lo que devolvió no se puede usar: sin texto, sin JSON válido o sin column_mapping. */
-    const MENSAJE_IA_RESPUESTA_ILEGIBLE = 'La IA no pudo interpretar esta planilla. Probá de nuevo; si sigue pasando, revisá que el encabezado esté en la fila correcta o avisanos.';
+    const MENSAJE_IA_RESPUESTA_ILEGIBLE = 'La IA no pudo interpretar esta planilla. Revisá que el encabezado esté en una sola fila, sin celdas combinadas ni fórmulas que dependan de otros archivos, y sacá las filas, columnas y hojas vacías o que no uses. Cerrá el Excel y guardalo antes de volver a subirlo; si sigue pasando, avisá a soporte.';
 
     /** Falta la clave de API en la configuración del servidor. */
     const MENSAJE_IA_SIN_CONFIGURAR = 'La importación con IA no está configurada en este sistema. Avisanos para que la activemos.';
@@ -864,7 +864,8 @@ PROMPT;
          * segundo intento.
          */
         try {
-            [$response, $modelo] = ProveedorIaHelper::pedir_mensaje($proveedor, $timeout, $payload);
+            // Pro con timeout completo y, si falla de forma transitoria, un único reintento con Flash (ver ModelosIaHelper::pedir_importacion()).
+            [$response, $modelo] = ModelosIaHelper::pedir_importacion($ia, $timeout, $payload, self::MAX_TOKENS * $factor);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
             Log::error('AiClientAnalyzer: no hubo respuesta de la IA', [
                 'proveedor' => $proveedor,
