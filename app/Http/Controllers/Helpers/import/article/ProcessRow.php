@@ -1172,6 +1172,19 @@ class ProcessRow {
             && empty($data['provider_code'])
         ) {
             $this->registrar_sin_identificador($this->fila_actual, $data['name'] ?? null);
+
+            /*
+             * Sin ningún código y sin nombre, la fila no se puede identificar ni nombrar: es, por
+             * ejemplo, el título de una sección con el código en espacios, que pasa checkRow() y
+             * queda sin código recién al normalizar. Seguir de largo encolaba un artículo vacío
+             * (misión importacion-fila-sin-identificador, 10/11/2026). El conflicto
+             * sin_identificador registrado arriba es lo que la deja a la vista del usuario.
+             */
+            if (trim((string) ($data['name'] ?? '')) === '') {
+                $this->contar_fila('sin_match_no_creado');
+                $this->sumar_durations();
+                return $this->observations;
+            }
         }
 
 
@@ -2939,7 +2952,8 @@ class ProcessRow {
     function ya_estaba_en_el_excel($data) {
 
         // Verificamos si ya existe un artículo con este identificador en el mismo archivo
-        $key = $data['id'] ?? $data['bar_code'] ?? $data['provider_code'] ?? $data['name'];
+        // El nombre también puede faltar: el mapeo puede no traer columna de nombre.
+        $key = $data['id'] ?? $data['bar_code'] ?? $data['provider_code'] ?? $data['name'] ?? null;
 
 
         if ($key) {
