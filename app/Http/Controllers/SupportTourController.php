@@ -15,7 +15,7 @@ class SupportTourController extends Controller
     public function pending(Request $request): JsonResponse
     {
         $tours = SupportTourService::de_la_persona($this->persona($request))
-            ->where('state', 'pending')->orderBy('id')->get();
+            ->where('state', 'pending')->orderByDesc('id')->get();
 
         return response()->json(['model' => $tours->map->para_navegacion()]);
     }

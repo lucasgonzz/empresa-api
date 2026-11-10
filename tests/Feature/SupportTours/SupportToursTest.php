@@ -111,6 +111,23 @@ class SupportToursTest extends EmpresaTestCase
         Event::assertNotDispatched(SupportTourOffered::class);
     }
 
+    public function test_pendientes_prioriza_la_guia_recien_programada_y_conserva_la_anterior(): void
+    {
+        $vieja = $this->datos();
+        $nueva = $this->datos(['tema' => 'guia_dinamica', 'titulo' => 'Aplicá un recargo']);
+        $this->postJson(self::ADMIN_SYNC, $vieja, $this->clave())->assertOk();
+        $this->postJson(self::ADMIN_SYNC, $nueva + [
+            'pasos' => [['clave' => 'indicacion', 'texto' => 'Revisá la venta.']],
+        ], $this->clave())->assertOk();
+
+        $this->getJson('/api/support-tour/pending')->assertOk()
+            ->assertJsonPath('model.0.uuid', $nueva['uuid'])
+            ->assertJsonPath('model.1.uuid', $vieja['uuid']);
+        $this->postJson($this->ruta($nueva, 'event'), ['event' => 'dismissed'])->assertOk();
+        $this->getJson('/api/support-tour/pending')->assertOk()->assertJsonCount(1, 'model')
+            ->assertJsonPath('model.0.uuid', $vieja['uuid']);
+    }
+
     public function test_sesion_de_prueba_vigente_anuncia_robotito_y_marca_el_mensaje_firmado(): void
     {
         PruebaHelper::olvidar_cache();
