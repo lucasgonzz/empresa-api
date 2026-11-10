@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Models\Address;
+use App\Models\Article;
 use App\Models\Provider;
 use App\Models\User;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
@@ -17,6 +18,7 @@ use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\article\ProviderImportMappingHelper;
 use App\Http\Controllers\Helpers\import\excel\ColumnasSinNombre;
+use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
@@ -306,6 +308,18 @@ class AiExcelAnalyzer
         $reconocido_por_firma = !is_null($mapeo_guardado);
 
         /*
+         * Encabezados repetidos adentro de la planilla (misión importacion-ia-mapeo-y-recomendacion,
+         * 10/11/2026): la IA solo ve una muestra, así que las candidatas se miden sobre la hoja
+         * entera y ella las confirma en esta misma llamada.
+         */
+        $candidatas_de_encabezado = EncabezadosRepetidos::candidatas(
+            $excel_path,
+            $indice_hoja,
+            max(1, (int) $encabezado['fila']),
+            $sample_data['headers']
+        );
+
+        /*
          * Paso 3: Construir el prompt y llamar a Claude.
          */
         $prompt = $this->build_prompt(
@@ -314,7 +328,8 @@ class AiExcelAnalyzer
             $original_filename,
             $addresses,
             $price_types,
-            ProviderImportMappingHelper::seccion_para_prompt($mapeo_guardado)
+            ProviderImportMappingHelper::seccion_para_prompt($mapeo_guardado),
+            EncabezadosRepetidos::seccion_para_prompt($candidatas_de_encabezado)
         );
 
         $claude_response = $this->call_claude($prompt);
@@ -337,6 +352,45 @@ class AiExcelAnalyzer
         $parsed['column_mapping'] = $this->apply_nombre_descripcion_interpretation_rules(
             $parsed['column_mapping']
         );
+
+        /*
+         * La regla queda escrita antes de cualquier recorrido del archivo: todos los conteos de
+         * acá para abajo, y la importación, la leen del archivo lateral.
+         */
+        $regla_de_encabezados = EncabezadosRepetidos::confirmar(
+            $candidatas_de_encabezado,
+            $parsed['encabezados_repetidos'] ?? null,
+            $parsed['column_mapping']
+        );
+
+        EncabezadosRepetidos::guardar($excel_path, $indice_hoja, $regla_de_encabezados);
+
+        /* Clave nueva y opcional del resultado: la SPA avisa cuántas filas se ignoraron. */
+        $parsed['encabezados_repetidos'] = EncabezadosRepetidos::resumen($regla_de_encabezados);
+
+        /*
+         * Si el nombre del archivo no alcanzó, el proveedor puede salir de los artículos que
+         * ya están cargados. Va antes del Paso 5.1 para que la configuración guardada de ese
+         * proveedor se aplique igual que si lo hubiera dicho la IA.
+         */
+        if (
+            !$reconocido_por_firma
+            && is_null($parsed['provider_id'])
+            && !ProviderImportMappingHelper::hay_columna_de_proveedor($parsed['column_mapping'])
+        ) {
+            $inferido = $this->proveedor_por_articulos_existentes(
+                $excel_path,
+                $indice_hoja,
+                max(1, (int) $encabezado['fila']),
+                $parsed['column_mapping'],
+                $providers
+            );
+
+            if (!is_null($inferido)) {
+                $parsed['provider_id']         = $inferido['provider_id'];
+                $parsed['provider_confidence'] = $inferido['provider_confidence'];
+            }
+        }
 
         /*
          * Paso 5.1 (misión importacion-excel-motor-rapido, 24/9/2026): lo que el usuario ya
@@ -381,7 +435,11 @@ class AiExcelAnalyzer
          */
         $bar_code_idx      = null;
         $provider_code_idx = null;
+        $sku_idx           = null;
         foreach ($parsed['column_mapping'] as $col) {
+            if (($col['system_property'] ?? null) === 'sku') {
+                $sku_idx = $col['excel_column_index'] ?? null;
+            }
             if (($col['system_property'] ?? null) === 'codigo_de_barras') {
                 $bar_code_idx = $col['excel_column_index'] ?? null;
             }
@@ -406,7 +464,7 @@ class AiExcelAnalyzer
             $provider_code_idx,
             $parsed['provider_id'] ?? null,
             $this->user_id,
-            ['hoja' => $indice_hoja, 'fila_encabezado' => $encabezado['fila']]
+            ['hoja' => $indice_hoja, 'fila_encabezado' => $encabezado['fila'], 'sku_column_index' => $sku_idx]
         );
 
         /*
@@ -488,7 +546,11 @@ class AiExcelAnalyzer
         /*
          * Primeras 5 filas de datos del Excel para la preview reactiva del paso 2 en el frontend.
          */
-        $parsed['preview_rows'] = array_slice($sample_data['rows'], 0, 5);
+        $filas_de_la_vista_previa = array_filter($sample_data['rows'], function ($fila) use ($regla_de_encabezados) {
+            return !EncabezadosRepetidos::es_encabezado($fila, null, $regla_de_encabezados);
+        });
+
+        $parsed['preview_rows'] = array_slice(array_values($filas_de_la_vista_previa), 0, 5);
 
         /*
          * Tamaño de lote con el que va a correr la importación: ARTICLE_EXCEL_CHUNK_SIZE, 1000
@@ -1102,6 +1164,8 @@ class AiExcelAnalyzer
         $usar_numeracion_fisica = (!is_null($fila_encabezado) && (int) $fila_encabezado > 1);
         $fila_encabezado        = is_null($fila_encabezado) ? 1 : (int) $fila_encabezado;
 
+        $regla_de_encabezados = EncabezadosRepetidos::leer($excel_path, (int) $indice_hoja);
+
         try {
             /* Mismo lector XLSX de OpenSpout que el resto del análisis, leyendo el archivo completo. */
             $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, $usar_numeracion_fisica);
@@ -1138,6 +1202,10 @@ class AiExcelAnalyzer
                 }
 
                 if ($usar_numeracion_fisica && $this->fila_esta_vacia($cells)) {
+                    continue;
+                }
+
+                if (EncabezadosRepetidos::es_encabezado($cells, $usar_numeracion_fisica ? $numero_fila : null, $regla_de_encabezados)) {
                     continue;
                 }
 
@@ -1637,7 +1705,7 @@ class AiExcelAnalyzer
      *                                         AnalyzerHojaYEncabezadoTest lo exigen.
      * @return string                     Prompt completo listo para enviar a la API
      */
-    protected function build_prompt(array $sample_data, array $providers, string $original_filename = '', array $addresses = [], array $price_types = [], string $seccion_mapeo_guardado = ''): string
+    protected function build_prompt(array $sample_data, array $providers, string $original_filename = '', array $addresses = [], array $price_types = [], string $seccion_mapeo_guardado = '', string $seccion_encabezados_repetidos = ''): string
     {
         /* Texto del nombre de archivo para el prompt (sin ruta, solo nombre + extensión). */
         $filename_for_prompt = trim(basename($original_filename));
@@ -1779,7 +1847,7 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 ## Nombre del archivo subido
 {$filename_for_prompt}
 
-(Usá este nombre como pista principal para inferir el proveedor: suele contener el nombre o siglas del distribuidor. Comparalo con la lista de proveedores disponibles.)
+(Es la única pista para inferir el proveedor: suele contener el nombre o siglas del distribuidor. Comparalo con la lista de proveedores disponibles.)
 
 ## Encabezados del Excel
 {$headers_line}
@@ -1787,6 +1855,7 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 ## Primeras filas de datos (muestra)
 {$rows_lines}
 
+{$seccion_encabezados_repetidos}
 ## Proveedores disponibles en el sistema
 {$providers_text}
 
@@ -1797,7 +1866,7 @@ Analizá el siguiente archivo Excel de importación de artículos y devolvé SOL
 1. Analizá cada columna del Excel y mapeala a la propiedad del sistema más apropiada.
 1bis. Devolvé UNA entrada por columna del Excel, en el MISMO orden en que aparecen las columnas, de izquierda a derecha, incluidas las que no correspondan a ninguna propiedad. Si dos columnas comparten el mismo encabezado (pasa cuando la cabecera está fusionada sobre varias columnas), devolvé una entrada por cada una, igual en orden de izquierda a derecha: la primera entrada con ese nombre se asigna a la columna de más a la izquierda.
 2. Si una columna no corresponde a ninguna propiedad del sistema, usá null en system_property.
-3. Determiná a qué proveedor pertenece este listado: priorizá el nombre del archivo; si no alcanza, usá encabezados y datos de muestra. El provider_id debe ser un ID de la lista de proveedores o null.
+3. Determiná a qué proveedor pertenece este listado SOLO por el nombre del archivo. No lo infieras por los encabezados ni por los datos de muestra: una marca no es un proveedor. Si el nombre del archivo no lo indica, devolvé null. El provider_id debe ser un ID de la lista de proveedores o null.
 
 ## Regla crítica: nombre del artículo (propiedad "nombre")
 - El dato más importante para importar es el **nombre** del artículo (propiedad del sistema: nombre).
@@ -1874,7 +1943,8 @@ Ejemplo de nota: "La columna «Recargos» no especifica si son porcentajes o mon
   ],
   "provider_id": null,
   "provider_confidence": "alto",
-  "assistant_notes": []
+  "assistant_notes": [],
+  "encabezados_repetidos": []
 }
 
 Notas:
@@ -1884,6 +1954,7 @@ Notas:
 - provider_id debe ser el ID numérico del proveedor o null si no se puede inferir
 - Devolvé SOLO el JSON, sin markdown ni texto adicional
 - assistant_notes: array de strings en español (máx. 5) con advertencias de alto nivel; vacío si no hay nada que aclarar
+- encabezados_repetidos: array de objetos {"columna": 1, "valor": "Articulo"}, solo con valores de la sección «Posibles encabezados repetidos»; vacío si esa sección no está o ninguno lo es
 PROMPT;
 
         /*
@@ -2294,7 +2365,149 @@ PROMPT;
             'provider_id'         => $provider_id,
             'provider_confidence' => $provider_confidence,
             'assistant_notes'     => $assistant_notes,
+            /* null si la IA no lo contestó: confirmar() sigue con lo que no depende de ella. */
+            'encabezados_repetidos' => isset($parsed['encabezados_repetidos']) && is_array($parsed['encabezados_repetidos'])
+                ? $parsed['encabezados_repetidos']
+                : null,
         ];
+    }
+
+    /**
+     * Infiere el proveedor cuando los artículos del Excel que ya están cargados son todos de
+     * uno solo (misión importacion-ia-mapeo-y-recomendacion, 10/11/2026).
+     *
+     * Hace falta que ninguno de los encontrados sea de otro proveedor y que ese proveedor cubra
+     * al menos la mitad de los códigos del archivo: con pocas coincidencias, un puñado de
+     * artículos no dice de quién es la lista. Una lista nueva puede traer artículos que todavía
+     * no existen, por eso no se pide el 100 %.
+     *
+     * Nunca lanza: sin dato, el proveedor queda sin inferir como siempre.
+     *
+     * @param  string $excel_path
+     * @param  int    $indice_hoja
+     * @param  int    $fila_encabezado
+     * @param  array  $column_mapping
+     * @param  array  $providers       proveedores del usuario
+     * @return array|null              ['provider_id' => int, 'provider_confidence' => 'alto'|'medio']
+     */
+    protected function proveedor_por_articulos_existentes($excel_path, $indice_hoja, $fila_encabezado, array $column_mapping, array $providers)
+    {
+        $indice  = null;
+        $columna = null;
+
+        foreach (['codigo_de_proveedor' => 'provider_code', 'codigo_de_barras' => 'bar_code'] as $propiedad => $columna_en_base) {
+            foreach ($column_mapping as $col) {
+                if (($col['system_property'] ?? null) === $propiedad && isset($col['excel_column_index'])) {
+                    $indice  = (int) $col['excel_column_index'];
+                    $columna = $columna_en_base;
+                    break 2;
+                }
+            }
+        }
+
+        if (is_null($indice)) {
+            return null;
+        }
+
+        try {
+            $codigos = $this->codigos_distintos_de_la_columna($excel_path, $indice_hoja, $fila_encabezado, $indice);
+
+            if (empty($codigos)) {
+                return null;
+            }
+
+            $proveedores = [];
+            $encontrados = [];
+
+            /* Mismos lotes y mismo strval que ExcelDuplicateStats::crossCheckProviderCodes(): ver su comentario. */
+            foreach (array_chunk(array_map('strval', array_keys($codigos)), 100) as $lote) {
+                $articulos = Article::where('user_id', $this->user_id)
+                    ->whereIn($columna, $lote)
+                    ->whereNotNull('provider_id')
+                    ->get([$columna, 'provider_id']);
+
+                foreach ($articulos as $articulo) {
+                    $proveedores[(int) $articulo->provider_id] = true;
+                    $encontrados[(string) $articulo->{$columna}] = true;
+                }
+
+                if (count($proveedores) > 1) {
+                    return null;
+                }
+            }
+
+            if (count($proveedores) !== 1) {
+                return null;
+            }
+
+            $provider_id = (int) array_keys($proveedores)[0];
+
+            if (!in_array($provider_id, array_map('intval', array_column($providers, 'id')), true)) {
+                return null;
+            }
+
+            $cobertura = count($encontrados) / count($codigos);
+
+            if ($cobertura < 0.5) {
+                return null;
+            }
+
+            return [
+                'provider_id'         => $provider_id,
+                'provider_confidence' => $cobertura >= 0.8 ? 'alto' : 'medio',
+            ];
+        } catch (\Throwable $e) {
+            Log::warning('AiExcelAnalyzer: no se pudo inferir el proveedor por los artículos', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
+     * Códigos distintos de una columna, sin encabezados repetidos ni valores de relleno.
+     *
+     * @param  string $excel_path
+     * @param  int    $indice_hoja
+     * @param  int    $fila_encabezado
+     * @param  int    $indice           columna 0-based
+     * @return array  código => true
+     */
+    protected function codigos_distintos_de_la_columna($excel_path, $indice_hoja, $fila_encabezado, $indice)
+    {
+        $regla   = EncabezadosRepetidos::leer($excel_path, (int) $indice_hoja);
+        $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, true);
+        $codigos = [];
+        $numero  = 0;
+
+        foreach ($lectura->filas() as $row) {
+            $numero++;
+
+            if ($numero <= $fila_encabezado) {
+                continue;
+            }
+
+            $cells = [];
+            foreach ($row->getCells() as $cell) {
+                $value   = $cell->getValue();
+                $cells[] = $value instanceof \DateTime ? '' : trim((string) ($value ?? ''));
+            }
+
+            if (EncabezadosRepetidos::es_encabezado($cells, $numero, $regla)) {
+                continue;
+            }
+
+            $codigo = $cells[$indice] ?? '';
+
+            if ($codigo !== '' && !IdentifierNormalizer::is_placeholder($codigo)) {
+                $codigos[$codigo] = true;
+            }
+        }
+
+        $lectura->cerrar();
+
+        return $codigos;
     }
 
     /**
@@ -2642,6 +2855,8 @@ PROMPT;
         /* Contador de filas de datos (sin contar la fila de cabecera). */
         $data_row_count = 0;
 
+        $regla_de_encabezados = EncabezadosRepetidos::leer($excel_path, (int) $indice_hoja);
+
         $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, true);
 
         $row_number = 0;
@@ -2667,6 +2882,10 @@ PROMPT;
 
             /* Las filas completamente vacías que algunos Excel dejan al final no son datos. */
             if ($this->fila_esta_vacia($cells)) {
+                continue;
+            }
+
+            if (EncabezadosRepetidos::es_encabezado($cells, $row_number, $regla_de_encabezados)) {
                 continue;
             }
 

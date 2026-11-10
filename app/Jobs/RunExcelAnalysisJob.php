@@ -550,6 +550,13 @@ class RunExcelAnalysisJob implements ShouldQueue
                                     : null,
         ];
 
+        foreach ($column_mapping as $col) {
+            if (($col['system_property'] ?? null) === 'sku' && isset($col['excel_column_index'])) {
+                $opciones['sku_column_index'] = (int) $col['excel_column_index'];
+                break;
+            }
+        }
+
         try {
             /*
              * Mismo volcado único que en handle_analisis(): si el análisis del paso 1 ya lo
