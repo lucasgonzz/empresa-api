@@ -74,12 +74,11 @@ class EncabezadosRepetidos
         $vacio      = self::candidatas_vacias($fila_encabezado, $encabezado);
 
         try {
-            $meta = ExcelWorkbookReader::asegurar_csv($excel_path, (int) $indice_hoja);
-            $csv  = CsvDeHoja::ruta_csv($excel_path, (int) $meta['indice']);
+            $hoja = ['excel' => $excel_path, 'indice' => (int) $indice_hoja];
 
-            $vacio['csv'] = $csv;
+            $vacio['hoja'] = $hoja;
 
-            return self::medir($csv, (int) $fila_encabezado, $encabezado, $vacio);
+            return self::medir($hoja, (int) $fila_encabezado, $encabezado, $vacio);
         } catch (\Throwable $e) {
             Log::warning('EncabezadosRepetidos: no se pudieron buscar candidatas', [
                 'message' => $e->getMessage(),
@@ -97,18 +96,18 @@ class EncabezadosRepetidos
      * fila «delgada», las delgadas definen los grupos, y recién con los grupos se sabe qué
      * valores hay que buscar en las filas completas.
      *
-     * @param  string $csv
+     * @param  array  $hoja
      * @param  int    $fila_encabezado
      * @param  array  $encabezado
      * @param  array  $resultado
      * @return array
      */
-    protected static function medir($csv, $fila_encabezado, array $encabezado, array $resultado)
+    protected static function medir(array $hoja, $fila_encabezado, array $encabezado, array $resultado)
     {
         $histograma = [];
         $exactas    = 0;
 
-        foreach (self::filas_del_csv($csv) as $numero => $celdas) {
+        foreach (self::filas_de_la_hoja($hoja) as $numero => $celdas) {
             if ($numero <= $fila_encabezado) {
                 continue;
             }
@@ -135,10 +134,10 @@ class EncabezadosRepetidos
         $resultado['exactas'] = $exactas;
 
         $limite = max(2, (int) ceil($mediana * 0.5));
-        $grupos = self::grupos_de_filas_delgadas($csv, $fila_encabezado, $encabezado, $limite);
+        $grupos = self::grupos_de_filas_delgadas($hoja, $fila_encabezado, $encabezado, $limite);
 
         if (!empty($grupos)) {
-            $grupos = self::sin_los_que_aparecen_en_filas_completas($grupos, $csv, $fila_encabezado, $encabezado, $limite);
+            $grupos = self::sin_los_que_aparecen_en_filas_completas($grupos, $hoja, $fila_encabezado, $encabezado, $limite);
         }
 
         usort($grupos, function ($a, $b) {
@@ -153,17 +152,17 @@ class EncabezadosRepetidos
     /**
      * Agrupa por (columna, valor) las celdas sin dígitos de las filas casi vacías.
      *
-     * @param  string $csv
+     * @param  array  $hoja
      * @param  int    $fila_encabezado
      * @param  array  $encabezado
      * @param  int    $limite           máximo de celdas con dato de una fila delgada
      * @return array
      */
-    protected static function grupos_de_filas_delgadas($csv, $fila_encabezado, array $encabezado, $limite)
+    protected static function grupos_de_filas_delgadas(array $hoja, $fila_encabezado, array $encabezado, $limite)
     {
         $grupos = [];
 
-        foreach (self::filas_del_csv($csv) as $numero => $celdas) {
+        foreach (self::filas_de_la_hoja($hoja) as $numero => $celdas) {
             if ($numero <= $fila_encabezado || self::repite_el_encabezado($celdas, $encabezado)) {
                 continue;
             }
@@ -218,13 +217,13 @@ class EncabezadosRepetidos
      * repetidas en filas incompletas siguen siendo datos, porque el resto de los artículos las usa.
      *
      * @param  array  $grupos
-     * @param  string $csv
+     * @param  array  $hoja
      * @param  int    $fila_encabezado
      * @param  array  $encabezado
      * @param  int    $limite
      * @return array  lista sin claves
      */
-    protected static function sin_los_que_aparecen_en_filas_completas(array $grupos, $csv, $fila_encabezado, array $encabezado, $limite)
+    protected static function sin_los_que_aparecen_en_filas_completas(array $grupos, array $hoja, $fila_encabezado, array $encabezado, $limite)
     {
         $por_columna = [];
 
@@ -232,7 +231,7 @@ class EncabezadosRepetidos
             $por_columna[$grupo['columna']][$grupo['clave']] = $clave_grupo;
         }
 
-        foreach (self::filas_del_csv($csv) as $numero => $celdas) {
+        foreach (self::filas_de_la_hoja($hoja) as $numero => $celdas) {
             if ($numero <= $fila_encabezado || self::celdas_con_dato($celdas) <= $limite) {
                 continue;
             }
@@ -341,33 +340,41 @@ class EncabezadosRepetidos
             return $regla;
         }
 
-        return self::contar($regla, $candidatas['csv'] ?? null);
+        return self::contar($regla, $candidatas['hoja'] ?? null);
     }
 
     /**
      * Cuenta las filas que la regla deja afuera, para no sumar dos veces una fila que
      * coincide con dos etiquetas.
      *
-     * @param  array       $regla
-     * @param  string|null $csv
+     * @param  array      $regla
+     * @param  array|null $hoja
      * @return array
      */
-    protected static function contar(array $regla, $csv)
+    protected static function contar(array $regla, $hoja)
     {
-        if (empty($csv) || !is_file($csv)) {
+        if (empty($hoja)) {
             return $regla;
         }
 
-        foreach (self::filas_del_csv($csv) as $numero => $celdas) {
-            if (!self::es_encabezado($celdas, $numero, $regla)) {
-                continue;
-            }
+        try {
+            foreach (self::filas_de_la_hoja($hoja) as $numero => $celdas) {
+                if (!self::es_encabezado($celdas, $numero, $regla)) {
+                    continue;
+                }
 
-            $regla['filas']++;
+                $regla['filas']++;
 
-            if (count($regla['ejemplos']) < self::EJEMPLOS) {
-                $regla['ejemplos'][] = (int) $numero;
+                if (count($regla['ejemplos']) < self::EJEMPLOS) {
+                    $regla['ejemplos'][] = (int) $numero;
+                }
             }
+        } catch (\Throwable $e) {
+            /* Sin poder contar no hay regla confiable: con filas en 0, guardar() no deja nada. */
+            Log::warning('EncabezadosRepetidos: no se pudieron contar las filas', ['message' => $e->getMessage()]);
+
+            $regla['filas']    = 0;
+            $regla['ejemplos'] = [];
         }
 
         return $regla;
@@ -588,34 +595,36 @@ class EncabezadosRepetidos
     }
 
     /**
-     * Registros del CSV de la hoja: número de fila física => celdas.
+     * Filas de la hoja: número de fila física => celdas.
      *
-     * @param  string $csv
+     * Va por ExcelWorkbookReader::abrir(), que lee el CSV lateral si ya existe y si no el XLSX.
+     * No lo genera acá a propósito: quien analiza sin pasar por el job no tiene por qué dejar
+     * archivos al lado del Excel.
+     *
+     * @param  array $hoja ['excel' => ruta, 'indice' => int]
      * @return \Generator
      */
-    protected static function filas_del_csv($csv)
+    protected static function filas_de_la_hoja(array $hoja)
     {
-        $handle = fopen($csv, 'rb');
-
-        if ($handle === false) {
-            return;
-        }
+        $lectura = ExcelWorkbookReader::abrir($hoja['excel'], $hoja['indice'], true);
 
         try {
-            if (fread($handle, 3) !== CsvDeHoja::BOM_UTF8) {
-                rewind($handle);
-            }
-
             $numero = 0;
 
-            /* Escape vacío, el del writer de OpenSpout. Ver ProcessArticleChunk::get_row_from_csv(). */
-            while (($celdas = fgetcsv($handle, 0, ',', '"', '')) !== false) {
+            foreach ($lectura->filas() as $row) {
                 $numero++;
+
+                $celdas = [];
+
+                foreach ($row->getCells() as $cell) {
+                    $valor    = $cell->getValue();
+                    $celdas[] = $valor instanceof \DateTime ? $valor->format('Y-m-d') : (string) ($valor ?? '');
+                }
 
                 yield $numero => $celdas;
             }
         } finally {
-            fclose($handle);
+            $lectura->cerrar();
         }
     }
 
@@ -646,7 +655,7 @@ class EncabezadosRepetidos
     protected static function candidatas_vacias($fila_encabezado, array $encabezado)
     {
         return [
-            'csv'             => null,
+            'hoja'            => null,
             'fila_encabezado' => (int) $fila_encabezado,
             'encabezado'      => $encabezado,
             'exactas'         => 0,
