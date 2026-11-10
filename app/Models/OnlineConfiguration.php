@@ -67,6 +67,7 @@ class OnlineConfiguration extends Model
         // agotado ni tiene tope de cantidad al comprar. Arranca en false (ver la migracion): es
         // un comportamiento mas agresivo que el default de mostrar_stock_disponible.
         'ignorar_stock' => 'boolean',
+        'permitir_pedidos_sin_stock' => 'boolean',
         // Login con Google de la tienda online (prompt 589, grupo 164): master switch. No hace
         // falta agregar google_client_id/google_client_secret a $fillable: el modelo usa
         // $guarded = [] (mass assignment abierto), y ademas el controller las asigna una por una.

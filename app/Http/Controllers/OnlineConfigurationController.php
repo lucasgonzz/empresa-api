@@ -91,6 +91,11 @@ class OnlineConfigurationController extends Controller
         // clave nueva no tiene que prenderlo solo.
         $model->ignorar_stock                   = $request->boolean('ignorar_stock', $model->ignorar_stock ?? false);
 
+        // Un formulario anterior puede guardar la configuración sin conocer esta opción.
+        if ($request->has('permitir_pedidos_sin_stock') && Schema::hasColumn('online_configurations', 'permitir_pedidos_sin_stock')) {
+            $model->permitir_pedidos_sin_stock = $request->boolean('permitir_pedidos_sin_stock');
+        }
+
         $model->online_description              = $request->online_description;
 
         // Descripción para vista previa al compartir el link de la tienda (og:description /

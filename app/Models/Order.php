@@ -122,7 +122,15 @@ class Order extends Model
     }
 
     function articles() {
-        return $this->belongsToMany('App\Models\Article')->withTrashed()->withPivot('cost', 'price', 'amount', 'variant_id', 'color_id', 'size_id', 'with_dolar', 'address_id', 'notes');
+        $articulos = $this->belongsToMany(Article::class)
+            ->withTrashed()
+            ->withPivot('id', 'cost', 'price', 'amount', 'variant_id', 'color_id', 'size_id', 'with_dolar', 'address_id', 'notes');
+
+        if ($this->getConnection()->getSchemaBuilder()->hasColumn('article_order', 'stock_a_consultar')) {
+            $articulos->withPivot('stock_a_consultar');
+        }
+
+        return $articulos;
     }
 
     function cart() {
