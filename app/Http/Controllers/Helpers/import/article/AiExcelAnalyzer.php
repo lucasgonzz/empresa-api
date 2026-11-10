@@ -102,16 +102,16 @@ class AiExcelAnalyzer
      */
 
     /** La API contestó un error que no es transitorio (auth, rate limit, request inválido). */
-    const MENSAJE_IA_RECHAZO = 'El servicio de IA rechazó el pedido. Volvé a intentar en unos minutos; si sigue pasando, avisanos.';
+    const MENSAJE_IA_RECHAZO = 'El servicio de IA rechazó el pedido y no pudimos analizar tu planilla. Puede ser un problema pasajero del servicio o un archivo que no puede leer. Qué podés probar: cerrá el Excel y guardalo; sacá las filas, columnas y hojas vacías o que no uses; dejá el encabezado en una sola fila; sacá las celdas combinadas y las fórmulas que dependen de otros archivos; si el archivo es muy grande, dividilo en archivos más chicos. Reintentá en unos minutos; si sigue pasando, avisá a soporte.';
 
     /** Error transitorio del proveedor de IA (ver ModelosIaHelper::error_transitorio_de_importacion()). */
-    const MENSAJE_IA_NO_DISPONIBLE = 'El servicio de IA no está disponible en este momento. Esperá unos segundos y volvé a intentarlo.';
+    const MENSAJE_IA_NO_DISPONIBLE = 'El servicio de IA no está disponible en este momento, ni con el modelo de respaldo. Suele ser una saturación pasajera: esperá unos minutos y volvé a intentarlo. Mientras tanto, qué podés probar: cerrá el Excel y guardalo; sacá las filas, columnas y hojas vacías o que no uses; dejá el encabezado en una sola fila; sacá las celdas combinadas y las fórmulas que dependen de otros archivos; si el archivo es muy grande, dividilo en archivos más chicos. Si sigue pasando, avisá a soporte.';
 
     /** La conexión con la IA se cortó o venció el timeout (services.importacion_excel_ia.timeout). */
-    const MENSAJE_IA_SIN_RESPUESTA = 'El servicio de IA no respondió a tiempo. Probá de nuevo en un minuto: los archivos grandes a veces necesitan un segundo intento.';
+    const MENSAJE_IA_SIN_RESPUESTA = 'No pudimos analizar tu planilla: la IA no respondió a tiempo, ni siquiera con el modelo de respaldo. Las causas más comunes son un archivo muy pesado o con muchas filas, filas o columnas vacías, hojas que no usás, celdas combinadas, o el servicio con mucha demanda. Qué podés probar: cerrá el Excel y guardalo; sacá las filas, columnas y hojas vacías o que no uses; dejá el encabezado en una sola fila; sacá las celdas combinadas y las fórmulas que dependen de otros archivos; si el archivo es muy grande, dividilo en archivos más chicos. Si no se arregla, volvé a intentar en unos minutos; y si sigue pasando, avisá a soporte.';
 
     /** Contestó, pero lo que devolvió no se puede usar: sin texto, sin JSON válido o sin column_mapping. */
-    const MENSAJE_IA_RESPUESTA_ILEGIBLE = 'La IA no pudo interpretar esta planilla. Probá de nuevo; si sigue pasando, revisá que el encabezado esté en la fila correcta o avisanos.';
+    const MENSAJE_IA_RESPUESTA_ILEGIBLE = 'La IA no pudo interpretar esta planilla. Las causas más comunes son que el encabezado no esté en una sola fila, que haya filas o columnas vacías, hojas que no usás, celdas combinadas o fórmulas que dependen de otros archivos. Qué podés probar: cerrá el Excel y guardalo; sacá las filas, columnas y hojas vacías o que no uses; dejá el encabezado en una sola fila; sacá las celdas combinadas y las fórmulas que dependen de otros archivos; si el archivo es muy grande, dividilo en archivos más chicos. Reintentá en unos minutos; si sigue pasando, avisá a soporte.';
 
     /** Falta la clave de API en la configuración del servidor. */
     const MENSAJE_IA_SIN_CONFIGURAR = 'La importación con IA no está configurada en este sistema. Avisanos para que la activemos.';
