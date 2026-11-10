@@ -666,9 +666,9 @@ class RunExcelAnalysisJob implements ShouldQueue
             /*
              * El paso 3 se dibuja con el mapeo que confirmó el usuario, no con el que propuso la
              * IA: las preguntas de códigos repetidos y el renglón de identificación dependen de
-             * estas claves. Opcionales: una SPA vieja las ignora.
+             * estas claves. Solo si la SPA las pide: la vieja recibe las cuatro de siempre.
              */
-            if (!empty($column_mapping)) {
+            if (!empty($column_mapping) && !empty($payload['recalcular_identificacion'])) {
                 $duplicate_stats = $stats;
                 unset($duplicate_stats['provider_codes_distintos']);
 

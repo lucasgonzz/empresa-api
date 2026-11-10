@@ -325,6 +325,7 @@ class EncabezadosRepetidosTest extends ImportTestCase
                 'provider_code_column_index' => null,
                 'hoja'                       => 0,
                 'header_row'                 => 3,
+                'recalcular_identificacion'  => true,
                 'column_mapping'             => [
                     ['system_property' => 'codigo_de_proveedor', 'excel_column_index' => 1, 'excel_column' => 'CODIGO'],
                     ['system_property' => 'nombre', 'excel_column_index' => 2, 'excel_column' => 'Nombre'],
