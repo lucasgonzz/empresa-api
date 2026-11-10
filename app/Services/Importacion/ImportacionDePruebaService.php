@@ -40,7 +40,10 @@ class ImportacionDePruebaService
 
     public function avanzar(ImportacionDePrueba $run): void
     {
-        if (in_array($run->estado, ['analizar', 'preparar'], true)) {
+        if (!$run->alcance_valido_para_avanzar()) {
+            return;
+        }
+        if (in_array($run->estado_publico(), ['analizar', 'preparar'], true)) {
             $habilitado = $run->modo_soporte ? self::dueno_activo((int) $run->user_id)
                 : PruebaHelper::en_periodo_vigente((int) $run->user_id);
             if (!$habilitado) {
@@ -50,11 +53,11 @@ class ImportacionDePruebaService
             }
         }
 
-        if ($run->estado === 'analizar') {
+        if ($run->estado_publico() === 'analizar') {
             $this->analizar($run);
         }
 
-        switch ($run->estado) {
+        switch ($run->estado_publico()) {
             case 'preparar':
                 $this->preparar($run);
                 break;
@@ -77,20 +80,26 @@ class ImportacionDePruebaService
     {
         $planilla = new PlanillaDePrueba($run);
         $hojas = $planilla->analizar(app(AiExcelAnalyzer::class, ['user_id' => (int) $run->user_id]));
-        $preguntas = $planilla->preguntas_columnas($hojas);
+        // El conteo solo elige identificador, cantidad y depósito. El resto de las columnas no se importa.
+        $preguntas = $run->alcance === 'stock_existente' ? [] : $planilla->preguntas_columnas($hojas);
 
         DB::transaction(function () use ($run, $hojas, $preguntas) {
             $run->hojas = $hojas;
             if ($preguntas !== []) {
                 $this->consultar($run, 'columnas', $preguntas);
             } else {
-                $run->update(['estado' => 'preparar']);
+                $run->update(['estado' => $run->estado_para('preparar')]);
             }
         });
     }
 
     private function preparar(ImportacionDePrueba $run): void
     {
+        if ($run->alcance === 'stock_existente') {
+            $this->preparar_stock_existente($run);
+            return;
+        }
+
         $planilla = new PlanillaDePrueba($run);
         $decisiones = $run->decisiones ?? [];
         try {
@@ -177,12 +186,6 @@ class ImportacionDePruebaService
         if ($huella === false) {
             throw new RuntimeException('No se pudo verificar el archivo preparado.');
         }
-        if (($run->decisiones['confirmacion'] ?? null) === 'confirmar'
-            && ($run->preguntas['confirmacion']['huella_plan'] ?? null) === $huella) {
-            return true;
-        }
-
-        $codigo = strtoupper(substr(hash('sha256', $run->uuid . ':' . ($run->revision + 1)), 0, 8));
         $campos = [];
         foreach ($hojas as $hoja) {
             $campos += $hoja['mapeo'] ?? [];
@@ -191,8 +194,73 @@ class ImportacionDePruebaService
         $archivo = mb_substr(preg_replace('/\s+/u', ' ', $run->nombre), 0, 110);
         $texto = 'Preparé «' . $archivo . '» con ' . $plan['filas'] . ' filas para importar al catálogo.'
             . ($detalle !== '' ? ' Datos del archivo: ' . $detalle . '.' : '')
-            . ' Se actualizarán los artículos que coincidan y se crearán los que falten.'
-            . "\n\nPara aprobar la carga respondé CONFIRMAR " . $codigo . '. Para cancelarla, respondé CANCELAR ' . $codigo . '.';
+            . ' Se actualizarán los artículos que coincidan y se crearán los que falten.';
+        return $this->confirmar_huella($run, $huella, $texto);
+    }
+
+    private function preparar_stock_existente(ImportacionDePrueba $run): void
+    {
+        DB::transaction(function () use ($run) {
+            $dueno = User::whereKey($run->user_id)->lockForUpdate()->firstOrFail();
+            $run = ImportacionDePrueba::whereKey($run->id)->lockForUpdate()->firstOrFail();
+            if ($run->estado !== 'stock_preparar') {
+                return;
+            }
+            if (ImportHistory::where('user_id', $dueno->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->exists()) {
+                return;
+            }
+            $planilla = new PlanillaStockExistente($run);
+            $plan = $planilla->preparar();
+            if ($plan['preguntas'] !== []) {
+                $this->consultar($run, 'repetidos', $plan['preguntas']);
+                return;
+            }
+            if (!isset($plan['deposito'])) {
+                $this->fallar($run, 'No pude identificar la hoja, las columnas de stock o un depósito del negocio para cargar el conteo.');
+                return;
+            }
+
+            $ajustes = count($plan['ajustes']);
+            $archivo = mb_substr(preg_replace('/\s+/u', ' ', $run->nombre), 0, 110);
+            $deposito = mb_substr($plan['nombre_deposito'], 0, 90);
+            $detalle = $plan['iguales'] . ($plan['iguales'] === 1 ? ' artículo ya coincide' : ' artículos ya coinciden') . ' con el Excel.';
+            if ($plan['omitidas'] > 0) {
+                $detalle .= ' Dejé fuera ' . $plan['omitidas'] . ($plan['omitidas'] === 1 ? ' fila' : ' filas')
+                    . ' por códigos sin coincidencia única, cantidades dudosas o artículos que requieren una revisión aparte.'
+                    . ($plan['filas_para_revisar'] === [] ? '' : ' Revisá, por ejemplo, las filas '
+                        . implode(', ', $plan['filas_para_revisar']) . '.')
+                    . ' Para cargarlas podés mandar otra planilla con solo esas filas y los códigos y cantidades corregidos.';
+            }
+            if ($plan['avisos'] > 0) {
+                $detalle .= ' Dejé aparte ' . $plan['avisos'] . ($plan['avisos'] === 1 ? ' artículo' : ' artículos')
+                    . ' porque el cambio podía disparar avisos de reposición'
+                    . ($plan['codigos_con_aviso'] === [] ? '.' : ' (' . implode(', ', $plan['codigos_con_aviso']) . ').');
+            }
+            if ($ajustes > 0) {
+                $texto = 'Preparé «' . $archivo . '» para ajustar ' . $ajustes . ' artículos existentes en «' . $deposito . '». '
+                    . $detalle;
+                if (!$this->confirmar_huella($run, hash('sha256', json_encode($plan, JSON_THROW_ON_ERROR)), $texto)) {
+                    return;
+                }
+                $planilla->aplicar($plan, $dueno);
+            }
+
+            $run->aviso('resultado', 'Archivo «' . $archivo . '». '
+                . ($ajustes === 0 ? 'El conteo no generó ajustes de stock. '
+                    : 'Apliqué y verifiqué ' . $ajustes . ' ajustes de stock en «' . $deposito . '». ') . $detalle);
+            $run->update(['estado' => 'terminado']);
+        }, 3);
+    }
+
+    private function confirmar_huella(ImportacionDePrueba $run, string $huella, string $texto): bool
+    {
+        if (($run->decisiones['confirmacion'] ?? null) === 'confirmar'
+            && ($run->preguntas['confirmacion']['huella_plan'] ?? null) === $huella) {
+            return true;
+        }
+
+        $codigo = strtoupper(substr(hash('sha256', $run->uuid . ':' . ($run->revision + 1)), 0, 8));
+        $texto .= "\n\nPara aprobar la carga respondé CONFIRMAR " . $codigo . '. Para cancelarla, respondé CANCELAR ' . $codigo . '.';
         $pregunta = PlanillaDePrueba::pregunta('confirmacion', $texto, ['confirmar' => 'Confirmar', 'cancelar' => 'Cancelar']);
         $pregunta['codigo_confirmacion'] = $codigo;
         $pregunta['huella_plan'] = $huella;
@@ -210,11 +278,11 @@ class ImportacionDePruebaService
     private function consultar(ImportacionDePrueba $run, string $tipo, array $preguntas, string $prefacio = ''): void
     {
         $decisiones = $run->decisiones ?? [];
-        if ($tipo === 'columnas') {
+        if ($tipo === 'columnas' || $run->alcance === 'stock_existente') {
             $decisiones = array_diff_key($decisiones, $preguntas);
         }
         $run->update([
-            'estado' => $tipo, 'revision' => (int) $run->revision + 1,
+            'estado' => $run->estado_para($tipo), 'revision' => (int) $run->revision + 1,
             'preguntas' => $preguntas, 'decisiones' => $decisiones,
         ]);
 

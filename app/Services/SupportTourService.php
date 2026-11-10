@@ -183,16 +183,21 @@ class SupportTourService
             return false;
         }
 
+        return $this->campo_vender_disponible($dueno, 'recargos');
+    }
+
+    private function campo_vender_disponible(User $dueno, string $campo): bool
+    {
         $diseno = VenderLayout::where('user_id', $dueno->id)->where('en_uso', true)
             ->orderByDesc('updated_at')->orderByDesc('id')->first(['layout']);
         $layout = optional($diseno)->layout;
-        if (!is_array($layout['etapas'] ?? null) || !in_array('recargos', (array) ($layout['sacados'] ?? []), true)) {
+        if (!is_array($layout['etapas'] ?? null) || !in_array($campo, (array) ($layout['sacados'] ?? []), true)) {
             return true;
         }
 
         // Como en el resolver de Vender, una ubicación explícita gana sobre la bandeja de campos sacados.
         foreach (VenderLayoutHelper::ETAPAS as $etapa) {
-            if (in_array('recargos', array_column((array) ($layout['etapas'][$etapa] ?? []), 'key'), true)) {
+            if (in_array($campo, array_column((array) ($layout['etapas'][$etapa] ?? []), 'key'), true)) {
                 return true;
             }
         }
@@ -230,6 +235,10 @@ class SupportTourService
                 $pasos[$clave] = $descripcion;
             }
         }
+        if (isset($pasos['vista.tesoreria'])) {
+            $pasos['caja.historial_aperturas'] = 'Señalar Aperturas en Tesorería. La persona elige la caja cuyo historial quiere abrir.';
+            $pasos['caja.reabrir_apertura'] = 'Señalar Reabrir en el historial que abrió la persona. Solo aparece para la última apertura de una caja cerrada. Usar después de caja.historial_aperturas.';
+        }
         if (isset($pasos['vista.listado'])) {
             $pasos['listado.filtro'] = 'Señalar el botón de filtros del Listado.';
             if (PermisosIaHelper::puede($persona, 'article.store')) {
@@ -265,6 +274,10 @@ class SupportTourService
                 $pasos['vender.codigo_barras'] = 'Señalar el campo para escanear o escribir un código de barras en Vender.';
             }
             $pasos['vender.total'] = 'Señalar el total de la venta para que la persona lo revise.';
+            if ($this->campo_vender_disponible($dueno, 'metodo_de_pago')) {
+                $pasos['vender.metodos_pago'] = 'Señalar el botón + junto a Mét. pago en Vender para abrir Múltiples métodos de pago. En una venta con artículos permite repartir el total.';
+                $pasos['vender.reparto_pago'] = 'Señalar el reparto de importes del modal Múltiples métodos de pago, después de que la persona lo abra. Usar después de vender.metodos_pago.';
+            }
             if ($this->puede_guiar_recargos($dueno, $persona)) {
                 $pasos['vender.recargos'] = 'Señalar los interruptores de recargos de venta existentes en el diseño activo.';
             }

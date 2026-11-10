@@ -291,7 +291,7 @@ class StockEnLote
      *
      * @return array ['movimientos' => int, 'por_camino_viejo' => int, 'articulos' => int]
      */
-    public function volcar()
+    public function volcar(bool $omitir_avisos_de_reposicion = false)
     {
         $resumen = ['movimientos' => 0, 'por_camino_viejo' => 0, 'articulos' => 0];
 
@@ -584,6 +584,9 @@ class StockEnLote
         }
 
         // ── Los casos no cubiertos, por el camino viejo, en su orden ─────────────────────────
+        if ($omitir_avisos_de_reposicion && $por_camino_viejo !== []) {
+            throw new \RuntimeException('El plan de stock incluye artículos con variantes.');
+        }
         foreach ($por_camino_viejo as $pedido) {
             $this->procesar_a_la_vieja($pedido);
         }
@@ -663,11 +666,16 @@ class StockEnLote
         $resumen['movimientos'] = count($movimientos);
         $resumen['articulos']   = count($ultimo_movimiento_de);
 
-        // 6.f: avisos de "volvió el stock".
-        $this->disparar_avisos($avisos);
-
-        // 10: Tienda Nube / Mercado Libre, sólo con el env prendido.
-        $this->sincronizar_plataformas($a_sincronizar);
+        if ($omitir_avisos_de_reposicion) {
+            // El conteo de soporte no consume avisos de reposición y verifica el stock antes
+            // de confirmar la transacción externa. Recién después sincroniza el stock aplicado.
+            DB::afterCommit(function () use ($a_sincronizar) {
+                $this->sincronizar_plataformas($a_sincronizar);
+            });
+        } else {
+            $this->disparar_avisos($avisos);
+            $this->sincronizar_plataformas($a_sincronizar);
+        }
 
         Log::info('StockEnLote: '.$resumen['movimientos'].' movimientos de stock escritos en bloque para '.$resumen['articulos'].' artículos'
             .($resumen['por_camino_viejo'] > 0 ? ' ('.$resumen['por_camino_viejo'].' pedidos por el camino viejo)' : '')

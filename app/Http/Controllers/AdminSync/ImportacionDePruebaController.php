@@ -10,13 +10,20 @@ use App\Models\ImportacionDePrueba;
 use App\Models\Provider;
 use App\Models\User;
 use App\Services\Importacion\ImportacionDePruebaService;
+use App\Services\Importacion\PlanillaStockExistente;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 
 class ImportacionDePruebaController extends Controller
 {
+    public static function soporta_stock_existente(): bool
+    {
+        return Schema::hasColumn('importaciones_de_prueba', 'alcance');
+    }
+
     public static function iniciar(Request $request, int $user_id, bool $modo_soporte = false): JsonResponse
     {
         self::comprobar_dueno($user_id, $modo_soporte);
@@ -26,20 +33,25 @@ class ImportacionDePruebaController extends Controller
             'importacion_clave' => 'required|regex:/^[a-f0-9]{64}$/',
             'provider_id' => 'nullable|integer|min:1',
             'origen' => 'nullable|string|max:40',
+            'alcance' => 'sometimes|required|in:stock_existente',
         ]);
 
+        $alcance = $datos['alcance'] ?? null;
+        abort_if($alcance !== null && !$modo_soporte, 422, 'El alcance de stock es exclusivo de soporte.');
         $proveedor = $datos['provider_id'] ?? null;
         if ($proveedor !== null && !Provider::where('user_id', $user_id)->whereKey($proveedor)->exists()) {
             abort(422, 'El proveedor no pertenece al negocio.');
         }
 
-        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte) {
+        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte, $alcance) {
             // Serializa reenvíos simultáneos del mismo adjunto, antes de escribir otro archivo.
             User::whereKey($user_id)->lockForUpdate()->firstOrFail();
             $origen = [
                 'user_id' => $user_id,
                 'support_ticket_id' => $datos['support_ticket_id'],
-                'clave' => $modo_soporte ? hash('sha256', 'soporte:' . $datos['importacion_clave']) : $datos['importacion_clave'],
+                'clave' => $modo_soporte
+                    ? hash('sha256', 'soporte:' . ($alcance === null ? '' : $alcance . ':') . $datos['importacion_clave'])
+                    : $datos['importacion_clave'],
             ];
             $run = ImportacionDePrueba::where($origen)->first();
             if ($run !== null) {
@@ -60,9 +72,9 @@ class ImportacionDePruebaController extends Controller
                 'nombre' => mb_substr($archivo->getClientOriginalName(), 0, 255),
                 'origen' => $datos['origen'] ?? 'martin',
                 'provider_id' => $proveedor,
-                'estado' => 'analizar',
+                'estado' => $alcance === null ? 'analizar' : 'stock_analizar',
                 'modo_soporte' => $modo_soporte,
-            ]);
+            ] + ($alcance === null ? [] : ['alcance' => $alcance]));
         });
 
         if ($run->wasRecentlyCreated) {
@@ -71,9 +83,9 @@ class ImportacionDePruebaController extends Controller
 
         return response()->json([
             'analysis_uuid' => $run->uuid,
-            'estado' => $run->estado,
+            'estado' => $run->estado_publico(),
             ($modo_soporte ? 'automatizar_soporte' : 'automatizar_prueba') => true,
-        ], 202);
+        ] + ($alcance === null ? [] : ['alcance' => $run->alcance]), 202);
     }
 
     public function pendientes(Request $request): JsonResponse
@@ -111,10 +123,13 @@ class ImportacionDePruebaController extends Controller
                 'analysis_uuid' => $run->uuid,
                 'filename' => $run->nombre,
                 'revision' => (int) $run->revision,
-                'tipo' => $run->estado,
+                'tipo' => $run->estado_publico(),
                 'preguntas' => array_values($pendientes),
-            ];
-        })] + ($modo_soporte ? ['automatizar_soporte' => true] : []));
+            ] + ($run->alcance === null ? [] : ['alcance' => $run->alcance]);
+        })] + ($modo_soporte ? [
+            'automatizar_soporte' => true,
+            'alcances_soporte' => self::soporta_stock_existente() ? ['stock_existente'] : [],
+        ] : []));
     }
 
     public function resolver(Request $request, string $uuid): JsonResponse
@@ -133,6 +148,8 @@ class ImportacionDePruebaController extends Controller
             $run = ImportacionDePrueba::where('uuid', $uuid)->where('user_id', $datos['user_id'])
                 ->where('support_ticket_id', $datos['support_ticket_id'])->where('modo_soporte', $modo_soporte)
                 ->lockForUpdate()->firstOrFail();
+            abort_if(in_array($run->estado, ImportacionDePrueba::ESPERANDO_RESPUESTA, true)
+                && !$run->alcance_valido_para_avanzar(), 409, 'No se pudo verificar el alcance de la importación.');
             $guardadas = $run->decisiones ?? [];
             $revision_actual = (int) $run->revision === (int) $datos['revision'];
             if (!$revision_actual || !in_array($run->estado, ImportacionDePrueba::ESPERANDO_RESPUESTA, true)) {
@@ -144,8 +161,9 @@ class ImportacionDePruebaController extends Controller
 
             $preguntas = $run->preguntas ?? [];
             foreach ($datos['respuestas'] as $clave => $respuesta) {
-                if (!isset($preguntas[$clave])
-                    || !in_array($respuesta, array_column($preguntas[$clave]['opciones'], 'valor'), true)) {
+                $pregunta = $preguntas[$clave] ?? null;
+                if ($pregunta === null || (!in_array($respuesta, array_column($pregunta['opciones'], 'valor'), true)
+                    && !self::codigo_de_stock_valido($run, $pregunta, $respuesta))) {
                     abort(422, 'La respuesta no coincide con las opciones de la consulta.');
                 }
                 if (isset($guardadas[$clave]) && $guardadas[$clave] !== $respuesta) {
@@ -158,8 +176,8 @@ class ImportacionDePruebaController extends Controller
             $run->decisiones = $guardadas;
             if ($continuar) {
                 $run->retirar_pregunta();
-                $cancelar = $run->estado === 'confirmacion' && $guardadas['confirmacion'] === 'cancelar';
-                $run->estado = $cancelar ? 'cancelado' : 'preparar';
+                $cancelar = $run->estado_publico() === 'confirmacion' && $guardadas['confirmacion'] === 'cancelar';
+                $run->estado = $cancelar ? 'cancelado' : $run->estado_para('preparar');
                 $continuar = !$cancelar;
             }
             $run->save();
@@ -171,7 +189,17 @@ class ImportacionDePruebaController extends Controller
             AvanzarImportacionDePrueba::dispatch((int) $run->id);
         }
 
-        return response()->json(['estado' => $run->estado, 'analysis_uuid' => $run->uuid], $continuar ? 202 : 200);
+        return response()->json(['estado' => $run->estado_publico(), 'analysis_uuid' => $run->uuid], $continuar ? 202 : 200);
+    }
+
+    private static function codigo_de_stock_valido(ImportacionDePrueba $run, array $pregunta, string $respuesta): bool
+    {
+        if ($run->alcance !== 'stock_existente' || ($pregunta['acepta_codigo_articulo'] ?? false) !== true) {
+            return false;
+        }
+        $codigo = PlanillaStockExistente::codigo_de_respuesta($respuesta);
+
+        return $codigo !== null && (new PlanillaStockExistente($run))->codigo_inequivoco($codigo);
     }
 
     private static function comprobar_dueno(int $user_id, bool $modo_soporte): void

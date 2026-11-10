@@ -12,6 +12,8 @@ use App\Jobs\ProcessArticleChunk;
 use App\Jobs\BorrarSemillaDePruebaJob;
 use App\Jobs\FinalizeArticleImport;
 use App\Jobs\RegistrarHitoDePruebaJob;
+use App\Models\Address;
+use App\Models\Advise;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\Article;
 use App\Models\ArticleDiscount;
@@ -439,6 +441,104 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->assertStringContainsString('1 artículo creado', $resultado->texto);
     }
 
+    public function test_stock_existente_aclara_codigos_reconfirma_cambios_y_solo_aplica_cantidades_confirmadas(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        $principal = Address::create(['user_id' => $this->dueno->id, 'street' => 'Depósito Principal']);
+        $otro = Address::create(['user_id' => $this->dueno->id, 'street' => 'Depósito Secundario']);
+        $articulos = collect(['reel-a' => 4, 'reel-b' => 2, 'vacio' => 6, 'cero' => 3, 'aviso' => 0, 'igual' => 8])
+            ->map(function ($stock, $sku) use ($principal) {
+                $articulo = Article::create([
+                    'user_id' => $this->dueno->id, 'name' => $sku, 'sku' => $sku, 'stock' => $stock,
+                    'price' => 10, 'status' => 'active',
+                ]);
+                $articulo->addresses()->attach($principal->id, ['amount' => $stock, 'stock_min' => 2]);
+                return $articulo;
+            });
+        $articulos['reel-a']->addresses()->attach($otro->id, ['amount' => 5]);
+        $articulos['reel-a']->update(['stock' => 9]);
+        $aviso = Advise::create(['article_id' => $articulos['aviso']->id, 'email' => 'aviso@example.test']);
+
+        $archivo = $this->planilla([[
+            ['SKU', 'Stock contado', 'Precio'],
+            ['reel-a', 7, 999], ['reel-a', 11, 999], ['vacio', null, 999], ['cero', 0, 999],
+            ['nuevo', 12, 999], ['aviso', 1, 999], ['igual', 8, 999],
+        ]], true);
+        $cabeceras = ['X-Admin-Api-Key' => self::CLAVE, 'Accept' => 'application/json'];
+        $datos = ['automatizar_soporte' => 1, 'user_id' => $this->dueno->id, 'support_ticket_id' => 74];
+        $subida = $datos + ['model' => 'article', 'alcance' => 'stock_existente', 'importacion_clave' => hash_file('sha256', $archivo)];
+        $subir = function (string $ruta, array $cabeceras) use ($subida, $archivo) {
+            return $this->post(self::BASE . $ruta, $subida + [
+                'excel_file' => new UploadedFile($archivo, 'inventario.xlsx', null, null, true),
+            ], $cabeceras);
+        };
+        $subir('analyze-stock-existente', ['Accept' => 'application/json'])->assertUnauthorized();
+        $subir('analyze', $cabeceras)->assertStatus(422);
+        $uuid = $subir('analyze-stock-existente', $cabeceras)->assertStatus(202)->assertJsonPath('estado', 'analizar')
+            ->assertJsonPath('alcance', 'stock_existente')->json('analysis_uuid');
+        $subir('analyze-stock-existente', $cabeceras)->assertStatus(202)->assertJsonPath('analysis_uuid', $uuid);
+        $run = ImportacionDePrueba::where('uuid', $uuid)->firstOrFail();
+        $this->assertSame('stock_analizar', $run->estado);
+        $this->archivos[] = storage_path('app/' . $run->archivo);
+        $this->archivos[] = storage_path('app/imported_files/prueba_' . $uuid . '_');
+        $this->analizador([['sku' => 0.99, 'stock_actual' => 0.99, 'precio' => 0.99]], true);
+
+        $consulta = self::BASE . 'prueba-pendientes?' . http_build_query($datos);
+        $resolver = function (array $respuestas) use ($datos, $uuid, $run, $cabeceras) {
+            return $this->postJson(self::BASE . 'prueba-resolver/' . $uuid,
+                $datos + ['revision' => $run->fresh()->revision, 'respuestas' => $respuestas], $cabeceras);
+        };
+        $servicio = app(ImportacionDePruebaService::class);
+        $servicio->avanzar($run);
+        $this->getJson($consulta, $cabeceras)->assertOk()
+            ->assertJsonPath('alcances_soporte', ['stock_existente'])
+            ->assertJsonPath('pendientes.0.alcance', 'stock_existente')
+            ->assertJsonPath('pendientes.0.preguntas.0.clave', 'stock_deposito');
+        $resolver(['stock_deposito' => 'd' . $principal->id])->assertStatus(202);
+        $servicio->avanzar($run->fresh());
+        $preguntas = $this->getJson($consulta, $cabeceras)->assertOk()->assertJsonPath('pendientes.0.tipo', 'repetidos')
+            ->json('pendientes.0.preguntas');
+        $this->assertSame(['stock_codigo_fila_0_2', 'stock_codigo_fila_0_3', 'stock_codigo_fila_0_6'], array_column($preguntas, 'clave'));
+        $this->assertTrue($preguntas[1]['acepta_codigo_articulo']);
+        $resolver([$preguntas[1]['clave'] => 'codigo:inexistente'])->assertStatus(422);
+        $resolver([
+            $preguntas[0]['clave'] => 'usar_original', $preguntas[1]['clave'] => 'codigo:reel-b', $preguntas[2]['clave'] => 'omitir',
+        ])->assertStatus(202);
+        $servicio->avanzar($run->fresh());
+        $this->assertSame('stock_confirmacion', $run->fresh()->estado);
+        $confirmacion = $run->fresh()->preguntas['confirmacion'];
+        $this->assertStringContainsString('3 artículos existentes', $confirmacion['texto']);
+        $this->assertStringContainsString('avisos de reposición', $confirmacion['texto']);
+        $this->assertEquals(9, $articulos['reel-a']->fresh()->stock);
+
+        // Un cambio real en el depósito después de la vista previa invalida la primera confirmación.
+        $articulos['reel-a']->addresses()->updateExistingPivot($principal->id, ['amount' => 3]);
+        $articulos['reel-a']->update(['stock' => 8]);
+        $resolver(['confirmacion' => 'confirmar'])->assertStatus(202);
+        $servicio->avanzar($run->fresh());
+        $this->assertSame('stock_confirmacion', $run->fresh()->estado);
+        $this->assertNotSame($confirmacion['codigo_confirmacion'], $run->fresh()->preguntas['confirmacion']['codigo_confirmacion']);
+        $this->assertEquals(8, $articulos['reel-a']->fresh()->stock);
+
+        $resolver(['confirmacion' => 'confirmar'])->assertStatus(202);
+        $servicio->avanzar($run->fresh());
+        $this->assertSame('terminado', $run->fresh()->estado);
+        $this->assertNull($run->fresh()->import_history_id);
+        $this->assertEquals(12, $articulos['reel-a']->fresh()->stock);
+        $this->assertEquals(11, $articulos['reel-b']->fresh()->stock);
+        $this->assertEquals(6, $articulos['vacio']->fresh()->stock);
+        $this->assertEquals(0, $articulos['cero']->fresh()->stock);
+        $this->assertEquals(0, $articulos['aviso']->fresh()->stock);
+        $this->assertDatabaseHas('advises', ['id' => $aviso->id]);
+        $this->assertDatabaseHas('articles', ['id' => $articulos['reel-a']->id, 'price' => 10, 'name' => 'reel-a']);
+        $this->assertDatabaseMissing('articles', ['user_id' => $this->dueno->id, 'sku' => 'nuevo']);
+        $this->assertDatabaseHas('address_article', ['article_id' => $articulos['reel-a']->id, 'address_id' => $otro->id, 'amount' => 5]);
+        $this->assertDatabaseHas('address_article', ['article_id' => $articulos['reel-a']->id, 'address_id' => $principal->id, 'amount' => 7, 'stock_min' => 2]);
+        $this->assertDatabaseHas('stock_movements', ['article_id' => $articulos['reel-a']->id, 'to_address_id' => $principal->id, 'amount' => 4]);
+        $resultado = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 74)->firstOrFail();
+        $this->assertStringContainsString('Apliqué y verifiqué 3 ajustes', $resultado->texto);
+    }
+
     public function test_soporte_cancela_la_corrida_y_acepta_dueños_con_vencimiento_historico(): void
     {
         config(['app.FOR_USER' => null, 'services.admin_api.require_api_key' => false]);
@@ -541,12 +641,12 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         ]);
     }
 
-    private function planilla(array $hojas): string
+    private function planilla(array $hojas, bool $comparacion_estricta = false): string
     {
         $libro = new Spreadsheet();
         foreach ($hojas as $indice => $filas) {
             $hoja = $indice === 0 ? $libro->getActiveSheet() : $libro->createSheet();
-            $hoja->setTitle('Hoja ' . $indice)->fromArray($filas);
+            $hoja->setTitle('Hoja ' . $indice)->fromArray($filas, null, 'A1', $comparacion_estricta);
         }
         $archivo = tempnam(sys_get_temp_dir(), 'prueba_import_');
         (new Xlsx($libro))->save($archivo);

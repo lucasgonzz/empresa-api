@@ -44,6 +44,7 @@ class SupportToursTest extends EmpresaTestCase
             'app.USER_ID' => $this->dueno->id,
             'services.admin_api.api_key' => self::CLAVE,
             'services.admin_api.require_api_key' => false,
+            'services.admin_api.inbound_key' => self::CLAVE,
             'services.admin_api.url' => 'https://admin.test',
             'services.admin_api.client_uuid' => (string) Str::uuid(),
             'broadcasting.default' => 'null',
@@ -57,13 +58,16 @@ class SupportToursTest extends EmpresaTestCase
         Http::fake([self::INBOUND => Http::response(['ok' => true], 201)]);
         $this->actingAs($this->empleado, 'web');
         $mensaje = $this->postJson('/api/support-message', [
-            'body' => '¿Cómo creo un ticket?',
+            'body' => 'Pregunta para Robotito sobre «Creá un ticket» en el paso 1: ¿Cómo creo un ticket?',
             'robotito_support_version' => 99,
+            'robotito_followup' => true,
+            'robotito_question' => '¿Cómo creo un ticket?',
         ])->assertCreated()->json('model');
         $this->assertArrayNotHasKey('robotito_support_version', $mensaje);
         Http::assertSent(function (Request $pedido) use ($mensaje) {
             return $pedido->url() === self::INBOUND && $pedido['robotito_support_version'] === 1
-                && $pedido['message_uuid'] === $mensaje['uuid'];
+                && $pedido['message_uuid'] === $mensaje['uuid']
+                && !isset($pedido['robotito_followup']) && !isset($pedido['robotito_question']);
         });
 
         $oferta = $this->datos(['source' => 'sistema', 'uuid' => $mensaje['uuid'], 'ticket_uuid' => $mensaje['ticket']['uuid']]);
@@ -416,6 +420,35 @@ class SupportToursTest extends EmpresaTestCase
         Event::assertDispatchedTimes(SupportTourOffered::class, 2);
     }
 
+    public function test_catalogo_de_aperturas_y_pago_repartido_respeta_permisos_y_diseno(): void
+    {
+        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'comerciocity_interno'], ['name' => 'Vender']);
+        $this->dueno->extencions()->syncWithoutDetaching([$extension->id]);
+        $ruta = self::ADMIN_SYNC . '/catalogo?user_id=' . $this->empleado->id;
+        $claves = function () use ($ruta): array {
+            return $this->getJson($ruta, $this->clave())->assertOk()->json('pasos.*.clave');
+        };
+        $pasos = ['caja.historial_aperturas', 'caja.reabrir_apertura', 'vender.metodos_pago', 'vender.reparto_pago'];
+        $this->assertEmpty(array_intersect($pasos, $claves()));
+
+        foreach (['caja.index', 'sale.store'] as $slug) {
+            $permiso = PermissionEmpresa::unguarded(function () use ($slug) {
+                return PermissionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+            });
+            $this->empleado->permissions()->attach($permiso->id);
+        }
+        $this->assertSame($pasos, array_values(array_intersect($pasos, $claves())));
+
+        VenderLayout::create([
+            'user_id' => $this->dueno->id, 'name' => 'Sin métodos de pago', 'en_uso' => true,
+            'layout' => ['etapas' => ['etapa_3' => []], 'sacados' => ['metodo_de_pago']],
+        ]);
+        $catalogo = $claves();
+        $this->assertNotContains('vender.metodos_pago', $catalogo);
+        $this->assertNotContains('vender.reparto_pago', $catalogo);
+        $this->assertContains('caja.reabrir_apertura', $catalogo);
+    }
+
     public function test_la_repregunta_se_reintenta_sin_duplicar_y_la_nueva_guia_conserva_el_origen(): void
     {
         $status = 503;
@@ -445,6 +478,8 @@ class SupportToursTest extends EmpresaTestCase
         foreach (Http::recorded() as [$pedido]) {
             $this->assertSame($mensaje->uuid, $pedido['message_uuid']);
             $this->assertSame(1, $pedido['robotito_support_version']);
+            $this->assertTrue($pedido['robotito_followup']);
+            $this->assertSame($pregunta['question'], $pedido['robotito_question']);
         }
 
         $reformulada = $this->datos(['source' => 'sistema', 'uuid' => $mensaje->uuid, 'ticket_uuid' => $mensaje->ticket->uuid]);
