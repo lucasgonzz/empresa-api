@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Models\User;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -700,6 +701,110 @@ class ModelosIaHelper
         $tipo   = is_array($cuerpo) && isset($cuerpo['error']['type']) ? (string) $cuerpo['error']['type'] : '';
 
         return in_array($tipo, ['overloaded_error', 'api_error'], true) || (int) $response->status() === 529;
+    }
+
+    /**
+     * Segundos del presupuesto total de un análisis de importación (RunExcelAnalysisJob tiene
+     * `$timeout = 900`): 840 deja 60 s de margen para leer la respuesta y guardar el resultado. Ahí
+     * tienen que entrar el pedido a Pro y, si falla, el reintento con Flash.
+     */
+    const PRESUPUESTO_IMPORTACION_SEGUNDOS = 840;
+
+    /** Piso del timeout del reintento con Flash: menos que esto no alcanza ni para una planilla chica. */
+    const TIMEOUT_MINIMO_RESPALDO_SEGUNDOS = 30;
+
+    /**
+     * Llama a la IA de una importación de Excel (artículos, clientes o proveedores) y devuelve
+     * [respuesta, modelo con el que se contestó].
+     *
+     * 🔴 RESPALDO A FLASH (misión excel-ia-respaldo-flash, 10/11/2026, soporte de Mayorista de Pesca):
+     * con una planilla de ~1.100 filas DeepSeek Pro agotaba los 120 s de timeout, y el respaldo que
+     * trae ProveedorIaHelper::pedir_mensaje() (reservar 1/4 del timeout para la otra variante) dejaba a
+     * Flash con 30 s: también fallaba. Acá el orden es otro:
+     *
+     * 1. Se llama al modelo resuelto con el TIMEOUT COMPLETO y sin el respaldo interno
+     *    (`permitir_respaldo = false`): Pro tiene todo el tiempo que se le dio.
+     * 2. Solo si el modelo efectivo es DeepSeek Pro y falló de forma transitoria (se cortó o venció la
+     *    conexión, 408, 504 o un error que ProveedorIaHelper::es_error_transitorio() cuenta como
+     *    saturación) se reintenta UNA vez con Flash: sin razonamiento y con el techo de salida base.
+     *    Flash tiene timeout propio: lo que le queda del presupuesto del job, con un piso, sin pasar
+     *    nunca del timeout configurado.
+     *
+     * Un error NO transitorio (clave, saldo, pedido inválido) no se reintenta: con Flash fallaría igual.
+     * Anthropic y Flash elegido hacen una sola llamada, como siempre.
+     *
+     * Si Flash también falla, ConnectionException se propaga y una respuesta fallida se devuelve tal
+     * cual, así el analizador usa sus mensajes de siempre.
+     *
+     * @param  array  $ia  Lo que devolvió resolver() para la tarea Excel.
+     * @param  int    $timeout  Timeout configurado para una llamada (segundos).
+     * @param  array  $payload  El pedido armado para el modelo resuelto.
+     * @param  int    $max_tokens_sin_razonamiento  Techo de salida base del analizador (con el factor
+     *                                              de reintento ya aplicado), para el pedido a Flash.
+     * @return array  [\Illuminate\Http\Client\Response, string]  La respuesta y el modelo que contestó.
+     *
+     * @throws \Illuminate\Http\Client\ConnectionException  Si la conexión falla y no hay respaldo, o si falla también el respaldo.
+     */
+    public static function pedir_importacion(array $ia, int $timeout, array $payload, int $max_tokens_sin_razonamiento): array
+    {
+        // Momento de inicio: de acá se descuenta lo gastado para el presupuesto del respaldo.
+        $inicio = hrtime(true);
+
+        // Solo DeepSeek Pro tiene a Flash como respaldo; cualquier otra combinación llama una sola vez.
+        $tiene_respaldo = isset($ia['proveedor'], $ia['opcion_efectiva'])
+            && (string) $ia['proveedor'] === ProveedorIaHelper::DEEPSEEK
+            && (string) $ia['opcion_efectiva'] === self::DEEPSEEK_PRO;
+
+        // Motivo del cambio a Flash, para el log (null mientras no haya falla).
+        $motivo = null;
+
+        try {
+            [$respuesta, $modelo] = ProveedorIaHelper::pedir_mensaje((string) $ia['proveedor'], $timeout, $payload, false);
+        } catch (ConnectionException $e) {
+            if (! $tiene_respaldo) {
+                throw $e;
+            }
+
+            $motivo = 'conexion';
+        }
+
+        if (is_null($motivo)) {
+            // Contestó: se respalda solo si es una falla transitoria (saturación o timeout del lado del proveedor).
+            $falla_transitoria = ! $respuesta->successful()
+                && (ProveedorIaHelper::es_error_transitorio($respuesta) || in_array((int) $respuesta->status(), [408, 504], true));
+
+            if (! $tiene_respaldo || ! $falla_transitoria) {
+                return [$respuesta, $modelo];
+            }
+
+            $motivo = 'http_' . (int) $respuesta->status();
+        }
+
+        // Segundos que ya se gastaron con Pro y timeout del reintento: lo que queda del job, con piso, sin pasar del configurado.
+        $gastados         = (int) ceil((hrtime(true) - $inicio) / 1e9);
+        $timeout_respaldo = min(
+            $timeout,
+            max(self::TIMEOUT_MINIMO_RESPALDO_SEGUNDOS, self::PRESUPUESTO_IMPORTACION_SEGUNDOS - $gastados)
+        );
+
+        // El pedido a Flash: mismo contenido, su modelo, sin razonamiento y con el techo de salida base.
+        $modelo_flash                = self::modelo_de_opcion(self::DEEPSEEK_FLASH);
+        $payload_flash               = $payload;
+        $payload_flash['model']      = $modelo_flash;
+        $payload_flash['max_tokens'] = $max_tokens_sin_razonamiento;
+        unset($payload_flash['thinking']);
+        $payload_flash = ProveedorIaHelper::agregar_thinking($payload_flash, ProveedorIaHelper::thinking_de_deepseek(false));
+
+        Log::warning('Importación con IA: DeepSeek Pro falló, se reintenta con Flash.', [
+            'motivo'             => $motivo,
+            'modelo_inicial'     => (string) $payload['model'],
+            'modelo_de_respaldo' => $modelo_flash,
+            'segundos_gastados'  => $gastados,
+            'timeout_respaldo'   => $timeout_respaldo,
+        ]);
+
+        // Un único reintento, sin respaldo interno: si falla, la excepción o la respuesta llegan al analizador.
+        return ProveedorIaHelper::pedir_mensaje(ProveedorIaHelper::DEEPSEEK, $timeout_respaldo, $payload_flash, false);
     }
 
     /**
