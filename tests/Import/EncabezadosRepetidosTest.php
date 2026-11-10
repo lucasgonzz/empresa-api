@@ -5,10 +5,16 @@ namespace Tests\Import;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
+use App\Jobs\RunExcelAnalysisJob;
 use App\Models\Article;
+use App\Models\ExcelAnalysisRun;
 use App\Models\ImportHistory;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\Support\Str;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use Tests\Fakes\HttpFactorySinSalida;
 
 /**
  * Encabezados repetidos adentro de la planilla, proveedor inferido por los artículos y SKU
@@ -485,6 +491,51 @@ class EncabezadosRepetidosTest extends ImportTestCase
 
         $this->assertStringNotContainsString('usá encabezados y datos de muestra', $analizador->ultimo_prompt);
         $this->assertStringContainsString('marca no es un proveedor', $analizador->ultimo_prompt);
+    }
+
+    public function test_la_corrida_en_segundo_plano_expone_las_filas_ignoradas()
+    {
+        config([
+            'services.anthropic.api_key' => 'clave-anthropic-de-prueba',
+            'services.deepseek.api_key'  => 'clave-deepseek-de-prueba',
+        ]);
+
+        Notification::fake();
+
+        $respuesta = $this->respuesta_ia($this->propiedades_mayorista(), [
+            'encabezados_repetidos' => [['columna' => 1, 'valor' => 'Articulo']],
+        ]);
+
+        Http::swap(new HttpFactorySinSalida(app('events')));
+        Http::fake(function () use ($respuesta) {
+            return Http::response([
+                'model'       => 'modelo-de-prueba',
+                'content'     => [['type' => 'text', 'text' => $respuesta]],
+                'stop_reason' => 'end_turn',
+                'usage'       => ['input_tokens' => 1, 'output_tokens' => 1],
+            ], 200);
+        });
+
+        $ruta = $this->planilla($this->filas_mayorista());
+
+        $run = ExcelAnalysisRun::create([
+            'uuid'         => Str::uuid()->toString(),
+            'user_id'      => $this->tenant->id,
+            'auth_user_id' => $this->tenant->id,
+            'tipo'         => 'analisis',
+            'estado'       => 'pendiente',
+            'excel_path'   => 'imported_files/' . basename($ruta),
+            'payload'      => ['model' => 'article', 'original_filename' => 'lista.xlsx', 'header_row' => 3],
+        ]);
+
+        (new RunExcelAnalysisJob($run->id))->handle();
+
+        $run->refresh();
+
+        $this->assertSame('listo', $run->estado, json_encode($run->toArray(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame(3, $run->resultado['encabezados_repetidos']['filas']);
+        $this->assertSame([7, 9, 12], $run->resultado['encabezados_repetidos']['ejemplos']);
+        $this->assertSame(1, $run->resultado['duplicate_stats']['provider_codes_duplicados_intra_archivo']);
     }
 
     public function test_cuenta_los_sku_repetidos()

@@ -345,6 +345,8 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'assistant_notes'       => $analysis['assistant_notes'] ?? [],
                 'duplicate_stats'       => $analysis['duplicate_stats'] ?? null,
                 'preview_rows'          => $analysis['preview_rows'] ?? [],
+                /* Clave nueva y opcional: las filas que repiten el encabezado adentro de la planilla. */
+                'encabezados_repetidos' => $analysis['encabezados_repetidos'] ?? ['filas' => 0, 'ejemplos' => [], 'valores' => []],
                 'placeholders'          => $analysis['placeholders'] ?? [],
                 'cadena_identificacion' => $analysis['cadena_identificacion'] ?? null,
                 'nombres_duplicados'    => $analysis['nombres_duplicados'] ?? null,
