@@ -1707,6 +1707,7 @@ Route::middleware('admin.api.key:siempre')
         Route::post('prueba/cupo-imagenes', 'AdminSync\\PruebaController@cupo_imagenes');
         Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
         Route::post('ai-excel-import/prueba-resolver/{uuid}', 'AdminSync\\ImportacionDePruebaController@resolver');
+        Route::post('ai-excel-import/analyze-stock-existente', 'AdminSync\\AiExcelImportController@analyzeStockExistente');
     });
 
 Route::middleware('admin.api.key')

@@ -18,9 +18,25 @@ class ImportacionDePrueba extends Model
         'modo_soporte' => 'boolean',
     ];
 
-    public const EN_CURSO = ['analizar', 'preparar', 'importando', 'imagenes', 'indexar', 'indexando'];
+    public const EN_CURSO = ['analizar', 'preparar', 'importando', 'imagenes', 'indexar', 'indexando', 'stock_analizar', 'stock_preparar'];
 
-    public const ESPERANDO_RESPUESTA = ['columnas', 'repetidos', 'confirmacion'];
+    public const ESPERANDO_RESPUESTA = ['columnas', 'repetidos', 'confirmacion', 'stock_repetidos', 'stock_confirmacion'];
+
+    public function estado_para(string $estado): string
+    {
+        // Un worker anterior no debe interpretar un conteo como un alta de catálogo.
+        return $this->alcance === 'stock_existente' ? 'stock_' . $estado : $estado;
+    }
+
+    public function estado_publico(): string
+    {
+        return strpos($this->estado, 'stock_') === 0 ? substr($this->estado, 6) : $this->estado;
+    }
+
+    public function alcance_valido_para_avanzar(): bool
+    {
+        return (strpos($this->estado, 'stock_') === 0) === ($this->alcance === 'stock_existente');
+    }
 
     public function scopeWithAll($query)
     {

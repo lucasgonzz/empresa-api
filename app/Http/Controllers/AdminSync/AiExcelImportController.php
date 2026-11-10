@@ -54,6 +54,8 @@ class AiExcelImportController extends Controller
      */
     public function analyze(Request $request): JsonResponse
     {
+        abort_if($request->has('alcance'), 422, 'El alcance de stock tiene su propio endpoint.');
+
         if ($this->bandera($request->input('automatizar_prueba')) || $request->boolean('automatizar_soporte')) {
             return app(AdminApiKey::class)->handle($request, function (Request $request) {
                 return $this->analizar_archivo($request, true);
@@ -61,6 +63,19 @@ class AiExcelImportController extends Controller
         }
 
         return $this->analizar_archivo($request, false);
+    }
+
+    public function analyzeStockExistente(Request $request): JsonResponse
+    {
+        $request->validate([
+            'alcance' => 'required|in:stock_existente',
+            'automatizar_soporte' => 'required|accepted',
+            'model' => 'required|in:article',
+        ]);
+        abort_if($this->bandera($request->input('automatizar_prueba')), 422, 'El alcance de stock es exclusivo de soporte.');
+        abort_unless(ImportacionDePruebaController::soporta_stock_existente(), 409, 'El sistema todavía no puede preparar este alcance.');
+
+        return $this->analizar_archivo($request, true);
     }
 
     protected function analizar_archivo(Request $request, bool $automatizar): JsonResponse
