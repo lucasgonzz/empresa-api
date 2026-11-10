@@ -192,37 +192,42 @@ class SupportToursTest extends EmpresaTestCase
         $dueno = $this->persona();
         $empleado = $this->persona(['owner_id' => $dueno->id]);
         config(['app.USER_ID' => $dueno->id]);
-        $ruta = self::ADMIN_SYNC . '/recargos/disponibilidad';
+        $ruta = self::ADMIN_SYNC . '/catalogo';
         $this->getJson($ruta)->assertUnauthorized();
-        $this->getJson($ruta, $this->clave())->assertExactJson(['available' => false]);
+        $claves = function (string $consulta): array {
+            return $this->getJson($consulta, $this->clave())->assertOk()
+                ->assertJsonPath('available', true)->json('pasos.*.clave');
+        };
+        $this->assertNotContains('vender.recargos', $claves($ruta));
 
         $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'comerciocity_interno'], ['name' => 'Vender']);
         $dueno->extencions()->attach($extension->id);
         Surchage::create(['user_id' => $this->dueno->id, 'name' => 'De otro comercio', 'percentage' => 9]);
-        $this->getJson($ruta, $this->clave())->assertExactJson(['available' => false]);
+        $this->assertNotContains('vender.recargos', $claves($ruta));
 
         $recargo = Surchage::create(['user_id' => $dueno->id, 'name' => 'De este comercio', 'percentage' => 7]);
-        $this->getJson($ruta, $this->clave())->assertExactJson(['available' => true]);
-        $this->getJson($ruta . '?user_id=' . $this->dueno->id, $this->clave())->assertExactJson(['available' => false]);
+        $this->assertContains('vender.recargos', $claves($ruta));
+        $this->getJson($ruta . '?user_id=' . $this->dueno->id, $this->clave())
+            ->assertExactJson(['available' => false, 'pasos' => []]);
         $ruta_empleado = $ruta . '?user_id=' . $empleado->id;
-        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => false]);
+        $this->assertNotContains('vender.total', $claves($ruta_empleado));
         foreach (['sale.store', 'sale.discount_surchage.aplicar'] as $slug) {
             $permiso = PermissionEmpresa::unguarded(function () use ($slug) {
                 return PermissionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
             });
             $empleado->permissions()->attach($permiso->id);
         }
-        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => true]);
+        $this->assertContains('vender.recargos', $claves($ruta_empleado));
 
         $diseno = VenderLayout::create([
             'user_id' => $dueno->id, 'name' => 'Sin recargos', 'en_uso' => true,
             'layout' => ['etapas' => ['etapa_3' => []], 'sacados' => ['recargos']],
         ]);
-        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => false]);
+        $this->assertNotContains('vender.recargos', $claves($ruta_empleado));
         $diseno->update(['layout' => ['etapas' => ['etapa_1' => [['key' => 'recargos', 'cols' => 6]]], 'sacados' => []]]);
-        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => true]);
+        $this->assertContains('vender.recargos', $claves($ruta_empleado));
         $recargo->delete();
-        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => false]);
+        $this->assertNotContains('vender.recargos', $claves($ruta_empleado));
     }
 
     public function test_tour_recargos_vuelve_a_validar_disponibilidad_y_entrega_dos_pasos_privados(): void
@@ -231,19 +236,58 @@ class SupportToursTest extends EmpresaTestCase
         config(['app.USER_ID' => $dueno->id]);
         $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'comerciocity_interno'], ['name' => 'Vender']);
         $dueno->extencions()->attach($extension->id);
-        $oferta = $this->datos(['tema' => 'aplicar_recargo_venta', 'titulo' => 'Aplicá un recargo']);
-        $this->postJson(self::ADMIN_SYNC, $oferta + ['textos' => ['Un paso']], $this->clave())
-            ->assertJsonValidationErrors('textos');
-        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertStatus(409);
+        $oferta = $this->datos(['tema' => 'guia_dinamica', 'titulo' => 'Aplicá un recargo']);
+        $pasos = [
+            ['clave' => 'vender.recargos', 'texto' => 'Activá el recargo que quieras.'],
+            ['clave' => 'vender.total', 'texto' => 'Revisá el total.'],
+        ];
+        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertJsonValidationErrors('pasos');
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $pasos], $this->clave())->assertJsonValidationErrors('pasos.0');
         Surchage::create(['user_id' => $dueno->id, 'name' => 'Recargo de prueba', 'percentage' => 7]);
-        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertOk();
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $pasos], $this->clave())->assertOk();
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $pasos], $this->clave())->assertOk();
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => array_reverse($pasos)], $this->clave())->assertStatus(409);
         $this->getJson('/api/support-tour/pending')->assertExactJson(['model' => []]);
 
         Auth::forgetGuards();
         $this->actingAs($dueno, 'web')->getJson('/api/support-tour/pending')
-            ->assertJsonPath('model.0.tema', 'aplicar_recargo_venta');
+            ->assertJsonPath('model.0.tema', 'guia_dinamica')->assertJsonPath('model.0.pasos', $pasos);
         $this->seguimiento($oferta)->assertJsonPath('model.0.total_steps', 2);
         Event::assertDispatchedTimes(SupportTourOffered::class, 1);
+        $dueno->extencions()->detach($extension->id);
+        $this->postJson($this->ruta($oferta, 'accept'))->assertJsonValidationErrors('pasos.0');
+        $this->seguimiento($oferta)->assertJsonPath('model.0.state', 'pending');
+    }
+
+    public function test_guia_dinamica_rechaza_selectores_arbitrarios_y_destinos_ajenos(): void
+    {
+        $oferta = $this->datos(['tema' => 'guia_dinamica', 'titulo' => 'Historial']);
+        $historial = $this->historial();
+        $ajeno = $this->historial(['user_id' => $this->persona()->id]);
+        $paso = ['clave' => 'listado.revertir_importacion', 'texto' => 'Revisá esta importación.'];
+
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => [$paso]], $this->clave())
+            ->assertJsonValidationErrors('pasos.0');
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => [$paso + ['destino' => $ajeno->id]]], $this->clave())
+            ->assertJsonValidationErrors('pasos.0.destino');
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => [$paso + ['selector' => 'body']]], $this->clave())
+            ->assertJsonValidationErrors('pasos.0');
+        $ruta = self::ADMIN_SYNC . '/catalogo';
+        $this->assertArrayNotHasKey('destinos', $this->getJson($ruta, $this->clave())->assertOk()->json());
+        $this->getJson($ruta . '?import_history_id=' . $historial->id, $this->clave())
+            ->assertJsonPath('destinos', ['listado.revertir_importacion' => [[
+                'id' => $historial->id, 'created_at' => $historial->created_at->toDateTimeString(),
+                'provider_id' => null, 'provider_name' => null,
+            ]]]);
+        $pasos = [
+            ['clave' => 'vista.listado', 'texto' => 'Abrí el historial.'],
+            $paso + ['destino' => $historial->id],
+            ['clave' => 'indicacion', 'texto' => 'Verificá los datos antes de confirmar.'],
+        ];
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $pasos], $this->clave())->assertOk();
+        $this->postJson($this->ruta($oferta, 'accept'))->assertJsonPath('model.pasos', $pasos);
+        $historial->update(['rollback_status' => 'revertida', 'rolled_back_at' => now()]);
+        $this->postJson($this->ruta($oferta, 'accept'))->assertJsonValidationErrors('pasos.1.destino');
     }
 
     public function test_el_final_exige_todos_los_pasos_y_la_valoracion_distingue_la_polaridad(): void

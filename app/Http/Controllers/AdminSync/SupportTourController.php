@@ -25,16 +25,26 @@ class SupportTourController extends Controller
                 Rule::requiredIf($request->input('source') === 'whatsapp' && $request->has('user_id')),
                 'prohibited_unless:source,whatsapp', 'string', 'regex:/^[1-9][0-9]{7,14}$/',
             ],
-            'tema' => ['required', Rule::in(array_keys(SupportTour::PASOS_POR_TEMA))],
+            'tema' => ['required', Rule::in(array_merge(array_keys(SupportTour::PASOS_POR_TEMA), [SupportTour::GUIA_DINAMICA]))],
             'titulo' => 'required|string|max:120',
-            'textos' => 'sometimes|array',
+            'textos' => 'sometimes|prohibited_if:tema,' . SupportTour::GUIA_DINAMICA . '|array',
             'textos.*' => 'required|string|max:240',
+            'pasos' => 'required_if:tema,' . SupportTour::GUIA_DINAMICA
+                . '|prohibited_unless:tema,' . SupportTour::GUIA_DINAMICA . '|array|min:1|max:8',
+            'pasos.*' => 'required|array:clave,texto,destino',
+            'pasos.*.clave' => 'required|string|max:64',
+            'pasos.*.texto' => 'required|string|max:240',
+            'pasos.*.destino' => 'sometimes|required|integer|min:1|max:9007199254740991',
             'import_history_id' => 'required_if:tema,' . SupportTour::REVERTIR_IMPORTACION_ARTICULOS
                 . '|prohibited_unless:tema,' . SupportTour::REVERTIR_IMPORTACION_ARTICULOS . '|integer|min:1|max:9007199254740991',
         ]);
 
-        if (isset($datos['textos']) && array_keys($datos['textos']) !== range(0, SupportTour::PASOS_POR_TEMA[$datos['tema']] - 1)) {
+        if ($datos['tema'] !== SupportTour::GUIA_DINAMICA && isset($datos['textos'])
+            && array_keys($datos['textos']) !== range(0, SupportTour::PASOS_POR_TEMA[$datos['tema']] - 1)) {
             throw ValidationException::withMessages(['textos' => 'Mandá un texto para cada paso, en el orden del recorrido.']);
+        }
+        if (isset($datos['pasos']) && array_keys($datos['pasos']) !== range(0, count($datos['pasos']) - 1)) {
+            throw ValidationException::withMessages(['pasos' => 'Mandá los pasos como una lista ordenada.']);
         }
 
         $datos['uuid'] = strtolower($datos['uuid']);
@@ -75,13 +85,27 @@ class SupportTourController extends Controller
         )]);
     }
 
-    public function recargos_disponibles(Request $request, SupportTourService $service): JsonResponse
+    public function catalogo(Request $request, SupportTourService $service): JsonResponse
     {
-        $datos = $request->validate(['user_id' => 'sometimes|required|integer|min:1']);
+        $datos = $request->validate([
+            'user_id' => 'sometimes|required|integer|min:1',
+            'import_history_id' => 'sometimes|required|integer|min:1|max:9007199254740991',
+        ]);
         $dueno = $this->dueno();
         $persona = isset($datos['user_id']) ? User::find($datos['user_id']) : $dueno;
+        if (!$persona || (int) ($persona->owner_id ?: $persona->id) !== (int) $dueno->id) {
+            return response()->json(['available' => false, 'pasos' => []]);
+        }
 
-        return response()->json(['available' => $persona !== null && $service->puede_guiar_recargos($dueno, $persona)]);
+        $pasos = $service->catalogo_dinamico($dueno, $persona);
+        $respuesta = ['available' => true, 'pasos' => array_values($pasos)];
+        if (isset($datos['import_history_id'], $pasos['listado.revertir_importacion'])) {
+            $respuesta['destinos'] = [
+                'listado.revertir_importacion' => $service->importaciones_candidatas($persona, (int) $datos['import_history_id']),
+            ];
+        }
+
+        return response()->json($respuesta);
     }
 
     private function dueno(): User

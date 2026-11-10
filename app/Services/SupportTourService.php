@@ -22,6 +22,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 class SupportTourService
 {
@@ -72,10 +73,11 @@ class SupportTourService
         }
 
         $textos = array_values($datos['textos'] ?? []);
-        $total = SupportTour::PASOS_POR_TEMA[$datos['tema']];
+        $pasos = $datos['tema'] === SupportTour::GUIA_DINAMICA ? $this->normalizar_pasos($datos['pasos']) : null;
+        $total = $pasos === null ? SupportTour::PASOS_POR_TEMA[$datos['tema']] : count($pasos);
         $import_history_id = isset($datos['import_history_id']) ? (int) $datos['import_history_id'] : null;
 
-        [$tour, $nuevo] = DB::transaction(function () use ($dueno, $datos, $mensaje, $persona_id, $textos, $total, $import_history_id) {
+        [$tour, $nuevo] = DB::transaction(function () use ($dueno, $datos, $mensaje, $persona_id, $textos, $pasos, $total, $import_history_id) {
             // El mismo usuario puede recibir una sola oferta por mensaje, incluso con reintentos simultáneos.
             $persona = User::whereKey($persona_id)->lockForUpdate()->first();
             abort_unless($persona && (int) ($persona->owner_id ?: $persona->id) === (int) $dueno->id,
@@ -89,7 +91,7 @@ class SupportTourService
                 abort_unless((int) $previo->recipient_id === (int) $persona_id
                     && $previo->ticket_uuid === $datos['ticket_uuid'] && $previo->source === $datos['source']
                     && $previo->tema === $datos['tema'] && $previo->titulo === $datos['titulo'] && $previo->textos === $textos
-                    && $previo->import_history_id === $import_history_id,
+                    && $previo->import_history_id === $import_history_id && $previo->pasos_programados == $pasos,
                     409, 'Ese mensaje ya tiene una oferta de Robotito con otros datos.');
 
                 return [$previo, false];
@@ -101,15 +103,12 @@ class SupportTourService
             if (in_array($datos['tema'], ['buscar_articulo_nombre', 'buscar_articulo_codigo'], true)) {
                 abort_unless($this->puede_vender($dueno, $persona), 409, 'La pantalla Vender no está disponible para esa persona.');
             }
-            if ($datos['tema'] === SupportTour::APLICAR_RECARGO_VENTA) {
-                abort_unless($this->puede_guiar_recargos($dueno, $persona),
-                    409, 'Los recargos de venta no están disponibles para esa persona.');
-            }
             if ($datos['tema'] === SupportTour::REVERTIR_IMPORTACION_ARTICULOS) {
-                $importacion = ImportHistory::where('user_id', $dueno->id)->where('model_name', 'article')
-                    ->find($import_history_id);
-                abort_unless(self::puede_abrir_historial($persona) && $importacion && $importacion->puede_revertirse(),
+                abort_unless(self::puede_abrir_historial($persona) && $this->importacion_reversible($dueno, $import_history_id),
                     409, 'Esa importación ya no se puede señalar para revertir desde esta cuenta.');
+            }
+            if ($pasos !== null) {
+                $this->validar_pasos_programados($dueno, $persona, $pasos);
             }
 
             $anterior = $mensaje ? self::de_la_persona($persona)
@@ -127,6 +126,7 @@ class SupportTourService
                 'titulo' => $datos['titulo'],
                 'textos' => $textos,
                 'import_history_id' => $import_history_id,
+                'pasos_programados' => $pasos,
                 'total_steps' => $total,
                 'steps_shown' => [],
             ]);
@@ -168,7 +168,7 @@ class SupportTourService
             && PermisosIaHelper::puede($persona, 'sale.store');
     }
 
-    public function puede_guiar_recargos(User $dueno, User $persona): bool
+    private function puede_guiar_recargos(User $dueno, User $persona): bool
     {
         if ((int) ($persona->owner_id ?: $persona->id) !== (int) $dueno->id
             || !$this->puede_vender($dueno, $persona)
@@ -192,6 +192,131 @@ class SupportTourService
         }
 
         return false;
+    }
+
+    public function catalogo_dinamico(User $dueno, User $persona): array
+    {
+        $pasos = [
+            'indicacion' => 'Mostrar una instrucción textual en la pantalla actual, sin resaltar un control. Sirve cuando no hay un ancla exacta para el paso.',
+            'tutoriales.abrir' => 'Señalar el enlace Tutoriales del Centro de Recursos.',
+            'vista.alertas' => 'Abrir Alertas y mostrar una indicación textual dentro de esa pantalla.',
+        ];
+        $modulos = [
+            'vista.listado' => ['article.index', 'Abrir Listado de artículos y mostrar una indicación textual.'],
+            'vista.ventas' => ['sale.index', 'Abrir Ventas y mostrar una indicación textual.'],
+            'vista.reportes' => ['reportes.index', 'Abrir Reportes y mostrar una indicación textual.'],
+            'vista.tesoreria' => ['caja.index', 'Abrir Tesorería y mostrar una indicación textual.'],
+            'vista.gastos' => ['expense.index', 'Abrir Gastos y mostrar una indicación textual.'],
+            'vista.cheques' => ['reportes.cheques', 'Abrir Cheques y mostrar una indicación textual.'],
+            'vista.agenda' => ['pending.index', 'Abrir Agenda y mostrar una indicación textual.'],
+            'vista.comprobantes' => ['comprobantes.index', 'Abrir Comprobantes y mostrar una indicación textual.'],
+            'vista.abm' => ['abm', 'Abrir el ABM y mostrar una indicación textual.'],
+        ];
+        if (PermisosIaHelper::tiene_extencion($dueno, 'comerciocity_interno')) {
+            $modulos['vista.clientes'] = ['client.index', 'Abrir Clientes y mostrar una indicación textual.'];
+            $modulos['vista.proveedores'] = ['provider.index', 'Abrir Proveedores y mostrar una indicación textual.'];
+            if (PermisosIaHelper::tiene_extencion($dueno, 'budgets')) {
+                $modulos['vista.presupuestos'] = ['budget.index', 'Abrir Presupuestos y mostrar una indicación textual.'];
+            }
+        }
+        foreach ($modulos as $clave => [$permiso, $descripcion]) {
+            if (PermisosIaHelper::puede($persona, $permiso)) {
+                $pasos[$clave] = $descripcion;
+            }
+        }
+        if (isset($pasos['vista.listado'])) {
+            $pasos['listado.filtro'] = 'Señalar el botón de filtros del Listado.';
+            if (PermisosIaHelper::puede($persona, 'article.store')) {
+                $pasos['listado.nuevo_articulo'] = 'Señalar la parte principal de Crear para abrir una ficha nueva de artículo.';
+            }
+        }
+        if (isset($pasos['vista.ventas'])) {
+            $pasos['ventas.filtro_fecha'] = 'Señalar el control de fechas e histórico en Ventas.';
+        }
+        if (isset($pasos['vista.proveedores']) && PermisosIaHelper::puede($persona, 'provider_order.index')) {
+            $pasos['vista.compras'] = 'Abrir la solapa Compras de Proveedores y mostrar una indicación textual.';
+            $pasos['compras.filtro_fecha'] = 'Señalar el control de fechas e histórico de Compras.';
+            if (PermisosIaHelper::puede($persona, 'provider_order.store')) {
+                $pasos['compras.nueva'] = 'Señalar el botón para abrir el formulario de una compra nueva.';
+            }
+        }
+        if (self::puede_abrir_historial($persona)) {
+            $pasos['listado.crear'] = 'Señalar la flechita de Crear en Listado de artículos para desplegar el menú.';
+            $pasos['listado.historial_importaciones'] = 'Señalar Historial de importaciones en el submenú Importación del Listado.';
+            $pasos['listado.revertir_importacion'] = 'Señalar el botón Revertir o Reintentar de un historial de artículos validado por su ID. El cliente revisa la confirmación habitual.';
+        }
+        if ($this->puede_vender($dueno, $persona)) {
+            $pasos['vista.vender'] = 'Abrir Vender y mostrar una indicación textual, conservando la venta en curso.';
+            $pasos['vender.buscar_articulo'] = 'Señalar el botón del buscador de artículos por nombre en Vender.';
+            $pasos['vender.campo_busqueda'] = 'Señalar el campo de búsqueda por nombre después de que la persona abra el buscador.';
+            $pasos['vender.resultados_busqueda'] = 'Señalar los resultados después de buscar por nombre.';
+            if (!PermisosIaHelper::tiene_extencion($dueno, 'no_usar_codigos_de_barra')) {
+                $pasos['vender.codigo_barras'] = 'Señalar el campo para escanear o escribir un código de barras en Vender.';
+            }
+            $pasos['vender.total'] = 'Señalar el total de la venta para que la persona lo revise.';
+            if ($this->puede_guiar_recargos($dueno, $persona)) {
+                $pasos['vender.recargos'] = 'Señalar los interruptores de recargos de venta existentes en el diseño activo.';
+            }
+        }
+        if (self::tiene_chat_soporte($persona)) {
+            $pasos['soporte.abrir'] = 'Señalar cómo abrir Soporte, o el encabezado si ya está abierto.';
+            $pasos['soporte.conversacion'] = 'Señalar la conversación o el historial de Soporte después de abrirlo.';
+            $pasos['soporte.escribir'] = 'Señalar el campo para escribir una consulta en Soporte.';
+        }
+
+        $catalogo = [];
+        foreach ($pasos as $clave => $descripcion) {
+            $catalogo[$clave] = ['clave' => $clave, 'descripcion' => $descripcion];
+        }
+        if (isset($catalogo['listado.revertir_importacion'])) {
+            $catalogo['listado.revertir_importacion']['requiere_destino'] = true;
+        }
+
+        return $catalogo;
+    }
+
+    private function normalizar_pasos(array $pasos): array
+    {
+        return array_map(static function (array $paso) {
+            $datos = ['clave' => $paso['clave'], 'texto' => $paso['texto']];
+            if (isset($paso['destino'])) {
+                $datos['destino'] = (int) $paso['destino'];
+            }
+
+            return $datos;
+        }, $pasos);
+    }
+
+    private function validar_pasos_programados(User $dueno, User $persona, array $pasos): void
+    {
+        $catalogo = $this->catalogo_dinamico($dueno, $persona);
+        foreach ($pasos as $i => $paso) {
+            $definicion = $catalogo[$paso['clave']] ?? null;
+            $requiere_destino = $definicion['requiere_destino'] ?? false;
+            if ($definicion === null || $requiere_destino !== isset($paso['destino'])) {
+                throw ValidationException::withMessages(['pasos.' . $i => 'La acción o su destino no están disponibles para esta cuenta.']);
+            }
+            if ($requiere_destino && !$this->importacion_reversible($dueno, $paso['destino'])) {
+                throw ValidationException::withMessages(['pasos.' . $i . '.destino' => 'Esa importación ya no está disponible para revertir.']);
+            }
+        }
+    }
+
+    public function validar_reproduccion(User $persona, SupportTour $tour): void
+    {
+        $persona = $persona->fresh();
+        $dueno = $persona && $persona->owner_id ? $persona->owner : $persona;
+        $pasos = $tour->pasos_programados;
+        abort_unless($dueno && (int) $dueno->id === (int) $tour->owner_id && $pasos,
+            409, 'Esta guía ya no está disponible para tu cuenta.');
+        $this->validar_pasos_programados($dueno, $persona, $pasos);
+    }
+
+    private function importacion_reversible(User $dueno, int $id): bool
+    {
+        $historial = ImportHistory::where('user_id', $dueno->id)->where('model_name', 'article')->find($id);
+
+        return $historial && $historial->puede_revertirse();
     }
 
     public function importaciones_candidatas(User $persona, ?int $import_history_id): array

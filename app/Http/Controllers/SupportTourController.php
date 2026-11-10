@@ -20,12 +20,15 @@ class SupportTourController extends Controller
         return response()->json(['model' => $tours->map->para_navegacion()]);
     }
 
-    public function accept(Request $request, string $uuid): JsonResponse
+    public function accept(Request $request, string $uuid, SupportTourService $service): JsonResponse
     {
         $persona = $this->persona($request);
-        $tour = DB::transaction(function () use ($persona, $uuid) {
+        $tour = DB::transaction(function () use ($persona, $uuid, $service) {
             $tour = $this->bloquear_tour($persona, $uuid);
             abort_unless(in_array($tour->state, ['pending', 'accepted'], true), 409, 'Esta guía ya terminó.');
+            if ($tour->tema === SupportTour::GUIA_DINAMICA) {
+                $service->validar_reproduccion($persona, $tour);
+            }
 
             if ($tour->state === 'pending') {
                 $tour->state = 'accepted';
