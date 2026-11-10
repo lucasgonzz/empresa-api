@@ -532,10 +532,8 @@ class OrderController extends Controller
      * 🔴 Reemplaza a `GeneralHelper::attachModels($model, 'articles', ..., ['price','amount'])`, y
      * el motivo es que desde el 22/8/2026 este es el UNICO camino que queda.
      *
-     * `article_order` tiene nueve columnas (`Order::articles()` las declara con `withPivot`):
-     * `cost`, `price`, `amount`, `variant_id`, `color_id`, `size_id`, `with_dolar`, `address_id` y
-     * `notes`. `attachModels` hace `detach()` y re-`attach()` escribiendo SOLO las que se le pasan,
-     * asi que las otras siete quedaban en null.
+     * `attachModels` hace `detach()` y re-`attach()` escribiendo SOLO las columnas que se le pasan,
+     * así que el resto quedaba en null.
      *
      * Antes eso era alcanzable solo si alguien abria el formulario y guardaba, porque el boton
      * "Confirmar pedido" mandaba unicamente `order_status_id` y no entraba nunca por aca. Al
@@ -548,10 +546,7 @@ class OrderController extends Controller
      * Regla: lo que viene en la request manda; lo que no viene se conserva del pivote que ya
      * estaba. `price` y `amount` van siempre desde la request, que es lo que el formulario edita.
      *
-     * ⚠️ Limitacion conocida: la foto de los pivotes previos se indexa por `article_id`. Un pedido
-     * con el MISMO articulo en dos renglones (dos variantes distintas) recibe en los dos el pivote
-     * del ultimo. Sigue siendo estrictamente mejor que dejarlos en null, pero si algun dia hace
-     * falta resolverlo bien, el camino es que el front mande el id del pivote.
+     * La marca de consulta viene del pivote original y se conserva por artículo y variante.
      *
      * @param  \App\Models\Order  $model
      * @param  array              $articles  Renglones tal como los manda el formulario.
@@ -562,11 +557,11 @@ class OrderController extends Controller
         /** Columnas del pivote que el formulario NO edita y hay que conservar. */
         $columnas_a_conservar = ['cost', 'variant_id', 'color_id', 'size_id', 'with_dolar', 'address_id', 'notes'];
 
-        /** Foto de los pivotes actuales, por article_id. Se toma ANTES del detach. */
+        /** Foto de los pivotes actuales, por artículo y variante. Se toma antes del detach. */
         $pivotes_previos = [];
 
         foreach ($model->articles as $article_previo) {
-            $pivotes_previos[$article_previo->id] = $article_previo->pivot;
+            $pivotes_previos[$article_previo->id][(int) $article_previo->pivot->variant_id] = $article_previo->pivot;
         }
 
         $model->articles()->detach();
@@ -579,7 +574,14 @@ class OrderController extends Controller
                 continue;
             }
 
-            $previo = isset($pivotes_previos[$article_id]) ? $pivotes_previos[$article_id] : null;
+            $variante = GeneralHelper::getPivotValue($article, 'variant_id');
+            $previos_del_articulo = $pivotes_previos[$article_id] ?? [];
+            $previo = $previos_del_articulo[(int) $variante] ?? null;
+
+            // Un guardado parcial puede omitir la variante cuando hay un solo renglón de ese artículo.
+            if (is_null($variante) && is_null($previo) && count($previos_del_articulo) === 1) {
+                $previo = reset($previos_del_articulo);
+            }
 
             $valores = [
                 'price'  => GeneralHelper::getPivotValue($article, 'price'),
@@ -595,6 +597,10 @@ class OrderController extends Controller
                 } else if (!is_null($previo)) {
                     $valores[$columna] = $previo->{$columna};
                 }
+            }
+
+            if (isset($previo->stock_a_consultar)) {
+                $valores['stock_a_consultar'] = $previo->stock_a_consultar;
             }
 
             $model->articles()->attach($article_id, $valores);
