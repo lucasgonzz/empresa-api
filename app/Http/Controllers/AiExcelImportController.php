@@ -1215,6 +1215,13 @@ class AiExcelImportController extends Controller
                      * `(bool) 'false'` da true.
                      */
                     'chequear_relaciones'         => $request->boolean('chequear_relaciones'),
+
+                    /*
+                     * Misión importacion-ia-mapeo-y-recomendacion (10/11/2026): si el paso 3 se
+                     * recalcula con el mapeo confirmado (repetidos y cadena de identificación).
+                     * Opcional: la SPA vieja no la manda y recibe las mismas claves de siempre.
+                     */
+                    'recalcular_identificacion'   => $request->boolean('recalcular_identificacion'),
                 ],
             ]);
 

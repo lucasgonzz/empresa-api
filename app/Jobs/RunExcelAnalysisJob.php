@@ -345,6 +345,8 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'assistant_notes'       => $analysis['assistant_notes'] ?? [],
                 'duplicate_stats'       => $analysis['duplicate_stats'] ?? null,
                 'preview_rows'          => $analysis['preview_rows'] ?? [],
+                /* Clave nueva y opcional: las filas que repiten el encabezado adentro de la planilla. */
+                'encabezados_repetidos' => $analysis['encabezados_repetidos'] ?? ['filas' => 0, 'ejemplos' => [], 'valores' => []],
                 'placeholders'          => $analysis['placeholders'] ?? [],
                 'cadena_identificacion' => $analysis['cadena_identificacion'] ?? null,
                 'nombres_duplicados'    => $analysis['nombres_duplicados'] ?? null,
@@ -519,6 +521,21 @@ class RunExcelAnalysisJob implements ShouldQueue
         $column_mapping = $payload['column_mapping'] ?? [];
 
         /*
+         * El mapeo confirmado manda sobre el índice que calculó el análisis: si el usuario corrigió
+         * la columna en el paso 2, los repetidos tienen que salir de la columna que eligió.
+         */
+        if (!empty($column_mapping)) {
+            $provider_code_column_index = null;
+
+            foreach ($column_mapping as $col) {
+                if (($col['system_property'] ?? null) === 'codigo_de_proveedor' && isset($col['excel_column_index'])) {
+                    $provider_code_column_index = (int) $col['excel_column_index'];
+                    break;
+                }
+            }
+        }
+
+        /*
          * Derivar el índice 0-based de la columna bar_code desde el column_mapping.
          * Igual que en el controller original: sin este índice, cuando no hay
          * provider_code, ExcelDuplicateStats retorna todo en 0.
@@ -549,6 +566,13 @@ class RunExcelAnalysisJob implements ShouldQueue
                                     ? (int) $payload['header_row']
                                     : null,
         ];
+
+        foreach ($column_mapping as $col) {
+            if (($col['system_property'] ?? null) === 'sku' && isset($col['excel_column_index'])) {
+                $opciones['sku_column_index'] = (int) $col['excel_column_index'];
+                break;
+            }
+        }
 
         try {
             /*
@@ -638,6 +662,29 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'] ?? 0,
                 'formatos_numericos'                          => $formatos_numericos,
             ];
+
+            /*
+             * El paso 3 se dibuja con el mapeo que confirmó el usuario, no con el que propuso la
+             * IA: las preguntas de códigos repetidos y el renglón de identificación dependen de
+             * estas claves. Solo si la SPA las pide: la vieja recibe las cuatro de siempre.
+             */
+            if (!empty($column_mapping) && !empty($payload['recalcular_identificacion'])) {
+                $duplicate_stats = $stats;
+                unset($duplicate_stats['provider_codes_distintos']);
+
+                $identificacion = $analyzer->analyze_identification_chain(
+                    $excel_full_path,
+                    $column_mapping,
+                    $opciones['hoja'],
+                    $opciones['fila_encabezado']
+                );
+
+                $resultado['duplicate_stats']       = $duplicate_stats;
+                $resultado['placeholders']          = $identificacion['placeholders'];
+                $resultado['cadena_identificacion'] = $identificacion['cadena_identificacion'];
+                $resultado['nombres_duplicados']    = $identificacion['nombres_duplicados'];
+                $resultado['desempate_por_nombre']  = $identificacion['desempate_por_nombre'];
+            }
 
             /*
              * Misión importacion-relaciones-parecidas (8/10/2026): solo si la SPA lo pidió. Sin la

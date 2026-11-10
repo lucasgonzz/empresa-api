@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
 /**
@@ -109,6 +110,8 @@ class ExcelNumericFormatStats
 
         try {
             /* Mismo lector XLSX de OpenSpout que usa ExcelDuplicateStats / InitExcelImport. */
+            $regla_de_encabezados = EncabezadosRepetidos::leer($excel_path, (int) $indice_hoja);
+
             $lectura = ExcelWorkbookReader::abrir($excel_path, $indice_hoja, $usar_numeracion_fisica);
 
             /* Bandera para saltar la primera fila (cabecera) en la rama vieja. */
@@ -152,6 +155,11 @@ class ExcelNumericFormatStats
                  * descartarlas acá: es lo que hacía el flag en la rama vieja.
                  */
                 if ($usar_numeracion_fisica && self::fila_esta_vacia($cells)) {
+                    continue;
+                }
+
+                /* Un encabezado repetido trae «COSTO» donde va un número: no es una celda a interpretar. */
+                if (EncabezadosRepetidos::es_encabezado($cells, $usar_numeracion_fisica ? $numero_fila : null, $regla_de_encabezados)) {
                     continue;
                 }
 

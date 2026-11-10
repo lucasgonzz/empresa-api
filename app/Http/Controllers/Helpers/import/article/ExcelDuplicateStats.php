@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\article;
 
 use App\Models\Article;
 use Illuminate\Support\Facades\Log;
+use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
 /**
@@ -97,6 +98,11 @@ class ExcelDuplicateStats
         $indice_hoja     = isset($opciones['hoja']) ? (int) $opciones['hoja'] : 0;
         $fila_encabezado = isset($opciones['fila_encabezado']) ? $opciones['fila_encabezado'] : null;
 
+        /* Opcional: la columna de SKU también identifica, y sus repetidos se muestran en el paso 3. */
+        $sku_column_index_0based = isset($opciones['sku_column_index']) && is_numeric($opciones['sku_column_index'])
+            ? (int) $opciones['sku_column_index']
+            : null;
+
         /*
          * 🔴 INTERRUPTOR DE SEGURIDAD (§1.3 del plan). Con $fila_encabezado en null o en 1 se
          * corre la rama de HOY, byte por byte: preservar_filas_vacias = false, saltear la
@@ -128,10 +134,12 @@ class ExcelDuplicateStats
             'detalle_provider_codes_duplicados'           => [],
             /* Grupo 291, prompt 03: sin columna definida no hay códigos que listar. */
             'provider_codes_distintos'                    => [],
+            'skus_duplicados_intra_archivo'               => 0,
+            'detalle_skus_duplicados'                     => [],
         ];
 
         /* Si no hay ningún índice definido, no tiene sentido leer el archivo. */
-        if (is_null($bar_code_column_index_0based) && is_null($provider_code_column_index_0based)) {
+        if (is_null($bar_code_column_index_0based) && is_null($provider_code_column_index_0based) && is_null($sku_column_index_0based)) {
             Log::info('ExcelDuplicateStats: sin columnas de código definidas, retornando vacío.');
             return $empty_result;
         }
@@ -155,6 +163,11 @@ class ExcelDuplicateStats
         $bar_code_filas      = [];
         $provider_code_veces = [];
         $provider_code_filas = [];
+        $sku_veces           = [];
+        $sku_filas           = [];
+
+        /* Filas que repiten el encabezado adentro de la planilla: no son datos. */
+        $regla_de_encabezados = EncabezadosRepetidos::leer($excel_path, $indice_hoja);
 
         /* Contador de filas de datos procesadas (sin contar la cabecera). */
         $total_filas = 0;
@@ -209,6 +222,10 @@ class ExcelDuplicateStats
                     continue;
                 }
 
+                if (EncabezadosRepetidos::es_encabezado($cells, $usar_numeracion_fisica ? $numero_fila : null, $regla_de_encabezados)) {
+                    continue;
+                }
+
                 $total_filas++;
 
                 /* Número de fila real en el Excel (1-based, incluye cabecera). */
@@ -220,6 +237,11 @@ class ExcelDuplicateStats
                     if ($bar_code_val !== '') {
                         self::acumular($bar_code_veces, $bar_code_filas, $bar_code_val, $excel_row_number);
                     }
+                }
+
+                /* Acumular sku si la columna está definida y la celda tiene contenido. */
+                if (!is_null($sku_column_index_0based) && isset($cells[$sku_column_index_0based]) && $cells[$sku_column_index_0based] !== '') {
+                    self::acumular($sku_veces, $sku_filas, $cells[$sku_column_index_0based], $excel_row_number);
                 }
 
                 /* Acumular provider_code si la columna está definida y la celda tiene contenido. */
@@ -305,8 +327,24 @@ class ExcelDuplicateStats
             }
         }
 
+        /* SKU repetidos, con el mismo criterio y el mismo tope de detalle. */
+        $skus_duplicados = 0;
+        $detalle_skus    = [];
+        foreach ($sku_veces as $val => $veces) {
+            if ($veces > 1) {
+                $skus_duplicados++;
+                if (count($detalle_skus) < self::MAX_EXAMPLES) {
+                    $detalle_skus[] = [
+                        'codigo' => (string) $val,
+                        'veces'  => $veces,
+                        'filas'  => self::filas_desde_texto($sku_filas[$val]),
+                    ];
+                }
+            }
+        }
+
         /* Las filas ya no hacen falta: se liberan antes del cruce contra la base. */
-        unset($bar_code_filas, $provider_code_filas);
+        unset($bar_code_filas, $provider_code_filas, $sku_filas);
 
         /*
          * Cruzamos los provider_codes únicos extraídos del Excel contra la tabla articles en BD.
@@ -355,6 +393,8 @@ class ExcelDuplicateStats
              * sacar esta clave antes de exponer duplicate_stats por HTTP.
              */
             'provider_codes_distintos'                    => !is_null($provider_code_column_index_0based) ? array_keys($provider_code_veces) : [],
+            'skus_duplicados_intra_archivo'               => $skus_duplicados,
+            'detalle_skus_duplicados'                     => $detalle_skus,
         ];
     }
 
