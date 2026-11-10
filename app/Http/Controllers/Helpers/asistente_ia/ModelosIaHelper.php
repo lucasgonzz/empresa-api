@@ -694,7 +694,10 @@ class ModelosIaHelper
     public static function error_transitorio_de_importacion($response, $proveedor): bool
     {
         if ((string) $proveedor === ProveedorIaHelper::DEEPSEEK) {
-            return ProveedorIaHelper::es_error_transitorio($response);
+            // 408 y 504 (timeout del lado del proveedor) también son "no disponible" en la importación;
+            // se suman acá y no en es_error_transitorio(), que comparte el asistente.
+            return ProveedorIaHelper::es_error_transitorio($response)
+                || in_array((int) $response->status(), [408, 504], true);
         }
 
         $cuerpo = $response->json();
@@ -771,7 +774,7 @@ class ModelosIaHelper
         if (is_null($motivo)) {
             // Contestó: se respalda solo si es una falla transitoria (saturación o timeout del lado del proveedor).
             $falla_transitoria = ! $respuesta->successful()
-                && (ProveedorIaHelper::es_error_transitorio($respuesta) || in_array((int) $respuesta->status(), [408, 504], true));
+                && self::error_transitorio_de_importacion($respuesta, ProveedorIaHelper::DEEPSEEK);
 
             if (! $tiene_respaldo || ! $falla_transitoria) {
                 return [$respuesta, $modelo];

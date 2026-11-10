@@ -287,6 +287,8 @@ class RespaldoFlashEnImportacionTest extends TestCase
             $this->assertStringContainsString('Excel', $mensaje, $nombre);
             $this->assertStringContainsString('filas', $mensaje, $nombre);
             $this->assertStringContainsString('soporte', $mensaje, $nombre);
+            $this->assertStringNotContainsString('respaldo', $mensaje, $nombre);
+            $this->assertLessThanOrEqual(450, mb_strlen($mensaje), $nombre);
             $this->assertStringContainsString('más chicos', $mensaje, $nombre);
 
             // Pro y Flash saturados: el mensaje de "no disponible" también lista qué hacer.
@@ -298,7 +300,42 @@ class RespaldoFlashEnImportacionTest extends TestCase
 
             $this->assertSame(AiExcelAnalyzer::MENSAJE_IA_NO_DISPONIBLE, $mensaje, $nombre);
             $this->assertCount(2, $this->enviados, $nombre);
-            $this->assertStringContainsString('guardalo', $mensaje, $nombre);
+            $this->assertStringContainsString('minutos', $mensaje, $nombre);
+            $this->assertStringNotContainsString('respaldo', $mensaje, $nombre);
+        }
+    }
+
+    /**
+     * Un 408 o 504 de DeepSeek (timeout del lado del proveedor) es "no disponible", no "rechazó el pedido".
+     *
+     * @group import
+     * @test
+     */
+    public function un_504_de_flash_o_un_408_con_flash_elegido_dan_no_disponible()
+    {
+        foreach ($this->analizadores() as $nombre => $par) {
+            // Pro saturado y Flash con 504.
+            $this->falsear(function ($modelo) {
+                return $modelo === 'deepseek-pro-test'
+                    ? [['error' => ['type' => 'overloaded_error']], 503]
+                    : [['error' => ['message' => 'Gateway Timeout']], 504];
+            });
+
+            $this->assertSame(AiExcelAnalyzer::MENSAJE_IA_NO_DISPONIBLE, $this->mensaje_de_error($par[0]), $nombre . ' 504');
+            $this->assertCount(2, $this->enviados, $nombre);
+        }
+
+        $columna = ModelosIaHelper::COLUMNAS_POR_TAREA[ModelosIaHelper::TAREA_EXCEL];
+        $this->dueno->{$columna} = ModelosIaHelper::DEEPSEEK_FLASH;
+        $this->dueno->save();
+
+        foreach ($this->analizadores() as $nombre => $par) {
+            $this->falsear(function () {
+                return [['error' => ['message' => 'Request Timeout']], 408];
+            });
+
+            $this->assertSame(AiExcelAnalyzer::MENSAJE_IA_NO_DISPONIBLE, $this->mensaje_de_error($par[0]), $nombre . ' 408');
+            $this->assertCount(1, $this->enviados, $nombre);
         }
     }
 
