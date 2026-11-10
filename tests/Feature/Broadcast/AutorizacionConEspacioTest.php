@@ -4,11 +4,14 @@ namespace Tests\Feature\Broadcast;
 
 use App\Broadcasting\EspacioDeCanales;
 use App\Broadcasting\PusherBroadcasterConEspacio;
+use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Models\DemoIngresoToken;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Broadcast;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -147,6 +150,27 @@ class AutorizacionConEspacioTest extends TestCase
         $this->autorizar($canal)->assertForbidden();
         $this->actingAs($this->empleado, 'web')->withSession(['acceso_soporte_token_id' => 1]);
         $this->autorizar($canal)->assertForbidden();
+    }
+
+    public function test_el_socket_de_robotito_admite_el_enlace_propio_de_prueba_vigente(): void
+    {
+        PruebaHelper::olvidar_cache();
+        config(['app.FOR_USER' => 'prueba']);
+        PruebaHelper::activar_desde_payload($this->dueno, ['vence_at' => now()->addDay()->toIso8601String()]);
+        $token = DemoIngresoToken::create([
+            'token_hash' => hash('sha256', (string) Str::uuid()), 'user_id' => $this->dueno->id,
+            'expires_at' => now()->addHours(2),
+        ]);
+        $this->actingAs($this->dueno, 'web')->withSession(['demo_ingreso_token_id' => $token->id]);
+        $canal = 'private-support-tour.user.' . $this->dueno->id . '@' . $this->espacio;
+
+        try {
+            $this->autorizar($canal)->assertOk()->assertJsonPath('auth', $this->firma_esperada($canal));
+            config(['app.FOR_USER' => 'demo']);
+            $this->autorizar($canal)->assertForbidden();
+        } finally {
+            PruebaHelper::olvidar_cache();
+        }
     }
 
     /**
