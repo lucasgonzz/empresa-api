@@ -220,6 +220,130 @@ class EncabezadosRepetidosTest extends ImportTestCase
         $this->assertSame([], $candidatas['grupos']);
     }
 
+    public function test_sin_ia_un_codigo_real_sin_digitos_y_sin_precio_no_se_descarta()
+    {
+        $filas = [
+            ['Codigo', 'Nombre', 'Precio'],
+            ['A-1', 'Anzuelo', 100],
+            ['A-2', 'Boya', 200],
+            ['A-3', 'Plomada', 300],
+            ['A-4', 'Reel', 400],
+            ['TANZA', 'Tanza roja', null],
+            ['TANZA', 'Tanza azul', null],
+            ['TANZA', 'Tanza verde', null],
+        ];
+
+        $encabezado = ['Codigo', 'Nombre', 'Precio'];
+        $candidatas = EncabezadosRepetidos::candidatas($this->planilla($filas), 0, 1, $encabezado);
+
+        $this->assertSame(0, EncabezadosRepetidos::confirmar($candidatas, null, $this->mapeo_con_codigo_en(0))['filas']);
+    }
+
+    public function test_un_marcador_de_sin_codigo_no_es_candidato()
+    {
+        $filas = [
+            ['Codigo', 'Nombre', 'Precio'],
+            ['A-1', 'Anzuelo', 100],
+            ['A-2', 'Boya', 200],
+            ['A-3', 'Plomada', 300],
+            ['S/C', 'Tanza roja', null],
+            ['S/C', 'Tanza azul', null],
+            ['S/C', 'Tanza verde', null],
+        ];
+
+        $candidatas = EncabezadosRepetidos::candidatas($this->planilla($filas), 0, 1, ['Codigo', 'Nombre', 'Precio']);
+
+        $this->assertSame([], $candidatas['grupos']);
+    }
+
+    public function test_sin_ia_entra_el_titulo_de_la_propia_columna()
+    {
+        $filas = $this->filas_mayorista();
+
+        foreach ([6, 8, 11] as $indice) {
+            $filas[$indice][1] = 'CODIGO';
+        }
+
+        $ruta       = $this->planilla($filas);
+        $candidatas = EncabezadosRepetidos::candidatas($ruta, 0, 3, $this->encabezado());
+
+        $this->assertSame(3, EncabezadosRepetidos::confirmar($candidatas, null, $this->mapeo_con_codigo_en(1))['filas']);
+    }
+
+    public function test_en_una_tabla_de_dos_columnas_se_detecta_la_repeticion_exacta()
+    {
+        $filas = [['Codigo', 'Nombre'], ['A-1', 'Uno'], ['Codigo', 'Nombre'], ['A-2', 'Dos'], ['Codigo', 'Nombre'], ['A-3', 'Tres']];
+
+        $candidatas = EncabezadosRepetidos::candidatas($this->planilla($filas), 0, 1, ['Codigo', 'Nombre']);
+        $regla      = EncabezadosRepetidos::confirmar($candidatas, [], []);
+
+        $this->assertSame(2, $candidatas['exactas']);
+        $this->assertSame(2, $regla['filas']);
+    }
+
+    public function test_la_recomendacion_recalcula_con_el_mapeo_que_corrigio_el_usuario()
+    {
+        config([
+            'services.anthropic.api_key' => 'clave-anthropic-de-prueba',
+            'services.deepseek.api_key'  => 'clave-deepseek-de-prueba',
+        ]);
+
+        Notification::fake();
+
+        $respuesta = json_encode([
+            'politica_colision'      => 'actualizar_todos',
+            'politica_intra_archivo' => 'ultima_gana',
+            'explicacion'            => 'Recomendación de prueba.',
+        ]);
+
+        Http::swap(new HttpFactorySinSalida(app('events')));
+        Http::fake(function () use ($respuesta) {
+            return Http::response([
+                'model'       => 'modelo-de-prueba',
+                'content'     => [['type' => 'text', 'text' => $respuesta]],
+                'stop_reason' => 'end_turn',
+                'usage'       => ['input_tokens' => 1, 'output_tokens' => 1],
+            ], 200);
+        });
+
+        $filas = array_values(array_filter($this->filas_mayorista(), function ($fila) {
+            return ($fila[1] ?? null) !== 'Articulo';
+        }));
+
+        $ruta = $this->planilla($filas);
+
+        /* provider_code_column_index llega en null: es el del análisis, antes de la corrección. */
+        $run = ExcelAnalysisRun::create([
+            'uuid'         => Str::uuid()->toString(),
+            'user_id'      => $this->tenant->id,
+            'auth_user_id' => $this->tenant->id,
+            'tipo'         => 'recomendacion',
+            'estado'       => 'pendiente',
+            'excel_path'   => 'imported_files/' . basename($ruta),
+            'payload'      => [
+                'model'                      => 'article',
+                'provider_code_column_index' => null,
+                'hoja'                       => 0,
+                'header_row'                 => 3,
+                'column_mapping'             => [
+                    ['system_property' => 'codigo_de_proveedor', 'excel_column_index' => 1, 'excel_column' => 'CODIGO'],
+                    ['system_property' => 'nombre', 'excel_column_index' => 2, 'excel_column' => 'Nombre'],
+                ],
+            ],
+        ]);
+
+        (new RunExcelAnalysisJob($run->id))->handle();
+
+        $run->refresh();
+
+        $this->assertSame('listo', $run->estado, json_encode($run->toArray(), JSON_UNESCAPED_UNICODE));
+        $this->assertSame(1, $run->resultado['duplicate_stats']['provider_codes_duplicados_intra_archivo']);
+        $this->assertArrayNotHasKey('provider_codes_distintos', $run->resultado['duplicate_stats']);
+        $this->assertTrue($run->resultado['cadena_identificacion']['disponible']);
+        $this->assertSame(7, $run->resultado['cadena_identificacion']['total_filas']);
+        $this->assertArrayHasKey('desempate_por_nombre', $run->resultado);
+    }
+
     public function test_el_analisis_excluye_esas_filas_de_todos_los_conteos()
     {
         $ruta = $this->planilla($this->filas_mayorista());

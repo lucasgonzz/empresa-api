@@ -354,21 +354,6 @@ class AiExcelAnalyzer
         );
 
         /*
-         * La regla queda escrita antes de cualquier recorrido del archivo: todos los conteos de
-         * acá para abajo, y la importación, la leen del archivo lateral.
-         */
-        $regla_de_encabezados = EncabezadosRepetidos::confirmar(
-            $candidatas_de_encabezado,
-            $parsed['encabezados_repetidos'] ?? null,
-            $parsed['column_mapping']
-        );
-
-        EncabezadosRepetidos::guardar($excel_path, $indice_hoja, $regla_de_encabezados);
-
-        /* Clave nueva y opcional del resultado: la SPA avisa cuántas filas se ignoraron. */
-        $parsed['encabezados_repetidos'] = EncabezadosRepetidos::resumen($regla_de_encabezados);
-
-        /*
          * Si el nombre del archivo no alcanzó, el proveedor puede salir de los artículos que
          * ya están cargados. Va antes del Paso 5.1 para que la configuración guardada de ese
          * proveedor se aplique igual que si lo hubiera dicho la IA.
@@ -422,6 +407,22 @@ class AiExcelAnalyzer
 
             array_unshift($parsed['assistant_notes'], ProviderImportMappingHelper::nota_de_reconocimiento($mapeo_guardado));
         }
+
+        /*
+         * La regla queda escrita antes de cualquier recorrido del archivo: todos los conteos de
+         * acá para abajo, y la importación, la leen del archivo lateral. Va después del Paso 5.1
+         * porque mira qué columnas identifican, y tiene que ver el mapeo definitivo.
+         */
+        $regla_de_encabezados = EncabezadosRepetidos::confirmar(
+            $candidatas_de_encabezado,
+            $parsed['encabezados_repetidos'] ?? null,
+            $parsed['column_mapping']
+        );
+
+        EncabezadosRepetidos::guardar($excel_path, $indice_hoja, $regla_de_encabezados);
+
+        /* Clave nueva y opcional del resultado: la SPA avisa cuántas filas se ignoraron. */
+        $parsed['encabezados_repetidos'] = EncabezadosRepetidos::resumen($regla_de_encabezados);
 
         /*
          * Paso 6: Contar el total real de filas de datos del Excel (excluye cabecera)
@@ -1039,7 +1040,7 @@ class AiExcelAnalyzer
      * @return array  ['placeholders' => [...], 'cadena_identificacion' => [...], 'nombres_duplicados' => [...],
      *                 'desempate_por_nombre' => [...]]
      */
-    protected function analyze_identification_chain(string $excel_path, array $column_mapping, $indice_hoja = 0, $fila_encabezado = null): array
+    public function analyze_identification_chain(string $excel_path, array $column_mapping, $indice_hoja = 0, $fila_encabezado = null): array
     {
         /* Resultado vacío por defecto: se retorna si no hay ninguna columna identificadora mapeada, o si falla la lectura. */
         $empty_result = [

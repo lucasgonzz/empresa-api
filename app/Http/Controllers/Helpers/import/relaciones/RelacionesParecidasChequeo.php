@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\import\relaciones;
 
 use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\ArticleImportColumnsNormalizer;
+use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
@@ -974,6 +975,9 @@ class RelacionesParecidasChequeo
             ? (int) $payload['header_row']
             : (int) ExcelHeaderDetector::detectar_en($excel_full_path, $hoja)['fila'];
 
+        /* Una fila que repite el encabezado no aporta nombres para revisar: no se va a importar. */
+        $regla_de_encabezados = EncabezadosRepetidos::leer($excel_full_path, $hoja);
+
         /* Con las filas vacías preservadas: el contador es la fila física, la misma del detector. */
         $lectura = ExcelWorkbookReader::abrir($excel_full_path, $hoja, true);
 
@@ -997,6 +1001,10 @@ class RelacionesParecidasChequeo
                     }
 
                     $celdas[] = $valor;
+                }
+
+                if (EncabezadosRepetidos::es_encabezado($celdas, $numero, $regla_de_encabezados)) {
+                    continue;
                 }
 
                 call_user_func($procesar, $celdas);

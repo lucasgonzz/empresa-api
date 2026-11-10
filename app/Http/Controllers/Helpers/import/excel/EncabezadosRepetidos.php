@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\import\excel;
 
+use App\Http\Controllers\Helpers\import\article\IdentifierNormalizer;
 use Illuminate\Support\Facades\Log;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
 
@@ -50,6 +51,16 @@ class EncabezadosRepetidos
 
     /** Repeticiones desde las que un valor en una columna de código entra aunque la IA no lo confirme. */
     const REPETICIONES_SIN_IA = 3;
+
+    /**
+     * Rótulos que se aceptan sin la confirmación de la IA, ya normalizados. Es una lista cerrada a
+     * propósito: un código real sin dígitos (TANZA, CANA) cumple todo lo demás, repetido y en filas
+     * sin precio, y descartarlo sería perder artículos sin que nadie lo vea.
+     */
+    const ROTULOS_SIN_IA = [
+        'articulo', 'articulos', 'art', 'codigo', 'codigos', 'cod', 'cod.', 'producto', 'productos',
+        'descripcion', 'detalle', 'item', 'items', 'sku', 'referencia', 'ref', 'ref.',
+    ];
 
     /** Cuántos números de fila se le muestran al usuario como ejemplo. */
     const EJEMPLOS = 3;
@@ -126,12 +137,13 @@ class EncabezadosRepetidos
 
         $mediana = self::mediana($histograma);
 
+        /* Una repetición exacta del encabezado se reconoce sin importar el ancho de la tabla. */
+        $resultado['exactas'] = $exactas;
+
         /* Con tablas de una o dos columnas no se distingue una fila «delgada» de una normal. */
         if ($mediana < 3) {
             return $resultado;
         }
-
-        $resultado['exactas'] = $exactas;
 
         $limite = max(2, (int) ceil($mediana * 0.5));
         $grupos = self::grupos_de_filas_delgadas($hoja, $fila_encabezado, $encabezado, $limite);
@@ -257,6 +269,23 @@ class EncabezadosRepetidos
     }
 
     /**
+     * True si el valor del grupo es un rótulo conocido o el título de su propia columna.
+     *
+     * @param  array $grupo
+     * @param  array $encabezado  [indice => título]
+     * @return bool
+     */
+    protected static function es_rotulo(array $grupo, array $encabezado)
+    {
+        if (in_array($grupo['clave'], self::ROTULOS_SIN_IA, true)) {
+            return true;
+        }
+
+        return isset($encabezado[$grupo['columna']])
+            && self::normalizar($encabezado[$grupo['columna']]) === $grupo['clave'];
+    }
+
+    /**
      * La sección del prompt con las candidatas. '' si no hay ninguna.
      *
      * @param  array  $candidatas
@@ -283,17 +312,18 @@ class EncabezadosRepetidos
             . "Estos valores solo aparecen en filas casi vacías (columna = posición desde 0):\n"
             . $lineas
             . "Devolvé en \"encabezados_repetidos\" los que sean títulos o rótulos de una tabla y no datos de un artículo. "
-            . "Dejá afuera los que sean un dato real (una marca, una categoría, un código).\n";
+            . "Dejá afuera los que sean un dato real (una marca, una categoría, un código o el nombre de un producto). "
+            . "Ante la duda, dejalo afuera.\n";
     }
 
     /**
      * Arma la regla final.
      *
      * Entran los grupos que confirmó la IA (solo si eran candidatos: no se le acepta un valor
-     * que la medición no encontró) y, sin depender de ella, los de una columna de código que se
-     * repiten tres veces o más. Un texto sin dígitos, repetido, que nunca viene con el resto de
-     * los datos, no identifica a ningún artículo. Si esa parte dependiera solo de la IA, una
-     * respuesta cortada volvería a mostrarle al usuario el falso repetido.
+     * que la medición no encontró) y, sin depender de ella, los rótulos conocidos (ROTULOS_SIN_IA
+     * o el título de la propia columna) en una columna de código, repetidos tres veces o más. Si
+     * esa parte dependiera solo de la IA, una respuesta cortada volvería a mostrarle al usuario el
+     * falso repetido; si aceptara cualquier texto, se perderían artículos con códigos sin dígitos.
      *
      * @param  array      $candidatas
      * @param  array|null $respuesta_ia    [['columna' => 1, 'valor' => 'Articulo'], ...]
@@ -312,7 +342,8 @@ class EncabezadosRepetidos
                 || isset($confirmadas['*|' . $grupo['clave']]);
 
             $sin_ia = isset($identificadoras[$grupo['columna']])
-                && $grupo['repeticiones'] >= self::REPETICIONES_SIN_IA;
+                && $grupo['repeticiones'] >= self::REPETICIONES_SIN_IA
+                && self::es_rotulo($grupo, $candidatas['encabezado'] ?? []);
 
             if (!$por_la_ia && !$sin_ia) {
                 continue;
@@ -696,7 +727,9 @@ class EncabezadosRepetidos
     {
         return $clave !== ''
             && mb_strlen($clave) <= self::LARGO_MAXIMO_ETIQUETA
-            && !preg_match('/\d/', (string) $valor);
+            && !preg_match('/\d/', (string) $valor)
+            /* S/C, S/N y compañía son marcadores de «sin código»: la fila sigue siendo un artículo. */
+            && !IdentifierNormalizer::is_placeholder($valor);
     }
 
     /**
