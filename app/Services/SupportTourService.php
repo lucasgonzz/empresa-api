@@ -235,6 +235,12 @@ class SupportTourService
                 $pasos[$clave] = $descripcion;
             }
         }
+        if (isset($pasos['vista.abm'])) {
+            $pasos['abm.editar_recargo'] = 'Abrir ABM → Precios → Recargos y señalar la lista para que la persona elija qué recargo de venta editar.';
+            $pasos['abm.porcentaje_recargo'] = 'Señalar Porcentaje en la edición del recargo predefinido. Usar después de abm.editar_recargo. La persona edita y guarda.';
+            $pasos['abm.editar_descuento'] = 'Abrir ABM → Precios → Descuentos y señalar la lista para que la persona elija qué descuento de venta editar.';
+            $pasos['abm.porcentaje_descuento'] = 'Señalar Porcentaje en la edición del descuento predefinido. Usar después de abm.editar_descuento. La persona edita y guarda.';
+        }
         if (isset($pasos['vista.tesoreria'])) {
             $pasos['caja.historial_aperturas'] = 'Señalar Aperturas en Tesorería. La persona elige la caja cuyo historial quiere abrir.';
             $pasos['caja.reabrir_apertura'] = 'Señalar Reabrir en el historial que abrió la persona. Solo aparece para la última apertura de una caja cerrada. Usar después de caja.historial_aperturas.';

@@ -45,6 +45,9 @@ class SupportTour extends Model
     public function para_navegacion(): array
     {
         $datos = $this->only(['uuid', 'tema', 'titulo', 'textos']);
+        if ($this->previous_uuid !== null) {
+            $datos['previous_uuid'] = $this->previous_uuid;
+        }
         if ($this->tema === self::REVERTIR_IMPORTACION_ARTICULOS) {
             $datos['import_history_id'] = $this->import_history_id;
         }

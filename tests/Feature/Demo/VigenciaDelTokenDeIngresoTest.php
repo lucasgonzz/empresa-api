@@ -4,6 +4,7 @@ namespace Tests\Feature\Demo;
 
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\PdfLinkHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\SaleController;
 use App\Models\DemoIngresoToken;
 use App\Models\User;
@@ -11,6 +12,7 @@ use App\Models\VersionSessionTransfer;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful;
@@ -251,6 +253,100 @@ class VigenciaDelTokenDeIngresoTest extends TestCase
         $this->assertFalse(session()->has('demo_ingreso_token_id'));
         $this->como_un_request_nuevo();
         $this->get_con_sesion_stateful('/api/user')->assertStatus(401);
+    }
+
+    /** @dataProvider clases_de_ingreso_por_link */
+    public function test_un_link_vigente_abre_una_sesion_nueva_desde_un_acceso_tecnico(string $modo, bool $robotito): void
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        config(['app.env' => 'testing', 'app.FOR_USER' => $modo, 'app.USER_ID' => $user->id]);
+        Http::fake(['*' => Http::response(['ok' => true], 200)]);
+        PruebaHelper::olvidar_cache();
+        try {
+            if ($modo === 'prueba') {
+                PruebaHelper::activar_desde_payload($user, ['vence_at' => now()->addDays(7)->toIso8601String()]);
+            }
+            $candado = 'candado-tomado-por-otra-sesion';
+            $actividad = now()->startOfSecond();
+            $user->forceFill(['session_id' => $candado, 'last_activity' => $actividad, 'activity_minutes' => 60])->save();
+            $creado = $this->crear_token(null, now()->addHour());
+            $sesion_anterior = $this->sesion_tecnica_existente($user);
+
+            $this->post_con_sesion_stateful('/api/demo/ingreso', ['t' => $creado['plain']])
+                ->assertOk()
+                ->assertSessionHas('demo_ingreso_token_id', $creado['token']->id)
+                ->assertSessionMissing('acceso_soporte_token_id')
+                ->assertSessionMissing('master_login_bypass_user_last_activity')
+                ->assertSessionMissing('auth_user')
+                ->assertSessionMissing('owner');
+            $this->assertNotSame($sesion_anterior, session()->getId());
+            $this->assertNotEmpty(session()->token());
+            $this->assertNotSame('csrf-del-acceso-tecnico', session()->token());
+
+            $this->withCookie(config('session.cookie'), session()->getId());
+            $this->como_un_request_nuevo();
+            $this->get_con_sesion_stateful('/api/user')->assertOk()
+                ->assertJsonPath('user.id', $user->id)
+                ->assertJsonPath('user.es_sesion_soporte', false)
+                ->assertJsonPath('user.es_acceso_maestro', false)
+                ->assertJsonPath('user.es_sesion_demo', $modo === 'demo')
+                ->assertJsonPath('user.robotito_soporte_habilitado', $robotito);
+            $this->get_con_sesion_stateful('/api/support-tour/pending')->assertStatus($robotito ? 200 : 403);
+            $actual = $user->fresh();
+            $this->assertSame($candado, $actual->session_id);
+            $this->assertEquals((string) $actividad, (string) $actual->last_activity);
+        } finally {
+            PruebaHelper::olvidar_cache();
+        }
+    }
+
+    public function clases_de_ingreso_por_link(): array
+    {
+        return [
+            'prueba vigente' => ['prueba', true],
+            'demo comercial' => ['demo', false],
+        ];
+    }
+
+    public function test_un_link_invalido_conserva_la_sesion_tecnica_existente(): void
+    {
+        $user = $this->usuario_de_testing();
+        if (is_null($user)) {
+            $this->markTestSkipped('La base de testing no tiene el usuario 500 sembrado.');
+        }
+
+        $sesion_anterior = $this->sesion_tecnica_existente($user);
+        $this->post_con_sesion_stateful('/api/demo/ingreso', ['t' => 'token-que-no-existe'])
+            ->assertUnauthorized()
+            ->assertJsonPath('error', 'token_invalido')
+            ->assertSessionHas(Auth::guard('web')->getName(), $user->id)
+            ->assertSessionHas('acceso_soporte_token_id', 123)
+            ->assertSessionHas('master_login_bypass_user_last_activity', true)
+            ->assertSessionHas('auth_user.id', $user->id)
+            ->assertSessionHas('owner.id', $user->id)
+            ->assertSessionHas('_token', 'csrf-del-acceso-tecnico')
+            ->assertSessionMissing('demo_ingreso_token_id');
+        $this->assertSame($sesion_anterior, session()->getId());
+    }
+
+    private function sesion_tecnica_existente(User $user): string
+    {
+        $this->withSession([
+            Auth::guard('web')->getName() => $user->id,
+            'acceso_soporte_token_id' => 123,
+            'master_login_bypass_user_last_activity' => true,
+            'auth_user' => ['id' => $user->id],
+            'owner' => ['id' => $user->id],
+            '_token' => 'csrf-del-acceso-tecnico',
+        ]);
+        $id = session()->getId();
+        $this->withCredentials()->withCookie(config('session.cookie'), $id);
+
+        return $id;
     }
 
     /**
