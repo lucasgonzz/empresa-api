@@ -16,6 +16,7 @@ use App\Http\Controllers\Helpers\import\article\ArticleIndexCache;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
 use App\Http\Controllers\Helpers\import\article\ProviderImportMappingHelper;
+use App\Http\Controllers\Helpers\import\excel\ColumnasSinNombre;
 use App\Http\Controllers\Helpers\import\excel\ExcelHeaderDetector;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 
@@ -2335,9 +2336,14 @@ PROMPT;
          * índices es la mitad mecánica; el aviso es la que hace que no se degrade en silencio.
          */
         $header_indexes_by_name = [];
+
+        /* Columnas sin título todavía sin asignar, en el orden real de la planilla. */
+        $blank_header_indexes = [];
+
         foreach ($headers as $header_index => $header_text) {
             $normalized_key = $this->normalize_header_key($header_text);
             if ($normalized_key === '') {
+                $blank_header_indexes[] = $header_index;
                 continue;
             }
             if (!isset($header_indexes_by_name[$normalized_key])) {
@@ -2348,6 +2354,9 @@ PROMPT;
 
         /* Cuántos índices de cada nombre ya se repartieron: nombre normalizado => cantidad. */
         $header_indexes_consumed = [];
+
+        /* Índice asignado al ítem anterior del mapeo: ubica a los ítems sin título. */
+        $previous_column_index = -1;
 
         $enriched_mapping = [];
 
@@ -2389,7 +2398,20 @@ PROMPT;
                      */
                     $excel_column_index = $indices_del_nombre[count($indices_del_nombre) - 1];
                 }
+            } elseif ($normalized_excel_name === '') {
+                /*
+                 * Ítem sin título: su posición en la respuesta no sirve si la IA se salteó alguna
+                 * columna. Se le asigna una columna real sin título (ver ColumnasSinNombre); si
+                 * el archivo no tiene ninguna libre, conserva la posición de siempre.
+                 */
+                $blank_column_index = ColumnasSinNombre::tomar_siguiente($blank_header_indexes, $previous_column_index);
+
+                if (!is_null($blank_column_index)) {
+                    $excel_column_index = $blank_column_index;
+                }
             }
+
+            $previous_column_index = $excel_column_index;
 
             /* Alineamos system_property al contrato del importador (codigo_de_proveedor, etc.). */
             $system_property = $mapping_item['system_property'] ?? null;
