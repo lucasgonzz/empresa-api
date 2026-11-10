@@ -4,7 +4,9 @@ namespace App\Http\Controllers\Helpers;
 
 use App\Models\SupportMessage;
 use App\Models\SupportTicket;
+use App\Models\SupportTour;
 use App\Services\SupportAgentesSync;
+use App\Services\SupportTourService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
@@ -95,6 +97,18 @@ class SupportSyncHelper
         ];
         if ($message->sender_type === 'user' && $message->robotito_support_version !== null) {
             $payload['robotito_support_version'] = (int) $message->robotito_support_version;
+            if ($outbound_key && $message->kind === 'text' && $message->ticket
+                && (int) $message->robotito_support_version === SupportTourService::VERSION_SOPORTE_WEB
+                && (int) $message->sender_user_id === (int) $message->ticket->user_id) {
+                // El vínculo persistido distingue la pregunta del tour de un texto escrito en el chat.
+                $pregunta = SupportTour::where('question_message_id', $message->id)
+                    ->where('recipient_id', $message->sender_user_id)
+                    ->where('question_ticket_uuid', $message->ticket->uuid)->value('question');
+                if ($pregunta !== null) {
+                    $payload['robotito_followup'] = true;
+                    $payload['robotito_question'] = $pregunta;
+                }
+            }
         }
         if ($identidad !== null) {
             $payload['agentes_version'] = SupportAgentesSync::VERSION;
