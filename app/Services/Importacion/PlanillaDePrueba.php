@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ArticleImportColumnsNormalizer;
 use App\Http\Controllers\Helpers\import\article\IdentifierNormalizer;
 use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
+use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Models\Address;
 use App\Models\ImportacionDePrueba;
@@ -434,13 +435,16 @@ class PlanillaDePrueba
             throw new RuntimeException('No se pudo abrir la hoja del Excel.');
         }
 
+        // Los encabezados repetidos adentro de la planilla no son artículos ni códigos repetidos.
+        $regla_de_encabezados = EncabezadosRepetidos::leer($ruta, $indice);
+
         try {
             if (fread($csv, 3) !== CsvDeHoja::BOM_UTF8) {
                 rewind($csv);
             }
             $numero = 0;
             while (($fila = fgetcsv($csv, 0, ',', '"', '')) !== false) {
-                if (++$numero >= $inicio) {
+                if (++$numero >= $inicio && !EncabezadosRepetidos::es_encabezado($fila, $numero, $regla_de_encabezados)) {
                     yield $numero => $fila;
                 }
             }

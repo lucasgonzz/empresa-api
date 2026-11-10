@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Jobs\BorrarSemillaDePruebaJob;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
+use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Jobs\FinalizeArticleImport;
@@ -498,6 +499,19 @@ class InitExcelImport
 
             if (!@copy($sidecar_csv, $this->csv_full_path)) {
                 throw new \RuntimeException('No se pudo copiar el CSV de la hoja a imported_files.');
+            }
+
+            /*
+             * Los encabezados repetidos que marcó el análisis se vacían en la COPIA, antes de que
+             * nadie junte claves u offsets. Así ninguna parte del motor los ve como artículos. Si
+             * no se pudieron vaciar se corta: importar esas filas crearía artículos basura.
+             * La importación clásica no pasa por el análisis, no tiene regla y no cambia.
+             */
+            if (!EncabezadosRepetidos::vaciar_en_csv(
+                $this->csv_full_path,
+                EncabezadosRepetidos::leer($this->archivo_excel, (int) $meta['indice'])
+            )) {
+                throw new \RuntimeException('No se pudieron quitar los encabezados repetidos del CSV.');
             }
 
             $ultima_fila_con_contenido = (int) $meta['ultima_fila_con_contenido'];
