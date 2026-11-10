@@ -75,6 +75,15 @@ class SupportTourController extends Controller
         )]);
     }
 
+    public function recargos_disponibles(Request $request, SupportTourService $service): JsonResponse
+    {
+        $datos = $request->validate(['user_id' => 'sometimes|required|integer|min:1']);
+        $dueno = $this->dueno();
+        $persona = isset($datos['user_id']) ? User::find($datos['user_id']) : $dueno;
+
+        return response()->json(['available' => $persona !== null && $service->puede_guiar_recargos($dueno, $persona)]);
+    }
+
     private function dueno(): User
     {
         $dueno = AsistenteCanalHelper::dueno();

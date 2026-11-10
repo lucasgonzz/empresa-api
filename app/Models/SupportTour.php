@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class SupportTour extends Model
 {
     public const REVERTIR_IMPORTACION_ARTICULOS = 'revertir_importacion_articulos';
+    public const APLICAR_RECARGO_VENTA = 'aplicar_recargo_venta';
 
     public const PASOS_POR_TEMA = [
         'crear_ticket' => 3,
@@ -14,6 +15,7 @@ class SupportTour extends Model
         'buscar_articulo_codigo' => 1,
         'centro_recursos' => 2,
         self::REVERTIR_IMPORTACION_ARTICULOS => 3,
+        self::APLICAR_RECARGO_VENTA => 2,
     ];
 
     public const MOTIVOS_POSITIVOS = ['claro', 'facil', 'ritmo', 'resolvio'];

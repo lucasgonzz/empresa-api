@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\SupportSyncHelper;
 use App\Http\Controllers\Helpers\SupportTicketHelper;
 use App\Http\Controllers\Helpers\TelefonoArgentinoHelper;
+use App\Http\Controllers\Helpers\VenderLayoutHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Models\ImportHistory;
@@ -14,7 +15,9 @@ use App\Models\Provider;
 use App\Models\SupportMessage;
 use App\Models\SupportTicket;
 use App\Models\SupportTour;
+use App\Models\Surchage;
 use App\Models\User;
+use App\Models\VenderLayout;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -96,9 +99,11 @@ class SupportTourService
                 abort_unless(self::tiene_chat_soporte($persona), 409, 'El chat de soporte no está disponible en este sistema.');
             }
             if (in_array($datos['tema'], ['buscar_articulo_nombre', 'buscar_articulo_codigo'], true)) {
-                abort_unless(PermisosIaHelper::tiene_extencion($dueno, 'comerciocity_interno')
-                    && PermisosIaHelper::puede($persona, 'sale.store'),
-                    409, 'La pantalla Vender no está disponible para esa persona.');
+                abort_unless($this->puede_vender($dueno, $persona), 409, 'La pantalla Vender no está disponible para esa persona.');
+            }
+            if ($datos['tema'] === SupportTour::APLICAR_RECARGO_VENTA) {
+                abort_unless($this->puede_guiar_recargos($dueno, $persona),
+                    409, 'Los recargos de venta no están disponibles para esa persona.');
             }
             if ($datos['tema'] === SupportTour::REVERTIR_IMPORTACION_ARTICULOS) {
                 $importacion = ImportHistory::where('user_id', $dueno->id)->where('model_name', 'article')
@@ -155,6 +160,38 @@ class SupportTourService
         return PermisosIaHelper::puede($persona, 'article.index')
             && (PermisosIaHelper::puede($persona, 'article.store')
                 || PermisosIaHelper::puede($persona, 'article.export_excel_clients'));
+    }
+
+    private function puede_vender(User $dueno, User $persona): bool
+    {
+        return PermisosIaHelper::tiene_extencion($dueno, 'comerciocity_interno')
+            && PermisosIaHelper::puede($persona, 'sale.store');
+    }
+
+    public function puede_guiar_recargos(User $dueno, User $persona): bool
+    {
+        if ((int) ($persona->owner_id ?: $persona->id) !== (int) $dueno->id
+            || !$this->puede_vender($dueno, $persona)
+            || !PermisosIaHelper::puede($persona, 'sale.discount_surchage.aplicar')
+            || !Surchage::where('user_id', $dueno->id)->exists()) {
+            return false;
+        }
+
+        $diseno = VenderLayout::where('user_id', $dueno->id)->where('en_uso', true)
+            ->orderByDesc('updated_at')->orderByDesc('id')->first(['layout']);
+        $layout = optional($diseno)->layout;
+        if (!is_array($layout['etapas'] ?? null) || !in_array('recargos', (array) ($layout['sacados'] ?? []), true)) {
+            return true;
+        }
+
+        // Como en el resolver de Vender, una ubicación explícita gana sobre la bandeja de campos sacados.
+        foreach (VenderLayoutHelper::ETAPAS as $etapa) {
+            if (in_array('recargos', array_column((array) ($layout['etapas'][$etapa] ?? []), 'key'), true)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function importaciones_candidatas(User $persona, ?int $import_history_id): array

@@ -6,9 +6,12 @@ use App\Events\SupportMessageReceived;
 use App\Events\SupportTourOffered;
 use App\Models\ExtencionEmpresa;
 use App\Models\ImportHistory;
+use App\Models\PermissionEmpresa;
 use App\Models\Provider;
 use App\Models\SupportMessage;
+use App\Models\Surchage;
 use App\Models\User;
+use App\Models\VenderLayout;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Auth;
@@ -182,6 +185,65 @@ class SupportToursTest extends EmpresaTestCase
                 'provider_id' => $proveedor->id,
                 'provider_name' => 'Proveedor del comercio',
             ]]]);
+    }
+
+    public function test_disponibilidad_de_recargos_valida_comercio_permisos_catalogo_y_diseno(): void
+    {
+        $dueno = $this->persona();
+        $empleado = $this->persona(['owner_id' => $dueno->id]);
+        config(['app.USER_ID' => $dueno->id]);
+        $ruta = self::ADMIN_SYNC . '/recargos/disponibilidad';
+        $this->getJson($ruta)->assertUnauthorized();
+        $this->getJson($ruta, $this->clave())->assertExactJson(['available' => false]);
+
+        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'comerciocity_interno'], ['name' => 'Vender']);
+        $dueno->extencions()->attach($extension->id);
+        Surchage::create(['user_id' => $this->dueno->id, 'name' => 'De otro comercio', 'percentage' => 9]);
+        $this->getJson($ruta, $this->clave())->assertExactJson(['available' => false]);
+
+        $recargo = Surchage::create(['user_id' => $dueno->id, 'name' => 'De este comercio', 'percentage' => 7]);
+        $this->getJson($ruta, $this->clave())->assertExactJson(['available' => true]);
+        $this->getJson($ruta . '?user_id=' . $this->dueno->id, $this->clave())->assertExactJson(['available' => false]);
+        $ruta_empleado = $ruta . '?user_id=' . $empleado->id;
+        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => false]);
+        foreach (['sale.store', 'sale.discount_surchage.aplicar'] as $slug) {
+            $permiso = PermissionEmpresa::unguarded(function () use ($slug) {
+                return PermissionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+            });
+            $empleado->permissions()->attach($permiso->id);
+        }
+        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => true]);
+
+        $diseno = VenderLayout::create([
+            'user_id' => $dueno->id, 'name' => 'Sin recargos', 'en_uso' => true,
+            'layout' => ['etapas' => ['etapa_3' => []], 'sacados' => ['recargos']],
+        ]);
+        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => false]);
+        $diseno->update(['layout' => ['etapas' => ['etapa_1' => [['key' => 'recargos', 'cols' => 6]]], 'sacados' => []]]);
+        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => true]);
+        $recargo->delete();
+        $this->getJson($ruta_empleado, $this->clave())->assertExactJson(['available' => false]);
+    }
+
+    public function test_tour_recargos_vuelve_a_validar_disponibilidad_y_entrega_dos_pasos_privados(): void
+    {
+        $dueno = $this->persona();
+        config(['app.USER_ID' => $dueno->id]);
+        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'comerciocity_interno'], ['name' => 'Vender']);
+        $dueno->extencions()->attach($extension->id);
+        $oferta = $this->datos(['tema' => 'aplicar_recargo_venta', 'titulo' => 'Aplicá un recargo']);
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['textos' => ['Un paso']], $this->clave())
+            ->assertJsonValidationErrors('textos');
+        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertStatus(409);
+        Surchage::create(['user_id' => $dueno->id, 'name' => 'Recargo de prueba', 'percentage' => 7]);
+        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertOk();
+        $this->getJson('/api/support-tour/pending')->assertExactJson(['model' => []]);
+
+        Auth::forgetGuards();
+        $this->actingAs($dueno, 'web')->getJson('/api/support-tour/pending')
+            ->assertJsonPath('model.0.tema', 'aplicar_recargo_venta');
+        $this->seguimiento($oferta)->assertJsonPath('model.0.total_steps', 2);
+        Event::assertDispatchedTimes(SupportTourOffered::class, 1);
     }
 
     public function test_el_final_exige_todos_los_pasos_y_la_valoracion_distingue_la_polaridad(): void
