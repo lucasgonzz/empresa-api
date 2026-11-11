@@ -425,7 +425,7 @@ class ArticleDimensionSearchEngine
                         if (!is_null($propuesta)) {
                             $propuestas_sin_respaldo[$campo] = array_merge($propuesta, [
                                 'motivo_rechazo' => $validado['motivo'],
-                                'criterio'       => $plan['criterio'],
+                                'criterio'       => $this->criterio_del_item($plan),
                                 'match'          => $match,
                                 'nota'           => $nota,
                             ]);
@@ -876,6 +876,31 @@ class ArticleDimensionSearchEngine
         }
 
         return $codigos;
+    }
+
+    /**
+     * El criterio que se guarda en `criterio_usado` del item a partir del plan que dio el dato. Los planes nuevos
+     * (sitios de referencia, código de barras fuera de Argentina) son solo del DIAGNÓSTICO: en el item tiene que
+     * quedar uno de los tres de siempre. Además la columna es `string(20)` y «codigo_de_barras_global» mide 23:
+     * con el modo estricto de MySQL el UPDATE fallaba y el artículo se reprocesaba (gastando Serper e IA) hasta
+     * quedar en error. El plan de sitios busca por el GTIN si lo hay y si no por el código de proveedor.
+     *
+     * @param  array $plan
+     * @return string
+     */
+    protected function criterio_del_item(array $plan)
+    {
+        if ($plan['criterio'] === DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS_GLOBAL) {
+            return DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS;
+        }
+
+        if ($plan['criterio'] === DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA) {
+            return $plan['tipo_codigo'] === DimensionPageText::CODIGO_DE_BARRAS
+                ? DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS
+                : DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR;
+        }
+
+        return $plan['criterio'];
     }
 
     /**

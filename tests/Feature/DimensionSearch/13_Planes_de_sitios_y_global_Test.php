@@ -245,6 +245,62 @@ class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
     }
 
     /**
+     * Una propuesta sin respaldo que salió de un plan NUEVO guarda en `criterio_usado` uno de los tres de siempre.
+     * Antes guardaba el criterio del plan: «codigo_de_barras_global» mide 23 y la columna es string(20); con MySQL
+     * estricto el cierre del artículo fallaba y el job lo reprocesaba (gastando Serper e IA) hasta dejarlo en error.
+     * Lo encontró la revisión independiente de la misión.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function una_propuesta_sin_respaldo_de_los_planes_nuevos_guarda_un_criterio_de_los_de_siempre()
+    {
+        $articulo = $this->nuevo_articulo('MANGUERA GARDENA CLASSIC 13MM 20M', self::GTIN_OBI, ['provider_code' => 'GA-18000']);
+
+        $this->falsear(
+            ['us|"'.self::GTIN_OBI.'"' => [$this->resultado(self::URL_OBI, 'GARDENA Classic Schlauch')]],
+            [self::URL_OBI => $this->pagina('GARDENA Classic Schlauch', 'EAN '.self::GTIN_OBI.'. Gartenschlauch für den Garten.')],
+            // La cita no está en la página: el valor queda como propuesta sin respaldo.
+            $this->ficha('exacto', ['peso' => $this->dato(2.7, 'kg', 'Gewicht 2,70 kg', self::URL_OBI)])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('valor_sin_respaldo', $item->motivo);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS, $item->criterio_usado);
+        $this->assertEquals(2.7, (float) $item->peso_kg);
+        $this->assertSame('sin_medidas', $this->entrada($item, 'codigo_de_barras_global')['resultado']);
+    }
+
+    /**
+     * Lo mismo en el plan de los sitios de referencia, buscando por el código de proveedor (sin GTIN).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function una_propuesta_sin_respaldo_del_plan_de_sitios_por_proveedor_guarda_codigo_proveedor()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['carbydoctor.com.au']);
+
+        $articulo = $this->nuevo_articulo('CARBURADOR KOHLER SV710', null, ['provider_code' => '32 853 63-S']);
+        $url      = 'https://www.carbydoctor.com.au/carburettor-kohler';
+
+        $this->falsear(
+            ['("32 853 63-S" OR "3285363S") site:carbydoctor.com.au' => [$this->resultado($url, 'Carburettor Kohler 32 853 63-S')]],
+            [$url => $this->pagina('Carburettor Kohler', 'OEM REPLACEMENT: 32 853 63-S. Carburettor for selected Kohler engines.')],
+            // La cita no está en la página: propuesta sin respaldo.
+            $this->ficha('exacto', ['peso' => $this->dato(750, 'g', 'Shipping Weight 750 g', $url)])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status, json_encode([$this->consultas_serper, $item->motivo, $item->diagnostico], JSON_UNESCAPED_UNICODE));
+        $this->assertSame('valor_sin_respaldo', $item->motivo);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+    }
+
+    /**
      * Sin GTIN válido no hay búsqueda global; y el orden completo son cinco planes como mucho.
      *
      * @group dimension-search
