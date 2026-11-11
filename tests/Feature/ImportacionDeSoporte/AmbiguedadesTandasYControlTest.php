@@ -17,7 +17,7 @@ use Illuminate\Support\Facades\Queue;
 
 /**
  * La revisión independiente de la parte B (misión importaciones-de-martin, 11/11/2026): lo que no se puede predecir
- * no se importa, cada tanda se controla contra lo previsto, los montos y signos de cada movimiento, las tandas de 100
+ * no se importa, cada tanda se controla contra lo previsto, los montos y signos de cada movimiento, las tandas de 50
  * filas, los relanzamientos con tope y el reintento después de una corrida muerta.
  */
 class AmbiguedadesTandasYControlTest extends ImportacionDeSoporteTestCase
@@ -185,9 +185,12 @@ class AmbiguedadesTandasYControlTest extends ImportacionDeSoporteTestCase
             'codigo' => $corrida->codigo], $this->cabeceras())->assertStatus(202);
 
         // Lo previsto dice una nota de crédito de 300 (el importador va a hacer una de 400).
-        $previsto = PlanDeContactosDeSoporte::armar($corrida->fresh())['previsto'];
+        $this->assertTrue(app(ImportacionDeSoporteService::class)->preparar_tandas($corrida->fresh()));
+        $corrida->refresh();
+        $this->assertSame(1, (int) $corrida->tandas_total);
+        $previsto = $corrida->previsto;
         $previsto[0]['movimientos'] = [['nota_de_credito', 300.0]];
-        $corrida->forceFill(['previsto' => $previsto, 'tandas_total' => 1])->save();
+        $corrida->forceFill(['previsto' => $previsto])->save();
         app(ImportacionDeSoporteService::class)->avanzar($corrida->fresh());
 
         $corrida->refresh();
@@ -201,7 +204,7 @@ class AmbiguedadesTandasYControlTest extends ImportacionDeSoporteTestCase
         $this->assertStringContainsString('no cargué nada', $corrida->error);
     }
 
-    public function test_tandas_de_cien_filas_y_una_tanda_que_falla_deja_revertir_lo_anterior(): void
+    public function test_tandas_de_cincuenta_filas_y_una_tanda_que_falla_deja_revertir_lo_anterior(): void
     {
         $filas = [['Nombre', 'Saldo']];
         for ($i = 1; $i <= 230; $i++) {
@@ -210,20 +213,21 @@ class AmbiguedadesTandasYControlTest extends ImportacionDeSoporteTestCase
         $archivo = $this->planilla($filas);
         $corrida = $this->importada('client', $archivo, ['nombre', 'saldo_actual'], 112);
         $this->assertSame('terminada', $corrida->estado);
-        $this->assertSame([3, 3], [(int) $corrida->tandas_total, (int) $corrida->tandas_hechas]);
+        $this->assertSame(50, ImportacionDeSoporte::FILAS_POR_TANDA);
+        $this->assertSame([5, 5], [(int) $corrida->tandas_total, (int) $corrida->tandas_hechas]);
         $this->assertSame(230, $corrida->resultado['creados']);
-        $this->assertSame(['1' => 100, '2' => 100, '3' => 30], ImportacionDeSoporteCambio::where('importacion_de_soporte_id', $corrida->id)
+        $this->assertSame(['1' => 50, '2' => 50, '3' => 50, '4' => 50, '5' => 30], ImportacionDeSoporteCambio::where('importacion_de_soporte_id', $corrida->id)
             ->where('tipo', 'creado')->select('tanda', DB::raw('count(*) as n'))->groupBy('tanda')->orderBy('tanda')->pluck('n', 'tanda')
             ->map(function ($n) {
                 return (int) $n;
             })->all());
         $ultimo = Client::where('user_id', $this->dueno->id)->where('name', 'Tanda Soporte 230')->firstOrFail();
         $this->assertEquals(230, $this->saldo('client', $ultimo->id));
-        $this->revertir($corrida->uuid, 112)->assertJsonPath('corrida.tandas.revertidas', 3)
+        $this->revertir($corrida->uuid, 112)->assertJsonPath('corrida.tandas.revertidas', 5)
             ->assertJsonPath('corrida.resultado.reversion.creados_borrados', 230);
         $this->assertSame(0, Client::where('user_id', $this->dueno->id)->where('name', 'like', 'Tanda Soporte %')->count());
 
-        // Una segunda planilla cuya tanda 2 no hace lo previsto: la 1 queda y se puede deshacer.
+        // Una segunda planilla cuya tanda 4 (filas 152 a 201) no hace lo previsto: las 3 primeras quedan y se pueden deshacer.
         $filas[0] = ['Nombre', 'Saldo'];
         foreach ($filas as $i => $fila) {
             if ($i > 0) {
@@ -233,14 +237,16 @@ class AmbiguedadesTandasYControlTest extends ImportacionDeSoporteTestCase
         $corrida = $this->analizada('client', $this->planilla($filas), ['nombre', 'saldo_actual'], 113);
         $this->postJson(self::BASE . $corrida->uuid . '/confirmar', ['user_id' => $this->dueno->id, 'support_ticket_id' => 113,
             'codigo' => $corrida->codigo], $this->cabeceras())->assertStatus(202);
-        $previsto = PlanDeContactosDeSoporte::armar($corrida->fresh())['previsto'];
+        $this->assertTrue(app(ImportacionDeSoporteService::class)->preparar_tandas($corrida->fresh()));
+        $corrida->refresh();
+        $previsto = $corrida->previsto;
         $previsto[150]['movimientos'] = [['saldo_inicial', 1.0]];
-        $corrida->forceFill(['previsto' => $previsto, 'tandas_total' => 3])->save();
+        $corrida->forceFill(['previsto' => $previsto])->save();
         app(ImportacionDeSoporteService::class)->avanzar($corrida->fresh());
         $corrida->refresh();
-        $this->assertSame(['error', 'no_coincide_con_el_resumen', 1], [$corrida->estado, $corrida->motivo, (int) $corrida->tandas_hechas]);
+        $this->assertSame(['error', 'no_coincide_con_el_resumen', 3], [$corrida->estado, $corrida->motivo, (int) $corrida->tandas_hechas]);
         $this->assertTrue($corrida->revertible());
-        $this->assertSame(100, Client::where('user_id', $this->dueno->id)->where('name', 'like', 'Tanda B Soporte %')->count());
+        $this->assertSame(150, Client::where('user_id', $this->dueno->id)->where('name', 'like', 'Tanda B Soporte %')->count());
         $this->assertStringContainsString('se puede deshacer', $corrida->error);
         $this->revertir($corrida->uuid, 113)->assertJsonPath('corrida.estado', 'revertida');
         $this->assertSame(0, Client::where('user_id', $this->dueno->id)->where('name', 'like', 'Tanda B Soporte %')->count());
@@ -284,6 +290,87 @@ class AmbiguedadesTandasYControlTest extends ImportacionDeSoporteTestCase
         $nueva = $this->iniciar('client', $archivo, 116)->assertJsonPath('corrida_existente', false)->json('corrida.corrida_id');
         $this->assertNotSame($corrida->uuid, $nueva);
         $this->iniciar('client', $archivo, 116)->assertJsonPath('corrida.corrida_id', $nueva);
+    }
+
+    public function test_un_numero_del_excel_que_choca_con_la_numeracion_automatica_es_ambiguo(): void
+    {
+        $maximo = (int) DB::table('clients')->where('user_id', $this->dueno->id)->max('num');
+        $corrida = $this->analizada('client', $this->planilla([['Numero', 'Nombre'], [null, 'Auto A Soporte'], [$maximo + 1, 'Auto B Soporte']]),
+            ['numero', 'nombre'], 120);
+        $this->assertSame('requiere_correccion', $corrida->estado);
+        $this->assertSame([['fila' => 3, 'nombre' => 'Auto B Soporte', 'motivo' => 'numero_automatico_choca']], $corrida->resumen['filas_ambiguas']);
+
+        // Sin filas nuevas sin número, el mismo número no choca con nada.
+        $this->assertSame('confirmacion', $this->analizada('client', $this->planilla([['Numero', 'Nombre'], [$maximo + 1, 'Auto C Soporte']]),
+            ['numero', 'nombre'], 121)->estado);
+    }
+
+    public function test_todos_los_acentos_cuentan_como_la_misma_letra(): void
+    {
+        $this->assertSame('joao silva', PlanDeContactosDeSoporte::nombre_comparable('  João   SILVA '));
+        $this->assertSame('yves leon', PlanDeContactosDeSoporte::nombre_comparable('Ýves Leõn'));
+        $corrida = $this->analizada('client', $this->planilla([['Nombre'], ['João Silva'], ['Joao Silva']]), ['nombre'], 122);
+        $this->assertSame(['nombre_repetido_en_el_archivo', 'nombre_repetido_en_el_archivo'], array_column($corrida->resumen['filas_ambiguas'], 'motivo'));
+    }
+
+    public function test_un_archivo_mas_grande_que_el_techo_se_frena_antes_de_pedir_codigo(): void
+    {
+        config(['importacion_soporte.maximo_de_filas' => 3]);
+        $corrida = $this->analizada('client', $this->planilla([['Nombre'], ['Uno T'], ['Dos T'], ['Tres T'], ['Cuatro T']]), ['nombre'], 123);
+        $this->assertSame(['requiere_correccion', 'archivo_demasiado_grande'], [$corrida->estado, $corrida->motivo]);
+        $this->assertNull($corrida->codigo);
+        $this->assertSame(3, $corrida->resumen['maximo_de_filas']);
+        $this->assertStringContainsString('Partilo en archivos de hasta 3 filas', $corrida->error);
+        $this->assertSame('confirmacion', $this->analizada('client', $this->planilla([['Nombre'], ['Uno T'], ['Dos T'], ['Tres T']]), ['nombre'], 124)->estado);
+    }
+
+    public function test_cada_tanda_lee_sus_filas_guardadas_y_los_archivos_se_borran_al_terminar(): void
+    {
+        $filas = [['Nombre', 'Saldo']];
+        for ($i = 1; $i <= 150; $i++) {
+            $filas[] = ['Guardada Soporte ' . $i, $i];
+        }
+        $corrida = $this->analizada('client', $this->planilla($filas), ['nombre', 'saldo_actual'], 125);
+        $this->postJson(self::BASE . $corrida->uuid . '/confirmar', ['user_id' => $this->dueno->id, 'support_ticket_id' => 125,
+            'codigo' => $corrida->codigo], $this->cabeceras())->assertStatus(202);
+        $servicio = app(ImportacionDeSoporteService::class);
+        $this->assertTrue($servicio->preparar_tandas($corrida->fresh()));
+        $tandas = [];
+        $this->assertSame(3, (int) $corrida->fresh()->tandas_total);
+        foreach ([1, 2, 3] as $tanda) {
+            $tandas[$tanda] = storage_path('app/imported_files/soporte_' . $corrida->uuid . '_tanda_' . $tanda . '.ser');
+            $this->assertFileExists($tandas[$tanda]);
+        }
+        $this->assertCount(50, unserialize(file_get_contents($tandas[1])));
+        $this->assertCount(50, unserialize(file_get_contents($tandas[3])));
+
+        // El Excel ya no hace falta: cada tanda trabaja con sus filas guardadas.
+        @unlink(storage_path('app/' . $corrida->archivo));
+        $servicio->avanzar($corrida->fresh());
+        $corrida->refresh();
+        $this->assertSame(['terminada', 150], [$corrida->estado, $corrida->resultado['creados']]);
+        $this->assertSame(1, CurrentAcount::where('client_id', Client::where('user_id', $this->dueno->id)
+            ->where('name', 'Guardada Soporte 150')->value('id'))->where('debe', 150)->count());
+        foreach ($tandas as $ruta) {
+            $this->assertFileDoesNotExist($ruta);
+        }
+    }
+
+    public function test_los_avisos_de_un_corte_con_tandas_hechas_dicen_que_se_puede_deshacer(): void
+    {
+        $corrida = $this->importada('client', $this->planilla([['Nombre'], ['Cortada Soporte']]), ['nombre'], 126);
+        DB::table('importaciones_de_soporte')->where('id', $corrida->id)->update(['estado' => 'importar', 'tandas_total' => 2,
+            'confirmada_at' => now()->subMinutes(30), 'updated_at' => now()->subMinutes(20)]);
+        $this->estado($corrida->uuid, 126)->assertJsonPath('corrida.estado', 'error')->assertJsonPath('corrida.motivo', 'se_corto')
+            ->assertJsonPath('corrida.revertible', true);
+        $this->assertStringContainsString('Lo que alcancé a cargar se puede deshacer.', $corrida->fresh()->error);
+
+        DB::table('importaciones_de_soporte')->where('id', $corrida->id)->update(['estado' => 'importar']);
+        (new AvanzarImportacionDeSoporte((int) $corrida->id))->failed(new \RuntimeException('se cayó el worker'));
+        $this->assertSame('error', $corrida->fresh()->estado);
+        $this->assertStringContainsString('Lo que alcancé a cargar se puede deshacer.', $corrida->fresh()->error);
+        $this->assertSame(2, AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 126)
+            ->where('texto', 'like', '%se puede deshacer%')->count());
     }
 
     /* -------------------------------------------------------------------------------------------------- */
