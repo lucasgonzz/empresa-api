@@ -43,8 +43,12 @@ class ImportacionDeSoporte extends Model
      */
     const VIVAS = ['analizar', 'confirmacion', 'importar', 'terminada', 'revirtiendo'];
 
-    /** Filas por tanda: cada una se importa (y se revierte) en su propia transacción. */
-    const FILAS_POR_TANDA = 100;
+    /**
+     * Filas por tanda: cada una se importa (y se revierte) en su propia transacción, con el candado del dueño tomado.
+     * 50 y no 100 (re-revisión, 11/11/2026): con 3.000 filas una tanda de 100 tardaba ~7 s en importarse y ~12 s en
+     * revertirse; el objetivo es que el candado nunca pase de ~10 s.
+     */
+    const FILAS_POR_TANDA = 50;
 
     /** Relanzamientos del job que puede pedir la consulta del admin antes de dar la corrida por cortada. */
     const MAXIMO_DE_RELANZAMIENTOS = 2;

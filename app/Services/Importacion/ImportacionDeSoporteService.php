@@ -23,7 +23,6 @@ use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Maatwebsite\Excel\Facades\Excel;
 use RuntimeException;
 use Throwable;
 
@@ -173,6 +172,20 @@ class ImportacionDeSoporteService
     private function preguntar(ImportacionDeSoporte $corrida, array $plan): void
     {
         $corrida->retirar_pregunta();
+        if (!empty($plan['demasiado_grande'])) {
+            $corrida->fill([
+                'estado' => 'requiere_correccion',
+                'motivo' => 'archivo_demasiado_grande',
+                'codigo' => null,
+                'huella' => $plan['huella'],
+                'resumen' => $plan['resumen'],
+                'error' => 'No importé «' . $this->archivo($corrida) . '» porque tiene ' . (int) $plan['resumen']['filas'] . ' '
+                    . $corrida->etiqueta_plural() . ' y el máximo por archivo es ' . PlanDeContactosDeSoporte::maximo_de_filas()
+                    . '. Partilo en archivos de hasta ' . PlanDeContactosDeSoporte::maximo_de_filas() . ' filas y mandalos de a uno.',
+            ]);
+            $corrida->save();
+            return;
+        }
         if ($plan['ambiguas'] !== []) {
             $corrida->fill([
                 'estado' => 'requiere_correccion',
@@ -208,30 +221,8 @@ class ImportacionDeSoporteService
     {
         $owner = User::findOrFail((int) $corrida->user_id);
 
-        if ((int) $corrida->tandas_total === 0) {
-            $seguir = $this->como_dueno($owner, function () use ($corrida, $owner) {
-                return DB::transaction(function () use ($corrida, $owner) {
-                    User::whereKey($owner->id)->lockForUpdate()->firstOrFail();
-                    $corrida = ImportacionDeSoporte::whereKey($corrida->id)->lockForUpdate()->firstOrFail();
-                    if ($corrida->estado !== 'importar' || (int) $corrida->tandas_total > 0) {
-                        return (int) $corrida->tandas_total > 0;
-                    }
-                    $plan = PlanDeContactosDeSoporte::armar($corrida);
-                    if ($plan['huella'] !== $corrida->huella || $plan['ambiguas'] !== []) {
-                        $this->preguntar($corrida, $plan);
-                        return false;
-                    }
-                    $filas = max(1, (int) $plan['ultima_fila'] - (int) $corrida->fila_inicio + 1);
-                    $corrida->previsto = $plan['previsto'];
-                    $corrida->tandas_total = (int) ceil($filas / ImportacionDeSoporte::FILAS_POR_TANDA);
-                    $corrida->save();
-
-                    return true;
-                });
-            });
-            if (!$seguir) {
-                return;
-            }
+        if ((int) $corrida->tandas_total === 0 && !$this->preparar_tandas($corrida)) {
+            return;
         }
 
         $corrida->refresh();
@@ -244,9 +235,12 @@ class ImportacionDeSoporteService
                         if ($corrida->estado !== 'importar' || (int) $corrida->tandas_hechas >= (int) $corrida->tandas_total) {
                             return false;
                         }
+                        $desde = microtime(true);
                         $this->ejecutar_tanda($corrida, (int) $corrida->tandas_hechas + 1);
                         $corrida->tandas_hechas = (int) $corrida->tandas_hechas + 1;
                         $corrida->save();
+                        // Cuánto estuvo tomado el candado del dueño: es lo que hay que vigilar (objetivo, menos de ~10 s).
+                        $this->registrar_duracion('importada', $corrida, $desde);
 
                         return true;
                     });
@@ -278,9 +272,45 @@ class ImportacionDeSoporteService
             return true;
         });
         if ($terminada) {
+            $this->borrar_tandas($corrida);
             $corrida->refresh();
             $corrida->aviso('resultado', $this->texto_del_resultado($corrida));
         }
+    }
+
+    /**
+     * La primera parte de importar: vuelve a armar lo previsto (afuera de toda transacción), lo compara con lo que el
+     * dueño confirmó y, si es lo mismo, guarda las filas de cada tanda y lo previsto. Si cambió, vuelve a preguntar
+     * (o pide corregir el Excel). Devuelve si se puede seguir con las tandas.
+     */
+    public function preparar_tandas(ImportacionDeSoporte $corrida): bool
+    {
+        // 🔴 El resumen se vuelve a armar AFUERA de toda transacción (re-revisión, 11/11/2026): leer el Excel entero
+        // y consultar cada contacto con el candado del dueño tomado hacía que el candado durara lo que el archivo
+        // (3.000 filas: ~44 s). Adentro de una transacción, además, getSaldo() lee con FOR UPDATE y bloquearía las
+        // cuentas de todos los contactos. Una sola ejecución por corrida la garantiza el candado del job; lo que
+        // cambie entre esta lectura y cada tanda lo frena el control posterior de la tanda.
+        $plan = PlanDeContactosDeSoporte::armar($corrida);
+        $seguir = DB::transaction(function () use ($corrida, $plan) {
+            $corrida = ImportacionDeSoporte::whereKey($corrida->id)->lockForUpdate()->firstOrFail();
+            if ($corrida->estado !== 'importar' || (int) $corrida->tandas_total > 0) {
+                return (int) $corrida->tandas_total > 0;
+            }
+            if ($plan['huella'] !== $corrida->huella || $plan['ambiguas'] !== [] || $plan['demasiado_grande']) {
+                $this->preguntar($corrida, $plan);
+                return false;
+            }
+            $filas = max(1, (int) $plan['ultima_fila'] - (int) $corrida->fila_inicio + 1);
+            $total = (int) ceil($filas / ImportacionDeSoporte::FILAS_POR_TANDA);
+            $this->guardar_tandas($corrida, $plan['filas_crudas'], $total);
+            $corrida->previsto = $plan['previsto'];
+            $corrida->tandas_total = $total;
+            $corrida->save();
+
+            return true;
+        });
+
+        return $seguir;
     }
 
     /**
@@ -321,11 +351,12 @@ class ImportacionDeSoporteService
                 return (string) $fecha;
             })->all();
 
-        $columnas = $corrida->columnas ?? [];
-        $importador = $es_cliente
-            ? new ClientImport($columnas, true, $desde, $hasta, (int) $corrida->hoja, $corrida->hoja_nombre, false)
-            : new ProviderImport($columnas, true, $desde, $hasta, null, (int) $corrida->hoja, $corrida->hoja_nombre, false);
-        Excel::import($importador, storage_path('app/' . $corrida->archivo));
+        // Solo las filas de esta tanda, ya leídas al confirmar: no se vuelve a leer el Excel entero en cada tanda.
+        $filas_de_la_tanda = $this->filas_de_la_tanda($corrida, $tanda);
+        if ($filas_de_la_tanda !== []) {
+            $importador = $this->importador($corrida, count($filas_de_la_tanda), $tanda === (int) $corrida->tandas_total);
+            $importador->collection(collect($filas_de_la_tanda));
+        }
 
         $creados = $clase::where('user_id', $owner_id)->where('id', '>', $ultimo_modelo)->orderBy('id')->get();
         $ids_creados = $creados->pluck('id')->map(function ($id) {
@@ -377,6 +408,94 @@ class ImportacionDeSoporteService
         foreach (array_chunk($filas, 500) as $lote) {
             DB::table('importacion_de_soporte_cambios')->insert($lote);
         }
+    }
+
+    /**
+     * Las filas crudas de cada tanda, en un archivo por tanda (serializadas: conservan el tipo de cada celda, que el
+     * importador distingue para el saldo).
+     */
+    private function guardar_tandas(ImportacionDeSoporte $corrida, array $crudas, int $total): void
+    {
+        for ($tanda = 1; $tanda <= $total; $tanda++) {
+            $desde = (int) $corrida->fila_inicio + ($tanda - 1) * ImportacionDeSoporte::FILAS_POR_TANDA;
+            $hasta = $desde + ImportacionDeSoporte::FILAS_POR_TANDA - 1;
+            $filas = [];
+            for ($fila = $desde; $fila <= $hasta; $fila++) {
+                if (array_key_exists($fila, $crudas)) {
+                    $filas[] = $crudas[$fila];
+                }
+            }
+            if (file_put_contents($this->ruta_de_tanda($corrida, $tanda), serialize($filas)) === false) {
+                throw new RuntimeException('No se pudieron guardar las filas de la tanda ' . $tanda . '.');
+            }
+        }
+    }
+
+    private function filas_de_la_tanda(ImportacionDeSoporte $corrida, int $tanda): array
+    {
+        $contenido = @file_get_contents($this->ruta_de_tanda($corrida, $tanda));
+        if ($contenido === false) {
+            throw new RuntimeException('No están las filas guardadas de la tanda ' . $tanda . '.');
+        }
+        $filas = unserialize($contenido, ['allowed_classes' => false]);
+
+        return is_array($filas) ? $filas : [];
+    }
+
+    private function borrar_tandas(ImportacionDeSoporte $corrida): void
+    {
+        for ($tanda = 1; $tanda <= (int) $corrida->tandas_total; $tanda++) {
+            @unlink($this->ruta_de_tanda($corrida, $tanda));
+        }
+    }
+
+    private function ruta_de_tanda(ImportacionDeSoporte $corrida, int $tanda): string
+    {
+        return storage_path('app/imported_files/soporte_' . $corrida->uuid . '_tanda_' . $tanda . '.ser');
+    }
+
+    /**
+     * El importador de siempre para las filas de una tanda (de la 1 a la última de la tanda). Su notificación de
+     * «importación finalizada» en el sistema sale solo con la última tanda, no una por tanda.
+     */
+    private function importador(ImportacionDeSoporte $corrida, int $filas, bool $ultima)
+    {
+        $columnas = $corrida->columnas ?? [];
+        if ($corrida->modelo === 'client') {
+            return new class($columnas, true, 1, $filas, 0, null, false, $ultima) extends ClientImport {
+                private $notificar;
+
+                public function __construct($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar, $notificar)
+                {
+                    parent::__construct($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar);
+                    $this->notificar = $notificar;
+                }
+
+                function enviar_notificacion()
+                {
+                    if ($this->notificar) {
+                        parent::enviar_notificacion();
+                    }
+                }
+            };
+        }
+
+        return new class($columnas, true, 1, $filas, null, 0, null, false, $ultima) extends ProviderImport {
+            private $notificar;
+
+            public function __construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $hoja, $hoja_nombre, $vaciar, $notificar)
+            {
+                parent::__construct($columns, $create_and_edit, $start_row, $finish_row, $provider_id, $hoja, $hoja_nombre, $vaciar);
+                $this->notificar = $notificar;
+            }
+
+            function enviar_notificacion()
+            {
+                if ($this->notificar) {
+                    parent::enviar_notificacion();
+                }
+            }
+        };
     }
 
     /**
@@ -453,10 +572,11 @@ class ImportacionDeSoporteService
         }
         $de_la_corrida = array_merge($de_la_corrida, array_keys($clave_de_creado),
             $corrida->cambios()->where('tipo', ImportacionDeSoporteCambio::TIPO_CREADO)->pluck('modelo_id')->all());
-        $otros = $clase::where('user_id', (int) $corrida->user_id)->where('updated_at', '>=', $inicio)
-            ->whereNotIn('id', $de_la_corrida === [] ? [0] : $de_la_corrida)->get(['id', 'updated_at'])
-            ->filter(function ($modelo) use ($recientes) {
-                return !isset($recientes[(int) $modelo->id]) || $recientes[(int) $modelo->id] !== (string) $modelo->updated_at;
+        $de_la_corrida = array_flip(array_map('intval', $de_la_corrida));
+        $otros = $clase::where('user_id', (int) $corrida->user_id)->where('updated_at', '>=', $inicio)->get(['id', 'updated_at'])
+            ->filter(function ($modelo) use ($recientes, $de_la_corrida) {
+                return !isset($de_la_corrida[(int) $modelo->id])
+                    && (!isset($recientes[(int) $modelo->id]) || $recientes[(int) $modelo->id] !== (string) $modelo->updated_at);
             });
         if ($otros->isNotEmpty()) {
             throw new ImportacionNoCoincideConElResumen('Se modificó un contacto que no estaba en el resumen.');
@@ -598,7 +718,9 @@ class ImportacionDeSoporteService
                         if ($corrida->estado !== 'revirtiendo' || (int) $corrida->tandas_revertidas >= (int) $corrida->tandas_hechas) {
                             return false;
                         }
+                        $desde = microtime(true);
                         $cuenta = $this->deshacer_tanda($corrida, (int) $corrida->tandas_hechas - (int) $corrida->tandas_revertidas);
+                        $this->registrar_duracion('revertida', $corrida, $desde);
                         $resultado = (array) $corrida->resultado;
                         $acumulado = isset($resultado['reversion']) ? (array) $resultado['reversion'] : [];
                         foreach ($cuenta as $clave => $valor) {
@@ -648,10 +770,13 @@ class ImportacionDeSoporteService
         $owner_id = (int) $corrida->user_id;
         $cambios = $corrida->cambios()->where('tanda', $tanda)->orderBy('id')->get();
         $movimientos = $cambios->where('tipo', ImportacionDeSoporteCambio::TIPO_MOVIMIENTO);
-        $de_la_corrida = $corrida->cambios()->where('tipo', ImportacionDeSoporteCambio::TIPO_MOVIMIENTO)
-            ->pluck('current_acount_id')->map(function ($id) {
-                return (int) $id;
-            })->all();
+        $por_cuenta = [];
+        $por_contacto = [];
+        foreach ($corrida->cambios()->where('tipo', ImportacionDeSoporteCambio::TIPO_MOVIMIENTO)->get(['modelo_id', 'current_acount_id', 'despues']) as $del_registro) {
+            $cuenta_id = isset($del_registro->despues['credit_account_id']) ? (int) $del_registro->despues['credit_account_id'] : 0;
+            $por_cuenta[$cuenta_id][] = (int) $del_registro->current_acount_id;
+            $por_contacto[(int) $del_registro->modelo_id][] = (int) $del_registro->current_acount_id;
+        }
         $cuentas = [];
         $cuenta = ['creados_borrados' => 0, 'creados_conservados' => 0, 'saldos_anulados_de_conservados' => 0,
             'actualizados_restaurados' => 0, 'actualizados_conservados' => 0, 'movimientos_borrados' => 0, 'contraasientos' => 0];
@@ -663,7 +788,8 @@ class ImportacionDeSoporteService
                 $this->marcar($cambio, 'revertido', 'ya no existía');
                 continue;
             }
-            $motivo = $this->motivo_para_conservar($modelo, $es_cliente, $de_la_corrida);
+            $motivo = $this->motivo_para_conservar($modelo, $es_cliente,
+                isset($por_contacto[(int) $modelo->id]) ? $por_contacto[(int) $modelo->id] : []);
             if (!is_null($motivo)) {
                 $conservados[(int) $modelo->id] = true;
                 $cuenta['creados_conservados']++;
@@ -725,7 +851,9 @@ class ImportacionDeSoporteService
             $cuentas[(int) $movimiento->credit_account_id] = true;
             $conservado = isset($conservados[(int) $cambio->modelo_id]);
             $posteriores = CurrentAcount::where('credit_account_id', $movimiento->credit_account_id)
-                ->where('id', '>', $movimiento->id)->whereNotIn('id', $de_la_corrida)->exists();
+                ->where('id', '>', $movimiento->id)
+                ->whereNotIn('id', isset($por_cuenta[(int) $movimiento->credit_account_id]) ? $por_cuenta[(int) $movimiento->credit_account_id] : [0])
+                ->exists();
             $facturada = $movimiento->status === 'nota_credito'
                 && !is_null(NotaCreditoHelper::motivo_por_el_que_no_se_puede_eliminar($movimiento));
             if (!$posteriores && !$facturada && !$conservado) {
@@ -973,6 +1101,13 @@ class ImportacionDeSoporteService
             if (!in_array($corrida->estado, ImportacionDeSoporte::EN_CURSO, true)) {
                 return;
             }
+            // Si una importación se corta con tandas ya cargadas, el dueño tiene que saber que eso se puede deshacer.
+            if ($corrida->estado === 'importar' && (int) $corrida->tandas_hechas > 0 && strpos($detalle, 'deshacer') === false) {
+                $detalle = rtrim($detalle) . ' Lo que alcancé a cargar se puede deshacer.';
+            }
+            if ($corrida->estado === 'importar') {
+                $this->borrar_tandas($corrida);
+            }
             $corrida->update(['estado' => 'error', 'motivo' => $motivo, 'error' => $detalle]);
             $corrida->aviso('error-' . ($motivo ?: 'general') . '-' . (int) $corrida->tandas_revertidas, $detalle);
         });
@@ -999,6 +1134,22 @@ class ImportacionDeSoporteService
             } else {
                 Auth::forgetGuards();
             }
+        }
+    }
+
+    /**
+     * Cuánto estuvo tomado el candado del dueño en una tanda (objetivo: menos de ~10 s). Pasado eso queda como
+     * warning, que es el nivel que se guarda en producción.
+     */
+    private function registrar_duracion(string $que, ImportacionDeSoporte $corrida, float $desde): void
+    {
+        $segundos = round(microtime(true) - $desde, 2);
+        $datos = ['corrida_id' => (int) $corrida->id, 'tandas_hechas' => (int) $corrida->tandas_hechas,
+            'tandas_revertidas' => (int) $corrida->tandas_revertidas, 'segundos' => $segundos];
+        if ($segundos > 10) {
+            Log::warning('ImportacionDeSoporteService: tanda ' . $que . ' con el candado del dueño más de 10 s', $datos);
+        } else {
+            Log::info('ImportacionDeSoporteService: tanda ' . $que, $datos);
         }
     }
 
