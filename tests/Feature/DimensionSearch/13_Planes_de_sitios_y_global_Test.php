@@ -4,6 +4,7 @@ namespace Tests\Feature\DimensionSearch;
 
 use App\Http\Controllers\Helpers\DimensionReferenceSiteHelper;
 use App\Models\DimensionSearchItem;
+use App\Services\DimensionSearch\DimensionPageText;
 use Illuminate\Support\Facades\Http;
 
 /**
@@ -333,5 +334,87 @@ class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
         list($item_otro) = $this->buscar($otro);
 
         $this->assertNull($this->entrada($item_otro, 'codigo_de_barras_global'));
+    }
+
+    /**
+     * 🔴 Revisión independiente: el plan de sitios BUSCA la forma compacta del código de proveedor («3285363S»), así
+     * que la página que la trae tiene que contar como «con el código». Antes quedaba sin_datos / no_coincide.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_pagina_con_el_codigo_de_proveedor_compacto_cuenta_como_con_el_codigo()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['meteorpiston.com']);
+
+        $articulo = $this->nuevo_articulo('CARBURADOR KOHLER CH20', null, ['provider_code' => '32 853 63-S']);
+        $url      = 'https://meteorpiston.com/p/1';
+
+        $this->falsear(
+            ['us|("32 853 63-S" OR "3285363S") site:meteorpiston.com' => [$this->resultado($url, 'Carburetor 3285363S')]],
+            [$url => $this->pagina('Carburetor', 'OEM 3285363S. Weight: 1 kg.')],
+            $this->ficha('exacto', ['peso' => $this->dato(1, 'kg', 'Weight: 1 kg', $url)])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertTrue($this->entrada($item, 'sitios_de_referencia')['paginas'][0]['leida']);
+        $this->assertTrue($this->entrada($item, 'sitios_de_referencia')['paginas'][0]['codigo_proveedor']);
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('medidas_parciales', $item->motivo);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+        $this->assertEquals(1, (float) $item->peso_kg);
+    }
+
+    /**
+     * Y al revés: cargado compacto («3285363S»), la página lo escribe con espacios y guion («32 853 63-S»).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_codigo_cargado_compacto_se_reconoce_escrito_con_separadores()
+    {
+        $articulo = $this->nuevo_articulo('CARBURADOR KOHLER CH20', null, ['provider_code' => '3285363S']);
+        $url      = 'https://tienda.test/carburador';
+
+        $this->falsear(
+            ['"3285363S" CARBURADOR KOHLER CH20' => [$this->resultado($url, 'Carburador')]],
+            [$url => $this->pagina('Carburador', 'OEM REPLACEMENT: 32 853 63-S. Weight: 1 kg.')],
+            $this->ficha('exacto', ['peso' => $this->dato(1, 'kg', 'Weight: 1 kg', $url)])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('medidas_parciales', $item->motivo, (string) $item->motivo_detalle);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+    }
+
+    /**
+     * Las reglas del reconocimiento con separadores: mismos alfanuméricos en el mismo orden, separadores opcionales
+     * (espacio, guion, punto, barra), nada pegado antes ni después, y solo para códigos de 6 o más caracteres que
+     * parecen un código.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_codigo_de_proveedor_con_separadores_respeta_los_bordes_y_los_codigos_cortos()
+    {
+        $p = DimensionPageText::CODIGO_PROVEEDOR;
+
+        foreach (['ABC1234', 'abc 1234', 'ABC/1234', 'ABC.12.34', 'Código: ABC-1234.'] as $texto) {
+            $this->assertTrue(DimensionPageText::contiene_codigo($texto, 'ABC-1234', $p), $texto);
+        }
+
+        foreach (['XABC1234', 'ABC12345', 'ABC-12345', 'AB-C1234-9', 'ABC_1234'] as $texto) {
+            $this->assertFalse(DimensionPageText::contiene_codigo($texto, 'ABC-1234', $p), $texto);
+        }
+
+        // Corto (menos de 6 alfanuméricos): solo el literal, como antes.
+        $this->assertTrue(DimensionPageText::contiene_codigo('ref AB-12 ok', 'AB-12', $p));
+        $this->assertFalse(DimensionPageText::contiene_codigo('ref AB12 ok', 'AB-12', $p));
+
+        // Seis dígitos sin letras parece un código; cinco no.
+        $this->assertTrue(DimensionPageText::contiene_codigo('ref 55.90.14 ok', '559014', $p));
+        $this->assertFalse(DimensionPageText::contiene_codigo('ref 12.345 ok', '12345', $p));
     }
 }

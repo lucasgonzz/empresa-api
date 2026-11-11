@@ -360,10 +360,63 @@ class DimensionPageText
             return $patrones;
         }
 
-        // Código de proveedor: literal, con cualquier espacio entre sus partes, sin letras/dígitos pegados.
+        // Código de proveedor de 6 alfanuméricos o más que parece un código: los mismos alfanuméricos en el mismo
+        // orden, con separadores opcionales entre ellos (misión medidas-sitios-de-referencia, revisión independiente).
+        $patron = self::patron_con_separadores($codigo);
+
+        if (!is_null($patron)) {
+            return [$patron];
+        }
+
+        // Código de proveedor corto: literal, con cualquier espacio entre sus partes, sin letras/dígitos pegados.
         $literal = str_replace(' ', '\s+', preg_quote(preg_replace('/\s+/', ' ', $codigo), '/'));
 
         return ['/(?<![\p{L}\d])'.$literal.'(?![\p{L}\d])/iu'];
+    }
+
+    /** Alfanuméricos como mínimo de un código de proveedor para reconocerlo con o sin separadores. */
+    const MINIMO_PARA_SEPARADORES = 6;
+
+    /**
+     * El patrón que reconoce un código de proveedor escrito con o sin separadores: «32 853 63-S», «3285363S» y
+     * «3285363-S» son el mismo código (los mismos alfanuméricos en el mismo orden). Entre cada par de caracteres
+     * puede haber un separador (espacios, o un guion, punto o barra rodeado de espacios opcionales). Nada pegado antes
+     * ni después: ni una letra o un dígito, ni un guion / punto / barra seguido de uno («ABC-1234-9» es otro código).
+     *
+     * Por qué: el plan de los sitios de referencia busca también la forma compacta del código, y una página que la
+     * trae tenía que contar como «con el código» (antes solo se reconocía el literal). Solo para códigos de
+     * MINIMO_PARA_SEPARADORES alfanuméricos o más que parecen un código (letras y algún dígito, o 6 dígitos o más):
+     * en uno corto, aflojar los separadores daría falsos positivos.
+     *
+     * @param  string $codigo
+     * @return string|null  El patrón preg, o null si el código es corto o no parece un código.
+     */
+    protected static function patron_con_separadores($codigo)
+    {
+        $alfanumericos = (string) preg_replace('/[^\p{L}\d]+/u', '', (string) $codigo);
+
+        if (mb_strlen($alfanumericos) < self::MINIMO_PARA_SEPARADORES) {
+            return null;
+        }
+
+        // Misma regla que ArticleDimensionSearchEngine::parece_un_codigo().
+        $hay_letras = (bool) preg_match('/\p{L}/u', $alfanumericos);
+        $digitos    = preg_match_all('/\d/', $alfanumericos);
+
+        if ($hay_letras ? $digitos === 0 : $digitos < 6) {
+            return null;
+        }
+
+        $caracteres = preg_split('//u', $alfanumericos, -1, PREG_SPLIT_NO_EMPTY);
+        $partes     = [];
+
+        foreach ($caracteres as $caracter) {
+            $partes[] = preg_quote($caracter, '/');
+        }
+
+        $separador = '(?:\s*[\-.\/]\s*|\s+)?';
+
+        return '/(?<![\p{L}\d])(?<![\p{L}\d][\-.\/])'.implode($separador, $partes).'(?![\p{L}\d])(?![\-.\/][\p{L}\d])/iu';
     }
 
     /**
