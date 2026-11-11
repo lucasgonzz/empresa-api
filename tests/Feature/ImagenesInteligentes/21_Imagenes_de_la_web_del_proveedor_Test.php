@@ -164,10 +164,13 @@ class Imagenes_de_la_web_del_proveedor_Test extends ImagenesInteligentesTestCase
         $this->subir('proveedor.com', [
             ['article_id' => $articulo->id, 'tipo' => 'dudosa', 'imagen' => $this->png(120, 120)],
             ['article_id' => $articulo->id, 'tipo' => 'dudosa', 'imagen' => UploadedFile::fake()->createWithContent('no.png', 'no soy una imagen')],
+            // Sin archivo (lo que deja PHP con los que pasan max_file_uploads): se reintenta, no es una imagen mala.
+            ['article_id' => $articulo->id, 'tipo' => 'dudosa'],
             ['article_id' => $uno->id, 'tipo' => 'exacto', 'codigo_web' => $repetido, 'imagen' => $this->png(500, 500)],
         ])->assertOk()->assertJsonPath('salteadas', [
             ['article_id' => $articulo->id, 'motivo' => 'imagen_chica'],
             ['article_id' => $articulo->id, 'motivo' => 'imagen_invalida'],
+            ['article_id' => $articulo->id, 'motivo' => 'imagen_no_recibida'],
         ])->assertJsonPath('exactas_a_revisar', [$uno->id]);
         $this->assertFalse($uno->images()->exists());
         $this->assertFalse($dos->images()->exists());

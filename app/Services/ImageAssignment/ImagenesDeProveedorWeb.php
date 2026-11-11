@@ -379,6 +379,12 @@ class ImagenesDeProveedorWeb
      */
     protected function leer_imagen($archivo, &$motivo)
     {
+        // Sin archivo: PHP descarta en silencio los que pasan `max_file_uploads` (20 por defecto, y la tanda es de
+        // hasta 25). No es una imagen mala: el que manda la tanda tiene que volver a mandarla.
+        if (is_null($archivo)) {
+            $motivo = 'imagen_no_recibida';
+            return null;
+        }
         if (!$archivo instanceof UploadedFile || !$archivo->isValid()) {
             $motivo = 'imagen_invalida';
             return null;

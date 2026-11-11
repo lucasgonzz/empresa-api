@@ -24,7 +24,8 @@ use Illuminate\Http\Request;
  *   → 401 {error: unauthorized} · 409 {message, motivo: dueno_no_resoluble|dueno_distinto} · 422 {message, motivo|errors}
  *
  * Motivos de `salteadas`: articulo_no_encontrado (no existe o es de otro dueño), articulo_inactivo, ya_procesado
- * (ya está en esta asignación), ya_tiene_imagen, ya_tiene_a_revisar, imagen_invalida, imagen_muy_pesada,
+ * (ya está en esta asignación), ya_tiene_imagen, ya_tiene_a_revisar, imagen_no_recibida (el ítem llegó sin archivo:
+ * PHP corta en `max_file_uploads`, 20 por defecto; hay que reintentarlo), imagen_invalida, imagen_muy_pesada,
  * imagen_chica, imagen_muy_grande, error_interno. Un 404 sin `motivo` es un empresa viejo: `version_vieja`.
  *
  * La clave X-Admin-Api-Key se exige SIEMPRE (trait ClaveEstrictaDeAdmin): esta ruta escribe en el catálogo.
