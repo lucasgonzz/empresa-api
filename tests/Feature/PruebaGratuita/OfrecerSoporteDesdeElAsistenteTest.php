@@ -154,16 +154,9 @@ class OfrecerSoporteDesdeElAsistenteTest extends TestCase
 
         // Y un mensaje de WhatsApp del mismo dueño, con todo lo demás igual, tampoco la recibe.
         Http::fake(['proveedor.test/*' => Http::response($this->fin('Abrí Compras.'))]);
-        try {
-            $service->responder($this->conversacion(), $this->conversacion_con_pendiente('whatsapp'));
-        } catch (\Throwable $e) {
-            // Si WhatsApp exige algo más de configuración, lo que importa es qué herramientas viajaron.
-        }
+        $service->responder($this->conversacion(), $this->conversacion_con_pendiente('whatsapp'));
 
-        Http::assertNotSent(function ($pedido) {
-            return strpos($pedido->url(), 'proveedor.test/') !== false
-                && in_array(HerramientaDeOfrecerSoporte::NOMBRE, array_column((array) $pedido['tools'], 'name'), true);
-        });
+        $this->assertSinLaHerramienta();
     }
 
     public function test_la_oferta_se_normaliza_y_el_admin_no_la_recibe()
