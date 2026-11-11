@@ -1861,6 +1861,9 @@ Route::middleware('admin.api.key')
         // primero". Las rutas fijas (actual) van ANTES de las que llevan {run_id}.
         Route::get('catalogo/resumen', 'AdminSync\\CatalogoController@resumen');
         Route::get('catalogo/articulos', 'AdminSync\\CatalogoController@articulos');
+        // Fotos de la web de un proveedor, traídas por la tarea de soporte (misión importaciones-de-martin, 11/11/2026):
+        // exactas asignadas solas, dudosas a revisar por el dueño. Clave estricta adentro del controlador.
+        Route::post('catalogo/imagenes/proveedor', 'AdminSync\\ImagenesDeProveedorController@store');
         Route::post('catalogo/categorias/propuestas', 'AdminSync\\CatalogoCategoriasController@crear');
         Route::get('catalogo/categorias/propuestas/actual', 'AdminSync\\CatalogoCategoriasController@actual');
         Route::get('catalogo/categorias/propuestas/{run_id}', 'AdminSync\\CatalogoCategoriasController@mostrar')->where('run_id', '[0-9]+');

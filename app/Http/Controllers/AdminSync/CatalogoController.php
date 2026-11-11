@@ -6,6 +6,7 @@ use App\Http\Controllers\AdminSync\Concerns\ClaveEstrictaDeAdmin;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\category_proposal\CategoryProposalCatalogoHelper;
+use App\Services\ImageAssignment\CatalogoConImagenes;
 use Illuminate\Http\Request;
 
 /**
@@ -40,7 +41,7 @@ class CatalogoController extends Controller
     }
 
     /**
-     * GET admin-sync/catalogo/articulos?despues_de=&limite=&solo_sin_categoria= — el inventario por
+     * GET admin-sync/catalogo/articulos?despues_de=&limite=&solo_sin_categoria=&con_imagenes= — el inventario por
      * cursor de id: los artículos del dueño de a páginas, de menor a mayor id.
      *
      * @param  \Illuminate\Http\Request $request
@@ -57,11 +58,19 @@ class CatalogoController extends Controller
 
         $dueno = AsistenteCanalHelper::dueno();
 
-        return response()->json(CategoryProposalCatalogoHelper::articulos(
+        $pagina = CategoryProposalCatalogoHelper::articulos(
             $dueno->id,
             $request->query('despues_de', 0),
             $request->query('limite', CategoryProposalCatalogoHelper::LIMITE_POR_DEFECTO),
             filter_var($request->query('solo_sin_categoria', false), FILTER_VALIDATE_BOOLEAN)
-        ), 200);
+        );
+
+        // `con_imagenes=1` (misión importaciones-de-martin, 11/11/2026): suma tiene_imagen, codigos_pivot y
+        // a_revisar a cada artículo, para la tarea que trae fotos de la web de un proveedor. Sin él, igual que antes.
+        if (filter_var($request->query('con_imagenes', false), FILTER_VALIDATE_BOOLEAN)) {
+            $pagina['articulos'] = CatalogoConImagenes::enriquecer($pagina['articulos'], (int) $dueno->id);
+        }
+
+        return response()->json($pagina, 200);
     }
 }

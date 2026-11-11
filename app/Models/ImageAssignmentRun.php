@@ -27,6 +27,13 @@ class ImageAssignmentRun extends Model
     const ORIGEN_SELECCION = 'seleccion';
     const ORIGEN_ASISTENTE = 'asistente';
 
+    /**
+     * Fotos traídas de la web de un proveedor por la tarea de soporte (misión importaciones-de-martin,
+     * 11/11/2026): una asignación por ticket y fuente (`support_ticket_id`, `fuente`), sin búsquedas ni job.
+     * Ver App\Services\ImageAssignment\ImagenesDeProveedorWeb.
+     */
+    const ORIGEN_PROVEEDOR_WEB = 'proveedor_web';
+
     const PREFIJO_PROCESO_SERPER = 'imagenes_';
 
     const PROVEEDOR_SERPER = 'serper';
