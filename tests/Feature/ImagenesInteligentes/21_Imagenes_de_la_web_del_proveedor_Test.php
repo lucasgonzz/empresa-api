@@ -106,6 +106,16 @@ class Imagenes_de_la_web_del_proveedor_Test extends ImagenesInteligentesTestCase
         $this->assertSame(1, $articulo->images()->count());
         $payload = ImageAssignmentRunHelper::payload_de_item($item->fresh());
         $this->assertSame('proveedor-dos.com', $payload['imagen']['dominio']);
+        $this->assertSame('https://proveedor-dos.com/llave', $payload['imagen']['url_origen']);
+        $this->assertSame('dudosa', $payload['imagen']['tipo_coincidencia']);
+        $asignacion = ImageAssignmentRunHelper::payload_de_asignacion(ImageAssignmentRun::findOrFail($respuesta->json('run_id')));
+        $this->assertSame('proveedor-dos.com', $asignacion['fuente']);
+        $this->assertSame(ImageAssignmentRun::ORIGEN_PROVEEDOR_WEB, $asignacion['origen']);
+        // Las asignaciones del motor siguen igual: sin fuente ni datos de origen en la imagen.
+        $del_motor = ImageAssignmentItem::where('article_id', $otro->id)->where('status', ImageAssignmentItem::STATUS_A_REVISAR)->firstOrFail();
+        $this->assertNull(ImageAssignmentRunHelper::payload_de_asignacion($del_motor->run)['fuente']);
+        $this->assertNull(ImageAssignmentRunHelper::payload_de_item($del_motor)['imagen']['url_origen']);
+        $this->assertNull(ImageAssignmentRunHelper::payload_de_item($del_motor)['imagen']['tipo_coincidencia']);
     }
 
     public function test_idempotente_por_ticket_fuente_y_articulo_y_solo_del_dueno(): void
