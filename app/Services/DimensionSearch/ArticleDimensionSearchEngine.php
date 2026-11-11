@@ -50,6 +50,14 @@ use Illuminate\Support\Str;
  * Los criterios nuevos (1 y 3) son SOLO del diagnóstico: `criterio_usado` del artículo sigue siendo
  * codigo_de_barras / codigo_proveedor / nombre según qué código traía la página de la que salió el dato.
  *
+ * DATOS ESTRUCTURADOS (misión medidas-sitios-de-referencia): de cada página HTML se leen también los JSON-LD de
+ * schema.org (DimensionStructuredData), del nodo de producto que corresponde al artículo (por su GTIN / mpn / sku,
+ * o el único nodo de una página que trae el código del artículo). Después de validar lo que dijo la IA, los campos
+ * que quedaron sin validar se completan con ellos, SOLO si la IA no dijo `otro_producto` en esa búsqueda, y cada
+ * uno pasa por los topes de cordura del validador (validar_estructurado()); cuentan como cita etiquetada. Si la IA
+ * no responde pero hay estructurados del artículo, el artículo queda `a_revisar` (sin la IA no hay `match` y nada
+ * se escribe solo).
+ *
  * De cada búsqueda se leen hasta 3 páginas (descarga con la guarda anti-SSRF, nunca PDF). Para los
  * planes de CÓDIGO una página solo cuenta si contiene el código; para el de nombre cuentan todas. De cada
  * página se pasa a la IA un extracto acotado (DimensionPageText). Si la IA dice `otro_producto`, o ningún
@@ -351,6 +359,27 @@ class ArticleDimensionSearchEngine
             if (!$respuesta['respondio']) {
                 $resultado['ia_error'] = (string) $respuesta['error'];
                 $entrada['ia'] = ['llamada' => true, 'respondio' => false, 'error' => $respuesta['error']];
+
+                // Sin la IA no hay `match`, pero si las páginas del artículo traen datos estructurados, se dejan a revisar
+                // (como `probable`: clasificar() nunca los asigna solos).
+                $estructurados = $this->completar_con_estructurados([], $documentos);
+
+                if (!empty($estructurados)) {
+                    $entrada['estructurados'] = array_keys($estructurados);
+                    $entrada['resultado']     = 'datos';
+                    $diagnostico[] = $entrada;
+
+                    $mejor = [
+                        'campos'     => $estructurados,
+                        'match'      => self::MATCH_PROBABLE,
+                        'nota'       => 'La IA no respondió: las medidas salen de los datos estructurados de la página, sin confirmar que sea el mismo producto.',
+                        'documentos' => $documentos,
+                        'plan'       => $plan,
+                    ];
+
+                    break;
+                }
+
                 $entrada['resultado'] = 'ia_sin_respuesta';
                 $diagnostico[] = $entrada;
                 continue;
@@ -403,6 +432,14 @@ class ArticleDimensionSearchEngine
                         }
                     }
                 }
+            }
+
+            // Lo que la IA no pudo citar, de los datos estructurados de las páginas del artículo (la IA no dijo `otro_producto`).
+            $estructurados = $this->completar_con_estructurados($campos, $documentos);
+
+            if (!empty($estructurados)) {
+                $campos = array_merge($campos, $estructurados);
+                $entrada['estructurados'] = array_keys($estructurados);
             }
 
             if (empty($campos)) {
@@ -994,7 +1031,7 @@ class ArticleDimensionSearchEngine
      * @param  array $titulos    (por referencia) url => título del resultado.
      * @param  array $paginas    (por referencia) las entradas de diagnóstico de las páginas.
      * @param  bool  $hubo_misma_cosa  true si en un plan anterior la IA ya dijo que era el mismo producto (en el plan de nombre, eso evita gastar scrapes).
-     * @return array  url => ['texto', 'titulo', 'codigo_de_barras' (bool), 'codigo_proveedor' (bool)].
+     * @return array  url => ['texto', 'titulo', 'codigo_de_barras' (bool), 'codigo_proveedor' (bool), 'estructurado' (campo => dato)].
      */
     protected function leer_paginas(array $organicos, array $plan, array $codigos, array &$leidas, array &$titulos, array &$paginas, $hubo_misma_cosa = false)
     {
@@ -1314,20 +1351,97 @@ class ArticleDimensionSearchEngine
             $motivo = $lectura['fallo'] === DimensionPageReader::FALLO_PDF ? 'PDF leído con el respaldo.' : 'Página leída con el respaldo.';
         }
 
+        // Los datos estructurados (JSON-LD) del nodo que corresponde al artículo. El texto del respaldo no los trae.
+        $estructurado = empty($lectura['es_texto']) ? $this->estructurados_del_articulo($lectura['contenido'], $codigos, $tiene_barras || $tiene_proveedor) : [];
+
+        $entrada = array_merge($pagina, [
+            'leida'            => true,
+            'motivo'           => $motivo,
+            'codigo_de_barras' => $tiene_barras,
+            'codigo_proveedor' => $tiene_proveedor,
+        ]);
+
+        if (!empty($estructurado)) {
+            $entrada['datos_estructurados'] = array_keys($estructurado);
+        }
+
         return [
             'documento' => [
                 'texto'            => $texto,
                 'titulo'           => $titulo,
                 'codigo_de_barras' => $tiene_barras,
                 'codigo_proveedor' => $tiene_proveedor,
+                'estructurado'     => $estructurado,
             ],
-            'entrada'   => array_merge($pagina, [
-                'leida'            => true,
-                'motivo'           => $motivo,
-                'codigo_de_barras' => $tiene_barras,
-                'codigo_proveedor' => $tiene_proveedor,
-            ]),
+            'entrada'   => $entrada,
         ];
+    }
+
+    /**
+     * Los campos de los datos estructurados (JSON-LD) de la página que son DEL ARTÍCULO: los del nodo cuyo GTIN /
+     * mpn / sku es el del artículo, o el único nodo con medidas de una página que trae el código del artículo.
+     *
+     * @param  string $html
+     * @param  array  $codigos  Los códigos del artículo ([codigo, tipo]).
+     * @param  bool   $pagina_trae_el_codigo
+     * @return array  campo => dato de DimensionStructuredData ([] si no hay).
+     */
+    protected function estructurados_del_articulo($html, array $codigos, $pagina_trae_el_codigo)
+    {
+        $nodos = DimensionStructuredData::de_html((string) $html);
+
+        if (empty($nodos)) {
+            return [];
+        }
+
+        $gtin      = null;
+        $proveedor = null;
+
+        foreach ($codigos as $c) {
+            if ($c['tipo'] === DimensionPageText::CODIGO_DE_BARRAS) {
+                $gtin = $c['codigo'];
+            } else {
+                $proveedor = $c['codigo'];
+            }
+        }
+
+        $elegido = DimensionStructuredData::del_articulo($nodos, $gtin, $proveedor, $pagina_trae_el_codigo);
+
+        return is_null($elegido) ? [] : $elegido['nodo']['campos'];
+    }
+
+    /**
+     * Completa con los datos estructurados de las páginas los campos que la IA no pudo respaldar con una cita: el
+     * primero que pase el validador, en el orden de las páginas. Nunca pisa un campo ya validado.
+     *
+     * @param  array $campos      campo => dato validado (lo que ya salió de la IA).
+     * @param  array $documentos  url => documento (con `estructurado`).
+     * @return array  campo => dato validado, SOLO los nuevos.
+     */
+    protected function completar_con_estructurados(array $campos, array $documentos)
+    {
+        $nuevos = [];
+
+        foreach (self::CAMPOS_DE_LA_IA as $campo) {
+            if (isset($campos[$campo])) {
+                continue;
+            }
+
+            foreach ($documentos as $url => $documento) {
+                if (empty($documento['estructurado'][$campo])) {
+                    continue;
+                }
+
+                $validado = $this->validador->validar_estructurado($campo, $documento['estructurado'][$campo], $url);
+
+                if ($validado['ok']) {
+                    $nuevos[$campo] = $validado['dato'];
+                    break;
+                }
+            }
+        }
+
+        return $nuevos;
     }
 
     /**

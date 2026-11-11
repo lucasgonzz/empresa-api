@@ -265,6 +265,77 @@ class DimensionValueValidator
     }
 
     /**
+     * Valida un campo que salió de los DATOS ESTRUCTURADOS de la página (JSON-LD de schema.org, leído por
+     * DimensionStructuredData; misión medidas-sitios-de-referencia, 11/11/2026). No hay cita que comprobar contra el
+     * texto: el número y la unidad los leyó el código, no la IA. Lo que sí se exige es lo mismo que a cualquier dato:
+     * que sea del tipo del campo (un peso en kg, una medida en cm) y que pase los topes de cordura.
+     *
+     * Cuenta como cita etiquetada (la propiedad `weight` / `height` / `width` / `depth` dice qué medida es), nunca es
+     * ambiguo ni un rango.
+     *
+     * @param  string $campo  peso | alto | ancho | profundidad.
+     * @param  mixed  $dato   Lo de DimensionStructuredData: valor (kg | cm), unidad, valor_original, unidad_original,
+     *                        convertido, cita, alcance.
+     * @param  string $url    La página de la que salió.
+     * @return array  Como validar(): ['ok', 'motivo', 'dato'] (el dato con `estructurado` => true).
+     */
+    public function validar_estructurado($campo, $dato, $url)
+    {
+        if (!isset(self::CAMPOS[$campo])) {
+            return $this->rechazo('campo_desconocido');
+        }
+
+        $tipo = self::CAMPOS[$campo];
+
+        if (!is_array($dato) || !isset($dato['valor']) || !is_numeric($dato['valor'])) {
+            return $this->rechazo('no_informado');
+        }
+
+        if (!isset($dato['unidad']) || $dato['unidad'] !== self::UNIDAD_CANONICA[$tipo]) {
+            return $this->rechazo('unidad_invalida');
+        }
+
+        $canonico = round((float) $dato['valor'], self::DECIMALES);
+        $maximo   = $tipo === self::TIPO_PESO ? self::MAXIMO_PESO_KG : self::MAXIMO_MEDIDA_CM;
+
+        if ($canonico <= 0 || $canonico > $maximo) {
+            return $this->rechazo('fuera_de_rango');
+        }
+
+        return [
+            'ok'     => true,
+            'motivo' => null,
+            'dato'   => [
+                'valor'           => $canonico,
+                'unidad'          => self::UNIDAD_CANONICA[$tipo],
+                'valor_original'  => isset($dato['valor_original']) ? $dato['valor_original'] : $canonico,
+                'unidad_original' => isset($dato['unidad_original']) ? (string) $dato['unidad_original'] : self::UNIDAD_CANONICA[$tipo],
+                'convertido'      => !empty($dato['convertido']),
+                'cita'            => isset($dato['cita']) ? mb_substr((string) $dato['cita'], 0, 300) : '',
+                'url'             => (string) $url,
+                'alcance'         => 'producto',
+                'ambiguo'         => false,
+                'rango'           => false,
+                'etiquetada'      => true,
+                'aviso'           => null,
+                // Marca de que salió del JSON-LD de la página y no de una cita de la IA.
+                'estructurado'    => true,
+            ],
+        ];
+    }
+
+    /**
+     * La unidad escrita como [tipo, factor a kg / cm, etiqueta]; null si no se reconoce («Kg.», «gramos», «mm»).
+     *
+     * @param  mixed $unidad
+     * @return array|null
+     */
+    public function reconocer_unidad($unidad)
+    {
+        return $this->unidad_del_modelo($unidad);
+    }
+
+    /**
      * Motivos de rechazo de `validar()` por los que la propuesta de la IA igual se conserva como «a revisar»
      * (misión medidas-sin-datos, 28/10/2026): el valor y la unidad son utilizables pero el sistema no pudo
      * comprobar la cita contra la página. Los demás motivos (`valor_invalido`, `unidad_invalida`,
