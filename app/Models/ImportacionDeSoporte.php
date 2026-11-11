@@ -22,6 +22,7 @@ class ImportacionDeSoporte extends Model
         'columnas' => 'array',
         'resumen' => 'array',
         'resultado' => 'array',
+        'previsto' => 'array',
         'avisar_por_whatsapp' => 'boolean',
         'confirmada_at' => 'datetime',
         'terminada_at' => 'datetime',
@@ -31,10 +32,29 @@ class ImportacionDeSoporte extends Model
     const MODELOS = ['client', 'provider'];
 
     /** Estados en los que todavía trabaja el job. */
-    const EN_CURSO = ['analizar', 'importar'];
+    const EN_CURSO = ['analizar', 'importar', 'revirtiendo'];
 
     /** Las que no terminaron: el ticket no se cierra con una de estas (prueba-pendientes las informa). */
-    const ABIERTAS = ['analizar', 'confirmacion', 'importar'];
+    const ABIERTAS = ['analizar', 'confirmacion', 'importar', 'revirtiendo'];
+
+    /**
+     * Las vivas: un reenvío del mismo archivo en el mismo ticket vuelve a esta corrida en lugar de crear otra.
+     * Una con error, cancelada, revertida o que pide corregir el Excel no cuenta: se puede reintentar.
+     */
+    const VIVAS = ['analizar', 'confirmacion', 'importar', 'terminada', 'revirtiendo'];
+
+    /** Filas por tanda: cada una se importa (y se revierte) en su propia transacción. */
+    const FILAS_POR_TANDA = 100;
+
+    /** Relanzamientos del job que puede pedir la consulta del admin antes de dar la corrida por cortada. */
+    const MAXIMO_DE_RELANZAMIENTOS = 2;
+
+    /** Si hay tandas hechas sin revertir, la corrida se puede deshacer (terminada, o cortada a mitad). */
+    public function revertible(): bool
+    {
+        return in_array($this->estado, ['terminada', 'error'], true)
+            && (int) $this->tandas_hechas > (int) $this->tandas_revertidas;
+    }
 
     public function scopeWithAll($query)
     {

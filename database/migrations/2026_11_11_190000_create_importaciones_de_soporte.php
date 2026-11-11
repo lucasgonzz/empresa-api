@@ -39,8 +39,19 @@ class CreateImportacionesDeSoporte extends Migration
                 $table->string('clave', 64);
                 $table->string('archivo', 255);
                 $table->string('nombre', 255);
-                // analizar | confirmacion | importar | terminada | error | cancelada | revertida.
+                // analizar | confirmacion | requiere_correccion | importar | terminada | revirtiendo | revertida |
+                // error | cancelada.
                 $table->string('estado', 20)->default('analizar');
+                // Por qué quedó así (filas_ambiguas, no_coincide_con_el_resumen, se_corto, reversion_incompleta).
+                $table->string('motivo', 40)->nullable();
+                // Veces que la consulta del admin la volvió a despachar (tope 2: nunca entra en ciclo).
+                $table->unsignedTinyInteger('relanzamientos')->default(0);
+                // Lo que el resumen previó fila por fila: contra esto se controla cada tanda importada.
+                $table->longText('previsto')->nullable();
+                // Las importaciones grandes van en tandas de filas, cada una en su transacción.
+                $table->unsignedInteger('tandas_total')->default(0);
+                $table->unsignedInteger('tandas_hechas')->default(0);
+                $table->unsignedInteger('tandas_revertidas')->default(0);
                 $table->unsignedInteger('revision')->default(0);
                 $table->boolean('avisar_por_whatsapp')->default(true);
                 $table->unsignedSmallInteger('hoja')->default(0);
@@ -57,7 +68,8 @@ class CreateImportacionesDeSoporte extends Migration
                 $table->timestamp('revertida_at')->nullable();
                 $table->timestamps();
 
-                $table->unique(['user_id', 'support_ticket_id', 'clave'], 'ids_dueno_ticket_clave_unique');
+                // Sin unique: la idempotencia es solo entre corridas vivas (una cancelada o con error se puede reintentar).
+                $table->index(['user_id', 'support_ticket_id', 'clave'], 'ids_dueno_ticket_clave_idx');
                 $table->index(['user_id', 'estado'], 'ids_dueno_estado_idx');
             });
         }
@@ -66,6 +78,8 @@ class CreateImportacionesDeSoporte extends Migration
             Schema::create('importacion_de_soporte_cambios', function (Blueprint $table) {
                 $table->id();
                 $table->unsignedBigInteger('importacion_de_soporte_id');
+                // La tanda de filas que lo hizo (se revierte tanda por tanda, de la última a la primera).
+                $table->unsignedInteger('tanda')->default(1);
                 // creado | actualizado | movimiento.
                 $table->string('tipo', 20);
                 // client | provider: el modelo de la fila (o el dueño del movimiento).
@@ -79,7 +93,7 @@ class CreateImportacionesDeSoporte extends Migration
                 $table->string('motivo_reversion', 190)->nullable();
                 $table->timestamps();
 
-                $table->index(['importacion_de_soporte_id', 'tipo'], 'idsc_corrida_tipo_idx');
+                $table->index(['importacion_de_soporte_id', 'tanda', 'tipo'], 'idsc_corrida_tanda_tipo_idx');
             });
         }
     }
