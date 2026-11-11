@@ -3,6 +3,7 @@
 namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
+use Illuminate\Support\Str;
 
 /**
  * `ofrecer_soporte`: el asistente personal de la prueba gratuita le ofrece al lead pasar una duda de
@@ -63,6 +64,13 @@ class HerramientaDeOfrecerSoporte
             'adjuntos_de_la_respuesta' => AdjuntosIaHelper::normalizar([[
                 'tipo'  => AdjuntosIaHelper::TIPO_SOPORTE,
                 'texto' => $pregunta,
+                /*
+                 * El `mensaje_uuid` del envío a Soporte, aleatorio y fijado acá, una vez por oferta: el
+                 * reintento del botón, el del globo y otro dispositivo mandan el mismo y no duplican la
+                 * pregunta. Aleatorio y no derivado del id del mensaje, porque el admin guarda ese uuid
+                 * UNIQUE entre todos los clientes y los ids se repiten entre instancias.
+                 */
+                'uuid'  => (string) Str::uuid(),
             ]]),
             'como_sigo' => 'La oferta ya queda como un botón «Seguir con Soporte» debajo de tu respuesta: no se mandó nada todavía. Cerrá tu respuesta preguntándole si quiere que Soporte le arme un tour, sin prometer horarios ni decir que ya se lo pasaste.',
         ];

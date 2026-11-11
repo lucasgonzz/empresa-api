@@ -18,6 +18,7 @@ use App\Services\AsistenteIa\HerramientaDeOfrecerSoporte;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Str;
 use Tests\TestCase;
 
 /**
@@ -90,15 +91,19 @@ class OfrecerSoporteDesdeElAsistenteTest extends TestCase
         $pendiente->refresh();
 
         $this->assertSame('listo', $pendiente->estado);
+        $adjuntos = $pendiente->adjuntos;
+        $this->assertCount(1, $adjuntos);
+        $uuid = $adjuntos[0]['uuid'];
+        $this->assertTrue(Str::isUuid($uuid), 'La oferta trae el uuid con el que el SPA la manda a Soporte.');
         $this->assertSame(
-            [['tipo' => 'soporte', 'url' => null, 'texto' => self::PREGUNTA, 'articulo_id' => null]],
-            $pendiente->adjuntos
+            [['tipo' => 'soporte', 'url' => null, 'texto' => self::PREGUNTA, 'articulo_id' => null, 'uuid' => $uuid]],
+            $adjuntos
         );
         // assertEquals y no assertSame: la columna es JSON de MySQL, que guarda las claves en su propio orden.
         $this->assertEquals(
-            [['tipo' => 'soporte', 'url' => null, 'texto' => self::PREGUNTA, 'articulo_id' => null]],
+            [['tipo' => 'soporte', 'url' => null, 'texto' => self::PREGUNTA, 'articulo_id' => null, 'uuid' => $uuid]],
             json_decode((string) \DB::table('ai_messages')->where('id', $pendiente->id)->value('adjuntos'), true),
-            'La oferta queda guardada en la columna, no solo en el accessor.'
+            'La oferta queda guardada en la columna con su uuid, no solo en el accessor.'
         );
 
         // La herramienta viajó en el pedido al proveedor, después de la del manual.
@@ -163,15 +168,21 @@ class OfrecerSoporteDesdeElAsistenteTest extends TestCase
     {
         $largo = str_repeat('a', AdjuntosIaHelper::MAX_TEXTO_SOPORTE + 50);
 
+        $uuid = (string) Str::uuid();
+
         $normalizados = AdjuntosIaHelper::normalizar([
-            ['tipo' => 'soporte', 'texto' => '   '],
-            ['tipo' => 'soporte', 'texto' => $largo, 'url' => 'https://otro.test/x'],
-            ['tipo' => 'soporte', 'texto' => 'Una segunda oferta no entra'],
-            ['tipo' => 'imagen', 'url' => 'https://fotos.test/a.jpg', 'texto' => 'Martillo', 'articulo_id' => 12],
+            ['tipo' => 'soporte', 'texto' => '   ', 'uuid' => (string) Str::uuid()],
+            ['tipo' => 'soporte', 'texto' => 'Sin uuid no entra'],
+            ['tipo' => 'soporte', 'texto' => 'Con un uuid inválido tampoco', 'uuid' => 'no-es-un-uuid'],
+            ['tipo' => 'soporte', 'texto' => $largo, 'url' => 'https://otro.test/x', 'uuid' => strtoupper($uuid)],
+            ['tipo' => 'soporte', 'texto' => 'Una segunda oferta no entra', 'uuid' => (string) Str::uuid()],
+            ['tipo' => 'imagen', 'url' => 'https://fotos.test/a.jpg', 'texto' => 'Martillo', 'articulo_id' => 12, 'uuid' => $uuid],
         ]);
 
         $this->assertCount(2, $normalizados);
-        $this->assertSame(['tipo', 'url', 'texto', 'articulo_id'], array_keys($normalizados[0]));
+        $this->assertSame(['tipo', 'url', 'texto', 'articulo_id', 'uuid'], array_keys($normalizados[0]));
+        $this->assertSame($uuid, $normalizados[0]['uuid'], 'El uuid se conserva (en minúsculas).');
+        $this->assertSame(['tipo', 'url', 'texto', 'articulo_id'], array_keys($normalizados[1]), 'Una imagen no gana la clave uuid.');
         $this->assertSame('soporte', $normalizados[0]['tipo']);
         $this->assertNull($normalizados[0]['url'], 'La oferta no lleva URL aunque el modelo mande una.');
         $this->assertSame(AdjuntosIaHelper::MAX_TEXTO_SOPORTE, mb_strlen($normalizados[0]['texto']));
@@ -183,6 +194,20 @@ class OfrecerSoporteDesdeElAsistenteTest extends TestCase
         );
 
         $this->assertArrayHasKey('error', HerramientaDeOfrecerSoporte::ejecutar(['pregunta' => '  ']));
+    }
+
+    /**
+     * El uuid es aleatorio por oferta: el admin guarda `support_messages.uuid` UNIQUE entre todos los
+     * clientes, así que dos ofertas (de esta instancia o de otra con los mismos ids) nunca comparten uno.
+     */
+    public function test_dos_ofertas_tienen_uuids_distintos()
+    {
+        $primera = HerramientaDeOfrecerSoporte::ejecutar(['pregunta' => self::PREGUNTA])['adjuntos_de_la_respuesta'][0];
+        $segunda = HerramientaDeOfrecerSoporte::ejecutar(['pregunta' => self::PREGUNTA])['adjuntos_de_la_respuesta'][0];
+
+        $this->assertTrue(Str::isUuid($primera['uuid']));
+        $this->assertTrue(Str::isUuid($segunda['uuid']));
+        $this->assertNotSame($primera['uuid'], $segunda['uuid']);
     }
 
     private function assertSinLaHerramienta()

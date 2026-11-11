@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Models\Article;
+use Illuminate\Support\Str;
 
 /**
  * Los adjuntos de una respuesta del asistente: hoy, las fotos de los artículos que el dueño
@@ -30,7 +31,7 @@ class AdjuntosIaHelper
 
     /**
      * La oferta de pasar una duda a Soporte (misión prueba-ayuda-unificada-en-soporte, E1, 10/11/2026):
-     * `{tipo: 'soporte', url: null, texto: <pregunta>, articulo_id: null}`. La deja
+     * `{tipo: 'soporte', url: null, texto: <pregunta>, articulo_id: null, uuid}`. La deja
      * HerramientaDeOfrecerSoporte y el SPA la dibuja como el botón «Seguir con Soporte». No lleva URL:
      * lo que importa es el texto, que el lead manda a Soporte con un clic. Un SPA anterior la ignora
      * (AdjuntosDeMensaje.vue solo pinta `tipo == 'imagen'`) y el admin no la recibe (para_el_admin()).
@@ -311,11 +312,24 @@ class AdjuntosIaHelper
             return null;
         }
 
+        /*
+         * 🔴 Sin un UUID válido la oferta no se guarda. Es el `mensaje_uuid` con el que el SPA manda la
+         * pregunta a Soporte, y lo que hace único ese envío: empresa lo deduplica y el admin lo guarda como
+         * `support_messages.uuid`, UNIQUE entre TODOS los clientes. Por eso es aleatorio (lo genera
+         * HerramientaDeOfrecerSoporte) y nunca algo derivado de un id local, que se repite entre instancias.
+         */
+        $uuid = isset($adjunto['uuid']) && is_string($adjunto['uuid']) ? strtolower(trim($adjunto['uuid'])) : '';
+
+        if (!Str::isUuid($uuid)) {
+            return null;
+        }
+
         return [
             'tipo'        => self::TIPO_SOPORTE,
             'url'         => null,
             'texto'       => mb_substr($texto, 0, self::MAX_TEXTO_SOPORTE),
             'articulo_id' => null,
+            'uuid'        => $uuid,
         ];
     }
 
