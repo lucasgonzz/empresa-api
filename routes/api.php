@@ -1712,6 +1712,14 @@ Route::middleware('admin.api.key:siempre')
         Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
         Route::post('ai-excel-import/prueba-resolver/{uuid}', 'AdminSync\\ImportacionDePruebaController@resolver');
         Route::post('ai-excel-import/analyze-stock-existente', 'AdminSync\\AiExcelImportController@analyzeStockExistente');
+        // Clientes y proveedores desde el ticket de soporte, con resumen, `CONFIRMAR <código>` y deshacer (misión
+        // importaciones-de-martin, 11/11/2026). `siempre`: escriben clientes, proveedores y cuentas corrientes.
+        // Solo para el dueño activo (409 `dueno_no_activo`); un cliente viejo sin estas rutas responde 404 sin
+        // `motivo` y el admin lo muestra como `version_vieja`. Contrato en AdminSync/ImportacionDeSoporteController.
+        Route::post('importacion-soporte/{modelo}/iniciar', 'AdminSync\\ImportacionDeSoporteController@iniciar')->where('modelo', 'client|provider');
+        Route::get('importacion-soporte/{corrida}', 'AdminSync\\ImportacionDeSoporteController@mostrar')->whereUuid('corrida');
+        Route::post('importacion-soporte/{corrida}/confirmar', 'AdminSync\\ImportacionDeSoporteController@confirmar')->whereUuid('corrida');
+        Route::post('importacion-soporte/{corrida}/revertir', 'AdminSync\\ImportacionDeSoporteController@revertir')->whereUuid('corrida');
     });
 
 Route::middleware('admin.api.key')
