@@ -281,4 +281,35 @@ class Motor_con_datos_estructurados_Test extends DimensionSearchTestCase
         $this->assertSame('valor_ambiguo', $item->motivo);
         $this->assertNull($articulo->fresh()->peso);
     }
+
+    /**
+     * Revisión independiente: muchas tiendas (Shopify, WooCommerce) ponen en el JSON-LD su `sku` INTERNO. Un Product
+     * principal sin gtin, con un sku de la tienda, en una página que trae el GTIN del artículo en el texto: sus medidas
+     * sirven (solo un gtin o un mpn distinto dicen que es otro producto).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_sku_interno_de_la_tienda_no_descarta_las_medidas_del_producto_de_la_pagina()
+    {
+        $gtin     = $this->con_verificador('779123456844');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+        $url      = 'https://tienda.test/cuchilla-4';
+
+        $html = '<html><head><title>Cuchilla</title><script type="application/ld+json">{"@type":"Product","name":"Cuchilla","sku":"SHOP-998",'
+            .'"weight":{"@type":"QuantitativeValue","unitCode":"KGM","value":0.82}}</script></head>'
+            .'<body><main><p>Código de barras '.$gtin.'. Alto: 5 cm. Ancho: 50 cm. Largo: 3 cm.</p></main></body></html>';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado($url, 'Cuchilla')]],
+            [$url => $html],
+            $this->ficha('exacto', $this->tres_medidas_citadas($url))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertEquals(0.82, (float) $item->peso_kg);
+        $this->assertTrue($item->evidencia['peso']['estructurado']);
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status, (string) $item->motivo_detalle);
+    }
 }

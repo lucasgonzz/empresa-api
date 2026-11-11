@@ -197,9 +197,13 @@ class Datos_estructurados_Test extends TestCase
 
         $this->assertNull(DimensionStructuredData::del_articulo($relacionado, '4078500001694', null, true), 'El del artículo coincide pero no tiene medidas.');
 
-        // Plan B: ninguno coincide por código; el único con medidas trae OTRO código.
-        $ajeno = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","sku":"XX-999","weight":{"unitCode":"KGM","value":9}}</script>');
+        // Plan B: ninguno coincide por código; el único con medidas trae OTRO gtin o OTRO mpn. (Con un `sku` distinto
+        // ya no se descarta: es el código interno de la tienda; ver el test del sku de Shopify / WooCommerce.)
+        $ajeno = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","mpn":"XX-999","weight":{"unitCode":"KGM","value":9}}</script>');
         $this->assertNull(DimensionStructuredData::del_articulo($ajeno, null, 'AB-1234', true));
+
+        $otro_gtin = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","gtin13":"4006000000007","sku":"SHOP-1","weight":{"unitCode":"KGM","value":9}}</script>');
+        $this->assertNull(DimensionStructuredData::del_articulo($otro_gtin, '4078500001694', null, true));
 
         // Plan B: el único con medidas no trae códigos pero está anidado en otro producto (accesorio, similar, relacionado).
         foreach (['isAccessoryOrSparePartFor', 'isSimilarTo', 'isRelatedTo', 'isConsumableFor'] as $propiedad) {
@@ -256,5 +260,28 @@ class Datos_estructurados_Test extends TestCase
 
             $this->assertFalse($nodos[0]['campos']['peso']['ambiguo'], $valor);
         }
+    }
+
+    /**
+     * Revisión independiente: el `sku` del JSON-LD suele ser el código INTERNO de la tienda (Shopify, WooCommerce). En
+     * el camino sin coincidencia por código, un sku distinto del artículo no descarta al único Product principal; un
+     * gtin o un mpn distinto, sí.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_sku_distinto_no_descarta_al_unico_producto_de_la_pagina()
+    {
+        $nodos = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","name":"Cuchilla","sku":"SHOP-998",'
+            .'"weight":{"unitCode":"KGM","value":0.82}}</script>');
+
+        $elegido = DimensionStructuredData::del_articulo($nodos, '4078500001694', 'AB-1234', true);
+
+        $this->assertNotNull($elegido);
+        $this->assertFalse($elegido['por_codigo']);
+        $this->assertEquals(0.82, $elegido['nodo']['campos']['peso']['valor']);
+
+        // Sin el código del artículo en la página, sigue sin servir.
+        $this->assertNull(DimensionStructuredData::del_articulo($nodos, '4078500001694', 'AB-1234', false));
     }
 }

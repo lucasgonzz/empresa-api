@@ -130,8 +130,10 @@ class DimensionStructuredData
      *      plan B: que el artículo esté en la página sin medidas no habilita a tomar las de otro nodo.
      *   B. SIN CÓDIGO: si la página trae el código del artículo en otro lado, el ÚNICO nodo con medidas, siempre que
      *      sea el producto de la página (`principal`, no uno anidado en `isRelatedTo`, `isAccessoryOrSparePartFor`,
-     *      `isSimilarTo`…) y que no traiga ningún gtin / mpn / sku (si trae uno, no es el del artículo: es otro
-     *      producto). Si hay más de un nodo principal con medidas, son variantes y no se sabe cuál es: null.
+     *      `isSimilarTo`…) y que no traiga ningún gtin ni mpn (si trae uno, no es el del artículo: es otro producto).
+     *      Un `sku` distinto NO lo descarta: muchas tiendas (Shopify, WooCommerce) ponen ahí su código interno
+     *      (revisión independiente). Si hay más de un nodo principal con medidas, son variantes y no se sabe cuál
+     *      es: null.
      *
      * Revisión independiente de la misión: antes se tomaba el primer nodo con medidas de cualquier lado, y un
      * producto relacionado anidado le prestaba su peso al artículo.
@@ -166,7 +168,7 @@ class DimensionStructuredData
             return null;
         }
 
-        // B. Sin código: el único producto de la página con medidas, y sin códigos propios.
+        // B. Sin código: el único producto de la página con medidas, sin gtin ni mpn propios (el sku puede ser el de la tienda).
         if (!$pagina_trae_el_codigo) {
             return null;
         }
@@ -179,8 +181,14 @@ class DimensionStructuredData
             }
         }
 
-        if (count($con_campos) !== 1 || !empty($con_campos[0]['codigos'])) {
+        if (count($con_campos) !== 1) {
             return null;
+        }
+
+        foreach (array_keys($con_campos[0]['codigos']) as $clave) {
+            if ($clave !== 'sku') {
+                return null;
+            }
         }
 
         return ['nodo' => $con_campos[0], 'por_codigo' => false];
