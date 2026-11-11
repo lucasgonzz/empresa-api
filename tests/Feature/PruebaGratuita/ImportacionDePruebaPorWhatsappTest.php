@@ -22,6 +22,7 @@ use App\Models\ImageAssignmentItem;
 use App\Models\ImageAssignmentRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\PriceType;
 use App\Models\PruebaHito;
 use App\Models\Provider;
 use App\Services\Importacion\ImportacionDePruebaService;
@@ -653,12 +654,16 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $run = $this->corrida_subida($respuesta->json('analysis_uuid'));
         $this->assertSame([
             ['hoja' => 'Hoja 0', 'columna' => 'A', 'campo' => null],
-            ['hoja' => 'HOJA 0', 'columna' => 'B', 'campo' => 'nombre'],
-            ['hoja' => null, 'columna' => 'C', 'campo' => 'precio'],
-            ['hoja' => null, 'columna' => 'D', 'campo' => 'address_' . $deposito->id . '_amount'],
+            ['hoja' => 'Hoja 0', 'columna' => 'B', 'campo' => 'nombre'],
+            ['hoja' => 'Hoja 0', 'columna' => 'C', 'campo' => 'precio'],
+            ['hoja' => 'Hoja 0', 'columna' => 'D', 'campo' => 'address_' . $deposito->id . '_amount'],
         ], $run->columnas_previas);
 
-        $this->analizador([$this->analisis_del_ticket()]);
+        // Sin el mapeo previo, este análisis pregunta las cuatro columnas.
+        $planilla = new PlanillaDePrueba($run);
+        $this->analizador([$this->analisis_del_ticket(), $this->analisis_del_ticket()]);
+        $sin_previas = $planilla->analizar(app(\App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer::class));
+        $this->assertSame(['columna_0_0', 'columna_0_1', 'columna_0_2', 'columna_0_3'], array_keys($planilla->preguntas_columnas($sin_previas)));
         app(ImportacionDePruebaService::class)->avanzar($run);
         $run->refresh();
 
@@ -739,11 +744,11 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->subir_de_soporte($archivo, [
             ['columna' => 'B', 'campo' => 'nombre'],
             ['columna' => 'C', 'campo' => 'Nombre'],
-        ])->assertStatus(422)->assertJsonPath('message', 'Las columnas B y C quedaron asignadas al mismo campo «nombre».');
+        ])->assertStatus(422)->assertJsonPath('message', 'Las columnas B y C de «Hoja 0» quedaron asignadas al mismo campo «nombre».');
         $this->subir_de_soporte($archivo, [
             ['columna' => 'B', 'campo' => 'nombre'],
             ['columna' => 'b', 'campo' => 'ignorar'],
-        ])->assertStatus(422)->assertJsonPath('message', 'La columna B aparece dos veces en el mapeo previo.');
+        ])->assertStatus(422)->assertJsonPath('message', 'La columna B de «Hoja 0» aparece dos veces en el mapeo previo.');
         $this->subir_de_soporte($archivo, '{"columna":"B","campo":"nombre"}')->assertStatus(422);
         $this->subir_de_soporte($archivo, [['columna' => 'B1', 'campo' => 'nombre']])->assertStatus(422);
         // Dos columnas ignoradas no chocan entre sí.
@@ -842,6 +847,111 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
     }
 
     /**
+     * Listas de precio: el nombre pelado de una lista no resuelve en silencio al porcentaje; vale la
+     * clave exacta o la etiqueta completa.
+     */
+    public function test_mapeo_previo_con_lista_de_precio_exige_clave_o_etiqueta_completa(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        $lista = PriceType::create(['name' => 'Mayorista Pesca', 'user_id' => $this->dueno->id]);
+        $archivo = $this->planilla_del_ticket();
+        foreach (['Mayorista Pesca', 'Lista Mayorista Pesca', '%_mayorista_pesca'] as $pelado) {
+            $mensaje = $this->subir_de_soporte($archivo, [['columna' => 'C', 'campo' => $pelado]])->assertStatus(422)->json('message');
+            $this->assertStringContainsString('El campo «' . $pelado . '» de la columna C no existe en este negocio.', $mensaje);
+            $this->assertStringContainsString('price_type_' . $lista->id . '_percentage (Lista Mayorista Pesca (percentage))', $mensaje);
+        }
+        $this->assertFalse(ImportacionDePrueba::where('user_id', $this->dueno->id)->where('support_ticket_id', 74)->exists());
+
+        $respuesta = $this->subir_de_soporte($archivo, [
+            ['columna' => 'C', 'campo' => 'Lista Mayorista Pesca (final_price)'],
+            ['columna' => 'D', 'campo' => 'price_type_' . $lista->id . '_percentage'],
+        ])->assertStatus(202)->assertJsonPath('columnas_previas', 2);
+        $run = $this->corrida_subida($respuesta->json('analysis_uuid'));
+        $this->assertSame(['price_type_' . $lista->id . '_final_price', 'price_type_' . $lista->id . '_percentage'],
+            array_column($run->columnas_previas, 'campo'));
+    }
+
+    /**
+     * Hojas: una hoja que no está en el libro, o la falta de hoja en un libro de varias, es 422
+     * nombrando las hojas; una hoja escrita distinto se guarda con su nombre real.
+     */
+    public function test_mapeo_previo_valida_las_hojas_contra_el_libro(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        $archivo = $this->planilla([
+            [['Nombre', 'Precio'], ['Reel', 10]],
+            [['Nombre', 'Precio'], ['Caña', 20]],
+        ]);
+        $this->subir_de_soporte($archivo, [['hoja' => 'Precios', 'columna' => 'B', 'campo' => 'precio']])->assertStatus(422)
+            ->assertJsonPath('message', 'La hoja «Precios» de la columna B no existe en el archivo. Hojas del archivo: «Hoja 0», «Hoja 1».')
+            ->assertJsonPath('errors.columnas_previas.0', 'La hoja «Precios» de la columna B no existe en el archivo. Hojas del archivo: «Hoja 0», «Hoja 1».');
+        $this->subir_de_soporte($archivo, [['columna' => 'B', 'campo' => 'precio']])->assertStatus(422)
+            ->assertJsonPath('message', 'Falta la hoja de la columna B: el archivo tiene varias hojas («Hoja 0», «Hoja 1»). Indicá en cuál está.');
+        $this->assertFalse(ImportacionDePrueba::where('user_id', $this->dueno->id)->where('support_ticket_id', 74)->exists());
+
+        // La misma columna en dos hojas distintas no choca, y la hoja queda con su nombre real.
+        $respuesta = $this->subir_de_soporte($archivo, [
+            ['hoja' => 'hoja 1', 'columna' => 'B', 'campo' => 'precio'],
+            ['hoja' => 'Hoja 0', 'columna' => 'B', 'campo' => 'costo'],
+        ])->assertStatus(202)->assertJsonPath('columnas_previas', 2);
+        $run = $this->corrida_subida($respuesta->json('analysis_uuid'));
+        $this->assertSame(['Hoja 1', 'Hoja 0'], array_column($run->columnas_previas, 'hoja'));
+
+        $this->analizador([['nombre' => 0.99, 'columna_b' => 0], ['nombre' => 0.99, 'columna_b' => 0]]);
+        app(ImportacionDePruebaService::class)->avanzar($run);
+        $run->refresh();
+        $this->assertSame('costo', $run->hojas[0]['columnas'][1]['campo']);
+        $this->assertSame('precio', $run->hojas[1]['columnas'][1]['campo']);
+        $this->assertSame('confirmacion', $run->estado);
+    }
+
+    /**
+     * En un libro de una sola hoja, una previa sin hoja es de esa hoja: con otra previa que sí la
+     * nombra, los duplicados de columna y de campo se detectan después de normalizar.
+     */
+    public function test_mapeo_previo_con_y_sin_hoja_en_la_misma_hoja_choca(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        $archivo = $this->planilla_del_ticket();
+        $this->subir_de_soporte($archivo, [
+            ['hoja' => 'Hoja 0', 'columna' => 'B', 'campo' => 'nombre'],
+            ['columna' => 'B', 'campo' => 'precio'],
+        ])->assertStatus(422)->assertJsonPath('message', 'La columna B de «Hoja 0» aparece dos veces en el mapeo previo.');
+        $this->subir_de_soporte($archivo, [
+            ['hoja' => 'hoja 0', 'columna' => 'B', 'campo' => 'nombre'],
+            ['columna' => 'C', 'campo' => 'nombre'],
+        ])->assertStatus(422)->assertJsonPath('message', 'Las columnas B y C de «Hoja 0» quedaron asignadas al mismo campo «nombre».');
+        $this->assertFalse(ImportacionDePrueba::where('user_id', $this->dueno->id)->where('support_ticket_id', 74)->exists());
+    }
+
+    /**
+     * Base sin la migración: la importación sigue como hoy, sin guardar previas, y responde
+     * `columnas_previas: 0`. Se simula con una gramática que oculta la columna en el listado de
+     * columnas (sin DDL, que en MySQL confirmaría la transacción que aísla el test).
+     */
+    public function test_mapeo_previo_sin_la_migracion_sigue_sin_previas(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        $conexion = DB::connection();
+        $conexion->setSchemaGrammar($conexion->withTablePrefix(new class extends \Illuminate\Database\Schema\Grammars\MySqlGrammar {
+            public function compileColumnListing()
+            {
+                return parent::compileColumnListing() . " and column_name <> 'columnas_previas'";
+            }
+        }));
+        try {
+            $this->assertFalse(\App\Http\Controllers\AdminSync\ImportacionDePruebaController::soporta_columnas_previas());
+            $respuesta = $this->subir_de_soporte($this->planilla_del_ticket(), [['columna' => 'B', 'campo' => 'nombre']])
+                ->assertStatus(202)->assertJsonPath('columnas_previas', 0)->assertJsonPath('corrida_existente', false);
+        } finally {
+            $conexion->useDefaultSchemaGrammar();
+        }
+        $this->assertTrue(\App\Http\Controllers\AdminSync\ImportacionDePruebaController::soporta_columnas_previas());
+        $run = $this->corrida_subida($respuesta->json('analysis_uuid'));
+        $this->assertNull($run->columnas_previas);
+    }
+
+    /**
      * Planilla parecida a la del ticket 74: columna A sin título, nombres, precio y stock.
      */
     private function planilla_del_ticket(): string
@@ -855,10 +965,11 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
 
     /**
      * Análisis simulado sin ninguna columna segura, como el que disparó las preguntas del ticket 74.
+     * El título de B no es «descripcion» a propósito: `descripcion_como_nombre` la volvería segura.
      */
     private function analisis_del_ticket(): array
     {
-        return ['columna_a' => 0, 'descripcion' => 0.50, 'precio' => 0.60, 'stock_actual' => 0.50];
+        return ['columna_a' => 0, 'marca' => 0.50, 'precio' => 0.60, 'stock_actual' => 0.50];
     }
 
     /**

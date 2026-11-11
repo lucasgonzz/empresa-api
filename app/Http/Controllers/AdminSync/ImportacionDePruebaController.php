@@ -15,9 +15,11 @@ use App\Services\Importacion\PlanillaStockExistente;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class ImportacionDePruebaController extends Controller
 {
@@ -37,7 +39,7 @@ class ImportacionDePruebaController extends Controller
             'origen' => 'nullable|string|max:40',
             'alcance' => 'sometimes|required|in:stock_existente',
             // Mapeo de columnas que soporte ya confirmó con el cliente: string JSON (viaja en multipart).
-            'columnas_previas' => 'sometimes|nullable|string|max:8000',
+            'columnas_previas' => 'sometimes|nullable|string|max:24000',
         ]);
 
         $alcance = $datos['alcance'] ?? null;
@@ -54,7 +56,7 @@ class ImportacionDePruebaController extends Controller
             if ($alcance !== null) {
                 self::rechazar_previas('El mapeo previo es para la importación general de artículos.');
             }
-            $previas = self::columnas_previas((string) $datos['columnas_previas'], $user_id);
+            $previas = self::columnas_previas((string) $datos['columnas_previas'], $user_id, $request->file('excel_file'));
         }
         // Una base sin la migración sigue como hoy, sin mapeo previo, en lugar de caerse al guardar.
         $guarda_previas = $trajo_previas && self::soporta_columnas_previas();
@@ -128,17 +130,24 @@ class ImportacionDePruebaController extends Controller
      * opcional. El campo se resuelve contra los campos del negocio con la misma lógica de
      * `PlanillaDePrueba`, así lo guardado es exactamente lo que el análisis va a aplicar.
      *
-     * Formato guardado: lista de ['hoja' => ?string, 'columna' => 'A'..'ZZZ', 'campo' => ?string],
-     * con `campo` ya resuelto a la clave del importador y **null para ignorar** (nunca la cadena
-     * `ignorar`, que no es un campo del importador).
+     * La hoja se valida contra el libro recibido y se guarda con su nombre real: sin hoja vale solo
+     * si el libro tiene una única hoja (y queda guardada con ese nombre); una hoja que no existe o
+     * una hoja faltante en un libro de varias hojas es 422. Los duplicados de columna o de campo se
+     * controlan después de normalizar, así una previa con hoja y otra sin hoja que caen en la misma
+     * hoja también chocan.
      *
-     * @param  string $json     Lista JSON recibida en el pedido
-     * @param  int    $user_id  Dueño del negocio, para leer sus depósitos y listas de precio
-     * @return array            Lista normalizada
+     * Formato guardado: lista de ['hoja' => string, 'columna' => 'A'..'ZZZ', 'campo' => ?string],
+     * con la hoja con su nombre real, `campo` ya resuelto a la clave del importador y **null para
+     * ignorar** (nunca la cadena `ignorar`, que no es un campo del importador).
+     *
+     * @param  string       $json     Lista JSON recibida en el pedido
+     * @param  int          $user_id  Dueño del negocio, para leer sus depósitos y listas de precio
+     * @param  UploadedFile $archivo  Excel del pedido, para leer los nombres de sus hojas
+     * @return array                  Lista normalizada
      *
      * @throws HttpResponseException  422 si el JSON, una columna o un campo no son válidos
      */
-    private static function columnas_previas(string $json, int $user_id): array
+    private static function columnas_previas(string $json, int $user_id, UploadedFile $archivo): array
     {
         $lista = json_decode($json, true);
         if (!is_array($lista) || $lista === [] || array_keys($lista) !== range(0, count($lista) - 1)) {
@@ -150,10 +159,8 @@ class ImportacionDePruebaController extends Controller
 
         // La planilla resuelve los campos con los depósitos y listas del negocio; la corrida todavía no existe.
         $planilla = new PlanillaDePrueba(new ImportacionDePrueba(['user_id' => $user_id]));
-        $normalizadas = [];
-        // Por hoja comparable: columnas y campos ya usados, para rechazar duplicados.
-        $columnas_vistas = [];
-        $campos_vistos = [];
+        // Primera pasada: forma de cada ítem y campo resuelto. La hoja se normaliza después.
+        $leidas = [];
         foreach ($lista as $numero => $item) {
             $orden = $numero + 1;
             if (!is_array($item)) {
@@ -181,17 +188,54 @@ class ImportacionDePruebaController extends Controller
                     . ' no existe en este negocio. Campos posibles: ' . implode(', ', $planilla->campos_posibles()) . '.');
             }
 
-            $clave_hoja = $hoja === null ? '' : PlanillaDePrueba::titulo_comparable($hoja);
-            if (isset($columnas_vistas[$clave_hoja][$columna])) {
+            $leidas[] = ['hoja' => $hoja, 'columna' => $columna, 'campo' => $resuelto];
+        }
+
+        // Las hojas se validan contra el libro recibido: una previa que el análisis no puede ubicar
+        // no tiene que contarse como aplicada (el cliente recibiría otra vez las preguntas).
+        try {
+            $hojas_del_libro = PlanillaDePrueba::nombres_de_hojas((string) $archivo->getRealPath(), (string) $archivo->getClientOriginalExtension());
+        } catch (RuntimeException $error) {
+            $hojas_del_libro = [];
+        }
+        if ($hojas_del_libro === []) {
+            self::rechazar_previas('No pude leer las hojas del archivo para aplicar el mapeo previo.');
+        }
+        $lista_de_hojas = '«' . implode('», «', $hojas_del_libro) . '»';
+
+        $normalizadas = [];
+        // Por nombre real de hoja: columnas y campos ya usados, para rechazar duplicados.
+        $columnas_vistas = [];
+        $campos_vistos = [];
+        foreach ($leidas as $previa) {
+            $columna = $previa['columna'];
+            $resuelto = $previa['campo'];
+            if ($previa['hoja'] === null) {
+                if (count($hojas_del_libro) > 1) {
+                    self::rechazar_previas('Falta la hoja de la columna ' . $columna . ': el archivo tiene varias hojas ('
+                        . $lista_de_hojas . '). Indicá en cuál está.');
+                }
+                // Con una sola hoja, la previa sin hoja es de esa hoja.
+                $hoja = $hojas_del_libro[0];
+            } else {
+                $hoja = self::hoja_del_libro($previa['hoja'], $hojas_del_libro);
+                if ($hoja === null) {
+                    self::rechazar_previas('La hoja «' . $previa['hoja'] . '» de la columna ' . $columna
+                        . ' no existe en el archivo. Hojas del archivo: ' . $lista_de_hojas . '.');
+                }
+            }
+
+            $referencia = 'columna ' . $columna . ' de «' . $hoja . '»';
+            if (isset($columnas_vistas[$hoja][$columna])) {
                 self::rechazar_previas('La ' . $referencia . ' aparece dos veces en el mapeo previo.');
             }
-            $columnas_vistas[$clave_hoja][$columna] = true;
+            $columnas_vistas[$hoja][$columna] = true;
             if ($resuelto !== PlanillaDePrueba::CAMPO_IGNORAR) {
-                if (isset($campos_vistos[$clave_hoja][$resuelto])) {
-                    self::rechazar_previas('Las columnas ' . $campos_vistos[$clave_hoja][$resuelto] . ' y ' . $columna
-                        . ($hoja === null ? '' : ' de «' . $hoja . '»') . ' quedaron asignadas al mismo campo «' . $resuelto . '».');
+                if (isset($campos_vistos[$hoja][$resuelto])) {
+                    self::rechazar_previas('Las columnas ' . $campos_vistos[$hoja][$resuelto] . ' y ' . $columna
+                        . ' de «' . $hoja . '» quedaron asignadas al mismo campo «' . $resuelto . '».');
                 }
-                $campos_vistos[$clave_hoja][$resuelto] = $columna;
+                $campos_vistos[$hoja][$resuelto] = $columna;
             }
 
             $normalizadas[] = [
@@ -202,6 +246,29 @@ class ImportacionDePruebaController extends Controller
         }
 
         return $normalizadas;
+    }
+
+    /**
+     * Busca una hoja del mapeo previo entre las del libro: primero por nombre exacto y, si no hay,
+     * por `titulo_comparable` cuando coincide con una sola hoja.
+     *
+     * @param  string   $hoja    Hoja recibida en el mapeo previo
+     * @param  string[] $hojas   Nombres reales de las hojas del libro
+     * @return string|null       Nombre real de la hoja, o null si no existe o es ambigua
+     */
+    private static function hoja_del_libro(string $hoja, array $hojas): ?string
+    {
+        foreach ($hojas as $nombre) {
+            if (trim($nombre) === $hoja) {
+                return $nombre;
+            }
+        }
+        $buscada = PlanillaDePrueba::titulo_comparable($hoja);
+        $coincidencias = array_values(array_filter($hojas, function ($nombre) use ($buscada) {
+            return PlanillaDePrueba::titulo_comparable($nombre) === $buscada;
+        }));
+
+        return count($coincidencias) === 1 ? $coincidencias[0] : null;
     }
 
     /**

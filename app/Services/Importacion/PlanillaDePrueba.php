@@ -364,7 +364,8 @@ class PlanillaDePrueba
      *
      * Acepta la clave exacta (`nombre`, `address_1_amount`), un alias del importador
      * (`codigo_proveedor`), la etiqueta que usan las preguntas (`Depósito Principal`, `precio final`)
-     * o el nombre de columna del importador, comparados con `titulo_comparable`. Si el texto
+     * o el nombre de columna del importador, comparados con `titulo_comparable`. Las listas de
+     * precio no se comparan contra el nombre de columna del importador (ver abajo). Si el texto
      * coincide con más de un campo distinto, no se adivina.
      *
      * @param  string $campo  Texto recibido en el mapeo previo
@@ -392,7 +393,13 @@ class PlanillaDePrueba
         }
         $coincidencias = [];
         foreach ($this->propiedades as $clave => $propiedad) {
-            $candidatos = [$clave, $propiedad, $this->nombres[$clave] ?? ''];
+            // En las listas de precio el nombre de columna del importador (`%_mayorista`,
+            // `$_final_mayorista`) pierde el símbolo al compararlo: «Mayorista» caería en silencio
+            // en el porcentaje. Para las listas valen solo la clave y la etiqueta completa
+            // («Lista Mayorista (percentage)»).
+            $candidatos = strpos($clave, 'price_type_') === 0
+                ? [$clave, $this->nombres[$clave] ?? '']
+                : [$clave, $propiedad, $this->nombres[$clave] ?? ''];
             foreach ($candidatos as $candidato) {
                 if (self::titulo_comparable($candidato) === $buscado) {
                     $coincidencias[$clave] = true;
@@ -401,6 +408,32 @@ class PlanillaDePrueba
         }
 
         return count($coincidencias) === 1 ? (string) array_key_first($coincidencias) : null;
+    }
+
+    /**
+     * Nombres de las hojas de un libro recién recibido, antes de que exista la corrida.
+     *
+     * Para `.xlsx` usa `ExcelWorkbookReader::listar_hojas` (OpenSpout), la misma fuente que después
+     * recorre `analizar()`. Un `.xls` no lo abre OpenSpout: `ruta()` lo convierte con PhpSpreadsheet
+     * sin cambiar los nombres, así que acá se listan con el lector `Xls` de PhpSpreadsheet.
+     *
+     * @param  string $ruta       Ruta del archivo (puede ser el temporal de la subida)
+     * @param  string $extension  Extensión original del archivo
+     * @return string[]           Nombres de las hojas, en orden
+     *
+     * @throws RuntimeException   Si el archivo no se puede leer
+     */
+    public static function nombres_de_hojas(string $ruta, string $extension): array
+    {
+        try {
+            if (strtolower($extension) === 'xls') {
+                return array_values(IOFactory::createReader('Xls')->listWorksheetNames($ruta));
+            }
+
+            return array_column(ExcelWorkbookReader::listar_hojas($ruta), 'nombre');
+        } catch (\Throwable $error) {
+            throw new RuntimeException('No se pudieron leer las hojas del archivo.', 0, $error);
+        }
     }
 
     /**
@@ -429,8 +462,9 @@ class PlanillaDePrueba
      * campo ya tomado deja de ser segura, para que se pregunte en lugar de chocar en
      * `resolver_columnas` («Dos columnas … al mismo dato»).
      *
-     * Reglas: la hoja se busca por nombre con `titulo_comparable`; sin hoja, la previa vale solo si
-     * el análisis dejó una única hoja. Una letra que no está entre las columnas con datos se saltea.
+     * Reglas: la hoja se busca por nombre exacto y, si ninguna hoja se llama así, con
+     * `titulo_comparable`; sin hoja, la previa vale solo si el análisis dejó una única hoja
+     * (`iniciar` ya guarda la hoja normalizada al nombre real del libro, así que es un resguardo). Una letra que no está entre las columnas con datos se saltea.
      * Las previas con hoja se aplican antes que las sin hoja; si dos previas caen en la misma
      * columna o en el mismo campo, gana la primera. Un campo que el negocio ya no tiene (un
      * depósito borrado entre el pedido y el análisis) no se aplica y la columna se pregunta.
@@ -450,6 +484,8 @@ class PlanillaDePrueba
             array_filter($previas, function ($previa) { return ($previa['hoja'] ?? null) === null; })
         );
         $una_sola_hoja = count($hojas) === 1;
+        // Nombres reales de las hojas: el nombre exacto gana sobre la comparación tolerante.
+        $nombres_exactos = array_column($hojas, 'nombre');
 
         foreach ($hojas as &$hoja) {
             $nombre_hoja = self::titulo_comparable($hoja['nombre']);
@@ -459,7 +495,15 @@ class PlanillaDePrueba
             $tomadas = [];
             foreach ($previas as $previa) {
                 $hoja_previa = $previa['hoja'] ?? null;
-                if ($hoja_previa === null ? !$una_sola_hoja : self::titulo_comparable($hoja_previa) !== $nombre_hoja) {
+                if ($hoja_previa === null) {
+                    $corresponde = $una_sola_hoja;
+                } elseif ($hoja_previa === $hoja['nombre']) {
+                    $corresponde = true;
+                } else {
+                    $corresponde = !in_array($hoja_previa, $nombres_exactos, true)
+                        && self::titulo_comparable($hoja_previa) === $nombre_hoja;
+                }
+                if (!$corresponde) {
                     continue;
                 }
                 $letra = strtoupper(trim((string) ($previa['columna'] ?? '')));
