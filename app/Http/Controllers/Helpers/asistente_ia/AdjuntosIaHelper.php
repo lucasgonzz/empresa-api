@@ -25,8 +25,20 @@ use App\Models\Article;
  */
 class AdjuntosIaHelper
 {
-    /** El único tipo que hoy saben dibujar la SPA y el admin (contrato §1). Un tipo nuevo se agrega acá. */
+    /** Las fotos (contrato §1): el tipo que saben dibujar la SPA y el admin. Un tipo nuevo se agrega acá. */
     const TIPO_IMAGEN = 'imagen';
+
+    /**
+     * La oferta de pasar una duda a Soporte (misión prueba-ayuda-unificada-en-soporte, E1, 10/11/2026):
+     * `{tipo: 'soporte', url: null, texto: <pregunta>, articulo_id: null}`. La deja
+     * HerramientaDeOfrecerSoporte y el SPA la dibuja como el botón «Seguir con Soporte». No lleva URL:
+     * lo que importa es el texto, que el lead manda a Soporte con un clic. Un SPA anterior la ignora
+     * (AdjuntosDeMensaje.vue solo pinta `tipo == 'imagen'`) y el admin no la recibe (para_el_admin()).
+     */
+    const TIPO_SOPORTE = 'soporte';
+
+    /** Largo máximo de la pregunta de un adjunto de soporte: es un mensaje para Martín, no un epígrafe. */
+    const MAX_TEXTO_SOPORTE = 500;
 
     /**
      * Tope de adjuntos por mensaje (contrato §1). Es un tope de PRODUCTO y no técnico: seis fotos
@@ -157,8 +169,8 @@ class AdjuntosIaHelper
      * o un array ya decodificado, y una tool podría devolver cualquier cosa.
      *
      * Lo que se descarta, y por qué:
-     *   - `tipo` que no sea 'imagen': la SPA ignora tipos que no conoce, pero guardarlos sería
-     *     guardar algo que nadie pinta.
+     *   - `tipo` que no sea 'imagen' ni 'soporte': la SPA ignora tipos que no conoce, pero
+     *     guardarlos sería guardar algo que nadie pinta. 'soporte' no lleva URL (ver TIPO_SOPORTE).
      *   - `url` que no sea string absoluta http(s): el admin la manda tal cual a Meta como
      *     `image.link`, y una ruta relativa o un `data:` es un mensaje que rebota.
      *   - `texto` se recorta a MAX_TEXTO y vacío queda null (es un epígrafe, no un campo obligatorio).
@@ -180,9 +192,34 @@ class AdjuntosIaHelper
 
         $adjuntos = [];
 
+        $con_soporte = false;
+
         foreach ($valor as $adjunto) {
 
-            if (!is_array($adjunto) || !isset($adjunto['tipo']) || !isset($adjunto['url'])) {
+            if (!is_array($adjunto) || !isset($adjunto['tipo'])) {
+                continue;
+            }
+
+            /*
+             * La oferta de Soporte va por su lado: sin URL, con la pregunta obligatoria y UNA sola por
+             * mensaje (dos botones iguales en la misma respuesta serían dos tickets con la misma duda).
+             */
+            if ((string) $adjunto['tipo'] === self::TIPO_SOPORTE) {
+                $de_soporte = self::adjunto_de_soporte($adjunto);
+
+                if (!is_null($de_soporte) && !$con_soporte) {
+                    $adjuntos[] = $de_soporte;
+                    $con_soporte = true;
+                }
+
+                if (count($adjuntos) >= self::MAX_ADJUNTOS) {
+                    break;
+                }
+
+                continue;
+            }
+
+            if (!isset($adjunto['url'])) {
                 continue;
             }
 
@@ -240,6 +277,12 @@ class AdjuntosIaHelper
 
         foreach (self::normalizar($adjuntos) as $adjunto) {
 
+            // El botón de Soporte existe solo en la pantalla del sistema: por WhatsApp no hay qué tocar,
+            // y el admin manda cada adjunto como una imagen de Meta, que sin URL rebotaría.
+            if ($adjunto['tipo'] !== self::TIPO_IMAGEN) {
+                continue;
+            }
+
             $recortados[] = [
                 'tipo'  => $adjunto['tipo'],
                 'url'   => $adjunto['url'],
@@ -248,6 +291,32 @@ class AdjuntosIaHelper
         }
 
         return $recortados;
+    }
+
+    /**
+     * Un adjunto de soporte con la forma del contrato (C3), o null si no trae pregunta.
+     *
+     * @param  array  $adjunto
+     * @return array|null
+     */
+    protected static function adjunto_de_soporte(array $adjunto)
+    {
+        if (!isset($adjunto['texto']) || !is_scalar($adjunto['texto']) || is_bool($adjunto['texto'])) {
+            return null;
+        }
+
+        $texto = trim((string) $adjunto['texto']);
+
+        if ($texto === '') {
+            return null;
+        }
+
+        return [
+            'tipo'        => self::TIPO_SOPORTE,
+            'url'         => null,
+            'texto'       => mb_substr($texto, 0, self::MAX_TEXTO_SOPORTE),
+            'articulo_id' => null,
+        ];
     }
 
     /**
