@@ -425,7 +425,7 @@ class ArticleDimensionSearchEngine
                         if (!is_null($propuesta)) {
                             $propuestas_sin_respaldo[$campo] = array_merge($propuesta, [
                                 'motivo_rechazo' => $validado['motivo'],
-                                'criterio'       => $this->criterio_del_item($plan),
+                                'criterio'       => $this->criterio_del_item($plan, $documentos, $propuesta['url']),
                                 'match'          => $match,
                                 'nota'           => $nota,
                             ]);
@@ -883,18 +883,47 @@ class ArticleDimensionSearchEngine
      * (sitios de referencia, código de barras fuera de Argentina) son solo del DIAGNÓSTICO: en el item tiene que
      * quedar uno de los tres de siempre. Además la columna es `string(20)` y «codigo_de_barras_global» mide 23:
      * con el modo estricto de MySQL el UPDATE fallaba y el artículo se reprocesaba (gastando Serper e IA) hasta
-     * quedar en error. El plan de sitios busca por el GTIN si lo hay y si no por el código de proveedor.
+     * quedar en error. El plan de sitios busca por el GTIN y el proveedor a la vez: el criterio sale del código que
+     * traía la página de la que salió el dato (si se sabe cuál es: `$url` entre los documentos); si no, de las
+     * páginas leídas en la búsqueda (ninguna con el de barras y alguna con el de proveedor → proveedor); y si no, del
+     * código principal del plan (el GTIN si lo hay).
      *
-     * @param  array $plan
+     * @param  array  $plan
+     * @param  array  $documentos  url => documento de la búsqueda (con `codigo_de_barras` / `codigo_proveedor`).
+     * @param  string $url         La página de la que salió el dato ('' si no se sabe).
      * @return string
      */
-    protected function criterio_del_item(array $plan)
+    protected function criterio_del_item(array $plan, array $documentos = [], $url = '')
     {
         if ($plan['criterio'] === DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS_GLOBAL) {
             return DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS;
         }
 
         if ($plan['criterio'] === DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA) {
+            $url = (string) $url;
+
+            if ($url !== '' && isset($documentos[$url])) {
+                if (!empty($documentos[$url]['codigo_de_barras'])) {
+                    return DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS;
+                }
+
+                if (!empty($documentos[$url]['codigo_proveedor'])) {
+                    return DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR;
+                }
+            }
+
+            $con_barras    = false;
+            $con_proveedor = false;
+
+            foreach ($documentos as $documento) {
+                $con_barras    = $con_barras || !empty($documento['codigo_de_barras']);
+                $con_proveedor = $con_proveedor || !empty($documento['codigo_proveedor']);
+            }
+
+            if (!$con_barras && $con_proveedor) {
+                return DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR;
+            }
+
             return $plan['tipo_codigo'] === DimensionPageText::CODIGO_DE_BARRAS
                 ? DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS
                 : DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR;

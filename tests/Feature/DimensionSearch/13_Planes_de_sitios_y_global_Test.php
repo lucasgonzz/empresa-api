@@ -417,4 +417,31 @@ class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
         $this->assertTrue(DimensionPageText::contiene_codigo('ref 55.90.14 ok', '559014', $p));
         $this->assertFalse(DimensionPageText::contiene_codigo('ref 12.345 ok', '12345', $p));
     }
+
+    /**
+     * En el plan de sitios (que busca por el GTIN y el proveedor juntos), el `criterio_usado` de una propuesta sin
+     * respaldo sale del código que traía la página de la que salió, no del primer código de la consulta.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_propuesta_del_plan_de_sitios_guarda_el_criterio_del_codigo_que_traia_la_pagina()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['verdefacile.eu']);
+
+        $url      = 'https://www.verdefacile.eu/it/catena-42550194950';
+        $articulo = $this->nuevo_articulo('CADENA MOTOSIERRA 3/8 50 ESLABONES', self::GTIN_OBI, ['provider_code' => '42550194950']);
+
+        $this->falsear(
+            ['("'.self::GTIN_OBI.'" OR "42550194950") site:verdefacile.eu' => [$this->resultado($url, 'Catena 42550194950')]],
+            [$url => $this->pagina('Catena motosega', 'Riferimento 42550194950. Catena per motosega.')],
+            // La cita no está en la página: propuesta sin respaldo.
+            $this->ficha('exacto', ['peso' => $this->dato(4.5, 'kg', 'Peso: 4,5 Kg', $url)])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('valor_sin_respaldo', $item->motivo);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+    }
 }
