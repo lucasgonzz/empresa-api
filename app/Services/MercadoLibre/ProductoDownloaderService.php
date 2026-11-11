@@ -391,6 +391,14 @@ class ProductoDownloaderService extends MercadoLibreService
      */
     protected function asignar_precio($article, $price)
     {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([(int) $article->id], null, 'mercado_libre', function () use ($argumentos) {
+            return call_user_func_array([$this, 'asignar_precio_sin_historial'], $argumentos);
+        });
+    }
+
+    protected function asignar_precio_sin_historial($article, $price)
+    {
         $article->price_types()->attach($this->price_type_ml->id, [
             'setear_precio_final'   => 1,
             'final_price'           => $price,

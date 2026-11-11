@@ -492,6 +492,8 @@ abstract class ComprasPreciosEnLoteTestCase extends ComprasTestCase
             ];
         }
 
+        $foto['listas_auditoria'] = $this->listas_para_auditoria($pivots->map(function ($fila) { return (array) $fila; })->all(),
+            DB::table('article_price_type_monedas')->whereIn('article_id', $ids)->orderBy('id')->get()->map(function ($fila) { return (array) $fila; })->all());
         return $foto;
     }
 
@@ -520,6 +522,13 @@ abstract class ComprasPreciosEnLoteTestCase extends ComprasTestCase
     protected function foto_de_la_compra(array $ids, $compra_id, array $marcas)
     {
         $foto = $this->foto($ids, $marcas['price_changes']);
+        foreach ($foto['cambios'] as &$eventos) {
+            foreach ($eventos as &$evento) {
+                $evento['cambios_listas'] = $this->detalle_ordenado(json_decode($evento['cambios_listas'], true));
+            }
+            unset($evento);
+        }
+        unset($eventos);
 
         $foto['article_provider']      = $this->filas('article_provider', 'article_id', $ids, $compra_id, $marcas);
         $foto['article_discounts']     = $this->filas('article_discounts', 'article_id', $ids, $compra_id, $marcas);
@@ -833,21 +842,27 @@ abstract class ComprasPreciosEnLoteTestCase extends ComprasTestCase
         /* D1: un solo cambio de precio por artículo y por compra. */
         $esperado['cambios'] = [];
 
-        foreach ($motor['articles'] as $article_id => $fila_del_motor) {
+        $listas_finales = $this->listas_para_auditoria($hoy['pivots'], $hoy['monedas']);
+        foreach ($hoy['articles'] as $article_id => $fila_del_motor) {
 
             $this->assertArrayHasKey($article_id, $antes['articles'], 'El artículo ' . $article_id . ' no estaba en la foto de antes.');
 
-            if (!$this->cambio_el_precio($antes['articles'][$article_id], $fila_del_motor['final_price'])) {
+            $detalle = $this->diferencia_de_listas($antes['listas_auditoria'][$article_id] ?? [], $listas_finales[$article_id] ?? []);
+            $cambio_general = $antes['articles'][$article_id] !== $fila_del_motor['final_price'];
+            if (!$cambio_general && !$detalle) {
                 continue;
             }
 
-            if (isset($esperado['articles'][$article_id])) {
+            if ($this->cambio_el_precio($antes['articles'][$article_id], $fila_del_motor['final_price']) && isset($esperado['articles'][$article_id])) {
                 $esperado['articles'][$article_id]['previus_final_price'] = $antes['articles'][$article_id];
             }
 
             if (!empty($hoy['cambios'][$article_id])) {
                 $cambios_de_hoy = $hoy['cambios'][$article_id];
-                $esperado['cambios'][$article_id] = [$cambios_de_hoy[count($cambios_de_hoy) - 1]];
+                $evento = $cambios_de_hoy[count($cambios_de_hoy) - 1];
+                $evento['precio_final_anterior'] = $antes['articles'][$article_id];
+                $evento['cambios_listas'] = $this->normalizar_escalares($detalle);
+                $esperado['cambios'][$article_id] = [$evento];
             }
         }
 
@@ -887,6 +902,63 @@ abstract class ComprasPreciosEnLoteTestCase extends ComprasTestCase
         $esperado['article_provider'] = $this->ordenar_filas($esperado['article_provider']);
 
         return $esperado;
+    }
+
+    /** Fotos independientes de los pivotes, nunca del JSON producido por el servicio. */
+    protected function listas_para_auditoria(array $pivotes, array $monedas)
+    {
+        $nombres = \App\Models\PriceType::pluck('name', 'id');
+        $nombres_moneda = \App\Models\Moneda::pluck('name', 'id');
+        $foto = [];
+        foreach ($pivotes as $p) {
+            $foto[$p['article_id']][$p['price_type_id'].':1'] = [
+                'lista_id' => $p['price_type_id'], 'lista_nombre' => $nombres[$p['price_type_id']],
+                'moneda_id' => 1, 'moneda_nombre' => 'Pesos', 'precio' => $p['final_price'],
+            ];
+        }
+        if (UserHelper::hasExtencion('ventas_en_dolares')) {
+            foreach ($monedas as $m) {
+                $foto[$m['article_id']][$m['price_type_id'].':'.$m['moneda_id']] = [
+                    'lista_id' => $m['price_type_id'], 'lista_nombre' => $nombres[$m['price_type_id']],
+                    'moneda_id' => $m['moneda_id'], 'moneda_nombre' => $nombres_moneda[$m['moneda_id']], 'precio' => $m['final_price'],
+                ];
+            }
+        }
+        return $foto;
+    }
+
+    protected function diferencia_de_listas(array $antes, array $despues)
+    {
+        $detalle = [];
+        foreach (array_unique(array_merge(array_keys($antes), array_keys($despues))) as $clave) {
+            $viejo = $antes[$clave] ?? null;
+            $nuevo = $despues[$clave] ?? null;
+            if ($viejo !== null && $nuevo !== null && $viejo['precio'] === $nuevo['precio']) {
+                continue;
+            }
+            if ($viejo === null && ($nuevo === null || $nuevo['precio'] === null)) {
+                continue;
+            }
+            $dato = $nuevo ?? $viejo;
+            unset($dato['precio']);
+            $dato['precio_anterior'] = $viejo['precio'] ?? null;
+            $dato['precio_nuevo'] = $nuevo['precio'] ?? null;
+            $dato['operacion'] = $viejo === null ? 'alta' : ($nuevo === null ? 'baja' : 'cambio');
+            $detalle[] = $dato;
+        }
+        return $this->detalle_ordenado($detalle);
+    }
+
+    protected function detalle_ordenado(array $detalle)
+    {
+        foreach ($detalle as &$dato) {
+            ksort($dato);
+        }
+        unset($dato);
+        usort($detalle, function ($a, $b) {
+            return strcmp($a['lista_id'].':'.$a['moneda_id'], $b['lista_id'].':'.$b['moneda_id']);
+        });
+        return $detalle;
     }
 
     /**

@@ -396,6 +396,39 @@ class PriceTypeController extends Controller
     }
 
     public function destroy($id) {
+        $lista = PriceType::findOrFail($id);
+        if (PriceTypeHelper::es_lista_precio_final($lista)) {
+            return $this->destroy_sin_historial($id);
+        }
+        // La lista puede abarcar cientos de miles de artículos. Las fotos se
+        // consumen por tanda, dentro de la misma transacción de eliminación.
+        $respuesta = \Illuminate\Support\Facades\DB::transaction(function () use ($id) {
+            $ultimo = 0;
+            do {
+                $normales = \Illuminate\Support\Facades\DB::table('article_price_type')
+                    ->where('price_type_id', $id)->where('article_id', '>', $ultimo)->select('article_id');
+                $monedas = \Illuminate\Support\Facades\DB::table('article_price_type_monedas')
+                    ->where('price_type_id', $id)->where('article_id', '>', $ultimo)->select('article_id');
+                $ids = $normales->union($monedas)->orderBy('article_id')->limit(500)->pluck('article_id')->all();
+                if (!$ids) {
+                    break;
+                }
+                \App\Services\HistorialPreciosService::ejecutar($ids, null, 'eliminar_lista', function () use ($ids, $id) {
+                    \Illuminate\Support\Facades\DB::table('article_price_type')->where('price_type_id', $id)->whereIn('article_id', $ids)->delete();
+                    \Illuminate\Support\Facades\DB::table('article_price_type_monedas')->where('price_type_id', $id)->whereIn('article_id', $ids)->delete();
+                });
+                $ultimo = max($ids);
+            } while (count($ids) === 500);
+            return $this->destroy_sin_historial($id, false);
+        });
+        // El broadcast espera la confirmación del borrado.
+        \Illuminate\Support\Facades\DB::afterCommit(function () use ($id) {
+            $this->sendDeleteModelNotification('PriceType', $id);
+        });
+        return $respuesta;
+    }
+
+    public function destroy_sin_historial($id, $notificar = true) {
         $model = PriceType::find($id);
 
         /*
@@ -418,7 +451,9 @@ class PriceTypeController extends Controller
         $model->delete();
         PriceTypeHelper::olvidar_precio_final($model->user_id);
         ImageController::deleteModelImages($model);
-        $this->sendDeleteModelNotification('PriceType', $model->id);
+        if ($notificar) {
+            $this->sendDeleteModelNotification('PriceType', $model->id);
+        }
 
         // Sus filas de `combo_price_type` ya no apuntan a nada, y los combos calculados pierden esa
         // lista (y `combos.price` puede pasar a otra). Ver el método.

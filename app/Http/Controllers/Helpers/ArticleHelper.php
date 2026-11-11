@@ -264,6 +264,19 @@ class ArticleHelper {
      *        Con null, o en una cuenta sin dolares, no cambia nada.
      */
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null, $moneda_id_para_descripcion = null) {
+        $argumentos = func_get_args();
+        // Un llamador legacy puede manejar explícitamente PreciosEnLote y volcar
+        // después. No tomar una foto "final" cuando esas escrituras aún no existen.
+        // Los caminos de producto en lote tienen su unidad exterior completa.
+        if (PreciosEnLote::esta_activo() && !\App\Services\HistorialPreciosService::activo()) {
+            return call_user_func_array([self::class, 'setFinalPrice_sin_historial'], $argumentos);
+        }
+        return \App\Services\HistorialPreciosService::ejecutar([(int) $article->id], $auth_user_id, 'recalculo', function () use ($argumentos) {
+            return call_user_func_array([self::class, 'setFinalPrice_sin_historial'], $argumentos);
+        });
+    }
+
+    static function setFinalPrice_sin_historial($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null, $moneda_id_para_descripcion = null) {
 
         // Log::info('setFinalPrice para '.$article->name.' ,id: '.$article->id.' con costo de '.$article->cost.' y precio de '.$article->price);
 

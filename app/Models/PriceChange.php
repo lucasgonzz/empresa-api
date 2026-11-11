@@ -8,6 +8,7 @@ use Illuminate\Database\Eloquent\Model;
 class PriceChange extends Model
 {
     protected $guarded = [];
+    protected $casts = ['cambios_listas' => 'array'];
 
     function scopeWithAll($q) {
         $q->with('price_types');        

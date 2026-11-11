@@ -765,7 +765,12 @@ class UserController extends Controller
                     }
 
                     if (count($rows)) {
-                        DB::table($pivot_table)->insertOrIgnore($rows);
+                        \App\Services\HistorialPreciosService::ejecutar(
+                            $articles_chunk->pluck('id')->all(), null, 'activar_listas',
+                            function () use ($pivot_table, $rows) {
+                                DB::table($pivot_table)->insertOrIgnore($rows);
+                            }
+                        );
                     }
                 });
 
@@ -778,11 +783,12 @@ class UserController extends Controller
         if ($current_lists_de_precio === 1 && $new_lists_de_precio === 0) {
             Log::info('Quitando listas de precio');
             if (!empty($price_type_ids)) {
-                DB::table('article_price_type')
-                    ->join('articles', 'articles.id', '=', 'article_price_type.article_id')
-                    ->where('articles.user_id', $owner_user->id)
-                    ->whereIn('article_price_type.price_type_id', $price_type_ids)
-                    ->delete();
+                Article::where('user_id', $owner_user->id)->select('id')->chunkById(200, function ($articulos) use ($price_type_ids) {
+                    $ids = $articulos->pluck('id')->all();
+                    \App\Services\HistorialPreciosService::ejecutar($ids, null, 'desactivar_listas', function () use ($ids, $price_type_ids) {
+                        DB::table('article_price_type')->whereIn('article_id', $ids)->whereIn('price_type_id', $price_type_ids)->delete();
+                    });
+                });
             }
 
             // Recalcula precios para que `final_price` deje de depender de los price_types.

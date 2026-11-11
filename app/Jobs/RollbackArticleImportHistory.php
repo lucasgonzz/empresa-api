@@ -379,7 +379,11 @@ class RollbackArticleImportHistory implements ShouldQueue
                                             ->values()
                                             ->all();
 
-        DB::transaction(function () use ($restore_map, $relations_restore_map, $created_article_ids, $import_history) {
+        \App\Services\HistorialPreciosService::ejecutar(
+            array_unique(array_merge(array_keys($restore_map), array_keys($relations_restore_map), $created_article_ids)),
+            $this->auth_user_id,
+            'reversion_importacion',
+            function () use ($restore_map, $relations_restore_map, $created_article_ids, $import_history) {
             /**
              * Revertimos columnas directas en artículos actualizados.
              */

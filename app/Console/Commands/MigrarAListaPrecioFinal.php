@@ -726,6 +726,14 @@ class MigrarAListaPrecioFinal extends Command
      */
     private function migrar_articulo(array $a, $lista, $owner)
     {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([(int) $a['id']], null, 'migracion_precio_final', function () use ($argumentos) {
+            return call_user_func_array([$this, 'migrar_articulo_sin_historial'], $argumentos);
+        });
+    }
+
+    private function migrar_articulo_sin_historial(array $a, $lista, $owner)
+    {
         $id = (int) $a['id'];
 
         // Estado previo, leído con candado, y el respaldo ANTES de tocar nada.
