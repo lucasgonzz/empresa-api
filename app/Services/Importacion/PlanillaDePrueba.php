@@ -24,6 +24,8 @@ class PlanillaDePrueba
     private const CONFIANZA_MINIMA = 0.90;
     public const SEPARAR_CODIGO = '__prueba_separar_codigo';
     public const DESCUENTOS_LATERALES = '__prueba_descuentos_laterales';
+    // Valor del mapeo previo que deja una columna afuera de la importación.
+    public const CAMPO_IGNORAR = 'ignorar';
 
     private $run;
     private $propiedades;
@@ -217,7 +219,7 @@ class PlanillaDePrueba
         return $descripciones[0];
     }
 
-    private static function titulo_comparable($titulo): string
+    public static function titulo_comparable($titulo): string
     {
         return trim(preg_replace('/[^a-z0-9]+/', ' ', strtolower(Str::ascii((string) $titulo))));
     }
@@ -354,6 +356,152 @@ class PlanillaDePrueba
         }
 
         return $preguntas;
+    }
+
+    /**
+     * Resuelve un campo del mapeo previo (lo que soporte confirmó con el cliente) contra los campos
+     * que este negocio puede importar: canónicos, depósitos y listas de precio.
+     *
+     * Acepta la clave exacta (`nombre`, `address_1_amount`), un alias del importador
+     * (`codigo_proveedor`), la etiqueta que usan las preguntas (`Depósito Principal`, `precio final`)
+     * o el nombre de columna del importador, comparados con `titulo_comparable`. Si el texto
+     * coincide con más de un campo distinto, no se adivina.
+     *
+     * @param  string $campo  Texto recibido en el mapeo previo
+     * @return string|null    Clave del campo, `self::CAMPO_IGNORAR` para ignorar la columna,
+     *                        o null si no existe o es ambiguo
+     */
+    public function resolver_campo_previo(string $campo): ?string
+    {
+        $texto = trim($campo);
+        if (self::titulo_comparable($texto) === self::CAMPO_IGNORAR) {
+            return self::CAMPO_IGNORAR;
+        }
+        if (isset($this->propiedades[$texto])) {
+            return $texto;
+        }
+        $alias = ArticleImportColumnsNormalizer::normalize_property_key($texto);
+        if ($alias !== null && isset($this->propiedades[$alias])) {
+            return $alias;
+        }
+
+        // Comparación tolerante: clave, etiqueta de la pregunta o nombre de columna del importador.
+        $buscado = self::titulo_comparable($texto);
+        if ($buscado === '') {
+            return null;
+        }
+        $coincidencias = [];
+        foreach ($this->propiedades as $clave => $propiedad) {
+            $candidatos = [$clave, $propiedad, $this->nombres[$clave] ?? ''];
+            foreach ($candidatos as $candidato) {
+                if (self::titulo_comparable($candidato) === $buscado) {
+                    $coincidencias[$clave] = true;
+                }
+            }
+        }
+
+        return count($coincidencias) === 1 ? (string) array_key_first($coincidencias) : null;
+    }
+
+    /**
+     * Lista los campos posibles para el mensaje de error del mapeo previo, con la etiqueta cuando
+     * aporta (depósitos y listas de precio).
+     *
+     * @return string[]  `ignorar`, y cada clave con su etiqueta entre paréntesis si es distinta
+     */
+    public function campos_posibles(): array
+    {
+        $campos = [self::CAMPO_IGNORAR];
+        foreach (array_keys($this->propiedades) as $clave) {
+            $etiqueta = $this->nombres[$clave] ?? '';
+            $campos[] = $etiqueta !== '' && self::titulo_comparable($etiqueta) !== self::titulo_comparable($clave)
+                ? $clave . ' (' . $etiqueta . ')' : $clave;
+        }
+
+        return $campos;
+    }
+
+    /**
+     * Aplica a las hojas analizadas el mapeo de columnas que soporte ya confirmó con el cliente.
+     *
+     * Cada columna cubierta queda segura con el campo resuelto (o sin campo, si se ignora) y marcada
+     * `previa`. Otra columna de la misma hoja sin mapeo previo que el análisis había asignado a un
+     * campo ya tomado deja de ser segura, para que se pregunte en lugar de chocar en
+     * `resolver_columnas` («Dos columnas … al mismo dato»).
+     *
+     * Reglas: la hoja se busca por nombre con `titulo_comparable`; sin hoja, la previa vale solo si
+     * el análisis dejó una única hoja. Una letra que no está entre las columnas con datos se saltea.
+     * Las previas con hoja se aplican antes que las sin hoja; si dos previas caen en la misma
+     * columna o en el mismo campo, gana la primera. Un campo que el negocio ya no tiene (un
+     * depósito borrado entre el pedido y el análisis) no se aplica y la columna se pregunta.
+     *
+     * 🔴 `ignorar` nunca queda como `campo = 'ignorar'`: `preguntas_columnas()` anula
+     * `$opciones[$campo]` de cada columna segura y se llevaría la opción «Ignorar».
+     *
+     * @param  array $hojas    Hojas devueltas por `analizar()`
+     * @param  array $previas  Lista normalizada de ['hoja' => ?string, 'columna' => string, 'campo' => ?string]
+     * @return array           Las mismas hojas, con las columnas cubiertas ya resueltas
+     */
+    public function aplicar_columnas_previas(array $hojas, array $previas): array
+    {
+        // Primero las que nombran la hoja: son más específicas. Sin usort: en PHP 7.4 no es estable.
+        $previas = array_merge(
+            array_filter($previas, function ($previa) { return ($previa['hoja'] ?? null) !== null; }),
+            array_filter($previas, function ($previa) { return ($previa['hoja'] ?? null) === null; })
+        );
+        $una_sola_hoja = count($hojas) === 1;
+
+        foreach ($hojas as &$hoja) {
+            $nombre_hoja = self::titulo_comparable($hoja['nombre']);
+            // Posiciones ya cubiertas por una previa en esta hoja.
+            $cubiertas = [];
+            // Propiedades del importador ya tomadas por una previa en esta hoja.
+            $tomadas = [];
+            foreach ($previas as $previa) {
+                $hoja_previa = $previa['hoja'] ?? null;
+                if ($hoja_previa === null ? !$una_sola_hoja : self::titulo_comparable($hoja_previa) !== $nombre_hoja) {
+                    continue;
+                }
+                $letra = strtoupper(trim((string) ($previa['columna'] ?? '')));
+                if (!preg_match('/^[A-Z]{1,3}$/', $letra)) {
+                    continue;
+                }
+                $posicion = Coordinate::columnIndexFromString($letra) - 1;
+                if (!isset($hoja['columnas'][$posicion]) || isset($cubiertas[$posicion])) {
+                    continue;
+                }
+                $campo = $previa['campo'] ?? null;
+                if ($campo === self::CAMPO_IGNORAR) {
+                    $campo = null;
+                }
+                if ($campo !== null && (!isset($this->propiedades[$campo]) || isset($tomadas[$this->propiedades[$campo]]))) {
+                    continue;
+                }
+
+                $hoja['columnas'][$posicion]['campo'] = $campo;
+                $hoja['columnas'][$posicion]['segura'] = true;
+                $hoja['columnas'][$posicion]['previa'] = true;
+                $cubiertas[$posicion] = true;
+                if ($campo !== null) {
+                    $tomadas[$this->propiedades[$campo]] = true;
+                }
+            }
+
+            // El análisis pudo haberle dado a otra columna el mismo dato: esa se pregunta.
+            foreach ($hoja['columnas'] as $posicion => &$columna) {
+                $campo = $columna['campo'] ?? null;
+                if (isset($cubiertas[$posicion]) || $campo === null || !isset($this->propiedades[$campo])) {
+                    continue;
+                }
+                if (isset($tomadas[$this->propiedades[$campo]])) {
+                    $columna['segura'] = false;
+                }
+            }
+            unset($columna);
+        }
+        unset($hoja);
+
+        return $hojas;
     }
 
     private static function clave_columna(array $hoja, int $posicion): string
