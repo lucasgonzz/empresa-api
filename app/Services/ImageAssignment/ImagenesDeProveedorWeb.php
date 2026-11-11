@@ -50,6 +50,12 @@ class ImagenesDeProveedorWeb
     const LADO_MINIMO = 200;
     const TIPOS = ['exacto', 'dudosa'];
 
+    /** De dónde vienen las fotos: la web del proveedor o su catálogo en PDF (adjunto del ticket). */
+    const TIPOS_DE_FUENTE = ['web', 'pdf'];
+
+    /** @var bool La tanda en curso viene de un catálogo en PDF. */
+    protected $es_pdf = false;
+
     /** @var \App\Services\ImageAssignment\CandidateImageProcessor */
     protected $procesador;
 
@@ -66,10 +72,12 @@ class ImagenesDeProveedorWeb
      * @param  string $fuente        dominio del sitio, ya normalizado
      * @param  array  $items         [{article_id, tipo, imagen: UploadedFile|null, url_origen, codigo_web}]
      * @param  bool   $ultima_tanda  deja el aviso por WhatsApp de la asignación (una vez)
+     * @param  string $tipo_fuente   web | pdf (con pdf, `fuente` es `adjunto-<id>.pdf` y el origen es `proveedor_pdf`)
      * @return array
      */
-    public function procesar(int $owner_id, int $support_ticket_id, string $fuente, array $items, bool $ultima_tanda = false): array
+    public function procesar(int $owner_id, int $support_ticket_id, string $fuente, array $items, bool $ultima_tanda = false, string $tipo_fuente = 'web'): array
     {
+        $this->es_pdf = $tipo_fuente === 'pdf';
         $run = $this->asignacion($owner_id, $support_ticket_id, $fuente);
         $asignadas = 0;
         $a_revisar = 0;
@@ -132,7 +140,7 @@ class ImagenesDeProveedorWeb
         return DB::transaction(function () use ($owner_id, $support_ticket_id, $fuente) {
             DB::table('users')->where('id', $owner_id)->lockForUpdate()->first(['id']);
             $existente = ImageAssignmentRun::where('user_id', $owner_id)
-                ->where('origen', ImageAssignmentRun::ORIGEN_PROVEEDOR_WEB)
+                ->where('origen', $this->origen())
                 ->where('support_ticket_id', $support_ticket_id)
                 ->where('fuente', $fuente)
                 ->first();
@@ -145,10 +153,10 @@ class ImagenesDeProveedorWeb
                 'user_id' => $owner_id,
                 'auth_user_id' => null,
                 'uuid' => (string) Str::uuid(),
-                'origen' => ImageAssignmentRun::ORIGEN_PROVEEDOR_WEB,
-                'proveedor' => 'web',
+                'origen' => $this->origen(),
+                'proveedor' => $this->es_pdf ? 'pdf' : 'web',
                 'status' => ImageAssignmentRun::STATUS_TERMINADA,
-                'motivo_estado' => 'Fotos de la web del proveedor (' . mb_substr($fuente, 0, 120) . ').',
+                'motivo_estado' => 'Fotos ' . $this->de_donde($fuente) . '.',
                 'total_articulos' => 0,
                 'procesados' => 0,
                 'aplica_tope_diario' => false,
@@ -216,14 +224,14 @@ class ImagenesDeProveedorWeb
 
         if (is_null($criterio)) {
             $meta['avisos'] = $degradada
-                ? ['El código de la web no coincide exacto con el del artículo (o lo comparte otro artículo)']
-                : ['Coincidencia por nombre o código parecido en la web del proveedor'];
+                ? ['El código ' . ($this->es_pdf ? 'del catálogo' : 'de la web') . ' no coincide exacto con el del artículo (o lo comparte otro artículo)']
+                : ['Coincidencia por nombre o código parecido ' . ($this->es_pdf ? 'en el catálogo en PDF' : 'en la web') . ' del proveedor'];
 
             try {
                 $this->crear_item($run, $article, [
                     'status' => ImageAssignmentItem::STATUS_A_REVISAR,
                     'motivo' => 'confianza_media',
-                    'motivo_detalle' => 'Esta foto es de la web del proveedor (' . $fuente . '), pero la coincidencia con el artículo no es exacta: revisala antes de aprobarla.',
+                    'motivo_detalle' => 'Esta foto es ' . $this->de_donde($fuente) . ', pero la coincidencia con el artículo no es exacta: revisala antes de aprobarla.',
                     'criterio_usado' => null,
                     'imagen_url' => $guardada['url'],
                     'imagen_archivo' => $guardada['archivo'],
@@ -257,7 +265,7 @@ class ImagenesDeProveedorWeb
                 $this->crear_item($run, $bloqueado, [
                     'status' => ImageAssignmentItem::STATUS_ASIGNADA,
                     'motivo' => null,
-                    'motivo_detalle' => 'Se asignó la foto de la web del proveedor (' . $fuente . '): el '
+                    'motivo_detalle' => 'Se asignó la foto ' . $this->de_donde($fuente) . ': el '
                         . ($criterio === 'codigo_de_barras' ? 'código de barras' : 'código de proveedor') . ' coincide exacto.',
                     'criterio_usado' => $criterio,
                     'imagen_url' => $guardada['url'],
@@ -356,7 +364,7 @@ class ImagenesDeProveedorWeb
             $respuesta = ImageAssignmentRunHelper::rechazar($owner_id, (int) $item_id, null);
             if ((int) $respuesta['status'] === 200) {
                 ImageAssignmentItem::whereKey($item_id)->update([
-                    'motivo_detalle' => 'Se reemplazó por la foto exacta de la web del proveedor (' . mb_substr($fuente, 0, 120) . ').',
+                    'motivo_detalle' => 'Se reemplazó por la foto exacta ' . $this->de_donde($fuente) . '.',
                 ]);
             }
         }
@@ -422,8 +430,8 @@ class ImagenesDeProveedorWeb
             return false;
         }
         $texto = $asignadas > 0
-            ? 'Te cargué ' . $asignadas . ($asignadas === 1 ? ' foto' : ' fotos') . ' de la web de tu proveedor (' . $fuente . ') en tus artículos.'
-            : 'Revisé la web de tu proveedor (' . $fuente . ') y no encontré fotos con el código exacto de tus artículos.';
+            ? 'Te cargué ' . $asignadas . ($asignadas === 1 ? ' foto' : ' fotos') . ' ' . $this->de_tu_proveedor($fuente) . ' en tus artículos.'
+            : 'Revisé ' . ($this->es_pdf ? 'el catálogo en PDF de tu proveedor' : 'la web de tu proveedor (' . mb_substr($fuente, 0, 120) . ')') . ' y no encontré fotos con el código exacto de tus artículos.';
         if ($a_revisar > 0) {
             $texto .= ' Te dejé ' . $a_revisar . ($a_revisar === 1 ? ' foto' : ' fotos')
                 . ' que parecen ser de tus artículos para que las revises y apruebes en Alertas → Catálogo → Imágenes.';
@@ -433,7 +441,7 @@ class ImagenesDeProveedorWeb
         }
 
         AiAvisoDelAsistente::firstOrCreate([
-            'uuid' => Uuid::uuid5($run->uuid, 'proveedor-web')->toString(),
+            'uuid' => Uuid::uuid5($run->uuid, $this->es_pdf ? 'proveedor-pdf' : 'proveedor-web')->toString(),
             'owner_id' => (int) $run->user_id,
             'tipo' => AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA,
         ], [
@@ -443,6 +451,23 @@ class ImagenesDeProveedorWeb
         ]);
 
         return true;
+    }
+
+    protected function origen(): string
+    {
+        return $this->es_pdf ? ImageAssignmentRun::ORIGEN_PROVEEDOR_PDF : ImageAssignmentRun::ORIGEN_PROVEEDOR_WEB;
+    }
+
+    /** «de la web del proveedor (dominio)» o «del catálogo en PDF del proveedor», para los textos del detalle. */
+    protected function de_donde(string $fuente): string
+    {
+        return $this->es_pdf ? 'del catálogo en PDF del proveedor' : 'de la web del proveedor (' . mb_substr($fuente, 0, 120) . ')';
+    }
+
+    /** Lo mismo, en la voz del aviso al dueño. */
+    protected function de_tu_proveedor(string $fuente): string
+    {
+        return $this->es_pdf ? 'del catálogo en PDF de tu proveedor' : 'de la web de tu proveedor (' . mb_substr($fuente, 0, 120) . ')';
     }
 
     protected function url($valor)

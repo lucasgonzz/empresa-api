@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\AvanzarImportacionDePrueba;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\ImportacionDePrueba;
+use App\Models\ImportacionDeSoporte;
 use App\Models\Provider;
 use App\Models\User;
 use App\Services\Importacion\ImportacionDePruebaService;
@@ -309,6 +310,11 @@ class ImportacionDePruebaController extends Controller
                 ->when(!$modo_soporte, function ($consulta) {
                     $consulta->where('created_at', '>=', now()->subDay());
                 })->exists();
+        // Clientes y proveedores desde soporte (misión importaciones-de-martin, 11/11/2026): una corrida que analiza,
+        // espera el código o importa también deja el ticket «en proceso», para que no se cierre a mitad de camino.
+        // Van en una clave aparte (no en `pendientes`, que se resuelven por prueba-resolver).
+        $contactos = $modo_soporte ? self::contactos_abiertos((int) $datos['user_id'], (int) $datos['support_ticket_id']) : [];
+        $en_proceso = $en_proceso || $contactos !== [];
 
         return response()->json(['en_proceso' => $en_proceso, 'pendientes' => $corridas->map(function (ImportacionDePrueba $run) {
             $preguntas = $run->preguntas ?? [];
@@ -329,8 +335,36 @@ class ImportacionDePruebaController extends Controller
             ] + ($run->alcance === null ? [] : ['alcance' => $run->alcance]);
         })] + ($modo_soporte ? [
             'automatizar_soporte' => true,
+            'importaciones_de_contactos' => $contactos,
             'alcances_soporte' => self::soporta_stock_existente() ? ['stock_existente'] : [],
         ] : []));
+    }
+
+    /**
+     * Las corridas de clientes o proveedores del ticket que todavía no terminaron (analizan, esperan el código del
+     * dueño o importan), con la forma corta del contrato. Vacío si la base todavía no tiene la tabla.
+     *
+     * @param  int $user_id
+     * @param  int $support_ticket_id
+     * @return array [{corrida_id, modelo, estado, revision, codigo_requerido}]
+     */
+    private static function contactos_abiertos(int $user_id, int $support_ticket_id): array
+    {
+        if (!Schema::hasTable('importaciones_de_soporte')) {
+            return [];
+        }
+
+        return ImportacionDeSoporte::where('user_id', $user_id)->where('support_ticket_id', $support_ticket_id)
+            ->whereIn('estado', ImportacionDeSoporte::ABIERTAS)->orderBy('id')->get()
+            ->map(function (ImportacionDeSoporte $corrida) {
+                return [
+                    'corrida_id' => (string) $corrida->uuid,
+                    'modelo' => (string) $corrida->modelo,
+                    'estado' => (string) $corrida->estado,
+                    'revision' => (int) $corrida->revision,
+                    'codigo_requerido' => $corrida->estado === 'confirmacion',
+                ];
+            })->all();
     }
 
     public function resolver(Request $request, string $uuid): JsonResponse

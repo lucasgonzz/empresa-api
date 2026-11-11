@@ -198,6 +198,38 @@ class Imagenes_de_la_web_del_proveedor_Test extends ImagenesInteligentesTestCase
         $this->assertFalse($articulo->images()->exists());
     }
 
+    public function test_las_fotos_del_catalogo_pdf_van_con_su_origen_su_fuente_y_su_aviso(): void
+    {
+        $articulo = $this->nuevo_articulo('Rodillo', null, ['provider_code' => 'RD-5']);
+        $dudoso = $this->nuevo_articulo('Pincel');
+
+        $this->subir('catalogo.pdf', [['article_id' => $articulo->id, 'tipo' => 'exacto', 'codigo_web' => 'RD-5', 'imagen' => $this->png(600, 600)]], 93, null, false, 'pdf')
+            ->assertStatus(422)->assertJsonPath('motivo', 'fuente_invalida');
+        $this->subir('adjunto-0.pdf', [['article_id' => $articulo->id, 'tipo' => 'exacto', 'imagen' => $this->png(600, 600)]], 93, null, false, 'pdf')
+            ->assertStatus(422)->assertJsonPath('motivo', 'fuente_invalida');
+        $this->subir('adjunto-55.pdf', [['article_id' => $articulo->id, 'tipo' => 'exacto', 'imagen' => $this->png(600, 600)]], 93, null, false, 'otro')
+            ->assertStatus(422);
+
+        $respuesta = $this->subir('Adjunto-55.PDF', [
+            ['article_id' => $articulo->id, 'tipo' => 'exacto', 'codigo_web' => 'RD-5', 'imagen' => $this->png(600, 600)],
+            ['article_id' => $dudoso->id, 'tipo' => 'dudosa', 'imagen' => $this->png(600, 600)],
+        ], 93, null, true, 'pdf')->assertOk()->assertJsonPath('asignadas', 1)->assertJsonPath('a_revisar', 1);
+
+        $run = ImageAssignmentRun::findOrFail($respuesta->json('run_id'));
+        $this->assertSame(ImageAssignmentRun::ORIGEN_PROVEEDOR_PDF, $run->origen);
+        $this->assertSame('proveedor_pdf', $run->origen);
+        $this->assertSame('adjunto-55.pdf', $run->fuente);
+        $this->assertStringContainsString('catálogo en PDF', ImageAssignmentItem::where('run_id', $run->id)->where('article_id', $articulo->id)->value('motivo_detalle'));
+        $aviso = AiAvisoDelAsistente::where('owner_id', $this->owner->id)->where('support_ticket_id', 93)->firstOrFail();
+        $this->assertStringContainsString('del catálogo en PDF de tu proveedor', $aviso->texto);
+        $this->assertStringNotContainsString('web', $aviso->texto);
+
+        // Un adjunto PDF mandado como web no es un dominio: se rechaza en lugar de abrir otra asignación.
+        $this->subir('adjunto-55.pdf', [['article_id' => $dudoso->id, 'tipo' => 'dudosa', 'imagen' => $this->png(600, 600)]], 93)
+            ->assertStatus(422)->assertJsonPath('motivo', 'fuente_invalida');
+        $this->assertSame(1, ImageAssignmentRun::where('user_id', $this->owner->id)->where('support_ticket_id', 93)->count());
+    }
+
     public function test_catalogo_articulos_con_imagenes_suma_foto_codigos_del_pivot_y_a_revisar(): void
     {
         $con_foto = $this->nuevo_articulo('Con foto');
@@ -226,7 +258,7 @@ class Imagenes_de_la_web_del_proveedor_Test extends ImagenesInteligentesTestCase
 
     /* -------------------------------------------------------------------------------------------------- */
 
-    private function subir(string $fuente, array $items, int $ticket = 90, $user_id = null, bool $ultima = false)
+    private function subir(string $fuente, array $items, int $ticket = 90, $user_id = null, bool $ultima = false, $tipo_fuente = null)
     {
         foreach ($items as &$item) {
             if (isset($item['imagen']) && is_string($item['imagen'])) {
@@ -241,7 +273,7 @@ class Imagenes_de_la_web_del_proveedor_Test extends ImagenesInteligentesTestCase
             'fuente' => $fuente,
             'ultima_tanda' => $ultima ? 1 : 0,
             'items' => $items,
-        ], ['X-Admin-Api-Key' => self::CLAVE, 'Accept' => 'application/json']);
+        ] + (is_null($tipo_fuente) ? [] : ['tipo_fuente' => $tipo_fuente]), ['X-Admin-Api-Key' => self::CLAVE, 'Accept' => 'application/json']);
     }
 
     private function a_revisar_en_otra_asignacion(Article $articulo): ImageAssignmentItem

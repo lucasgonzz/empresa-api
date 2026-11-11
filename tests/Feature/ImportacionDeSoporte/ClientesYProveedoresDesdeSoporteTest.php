@@ -294,6 +294,39 @@ class ClientesYProveedoresDesdeSoporteTest extends EmpresaTestCase
             ->assertStatus(409)->assertJsonPath('motivo', 'dueno_no_activo');
     }
 
+    public function test_prueba_pendientes_informa_las_corridas_abiertas_para_que_no_se_cierre_el_ticket(): void
+    {
+        $pendientes = '/api/admin-sync/ai-excel-import/prueba-pendientes?automatizar_soporte=1&user_id=' . $this->dueno->id . '&support_ticket_id=';
+        $this->getJson($pendientes . '80', $this->cabeceras())->assertOk()
+            ->assertJsonPath('en_proceso', false)->assertJsonPath('importaciones_de_contactos', []);
+
+        $this->analizador(AiProviderAnalyzer::class, ['nombre']);
+        $uuid = $this->iniciar('provider', $this->planilla([['Nombre'], ['Proveedor Abierto']]), 80)->json('corrida.corrida_id');
+        $this->getJson($pendientes . '80', $this->cabeceras())->assertOk()->assertJsonPath('en_proceso', true)
+            ->assertJsonPath('pendientes', [])
+            ->assertJsonPath('importaciones_de_contactos.0.corrida_id', $uuid)
+            ->assertJsonPath('importaciones_de_contactos.0.modelo', 'provider')
+            ->assertJsonPath('importaciones_de_contactos.0.estado', 'analizar')
+            ->assertJsonPath('importaciones_de_contactos.0.codigo_requerido', false);
+        $this->getJson($pendientes . '81', $this->cabeceras())->assertOk()->assertJsonPath('importaciones_de_contactos', []);
+
+        $corrida = ImportacionDeSoporte::where('uuid', $uuid)->firstOrFail();
+        app(ImportacionDeSoporteService::class)->avanzar($corrida);
+        $this->getJson($pendientes . '80', $this->cabeceras())->assertOk()
+            ->assertJsonPath('importaciones_de_contactos.0.estado', 'confirmacion')
+            ->assertJsonPath('importaciones_de_contactos.0.codigo_requerido', true);
+
+        $this->postJson(self::BASE . $uuid . '/confirmar', ['user_id' => $this->dueno->id, 'support_ticket_id' => 80,
+            'codigo' => $corrida->fresh()->codigo, 'decision' => 'cancelar'], $this->cabeceras())->assertOk();
+        // Sin corrida abierta, lo único que puede quedar «en proceso» es un aviso que todavía no salió por WhatsApp.
+        AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 80)->update(['avisado_por_whatsapp_at' => now()]);
+        $this->getJson($pendientes . '80', $this->cabeceras())->assertOk()
+            ->assertJsonPath('en_proceso', false)->assertJsonPath('importaciones_de_contactos', []);
+        // Fuera del modo soporte la clave no aparece.
+        $this->assertArrayNotHasKey('importaciones_de_contactos', $this->getJson(str_replace('automatizar_soporte=1&', '', $pendientes) . '80',
+            $this->cabeceras())->json() ?: []);
+    }
+
     /* -------------------------------------------------------------------------------------------------- */
 
     private function importar_confirmado(string $modelo, string $archivo, string $clase, array $campos, int $ticket): ImportacionDeSoporte

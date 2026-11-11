@@ -33,6 +33,9 @@ class ImportacionDeSoporte extends Model
     /** Estados en los que todavía trabaja el job. */
     const EN_CURSO = ['analizar', 'importar'];
 
+    /** Las que no terminaron: el ticket no se cierra con una de estas (prueba-pendientes las informa). */
+    const ABIERTAS = ['analizar', 'confirmacion', 'importar'];
+
     public function scopeWithAll($query)
     {
         return $query;

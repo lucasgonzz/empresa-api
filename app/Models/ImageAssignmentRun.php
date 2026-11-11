@@ -34,6 +34,9 @@ class ImageAssignmentRun extends Model
      */
     const ORIGEN_PROVEEDOR_WEB = 'proveedor_web';
 
+    /** Lo mismo, con las fotos del catálogo en PDF del proveedor (adjunto del ticket): `fuente` = `adjunto-<id>.pdf`. */
+    const ORIGEN_PROVEEDOR_PDF = 'proveedor_pdf';
+
     const PREFIJO_PROCESO_SERPER = 'imagenes_';
 
     const PROVEEDOR_SERPER = 'serper';

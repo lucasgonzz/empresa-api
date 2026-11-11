@@ -48,6 +48,8 @@ class Clave_de_admin_sync_Test extends CategoryProposalsTestCase
             ['GET',  'api/admin-sync/catalogo/categorias/propuestas/999999/pendientes'],
             ['POST', 'api/admin-sync/catalogo/categorias/propuestas/999999/listo'],
             ['POST', 'api/admin-sync/catalogo/categorias/propuestas/999999/descartar'],
+            // Fotos de la web o del PDF de un proveedor (misión importaciones-de-martin, 11/11/2026).
+            ['POST', 'api/admin-sync/catalogo/imagenes/proveedor'],
         ];
     }
 
@@ -191,6 +193,7 @@ class Clave_de_admin_sync_Test extends CategoryProposalsTestCase
             'GET api/admin-sync/catalogo/categorias/propuestas/999999/pendientes'          => 404,
             'POST api/admin-sync/catalogo/categorias/propuestas/999999/listo'              => 404,
             'POST api/admin-sync/catalogo/categorias/propuestas/999999/descartar'          => 404,
+            'POST api/admin-sync/catalogo/imagenes/proveedor'                              => 422,
         ];
 
         foreach ($this->rutas() as $ruta) {
