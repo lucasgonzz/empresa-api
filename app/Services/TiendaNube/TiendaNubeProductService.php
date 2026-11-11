@@ -5,7 +5,6 @@ namespace App\Services\TiendaNube;
 use App\Models\Article;
 use App\Models\PriceType;
 use App\Services\TiendaNube\BaseTiendaNubeService;
-use App\Services\TiendaNube\TiendaNubeImageService;
 use App\Services\TiendaNube\TiendaNubeProductDescriptionService;
 use App\Services\TiendaNube\TiendaNubeProductImageService;
 use Illuminate\Support\Facades\Log;
@@ -35,8 +34,10 @@ class TiendaNubeProductService extends BaseTiendaNubeService
     }
 
     /** Crea o actualiza el producto en TN según si ya tiene tiendanube_product_id */
-    public function crearOActualizarProducto(Article $article)
+    public function crearOActualizarProducto(Article $article, array $imagePositions = [])
     {
+        $article->needs_sync_with_tn = true;
+        $article->save();
         if ($article->tiendanube_product_id) {
             $article = $this->actualizar($article);
         } else {
@@ -48,13 +49,11 @@ class TiendaNubeProductService extends BaseTiendaNubeService
         $service = new TiendaNubeProductDescriptionService($uid);
         $service->update_descriptions($article);
 
-        $service = new TiendaNubeImageService($uid);
-
-        if (env('CARGAR_IMAGENES_DE_ARTICULOS_A_TIENDA_NUBE', false)) {
-            foreach ($article->images as $image) {
-                $service->subirImagenDeArticulo($article, $image);
-            }
-        }
+        // Las fotos son parte del alta normal. El flag histórico omitía este paso
+        // y la cola declaraba éxito aunque nunca se hubiera intentado publicarlas.
+        $this->update_images($article, $imagePositions);
+        $article->needs_sync_with_tn = false;
+        $article->save();
 
     }
 
@@ -88,8 +87,6 @@ class TiendaNubeProductService extends BaseTiendaNubeService
 
             $article->tiendanube_product_id = $data['id'] ?? null;
             $article->handle = isset($data['handle']) ? $data['handle']['es'] : null;
-
-            $article->needs_sync_with_tn    = false;
 
             if (!empty($data['variants'][0]['id'])) {
                 $article->tiendanube_variant_id = $data['variants'][0]['id'];
@@ -142,21 +139,14 @@ class TiendaNubeProductService extends BaseTiendaNubeService
             $response  = $this->http()->put($vEndpoint, $variantPayload);
         }
 
-        if ($response->successful()) {
-            $article->needs_sync_with_tn = false;
-            $article->save();
-        }
-
-        $this->update_images($article);
-        
         return $article;
     }
 
-    function update_images($article) {
+    function update_images($article, array $positions = []) {
 
         $uid = $article->user_id ?? $this->tn_context_user_id;
         $tn_image = new TiendaNubeProductImageService($uid);
-        $tn_image->sync_images_for_article($article);
+        $tn_image->reconcile($article, true, null, $positions);
     }
 
     function get_variant_data($article) {

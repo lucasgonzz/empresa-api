@@ -272,6 +272,14 @@ class ImageController extends Controller
         $image_name = $image->hosting_url;
         $array = explode('/', $image_name);
         $image_name = $array[count($array)-1];
+        $deleted = false;
+        $deleteLocal = function () use ($image, $image_name, &$deleted) {
+            $helper = new InventoryLinkageHelper();
+            $helper->delete_image($image);
+            Storage::disk('public')->delete($image_name);
+            $image->delete();
+            $deleted = true;
+        };
 
 
         Log::info('model_name: '.$model_name);
@@ -284,7 +292,9 @@ class ImageController extends Controller
                 ProductService::add_article_to_sync($article);
 
                 $tn = new TiendaNubeProductImageService($article->user_id);
-                $tn->delete_image_from_article($article, $image);
+                // La baja local se hace dentro del mismo candado que la remota. Si se
+                // liberara antes, otro sync podría volver a subir la foto recién borrada.
+                $tn->delete_image_from_article($article, $image, $deleteLocal);
 
                 /* Encolar sync de respaldo: si el DELETE directo falló o el artículo tiene más cambios */
                 TiendaNubeSyncArticleService::add_article_to_sync($article);
@@ -297,11 +307,9 @@ class ImageController extends Controller
         }
 
         
-        $helper = new InventoryLinkageHelper();
-        $helper->delete_image($image);
-
-        Storage::disk('public')->delete($image_name);
-        $image->delete();
+        if (!$deleted) {
+            $deleteLocal();
+        }
 
         return response()->json(['model' => $this->fullModel($model_name, $model_id)], 200);
     }

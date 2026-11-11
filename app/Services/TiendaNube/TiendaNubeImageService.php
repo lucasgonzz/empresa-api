@@ -4,82 +4,28 @@ namespace App\Services\TiendaNube;
 
 use App\Models\Article;
 use App\Models\Image;
-use App\Services\TiendaNube\BaseTiendaNubeService;
-use Illuminate\Support\Facades\Log;
 
-/**
- * Responsabilidad: Subida y manejo de imágenes de productos en Tienda Nube.
- */
+/** Entrada compatible para los jobs de carga posterior de fotos. */
 class TiendaNubeImageService extends BaseTiendaNubeService
 {
-    /**
-     * @param int|null $user_id Usuario dueño del conector TN.
-     */
-    public function __construct($user_id = null)
-    {
-        parent::__construct($user_id);
-    }
-
-    /**
-     * Sube una imagen del artículo a Tienda Nube.
-     * - Si el producto no existe aún en TN, lo crea/actualiza antes de subir la imagen
-     * - position: 1 => principal; si es null, la API la agrega al final
-     */
     public function subirImagenDeArticulo(Article $article, Image $image, ?int $position = null): array
     {
-
-        Log::info('subirImagenDeArticulo para '.$article->name);
-        // Garantizar que el producto exista
+        $positions = $position === null ? [] : [$image->id => $position];
         if (!$article->tiendanube_product_id) {
-            // Podés inyectar el ProductService desde afuera si preferís;
-            // acá lo instanciamos directo para simplificar.
-            $productService = new TiendaNubeProductService(null, $article->user_id);
-            $productService->crearOActualizarProducto($article);
-        }
-
-        $endpoint = "/{$this->store_id}/products/{$article->tiendanube_product_id}/images";
-
-        $payload = [];
-
-        // Usar URL pública (src) o attachment base64 (si implementás esa variante)
-        if (!empty($image->hosting_url)) {
-            $payload['src'] = $image->hosting_url;
-        }
-
-        // Atajo para probar en local (opcional)
-        if (config('app.APP_ENV') === 'local' && empty($payload['src'])) {
-            $payload['src'] = 'https://api-golonorte.comerciocity.com/public/storage/174222051315387.webp';
-        }
-
-        if (!is_null($position)) {
-            $payload['position'] = (int) $position;
+            (new TiendaNubeProductService(null, $article->user_id))->crearOActualizarProducto($article, $positions);
         } else {
-            // Si no enviás position, TN la coloca al final;
-            // si preferís forzar orden localmente:
-            $payload['position'] = max(1, count($article->images));
+            (new TiendaNubeProductImageService($article->user_id))->reconcile($article, true, null, $positions, $image->id);
         }
-
-        $response = $this->http()->post($endpoint, $payload);
-        if ($response->failed()) {
-            Log::error('Error subiendo imagen a TN: '.$response->body());
-            throw new \RuntimeException('Error subiendo imagen a TN: '.$response->body());
+        $image->refresh();
+        if (!$image->tienda_nube_image_id) {
+            throw new \RuntimeException('La imagen no quedó confirmada en Tienda Nube.');
         }
-
-        $data = $response->json();
-
-        Log::info('respuesta de imagen tienda nube');
-        Log::info($data);
-
-        // Guardar ID de imagen de TN si tu modelo Image tiene esa columna
-        if ($image->getAttribute('tiendanube_image_id') !== null || property_exists($image, 'tiendanube_image_id')) {
-            $image->tiendanube_image_id = $data['id'] ?? null;
-            $image->save();
-
-            $article->needs_sync_with_tn = false;
-            $article->timestamps = false;
-            $article->save();
+        $remote = (new TiendaNubeProductImageService($article->user_id))->remote_images($article);
+        foreach ($remote as $row) {
+            if ((string) $row['id'] === (string) $image->tienda_nube_image_id) {
+                return $row;
+            }
         }
-
-        return $data;
+        throw new \RuntimeException('La imagen confirmada ya no aparece en el producto remoto.');
     }
 }
