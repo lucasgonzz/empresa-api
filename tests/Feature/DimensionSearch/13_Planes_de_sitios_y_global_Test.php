@@ -1,0 +1,281 @@
+<?php
+
+namespace Tests\Feature\DimensionSearch;
+
+use App\Http\Controllers\Helpers\DimensionReferenceSiteHelper;
+use App\Models\DimensionSearchItem;
+use Illuminate\Support\Facades\Http;
+
+/**
+ * Los planes nuevos del motor (misión medidas-sitios-de-referencia, 11/11/2026): la búsqueda en los sitios de
+ * referencia del comercio (primera, con `site:` y todos los códigos del artículo) y la del código de barras fuera
+ * de Argentina (`gl=us`, `hl=en`).
+ *
+ * El caso real: en la corrida de Masquito (4.143 artículos) obi.de, verdefacile.eu, meteorpiston.com y
+ * carbydoctor.com.au no aparecieron ni una vez, porque la búsqueda era en Argentina y en castellano.
+ *
+ * Todo con Serper, páginas e IA falsos: nada sale a internet.
+ */
+class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
+{
+    /** El EAN real de la manguera Gardena de OBI. */
+    const GTIN_OBI = '4078500001694';
+
+    const URL_OBI = 'https://www.obi.de/gartenschlauch/gardena-classic-schlauch/p/1234567';
+
+    /**
+     * Los gl de cada consulta que recibió el Serper falso, en orden (consulta => gl).
+     *
+     * @return array  Lista de ['q', 'gl', 'hl'].
+     */
+    protected function busquedas_hechas()
+    {
+        $hechas = [];
+
+        foreach (Http::recorded() as $par) {
+            if (strpos($par[0]->url(), 'google.serper.dev') !== false) {
+                $datos    = $par[0]->data();
+                $hechas[] = ['q' => $datos['q'], 'gl' => $datos['gl'], 'hl' => $datos['hl']];
+            }
+        }
+
+        return $hechas;
+    }
+
+    /**
+     * La entrada del diagnóstico de un criterio (null si no está).
+     *
+     * @param  \App\Models\DimensionSearchItem $item
+     * @param  string $criterio
+     * @return array|null
+     */
+    protected function entrada($item, $criterio)
+    {
+        foreach ($item->diagnostico as $entrada) {
+            if ($entrada['criterio'] === $criterio) {
+                return $entrada;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Los cuatro datos de la manguera, citados de la página de prueba (en inglés: las etiquetas en alemán son de
+     * otro test).
+     *
+     * @param  string $url
+     * @return array
+     */
+    protected function datos_de_la_manguera($url)
+    {
+        return [
+            'peso'  => $this->dato(2.7, 'kg', 'Weight 2.70 kg', $url),
+            'alto'  => $this->dato(9, 'cm', 'Height 9.0 cm', $url),
+            'ancho' => $this->dato(38, 'cm', 'Width 38.0 cm', $url),
+            'largo' => $this->dato(38, 'cm', 'Depth 38.0 cm', $url),
+        ];
+    }
+
+    /**
+     * @group dimension-search
+     * @test
+     */
+    public function con_sitios_la_primera_consulta_es_en_los_sitios_con_todos_los_codigos_y_sin_region_argentina()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['obi.de', 'verdefacile.eu']);
+
+        $articulo = $this->nuevo_articulo('MANGUERA GARDENA CLASSIC 13MM 20M', self::GTIN_OBI, ['provider_code' => 'GA-18000']);
+        $consulta = '("'.self::GTIN_OBI.'" OR "GA-18000" OR "GA18000") (site:obi.de OR site:verdefacile.eu)';
+
+        $this->falsear(
+            [$consulta => [$this->resultado(self::URL_OBI, 'GARDENA Classic Schlauch')]],
+            [self::URL_OBI => $this->pagina('GARDENA Classic Schlauch', 'EAN '.self::GTIN_OBI.'. Weight 2.70 kg Height 9.0 cm Width 38.0 cm Depth 38.0 cm')],
+            $this->ficha('exacto', $this->datos_de_la_manguera(self::URL_OBI))
+        );
+
+        list($item, $resultado) = $this->procesar($this->corrida([$articulo]), $articulo);
+
+        $this->assertSame([['q' => $consulta, 'gl' => 'us', 'hl' => 'en']], $this->busquedas_hechas(), 'Una sola búsqueda: la de los sitios, y ya dio los datos.');
+        $this->assertSame(1, $resultado['busquedas_intentadas']);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        // criterio_usado NO cambia de dominio: sale del código que traía la página.
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS, $item->criterio_usado);
+        $this->assertEquals(2.7, (float) $articulo->fresh()->peso);
+
+        $entrada = $item->diagnostico[0];
+        $this->assertSame('sitios_de_referencia', $entrada['criterio']);
+        $this->assertSame('datos', $entrada['resultado']);
+        $this->assertSame('us', $entrada['gl']);
+    }
+
+    /**
+     * En el plan de los sitios la página cuenta si trae CUALQUIER código del artículo, no solo el GTIN.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function en_los_sitios_una_pagina_con_el_codigo_de_proveedor_cuenta_aunque_no_traiga_el_de_barras()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['verdefacile.eu']);
+
+        $url      = 'https://www.verdefacile.eu/it/catena-motosega-42550194950';
+        $articulo = $this->nuevo_articulo('CADENA MOTOSIERRA 3/8 50 ESLABONES', self::GTIN_OBI, ['provider_code' => '42550194950']);
+
+        $this->falsear(
+            ['("'.self::GTIN_OBI.'" OR "42550194950") site:verdefacile.eu' => [$this->resultado($url, 'Catena motosega 42550194950')]],
+            [$url => $this->pagina('Catena motosega', 'Riferimento 42550194950. Weight: 4,5 Kg')],
+            $this->ficha('exacto', ['peso' => $this->dato(4.5, 'kg', 'Weight: 4,5 Kg', $url)])
+        );
+
+        list($item) = $this->procesar($this->corrida([$articulo]), $articulo);
+
+        $this->assertSame('("'.self::GTIN_OBI.'" OR "42550194950") site:verdefacile.eu', $this->consultas_serper[0]);
+        $this->assertTrue($this->entrada($item, 'sitios_de_referencia')['paginas'][0]['leida'], 'La página trae el código de proveedor: se leyó.');
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status, 'Solo el peso: medidas parciales.');
+        $this->assertSame('medidas_parciales', $item->motivo);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+        $this->assertEquals(4.5, (float) $item->peso_kg);
+    }
+
+    /**
+     * El código de proveedor compacto (sin espacios ni guiones) también se busca, y sin GTIN el plan es del proveedor.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function sin_gtin_busca_el_proveedor_y_su_forma_compacta_en_los_sitios()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['carbydoctor.com.au', 'meteorpiston.com']);
+
+        $articulo = $this->nuevo_articulo('CARBURADOR KOHLER CH18', null, ['provider_code' => '32 853 63-S']);
+
+        $this->falsear([], [], $this->ficha('otro_producto'));
+
+        list($item) = $this->procesar($this->corrida([$articulo]), $articulo);
+
+        $this->assertSame([
+            '("32 853 63-S" OR "3285363S") (site:carbydoctor.com.au OR site:meteorpiston.com)',
+            '"32 853 63-S" CARBURADOR KOHLER CH18',
+            'CARBURADOR KOHLER CH18 ficha técnica peso medidas',
+        ], $this->consultas_serper);
+
+        $this->assertSame(['sitios_de_referencia', 'codigo_de_barras', 'codigo_proveedor', 'nombre'], array_column($item->diagnostico, 'criterio'));
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
+    }
+
+    /**
+     * @group dimension-search
+     * @test
+     */
+    public function sin_sitios_no_hay_plan_de_sitios()
+    {
+        $articulo = $this->nuevo_articulo('CARBURADOR KOHLER CH18', null, ['provider_code' => '32 853 63-S']);
+
+        $this->falsear([], [], $this->ficha('otro_producto'));
+
+        list($item) = $this->procesar($this->corrida([$articulo]), $articulo);
+
+        foreach ($this->consultas_serper as $consulta) {
+            $this->assertStringNotContainsString('site:', $consulta);
+        }
+
+        $this->assertNull($this->entrada($item, 'sitios_de_referencia'), 'Sin lista, ni siquiera figura como salteado.');
+    }
+
+    /**
+     * Con sitios pero sin ningún código útil: el plan de sitios figura como salteado y se sigue con el nombre.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function con_sitios_y_sin_codigos_el_plan_de_sitios_se_saltea_con_su_motivo()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['obi.de']);
+
+        $articulo = $this->nuevo_articulo('MANGUERA DE JARDIN VERDE 20 METROS', '12345', ['provider_code' => 'TRANSPORTE']);
+
+        $this->falsear([], [], $this->ficha('otro_producto'));
+
+        list($item) = $this->procesar($this->corrida([$articulo]), $articulo);
+
+        $this->assertSame(['MANGUERA DE JARDIN VERDE 20 METROS ficha técnica peso medidas'], $this->consultas_serper);
+
+        $sitios = $this->entrada($item, 'sitios_de_referencia');
+        $this->assertFalse($sitios['usado']);
+        $this->assertStringContainsString('sitios de referencia', $sitios['motivo']);
+        $this->assertSame('sitios_de_referencia', $item->diagnostico[0]['criterio'], 'Va primero, en el orden de los planes.');
+    }
+
+    /**
+     * El GTIN sin resultados en Argentina se busca de nuevo fuera (gl=us, hl=en), antes que el código de proveedor.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_gtin_sin_resultado_en_argentina_se_busca_fuera_con_gl_us()
+    {
+        $articulo = $this->nuevo_articulo('MANGUERA GARDENA CLASSIC 13MM 20M', self::GTIN_OBI, ['provider_code' => 'GA-18000']);
+
+        $this->falsear(
+            // Solo la búsqueda de EE. UU. devuelve la ficha (la clave «gl|consulta» la distingue de la argentina).
+            ['us|"'.self::GTIN_OBI.'"' => [$this->resultado(self::URL_OBI, 'GARDENA Classic Schlauch')]],
+            [self::URL_OBI => $this->pagina('GARDENA Classic Schlauch', 'EAN '.self::GTIN_OBI.'. Weight 2.70 kg Height 9.0 cm Width 38.0 cm Depth 38.0 cm')],
+            $this->ficha('exacto', $this->datos_de_la_manguera(self::URL_OBI))
+        );
+
+        list($item, $resultado) = $this->buscar($articulo);
+
+        $this->assertSame([
+            ['q' => '"'.self::GTIN_OBI.'"', 'gl' => 'ar', 'hl' => 'es'],
+            ['q' => '"'.self::GTIN_OBI.'"', 'gl' => 'us', 'hl' => 'en'],
+        ], $this->busquedas_hechas());
+        $this->assertSame(2, $resultado['busquedas_intentadas']);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS, $item->criterio_usado);
+
+        $this->assertSame('sin_resultados', $this->entrada($item, 'codigo_de_barras')['resultado']);
+        $global = $this->entrada($item, 'codigo_de_barras_global');
+        $this->assertSame('datos', $global['resultado']);
+        $this->assertSame('us', $global['gl']);
+        $this->assertSame('en', $global['hl']);
+        $this->assertArrayNotHasKey('gl', $this->entrada($item, 'codigo_de_barras'), 'La argentina va con la región de la configuración.');
+    }
+
+    /**
+     * Sin GTIN válido no hay búsqueda global; y el orden completo son cinco planes como mucho.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_orden_completo_es_sitios_barras_barras_global_proveedor_y_nombre()
+    {
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['obi.de']);
+
+        $articulo = $this->nuevo_articulo('MANGUERA GARDENA CLASSIC 13MM 20M', self::GTIN_OBI, ['provider_code' => 'GA-18000']);
+
+        $this->falsear([], [], $this->ficha('otro_producto'));
+
+        list($item, $resultado) = $this->buscar($articulo);
+
+        $this->assertSame([
+            ['q' => '("'.self::GTIN_OBI.'" OR "GA-18000" OR "GA18000") site:obi.de', 'gl' => 'us', 'hl' => 'en'],
+            ['q' => '"'.self::GTIN_OBI.'"', 'gl' => 'ar', 'hl' => 'es'],
+            ['q' => '"'.self::GTIN_OBI.'"', 'gl' => 'us', 'hl' => 'en'],
+            ['q' => '"GA-18000" MANGUERA GARDENA CLASSIC 13MM 20M', 'gl' => 'ar', 'hl' => 'es'],
+            ['q' => 'MANGUERA GARDENA CLASSIC 13MM 20M ficha técnica peso medidas', 'gl' => 'ar', 'hl' => 'es'],
+        ], $this->busquedas_hechas());
+
+        $this->assertSame(5, $resultado['busquedas_intentadas']);
+        $this->assertSame(['sitios_de_referencia', 'codigo_de_barras', 'codigo_de_barras_global', 'codigo_proveedor', 'nombre'], array_column($item->diagnostico, 'criterio'));
+
+        // Un código de barras interno (no GTIN): ni la búsqueda argentina ni la global.
+        $otro = $this->nuevo_articulo('MANGUERA GARDENA CLASSIC 13MM 20M', '12345');
+        $this->falsear([], [], $this->ficha('otro_producto'));
+        list($item_otro) = $this->buscar($otro);
+
+        $this->assertNull($this->entrada($item_otro, 'codigo_de_barras_global'));
+    }
+}

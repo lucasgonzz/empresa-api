@@ -3,6 +3,7 @@
 namespace App\Services\DimensionSearch;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\DimensionReferenceSiteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\Article;
@@ -29,14 +30,25 @@ use Illuminate\Support\Str;
  * `profundidad` de UN artículo y decide qué hacer con lo que encuentra (misión medidas-masivas-catalogo,
  * 27/10/2026). Lo llama ProcessDimensionSearchRunJob con el artículo ya reclamado (`procesando`).
  *
- * LA ESTRATEGIA (probada con 10 artículos reales de Masquito, 27/10/2026): hasta TRES búsquedas de Serper,
- * en este orden, saltando las que no aplican y las repetidas:
+ * LA ESTRATEGIA (probada con 10 artículos reales de Masquito, 27/10/2026; ampliada por la misión
+ * medidas-sitios-de-referencia, 11/11/2026): hasta CINCO búsquedas de Serper, en este orden, saltando las que no
+ * aplican y las repetidas, y cortando en la primera que da un campo válido:
  *
- *   1. Código de barras, solo si es un GTIN válido (con sus equivalentes EAN/UPC). Consulta `"<gtin>"`.
- *   2. Código de proveedor: `"<código>" <primeras 6 palabras del nombre>`. Solo si el código se parece a
+ *   1. Sitios de referencia (solo si la corrida tiene la foto de la lista y el artículo tiene un código útil):
+ *      UNA consulta `("<gtin>" OR "<proveedor>" OR "<proveedor compacto>") (site:a OR site:b …)`, con gl=us y
+ *      hl=en (lo mismo que Serper sin región: el `site:` ya acota). Ahí una página cuenta si trae CUALQUIER código
+ *      del artículo. Diagnóstico: `sitios_de_referencia`.
+ *   2. Código de barras, solo si es un GTIN válido (con sus equivalentes EAN/UPC). Consulta `"<gtin>"`, con la
+ *      región y el idioma de la configuración (Argentina, castellano).
+ *   3. El mismo código de barras FUERA de Argentina (`gl=us`, `hl=en`): trae las tiendas europeas que publican el
+ *      mismo EAN y que la búsqueda argentina no muestra. Diagnóstico: `codigo_de_barras_global`.
+ *   4. Código de proveedor: `"<código>" <primeras 6 palabras del nombre>`. Solo si el código se parece a
  *      un código (4 caracteres o más y algún dígito: «TRANSPORTE» es una palabra, no un código) y no es
  *      el mismo que el de barras.
- *   3. Nombre: `<primeras 6 palabras del nombre> ficha técnica peso medidas`.
+ *   5. Nombre: `<primeras 6 palabras del nombre> ficha técnica peso medidas`.
+ *
+ * Los criterios nuevos (1 y 3) son SOLO del diagnóstico: `criterio_usado` del artículo sigue siendo
+ * codigo_de_barras / codigo_proveedor / nombre según qué código traía la página de la que salió el dato.
  *
  * De cada búsqueda se leen hasta 3 páginas (descarga con la guarda anti-SSRF, nunca PDF). Para los
  * planes de CÓDIGO una página solo cuenta si contiene el código; para el de nombre cuentan todas. De cada
@@ -83,8 +95,16 @@ class ArticleDimensionSearchEngine
     protected $resolucion_incompleta = false;
     protected $segundos_resolucion_restantes = SerperLinkResolver::PRESUPUESTO_SEGUNDOS;
 
-    /** Búsquedas de Serper como mucho por artículo. */
-    const MAX_BUSQUEDAS = 3;
+    /**
+     * Búsquedas de Serper como mucho por artículo. Eran 3; con los sitios de referencia y el código de barras fuera
+     * de Argentina son 5 (misión medidas-sitios-de-referencia). El loop corta en el primer plan con un campo válido:
+     * el gasto extra solo aparece en los artículos que antes salían sin datos.
+     */
+    const MAX_BUSQUEDAS = 5;
+
+    /** Región e idioma de las búsquedas fuera de Argentina (el código de barras global y los sitios de referencia). */
+    const GL_GLOBAL = 'us';
+    const HL_GLOBAL = 'en';
 
     /** Páginas que se le pasan a la IA como mucho por búsqueda. */
     const MAX_PAGINAS_LEIDAS = 3;
@@ -268,9 +288,9 @@ class ArticleDimensionSearchEngine
             $resultado['busquedas_intentadas']++;
 
             $inicio   = microtime(true);
-            $busqueda = $this->buscar_en_serper($plan['consulta']);
+            $busqueda = $this->buscar_en_serper($plan['consulta'], $plan['gl'], $plan['hl']);
 
-            $entrada = [
+            $entrada = array_merge([
                 'criterio'    => $plan['criterio'],
                 'usado'       => true,
                 'consulta'    => $plan['consulta'],
@@ -281,7 +301,7 @@ class ArticleDimensionSearchEngine
                 'paginas'     => [],
                 'ia'          => null,
                 'resultado'   => 'sin_resultados',
-            ];
+            ], $this->region_del_plan($plan));
 
             if (!empty($busqueda['tope_demo'])) {
                 // La demo llegó a su tope en esta búsqueda: no cuenta como error del proveedor.
@@ -506,21 +526,53 @@ class ArticleDimensionSearchEngine
     protected function armar_planes(Article $articulo, array &$planes)
     {
         $diagnostico = [];
-        $consultas   = [];
+        $consultas   = [];   // Clave «gl|hl|consulta» de cada plan: la misma consulta en otra región NO es repetida.
 
         $barras    = trim((string) $articulo->bar_code);
         $proveedor = trim((string) $articulo->provider_code);
         $nombre    = $this->nombre_corto((string) $articulo->name);
 
-        // 1. Código de barras: solo un GTIN válido.
         $canonico = $barras === '' ? null : Gtin::canonical($barras);
+        $gtin     = null;
 
         if (!is_null($canonico)) {
             $equivalentes = array_values(Gtin::equivalents($canonico));
-            $consulta     = '"'.$equivalentes[count($equivalentes) - 1].'"';
+            $gtin         = $equivalentes[count($equivalentes) - 1];
+        }
 
-            $planes[]    = ['criterio' => DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS, 'consulta' => $consulta, 'codigo' => $barras, 'tipo_codigo' => DimensionPageText::CODIGO_DE_BARRAS];
-            $consultas[] = $consulta;
+        // 1. Sitios de referencia (solo si la corrida se lanzó con una lista).
+        $sitios = $this->sitios_de_referencia();
+
+        if (!empty($sitios)) {
+            $plan_sitios = $this->plan_de_sitios($articulo, $gtin, $sitios);
+
+            if (is_null($plan_sitios)) {
+                $diagnostico[] = [
+                    'criterio' => DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA,
+                    'usado'    => false,
+                    'motivo'   => 'El artículo no tiene un código de barras válido ni un código de proveedor para buscarlo en los sitios de referencia.',
+                ];
+            } else {
+                $planes[]    = $plan_sitios;
+                $consultas[] = $this->clave_de_consulta($plan_sitios);
+            }
+        }
+
+        // 2. Código de barras: solo un GTIN válido.
+        if (!is_null($gtin)) {
+            $consulta = '"'.$gtin.'"';
+
+            $plan        = $this->plan(DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS, $consulta, $barras, DimensionPageText::CODIGO_DE_BARRAS);
+            $planes[]    = $plan;
+            $consultas[] = $this->clave_de_consulta($plan);
+
+            // 3. El mismo código de barras fuera de Argentina (si la configuración ya busca en EE. UU. en inglés, es repetida).
+            $global = $this->plan(DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS_GLOBAL, $consulta, $barras, DimensionPageText::CODIGO_DE_BARRAS, self::GL_GLOBAL, self::HL_GLOBAL);
+
+            if (!in_array($this->clave_de_consulta($global), $consultas, true)) {
+                $planes[]    = $global;
+                $consultas[] = $this->clave_de_consulta($global);
+            }
         } else {
             $diagnostico[] = [
                 'criterio' => DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS,
@@ -529,32 +581,171 @@ class ArticleDimensionSearchEngine
             ];
         }
 
-        // 2. Código de proveedor: parece un código, y no es el mismo que el de barras.
+        // 4. Código de proveedor: parece un código, y no es el mismo que el de barras.
         $motivo_proveedor = $this->motivo_de_codigo_de_proveedor_inservible($proveedor, $barras);
 
         if (is_null($motivo_proveedor)) {
-            $consulta = '"'.$proveedor.'"'.($nombre === '' ? '' : ' '.$nombre);
+            $plan = $this->plan(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, '"'.$proveedor.'"'.($nombre === '' ? '' : ' '.$nombre), $proveedor, DimensionPageText::CODIGO_PROVEEDOR);
 
-            if (!in_array($consulta, $consultas, true)) {
-                $planes[]    = ['criterio' => DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, 'consulta' => $consulta, 'codigo' => $proveedor, 'tipo_codigo' => DimensionPageText::CODIGO_PROVEEDOR];
-                $consultas[] = $consulta;
+            if (!in_array($this->clave_de_consulta($plan), $consultas, true)) {
+                $planes[]    = $plan;
+                $consultas[] = $this->clave_de_consulta($plan);
             }
         } else {
             $diagnostico[] = ['criterio' => DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, 'usado' => false, 'motivo' => $motivo_proveedor];
         }
 
-        // 3. Nombre: hace falta algo más que una palabra suelta.
+        // 5. Nombre: hace falta algo más que una palabra suelta.
         if ($this->nombre_alcanza($nombre)) {
-            $consulta = $nombre.' ficha técnica peso medidas';
+            $plan = $this->plan(DimensionSearchItem::CRITERIO_NOMBRE, $nombre.' ficha técnica peso medidas', null, null);
 
-            if (!in_array($consulta, $consultas, true)) {
-                $planes[] = ['criterio' => DimensionSearchItem::CRITERIO_NOMBRE, 'consulta' => $consulta, 'codigo' => null, 'tipo_codigo' => null];
+            if (!in_array($this->clave_de_consulta($plan), $consultas, true)) {
+                $planes[] = $plan;
             }
         } else {
             $diagnostico[] = ['criterio' => DimensionSearchItem::CRITERIO_NOMBRE, 'usado' => false, 'motivo' => 'El nombre del artículo es muy corto para buscarlo.'];
         }
 
         return $diagnostico;
+    }
+
+    /**
+     * Un plan de búsqueda.
+     *
+     * @param  string      $criterio
+     * @param  string      $consulta
+     * @param  string|null $codigo       El código que la página tiene que traer (null = plan de nombre).
+     * @param  string|null $tipo_codigo  DimensionPageText::CODIGO_*.
+     * @param  string|null $gl           Región de Serper (null = la de la configuración).
+     * @param  string|null $hl           Idioma de Serper (null = el de la configuración).
+     * @return array
+     */
+    protected function plan($criterio, $consulta, $codigo, $tipo_codigo, $gl = null, $hl = null)
+    {
+        return [
+            'criterio'         => $criterio,
+            'consulta'         => $consulta,
+            'codigo'           => $codigo,
+            'tipo_codigo'      => $tipo_codigo,
+            'gl'               => $gl,
+            'hl'               => $hl,
+            // true = la página cuenta si trae CUALQUIER código del artículo, no solo el del plan (sitios de referencia).
+            'cualquier_codigo' => false,
+            // Los códigos del artículo con los que se reconoce la página en un plan de cualquier código.
+            'codigos'          => [],
+        ];
+    }
+
+    /**
+     * La clave con la que se detecta una consulta repetida: la misma consulta en otra región no lo es.
+     *
+     * @param  array $plan
+     * @return string
+     */
+    protected function clave_de_consulta(array $plan)
+    {
+        $gl = is_null($plan['gl']) ? (string) config('services.serper.gl', 'ar') : $plan['gl'];
+        $hl = is_null($plan['hl']) ? (string) config('services.serper.hl', 'es') : $plan['hl'];
+
+        return $gl.'|'.$hl.'|'.$plan['consulta'];
+    }
+
+    /**
+     * La foto de los sitios de referencia de la corrida (lista de dominios; vacía si se lanzó sin sitios).
+     *
+     * @return array
+     */
+    protected function sitios_de_referencia()
+    {
+        $sitios = $this->run->sitios_de_referencia;
+        $lista  = [];
+
+        if (!is_array($sitios)) {
+            return [];
+        }
+
+        foreach ($sitios as $sitio) {
+            // Una foto tocada a mano en la base no puede meter otra cosa que un dominio en la consulta.
+            if (is_string($sitio) && DimensionReferenceSiteHelper::es_dominio(strtolower(trim($sitio)))) {
+                $lista[] = strtolower(trim($sitio));
+            }
+        }
+
+        return array_slice(array_values(array_unique($lista)), 0, DimensionReferenceSiteHelper::MAXIMO_SITIOS);
+    }
+
+    /**
+     * El plan de los sitios de referencia: `("<gtin>" OR "<proveedor>" OR "<proveedor compacto>") (site:a OR site:b)`.
+     * El GTIN solo si es válido; el proveedor solo si parece un código; el compacto (sin espacios, guiones ni
+     * puntos: «32 853 63-S» → «3285363S») solo si es distinto y sigue pareciendo un código. Null si el artículo no
+     * tiene ningún código útil.
+     *
+     * `codigo` / `tipo_codigo` del plan: el GTIN si hay, si no el proveedor. Pero la página cuenta si trae CUALQUIERA
+     * de los códigos del artículo (`cualquier_codigo`).
+     *
+     * @param  \App\Models\Article $articulo
+     * @param  string|null         $gtin    El GTIN en la forma que se busca (null si no es válido).
+     * @param  array               $sitios  Dominios.
+     * @return array|null
+     */
+    protected function plan_de_sitios(Article $articulo, $gtin, array $sitios)
+    {
+        $proveedor = trim((string) preg_replace('/\s+/u', ' ', (string) $articulo->provider_code));
+        $terminos  = [];
+
+        if (!is_null($gtin)) {
+            $terminos[] = $gtin;
+        }
+
+        if ($proveedor !== '' && $this->parece_un_codigo($proveedor)) {
+            $terminos[] = $proveedor;
+
+            $compacto = (string) preg_replace('/[\s\-.]+/u', '', $proveedor);
+
+            if ($compacto !== $proveedor && $this->parece_un_codigo($compacto)) {
+                $terminos[] = $compacto;
+            }
+        }
+
+        // Sin repetidos (un código de proveedor igual al de barras), sin importar mayúsculas; sin comillas adentro
+        // (romperían la frase exacta).
+        $unicos = [];
+
+        foreach ($terminos as $termino) {
+            $termino = trim(str_replace('"', '', $termino));
+
+            if ($termino !== '' && !isset($unicos[mb_strtolower($termino)])) {
+                $unicos[mb_strtolower($termino)] = $termino;
+            }
+        }
+
+        if (empty($unicos)) {
+            return null;
+        }
+
+        $codigos = [];
+
+        foreach ($unicos as $termino) {
+            $codigos[] = '"'.$termino.'"';
+        }
+
+        $en_la_consulta = [];
+
+        foreach ($sitios as $sitio) {
+            $en_la_consulta[] = 'site:'.$sitio;
+        }
+
+        $consulta = (count($codigos) === 1 ? $codigos[0] : '('.implode(' OR ', $codigos).')')
+            .' '.(count($en_la_consulta) === 1 ? $en_la_consulta[0] : '('.implode(' OR ', $en_la_consulta).')');
+
+        $plan = is_null($gtin)
+            ? $this->plan(DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA, $consulta, $proveedor, DimensionPageText::CODIGO_PROVEEDOR, self::GL_GLOBAL, self::HL_GLOBAL)
+            : $this->plan(DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA, $consulta, trim((string) $articulo->bar_code), DimensionPageText::CODIGO_DE_BARRAS, self::GL_GLOBAL, self::HL_GLOBAL);
+
+        $plan['cualquier_codigo'] = true;
+        $plan['codigos']          = $this->codigos_del_articulo($articulo);
+
+        return $plan;
     }
 
     /**
@@ -657,7 +848,28 @@ class ArticleDimensionSearchEngine
      */
     protected function entrada_no_usada(array $plan, $motivo)
     {
-        return ['criterio' => $plan['criterio'], 'usado' => false, 'consulta' => $plan['consulta'], 'motivo' => $motivo];
+        return array_merge(['criterio' => $plan['criterio'], 'usado' => false, 'consulta' => $plan['consulta'], 'motivo' => $motivo], $this->region_del_plan($plan));
+    }
+
+    /**
+     * La región y el idioma del plan para el diagnóstico, solo si no son los de la configuración ([] si lo son).
+     *
+     * @param  array $plan
+     * @return array
+     */
+    protected function region_del_plan(array $plan)
+    {
+        $region = [];
+
+        if (!is_null($plan['gl'])) {
+            $region['gl'] = $plan['gl'];
+        }
+
+        if (!is_null($plan['hl'])) {
+            $region['hl'] = $plan['hl'];
+        }
+
+        return $region;
     }
 
     /* ----------------------------------------------------------------------------------------
@@ -665,14 +877,19 @@ class ArticleDimensionSearchEngine
      * -------------------------------------------------------------------------------------- */
 
     /**
-     * Una búsqueda en Serper (`/search`, gl=ar, hl=es). Respeta el tope de las demos y registra la
-     * consulta en serper_usage_events. Nunca lanza.
+     * Una búsqueda en Serper (`/search`, gl=ar, hl=es por configuración). Respeta el tope de las demos y registra
+     * la consulta en serper_usage_events (igual para cualquier región). Nunca lanza.
      *
-     * @param  string $consulta
+     * @param  string      $consulta
+     * @param  string|null $gl  Región (null = `services.serper.gl`; el código de barras global y los sitios usan `us`).
+     * @param  string|null $hl  Idioma (null = `services.serper.hl`).
      * @return array  ['ok' => bool, 'error' => string|null, 'organicos' => array, 'tope_demo' => bool]
      */
-    protected function buscar_en_serper($consulta)
+    protected function buscar_en_serper($consulta, $gl = null, $hl = null)
     {
+        $gl = is_null($gl) ? (string) config('services.serper.gl', 'ar') : (string) $gl;
+        $hl = is_null($hl) ? (string) config('services.serper.hl', 'es') : (string) $hl;
+
         $clave = ImageSearchProviderFactory::clave_serper_para($this->owner);
 
         if ($clave === '') {
@@ -682,7 +899,7 @@ class ArticleDimensionSearchEngine
         $contexto = ['user_id' => (int) $this->owner->id, 'auth_user_id' => null, 'process' => self::PROCESO_SERPER];
 
         try {
-            $llamada = TopeSerperDemo::ejecutar($this->owner, function () use ($clave, $consulta, $contexto) {
+            $llamada = TopeSerperDemo::ejecutar($this->owner, function () use ($clave, $consulta, $contexto, $gl, $hl) {
                 $inicio    = microtime(true);
                 $respuesta = null;
                 $excepcion = null;
@@ -694,8 +911,8 @@ class ArticleDimensionSearchEngine
                         ->withHeaders(['X-API-KEY' => $clave, 'Content-Type' => 'application/json'])
                         ->post(self::URL_SERPER, [
                             'q'   => $consulta,
-                            'gl'  => (string) config('services.serper.gl', 'ar'),
-                            'hl'  => (string) config('services.serper.hl', 'es'),
+                            'gl'  => $gl,
+                            'hl'  => $hl,
                             'num' => self::RESULTADOS_POR_BUSQUEDA,
                         ]);
                 } catch (\Throwable $e) {
@@ -1077,9 +1294,14 @@ class ArticleDimensionSearchEngine
             }
         }
 
-        // En un plan de código, la página tiene que traer EL código de ese plan.
+        // En un plan de código, la página tiene que traer EL código de ese plan (en el de los sitios de referencia,
+        // cualquiera de los del artículo: la consulta los buscó a todos juntos).
         if (!is_null($plan['codigo'])) {
-            $trae_el_codigo = $plan['tipo_codigo'] === DimensionPageText::CODIGO_DE_BARRAS ? $tiene_barras : $tiene_proveedor;
+            if (!empty($plan['cualquier_codigo'])) {
+                $trae_el_codigo = $tiene_barras || $tiene_proveedor;
+            } else {
+                $trae_el_codigo = $plan['tipo_codigo'] === DimensionPageText::CODIGO_DE_BARRAS ? $tiene_barras : $tiene_proveedor;
+            }
 
             if (!$trae_el_codigo) {
                 return ['documento' => null, 'entrada' => array_merge($pagina, ['leida' => false, 'motivo' => 'La página no contiene el código buscado.'])];
@@ -1188,7 +1410,8 @@ class ArticleDimensionSearchEngine
 
     /**
      * ¿Esta página del resultado de búsqueda vale la pena como candidata al respaldo? En un plan de código, solo si
-     * el título o el snippet del resultado trae el código del plan; en el de nombre, cualquiera.
+     * el título o el snippet del resultado trae el código del plan (en el de los sitios de referencia, cualquier
+     * código del artículo); en el de nombre, cualquiera.
      *
      * @param  array  $plan
      * @param  string $titulo
@@ -1199,6 +1422,16 @@ class ArticleDimensionSearchEngine
     {
         if (is_null($plan['codigo'])) {
             return true;
+        }
+
+        if (!empty($plan['cualquier_codigo']) && !empty($plan['codigos'])) {
+            foreach ($plan['codigos'] as $c) {
+                if (DimensionPageText::contiene_codigo($titulo.' '.$snippet, $c['codigo'], $c['tipo'])) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         return DimensionPageText::contiene_codigo($titulo.' '.$snippet, $plan['codigo'], $plan['tipo_codigo']);
@@ -2010,8 +2243,9 @@ class ArticleDimensionSearchEngine
     }
 
     /**
-     * El diagnóstico en el orden de los planes (barras, proveedor, nombre), con los que se saltearon en su
-     * lugar y no todos juntos al principio. Hay a lo sumo una entrada por criterio.
+     * El diagnóstico en el orden de los planes (sitios de referencia, barras, barras fuera de Argentina, proveedor,
+     * nombre), con los que se saltearon en su lugar y no todos juntos al principio. Hay a lo sumo una entrada por
+     * criterio. 🔴 Un criterio que no esté en esta lista se PIERDE del diagnóstico: un plan nuevo va acá.
      *
      * @param  array $diagnostico
      * @return array
@@ -2019,7 +2253,9 @@ class ArticleDimensionSearchEngine
     protected function diagnostico_en_orden(array $diagnostico)
     {
         $orden = [
+            DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA,
             DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS,
+            DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS_GLOBAL,
             DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR,
             DimensionSearchItem::CRITERIO_NOMBRE,
         ];

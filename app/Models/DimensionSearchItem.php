@@ -51,6 +51,14 @@ class DimensionSearchItem extends Model
     const CRITERIO_CODIGO_PROVEEDOR = 'codigo_proveedor';
     const CRITERIO_NOMBRE           = 'nombre';
 
+    /**
+     * Criterios que SOLO aparecen en el diagnóstico (misión medidas-sitios-de-referencia, 11/11/2026): son planes de
+     * búsqueda, no la forma en que se reconoció el producto. `criterio_usado` sigue siendo uno de los tres de arriba
+     * (sale de qué código traía la página de la que salió el dato).
+     */
+    const CRITERIO_SITIOS_DE_REFERENCIA    = 'sitios_de_referencia';
+    const CRITERIO_CODIGO_DE_BARRAS_GLOBAL = 'codigo_de_barras_global';
+
     protected $guarded = [];
 
     protected $casts = [

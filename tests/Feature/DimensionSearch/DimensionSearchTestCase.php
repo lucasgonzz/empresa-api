@@ -198,7 +198,8 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
      * El único Http::fake de cada test.
      *
      * @param  array                $serper   consulta => [resultados de resultado()]; 'error' => el mensaje de
-     *                                        un 500 de Serper para TODAS las consultas.
+     *                                        un 500 de Serper para TODAS las consultas. Con «gl|consulta» como clave
+     *                                        («us|"779…"») responde solo a la búsqueda de esa región.
      * @param  array                $paginas  url => HTML, o url => ['status' => 404] / ['html' => ..., 'tipo' => 'application/pdf'].
      * @param  array|string|callable $ia      Una ficha() fija, una función (array $pedido, int $n) que devuelve la
      *                                        ficha() según lo que se le mandó, o 'caida' (la IA responde 500) /
@@ -253,6 +254,14 @@ abstract class DimensionSearchTestCase extends EmpresaTestCase
 
                 if (isset($serper['error'])) {
                     return Http::response(['message' => $serper['error'], 'statusCode' => 500], 500);
+                }
+
+                // Una clave «gl|consulta» (p. ej. «us|"7790…"») responde solo a la búsqueda de esa región y le gana a la
+                // clave pelada (misión medidas-sitios-de-referencia: la misma consulta se hace en Argentina y fuera).
+                $gl = isset($request->data()['gl']) ? (string) $request->data()['gl'] : '';
+
+                if (isset($serper[$gl.'|'.$consulta])) {
+                    return Http::response(['organic' => array_values($serper[$gl.'|'.$consulta])], 200);
                 }
 
                 return Http::response(['organic' => isset($serper[$consulta]) ? array_values($serper[$consulta]) : []], 200);
