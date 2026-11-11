@@ -18,7 +18,7 @@ use App\Services\ProductFacts\Gtin;
  *   - `codigos`: gtin8, gtin12, gtin13, gtin14, gtin, mpn, sku (los que tenga, como string; también los de sus
  *     `offers` directas, que a veces son las que traen el gtin);
  *   - `campos`: peso, alto, ancho, profundidad => {valor (kg | cm), unidad, valor_original, unidad_original,
- *     convertido, cita (el fragmento JSON tal cual está en la página), alcance: 'producto'}.
+ *     convertido, cita (el fragmento JSON tal cual está en la página), alcance: 'producto', ambiguo, aviso}.
  * Se leen `weight`, `height`, `width` y `depth` (y `length` si no hay `depth`), como QuantitativeValue con
  * `unitCode` o `unitText`, o como texto («2,7 kg»). Un nodo sin campos ni códigos no se devuelve.
  *   - `principal`: true si es el producto de la página, false si está anidado en otro producto (relacionado,
@@ -466,7 +466,45 @@ class DimensionStructuredData
             return null;
         }
 
-        return self::dato($numero, $unidad, $tipo);
+        $dato = self::dato($numero, $unidad, $tipo);
+
+        // «1.200» / «1,200» escrito como texto: puede ser 1,2 o 1.200 (misma regla que el validador para el texto).
+        if (self::es_ambiguo($valor['value'])) {
+            $dato['ambiguo'] = true;
+            $dato['aviso']   = self::frase_de_ambiguedad(trim((string) $valor['value']), $unidad[2]);
+        }
+
+        return $dato;
+    }
+
+    /**
+     * ¿Un `value` de TEXTO con un solo separador y exactamente tres dígitos después («1.200», «1,500»)? Puede ser un
+     * decimal o un separador de miles: es la regla de DimensionValueValidator::lecturas_del_numero() (la parte entera
+     * no es «0» ni tiene más de tres dígitos). Un `value` numérico de JSON no es ambiguo nunca.
+     *
+     * Revisión independiente de la misión: antes «1.200» en gramos se leía como 1,2 g sin aviso.
+     *
+     * @param  mixed $valor
+     * @return bool
+     */
+    protected static function es_ambiguo($valor)
+    {
+        return is_string($valor) && (bool) preg_match('/^(?!0[.,])\d{1,3}[.,]\d{3}$/', trim($valor));
+    }
+
+    /**
+     * «Los datos estructurados de la página dicen «1.200 g»: puede ser 1,2 o 1.200.»
+     *
+     * @param  string $texto
+     * @param  string $etiqueta  La unidad («g», «kg»).
+     * @return string
+     */
+    protected static function frase_de_ambiguedad($texto, $etiqueta)
+    {
+        $partes  = preg_split('/[.,]/', $texto);
+        $decimal = rtrim($partes[1], '0');
+
+        return 'Los datos estructurados de la página dicen «'.$texto.' '.$etiqueta.'»: puede ser '.$partes[0].($decimal === '' ? '' : ','.$decimal).' o '.$partes[0].'.'.$partes[1].'.';
     }
 
     /**
@@ -543,6 +581,9 @@ class DimensionStructuredData
             'unidad_original' => $unidad[2],
             'convertido'      => $unidad[2] !== $canonica,
             'alcance'         => 'producto',
+            // true = el número admite dos lecturas («1.200»): va a revisar, nunca se asigna solo (ver es_ambiguo()).
+            'ambiguo'         => false,
+            'aviso'           => null,
         ];
     }
 

@@ -224,4 +224,37 @@ class Datos_estructurados_Test extends TestCase
         $pagina = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"WebPage","mainEntity":{"@type":"Product","name":"Cuchilla","weight":{"unitCode":"KGM","value":1.5}}}</script>');
         $this->assertEquals(1.5, DimensionStructuredData::del_articulo($pagina, null, 'AB-1234', true)['nodo']['campos']['peso']['valor']);
     }
+
+    /**
+     * 🔴 Revisión independiente: un `value` de texto como «1.200» o «1,200» (un separador y exactamente tres dígitos)
+     * puede ser 1,2 o 1.200, igual que en el texto de la página: se marca `ambiguo` (va a revisar, nunca se asigna
+     * solo). Un `value` numérico de JSON es inequívoco.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_value_de_texto_con_tres_digitos_despues_del_separador_es_ambiguo()
+    {
+        foreach (['1.200', '1,200'] as $texto) {
+            $nodos = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","sku":"A1",'
+                .'"weight":{"@type":"QuantitativeValue","unitCode":"GRM","value":"'.$texto.'"}}</script>');
+
+            $peso = $nodos[0]['campos']['peso'];
+            $this->assertTrue($peso['ambiguo'], $texto);
+            $this->assertStringContainsString($texto, $peso['aviso']);
+
+            $validado = (new DimensionValueValidator())->validar_estructurado('peso', $peso, 'https://x.test');
+            $this->assertTrue($validado['ok']);
+            $this->assertTrue($validado['dato']['ambiguo'], 'El validador conserva la marca: '.$texto);
+            $this->assertNotEmpty($validado['dato']['aviso']);
+        }
+
+        // Inequívocos: un número de JSON, dos decimales, un cero adelante o más de tres dígitos enteros.
+        foreach (['1.2', '"38.00"', '"0.500"', '"1200.500"', '"2,7"'] as $valor) {
+            $nodos = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","sku":"A1",'
+                .'"weight":{"@type":"QuantitativeValue","unitCode":"KGM","value":'.$valor.'}}</script>');
+
+            $this->assertFalse($nodos[0]['campos']['peso']['ambiguo'], $valor);
+        }
+    }
 }

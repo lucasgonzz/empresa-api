@@ -251,4 +251,34 @@ class Motor_con_datos_estructurados_Test extends DimensionSearchTestCase
             'largo' => $this->dato(3, 'cm', 'Largo: 3 cm', $url),
         ];
     }
+
+    /**
+     * Un peso del JSON-LD escrito «1.200» en gramos (¿1,2 o 1.200?) no se asigna solo aunque la IA diga `exacto` y
+     * cite bien las otras tres medidas: queda a revisar como `valor_ambiguo`.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_peso_ambiguo_del_json_ld_queda_a_revisar()
+    {
+        $gtin     = $this->con_verificador('779123456836');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+        $url      = 'https://tienda.test/cuchilla-3';
+
+        $html = '<html><head><title>Cuchilla</title><script type="application/ld+json">{"@type":"Product","gtin13":"'.$gtin.'",'
+            .'"weight":{"@type":"QuantitativeValue","unitCode":"GRM","value":"1.200"}}</script></head>'
+            .'<body><main><p>EAN '.$gtin.'. Alto: 5 cm. Ancho: 50 cm. Largo: 3 cm.</p></main></body></html>';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado($url, 'Cuchilla')]],
+            [$url => $html],
+            $this->ficha('exacto', $this->tres_medidas_citadas($url))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_A_REVISAR, $item->status);
+        $this->assertSame('valor_ambiguo', $item->motivo);
+        $this->assertNull($articulo->fresh()->peso);
+    }
 }

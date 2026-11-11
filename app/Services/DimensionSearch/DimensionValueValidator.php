@@ -293,8 +293,8 @@ class DimensionValueValidator
      * texto: el número y la unidad los leyó el código, no la IA. Lo que sí se exige es lo mismo que a cualquier dato:
      * que sea del tipo del campo (un peso en kg, una medida en cm) y que pase los topes de cordura.
      *
-     * Cuenta como cita etiquetada (la propiedad `weight` / `height` / `width` / `depth` dice qué medida es), nunca es
-     * ambiguo ni un rango.
+     * Cuenta como cita etiquetada (la propiedad `weight` / `height` / `width` / `depth` dice qué medida es) y nunca es
+     * un rango. Es ambiguo solo si DimensionStructuredData lo marcó (`value` de texto como «1.200»).
      *
      * @param  string $campo  peso | alto | ancho | profundidad.
      * @param  mixed  $dato   Lo de DimensionStructuredData: valor (kg | cm), unidad, valor_original, unidad_original,
@@ -337,10 +337,12 @@ class DimensionValueValidator
                 'cita'            => isset($dato['cita']) ? mb_substr((string) $dato['cita'], 0, 300) : '',
                 'url'             => (string) $url,
                 'alcance'         => 'producto',
-                'ambiguo'         => false,
+                // «1.200» escrito como texto en el JSON-LD (revisión independiente): se conserva la marca, y con ella
+                // el artículo va a revisar (motivo_de_revision() del motor), nunca se asigna solo.
+                'ambiguo'         => !empty($dato['ambiguo']),
                 'rango'           => false,
                 'etiquetada'      => true,
-                'aviso'           => null,
+                'aviso'           => !empty($dato['ambiguo']) && isset($dato['aviso']) ? (string) $dato['aviso'] : null,
                 // Marca de que salió del JSON-LD de la página y no de una cita de la IA.
                 'estructurado'    => true,
             ],
