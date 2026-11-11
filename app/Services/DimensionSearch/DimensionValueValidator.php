@@ -611,6 +611,19 @@ class DimensionValueValidator
             }
         }
 
+        // La unidad entre corchetes o paréntesis ANTES del número, como en las fichas técnicas de fábrica
+        // (misión medidas-sitios-de-referencia, 11/11/2026; Meteor: «Item total weight [g]: 111», «Item total
+        // dimensions L x L x H [mm]: 65 x 65 x 90», «Peso (kg): 4,5»). Uno a tres números después de los dos puntos.
+        $previa = '/[\[(]\s*('.$unidad.')\s*[\])]\s*:?\s*('.$numero.'(?:'.$separador.$numero.'){0,2})(?![\p{L}\d])/iu';
+
+        if (preg_match_all($previa, $texto, $coincidencias, PREG_SET_ORDER)) {
+            foreach ($coincidencias as $c) {
+                preg_match_all('/'.$numero.'/u', $c[2], $numeros);
+                $extra = count($numeros[0]) > 1 ? ['grupo' => true, 'texto' => trim($c[0])] : ['texto' => trim($c[0])];
+                $this->sumar_pares($pares, $numeros[0], $c[1], $extra, $rangos);
+            }
+        }
+
         return $pares;
     }
 

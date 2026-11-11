@@ -69,6 +69,27 @@ class Fichas_en_otros_idiomas_Test extends DimensionSearchTestCase
     }
 
     /**
+     * La unidad entre corchetes ANTES del número, como en las fichas de Meteor: «Item total weight [g]: 111» y
+     * «Item total dimensions L x L x H [mm]: 65 x 65 x 90». Antes no se leía y la propuesta quedaba sin respaldo.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_validador_lee_la_unidad_entre_corchetes_antes_del_numero()
+    {
+        $meteor = 'Nominal Diameter [mm]: 50 Bare piston weight [g]: 77 Item total weight [g]: 111 Item total dimensions L x L x H [mm]: 65 x 65 x 90 OEM item code: 503448371';
+
+        $this->assertEquals(0.111, $this->validado('peso', 111, 'g', 'Item total weight [g]: 111', $meteor)['valor']);
+        $this->assertEquals(9, $this->validado('alto', 90, 'mm', 'Item total dimensions L x L x H [mm]: 65 x 65 x 90', $meteor)['valor']);
+        $this->assertEquals(6.5, $this->validado('ancho', 65, 'mm', 'Item total dimensions L x L x H [mm]: 65 x 65 x 90', $meteor)['valor']);
+        $this->assertEquals(0.45, $this->validado('peso', 0.45, 'kg', 'Peso (kg): 0,45', 'Peso (kg): 0,45')['valor']);
+
+        // Un número que no está en la cita no valida aunque la unidad esté.
+        $r = (new DimensionValueValidator())->validar('peso', $this->dato(150, 'g', 'Item total weight [g]: 111', self::URL), [self::URL => $meteor]);
+        $this->assertFalse($r['ok']);
+    }
+
+    /**
      * @group dimension-search
      * @test
      */
