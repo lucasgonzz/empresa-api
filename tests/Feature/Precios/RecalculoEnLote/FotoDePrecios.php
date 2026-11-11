@@ -98,7 +98,10 @@ trait FotoDePrecios
 
             $cambio = (array) $cambio;
             $price_change_id = (int) $cambio['id'];
-            unset($cambio['id']);
+            // Identidad de operación y vía real difieren entre lote y unitario.
+            // La equivalencia de precios conserva detalle, previo/nuevo y actor.
+            // HistorialCompletoPorListaTest verifica estos dos metadatos aparte.
+            unset($cambio['id'], $cambio['operacion_uuid'], $cambio['origen']);
 
             $listas = isset($listas_por_cambio[$price_change_id]) ? $listas_por_cambio[$price_change_id] : [];
 

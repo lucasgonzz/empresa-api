@@ -124,19 +124,42 @@ class DimensionValueValidator
     ];
 
     /**
-     * Las palabras que, en la cita, dicen A QUÉ medida corresponde el número (sin tildes, en minúsculas).
+     * Las palabras que, en la cita, dicen A QUÉ medida corresponde el número (en minúsculas).
      * Para una asignación sola, la cita de cada campo tiene que traer una de las suyas, o una de las
      * genéricas, o ser una agrupación «A x B x C unidad». Una cita pelada («25 cm») no dice qué medida es.
+     *
+     * IDIOMAS (misión medidas-sitios-de-referencia, 11/11/2026): las fichas de los sitios de referencia de Masquito
+     * están en alemán (OBI: «Gewicht», «Höhe», «Breite», «Tiefe»), italiano (Verdefacile: «Peso», «Altezza»), inglés
+     * (Carbydoctor: «Shipping Weight») y portugués. cita_tiene_etiqueta() saca SOLO las tildes de á é í ó ú: una
+     * palabra con diéresis, ß, à, ã u õ va en las dos formas («höhe» y «hohe», «länge», «lange» y «laenge»,
+     * «profondità» y «profondita») para que valga como la escriba la página o la copie la IA.
      */
     const ETIQUETAS_DEL_CAMPO = [
-        'peso'        => ['peso', 'pesa', 'weight'],
-        'alto'        => ['alto', 'altura', 'height'],
-        'ancho'       => ['ancho', 'anchura', 'width'],
-        'profundidad' => ['largo', 'longitud', 'profundidad', 'fondo', 'length', 'depth'],
+        'peso'        => [
+            'peso', 'pesa', 'weight',
+            // Alemán, italiano, francés, inglés.
+            'gewicht', 'nettogewicht', 'bruttogewicht', 'peso netto', 'peso lordo', 'poids', 'shipping weight', 'item weight',
+        ],
+        'alto'        => [
+            'alto', 'altura', 'height',
+            'höhe', 'hohe', 'hoehe', 'altezza', 'hauteur',
+        ],
+        'ancho'       => [
+            'ancho', 'anchura', 'width',
+            'breite', 'larghezza', 'largeur', 'largura',
+        ],
+        'profundidad' => [
+            'largo', 'longitud', 'profundidad', 'fondo', 'length', 'depth',
+            'tiefe', 'länge', 'lange', 'laenge', 'profondità', 'profondita', 'lunghezza', 'longueur', 'comprimento', 'profundidade',
+        ],
     ];
 
     /** Etiquetas que valen para cualquier campo de medidas / de peso. */
-    const ETIQUETAS_GENERICAS_DE_MEDIDAS = ['medidas', 'dimensiones', 'dimensions', 'tamano', 'tamaño', 'size', 'envase', 'embalaje'];
+    const ETIQUETAS_GENERICAS_DE_MEDIDAS = [
+        'medidas', 'dimensiones', 'dimensions', 'tamano', 'tamaño', 'size', 'envase', 'embalaje',
+        // Alemán, italiano, portugués (misión medidas-sitios-de-referencia).
+        'maße', 'masse', 'abmessungen', 'dimensioni', 'ingombro', 'misure', 'dimensões', 'dimensoes',
+    ];
     const ETIQUETAS_GENERICAS_DE_PESO    = ['envase', 'embalaje'];
 
     /** Alcance que se guarda cuando la IA no dice uno válido. */
@@ -262,6 +285,79 @@ class DimensionValueValidator
                 'aviso'           => $aviso,
             ],
         ];
+    }
+
+    /**
+     * Valida un campo que salió de los DATOS ESTRUCTURADOS de la página (JSON-LD de schema.org, leído por
+     * DimensionStructuredData; misión medidas-sitios-de-referencia, 11/11/2026). No hay cita que comprobar contra el
+     * texto: el número y la unidad los leyó el código, no la IA. Lo que sí se exige es lo mismo que a cualquier dato:
+     * que sea del tipo del campo (un peso en kg, una medida en cm) y que pase los topes de cordura.
+     *
+     * Cuenta como cita etiquetada (la propiedad `weight` / `height` / `width` / `depth` dice qué medida es) y nunca es
+     * un rango. Es ambiguo solo si DimensionStructuredData lo marcó (`value` de texto como «1.200»).
+     *
+     * @param  string $campo  peso | alto | ancho | profundidad.
+     * @param  mixed  $dato   Lo de DimensionStructuredData: valor (kg | cm), unidad, valor_original, unidad_original,
+     *                        convertido, cita, alcance.
+     * @param  string $url    La página de la que salió.
+     * @return array  Como validar(): ['ok', 'motivo', 'dato'] (el dato con `estructurado` => true).
+     */
+    public function validar_estructurado($campo, $dato, $url)
+    {
+        if (!isset(self::CAMPOS[$campo])) {
+            return $this->rechazo('campo_desconocido');
+        }
+
+        $tipo = self::CAMPOS[$campo];
+
+        if (!is_array($dato) || !isset($dato['valor']) || !is_numeric($dato['valor'])) {
+            return $this->rechazo('no_informado');
+        }
+
+        if (!isset($dato['unidad']) || $dato['unidad'] !== self::UNIDAD_CANONICA[$tipo]) {
+            return $this->rechazo('unidad_invalida');
+        }
+
+        $canonico = round((float) $dato['valor'], self::DECIMALES);
+        $maximo   = $tipo === self::TIPO_PESO ? self::MAXIMO_PESO_KG : self::MAXIMO_MEDIDA_CM;
+
+        if ($canonico <= 0 || $canonico > $maximo) {
+            return $this->rechazo('fuera_de_rango');
+        }
+
+        return [
+            'ok'     => true,
+            'motivo' => null,
+            'dato'   => [
+                'valor'           => $canonico,
+                'unidad'          => self::UNIDAD_CANONICA[$tipo],
+                'valor_original'  => isset($dato['valor_original']) ? $dato['valor_original'] : $canonico,
+                'unidad_original' => isset($dato['unidad_original']) ? (string) $dato['unidad_original'] : self::UNIDAD_CANONICA[$tipo],
+                'convertido'      => !empty($dato['convertido']),
+                'cita'            => isset($dato['cita']) ? mb_substr((string) $dato['cita'], 0, 300) : '',
+                'url'             => (string) $url,
+                'alcance'         => 'producto',
+                // «1.200» escrito como texto en el JSON-LD (revisión independiente): se conserva la marca, y con ella
+                // el artículo va a revisar (motivo_de_revision() del motor), nunca se asigna solo.
+                'ambiguo'         => !empty($dato['ambiguo']),
+                'rango'           => false,
+                'etiquetada'      => true,
+                'aviso'           => !empty($dato['ambiguo']) && isset($dato['aviso']) ? (string) $dato['aviso'] : null,
+                // Marca de que salió del JSON-LD de la página y no de una cita de la IA.
+                'estructurado'    => true,
+            ],
+        ];
+    }
+
+    /**
+     * La unidad escrita como [tipo, factor a kg / cm, etiqueta]; null si no se reconoce («Kg.», «gramos», «mm»).
+     *
+     * @param  mixed $unidad
+     * @return array|null
+     */
+    public function reconocer_unidad($unidad)
+    {
+        return $this->unidad_del_modelo($unidad);
     }
 
     /**
@@ -514,6 +610,19 @@ class DimensionValueValidator
             foreach ($coincidencias as $c) {
                 preg_match_all('/'.$numero.'/u', $c[1], $numeros);
                 $this->sumar_pares($pares, $numeros[0], $c[2], ['grupo' => true, 'texto' => trim($c[0])], $rangos);
+            }
+        }
+
+        // La unidad entre corchetes o paréntesis ANTES del número, como en las fichas técnicas de fábrica
+        // (misión medidas-sitios-de-referencia, 11/11/2026; Meteor: «Item total weight [g]: 111», «Item total
+        // dimensions L x L x H [mm]: 65 x 65 x 90», «Peso (kg): 4,5»). Uno a tres números después de los dos puntos.
+        $previa = '/[\[(]\s*('.$unidad.')\s*[\])]\s*:?\s*('.$numero.'(?:'.$separador.$numero.'){0,2})(?![\p{L}\d])/iu';
+
+        if (preg_match_all($previa, $texto, $coincidencias, PREG_SET_ORDER)) {
+            foreach ($coincidencias as $c) {
+                preg_match_all('/'.$numero.'/u', $c[2], $numeros);
+                $extra = count($numeros[0]) > 1 ? ['grupo' => true, 'texto' => trim($c[0])] : ['texto' => trim($c[0])];
+                $this->sumar_pares($pares, $numeros[0], $c[1], $extra, $rangos);
             }
         }
 

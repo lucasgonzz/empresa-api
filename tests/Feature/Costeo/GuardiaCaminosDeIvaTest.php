@@ -53,7 +53,7 @@ class GuardiaCaminosDeIvaTest extends TestCase
      * uno (medido con este mismo escáner sobre la rama `refractor` después de los prompts 01/02/03
      * de este grupo, 8/8/2026):
      *
-     * - `ArticleHelper::setFinalPrice()` → 2: la rama `price_from_cost_mas_iva` (prompt 01, línea
+     * - `ArticleHelper::setFinalPrice_sin_historial()` → 2: la rama `price_from_cost_mas_iva` (prompt 01, línea
      *   ~351) y el bloque común de IVA de venta (línea ~502, guardado por `$iva_ya_aplicado`).
      * - `ArticleHelper::aplicar_descuentos_e_iva()` → 1: Capa 1, el IVA que se suma al costo real
      *   cuando `iva_va_al_costo()` da true (Monotributista / cuenta legacy).
@@ -73,8 +73,12 @@ class GuardiaCaminosDeIvaTest extends TestCase
      *
      * @var array<int, array{archivo: string, metodo: string, esperado: int}>
      */
+    // Historial por lista (11/11/2026): setFinalPrice delega el cálculo intacto al
+    // cuerpo _sin_historial. Se vigila ese cuerpo; TOTAL_POR_ARCHIVO sigue
+    // incluyendo el envoltorio para detectar cualquier IVA nuevo allí.
     private const CASOS = [
-        ['archivo' => self::ARTICLE_HELPER, 'metodo' => 'setFinalPrice', 'esperado' => 2],
+        // setFinalPrice envuelve la auditoría; el cuerpo de cálculo conserva sus dos IVA.
+        ['archivo' => self::ARTICLE_HELPER, 'metodo' => 'setFinalPrice_sin_historial', 'esperado' => 2],
         ['archivo' => self::ARTICLE_HELPER, 'metodo' => 'aplicar_descuentos_e_iva', 'esperado' => 1],
         ['archivo' => self::ARTICLE_PRICES_HELPER, 'metodo' => 'aplicar_precios_segun_listas_de_precios', 'esperado' => 1],
         ['archivo' => self::ARTICLE_PRICES_HELPER, 'metodo' => 'aplicar_precios_segun_listas_de_precios_y_categorias', 'esperado' => 1],

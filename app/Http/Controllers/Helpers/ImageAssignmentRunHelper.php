@@ -869,6 +869,9 @@ class ImageAssignmentRunHelper
             'id'                     => (int) $run->id,
             'uuid'                   => (string) $run->uuid,
             'origen'                 => (string) $run->origen,
+            // De dónde salieron las fotos de una asignación de soporte (proveedor_web: el dominio; proveedor_pdf:
+            // `adjunto-<id>.pdf`). Null en las del motor (misión importaciones-de-martin, 11/11/2026).
+            'fuente'                 => isset($run->fuente) ? (string) $run->fuente : null,
             'proveedor'              => (string) $run->proveedor,
             'status'                 => (string) $run->status,
             'motivo_estado'          => $run->motivo_estado,
@@ -924,6 +927,10 @@ class ImageAssignmentRunHelper
                 'fondo_blanco_ratio' => isset($meta['fondo_blanco_ratio']) ? (float) $meta['fondo_blanco_ratio'] : null,
                 'dominio'            => isset($meta['dominio']) ? (string) $meta['dominio'] : null,
                 'pagina'             => isset($meta['pagina']) ? (string) $meta['pagina'] : null,
+                // Las fotos de la web o del PDF del proveedor (misión importaciones-de-martin, 11/11/2026): la página
+                // de donde salió y si el cruce fue exacto o dudoso. Null en las del motor.
+                'url_origen'         => isset($meta['url_origen']) ? (string) $meta['url_origen'] : null,
+                'tipo_coincidencia'  => isset($meta['tipo_coincidencia']) ? (string) $meta['tipo_coincidencia'] : null,
                 'ia'                 => [
                     'veredicto' => isset($ia['veredicto']) ? (string) $ia['veredicto'] : 'sin_evaluar',
                     'confianza' => isset($ia['confianza']) ? $ia['confianza'] : null,

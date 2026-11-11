@@ -39,7 +39,10 @@ class DimensionSearchRun extends Model
     protected $guarded = [];
 
     protected $casts = [
-        'solo_con_stock' => 'boolean',
+        'solo_con_stock'       => 'boolean',
+        // La foto de los sitios de referencia con que se lanzó (lista de dominios; null = ninguno). Ver
+        // DimensionReferenceSiteHelper (misión medidas-sitios-de-referencia, 11/11/2026).
+        'sitios_de_referencia' => 'array',
     ];
 
     protected $dates = ['started_at', 'finished_at', 'last_progress_at', 'visto_at'];

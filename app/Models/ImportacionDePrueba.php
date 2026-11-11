@@ -15,6 +15,8 @@ class ImportacionDePrueba extends Model
         'preguntas' => 'array',
         'decisiones' => 'array',
         'hitos' => 'array',
+        // Mapeo de columnas ya confirmado por soporte: lista de {hoja, columna, campo}; campo null = ignorar.
+        'columnas_previas' => 'array',
         'modo_soporte' => 'boolean',
     ];
 

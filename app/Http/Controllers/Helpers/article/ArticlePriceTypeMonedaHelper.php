@@ -17,6 +17,13 @@ class ArticlePriceTypeMonedaHelper {
 
     // Solo adjunto los datos que vienen del front, no calculo ningun precio ni porcentaje
     static function attach_price_type_monedas($article, $price_type_monedas, $user = null) {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([(int) $article->id], null, 'ficha_moneda', function () use ($argumentos) {
+            return call_user_func_array([self::class, 'attach_price_type_monedas_sin_historial'], $argumentos);
+        });
+    }
+
+    static function attach_price_type_monedas_sin_historial($article, $price_type_monedas, $user = null) {
 
         if (empty($price_type_monedas)) return;
 

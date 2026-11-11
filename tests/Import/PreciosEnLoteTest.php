@@ -223,12 +223,14 @@ class PreciosEnLoteTest extends ImportTestCase
         $this->consultas = [];
         $this->contando  = true;
 
+        $general_previo = $article->final_price;
         ArticleHelper::setFinalPrice($article, $this->tenant->id, $this->tenant, $this->tenant->id, false, $price_types);
 
         $this->contando = false;
 
         $consultas = $this->consultas;
 
+        $this->assertSame($general_previo, $article->fresh()->final_price, 'guardar_cambios=false conserva el general persistido de antes.');
         $cantidad_de_listas = count($price_types);
 
         $this->assertSame(2, $cantidad_de_listas);
@@ -237,8 +239,14 @@ class PreciosEnLoteTest extends ImportTestCase
         $this->assertSame($cantidad_de_listas, $this->consultas_que_nombran($consultas, '/^update `article_price_type` set/i'), 'Un update por lista (updateExistingPivot).');
         $this->assertSame(0, $this->consultas_que_nombran($consultas, '/^update `article_price_type` set .* case /i'), 'Fuera del modo lote no hay UPDATE ... CASE.');
         $this->assertSame(1, $this->consultas_que_nombran($consultas, '/^insert into `price_changes`/i'), 'Un insert en price_changes (cambió el precio).');
-        $this->assertSame($cantidad_de_listas, $this->consultas_que_nombran($consultas, '/^insert into `price_change_price_type`/i'), 'Un attach por lista.');
-        $this->assertSame(0, $this->consultas_que_nombran($consultas, '/values \(.*\), \(/i'), 'Fuera del modo lote no hay inserts multi-fila.');
+        $this->assertSame(1, $this->consultas_que_nombran($consultas, '/^insert into `price_change_price_type`/i'), 'Una foto de listas en bloque.');
+        $evento = \App\Models\PriceChange::where('article_id', $a2->id)->orderByDesc('id')->first();
+        $this->assertCount(2, $evento->price_types);
+        $this->assertEquals($a2->fresh()->final_price, $evento->final_price, 'Sin guardar generales, la historia conserva el general realmente persistido.');
+        foreach ($evento->price_types as $lista) {
+            $this->assertEquals($a2->fresh()->price_types()->find($lista->id)->pivot->final_price, $lista->pivot->final_price);
+        }
+        $this->assertSame(1, $this->consultas_que_nombran($consultas, '/values \(.*\), \(/i'), 'Solo la foto histórica se inserta en bloque.');
 
         $this->assertSame(1, $this->consultas_que_nombran($consultas, '/from `ivas`/i'), 'El IVA se consulta una sola vez por llamada: la relación cargada se reusa mientras coincida con iva_id.');
 
@@ -553,6 +561,7 @@ class PreciosEnLoteTest extends ImportTestCase
         $this->assertEquals($foto_por_articulo, $foto_en_lote, 'Con 50 filas, el modo lote dejó una base distinta.');
 
         $cantidad = count($ids);
+        fwrite(STDERR, '\n[Fixture] persistencia general fuera de medición del motor: '.$en_lote['persistencia_fuera_motor'].' actualizaciones de fixture; producto usa updateMasivo.\n');
 
         $antes   = count($por_articulo['loop']) + count($por_articulo['volcar']);
         $despues = count($en_lote['loop']) + count($en_lote['volcar']);
@@ -640,6 +649,30 @@ class PreciosEnLoteTest extends ImportTestCase
      * @return array{resultados:array,loop:array,volcar:array}
      */
     protected function calcular($articulos, $en_lote)
+    {
+        // La importación real posee una unidad exterior que también persiste
+        // los generales calculados. La foto histórica se toma DESPUÉS de eso.
+        $salida = \App\Services\HistorialPreciosService::ejecutar($articulos->pluck('id')->all(), $this->tenant->id, 'importacion', function () use ($articulos, $en_lote) {
+            $salida = $this->calcular_sin_unidad($articulos, $en_lote);
+            // Esta etapa representa updateMasivo(), fuera de la medición del
+            // loop/volcado del recolector, como la precarga de relaciones.
+            foreach ($salida['resultados'] as $id => $resultado) {
+                DB::table('articles')->where('id', $id)->update([
+                    'costo_real' => $resultado['costo_real'],
+                    'final_price' => $resultado['final_price'],
+                ]);
+            }
+            $salida['persistencia_fuera_motor'] = count($salida['resultados']);
+            $this->contando = true;
+            return $salida;
+        });
+        $salida['volcar'] = array_merge($salida['volcar'], $this->consultas);
+        $this->contando = false;
+        $this->consultas = [];
+        return $salida;
+    }
+
+    protected function calcular_sin_unidad($articulos, $en_lote)
     {
         $price_types = $this->listas_del_tenant();
 
@@ -879,6 +912,8 @@ class PreciosEnLoteTest extends ImportTestCase
                 'price'       => $this->normalizar($cambio->price),
                 'final_price' => $this->normalizar($cambio->final_price),
                 'employee_id' => is_null($cambio->employee_id) ? null : (int) $cambio->employee_id,
+                'precio_final_anterior' => $this->normalizar($cambio->precio_final_anterior),
+                'cambios_listas' => json_decode($cambio->cambios_listas, true),
                 'listas'      => $listas,
             ];
         }

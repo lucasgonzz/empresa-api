@@ -7,15 +7,20 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\AvanzarImportacionDePrueba;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\ImportacionDePrueba;
+use App\Models\ImportacionDeSoporte;
 use App\Models\Provider;
 use App\Models\User;
 use App\Services\Importacion\ImportacionDePruebaService;
+use App\Services\Importacion\PlanillaDePrueba;
 use App\Services\Importacion\PlanillaStockExistente;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
+use RuntimeException;
 
 class ImportacionDePruebaController extends Controller
 {
@@ -34,6 +39,8 @@ class ImportacionDePruebaController extends Controller
             'provider_id' => 'nullable|integer|min:1',
             'origen' => 'nullable|string|max:40',
             'alcance' => 'sometimes|required|in:stock_existente',
+            // Mapeo de columnas que soporte ya confirmó con el cliente: string JSON (viaja en multipart).
+            'columnas_previas' => 'sometimes|nullable|string|max:24000',
         ]);
 
         $alcance = $datos['alcance'] ?? null;
@@ -43,7 +50,19 @@ class ImportacionDePruebaController extends Controller
             abort(422, 'El proveedor no pertenece al negocio.');
         }
 
-        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte, $alcance) {
+        // Las claves nuevas de la respuesta solo salen si el pedido trajo el campo: sin él, todo igual que antes.
+        $trajo_previas = array_key_exists('columnas_previas', $datos);
+        $previas = null;
+        if (($datos['columnas_previas'] ?? null) !== null) {
+            if ($alcance !== null) {
+                self::rechazar_previas('El mapeo previo es para la importación general de artículos.');
+            }
+            $previas = self::columnas_previas((string) $datos['columnas_previas'], $user_id, $request->file('excel_file'));
+        }
+        // Una base sin la migración sigue como hoy, sin mapeo previo, en lugar de caerse al guardar.
+        $guarda_previas = $trajo_previas && self::soporta_columnas_previas();
+
+        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte, $alcance, $previas, $guarda_previas) {
             // Serializa reenvíos simultáneos del mismo adjunto, antes de escribir otro archivo.
             User::whereKey($user_id)->lockForUpdate()->firstOrFail();
             $origen = [
@@ -74,18 +93,201 @@ class ImportacionDePruebaController extends Controller
                 'provider_id' => $proveedor,
                 'estado' => $alcance === null ? 'analizar' : 'stock_analizar',
                 'modo_soporte' => $modo_soporte,
-            ] + ($alcance === null ? [] : ['alcance' => $alcance]));
+            ] + ($alcance === null ? [] : ['alcance' => $alcance])
+              + ($previas !== null && $guarda_previas ? ['columnas_previas' => $previas] : []));
         });
 
         if ($run->wasRecentlyCreated) {
             AvanzarImportacionDePrueba::dispatch((int) $run->id);
         }
 
+        // Una corrida que ya existía por la clave idempotente conserva sus previas: no se pisan.
+        $extra_previas = $trajo_previas ? [
+            'columnas_previas' => $guarda_previas ? count($run->columnas_previas ?? []) : 0,
+            'corrida_existente' => !$run->wasRecentlyCreated,
+        ] : [];
+
         return response()->json([
             'analysis_uuid' => $run->uuid,
             'estado' => $run->estado_publico(),
             ($modo_soporte ? 'automatizar_soporte' : 'automatizar_prueba') => true,
-        ] + ($alcance === null ? [] : ['alcance' => $run->alcance]), 202);
+        ] + ($alcance === null ? [] : ['alcance' => $run->alcance]) + $extra_previas, 202);
+    }
+
+    /**
+     * Indica si la base ya tiene la columna del mapeo previo de columnas.
+     *
+     * @return bool
+     */
+    public static function soporta_columnas_previas(): bool
+    {
+        return Schema::hasColumn('importaciones_de_prueba', 'columnas_previas');
+    }
+
+    /**
+     * Valida y normaliza el mapeo previo de columnas que manda soporte.
+     *
+     * Cada ítem trae `columna` (letra de Excel), `campo` (clave, etiqueta o `ignorar`) y `hoja`
+     * opcional. El campo se resuelve contra los campos del negocio con la misma lógica de
+     * `PlanillaDePrueba`, así lo guardado es exactamente lo que el análisis va a aplicar.
+     *
+     * La hoja se valida contra el libro recibido y se guarda con su nombre real: sin hoja vale solo
+     * si el libro tiene una única hoja (y queda guardada con ese nombre); una hoja que no existe o
+     * una hoja faltante en un libro de varias hojas es 422. Los duplicados de columna o de campo se
+     * controlan después de normalizar, así una previa con hoja y otra sin hoja que caen en la misma
+     * hoja también chocan.
+     *
+     * Formato guardado: lista de ['hoja' => string, 'columna' => 'A'..'ZZZ', 'campo' => ?string],
+     * con la hoja con su nombre real, `campo` ya resuelto a la clave del importador y **null para
+     * ignorar** (nunca la cadena `ignorar`, que no es un campo del importador).
+     *
+     * @param  string       $json     Lista JSON recibida en el pedido
+     * @param  int          $user_id  Dueño del negocio, para leer sus depósitos y listas de precio
+     * @param  UploadedFile $archivo  Excel del pedido, para leer los nombres de sus hojas
+     * @return array                  Lista normalizada
+     *
+     * @throws HttpResponseException  422 si el JSON, una columna o un campo no son válidos
+     */
+    private static function columnas_previas(string $json, int $user_id, UploadedFile $archivo): array
+    {
+        $lista = json_decode($json, true);
+        if (!is_array($lista) || $lista === [] || array_keys($lista) !== range(0, count($lista) - 1)) {
+            self::rechazar_previas('El mapeo previo de columnas tiene que ser una lista JSON con al menos una columna.');
+        }
+        if (count($lista) > 80) {
+            self::rechazar_previas('El mapeo previo de columnas admite hasta 80 columnas.');
+        }
+
+        // La planilla resuelve los campos con los depósitos y listas del negocio; la corrida todavía no existe.
+        $planilla = new PlanillaDePrueba(new ImportacionDePrueba(['user_id' => $user_id]));
+        // Primera pasada: forma de cada ítem y campo resuelto. La hoja se normaliza después.
+        $leidas = [];
+        foreach ($lista as $numero => $item) {
+            $orden = $numero + 1;
+            if (!is_array($item)) {
+                self::rechazar_previas('El ítem ' . $orden . ' del mapeo previo no es un objeto con columna y campo.');
+            }
+            $hoja = $item['hoja'] ?? null;
+            if ($hoja !== null && (!is_string($hoja) || mb_strlen($hoja) > 120)) {
+                self::rechazar_previas('La hoja del ítem ' . $orden . ' del mapeo previo no es válida.');
+            }
+            $hoja = $hoja === null || trim($hoja) === '' ? null : trim($hoja);
+            $columna = $item['columna'] ?? null;
+            if (!is_string($columna) || !preg_match('/^[A-Za-z]{1,3}$/', $columna)) {
+                self::rechazar_previas('La columna del ítem ' . $orden . ' del mapeo previo tiene que ser una letra de Excel (A, B, …, AA).');
+            }
+            $columna = strtoupper($columna);
+            $referencia = 'columna ' . $columna . ($hoja === null ? '' : ' de «' . $hoja . '»');
+            $campo = $item['campo'] ?? null;
+            if (!is_string($campo) || trim($campo) === '' || mb_strlen($campo) > 120) {
+                self::rechazar_previas('Falta el campo de la ' . $referencia . ' en el mapeo previo.');
+            }
+
+            $resuelto = $planilla->resolver_campo_previo($campo);
+            if ($resuelto === null) {
+                self::rechazar_previas('El campo «' . trim($campo) . '» de la ' . $referencia
+                    . ' no existe en este negocio. Campos posibles: ' . implode(', ', $planilla->campos_posibles()) . '.');
+            }
+
+            $leidas[] = ['hoja' => $hoja, 'columna' => $columna, 'campo' => $resuelto];
+        }
+
+        // Las hojas se validan contra el libro recibido: una previa que el análisis no puede ubicar
+        // no tiene que contarse como aplicada (el cliente recibiría otra vez las preguntas).
+        try {
+            $hojas_del_libro = PlanillaDePrueba::nombres_de_hojas((string) $archivo->getRealPath(), (string) $archivo->getClientOriginalExtension());
+        } catch (RuntimeException $error) {
+            $hojas_del_libro = [];
+        }
+        if ($hojas_del_libro === []) {
+            self::rechazar_previas('No pude leer las hojas del archivo para aplicar el mapeo previo.');
+        }
+        $lista_de_hojas = '«' . implode('», «', $hojas_del_libro) . '»';
+
+        $normalizadas = [];
+        // Por nombre real de hoja: columnas y campos ya usados, para rechazar duplicados.
+        $columnas_vistas = [];
+        $campos_vistos = [];
+        foreach ($leidas as $previa) {
+            $columna = $previa['columna'];
+            $resuelto = $previa['campo'];
+            if ($previa['hoja'] === null) {
+                // Cuenta todas las hojas del libro, también las vacías: saber cuáles tienen datos
+                // obligaría a recorrerlas dentro del pedido del admin. martin.md pide siempre la hoja.
+                if (count($hojas_del_libro) > 1) {
+                    self::rechazar_previas('Falta la hoja de la columna ' . $columna . ': el archivo tiene varias hojas ('
+                        . $lista_de_hojas . '). Indicá en cuál está.');
+                }
+                // Con una sola hoja, la previa sin hoja es de esa hoja.
+                $hoja = $hojas_del_libro[0];
+            } else {
+                $hoja = self::hoja_del_libro($previa['hoja'], $hojas_del_libro);
+                if ($hoja === null) {
+                    self::rechazar_previas('La hoja «' . $previa['hoja'] . '» de la columna ' . $columna
+                        . ' no existe en el archivo. Hojas del archivo: ' . $lista_de_hojas . '.');
+                }
+            }
+
+            $referencia = 'columna ' . $columna . ' de «' . $hoja . '»';
+            if (isset($columnas_vistas[$hoja][$columna])) {
+                self::rechazar_previas('La ' . $referencia . ' aparece dos veces en el mapeo previo.');
+            }
+            $columnas_vistas[$hoja][$columna] = true;
+            if ($resuelto !== PlanillaDePrueba::CAMPO_IGNORAR) {
+                if (isset($campos_vistos[$hoja][$resuelto])) {
+                    self::rechazar_previas('Las columnas ' . $campos_vistos[$hoja][$resuelto] . ' y ' . $columna
+                        . ' de «' . $hoja . '» quedaron asignadas al mismo campo «' . $resuelto . '».');
+                }
+                $campos_vistos[$hoja][$resuelto] = $columna;
+            }
+
+            $normalizadas[] = [
+                'hoja' => $hoja,
+                'columna' => $columna,
+                'campo' => $resuelto === PlanillaDePrueba::CAMPO_IGNORAR ? null : $resuelto,
+            ];
+        }
+
+        return $normalizadas;
+    }
+
+    /**
+     * Busca una hoja del mapeo previo entre las del libro: primero por nombre exacto y, si no hay,
+     * por `titulo_comparable` cuando coincide con una sola hoja.
+     *
+     * @param  string   $hoja    Hoja recibida en el mapeo previo
+     * @param  string[] $hojas   Nombres reales de las hojas del libro
+     * @return string|null       Nombre real de la hoja, o null si no existe o es ambigua
+     */
+    private static function hoja_del_libro(string $hoja, array $hojas): ?string
+    {
+        foreach ($hojas as $nombre) {
+            if (trim($nombre) === $hoja) {
+                return $nombre;
+            }
+        }
+        $buscada = PlanillaDePrueba::titulo_comparable($hoja);
+        $coincidencias = array_values(array_filter($hojas, function ($nombre) use ($buscada) {
+            return PlanillaDePrueba::titulo_comparable($nombre) === $buscada;
+        }));
+
+        return count($coincidencias) === 1 ? $coincidencias[0] : null;
+    }
+
+    /**
+     * Corta el pedido con un 422 sobre el mapeo previo, con el mismo formato que una validación.
+     *
+     * @param  string $mensaje  Motivo, que soporte le muestra a quien inició la importación
+     * @return void
+     *
+     * @throws HttpResponseException
+     */
+    private static function rechazar_previas(string $mensaje): void
+    {
+        throw new HttpResponseException(response()->json([
+            'message' => $mensaje,
+            'errors' => ['columnas_previas' => [$mensaje]],
+        ], 422));
     }
 
     public function pendientes(Request $request): JsonResponse
@@ -108,6 +310,11 @@ class ImportacionDePruebaController extends Controller
                 ->when(!$modo_soporte, function ($consulta) {
                     $consulta->where('created_at', '>=', now()->subDay());
                 })->exists();
+        // Clientes y proveedores desde soporte (misión importaciones-de-martin, 11/11/2026): una corrida que analiza,
+        // espera el código o importa también deja el ticket «en proceso», para que no se cierre a mitad de camino.
+        // Van en una clave aparte (no en `pendientes`, que se resuelven por prueba-resolver).
+        $contactos = $modo_soporte ? self::contactos_abiertos((int) $datos['user_id'], (int) $datos['support_ticket_id']) : [];
+        $en_proceso = $en_proceso || $contactos !== [];
 
         return response()->json(['en_proceso' => $en_proceso, 'pendientes' => $corridas->map(function (ImportacionDePrueba $run) {
             $preguntas = $run->preguntas ?? [];
@@ -128,8 +335,36 @@ class ImportacionDePruebaController extends Controller
             ] + ($run->alcance === null ? [] : ['alcance' => $run->alcance]);
         })] + ($modo_soporte ? [
             'automatizar_soporte' => true,
+            'importaciones_de_contactos' => $contactos,
             'alcances_soporte' => self::soporta_stock_existente() ? ['stock_existente'] : [],
         ] : []));
+    }
+
+    /**
+     * Las corridas de clientes o proveedores del ticket que todavía no terminaron (analizan, esperan el código del
+     * dueño o importan), con la forma corta del contrato. Vacío si la base todavía no tiene la tabla.
+     *
+     * @param  int $user_id
+     * @param  int $support_ticket_id
+     * @return array [{corrida_id, modelo, estado, revision, codigo_requerido}]
+     */
+    private static function contactos_abiertos(int $user_id, int $support_ticket_id): array
+    {
+        if (!Schema::hasTable('importaciones_de_soporte')) {
+            return [];
+        }
+
+        return ImportacionDeSoporte::where('user_id', $user_id)->where('support_ticket_id', $support_ticket_id)
+            ->whereIn('estado', ImportacionDeSoporte::ABIERTAS)->orderBy('id')->get()
+            ->map(function (ImportacionDeSoporte $corrida) {
+                return [
+                    'corrida_id' => (string) $corrida->uuid,
+                    'modelo' => (string) $corrida->modelo,
+                    'estado' => (string) $corrida->estado,
+                    'revision' => (int) $corrida->revision,
+                    'codigo_requerido' => $corrida->estado === 'confirmacion',
+                ];
+            })->all();
     }
 
     public function resolver(Request $request, string $uuid): JsonResponse

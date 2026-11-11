@@ -668,6 +668,10 @@ class Respaldo_por_scrape_Test extends DimensionSearchTestCase
             SerperUsageEvent::insert($filas);
 
             // Nombre corto: no genera plan de nombre, así el único plan es el de barras (el que gastó la 25ª búsqueda).
+            // Misión medidas-sitios-de-referencia: con un GTIN ahora también está el plan del mismo código fuera de
+            // Argentina (gl=us, hl=en), que chocaría con el tope y dejaría el artículo «sin_cupo». Para que la premisa del
+            // test siga siendo cierta (un solo plan), la configuración busca ya en EE. UU. en inglés: el global es repetido.
+            config(['services.serper.gl' => 'us', 'services.serper.hl' => 'en']);
             $articulo = $this->nuevo_articulo('CUCH', $this->gtin);
 
             $this->falsear(

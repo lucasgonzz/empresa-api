@@ -80,6 +80,12 @@ class ImportacionDePruebaService
     {
         $planilla = new PlanillaDePrueba($run);
         $hojas = $planilla->analizar(app(AiExcelAnalyzer::class, ['user_id' => (int) $run->user_id]));
+        // Lo que soporte ya confirmó con el cliente queda resuelto y no se vuelve a preguntar.
+        // Se guarda aplicado en `hojas`, así la re-pregunta de preparar() también lo respeta.
+        $previas = $run->alcance === 'stock_existente' ? [] : ($run->columnas_previas ?? []);
+        if (is_array($previas) && $previas !== []) {
+            $hojas = $planilla->aplicar_columnas_previas($hojas, $previas);
+        }
         // El conteo solo elige identificador, cantidad y depósito. El resto de las columnas no se importa.
         $preguntas = $run->alcance === 'stock_existente' ? [] : $planilla->preguntas_columnas($hojas);
 

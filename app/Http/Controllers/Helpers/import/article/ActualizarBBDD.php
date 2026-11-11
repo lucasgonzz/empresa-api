@@ -186,6 +186,13 @@ class ActualizarBBDD {
     }
 
     function guardar_articulos() {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar(array_column($this->articulos_para_actualizar_CACHE, 'id'), $this->auth_user_id, 'importacion', function () use ($argumentos) {
+            return call_user_func_array([$this, 'guardar_articulos_sin_historial'], $argumentos);
+        });
+    }
+
+    function guardar_articulos_sin_historial() {
 
         // Crear los artículos nuevos en la bbdd
         if (!empty($this->articulos_para_crear_CACHE)) {
@@ -464,6 +471,10 @@ class ActualizarBBDD {
 
 
         // 🔁 Asignar price_types (a nuevos y actualizados)
+        \App\Services\HistorialPreciosService::capturar(array_merge(
+            collect($this->articulos_creados_models)->pluck('id')->all(),
+            collect($this->articulos_actualizados_models)->pluck('id')->all()
+        ));
         $this->asignar_price_types();
         $this->log('Se asignaron price_types');
 

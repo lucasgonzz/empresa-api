@@ -8,6 +8,7 @@ use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\BackgroundProcess;
 use App\Models\ImportHistory;
 use App\Models\PriceType;
 use App\Models\Provider;
@@ -179,6 +180,10 @@ class RollbackArticleImportHistory implements ShouldQueue
                     'rollback_status' => 'fallido',
                     'rollback_error'  => 'El usuario que pidio la reversion no coincide con el owner de la importacion',
                 ]);
+
+            // El controller ya la anunció "en espera": que no quede abierta para siempre.
+            $this->fallar_proceso_en_segundo_plano('El usuario que pidió la reversión no coincide con el dueño de la importación.');
+
             return;
         }
 
@@ -379,7 +384,11 @@ class RollbackArticleImportHistory implements ShouldQueue
                                             ->values()
                                             ->all();
 
-        DB::transaction(function () use ($restore_map, $relations_restore_map, $created_article_ids, $import_history) {
+        \App\Services\HistorialPreciosService::ejecutar(
+            array_unique(array_merge(array_keys($restore_map), array_keys($relations_restore_map), $created_article_ids)),
+            $this->auth_user_id,
+            'reversion_importacion',
+            function () use ($restore_map, $relations_restore_map, $created_article_ids, $import_history) {
             /**
              * Revertimos columnas directas en artículos actualizados.
              */
@@ -548,20 +557,30 @@ class RollbackArticleImportHistory implements ShouldQueue
     protected function iniciar_proceso_en_segundo_plano(ImportHistory $import_history)
     {
         try {
-            $partes = ['Importación #' . $import_history->id];
+            /*
+             * Desde la misión revertir-importacion-en-segundo-plano (11/11/2026) el proceso ya lo
+             * abrió el controller en `pendiente` al encolar (ver anunciar_en_espera()): acá solo
+             * se lo pasa a "en proceso". Antes se abría recién en este punto, o sea cuando un
+             * worker agarraba el job: si la cola estaba demorada, o el job caía antes de llegar
+             * acá (por ejemplo al cargar los lotes de una importación enorme), el usuario no veía
+             * nada ni en la píldora ni en el historial.
+             */
+            $abierto = BackgroundProcessHelper::por_referencia($import_history);
 
-            if (!is_null($import_history->provider_id)) {
-                $provider = Provider::find($import_history->provider_id);
+            if (!is_null($abierto)) {
+                BackgroundProcessHelper::avanzar($abierto, 0, [
+                    'etapa'            => 'Revirtiendo los artículos',
+                    'forzar_broadcast' => true,
+                ]);
 
-                if (!is_null($provider) && trim((string) $provider->name) !== '') {
-                    $partes[] = 'Proveedor ' . trim((string) $provider->name);
-                }
+                return;
             }
 
+            // Sin proceso abierto (un job que ya estaba en la cola antes de este cambio): se abre acá.
             BackgroundProcessHelper::iniciar($import_history->user_id, 'rollback_importacion', 'Reversión de una importación', [
                 'auth_user_id' => is_null($this->auth_user_id) ? $this->owner_user_id : $this->auth_user_id,
                 'referencia'   => $import_history,
-                'detalle'      => implode(' · ', $partes),
+                'detalle'      => self::detalle_del_proceso($import_history),
                 'etapa'        => 'Revirtiendo los artículos',
             ]);
         } catch (\Throwable $e) {
@@ -570,6 +589,70 @@ class RollbackArticleImportHistory implements ShouldQueue
                 'error'             => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Anuncia la reversión en la lista de procesos en segundo plano en el MISMO momento en que
+     * se encola, en estado `pendiente` ("En espera"). Lo llama el controller, antes del dispatch.
+     *
+     * Es lo que hace que el usuario vea la tarea apenas aprieta "Revertir", aunque el worker
+     * tarde en tomarla, y que quede en el historial aunque el job nunca llegue a correr (en ese
+     * caso `cerrar_colgados()` la cierra como fallida a las 3 horas). El job la retoma por
+     * referencia al ImportHistory (ver iniciar_proceso_en_segundo_plano()).
+     *
+     * Nunca tira: el helper ya atrapa, y el armado del detalle va aparte. Es presentación.
+     *
+     * @param  \App\Models\ImportHistory  $import_history
+     * @param  int|null  $auth_user_id  Quién apretó el botón (empleado o dueño).
+     * @return \App\Models\BackgroundProcess|null
+     */
+    public static function anunciar_en_espera(ImportHistory $import_history, $auth_user_id = null)
+    {
+        /*
+         * Un intento anterior que murió sin pasar por failed() (un worker sin memoria, por
+         * ejemplo) deja su proceso abierto y rollback_status en 'encolado'; el controller solo
+         * deja reintentar desde 'fallido', pero por si acaso se cierra el viejo acá para que la
+         * lista no muestre dos reversiones de la misma importación a la vez.
+         */
+        $anterior = BackgroundProcessHelper::por_referencia($import_history);
+
+        if (!is_null($anterior)) {
+            BackgroundProcessHelper::fallar($anterior, 'Se volvió a pedir la reversión de esta importación.');
+        }
+
+        return BackgroundProcessHelper::iniciar($import_history->user_id, 'rollback_importacion', 'Reversión de una importación', [
+            'auth_user_id' => $auth_user_id,
+            'referencia'   => $import_history,
+            'detalle'      => self::detalle_del_proceso($import_history),
+            'etapa'        => 'En espera de que arranque',
+            'status'       => BackgroundProcess::STATUS_PENDIENTE,
+        ]);
+    }
+
+    /**
+     * Texto que identifica la importación que se está deshaciendo: número y proveedor, si lo tiene.
+     * Nunca tira (devuelve al menos el número).
+     *
+     * @param  \App\Models\ImportHistory  $import_history
+     * @return string
+     */
+    protected static function detalle_del_proceso(ImportHistory $import_history)
+    {
+        $partes = ['Importación #' . $import_history->id];
+
+        try {
+            if (!is_null($import_history->provider_id)) {
+                $provider = Provider::find($import_history->provider_id);
+
+                if (!is_null($provider) && trim((string) $provider->name) !== '') {
+                    $partes[] = 'Proveedor ' . trim((string) $provider->name);
+                }
+            }
+        } catch (\Throwable $e) {
+            // El proveedor es un adorno del texto: sin él se muestra solo el número.
+        }
+
+        return implode(' · ', $partes);
     }
 
     /**

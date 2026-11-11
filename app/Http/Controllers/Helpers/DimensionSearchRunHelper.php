@@ -82,8 +82,18 @@ class DimensionSearchRunHelper
      * Estimación que se muestra antes de lanzar. Medida en la prueba real del 27/10/2026 (10 artículos de
      * Masquito, Serper + DeepSeek Flash): 1,8 búsquedas por artículo y ~1.870 tokens de entrada. Va del lado
      * alto a propósito (2,2 búsquedas): la ve Lucas antes de gastar, y quedarse corto en plata es peor que sobrar.
+     *
+     * Eso era con tres planes como mucho. Desde la misión medidas-sitios-de-referencia (11/11/2026) hay hasta cinco
+     * (MAX_BUSQUEDAS del motor) y la previa suma, del lado alto, lo que agregan los dos planes nuevos:
+     *   - BUSQUEDAS_EXTRA_POR_GTIN: una búsqueda más por cada artículo a buscar con un código de barras de forma GTIN
+     *     (8, 12, 13 o 14 dígitos; no se mira el dígito verificador, así que cuenta de más): el mismo código fuera de
+     *     Argentina, que corre siempre que la búsqueda argentina no dio datos. Se cuenta entera aunque muchos corten antes.
+     *   - BUSQUEDAS_EXTRA_CON_SITIOS: si el comercio tiene sitios de referencia, una búsqueda más por artículo (la de
+     *     los sitios va primero y corre en todos los que tienen algún código).
      */
     const BUSQUEDAS_ESTIMADAS_POR_ARTICULO = 2.2;
+    const BUSQUEDAS_EXTRA_POR_GTIN         = 1.0;
+    const BUSQUEDAS_EXTRA_CON_SITIOS       = 1.0;
     const SEGUNDOS_ESTIMADOS_POR_ARTICULO  = 12;
     const USD_POR_MIL_BUSQUEDAS            = 1.0;
     const USD_DE_IA_POR_ARTICULO           = 0.0007;
@@ -155,7 +165,8 @@ class DimensionSearchRunHelper
      * @param  string           $origen         catalogo | seleccion
      * @param  int|null         $creada_por     Quién la lanzó.
      * @param  array            $opciones       solo_con_stock (bool), purgar (bool; false si quien llama ya
-     *                                          purgó fuera de su transacción).
+     *                                          purgó fuera de su transacción), sitios_de_referencia (array de
+     *                                          dominios; si no viene, la lista actual del comercio).
      * @return \App\Models\DimensionSearchRun
      */
     public static function crear(User $owner, array $article_ids, $origen, $creada_por = null, array $opciones = [])
@@ -201,15 +212,22 @@ class DimensionSearchRunHelper
         $solo_con_stock = !empty($opciones['solo_con_stock']);
         $total          = count($validos);
 
-        return DB::transaction(function () use ($owner, $origen, $creada_por, $solo_con_stock, $total, $validos, $articulos) {
+        // La FOTO de los sitios de referencia (misión medidas-sitios-de-referencia): la corrida busca con la lista que
+        // había al lanzarla aunque después se cambie. Vacía = null (el motor no arma el plan de sitios).
+        $sitios = array_key_exists('sitios_de_referencia', $opciones) && is_array($opciones['sitios_de_referencia'])
+            ? array_values($opciones['sitios_de_referencia'])
+            : DimensionReferenceSiteHelper::listar((int) $owner->id);
+
+        return DB::transaction(function () use ($owner, $origen, $creada_por, $solo_con_stock, $total, $validos, $articulos, $sitios) {
             $run = DimensionSearchRun::create([
-                'user_id'        => (int) $owner->id,
-                'creada_por'     => is_null($creada_por) ? null : (int) $creada_por,
-                'origen'         => (string) $origen,
-                'proveedor'      => DimensionSearchRun::PROVEEDOR_SERPER,
-                'status'         => DimensionSearchRun::STATUS_PENDIENTE,
-                'solo_con_stock' => $solo_con_stock,
-                'total'          => $total,
+                'user_id'              => (int) $owner->id,
+                'creada_por'           => is_null($creada_por) ? null : (int) $creada_por,
+                'origen'               => (string) $origen,
+                'proveedor'            => DimensionSearchRun::PROVEEDOR_SERPER,
+                'status'               => DimensionSearchRun::STATUS_PENDIENTE,
+                'solo_con_stock'       => $solo_con_stock,
+                'total'                => $total,
+                'sitios_de_referencia' => empty($sitios) ? null : $sitios,
             ]);
 
             $ahora = Carbon::now();
@@ -299,9 +317,11 @@ class DimensionSearchRunHelper
             }
 
             $run = self::crear($owner, $ids, DimensionSearchRun::ORIGEN_CATALOGO, $creada_por, [
-                'solo_con_stock' => (bool) $solo_con_stock,
+                'solo_con_stock'       => (bool) $solo_con_stock,
                 // Ya se purgó arriba, fuera de la transacción.
-                'purgar'         => false,
+                'purgar'               => false,
+                // La lista vigente al lanzar, leída adentro de la transacción (con el dueño bloqueado).
+                'sitios_de_referencia' => DimensionReferenceSiteHelper::listar((int) $owner->id),
             ]);
 
             return ['status' => 201, 'message' => null, 'run' => $run];
@@ -454,6 +474,26 @@ class DimensionSearchRunHelper
     }
 
     /**
+     * Cuántos de los candidatos del catálogo tienen un código de barras con forma de GTIN (8, 12, 13 o 14 dígitos): los
+     * que van a tener además la búsqueda del código fuera de Argentina. No mira el dígito verificador (eso lo hace el
+     * motor con Gtin::canonical), así que cuenta de más: para una estimación de plata, es el lado bueno.
+     *
+     * @param  int  $owner_id
+     * @param  bool $solo_con_stock
+     * @param  bool $reintentar_sin_datos
+     * @return int
+     */
+    protected static function candidatos_con_gtin($owner_id, $solo_con_stock, $reintentar_sin_datos)
+    {
+        return (int) self::base_del_catalogo($owner_id, $solo_con_stock)
+            ->whereNotExists(self::subconsulta_a_revisar($owner_id))
+            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id, $reintentar_sin_datos))
+            ->whereNotExists(self::subconsulta_en_corrida_activa($owner_id))
+            ->whereRaw("TRIM(articles.bar_code) REGEXP '^([0-9]{8}|[0-9]{12,14})$'")
+            ->count();
+    }
+
+    /**
      * La previa que ve el acceso maestro antes de lanzar.
      *
      * @param  \App\Models\User $owner
@@ -467,7 +507,15 @@ class DimensionSearchRunHelper
         $conteos = self::conteos_del_catalogo((int) $owner->id, $solo_con_stock, $reintentar_sin_datos);
 
         $a_buscar  = min($tope, $conteos['candidatos']);
-        $busquedas = (int) round($a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO);
+        $sitios    = DimensionReferenceSiteHelper::listar((int) $owner->id);
+
+        // Los planes nuevos (ver BUSQUEDAS_EXTRA_*): el código de barras fuera de Argentina y los sitios de referencia.
+        $con_gtin  = $a_buscar > 0 ? min($a_buscar, self::candidatos_con_gtin((int) $owner->id, (bool) $solo_con_stock, (bool) $reintentar_sin_datos)) : 0;
+        $busquedas = (int) round(
+            $a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO
+            + $con_gtin * self::BUSQUEDAS_EXTRA_POR_GTIN
+            + (empty($sitios) ? 0 : $a_buscar * self::BUSQUEDAS_EXTRA_CON_SITIOS)
+        );
 
         // El respaldo por el scrape de Serper (páginas que bloquean la descarga y PDF): un promedio conservador
         // por artículo (config `creditos_estimados_por_articulo`: 1,5 scrapes x 4 créditos). Cada scrape cuesta de 2 a
@@ -513,6 +561,8 @@ class DimensionSearchRunHelper
                 'texto_respaldo'    => 'Si una página bloquea la descarga o es un PDF, se pide su texto a un servicio de respaldo (2 a 10 créditos por página, hasta '.(int) config('services.medidas_masivas.max_scrapes_por_articulo', 3).' por artículo). Se estima aparte, como piso: al menos ~'.number_format($creditos_respaldo, 0, ',', '.').' créditos de Serper (USD '.number_format($usd_respaldo, 2, ',', '.').') además de las búsquedas; puede ser más en los artículos que tienen páginas bloqueadas. El respaldo se apaga solo al llegar a '.number_format((int) config('services.medidas_masivas.max_creditos_por_corrida', 30000), 0, ',', '.').' créditos en la corrida.',
             ],
             'corrida_activa'                   => is_null($activa) ? null : self::payload_de_corrida($activa),
+            // Los sitios de referencia actuales del comercio: con estos se lanzaría (misión medidas-sitios-de-referencia).
+            'sitios_de_referencia'             => $sitios,
         ];
 
         // Solo en una demo: cuántas búsquedas de Serper le quedan al dueño.
@@ -826,7 +876,34 @@ class DimensionSearchRunHelper
             'puede_detener'          => $run->esta_activa(),
             'puede_reanudar'         => $trabada || in_array($run->status, [DimensionSearchRun::STATUS_DETENIDA, DimensionSearchRun::STATUS_FALLIDA], true),
             'visto'                  => !is_null($run->visto_at),
+            // Con qué sitios de referencia se lanzó ([] = ninguno, o una corrida anterior a los sitios).
+            'sitios_de_referencia'   => self::sitios_de_la_corrida($run),
         ];
+    }
+
+    /**
+     * La foto de los sitios de referencia de una corrida, siempre como lista de strings.
+     *
+     * @param  \App\Models\DimensionSearchRun $run
+     * @return array
+     */
+    public static function sitios_de_la_corrida(DimensionSearchRun $run)
+    {
+        $sitios = $run->sitios_de_referencia;
+
+        if (!is_array($sitios)) {
+            return [];
+        }
+
+        $lista = [];
+
+        foreach ($sitios as $sitio) {
+            if (is_string($sitio) && trim($sitio) !== '') {
+                $lista[] = trim($sitio);
+            }
+        }
+
+        return $lista;
     }
 
     /**

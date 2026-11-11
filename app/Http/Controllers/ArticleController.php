@@ -342,6 +342,13 @@ class ArticleController extends Controller
     }
 
     function store(Request $request) {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([], null, 'ficha', function () use ($argumentos) {
+            return call_user_func_array([$this, 'store_sin_historial'], $argumentos);
+        });
+    }
+
+    function store_sin_historial(Request $request) {
         \App\Services\ProductFacts\ApplyProductFacts::validate($request, $this->userId());
         $model = new Article();
         // $model->num                               = $this->num('articles');
@@ -522,7 +529,9 @@ class ArticleController extends Controller
         DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
 
         // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
-        PruebaHitosHelper::emitir('prueba.articulo_creado', ['id' => (int) $model->id]);
+        \Illuminate\Support\Facades\DB::afterCommit(function () use ($model) {
+            PruebaHitosHelper::emitir('prueba.articulo_creado', ['id' => (int) $model->id]);
+        });
 
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }
@@ -557,6 +566,13 @@ class ArticleController extends Controller
     }
 
     function update(Request $request) {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([(int) $request->id], null, 'ficha', function () use ($argumentos) {
+            return call_user_func_array([$this, 'update_sin_historial'], $argumentos);
+        });
+    }
+
+    function update_sin_historial(Request $request) {
         // Log::info('Se esta usando la bbdd = '.config('database.connections.mysql.database'));
         $model = Article::find($request->id);
 
@@ -792,7 +808,9 @@ class ArticleController extends Controller
         DemoEventoEmitter::emitir('articulo.creado', null, ['id' => $model->id]);
 
         // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
-        PruebaHitosHelper::emitir('prueba.articulo_creado', ['id' => (int) $model->id]);
+        \Illuminate\Support\Facades\DB::afterCommit(function () use ($model) {
+            PruebaHitosHelper::emitir('prueba.articulo_creado', ['id' => (int) $model->id]);
+        });
 
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 201);
     }

@@ -185,6 +185,14 @@ class DuplicarRecetaHelper
      */
     private static function duplicar_articulo($original, $nombre_nuevo, $controller_instance)
     {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([], null, 'duplicar_receta', function () use ($argumentos) {
+            return call_user_func_array([self::class, 'duplicar_articulo_sin_historial'], $argumentos);
+        });
+    }
+
+    private static function duplicar_articulo_sin_historial($original, $nombre_nuevo, $controller_instance)
+    {
         $user_id = $controller_instance->userId();
 
         $nuevo = $original->replicate();
@@ -278,6 +286,7 @@ class DuplicarRecetaHelper
      */
     private static function copiar_price_types($original, $nuevo)
     {
+        \App\Services\HistorialPreciosService::capturar([(int) $nuevo->id]);
         foreach ($original->price_types as $price_type) {
             $nuevo->price_types()->attach($price_type->id, [
                 'percentage'                     => $price_type->pivot->percentage,

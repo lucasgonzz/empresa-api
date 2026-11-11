@@ -15,6 +15,11 @@ use App\Services\ProductFacts\Gtin;
  * los encabezados de ficha técnica y de las palabras «peso / medidas / dimensiones / alto / ancho /
  * largo». Sin estado ni red.
  *
+ * IDIOMAS (misión medidas-sitios-de-referencia, 11/11/2026): las ventanas se abren también con las palabras y los
+ * encabezados de ficha en inglés, alemán, italiano, francés y portugués (las fichas de los sitios de referencia:
+ * «Maße & Gewicht», «Technische Daten», «Dati tecnici», «Item specifics», «Shipping Weight»). Antes solo con las
+ * castellanas, y de una ficha en alemán no quedaba en el extracto la parte que trae los datos.
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
  */
 class DimensionPageText
@@ -27,6 +32,23 @@ class DimensionPageText
 
     /** Máximo de caracteres del texto plano de un respaldo (scrape) que se procesa. */
     const MAXIMO_TEXTO_DE_RESPALDO = 400000;
+
+    /**
+     * Los encabezados de una ficha técnica, en castellano y (misión medidas-sitios-de-referencia) en inglés, alemán,
+     * italiano, francés y portugués. Cada uno abre una ventana larga hacia adelante.
+     */
+    const REGEX_ENCABEZADOS = '/descripci[oó]n|caracter[ií]sticas|especificaciones|ficha t[eé]cnica|sobre este producto'
+        .'|specifications|item specifics|technical data|technische daten|produktdaten|produktdetails|dati tecnici'
+        .'|scheda tecnica|caratteristiche tecniche|caract[eé]ristiques techniques|especifica[cç][oõ]es/iu';
+
+    /**
+     * Las palabras de peso y medidas, en castellano y en los otros idiomas de las fichas. Cada una abre una ventana
+     * corta alrededor. Las de otros idiomas van con bordes de letra (no `\b`, que no conoce la «ö» ni la «à»).
+     */
+    const REGEX_PALABRAS_DE_MEDIDAS = '/\bpeso\b|medidas|dimensi[oó]n|embalaje|\balto\b|\bancho\b|\blargo\b|profundidad|contenido neto|\bmarca\b'
+        .'|(?<![\p{L}])(?:weight|height|width|length|depth|dimensions|gewicht|nettogewicht|h[öo]he|hoehe|breite|tiefe|l[äa]nge|laenge'
+        .'|ma[ßs]e|abmessungen|altezza|larghezza|profondit[àa]|lunghezza|dimensioni|ingombro|misure|poids|hauteur|largeur'
+        .'|longueur|altura|largura|comprimento|dimens[õo]es)(?![\p{L}])/iu';
 
     /** Tipos de código con los que se identifica un artículo en una página. */
     const CODIGO_DE_BARRAS = 'codigo_de_barras';
@@ -196,13 +218,13 @@ class DimensionPageText
 
         $ventanas = [];
 
-        if (preg_match_all('/descripci[oó]n|caracter[ií]sticas|especificaciones|ficha t[eé]cnica|sobre este producto/iu', $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
+        if (preg_match_all(self::REGEX_ENCABEZADOS, $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
             foreach (array_slice($encontrados[0], 0, 4) as $x) {
                 $ventanas[] = [$x[1] - 100, $x[1] + 1200];
             }
         }
 
-        if (preg_match_all('/\bpeso\b|medidas|dimensi[oó]n|embalaje|\balto\b|\bancho\b|\blargo\b|profundidad|contenido neto|\bmarca\b/iu', $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
+        if (preg_match_all(self::REGEX_PALABRAS_DE_MEDIDAS, $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
             foreach (array_slice($encontrados[0], 0, 12) as $x) {
                 $ventanas[] = [$x[1] - 250, $x[1] + 350];
             }
@@ -338,10 +360,74 @@ class DimensionPageText
             return $patrones;
         }
 
-        // Código de proveedor: literal, con cualquier espacio entre sus partes, sin letras/dígitos pegados.
-        $literal = str_replace(' ', '\s+', preg_quote(preg_replace('/\s+/', ' ', $codigo), '/'));
+        // (a) El literal, con cualquier espacio entre sus partes, sin letras/dígitos pegados (como siempre).
+        $literal  = str_replace(' ', '\s+', preg_quote(preg_replace('/\s+/', ' ', $codigo), '/'));
+        $patrones = ['/(?<![\p{L}\d])'.$literal.'(?![\p{L}\d])/iu'];
 
-        return ['/(?<![\p{L}\d])'.$literal.'(?![\p{L}\d])/iu'];
+        // (b) y (c): la forma compacta y la de otros separadores, solo en los códigos largos que parecen un código.
+        $patron = self::patron_con_separadores($codigo);
+
+        if (!is_null($patron)) {
+            $patrones[] = $patron;
+        }
+
+        return $patrones;
+    }
+
+    /** Alfanuméricos como mínimo de un código de proveedor para reconocerlo en su forma compacta o con otros separadores. */
+    const MINIMO_PARA_SEPARADORES = 6;
+
+    /**
+     * El patrón que reconoce un código de proveedor escrito en su forma compacta o con OTROS separadores, pero solo en
+     * las posiciones donde el código cargado ya tiene uno:
+     *
+     *   (b) la forma compacta exacta, sin ningún separador: «32 853 63-S» → «3285363S»;
+     *   (c) con un separador distinto (espacios, o un guion, punto o barra con espacios opcionales) en cada lugar donde
+     *       el código cargado tenía uno: «32 853 63-S» → «32-853-63-S», «32.853.63 S», «32/853/63/S».
+     *
+     * Nada pegado antes ni después: ni una letra o un dígito, ni un guion / punto / barra seguido de uno («ABC-1234-9»
+     * es otro código). Solo para códigos de MINIMO_PARA_SEPARADORES alfanuméricos o más que parecen un código (letras
+     * y algún dígito, o 6 dígitos o más).
+     *
+     * 🔴 NUNCA se inventa un separador donde el código no lo tiene (revisión independiente de la misión): con eso un
+     * código «123456» coincidía con el precio «$123.456,00», «120345» con la fecha «12/03/45», «112345678» con el
+     * teléfono «11 2345 678», «MAX1000» con «MAX 1000 W» y «HP2000» con «Hp 2000 rpm», y la página contaba como «con el
+     * código del artículo». LÍMITE ACEPTADO: un código cargado compacto («3285363S») no se reconoce en una página que
+     * lo escribe con separadores («32 853 63-S»): para eso habría que inventarlos.
+     *
+     * Por qué existe: el plan de los sitios de referencia busca también la forma compacta del código, y una página que
+     * la trae tiene que contar como «con el código».
+     *
+     * @param  string $codigo
+     * @return string|null  El patrón preg, o null si el código es corto o no parece un código.
+     */
+    protected static function patron_con_separadores($codigo)
+    {
+        $alfanumericos = (string) preg_replace('/[^\p{L}\d]+/u', '', (string) $codigo);
+
+        if (mb_strlen($alfanumericos) < self::MINIMO_PARA_SEPARADORES) {
+            return null;
+        }
+
+        // Misma regla que ArticleDimensionSearchEngine::parece_un_codigo().
+        $hay_letras = (bool) preg_match('/\p{L}/u', $alfanumericos);
+        $digitos    = preg_match_all('/\d/', $alfanumericos);
+
+        if ($hay_letras ? $digitos === 0 : $digitos < 6) {
+            return null;
+        }
+
+        // Los tramos del código entre sus separadores: solo entre tramos puede ir un separador (o ninguno).
+        $tramos = preg_split('/[^\p{L}\d]+/u', (string) $codigo, -1, PREG_SPLIT_NO_EMPTY);
+        $partes = [];
+
+        foreach ($tramos as $tramo) {
+            $partes[] = preg_quote($tramo, '/');
+        }
+
+        $separador = '(?:\s*[\-.\/]\s*|\s+)?';
+
+        return '/(?<![\p{L}\d])(?<![\p{L}\d][\-.\/])'.implode($separador, $partes).'(?![\p{L}\d])(?![\-.\/][\p{L}\d])/iu';
     }
 
     /**

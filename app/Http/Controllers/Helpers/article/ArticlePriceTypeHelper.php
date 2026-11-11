@@ -13,6 +13,13 @@ use Illuminate\Support\Facades\Log;
 class ArticlePriceTypeHelper {
 
     static function attach_price_types($article, $price_types) {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar([(int) $article->id], null, 'ficha_lista', function () use ($argumentos) {
+            return call_user_func_array([self::class, 'attach_price_types_sin_historial'], $argumentos);
+        });
+    }
+
+    static function attach_price_types_sin_historial($article, $price_types) {
 
         // if (UserHelper::hasExtencion('ventas_en_dolares')) return;
 

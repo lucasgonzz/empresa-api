@@ -243,6 +243,17 @@ class Propagacion_en_bloque_Test extends DescuentosYMasivasEnLoteTestCase
         });
 
         $this->assertCount(0, $de_a_uno, 'Ningun Article::find() por articulo.');
-        $this->assertCount(4, $en_bloque, 'Una consulta de existencia (hasta 1.000 ids) y una lectura del motor por cada una de las 3 tandas.');
+        // La auditoría añade dos fotos confirmadas por tanda. Su proyección es
+        // exacta: no excluir otras lecturas ni esconder un futuro N+1 del motor.
+        $firma_foto = 'select `id`, `user_id`, `cost`, `price`, `final_price` from `articles`';
+        $fotos = array_filter($en_bloque, function ($q) use ($firma_foto) {
+            return strpos($q['query'], $firma_foto) === 0;
+        });
+        $motor_y_existencia = array_filter($en_bloque, function ($q) use ($firma_foto) {
+            return strpos($q['query'], $firma_foto) !== 0;
+        });
+        $this->assertCount(4, $motor_y_existencia, 'Una consulta de existencia (hasta 1.000 ids) y una lectura del motor por cada una de las 3 tandas.');
+        $this->assertCount(6, $fotos, 'Dos fotos de auditoría por cada una de las 3 tandas.');
+        $this->assertCount(10, $en_bloque, 'Presupuesto total: cuatro lecturas originales más seis fotos, sin consultas adicionales.');
     }
 }

@@ -398,19 +398,22 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
 
         list($item, $resultado) = $this->buscar($articulo);
 
+        // Misión medidas-sitios-de-referencia (11/11/2026): A PROPÓSITO hay un plan más, el mismo GTIN fuera de Argentina
+        // (gl=us, hl=en; mismo texto de consulta), entre el de barras y el de proveedor. Son 4 búsquedas, no 3.
         $this->assertSame([
+            '"'.$gtin.'"',
             '"'.$gtin.'"',
             '"VR-CU-0402" CUCHILLA ROTARY 20 PULGADAS AC 21MM',
             'CUCHILLA ROTARY 20 PULGADAS AC 21MM ficha técnica peso medidas',
         ], $this->consultas_serper);
 
-        $this->assertSame(3, $resultado['busquedas_intentadas']);
+        $this->assertSame(4, $resultado['busquedas_intentadas']);
         $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
         $this->assertSame('sin_resultados', $item->motivo);
-        $this->assertSame(3, (int) $item->run->busquedas);
+        $this->assertSame(4, (int) $item->run->busquedas);
 
         $criterios = array_column($item->diagnostico, 'criterio');
-        $this->assertSame(['codigo_de_barras', 'codigo_proveedor', 'nombre'], $criterios);
+        $this->assertSame(['codigo_de_barras', 'codigo_de_barras_global', 'codigo_proveedor', 'nombre'], $criterios);
     }
 
     /**
@@ -426,7 +429,9 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
         $this->falsear([], [], $this->ficha('otro_producto'));
         list($item) = $this->buscar($articulo);
 
-        $this->assertSame(['"'.$gtin.'"', 'CUCHILLA ROTARY 20 PULGADAS ficha técnica peso medidas'], $this->consultas_serper);
+        // Misión medidas-sitios-de-referencia: el segundo «"gtin"» es A PROPÓSITO la misma consulta fuera de Argentina
+        // (gl=us): no es una repetida. La de proveedor (igual al de barras) sigue salteada.
+        $this->assertSame(['"'.$gtin.'"', '"'.$gtin.'"', 'CUCHILLA ROTARY 20 PULGADAS ficha técnica peso medidas'], $this->consultas_serper);
 
         $salteado = null;
 
@@ -507,12 +512,15 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
 
         list($item) = $this->buscar($articulo);
 
-        $this->assertCount(2, $this->consultas_serper);
+        // Misión medidas-sitios-de-referencia: A PROPÓSITO hay una búsqueda más en el medio, el GTIN fuera de Argentina;
+        // trae la misma página ya descartada (no se le vuelve a pasar a la IA) y el plan 3 (proveedor) encuentra.
+        $this->assertCount(3, $this->consultas_serper);
         $this->assertCount(2, $this->pedidos_ia);
         $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
         $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
         $this->assertSame('otro_producto', $item->diagnostico[0]['resultado']);
-        $this->assertSame('datos', $item->diagnostico[1]['resultado']);
+        $this->assertSame('codigo_de_barras_global', $item->diagnostico[1]['criterio']);
+        $this->assertSame('datos', $item->diagnostico[2]['resultado']);
     }
 
     /**
@@ -778,7 +786,8 @@ class Motor_de_busqueda_Test extends DimensionSearchTestCase
         $this->assertTrue($resultado['error_de_proveedor']);
         $this->assertStringContainsString('Not enough credits', $item->motivo_detalle);
         $this->assertSame(0, (int) $item->run->busquedas, 'Una búsqueda que falló no cuenta como búsqueda.');
-        $this->assertSame(3, $resultado['busquedas_intentadas']);
+        // Misión medidas-sitios-de-referencia: 4 planes A PROPÓSITO (barras, barras fuera de Argentina, proveedor, nombre).
+        $this->assertSame(4, $resultado['busquedas_intentadas']);
     }
 
     /**

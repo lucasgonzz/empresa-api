@@ -1021,6 +1021,10 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::post('dimension-search-items/{id}/aprobar', 'DimensionSearchRunController@aprobar')->where('id', '[0-9]+');
     Route::post('dimension-search-items/{id}/rechazar', 'DimensionSearchRunController@rechazar')->where('id', '[0-9]+');
     Route::post('dimension-search-items/{id}/quitar', 'DimensionSearchRunController@quitar')->where('id', '[0-9]+');
+    // Los sitios de referencia del comercio (misión medidas-sitios-de-referencia, 11/11/2026): leer, cualquiera que ve
+    // la solapa; guardar, solo el acceso maestro (lo valida el controlador).
+    Route::get('dimension-search-reference-sites', 'DimensionSearchRunController@sitios_de_referencia');
+    Route::put('dimension-search-reference-sites', 'DimensionSearchRunController@guardar_sitios_de_referencia');
 
     /*
         TODO lo que sigue hasta el cierre del grupo es de la extensión `agentes_ia` (misión
@@ -1708,6 +1712,14 @@ Route::middleware('admin.api.key:siempre')
         Route::get('ai-excel-import/prueba-pendientes', 'AdminSync\\ImportacionDePruebaController@pendientes');
         Route::post('ai-excel-import/prueba-resolver/{uuid}', 'AdminSync\\ImportacionDePruebaController@resolver');
         Route::post('ai-excel-import/analyze-stock-existente', 'AdminSync\\AiExcelImportController@analyzeStockExistente');
+        // Clientes y proveedores desde el ticket de soporte, con resumen, `CONFIRMAR <código>` y deshacer (misión
+        // importaciones-de-martin, 11/11/2026). `siempre`: escriben clientes, proveedores y cuentas corrientes.
+        // Solo para el dueño activo (409 `dueno_no_activo`); un cliente viejo sin estas rutas responde 404 sin
+        // `motivo` y el admin lo muestra como `version_vieja`. Contrato en AdminSync/ImportacionDeSoporteController.
+        Route::post('importacion-soporte/{modelo}/iniciar', 'AdminSync\\ImportacionDeSoporteController@iniciar')->where('modelo', 'client|provider');
+        Route::get('importacion-soporte/{corrida}', 'AdminSync\\ImportacionDeSoporteController@mostrar')->whereUuid('corrida');
+        Route::post('importacion-soporte/{corrida}/confirmar', 'AdminSync\\ImportacionDeSoporteController@confirmar')->whereUuid('corrida');
+        Route::post('importacion-soporte/{corrida}/revertir', 'AdminSync\\ImportacionDeSoporteController@revertir')->whereUuid('corrida');
     });
 
 Route::middleware('admin.api.key')
@@ -1849,6 +1861,9 @@ Route::middleware('admin.api.key')
         // primero". Las rutas fijas (actual) van ANTES de las que llevan {run_id}.
         Route::get('catalogo/resumen', 'AdminSync\\CatalogoController@resumen');
         Route::get('catalogo/articulos', 'AdminSync\\CatalogoController@articulos');
+        // Fotos de la web de un proveedor, traídas por la tarea de soporte (misión importaciones-de-martin, 11/11/2026):
+        // exactas asignadas solas, dudosas a revisar por el dueño. Clave estricta adentro del controlador.
+        Route::post('catalogo/imagenes/proveedor', 'AdminSync\\ImagenesDeProveedorController@store');
         Route::post('catalogo/categorias/propuestas', 'AdminSync\\CatalogoCategoriasController@crear');
         Route::get('catalogo/categorias/propuestas/actual', 'AdminSync\\CatalogoCategoriasController@actual');
         Route::get('catalogo/categorias/propuestas/{run_id}', 'AdminSync\\CatalogoCategoriasController@mostrar')->where('run_id', '[0-9]+');

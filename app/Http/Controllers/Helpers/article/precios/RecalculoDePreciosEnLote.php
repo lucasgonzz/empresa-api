@@ -215,6 +215,14 @@ class RecalculoDePreciosEnLote
      */
     protected static function recalcular_tanda(array $ids, $owner, $auth_user_id, $price_types, $price_update_run_id)
     {
+        $argumentos = func_get_args();
+        return \App\Services\HistorialPreciosService::ejecutar($ids, $auth_user_id, 'recalculo_lote', function () use ($argumentos) {
+            return call_user_func_array([self::class, 'recalcular_tanda_sin_historial'], $argumentos);
+        });
+    }
+
+    protected static function recalcular_tanda_sin_historial(array $ids, $owner, $auth_user_id, $price_types, $price_update_run_id)
+    {
         /*
          * 🔴 UNA transacción por tanda y SIN reintentos adentro (DB::transaction con el intento
          * único por defecto). Es tentador pasarle un 3 "por los deadlocks", y es un error:

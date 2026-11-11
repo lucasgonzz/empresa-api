@@ -741,7 +741,7 @@ class ComboCalculadoHelper {
 
         try {
 
-            RecalcularCombosCalculados::dispatch($user_id, $combo_ids);
+            RecalcularCombosCalculados::dispatch($user_id, $combo_ids)->afterCommit();
 
             return count($combo_ids);
 
@@ -792,7 +792,7 @@ class ComboCalculadoHelper {
 
         try {
 
-            RecalcularCombosCalculados::dispatch($user_id, null);
+            RecalcularCombosCalculados::dispatch($user_id, null)->afterCommit();
 
             return true;
 
