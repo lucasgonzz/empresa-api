@@ -2,7 +2,11 @@
 
 namespace Tests\Import;
 
+use App\Jobs\RollbackArticleImportHistory;
 use App\Models\Article;
+use App\Models\BackgroundProcess;
+use App\Models\ImportHistory;
+use Illuminate\Support\Facades\Queue;
 use Tests\Import\Helpers\ArticleSnapshot;
 
 /**
@@ -206,6 +210,70 @@ class RollbackTest extends ImportTestCase
         $despues = $this->getJson('/api/import-history/article')->assertStatus(200)->json('models');
         $fila_despues = collect($despues)->firstWhere('id', $import->id);
         $this->assertFalse($fila_despues['can_revert']);
+    }
+
+    /**
+     * Misión revertir-importacion-en-segundo-plano: al apretar "Revertir", la tarea queda
+     * anunciada YA como proceso en segundo plano "En espera", antes de que ningún worker
+     * agarre el job, y es la MISMA fila que después el job pasa a "En proceso" y cierra
+     * (no se abre una segunda).
+     *
+     * @return void
+     */
+    public function test_al_revertir_la_tarea_queda_anunciada_en_espera_y_el_job_la_retoma()
+    {
+        $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
+
+        Queue::fake();
+
+        $this->revertir($import);
+
+        Queue::assertPushed(RollbackArticleImportHistory::class);
+
+        $procesos = BackgroundProcess::where('tipo', 'rollback_importacion')
+            ->where('referencia_type', ImportHistory::class)
+            ->where('referencia_id', $import->id)
+            ->get();
+
+        $this->assertCount(1, $procesos, 'Tiene que haber un solo proceso para esta reversión.');
+        $this->assertSame(BackgroundProcess::STATUS_PENDIENTE, $procesos[0]->status);
+        $this->assertSame((int) $this->tenant->id, (int) $procesos[0]->user_id);
+        $this->assertStringContainsString('Importación #' . $import->id, (string) $procesos[0]->detalle);
+
+        /* Ahora "arranca el worker": el mismo proceso pasa por en_proceso y termina. */
+        (new RollbackArticleImportHistory($import->id, $this->tenant->id, $this->tenant->id))->handle();
+
+        $despues = BackgroundProcess::where('tipo', 'rollback_importacion')
+            ->where('referencia_type', ImportHistory::class)
+            ->where('referencia_id', $import->id)
+            ->get();
+
+        $this->assertCount(1, $despues, 'El job abrió un segundo proceso en vez de retomar el anunciado.');
+        $this->assertSame($procesos[0]->id, $despues[0]->id);
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $despues[0]->status);
+    }
+
+    /**
+     * Un job que ya estaba en la cola antes de este cambio (sin proceso anunciado) sigue
+     * abriendo su propio registro al arrancar: no se pierde la visibilidad en el deploy.
+     *
+     * @return void
+     */
+    public function test_un_job_sin_proceso_anunciado_abre_el_suyo_al_arrancar()
+    {
+        $import = $this->importar(self::ARCHIVO, ['provider_id' => null]);
+
+        ImportHistory::where('id', $import->id)->update(['rollback_status' => 'encolado']);
+
+        (new RollbackArticleImportHistory($import->id, $this->tenant->id, $this->tenant->id))->handle();
+
+        $procesos = BackgroundProcess::where('tipo', 'rollback_importacion')
+            ->where('referencia_type', ImportHistory::class)
+            ->where('referencia_id', $import->id)
+            ->get();
+
+        $this->assertCount(1, $procesos);
+        $this->assertSame(BackgroundProcess::STATUS_COMPLETADO, $procesos[0]->status);
     }
 
     /**
