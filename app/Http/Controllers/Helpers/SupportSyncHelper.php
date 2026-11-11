@@ -71,12 +71,22 @@ class SupportSyncHelper
 
         // Metadata de adjuntos (sin binarios).
         $attachments_meta = $message->attachments->map(function ($attachment) {
-            return [
+            $meta = [
                 'disk' => $attachment->disk,
                 'path' => $attachment->path,
                 'mime' => $attachment->mime,
                 'size' => $attachment->size,
             ];
+            /*
+             * El nombre con el que el usuario subió el archivo (misión prueba-e2e-campana-imperio,
+             * 11/11/2026). Clave nueva y opcional: solo viaja si se conoce; los cuatro campos de siempre no
+             * cambian, y el binario sigue saliendo como `attachments_files[]` con el nombre de su ruta.
+             */
+            if (!empty($attachment->original_name)) {
+                $meta['original_name'] = $attachment->original_name;
+            }
+
+            return $meta;
         })->values()->all();
 
         // Arma payload compatible con el endpoint inbound de admin-api (campos escalares).

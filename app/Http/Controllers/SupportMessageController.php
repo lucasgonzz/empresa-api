@@ -13,7 +13,9 @@ use App\Models\User;
 use App\Services\SupportAgentesSync;
 use App\Services\SupportTourService;
 use Illuminate\Http\Request;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class SupportMessageController extends Controller
 {
@@ -45,6 +47,11 @@ class SupportMessageController extends Controller
                 $ticket->refresh();
             }
             $agentes = true;
+        }
+
+        $rechazo_del_adjunto = $this->rechazo_del_adjunto($request);
+        if ($rechazo_del_adjunto !== null) {
+            return $rechazo_del_adjunto;
         }
 
         $body = $request->input('body');
@@ -103,13 +110,22 @@ class SupportMessageController extends Controller
             $message = SupportMessage::create($datos);
             if ($request->hasFile('attachment')) {
                 $archivo = $request->file('attachment');
-                SupportMessageAttachment::create([
+                $carpeta = 'support_messages/' . $ticket->id;
+                /*
+                 * Un documento (la lista de precios: xlsx, xls, csv, pdf) se guarda con SU extensión y con
+                 * el mime que le corresponde, no con lo que adivine `finfo` (a un .xlsx lo ve como zip y a
+                 * un .csv como texto): es lo que le llega al admin. Audios e imágenes, como siempre.
+                 */
+                $extension = SupportMessageAttachment::extension_de_documento($archivo);
+                SupportMessageAttachment::create(SupportMessageAttachment::con_nombre_original([
                     'support_message_id' => $message->id,
                     'disk' => 'public',
-                    'path' => $archivo->store('support_messages/' . $ticket->id, 'public'),
-                    'mime' => $archivo->getMimeType(),
+                    'path' => $extension === null
+                        ? $archivo->store($carpeta, 'public')
+                        : $archivo->storeAs($carpeta, Str::random(40) . '.' . $extension, 'public'),
+                    'mime' => $extension === null ? $archivo->getMimeType() : SupportMessageAttachment::DOCUMENTOS[$extension],
                     'size' => $archivo->getSize(),
-                ]);
+                ], $archivo->getClientOriginalName()));
             }
 
             return ['model' => $message, 'repetido' => false];
@@ -131,6 +147,46 @@ class SupportMessageController extends Controller
         event(new SupportMessageReceived($message->id, $user_id));
 
         return response()->json(['model' => $message], 201);
+    }
+
+    /**
+     * El 422 de un adjunto que no se puede guardar, o null si no hay nada que objetar (misión
+     * prueba-e2e-campana-imperio, 11/11/2026).
+     *
+     * - Un archivo que PHP no terminó de recibir (pasó `upload_max_filesize`, se cortó la subida): hasta hoy
+     *   `hasFile()` daba false y el mensaje se guardaba SIN el adjunto y sin avisar. Ahora no se guarda nada
+     *   y el usuario lo ve.
+     * - Un documento de más de 10 MB. Audios e imágenes no tienen tope propio, como hasta ahora.
+     *
+     * Forma: `{code, message}`; el SPA muestra el `message` en la burbuja del mensaje que no salió.
+     *
+     * @param \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    private function rechazo_del_adjunto(Request $request)
+    {
+        $archivo = $request->file('attachment');
+
+        if (!$archivo instanceof UploadedFile) {
+            return null;
+        }
+
+        if (!$archivo->isValid()) {
+            return response()->json([
+                'code' => 'adjunto_no_recibido',
+                'message' => 'No pudimos recibir el archivo. Si es muy pesado, achicalo o mandalo en partes.',
+            ], 422);
+        }
+
+        if (SupportMessageAttachment::extension_de_documento($archivo) !== null
+            && (int) $archivo->getSize() > SupportMessageAttachment::TOPE_DE_DOCUMENTO) {
+            return response()->json([
+                'code' => 'adjunto_demasiado_grande',
+                'message' => 'El archivo pesa más de 10 MB. Achicalo o mandalo en partes.',
+            ], 422);
+        }
+
+        return null;
     }
 
     private function mensaje_reintentado(string $uuid, int $user_id, $ticket_id): ?SupportMessage

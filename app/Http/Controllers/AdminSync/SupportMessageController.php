@@ -12,6 +12,7 @@ use App\Services\SupportAgentesSync;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class SupportMessageController extends Controller
 {
@@ -59,14 +60,22 @@ class SupportMessageController extends Controller
 
             if ($has_uploaded_files) {
                 foreach ($attachments_files as $uploaded_file) {
-                    $stored_path = $uploaded_file->store('support_messages/' . $ticket->id, 'public');
-                    SupportMessageAttachment::create([
+                    /*
+                     * Un documento que manda Soporte (xlsx, xls, csv, pdf) se guarda con su extensión y su
+                     * mime, igual que el que sube el usuario; y `original_name` (aditivo) guarda el nombre
+                     * con el que llegó, si la columna ya existe. Audios e imágenes, como siempre.
+                     */
+                    $extension = SupportMessageAttachment::extension_de_documento($uploaded_file);
+                    $stored_path = $extension === null
+                        ? $uploaded_file->store('support_messages/' . $ticket->id, 'public')
+                        : $uploaded_file->storeAs('support_messages/' . $ticket->id, Str::random(40) . '.' . $extension, 'public');
+                    SupportMessageAttachment::create(SupportMessageAttachment::con_nombre_original([
                         'support_message_id' => $message->id,
                         'disk' => 'public',
                         'path' => $stored_path,
-                        'mime' => $uploaded_file->getMimeType(),
+                        'mime' => $extension === null ? $uploaded_file->getMimeType() : SupportMessageAttachment::DOCUMENTOS[$extension],
                         'size' => $uploaded_file->getSize(),
-                    ]);
+                    ], $uploaded_file->getClientOriginalName()));
                 }
             } else {
                 // Sin binarios: metadata JSON (multipart) o array (body JSON).
@@ -75,13 +84,13 @@ class SupportMessageController extends Controller
                     if (! is_array($attachment)) {
                         continue;
                     }
-                    SupportMessageAttachment::create([
+                    SupportMessageAttachment::create(SupportMessageAttachment::con_nombre_original([
                         'support_message_id' => $message->id,
                         'disk' => $attachment['disk'] ?? 'public',
                         'path' => $attachment['path'] ?? '',
                         'mime' => $attachment['mime'] ?? null,
                         'size' => $attachment['size'] ?? null,
-                    ]);
+                    ], $attachment['original_name'] ?? null));
                 }
             }
 
