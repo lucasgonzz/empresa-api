@@ -1021,6 +1021,10 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::post('dimension-search-items/{id}/aprobar', 'DimensionSearchRunController@aprobar')->where('id', '[0-9]+');
     Route::post('dimension-search-items/{id}/rechazar', 'DimensionSearchRunController@rechazar')->where('id', '[0-9]+');
     Route::post('dimension-search-items/{id}/quitar', 'DimensionSearchRunController@quitar')->where('id', '[0-9]+');
+    // Los sitios de referencia del comercio (misión medidas-sitios-de-referencia, 11/11/2026): leer, cualquiera que ve
+    // la solapa; guardar, solo el acceso maestro (lo valida el controlador).
+    Route::get('dimension-search-reference-sites', 'DimensionSearchRunController@sitios_de_referencia');
+    Route::put('dimension-search-reference-sites', 'DimensionSearchRunController@guardar_sitios_de_referencia');
 
     /*
         TODO lo que sigue hasta el cierre del grupo es de la extensión `agentes_ia` (misión

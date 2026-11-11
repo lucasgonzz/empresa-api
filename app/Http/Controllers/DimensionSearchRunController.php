@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\DimensionReferenceSiteHelper;
 use App\Http\Controllers\Helpers\DimensionSearchRunHelper;
 use App\Models\DimensionSearchRun;
 use App\Models\User;
@@ -251,6 +252,39 @@ class DimensionSearchRunController extends Controller
         }
 
         return $this->con_modelo(DimensionSearchRunHelper::payload_de_corrida($resultado['run']->fresh()), 201);
+    }
+
+    /**
+     * GET dimension-search-reference-sites — los sitios de referencia del comercio (misión
+     * medidas-sitios-de-referencia, 11/11/2026). Los ve cualquiera que ve la solapa de Medidas.
+     *
+     * @return \Illuminate\Http\JsonResponse  {sitios: string[]}
+     */
+    public function sitios_de_referencia()
+    {
+        return response()->json(['sitios' => DimensionReferenceSiteHelper::listar($this->userId())], 200);
+    }
+
+    /**
+     * PUT dimension-search-reference-sites {sitios: string[]} — reemplaza la lista entera (URLs o dominios; se
+     * guardan normalizados). Solo el acceso maestro, como lanzar.
+     *
+     * @param  \Illuminate\Http\Request $request
+     * @return \Illuminate\Http\JsonResponse  200 {sitios: string[]} (normalizados) | 403 {message} | 422 {message, errors}
+     */
+    public function guardar_sitios_de_referencia(Request $request)
+    {
+        if (!DimensionSearchRunHelper::es_acceso_maestro()) {
+            return $this->solo_acceso_maestro();
+        }
+
+        $resultado = DimensionReferenceSiteHelper::guardar($this->userId(), $request->input('sitios'));
+
+        if ($resultado['status'] !== 200) {
+            return response()->json(['message' => $resultado['message'], 'errors' => $resultado['errors']], $resultado['status']);
+        }
+
+        return response()->json(['sitios' => $resultado['sitios']], 200);
     }
 
     /**

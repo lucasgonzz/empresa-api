@@ -2,6 +2,7 @@
 
 namespace App\Console\Commands;
 
+use App\Http\Controllers\Helpers\DimensionReferenceSiteHelper;
 use App\Http\Controllers\Helpers\DimensionSearchRunHelper;
 use App\Models\User;
 use Illuminate\Console\Command;
@@ -15,6 +16,12 @@ use Illuminate\Console\Command;
  *     php artisan medidas:buscar --solo-con-stock          # los artículos con stock
  *     php artisan medidas:buscar --solo-con-stock --limite=200
  *     php artisan medidas:buscar --reintentar-sin-datos    # también los «sin datos» de una búsqueda anterior
+ *     php artisan medidas:buscar --sitios=obi.de,verdefacile.eu   # guarda los sitios de referencia y lanza
+ *
+ * `--sitios=` (misión medidas-sitios-de-referencia, 11/11/2026): REEMPLAZA la lista de sitios de referencia del
+ * comercio (los mismos que se editan en Alertas → Catálogo → Medidas) antes de lanzar; acepta URLs o dominios
+ * separados por comas y los guarda normalizados. Vacío (`--sitios=`) o sin la opción, no toca la lista. Con
+ * `--dry-run` la lista se normaliza y se muestra pero NO se guarda (un dry-run no cambia nada).
  *
  * Toma al dueño de `config('app.USER_ID')` (igual que los demás comandos por negocio): en esta
  * arquitectura cada instalación tiene UN dueño, y este comando solo itera ese. Valida que haya clave de
@@ -40,6 +47,7 @@ class MedidasBuscar extends Command
                             {--solo-con-stock : Solo los artículos con stock mayor a cero}
                             {--limite= : Máximo de artículos de esta corrida (además del tope de la configuración)}
                             {--reintentar-sin-datos : También busca de nuevo los que quedaron «sin datos» (no los rechazados, ni los que esperan revisión, ni los que ya tienen todas las medidas)}
+                            {--sitios= : Sitios de referencia separados por comas (URLs o dominios): reemplazan la lista del comercio antes de lanzar}
                             {--dry-run : Solo muestra la previa: no crea ni despacha nada}';
 
     /**
@@ -76,9 +84,45 @@ class MedidasBuscar extends Command
 
         $reintentar_sin_datos = (bool) $this->option('reintentar-sin-datos');
 
+        // Los sitios de referencia: se validan siempre, y se guardan salvo en un --dry-run.
+        $sitios_pedidos = $this->sitios_pedidos();
+        $sitios_sin_guardar = null;
+
+        if (!is_null($sitios_pedidos)) {
+            if ($this->option('dry-run')) {
+                $lista = DimensionReferenceSiteHelper::normalizar_lista($sitios_pedidos);
+
+                if (!$lista['ok']) {
+                    $this->error($lista['message']);
+
+                    return 1;
+                }
+
+                $sitios_sin_guardar = $lista['sitios'];
+            } else {
+                $guardado = DimensionReferenceSiteHelper::guardar((int) $owner->id, $sitios_pedidos);
+
+                if ($guardado['status'] !== 200) {
+                    $this->error($guardado['message']);
+
+                    return 1;
+                }
+
+                $this->info('Sitios de referencia guardados: '.implode(', ', $guardado['sitios']).'.');
+            }
+        }
+
         $previa = DimensionSearchRunHelper::previa_del_catalogo($owner, $solo_con_stock, $reintentar_sin_datos);
 
+        if (!is_null($sitios_sin_guardar)) {
+            $previa['sitios_de_referencia'] = $sitios_sin_guardar;
+        }
+
         $this->imprimir_previa($previa, $limite);
+
+        if (!is_null($sitios_sin_guardar)) {
+            $this->line('(--dry-run: los sitios de referencia se muestran como quedarían, pero no se guardaron.)');
+        }
 
         if ($this->option('dry-run')) {
             $this->info('Es un --dry-run: no se creó ni se despachó nada.');
@@ -99,6 +143,22 @@ class MedidasBuscar extends Command
         $this->info('Corrida #'.$run->id.' creada con '.$run->total.' artículos y despachada a la cola. Se revisa en Alertas → Catálogo → Medidas.');
 
         return 0;
+    }
+
+    /**
+     * Las entradas de `--sitios=` (null si no vino o vino vacía: no se toca la lista).
+     *
+     * @return array|null
+     */
+    protected function sitios_pedidos()
+    {
+        $opcion = $this->option('sitios');
+
+        if (!is_string($opcion) || trim($opcion) === '') {
+            return null;
+        }
+
+        return array_map('trim', explode(',', $opcion));
     }
 
     /**
@@ -132,6 +192,8 @@ class MedidasBuscar extends Command
         $this->line('A buscar en esta corrida:                   '.$a_buscar.' (tope '.$previa['tope'].')');
         $this->line('Estimado: ~'.$previa['estimacion']['busquedas'].' búsquedas, ~'.$previa['estimacion']['minutos'].' min, USD '.number_format($previa['estimacion']['usd_busquedas'] + $previa['estimacion']['usd_ia'], 2).' (búsquedas '.number_format($previa['estimacion']['usd_busquedas'], 2).' + IA '.number_format($previa['estimacion']['usd_ia'], 2).')');
         $this->line('Respaldo de lectura (páginas bloqueadas y PDF): ~'.number_format($previa['estimacion']['creditos_respaldo'], 0, ',', '.').' créditos de Serper (USD '.number_format($previa['estimacion']['usd_respaldo'], 2, ',', '.').'), aparte del costo de arriba. '.$previa['estimacion']['texto_respaldo']);
+        $sitios = isset($previa['sitios_de_referencia']) && is_array($previa['sitios_de_referencia']) ? $previa['sitios_de_referencia'] : [];
+        $this->line('Sitios de referencia (se buscan primero):   '.(empty($sitios) ? '(ninguno)' : implode(', ', $sitios)));
         $this->line('Serper configurado: '.($previa['proveedor_configurado'] ? 'sí' : 'NO').' · IA configurada: '.($previa['ia_configurada'] ? 'sí' : 'NO'));
 
         if (!$previa['ia_configurada'] && !empty($previa['ia_motivo'])) {
