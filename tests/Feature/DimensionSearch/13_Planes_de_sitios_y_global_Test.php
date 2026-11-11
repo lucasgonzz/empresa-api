@@ -367,12 +367,15 @@ class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
     }
 
     /**
-     * Y al revés: cargado compacto («3285363S»), la página lo escribe con espacios y guion («32 853 63-S»).
+     * Al revés NO: cargado compacto («3285363S»), la página lo escribe con espacios y guion («32 853 63-S»). Para
+     * reconocerlo habría que inventar separadores donde el código cargado no los tiene, y eso daba falsos positivos
+     * (un código «123456» coincidía con el precio «$123.456,00»; revisión independiente). Es un límite aceptado: la
+     * página no cuenta como «con el código».
      *
      * @group dimension-search
      * @test
      */
-    public function el_codigo_cargado_compacto_se_reconoce_escrito_con_separadores()
+    public function el_codigo_cargado_compacto_no_se_reconoce_escrito_con_separadores()
     {
         $articulo = $this->nuevo_articulo('CARBURADOR KOHLER CH20', null, ['provider_code' => '3285363S']);
         $url      = 'https://tienda.test/carburador';
@@ -385,14 +388,16 @@ class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
 
         list($item) = $this->buscar($articulo);
 
-        $this->assertSame('medidas_parciales', $item->motivo, (string) $item->motivo_detalle);
-        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+        $pagina = $this->entrada($item, 'codigo_proveedor')['paginas'][0];
+        $this->assertFalse($pagina['leida']);
+        $this->assertSame('La página no contiene el código buscado.', $pagina['motivo']);
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
     }
 
     /**
-     * Las reglas del reconocimiento con separadores: mismos alfanuméricos en el mismo orden, separadores opcionales
-     * (espacio, guion, punto, barra), nada pegado antes ni después, y solo para códigos de 6 o más caracteres que
-     * parecen un código.
+     * Las reglas del reconocimiento del código de proveedor: el literal; la forma compacta exacta (sin ningún
+     * separador); o con separadores distintos SOLO donde el código cargado ya tenía uno. Nada pegado antes ni después,
+     * y la forma compacta y la de separadores solo para códigos de 6 o más alfanuméricos que parecen un código.
      *
      * @group dimension-search
      * @test
@@ -401,21 +406,79 @@ class Planes_de_sitios_y_global_Test extends DimensionSearchTestCase
     {
         $p = DimensionPageText::CODIGO_PROVEEDOR;
 
-        foreach (['ABC1234', 'abc 1234', 'ABC/1234', 'ABC.12.34', 'Código: ABC-1234.'] as $texto) {
+        foreach (['ABC1234', 'abc 1234', 'ABC/1234', 'Código: ABC-1234.'] as $texto) {
             $this->assertTrue(DimensionPageText::contiene_codigo($texto, 'ABC-1234', $p), $texto);
         }
 
-        foreach (['XABC1234', 'ABC12345', 'ABC-12345', 'AB-C1234-9', 'ABC_1234'] as $texto) {
+        // «ABC.12.34»: el código cargado no tiene separador entre «12» y «34» (revisión independiente: antes valía).
+        foreach (['XABC1234', 'ABC12345', 'ABC-12345', 'AB-C1234-9', 'ABC_1234', 'ABC.12.34', 'A BC-1234'] as $texto) {
             $this->assertFalse(DimensionPageText::contiene_codigo($texto, 'ABC-1234', $p), $texto);
+        }
+
+        foreach (['32 853 63-S', '32-853-63-S', '32.853.63 S', '3285363S', 'OEM 32/853/63/S.'] as $texto) {
+            $this->assertTrue(DimensionPageText::contiene_codigo($texto, '32 853 63-S', $p), $texto);
         }
 
         // Corto (menos de 6 alfanuméricos): solo el literal, como antes.
         $this->assertTrue(DimensionPageText::contiene_codigo('ref AB-12 ok', 'AB-12', $p));
         $this->assertFalse(DimensionPageText::contiene_codigo('ref AB12 ok', 'AB-12', $p));
 
-        // Seis dígitos sin letras parece un código; cinco no.
-        $this->assertTrue(DimensionPageText::contiene_codigo('ref 55.90.14 ok', '559014', $p));
+        // Un código de seis dígitos escrito con puntos donde no los tiene: no (antes valía, revisión independiente).
+        $this->assertTrue(DimensionPageText::contiene_codigo('ref 559014 ok', '559014', $p));
+        $this->assertFalse(DimensionPageText::contiene_codigo('ref 55.90.14 ok', '559014', $p));
         $this->assertFalse(DimensionPageText::contiene_codigo('ref 12.345 ok', '12345', $p));
+    }
+
+    /**
+     * 🔴 Revisión independiente: separadores inventados donde el código no los tiene hacían coincidir un código con
+     * un precio, una fecha, un teléfono o una potencia.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_codigo_sin_separadores_no_coincide_con_precios_fechas_ni_telefonos()
+    {
+        $p = DimensionPageText::CODIGO_PROVEEDOR;
+
+        foreach ([
+            ['123456', 'Precio: $123.456,00'],
+            ['120345', 'Fecha 12/03/45'],
+            ['112345678', 'Tel 11 2345 678'],
+            ['MAX1000', 'Potencia MAX 1000 W'],
+            ['HP2000', 'Hp 2000 rpm'],
+        ] as $caso) {
+            $this->assertFalse(DimensionPageText::contiene_codigo($caso[1], $caso[0], $p), $caso[0].' en «'.$caso[1].'»');
+        }
+    }
+
+    /**
+     * De punta a punta: un código de proveedor «123456» y una página que solo trae el precio «$123.456,00» y las
+     * cuatro medidas. Antes quedaba asignada sola (codigo_exacto); la página no trae el código.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_precio_igual_al_codigo_no_asigna_las_medidas()
+    {
+        $articulo = $this->nuevo_articulo('TALADRO PERCUTOR 750W', null, ['provider_code' => '123456']);
+        $url      = 'https://tienda.test/taladro';
+
+        $this->falsear(
+            ['"123456" TALADRO PERCUTOR 750W' => [$this->resultado($url, 'Taladro percutor 750W')]],
+            [$url => $this->pagina('Taladro percutor 750W', 'Precio: $123.456,00. Peso: 2 kg. Alto: 20 cm. Ancho: 8 cm. Largo: 30 cm.')],
+            $this->ficha('exacto', [
+                'peso'  => $this->dato(2, 'kg', 'Peso: 2 kg', $url),
+                'alto'  => $this->dato(20, 'cm', 'Alto: 20 cm', $url),
+                'ancho' => $this->dato(8, 'cm', 'Ancho: 8 cm', $url),
+                'largo' => $this->dato(30, 'cm', 'Largo: 30 cm', $url),
+            ])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertNotSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertFalse($this->entrada($item, 'codigo_proveedor')['paginas'][0]['leida']);
+        $this->assertNull($articulo->fresh()->peso);
     }
 
     /**

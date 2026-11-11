@@ -360,33 +360,43 @@ class DimensionPageText
             return $patrones;
         }
 
-        // Código de proveedor de 6 alfanuméricos o más que parece un código: los mismos alfanuméricos en el mismo
-        // orden, con separadores opcionales entre ellos (misión medidas-sitios-de-referencia, revisión independiente).
+        // (a) El literal, con cualquier espacio entre sus partes, sin letras/dígitos pegados (como siempre).
+        $literal  = str_replace(' ', '\s+', preg_quote(preg_replace('/\s+/', ' ', $codigo), '/'));
+        $patrones = ['/(?<![\p{L}\d])'.$literal.'(?![\p{L}\d])/iu'];
+
+        // (b) y (c): la forma compacta y la de otros separadores, solo en los códigos largos que parecen un código.
         $patron = self::patron_con_separadores($codigo);
 
         if (!is_null($patron)) {
-            return [$patron];
+            $patrones[] = $patron;
         }
 
-        // Código de proveedor corto: literal, con cualquier espacio entre sus partes, sin letras/dígitos pegados.
-        $literal = str_replace(' ', '\s+', preg_quote(preg_replace('/\s+/', ' ', $codigo), '/'));
-
-        return ['/(?<![\p{L}\d])'.$literal.'(?![\p{L}\d])/iu'];
+        return $patrones;
     }
 
-    /** Alfanuméricos como mínimo de un código de proveedor para reconocerlo con o sin separadores. */
+    /** Alfanuméricos como mínimo de un código de proveedor para reconocerlo en su forma compacta o con otros separadores. */
     const MINIMO_PARA_SEPARADORES = 6;
 
     /**
-     * El patrón que reconoce un código de proveedor escrito con o sin separadores: «32 853 63-S», «3285363S» y
-     * «3285363-S» son el mismo código (los mismos alfanuméricos en el mismo orden). Entre cada par de caracteres
-     * puede haber un separador (espacios, o un guion, punto o barra rodeado de espacios opcionales). Nada pegado antes
-     * ni después: ni una letra o un dígito, ni un guion / punto / barra seguido de uno («ABC-1234-9» es otro código).
+     * El patrón que reconoce un código de proveedor escrito en su forma compacta o con OTROS separadores, pero solo en
+     * las posiciones donde el código cargado ya tiene uno:
      *
-     * Por qué: el plan de los sitios de referencia busca también la forma compacta del código, y una página que la
-     * trae tenía que contar como «con el código» (antes solo se reconocía el literal). Solo para códigos de
-     * MINIMO_PARA_SEPARADORES alfanuméricos o más que parecen un código (letras y algún dígito, o 6 dígitos o más):
-     * en uno corto, aflojar los separadores daría falsos positivos.
+     *   (b) la forma compacta exacta, sin ningún separador: «32 853 63-S» → «3285363S»;
+     *   (c) con un separador distinto (espacios, o un guion, punto o barra con espacios opcionales) en cada lugar donde
+     *       el código cargado tenía uno: «32 853 63-S» → «32-853-63-S», «32.853.63 S», «32/853/63/S».
+     *
+     * Nada pegado antes ni después: ni una letra o un dígito, ni un guion / punto / barra seguido de uno («ABC-1234-9»
+     * es otro código). Solo para códigos de MINIMO_PARA_SEPARADORES alfanuméricos o más que parecen un código (letras
+     * y algún dígito, o 6 dígitos o más).
+     *
+     * 🔴 NUNCA se inventa un separador donde el código no lo tiene (revisión independiente de la misión): con eso un
+     * código «123456» coincidía con el precio «$123.456,00», «120345» con la fecha «12/03/45», «112345678» con el
+     * teléfono «11 2345 678», «MAX1000» con «MAX 1000 W» y «HP2000» con «Hp 2000 rpm», y la página contaba como «con el
+     * código del artículo». LÍMITE ACEPTADO: un código cargado compacto («3285363S») no se reconoce en una página que
+     * lo escribe con separadores («32 853 63-S»): para eso habría que inventarlos.
+     *
+     * Por qué existe: el plan de los sitios de referencia busca también la forma compacta del código, y una página que
+     * la trae tiene que contar como «con el código».
      *
      * @param  string $codigo
      * @return string|null  El patrón preg, o null si el código es corto o no parece un código.
@@ -407,11 +417,12 @@ class DimensionPageText
             return null;
         }
 
-        $caracteres = preg_split('//u', $alfanumericos, -1, PREG_SPLIT_NO_EMPTY);
-        $partes     = [];
+        // Los tramos del código entre sus separadores: solo entre tramos puede ir un separador (o ninguno).
+        $tramos = preg_split('/[^\p{L}\d]+/u', (string) $codigo, -1, PREG_SPLIT_NO_EMPTY);
+        $partes = [];
 
-        foreach ($caracteres as $caracter) {
-            $partes[] = preg_quote($caracter, '/');
+        foreach ($tramos as $tramo) {
+            $partes[] = preg_quote($tramo, '/');
         }
 
         $separador = '(?:\s*[\-.\/]\s*|\s+)?';
