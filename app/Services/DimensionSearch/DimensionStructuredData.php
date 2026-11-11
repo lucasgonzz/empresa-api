@@ -21,6 +21,8 @@ use App\Services\ProductFacts\Gtin;
  *     convertido, cita (el fragmento JSON tal cual está en la página), alcance: 'producto'}.
  * Se leen `weight`, `height`, `width` y `depth` (y `length` si no hay `depth`), como QuantitativeValue con
  * `unitCode` o `unitText`, o como texto («2,7 kg»). Un nodo sin campos ni códigos no se devuelve.
+ *   - `principal`: true si es el producto de la página, false si está anidado en otro producto (relacionado,
+ *     accesorio, variante): ver recorrer() y del_articulo().
  *
  * 🔴 NADA DE ACÁ SE ESCRIBE SOLO: el motor solo usa estos campos para completar lo que la IA no pudo citar, de una
  * página que trae el código del artículo y que la IA NO descartó como `otro_producto`; y cada campo pasa por los
@@ -106,8 +108,9 @@ class DimensionStructuredData
             $encontrados = [];
             self::recorrer($datos, $encontrados, 0);
 
-            foreach ($encontrados as $nodo) {
-                $armado = self::armar_nodo($nodo, $crudo);
+            foreach ($encontrados as $encontrado) {
+                $armado = self::armar_nodo($encontrado[0], $crudo);
+                $armado['principal'] = (bool) $encontrado[1];
 
                 if (!empty($armado['campos']) || !empty($armado['codigos'])) {
                     $nodos[] = $armado;
@@ -119,10 +122,19 @@ class DimensionStructuredData
     }
 
     /**
-     * El nodo que corresponde al artículo: el primero con campos cuyo GTIN es el del artículo, o cuyo `mpn` / `sku`
-     * es el código de proveedor (sin importar mayúsculas, espacios, guiones ni puntos). Si ninguno coincide por
-     * código y la página trae el código del artículo en otro lado, el único nodo con campos (si hay más de uno, son
-     * variantes y no se sabe cuál es: null).
+     * El nodo que corresponde al artículo (null si no se puede saber cuál es).
+     *
+     *   A. POR CÓDIGO: los nodos cuyo GTIN es el del artículo, o cuyo `mpn` / `sku` es el código de proveedor (sin
+     *      importar mayúsculas, espacios, guiones ni puntos), estén donde estén (también una variante anidada). Si
+     *      hay alguno, se usa SOLO eso: el primero que trae medidas, y si ninguno las trae, null. 🔴 Nunca se cae al
+     *      plan B: que el artículo esté en la página sin medidas no habilita a tomar las de otro nodo.
+     *   B. SIN CÓDIGO: si la página trae el código del artículo en otro lado, el ÚNICO nodo con medidas, siempre que
+     *      sea el producto de la página (`principal`, no uno anidado en `isRelatedTo`, `isAccessoryOrSparePartFor`,
+     *      `isSimilarTo`…) y que no traiga ningún gtin / mpn / sku (si trae uno, no es el del artículo: es otro
+     *      producto). Si hay más de un nodo principal con medidas, son variantes y no se sabe cuál es: null.
+     *
+     * Revisión independiente de la misión: antes se tomaba el primer nodo con medidas de cualquier lado, y un
+     * producto relacionado anidado le prestaba su peso al artículo.
      *
      * @param  array       $nodos      Los de de_html().
      * @param  string|null $gtin       El código de barras del artículo (solo si es un GTIN válido).
@@ -132,38 +144,70 @@ class DimensionStructuredData
      */
     public static function del_articulo(array $nodos, $gtin, $proveedor, $pagina_trae_el_codigo)
     {
+        $canonico = is_null($gtin) || $gtin === '' ? null : Gtin::canonical((string) $gtin);
+        $compacto = is_null($proveedor) ? '' : self::compactar($proveedor);
+
+        // A. Por código.
+        $coinciden = [];
+
+        foreach ($nodos as $nodo) {
+            if (self::coincide_por_codigo($nodo, $canonico, $compacto)) {
+                $coinciden[] = $nodo;
+            }
+        }
+
+        if (!empty($coinciden)) {
+            foreach ($coinciden as $nodo) {
+                if (!empty($nodo['campos'])) {
+                    return ['nodo' => $nodo, 'por_codigo' => true];
+                }
+            }
+
+            return null;
+        }
+
+        // B. Sin código: el único producto de la página con medidas, y sin códigos propios.
+        if (!$pagina_trae_el_codigo) {
+            return null;
+        }
+
         $con_campos = [];
 
         foreach ($nodos as $nodo) {
-            if (!empty($nodo['campos'])) {
+            if (!empty($nodo['campos']) && !empty($nodo['principal'])) {
                 $con_campos[] = $nodo;
             }
         }
 
-        if (empty($con_campos)) {
+        if (count($con_campos) !== 1 || !empty($con_campos[0]['codigos'])) {
             return null;
         }
 
-        $canonico  = is_null($gtin) || $gtin === '' ? null : Gtin::canonical((string) $gtin);
-        $compacto  = is_null($proveedor) ? '' : self::compactar($proveedor);
+        return ['nodo' => $con_campos[0], 'por_codigo' => false];
+    }
 
-        foreach ($con_campos as $nodo) {
-            foreach ($nodo['codigos'] as $clave => $codigo) {
-                if (!is_null($canonico) && strpos($clave, 'gtin') === 0 && Gtin::canonical($codigo) === $canonico) {
-                    return ['nodo' => $nodo, 'por_codigo' => true];
-                }
+    /**
+     * ¿El nodo es el artículo por su código? GTIN igual (en cualquier longitud) o `mpn` / `sku` igual al código de
+     * proveedor compactado.
+     *
+     * @param  array       $nodo
+     * @param  string|null $canonico  El GTIN canónico del artículo.
+     * @param  string      $compacto  El código de proveedor compactado ('' si no hay).
+     * @return bool
+     */
+    protected static function coincide_por_codigo(array $nodo, $canonico, $compacto)
+    {
+        foreach ($nodo['codigos'] as $clave => $codigo) {
+            if (!is_null($canonico) && strpos($clave, 'gtin') === 0 && Gtin::canonical($codigo) === $canonico) {
+                return true;
+            }
 
-                if ($compacto !== '' && ($clave === 'mpn' || $clave === 'sku') && self::compactar($codigo) === $compacto) {
-                    return ['nodo' => $nodo, 'por_codigo' => true];
-                }
+            if ($compacto !== '' && ($clave === 'mpn' || $clave === 'sku') && self::compactar($codigo) === $compacto) {
+                return true;
             }
         }
 
-        if ($pagina_trae_el_codigo && count($con_campos) === 1) {
-            return ['nodo' => $con_campos[0], 'por_codigo' => false];
-        }
-
-        return null;
+        return false;
     }
 
     /**
@@ -211,30 +255,51 @@ class DimensionStructuredData
     /**
      * Junta los nodos de producto de un JSON (también adentro de `@graph`, listas, `mainEntity`, `hasVariant`…).
      *
+     * Cada nodo sale marcado con `principal`: true si es «el producto de la página» (la raíz, un elemento de una
+     * lista de raíz o de `@graph`, o el `mainEntity` de una WebPage); false si está ANIDADO adentro de otro producto
+     * (`isRelatedTo`, `isAccessoryOrSparePartFor`, `isSimilarTo`, `hasVariant`…) o de otra propiedad. Un nodo anidado
+     * es OTRO producto: solo se usa si coincide por código con el artículo (revisión independiente de la misión).
+     *
      * @param  mixed $datos
-     * @param  array $encontrados  (por referencia)
+     * @param  array $encontrados  (por referencia) lista de [nodo, principal].
      * @param  int   $nivel
+     * @param  bool  $principal    ¿Este valor está en un lugar de «producto de la página»?
      * @return void
      */
-    protected static function recorrer($datos, array &$encontrados, $nivel)
+    protected static function recorrer($datos, array &$encontrados, $nivel, $principal = true)
     {
         if (!is_array($datos) || $nivel > self::PROFUNDIDAD_MAXIMA) {
             return;
         }
 
-        if (self::es_producto($datos)) {
-            $encontrados[] = $datos;
+        // Una lista: sus elementos están en el mismo lugar que la lista.
+        if (isset($datos[0]) || $datos === []) {
+            foreach ($datos as $valor) {
+                if (is_array($valor)) {
+                    self::recorrer($valor, $encontrados, $nivel + 1, $principal);
+                }
+            }
+
+            return;
+        }
+
+        $es_producto = self::es_producto($datos);
+
+        if ($es_producto) {
+            $encontrados[] = [$datos, $principal];
         }
 
         foreach ($datos as $clave => $valor) {
-            // Las ofertas se leen como parte de su producto (armar_nodo), no como nodos sueltos.
-            if ($clave === 'offers') {
+            // Las ofertas se leen como parte de su producto (armar_nodo), no como nodos sueltos (tampoco su `itemOffered`).
+            if ($clave === 'offers' || !is_array($valor)) {
                 continue;
             }
 
-            if (is_array($valor)) {
-                self::recorrer($valor, $encontrados, $nivel + 1);
-            }
+            // Lo que cuelga de un producto es otro producto (relacionado, accesorio, variante). Fuera de un producto,
+            // solo `@graph` y `mainEntity` siguen siendo «el producto de la página».
+            $sigue_principal = $principal && !$es_producto && ($clave === '@graph' || $clave === 'mainEntity');
+
+            self::recorrer($valor, $encontrados, $nivel + 1, $sigue_principal);
         }
     }
 

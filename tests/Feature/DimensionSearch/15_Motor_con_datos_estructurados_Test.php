@@ -172,4 +172,83 @@ class Motor_con_datos_estructurados_Test extends DimensionSearchTestCase
         $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
         $this->assertNull($item->peso_kg);
     }
+
+    /**
+     * 🔴 Lo encontró la revisión independiente: el JSON-LD del artículo trae ANIDADO un producto relacionado
+     * (`isRelatedTo`) con otro GTIN y su propio peso. La IA dice `exacto` y cita alto, ancho y largo; el peso NO puede
+     * salir del producto relacionado (antes quedaba asignada con 9 kg, el de la bordeadora).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_peso_de_un_producto_relacionado_anidado_no_completa_al_articulo()
+    {
+        $gtin     = $this->con_verificador('779123456810');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+        $url      = 'https://tienda.test/cuchilla';
+
+        $html = '<html><head><title>Cuchilla</title><script type="application/ld+json">{"@type":"Product","name":"Cuchilla","gtin13":"'.$gtin.'",'
+            .'"isRelatedTo":{"@type":"Product","name":"Bordeadora","gtin13":"4006000000007","weight":{"@type":"QuantitativeValue","unitCode":"KGM","value":9}}}</script></head>'
+            .'<body><main><h1>Cuchilla</h1><p>EAN '.$gtin.'. Alto: 5 cm. Ancho: 50 cm. Largo: 3 cm.</p></main></body></html>';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado($url, 'Cuchilla')]],
+            [$url => $html],
+            $this->ficha('exacto', $this->tres_medidas_citadas($url))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertNotSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame('medidas_parciales', $item->motivo);
+        $this->assertNull($item->peso_kg);
+        $this->assertNull($articulo->fresh()->peso);
+        $this->assertArrayNotHasKey('estructurados', $item->diagnostico[0]);
+    }
+
+    /**
+     * Un `@graph` con dos productos: el del artículo (por su GTIN) sin peso y uno ajeno con peso. Se usa SOLO el del
+     * artículo, aunque no traiga medidas.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function en_un_graph_con_dos_productos_solo_cuenta_el_del_articulo_aunque_no_tenga_peso()
+    {
+        $gtin     = $this->con_verificador('779123456828');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY', $gtin);
+        $url      = 'https://tienda.test/cuchilla-2';
+
+        $html = '<html><head><title>Cuchilla</title><script type="application/ld+json">{"@context":"https://schema.org","@graph":['
+            .'{"@type":"Product","name":"Cuchilla","gtin13":"'.$gtin.'"},'
+            .'{"@type":"Product","name":"Bordeadora","gtin13":"4006000000007","weight":{"@type":"QuantitativeValue","unitCode":"KGM","value":9}}'
+            .']}</script></head><body><main><p>EAN '.$gtin.'. Alto: 5 cm. Ancho: 50 cm. Largo: 3 cm.</p></main></body></html>';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado($url, 'Cuchilla')]],
+            [$url => $html],
+            $this->ficha('exacto', $this->tres_medidas_citadas($url))
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame('medidas_parciales', $item->motivo);
+        $this->assertNull($item->peso_kg);
+        $this->assertNull($articulo->fresh()->peso);
+    }
+
+    /**
+     * Alto, ancho y largo citados bien por la IA (sin el peso).
+     *
+     * @param  string $url
+     * @return array
+     */
+    protected function tres_medidas_citadas($url)
+    {
+        return [
+            'alto'  => $this->dato(5, 'cm', 'Alto: 5 cm', $url),
+            'ancho' => $this->dato(50, 'cm', 'Ancho: 50 cm', $url),
+            'largo' => $this->dato(3, 'cm', 'Largo: 3 cm', $url),
+        ];
+    }
 }

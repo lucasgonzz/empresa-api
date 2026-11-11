@@ -179,4 +179,49 @@ class Datos_estructurados_Test extends TestCase
         $otra_unidad = $validador->validar_estructurado('alto', ['valor' => 2, 'unidad' => 'kg'], 'https://x.test');
         $this->assertSame('unidad_invalida', $otra_unidad['motivo']);
     }
+
+    /**
+     * 🔴 Revisión independiente: un nodo ajeno nunca le presta sus medidas al artículo.
+     *   - Si algún nodo coincide por código, se usa SOLO ese (sin medidas = no hay estructurados).
+     *   - Sin coincidencia, el único nodo con medidas vale solo si NO trae códigos (un gtin / mpn / sku distinto es
+     *     otro producto) y es el producto de la página, no uno anidado (`isRelatedTo`, `isAccessoryOrSparePartFor`,
+     *     `isSimilarTo`, `offers.itemOffered`…).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function un_nodo_ajeno_o_anidado_nunca_le_presta_sus_medidas_al_articulo()
+    {
+        $relacionado = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","gtin13":"4078500001694",'
+            .'"isRelatedTo":{"@type":"Product","gtin13":"4006000000007","weight":{"unitCode":"KGM","value":9}}}</script>');
+
+        $this->assertNull(DimensionStructuredData::del_articulo($relacionado, '4078500001694', null, true), 'El del artículo coincide pero no tiene medidas.');
+
+        // Plan B: ninguno coincide por código; el único con medidas trae OTRO código.
+        $ajeno = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","sku":"XX-999","weight":{"unitCode":"KGM","value":9}}</script>');
+        $this->assertNull(DimensionStructuredData::del_articulo($ajeno, null, 'AB-1234', true));
+
+        // Plan B: el único con medidas no trae códigos pero está anidado en otro producto (accesorio, similar, relacionado).
+        foreach (['isAccessoryOrSparePartFor', 'isSimilarTo', 'isRelatedTo', 'isConsumableFor'] as $propiedad) {
+            $anidado = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","name":"Cuchilla",'
+                .'"'.$propiedad.'":{"@type":"Product","name":"Bordeadora","weight":{"unitCode":"KGM","value":9}}}</script>');
+
+            $this->assertNull(DimensionStructuredData::del_articulo($anidado, null, 'AB-1234', true), $propiedad);
+        }
+
+        // Ni el producto de una oferta (`offers.itemOffered`).
+        $oferta = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"Product","name":"Cuchilla",'
+            .'"offers":{"@type":"Offer","itemOffered":{"@type":"Product","name":"Otro","weight":{"unitCode":"KGM","value":9}}}}</script>');
+        $this->assertNull(DimensionStructuredData::del_articulo($oferta, null, 'AB-1234', true));
+
+        // Un nodo anidado SÍ vale si coincide por código (una variante con el GTIN del artículo).
+        $variante = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"ProductGroup","name":"Manguera",'
+            .'"hasVariant":[{"@type":"Product","gtin13":"4006000000007","weight":{"unitCode":"KGM","value":5}},'
+            .'{"@type":"Product","gtin13":"4078500001694","weight":{"unitCode":"KGM","value":2.7}}]}</script>');
+        $this->assertEquals(2.7, DimensionStructuredData::del_articulo($variante, '4078500001694', null, false)['nodo']['campos']['peso']['valor']);
+
+        // El producto de la página adentro del `mainEntity` de la WebPage sí es el principal.
+        $pagina = DimensionStructuredData::de_html('<script type="application/ld+json">{"@type":"WebPage","mainEntity":{"@type":"Product","name":"Cuchilla","weight":{"unitCode":"KGM","value":1.5}}}</script>');
+        $this->assertEquals(1.5, DimensionStructuredData::del_articulo($pagina, null, 'AB-1234', true)['nodo']['campos']['peso']['valor']);
+    }
 }
