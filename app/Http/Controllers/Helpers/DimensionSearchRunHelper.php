@@ -82,8 +82,18 @@ class DimensionSearchRunHelper
      * Estimación que se muestra antes de lanzar. Medida en la prueba real del 27/10/2026 (10 artículos de
      * Masquito, Serper + DeepSeek Flash): 1,8 búsquedas por artículo y ~1.870 tokens de entrada. Va del lado
      * alto a propósito (2,2 búsquedas): la ve Lucas antes de gastar, y quedarse corto en plata es peor que sobrar.
+     *
+     * Eso era con tres planes como mucho. Desde la misión medidas-sitios-de-referencia (11/11/2026) hay hasta cinco
+     * (MAX_BUSQUEDAS del motor) y la previa suma, del lado alto, lo que agregan los dos planes nuevos:
+     *   - BUSQUEDAS_EXTRA_POR_GTIN: una búsqueda más por cada artículo a buscar con un código de barras de forma GTIN
+     *     (8, 12, 13 o 14 dígitos; no se mira el dígito verificador, así que cuenta de más): el mismo código fuera de
+     *     Argentina, que corre siempre que la búsqueda argentina no dio datos. Se cuenta entera aunque muchos corten antes.
+     *   - BUSQUEDAS_EXTRA_CON_SITIOS: si el comercio tiene sitios de referencia, una búsqueda más por artículo (la de
+     *     los sitios va primero y corre en todos los que tienen algún código).
      */
     const BUSQUEDAS_ESTIMADAS_POR_ARTICULO = 2.2;
+    const BUSQUEDAS_EXTRA_POR_GTIN         = 1.0;
+    const BUSQUEDAS_EXTRA_CON_SITIOS       = 1.0;
     const SEGUNDOS_ESTIMADOS_POR_ARTICULO  = 12;
     const USD_POR_MIL_BUSQUEDAS            = 1.0;
     const USD_DE_IA_POR_ARTICULO           = 0.0007;
@@ -464,6 +474,26 @@ class DimensionSearchRunHelper
     }
 
     /**
+     * Cuántos de los candidatos del catálogo tienen un código de barras con forma de GTIN (8, 12, 13 o 14 dígitos): los
+     * que van a tener además la búsqueda del código fuera de Argentina. No mira el dígito verificador (eso lo hace el
+     * motor con Gtin::canonical), así que cuenta de más: para una estimación de plata, es el lado bueno.
+     *
+     * @param  int  $owner_id
+     * @param  bool $solo_con_stock
+     * @param  bool $reintentar_sin_datos
+     * @return int
+     */
+    protected static function candidatos_con_gtin($owner_id, $solo_con_stock, $reintentar_sin_datos)
+    {
+        return (int) self::base_del_catalogo($owner_id, $solo_con_stock)
+            ->whereNotExists(self::subconsulta_a_revisar($owner_id))
+            ->whereNotExists(self::subconsulta_ya_buscado_sin_exito($owner_id, $reintentar_sin_datos))
+            ->whereNotExists(self::subconsulta_en_corrida_activa($owner_id))
+            ->whereRaw("TRIM(articles.bar_code) REGEXP '^([0-9]{8}|[0-9]{12,14})$'")
+            ->count();
+    }
+
+    /**
      * La previa que ve el acceso maestro antes de lanzar.
      *
      * @param  \App\Models\User $owner
@@ -477,7 +507,15 @@ class DimensionSearchRunHelper
         $conteos = self::conteos_del_catalogo((int) $owner->id, $solo_con_stock, $reintentar_sin_datos);
 
         $a_buscar  = min($tope, $conteos['candidatos']);
-        $busquedas = (int) round($a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO);
+        $sitios    = DimensionReferenceSiteHelper::listar((int) $owner->id);
+
+        // Los planes nuevos (ver BUSQUEDAS_EXTRA_*): el código de barras fuera de Argentina y los sitios de referencia.
+        $con_gtin  = $a_buscar > 0 ? min($a_buscar, self::candidatos_con_gtin((int) $owner->id, (bool) $solo_con_stock, (bool) $reintentar_sin_datos)) : 0;
+        $busquedas = (int) round(
+            $a_buscar * self::BUSQUEDAS_ESTIMADAS_POR_ARTICULO
+            + $con_gtin * self::BUSQUEDAS_EXTRA_POR_GTIN
+            + (empty($sitios) ? 0 : $a_buscar * self::BUSQUEDAS_EXTRA_CON_SITIOS)
+        );
 
         // El respaldo por el scrape de Serper (páginas que bloquean la descarga y PDF): un promedio conservador
         // por artículo (config `creditos_estimados_por_articulo`: 1,5 scrapes x 4 créditos). Cada scrape cuesta de 2 a
@@ -524,7 +562,7 @@ class DimensionSearchRunHelper
             ],
             'corrida_activa'                   => is_null($activa) ? null : self::payload_de_corrida($activa),
             // Los sitios de referencia actuales del comercio: con estos se lanzaría (misión medidas-sitios-de-referencia).
-            'sitios_de_referencia'             => DimensionReferenceSiteHelper::listar((int) $owner->id),
+            'sitios_de_referencia'             => $sitios,
         ];
 
         // Solo en una demo: cuántas búsquedas de Serper le quedan al dueño.

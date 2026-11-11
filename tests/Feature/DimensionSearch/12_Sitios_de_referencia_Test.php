@@ -213,4 +213,34 @@ class Sitios_de_referencia_Test extends DimensionSearchTestCase
             config(['app.USER_ID' => $anterior]);
         }
     }
+
+    /**
+     * 🔴 Revisión independiente: con hasta 5 búsquedas por artículo, la previa no puede seguir estimando 2,2. Suma
+     * una búsqueda por cada artículo con código de barras de forma GTIN (el plan fuera de Argentina) y, si el
+     * comercio tiene sitios de referencia, una más por artículo (el plan de los sitios).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_previa_suma_las_busquedas_del_plan_global_y_del_de_sitios()
+    {
+        for ($i = 0; $i < 6; $i++) {
+            $this->nuevo_articulo('ARTICULO SIN GTIN '.$i, $i === 0 ? '12345' : null);
+        }
+
+        foreach (['77912345678'.'0', '4078500001694', '12345678', '00012345678905'] as $i => $barras) {
+            $this->nuevo_articulo('ARTICULO CON GTIN '.$i, $barras);
+        }
+
+        // 10 x 2,2 = 22, más 4 con GTIN = 26.
+        $sin_sitios = DimensionSearchRunHelper::previa_del_catalogo($this->owner);
+        $this->assertSame(10, $sin_sitios['a_buscar']);
+        $this->assertSame(26, $sin_sitios['estimacion']['busquedas']);
+
+        // Con sitios: 10 más.
+        DimensionReferenceSiteHelper::guardar($this->owner->id, ['obi.de']);
+        $con_sitios = DimensionSearchRunHelper::previa_del_catalogo($this->owner);
+        $this->assertSame(36, $con_sitios['estimacion']['busquedas']);
+        $this->assertEquals(0.04, $con_sitios['estimacion']['usd_busquedas']);
+    }
 }
