@@ -413,9 +413,12 @@ class PlanillaDePrueba
     /**
      * Nombres de las hojas de un libro recién recibido, antes de que exista la corrida.
      *
-     * Para `.xlsx` usa `ExcelWorkbookReader::listar_hojas` (OpenSpout), la misma fuente que después
-     * recorre `analizar()`. Un `.xls` no lo abre OpenSpout: `ruta()` lo convierte con PhpSpreadsheet
-     * sin cambiar los nombres, así que acá se listan con el lector `Xls` de PhpSpreadsheet.
+     * 🔴 Solo nombres, sin recorrer ni contar filas: corre dentro del pedido del admin, que en modo
+     * soporte corta a los 25 s. `ExcelWorkbookReader::listar_hojas` cuenta las filas de cada hoja y
+     * con un Excel pesado el admin contestaría «no responde» mientras acá la corrida se crea igual.
+     * `listWorksheetNames` de PhpSpreadsheet lee solo el índice del libro (`xl/workbook.xml` en un
+     * `.xlsx`, el stream de libro en un `.xls`). Son los mismos nombres que después ve `analizar()`:
+     * un `.xls` se convierte en `ruta()` sin cambiarlos.
      *
      * @param  string $ruta       Ruta del archivo (puede ser el temporal de la subida)
      * @param  string $extension  Extensión original del archivo
@@ -426,11 +429,9 @@ class PlanillaDePrueba
     public static function nombres_de_hojas(string $ruta, string $extension): array
     {
         try {
-            if (strtolower($extension) === 'xls') {
-                return array_values(IOFactory::createReader('Xls')->listWorksheetNames($ruta));
-            }
+            $lector = IOFactory::createReader(strtolower($extension) === 'xls' ? 'Xls' : 'Xlsx');
 
-            return array_column(ExcelWorkbookReader::listar_hojas($ruta), 'nombre');
+            return array_values($lector->listWorksheetNames($ruta));
         } catch (\Throwable $error) {
             throw new RuntimeException('No se pudieron leer las hojas del archivo.', 0, $error);
         }

@@ -211,6 +211,8 @@ class ImportacionDePruebaController extends Controller
             $columna = $previa['columna'];
             $resuelto = $previa['campo'];
             if ($previa['hoja'] === null) {
+                // Cuenta todas las hojas del libro, también las vacías: saber cuáles tienen datos
+                // obligaría a recorrerlas dentro del pedido del admin. martin.md pide siempre la hoja.
                 if (count($hojas_del_libro) > 1) {
                     self::rechazar_previas('Falta la hoja de la columna ' . $columna . ': el archivo tiene varias hojas ('
                         . $lista_de_hojas . '). Indicá en cuál está.');
