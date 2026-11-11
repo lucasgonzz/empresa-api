@@ -11,6 +11,7 @@ use App\Models\CurrentAcount;
 use App\Models\ImportacionDeSoporte;
 use App\Models\Provider;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
 use RuntimeException;
 
@@ -46,6 +47,20 @@ class PlanDeContactosDeSoporte
     const MAXIMO_DE_EJEMPLOS = 10;
     const MAXIMO_DE_SALDOS = 60;
     const MAXIMO_DE_AMBIGUAS = 100;
+
+    /**
+     * Filas con nombre que entran en una importación desde soporte. Medido el 11/11/2026 en la base de testing de
+     * s18: ~0,05 s por fila importada; con el tope de 900 s del job y margen para releer y controlar, más de esto es
+     * una importación que puede quedar a medias. El resumen lo frena antes de pedir el código
+     * (`archivo_demasiado_grande`) y sugiere partir el archivo.
+     */
+    const MAXIMO_DE_FILAS = 5000;
+
+    /** El techo vigente (config `importacion_soporte.maximo_de_filas`, para poder probarlo; default MAXIMO_DE_FILAS). */
+    public static function maximo_de_filas(): int
+    {
+        return max(1, (int) config('importacion_soporte.maximo_de_filas', self::MAXIMO_DE_FILAS));
+    }
 
     /** Propiedades que entiende cada importador (las de AiClientAnalyzer / AiProviderAnalyzer). */
     const PROPIEDADES = [
@@ -112,14 +127,10 @@ class PlanDeContactosDeSoporte
      */
     public static function nombre_comparable($nombre): string
     {
-        $nombre = mb_strtolower(trim((string) $nombre), 'UTF-8');
-        $nombre = strtr($nombre, [
-            'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'à' => 'a', 'è' => 'e', 'ì' => 'i', 'ò' => 'o',
-            'ù' => 'u', 'ä' => 'a', 'ë' => 'e', 'ï' => 'i', 'ö' => 'o', 'ü' => 'u', 'â' => 'a', 'ê' => 'e', 'î' => 'i',
-            'ô' => 'o', 'û' => 'u', 'ñ' => 'n', 'ç' => 'c',
-        ]);
+        // Str::ascii cubre todos los acentos (ã, õ, ý, ñ…), no solo los del castellano.
+        $nombre = strtolower(Str::ascii(mb_strtolower(trim((string) $nombre), 'UTF-8')));
 
-        return (string) preg_replace('/\s+/u', ' ', $nombre);
+        return trim((string) preg_replace('/\s+/u', ' ', $nombre));
     }
 
     /**
@@ -131,6 +142,8 @@ class PlanDeContactosDeSoporte
      *   'previsto'   => [{fila, nombre, clave, id|null, nuevo, cambia_seguro, cambia_posible, movimientos: [[tipo, monto]]}],
      *   'ambiguas'   => [{fila, nombre, motivo}],
      *   'ultima_fila'=> int (para partir en tandas),
+     *   'filas_crudas' => [fila => celdas] desde fila_inicio, tal como las lee el importador (para no releer el Excel),
+     *   'demasiado_grande' => bool (más de MAXIMO_DE_FILAS filas con nombre),
      *   'huella'     => string,
      * ]
      */
@@ -152,10 +165,12 @@ class PlanDeContactosDeSoporte
 
         // 1) Las filas con nombre (las que el importador no saltea), como las recorre él.
         $filas = [];
+        $crudas = [];
         $sin_nombre = 0;
         $num_row = 1;
         foreach ($lector->filas as $row) {
             if ($num_row >= (int) $corrida->fila_inicio) {
+                $crudas[$num_row] = is_object($row) && method_exists($row, 'toArray') ? $row->toArray() : (array) $row;
                 $nombre = ImportHelper::getColumnValue($row, 'nombre', $columnas);
                 if (!is_null($nombre)) {
                     $numero = ImportHelper::getColumnValue($row, 'numero', $columnas);
@@ -233,6 +248,22 @@ class PlanDeContactosDeSoporte
                 $marcar($filas[$renombrados[$fila['clave']]], 'busca_un_nombre_que_otra_fila_cambia');
             }
         }
+        // Un número del Excel por encima del más alto que ya existe choca con la numeración automática de las filas
+        // nuevas sin número (el importador les da el siguiente al máximo, y en el medio puede caer en este).
+        $nuevas_sin_numero = 0;
+        foreach ($filas as $fila) {
+            if (is_null($fila['numero']) && is_null($fila['modelo'])) {
+                $nuevas_sin_numero++;
+            }
+        }
+        if ($nuevas_sin_numero > 0) {
+            $maximo = (int) DB::table($es_cliente ? 'clients' : 'providers')->where('user_id', $owner_id)->max('num');
+            foreach ($filas as $fila) {
+                if (!is_null($fila['num']) && is_null($fila['modelo']) && $fila['num'] > $maximo) {
+                    $marcar($fila, 'numero_automatico_choca');
+                }
+            }
+        }
         ksort($ambiguas);
 
         // 4) Lo previsto de cada fila: alta o actualización, y su movimiento de saldo.
@@ -300,6 +331,7 @@ class PlanDeContactosDeSoporte
             'filas_sin_nombre' => $sin_nombre,
             'filas_ambiguas_total' => count($ambiguas),
             'filas_ambiguas' => array_slice(array_values($ambiguas), 0, self::MAXIMO_DE_AMBIGUAS),
+            'maximo_de_filas' => self::maximo_de_filas(),
         ];
 
         $huella = hash('sha256', json_encode([
@@ -308,7 +340,8 @@ class PlanDeContactosDeSoporte
         ]));
 
         return ['resumen' => $resumen, 'previsto' => $previsto, 'ambiguas' => array_values($ambiguas),
-            'ultima_fila' => $ultima_fila, 'huella' => $huella];
+            'ultima_fila' => $ultima_fila, 'filas_crudas' => $crudas, 'demasiado_grande' => count($filas) > self::maximo_de_filas(),
+            'huella' => $huella];
     }
 
     /**
