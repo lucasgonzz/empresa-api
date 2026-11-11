@@ -15,6 +15,11 @@ use App\Services\ProductFacts\Gtin;
  * los encabezados de ficha técnica y de las palabras «peso / medidas / dimensiones / alto / ancho /
  * largo». Sin estado ni red.
  *
+ * IDIOMAS (misión medidas-sitios-de-referencia, 11/11/2026): las ventanas se abren también con las palabras y los
+ * encabezados de ficha en inglés, alemán, italiano, francés y portugués (las fichas de los sitios de referencia:
+ * «Maße & Gewicht», «Technische Daten», «Dati tecnici», «Item specifics», «Shipping Weight»). Antes solo con las
+ * castellanas, y de una ficha en alemán no quedaba en el extracto la parte que trae los datos.
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
  */
 class DimensionPageText
@@ -27,6 +32,23 @@ class DimensionPageText
 
     /** Máximo de caracteres del texto plano de un respaldo (scrape) que se procesa. */
     const MAXIMO_TEXTO_DE_RESPALDO = 400000;
+
+    /**
+     * Los encabezados de una ficha técnica, en castellano y (misión medidas-sitios-de-referencia) en inglés, alemán,
+     * italiano, francés y portugués. Cada uno abre una ventana larga hacia adelante.
+     */
+    const REGEX_ENCABEZADOS = '/descripci[oó]n|caracter[ií]sticas|especificaciones|ficha t[eé]cnica|sobre este producto'
+        .'|specifications|item specifics|technical data|technische daten|produktdaten|produktdetails|dati tecnici'
+        .'|scheda tecnica|caratteristiche tecniche|caract[eé]ristiques techniques|especifica[cç][oõ]es/iu';
+
+    /**
+     * Las palabras de peso y medidas, en castellano y en los otros idiomas de las fichas. Cada una abre una ventana
+     * corta alrededor. Las de otros idiomas van con bordes de letra (no `\b`, que no conoce la «ö» ni la «à»).
+     */
+    const REGEX_PALABRAS_DE_MEDIDAS = '/\bpeso\b|medidas|dimensi[oó]n|embalaje|\balto\b|\bancho\b|\blargo\b|profundidad|contenido neto|\bmarca\b'
+        .'|(?<![\p{L}])(?:weight|height|width|length|depth|dimensions|gewicht|nettogewicht|h[öo]he|hoehe|breite|tiefe|l[äa]nge|laenge'
+        .'|ma[ßs]e|abmessungen|altezza|larghezza|profondit[àa]|lunghezza|dimensioni|ingombro|misure|poids|hauteur|largeur'
+        .'|longueur|altura|largura|comprimento|dimens[õo]es)(?![\p{L}])/iu';
 
     /** Tipos de código con los que se identifica un artículo en una página. */
     const CODIGO_DE_BARRAS = 'codigo_de_barras';
@@ -196,13 +218,13 @@ class DimensionPageText
 
         $ventanas = [];
 
-        if (preg_match_all('/descripci[oó]n|caracter[ií]sticas|especificaciones|ficha t[eé]cnica|sobre este producto/iu', $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
+        if (preg_match_all(self::REGEX_ENCABEZADOS, $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
             foreach (array_slice($encontrados[0], 0, 4) as $x) {
                 $ventanas[] = [$x[1] - 100, $x[1] + 1200];
             }
         }
 
-        if (preg_match_all('/\bpeso\b|medidas|dimensi[oó]n|embalaje|\balto\b|\bancho\b|\blargo\b|profundidad|contenido neto|\bmarca\b/iu', $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
+        if (preg_match_all(self::REGEX_PALABRAS_DE_MEDIDAS, $texto, $encontrados, PREG_OFFSET_CAPTURE)) {
             foreach (array_slice($encontrados[0], 0, 12) as $x) {
                 $ventanas[] = [$x[1] - 250, $x[1] + 350];
             }

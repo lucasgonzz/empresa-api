@@ -124,19 +124,42 @@ class DimensionValueValidator
     ];
 
     /**
-     * Las palabras que, en la cita, dicen A QUÉ medida corresponde el número (sin tildes, en minúsculas).
+     * Las palabras que, en la cita, dicen A QUÉ medida corresponde el número (en minúsculas).
      * Para una asignación sola, la cita de cada campo tiene que traer una de las suyas, o una de las
      * genéricas, o ser una agrupación «A x B x C unidad». Una cita pelada («25 cm») no dice qué medida es.
+     *
+     * IDIOMAS (misión medidas-sitios-de-referencia, 11/11/2026): las fichas de los sitios de referencia de Masquito
+     * están en alemán (OBI: «Gewicht», «Höhe», «Breite», «Tiefe»), italiano (Verdefacile: «Peso», «Altezza»), inglés
+     * (Carbydoctor: «Shipping Weight») y portugués. cita_tiene_etiqueta() saca SOLO las tildes de á é í ó ú: una
+     * palabra con diéresis, ß, à, ã u õ va en las dos formas («höhe» y «hohe», «länge», «lange» y «laenge»,
+     * «profondità» y «profondita») para que valga como la escriba la página o la copie la IA.
      */
     const ETIQUETAS_DEL_CAMPO = [
-        'peso'        => ['peso', 'pesa', 'weight'],
-        'alto'        => ['alto', 'altura', 'height'],
-        'ancho'       => ['ancho', 'anchura', 'width'],
-        'profundidad' => ['largo', 'longitud', 'profundidad', 'fondo', 'length', 'depth'],
+        'peso'        => [
+            'peso', 'pesa', 'weight',
+            // Alemán, italiano, francés, inglés.
+            'gewicht', 'nettogewicht', 'bruttogewicht', 'peso netto', 'peso lordo', 'poids', 'shipping weight', 'item weight',
+        ],
+        'alto'        => [
+            'alto', 'altura', 'height',
+            'höhe', 'hohe', 'hoehe', 'altezza', 'hauteur',
+        ],
+        'ancho'       => [
+            'ancho', 'anchura', 'width',
+            'breite', 'larghezza', 'largeur', 'largura',
+        ],
+        'profundidad' => [
+            'largo', 'longitud', 'profundidad', 'fondo', 'length', 'depth',
+            'tiefe', 'länge', 'lange', 'laenge', 'profondità', 'profondita', 'lunghezza', 'longueur', 'comprimento', 'profundidade',
+        ],
     ];
 
     /** Etiquetas que valen para cualquier campo de medidas / de peso. */
-    const ETIQUETAS_GENERICAS_DE_MEDIDAS = ['medidas', 'dimensiones', 'dimensions', 'tamano', 'tamaño', 'size', 'envase', 'embalaje'];
+    const ETIQUETAS_GENERICAS_DE_MEDIDAS = [
+        'medidas', 'dimensiones', 'dimensions', 'tamano', 'tamaño', 'size', 'envase', 'embalaje',
+        // Alemán, italiano, portugués (misión medidas-sitios-de-referencia).
+        'maße', 'masse', 'abmessungen', 'dimensioni', 'ingombro', 'misure', 'dimensões', 'dimensoes',
+    ];
     const ETIQUETAS_GENERICAS_DE_PESO    = ['envase', 'embalaje'];
 
     /** Alcance que se guarda cuando la IA no dice uno válido. */
