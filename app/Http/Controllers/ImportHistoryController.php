@@ -92,6 +92,14 @@ class ImportHistoryController extends Controller
             ], 409);
         }
 
+        /*
+         * Se anuncia en la lista de procesos en segundo plano (píldora y historial) YA, en
+         * "En espera", antes de que ningún worker toque el job: así el usuario ve la tarea apenas
+         * aprieta "Revertir" y queda registrada aunque la cola se demore. El job la pasa a
+         * "En proceso" al arrancar y la cierra al terminar o al fallar.
+         */
+        RollbackArticleImportHistory::anunciar_en_espera($import_history, $this->userId(false));
+
         /**
          * Pasamos el id del usuario autenticado (no el user_id del propio
          * historial) para que el guard del job compare dos valores de
