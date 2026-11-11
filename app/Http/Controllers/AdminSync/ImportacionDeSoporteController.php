@@ -8,7 +8,6 @@ use App\Models\ImportacionDeSoporte;
 use App\Models\User;
 use App\Services\Importacion\ImportacionDePruebaService;
 use App\Services\Importacion\ImportacionDeSoporteService;
-use Carbon\Carbon;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -24,7 +23,8 @@ use Illuminate\Support\Str;
  *   GET  admin-sync/importacion-soporte/{corrida}?user_id=&support_ticket_id=        → 200 {corrida}
  *   POST admin-sync/importacion-soporte/{corrida}/confirmar  {user_id, support_ticket_id, codigo, decision?}
  *        → 202 (confirmada, se importa en la cola) · 200 (cancelada, o el mismo pedido repetido) · 409 codigo_*
- *   POST admin-sync/importacion-soporte/{corrida}/revertir   {user_id, support_ticket_id} → 200 · 409 no_revertible
+ *   POST admin-sync/importacion-soporte/{corrida}/revertir   {user_id, support_ticket_id}
+ *        → 202 (queda `revirtiendo`; el job deshace tanda por tanda) · 200 (ya revertida) · 409 no_revertible
  *
  * `{corrida}` es el `corrida_id` (uuid). Errores: `{message, motivo}`. 409 `dueno_no_activo` si el negocio no
  * es un dueño activo (en prueba o vencido no entra); 404 CON `motivo: corrida_no_encontrada` si la corrida no
@@ -36,9 +36,6 @@ use Illuminate\Support\Str;
  */
 class ImportacionDeSoporteController extends Controller
 {
-    /** Minutos sin novedad para volver a despachar una corrida en curso (la cola pudo perder el job). */
-    const MINUTOS_PARA_REANUDAR = 10;
-
     public function iniciar(Request $request, string $modelo): JsonResponse
     {
         if (!in_array($modelo, ImportacionDeSoporte::MODELOS, true)) {
@@ -70,7 +67,9 @@ class ImportacionDeSoporteController extends Controller
             // Serializa reenvíos simultáneos del mismo adjunto.
             User::whereKey($user_id)->lockForUpdate()->firstOrFail();
             $origen = ['user_id' => $user_id, 'support_ticket_id' => (int) $datos['support_ticket_id'], 'clave' => $clave];
-            $existente = ImportacionDeSoporte::where($origen)->first();
+            // Idempotencia entre corridas vivas: una con error, cancelada, revertida o que pide corregir el Excel no
+            // frena el reintento con el mismo archivo.
+            $existente = ImportacionDeSoporte::where($origen)->whereIn('estado', ImportacionDeSoporte::VIVAS)->latest('id')->first();
             if (!is_null($existente)) {
                 return $existente;
             }
@@ -106,10 +105,8 @@ class ImportacionDeSoporteController extends Controller
         if ($encontrada instanceof JsonResponse) {
             return $encontrada;
         }
-        if (in_array($encontrada->estado, ImportacionDeSoporte::EN_CURSO, true)
-            && $encontrada->updated_at->lt(Carbon::now()->subMinutes(self::MINUTOS_PARA_REANUDAR))) {
-            AvanzarImportacionDeSoporte::dispatch((int) $encontrada->id);
-        }
+        app(ImportacionDeSoporteService::class)->reanudar_si_hace_falta($encontrada);
+        $encontrada->refresh();
 
         return response()->json(['corrida' => ImportacionDeSoporteService::payload($encontrada)], 200);
     }
@@ -146,8 +143,11 @@ class ImportacionDeSoporteController extends Controller
         }
         list($status, $motivo, $actualizada) = $servicio->revertir($encontrada);
         if (!is_null($motivo)) {
-            return $this->error($status, $motivo, 'Solo se puede deshacer una importación terminada.',
+            return $this->error($status, $motivo, 'Solo se puede deshacer una importación terminada (o cortada con algo cargado).',
                 ['corrida' => ImportacionDeSoporteService::payload($actualizada)]);
+        }
+        if ($status === 202) {
+            AvanzarImportacionDeSoporte::dispatch((int) $actualizada->id);
         }
 
         return response()->json(['corrida' => ImportacionDeSoporteService::payload($actualizada)], $status);

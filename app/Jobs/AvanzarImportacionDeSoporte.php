@@ -23,7 +23,14 @@ class AvanzarImportacionDeSoporte implements ShouldQueue, ShouldBeUnique
 
     public $tries = 2;
     public $timeout = 900;
-    public $uniqueFor = 960;
+
+    /**
+     * Menos que los 10 minutos sin señales con los que la consulta del admin la relanza
+     * (ImportacionDeSoporteService::MINUTOS_PARA_REANUDAR): si la cola perdió el job, su candado de único ya venció
+     * y el relanzamiento no se descarta en silencio. Dos ejecuciones a la vez igual no pueden pasar: el handle()
+     * toma su propio candado por corrida.
+     */
+    public $uniqueFor = 540;
 
     private $importacion_id;
 
@@ -39,7 +46,7 @@ class AvanzarImportacionDeSoporte implements ShouldQueue, ShouldBeUnique
 
     public function handle(ImportacionDeSoporteService $servicio): void
     {
-        Cache::lock('importacion-de-soporte:' . $this->importacion_id, $this->uniqueFor)->get(function () use ($servicio) {
+        Cache::lock('importacion-de-soporte:' . $this->importacion_id, $this->timeout + 60)->get(function () use ($servicio) {
             $corrida = ImportacionDeSoporte::find($this->importacion_id);
             if ($corrida !== null && in_array($corrida->estado, ImportacionDeSoporte::EN_CURSO, true)) {
                 $servicio->avanzar($corrida);
