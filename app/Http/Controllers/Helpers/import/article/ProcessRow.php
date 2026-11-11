@@ -4347,15 +4347,39 @@ class ProcessRow {
     }
 
     function get_unidad_medida_id($row) {
-        $undiad_medida_excel = ImportHelper::getColumnValue($row, 'unidad_medida', $this->columns);
+        $valor = ImportHelper::getColumnValue($row, 'unidad_medida', $this->columns);
+        if ($valor === null || $valor === '') {
+            return null;
+        }
 
-        $unidad_medida = $this->unidad_medidas->where('name', $undiad_medida_excel)->first();
-
+        // El nombre cargado en el sistema manda, incluso si coincide con una abreviatura.
+        $unidad_medida = $this->unidad_medidas->where('name', $valor)->first();
         if ($unidad_medida) {
             return $unidad_medida->id;
         }
 
-        return null;
+        $normalizar = function ($nombre) {
+            return mb_strtolower(trim(preg_replace('/\s+/u', ' ', (string) $nombre)));
+        };
+        $nombre = $normalizar($valor);
+        $unidad_medida = $this->unidad_medidas->first(function ($unidad) use ($normalizar, $nombre) {
+            return $normalizar($unidad->name) === $nombre;
+        });
+        if ($unidad_medida) {
+            return $unidad_medida->id;
+        }
+
+        // Alias cerrados: UN del Excel de prueba es Unidad, nunca una unidad nueva.
+        $aliases = ['un' => 'unidad', 'und' => 'unidad', 'u' => 'unidad'];
+        if (!isset($aliases[$nombre])) {
+            return null;
+        }
+        $destino = $aliases[$nombre];
+        $unidad_medida = $this->unidad_medidas->first(function ($unidad) use ($normalizar, $destino) {
+            return $normalizar($unidad->name) === $destino;
+        });
+
+        return $unidad_medida ? $unidad_medida->id : null;
     }
 
     /**

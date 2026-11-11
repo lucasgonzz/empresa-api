@@ -446,6 +446,10 @@ class DemoSetupHelper
         self::apply_business_type_rules($data, $extencions, $seeders);
         self::apply_flag_rules($data, $extencions, $seeders);
 
+        if (self::es_setup_de_prueba($data)) {
+            $extencions[] = self::EXTENCION_SOPORTE_DE_LA_PRUEBA;
+        }
+
         // El ExtencionSeeder debe correr antes del sync para que existan los registros
         Artisan::call('db:seed', ['--class' => 'ExtencionSeeder', '--force' => true]);
 
@@ -1184,6 +1188,29 @@ class DemoSetupHelper
         }
 
         return bcrypt($data['doc_number']);
+    }
+
+    /**
+     * La extensión de Soporte que recibe la PRUEBA GRATUITA y no la demo (misión
+     * prueba-ayuda-unificada-en-soporte, E2, 10/11/2026). Decisión de Lucas: en la prueba toda la guía la
+     * da Soporte (Martín), que ve el sistema y arma tours, así que el lead tiene que tener la pestaña
+     * Soporte en Agentes. La demo NO la recibe: tiene que quedar idéntica (su guía es «Tu guía»).
+     *
+     * La fila de `extencion_empresas` ya la crea ExtencionSeeder (corre antes del sync). Para las
+     * instancias de prueba que ya existen está ExtencionSupportChatEnPruebaSeeder.
+     */
+    const EXTENCION_SOPORTE_DE_LA_PRUEBA = 'support_chat';
+
+    /**
+     * Si este setup arma una prueba gratuita: trae el objeto `prueba` (el alta de la landing) o corre en
+     * una instancia de prueba (`FOR_USER=prueba`, el pool que se arma antes de tener lead).
+     *
+     * @param array<string, mixed> $data
+     * @return bool
+     */
+    private static function es_setup_de_prueba(array $data)
+    {
+        return (isset($data['prueba']) && is_array($data['prueba'])) || self::es_instancia_de_prueba();
     }
 
     /**
