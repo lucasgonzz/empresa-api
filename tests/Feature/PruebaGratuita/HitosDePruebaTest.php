@@ -178,7 +178,11 @@ class HitosDePruebaTest extends EmpresaTestCase
         Http::assertNothingSent();
     }
 
-    public function test_el_estado_para_el_admin_trae_los_once_tipos_con_su_primer_momento()
+    /**
+     * Eran once tipos hasta la misión prueba-e2e-campana-imperio (11/11/2026), que sumó a propósito
+     * `prueba.venta_cc` y `prueba.articulo_actualizado`: por eso ahora son trece.
+     */
+    public function test_el_estado_para_el_admin_trae_los_trece_tipos_con_su_primer_momento()
     {
         $this->prender_la_prueba();
 
@@ -186,7 +190,11 @@ class HitosDePruebaTest extends EmpresaTestCase
 
         $estado = PruebaHelper::estado_para_admin($this->dueno->id);
 
-        $this->assertCount(11, $estado['hitos']);
+        $this->assertCount(13, $estado['hitos']);
+        $this->assertArrayHasKey('prueba.venta_cc', $estado['hitos']);
+        $this->assertArrayHasKey('prueba.articulo_actualizado', $estado['hitos']);
+        $this->assertNull($estado['hitos']['prueba.venta_cc']);
+        $this->assertNull($estado['hitos']['prueba.articulo_actualizado']);
         $this->assertSame('2026-11-04T10:00:00-03:00', $estado['hitos']['prueba.cliente_creado']);
         $this->assertNull($estado['hitos']['prueba.venta']);
         $this->assertTrue($estado['activa']);
