@@ -230,6 +230,44 @@ class SemillaRegistroHelper
     }
 
     /**
+     * Marca UN registro como de ejemplo, fuera de un lote (misión prueba-primera-venta, 12/11/2026): la
+     * apertura de caja con la que la prueba nace lista para vender se abre después de cerrar el lote del
+     * demo setup. Sin marcarla, al primer import `borrar_caja_de_ejemplo()` cerraba la caja y la dejaba
+     * huérfana (una apertura sin cierre en Tesorería) antes de abrir otra.
+     *
+     * Solo si el dueño todavía tiene datos de ejemplo: después del borrado lo nuevo es real. Con un lote
+     * abierto no hace falta (lo marca `cerrar_lote()`) y no se marca dos veces.
+     *
+     * @param int $owner_id
+     * @param string $tabla Una de TABLAS.
+     * @param int $registro_id
+     * @return bool si quedó marcado.
+     */
+    public static function marcar($owner_id, $tabla, $registro_id)
+    {
+        if (self::hay_lote_abierto() || !in_array($tabla, self::TABLAS, true) || !self::semilla_presente($owner_id)) {
+            return false;
+        }
+
+        $ya = SemillaRegistro::where('owner_id', (int) $owner_id)
+            ->where('tabla', $tabla)
+            ->where('registro_id', (int) $registro_id)
+            ->exists();
+
+        if (!$ya) {
+            SemillaRegistro::create([
+                'owner_id'    => (int) $owner_id,
+                'tabla'       => $tabla,
+                'registro_id' => (int) $registro_id,
+                'lote'        => 'prueba-primera-venta',
+                'created_at'  => Carbon::now(),
+            ]);
+        }
+
+        return true;
+    }
+
+    /**
      * Saca un registro de la marca: no es de ejemplo aunque haya nacido en el lote (el Client del propio
      * lead que crea el demo setup).
      *

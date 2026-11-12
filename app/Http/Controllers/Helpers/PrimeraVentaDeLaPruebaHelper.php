@@ -30,8 +30,8 @@ use Throwable;
  * deja en cero y CERRADA toda caja cuyos movimientos eran todos de ejemplo — o sea todas, en una prueba que
  * todavía no vendió. Ese es el «todas las cajas estaban cerradas» del ensayo.
  *
- * 🔴 Solo para la prueba. Lo llaman el demo setup cuando arma una prueba y el borrado de lo sembrado, que solo
- * existe en una prueba activa. Un cliente real no pasa nunca por acá. Nunca rompe a quien lo llama: un fallo
+ * 🔴 Solo para la prueba: se fija adentro que la prueba esté activa (`PruebaHelper::activa`), no confía en quien
+ * lo llama. Lo llaman el demo setup cuando arma una prueba y el borrado de lo sembrado. Nunca rompe a quien lo llama: un fallo
  * se loguea y la instancia queda como estaba.
  *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
@@ -50,6 +50,11 @@ class PrimeraVentaDeLaPruebaHelper
     public static function dejar_lista_para_vender($owner_id)
     {
         $resultado = ['address_id' => null, 'caja_abierta_id' => null];
+
+        // Se protege solo, sin confiar en quien lo llama: fuera de una prueba activa no toca nada.
+        if (!PruebaHelper::activa($owner_id)) {
+            return $resultado;
+        }
 
         try {
             $owner = User::find((int) $owner_id);
@@ -146,9 +151,16 @@ class PrimeraVentaDeLaPruebaHelper
         $helper = new CajaAperturaHelper($caja->id);
         $helper->abrir_caja();
 
-        // Fuera de un request no hay usuario logueado: la apertura queda a nombre del dueño.
         if (!is_null($helper->apertura_caja)) {
+            // Fuera de un request no hay usuario logueado: la apertura queda a nombre del dueño.
             AperturaCaja::where('id', $helper->apertura_caja->id)->update(['apertura_employee_id' => $owner->id]);
+
+            /*
+             * Mientras haya datos de ejemplo, esta apertura es parte de ellos: el primer import la borra
+             * junto con las demás aperturas vacías de la semilla (en vez de dejarla huérfana al cerrar la
+             * caja) y abre una sola nueva. Después del borrado ya no se marca: es la del negocio.
+             */
+            SemillaRegistroHelper::marcar($owner->id, 'apertura_cajas', $helper->apertura_caja->id);
         }
 
         return $helper->caja->fresh();

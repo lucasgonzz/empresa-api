@@ -54,6 +54,10 @@ class PrimeraVentaDeLaPruebaTest extends EmpresaTestCase
         $this->dueno->address_id = null;
         $this->dueno->save();
 
+        // El helper se protege solo: sin prueba activa no hace nada (ver test_fuera_de_una_prueba_no_toca_nada).
+        PruebaConfig::updateOrCreate(['owner_id' => $this->dueno->id], ['dias' => 7]);
+        PruebaHelper::olvidar_cache();
+
         $this->principal = Address::create(['street' => 'Principal del test', 'user_id' => $this->dueno->id, 'default_address' => 1]);
         $this->otra = Address::create(['street' => 'Otra del test', 'user_id' => $this->dueno->id]);
     }
@@ -162,9 +166,6 @@ class PrimeraVentaDeLaPruebaTest extends EmpresaTestCase
 
     public function test_el_borrado_de_la_semilla_al_importar_deja_la_caja_de_efectivo_abierta()
     {
-        PruebaConfig::updateOrCreate(['owner_id' => $this->dueno->id], ['dias' => 7]);
-        PruebaHelper::olvidar_cache();
-
         $efectivo = $this->crear_caja('Efectivo principal', $this->principal->id);
         $this->por_defecto_de_efectivo($efectivo, $this->principal->id);
 
@@ -180,5 +181,76 @@ class PrimeraVentaDeLaPruebaTest extends EmpresaTestCase
         $this->assertSame(1, (int) $caja->abierta, 'Después del primer import la caja de efectivo sigue abierta.');
         $this->assertNotNull($caja->current_apertura_caja_id);
         $this->assertNotEquals($apertura_de_ejemplo, $caja->current_apertura_caja_id, 'Es una apertura nueva, no la de ejemplo.');
+    }
+
+    public function test_la_apertura_del_armado_no_queda_huerfana_al_primer_import()
+    {
+        $efectivo = $this->crear_caja('Efectivo principal', $this->principal->id);
+        $this->por_defecto_de_efectivo($efectivo, $this->principal->id);
+
+        // El demo setup: la semilla (un artículo de ejemplo) en su lote, y DESPUÉS se deja lista para vender.
+        SemillaRegistroHelper::abrir_lote($this->dueno->id, 'test');
+        \App\Models\Article::create(['name' => 'De ejemplo', 'user_id' => $this->dueno->id, 'status' => 'active']);
+        SemillaRegistroHelper::cerrar_lote();
+
+        PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($this->dueno->id);
+        $apertura_del_armado = $efectivo->fresh()->current_apertura_caja_id;
+        $this->assertContains($apertura_del_armado, SemillaRegistroHelper::ids($this->dueno->id, 'apertura_cajas'), 'La apertura del armado cuenta como dato de ejemplo.');
+
+        $this->assertTrue(PruebaHelper::borrar_semilla_antes_de_importar($this->dueno->id, 'excel'));
+
+        $aperturas = AperturaCaja::where('caja_id', $efectivo->id)->get();
+        $this->assertCount(1, $aperturas, 'Queda UNA sola apertura: la del armado se fue con la semilla.');
+        $this->assertNull(AperturaCaja::find($apertura_del_armado));
+        $this->assertSame(1, (int) $efectivo->fresh()->abierta);
+        $this->assertSame((int) $aperturas->first()->id, (int) $efectivo->fresh()->current_apertura_caja_id);
+        $this->assertNotContains((int) $aperturas->first()->id, SemillaRegistroHelper::ids($this->dueno->id, 'apertura_cajas'), 'La nueva es del negocio.');
+    }
+
+    public function test_fuera_de_una_prueba_no_toca_nada()
+    {
+        $efectivo = $this->crear_caja('Efectivo principal', $this->principal->id);
+        $this->por_defecto_de_efectivo($efectivo, $this->principal->id);
+
+        // Sin configuración de prueba (un negocio que no está en prueba)...
+        PruebaConfig::where('owner_id', $this->dueno->id)->delete();
+        PruebaHelper::olvidar_cache();
+        $resultado = PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($this->dueno->id);
+        $this->assertNull($resultado['caja_abierta_id']);
+
+        // ...y en una instancia que no es de prueba, aunque tenga la configuración.
+        PruebaConfig::updateOrCreate(['owner_id' => $this->dueno->id], ['dias' => 7]);
+        config(['app.FOR_USER' => null]);
+        PruebaHelper::olvidar_cache();
+        $resultado = PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($this->dueno->id);
+        $this->assertNull($resultado['caja_abierta_id']);
+
+        $this->assertSame(0, (int) $efectivo->fresh()->abierta);
+        $this->assertNull($this->dueno->fresh()->address_id);
+    }
+
+    public function test_el_comando_se_niega_fuera_de_una_prueba()
+    {
+        $efectivo = $this->crear_caja('Efectivo principal', $this->principal->id);
+        $this->por_defecto_de_efectivo($efectivo, $this->principal->id);
+
+        config(['app.FOR_USER' => null]);
+        PruebaHelper::olvidar_cache();
+
+        $this->artisan('prueba:lista-para-vender')
+            ->expectsOutput('No es una instancia de prueba activa: no se toca nada.')
+            ->assertExitCode(0);
+
+        $this->assertSame(0, (int) $efectivo->fresh()->abierta);
+    }
+
+    public function test_el_comando_deja_lista_una_prueba_activa()
+    {
+        $efectivo = $this->crear_caja('Efectivo principal', $this->principal->id);
+        $this->por_defecto_de_efectivo($efectivo, $this->principal->id);
+
+        $this->artisan('prueba:lista-para-vender')->assertExitCode(0);
+
+        $this->assertSame(1, (int) $efectivo->fresh()->abierta);
     }
 }
