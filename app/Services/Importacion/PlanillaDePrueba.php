@@ -1111,7 +1111,7 @@ class PlanillaDePrueba
             foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
                 $datos = [];
                 foreach ($hoja['mapeo'] as $campo => $posicion) {
-                    $datos[$campo] = ImportHelper::getColumnValue($fila, $campo, $hoja['mapeo']);
+                    $datos[$campo] = ImportHelper::getColumnValue($fila, $campo, $hoja['mapeo'], $campo === 'nombre');
                 }
                 if (array_filter($datos, function ($valor) { return $valor !== null && $valor !== ''; }) === []) {
                     continue;

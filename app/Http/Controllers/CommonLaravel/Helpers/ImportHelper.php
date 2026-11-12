@@ -46,9 +46,10 @@ class ImportHelper {
 	 * @param mixed $row Fila del Excel (array o Collection).
 	 * @param string $key Clave de la columna en el mapeo.
 	 * @param array $columns Mapeo de columnas de la importación.
+	 * @param bool $conservar_comillas Para nombres de artículos: conserva pulgadas y texto significativo.
 	 * @return string|null
 	 */
-	static function getColumnValue($row, $key, $columns) {
+	static function getColumnValue($row, $key, $columns, $conservar_comillas = false) {
 		if (
 			isset($columns[$key])
 			&& isset($row[$columns[$key]])
@@ -64,7 +65,9 @@ class ImportHelper {
 			$value = self::scalarToLiteralString($row[$columns[$key]]);
 			$value = str_replace("\xEF\xBB\xBF", '', (string) $value);
 			$value = trim($value);
-			$value = trim($value, '"');
+			if (!$conservar_comillas) {
+				$value = trim($value, '"');
+			}
 			return trim($value);
 		}
 		return null;

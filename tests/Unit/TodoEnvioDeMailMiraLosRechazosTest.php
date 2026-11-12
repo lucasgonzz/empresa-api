@@ -41,7 +41,7 @@ use RecursiveIteratorIterator;
  * fija que ningún Mailable implemente `ShouldQueue` (si lo hiciera, `->send()` encolaría y el chequeo leería una lista vacía).
  *
  * 🔴 Puntos ciegos que QUEDAN (el detector cuenta CERO en estas formas; hoy no hay ninguna en `app/`): un alias de la fachada (`use ...\Mail as Correo`),
- * `$this->mailer->send(...)` o `app('mailer')->send(...)` (fuera de la fachada), llamar a `Mailable::send($mailer)` / `->queue()` directo sin pasar por la fachada, y un
+ * `$this->mailer->send(...)` o `app('mailer')->send(...)` (fuera de la fachada y sin una variable resuelta con `$manager->mailer()`), llamar a `Mailable::send($mailer)` / `->queue()` directo sin pasar por la fachada, y un
  * `PendingMail` que sale de la sentencia sin enviarse (`return Mail::to($a);`, `yield`, un array, `enviar(Mail::to($a), $b);`, `fn($a) => Mail::to($a)`, `??=`, un ternario):
  * su `->send()` queda en OTRA sentencia, que este detector no empareja (solo denuncia el guardado en una variable con `=`, `$p = Mail::to($a);`). Tampoco ve `Mail::driver()` ni
  * `Mail::getSwiftMailer()` (otros nombres para mandar), y un `->failures()` DENTRO de una closure del encadenado cuenta como "lee los rechazos".
@@ -70,7 +70,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     /**
      * Las llamadas a `RechazosDeCorreoHelper` que cuentan como "mirar los rechazos".
      */
-    const METODOS_DEL_HELPER = ['del_ultimo_envio', 'fallar_si_hubo_rechazos'];
+    const METODOS_DEL_HELPER = ['del_ultimo_envio', 'fallar_si_hubo_rechazos', 'fallar_si_hubo_rechazos_del_mailer'];
 
     /**
      * ENVÍOS INMEDIATOS que NO miran los rechazos, por decisión escrita (criterio: un punto se arregla si AFIRMA un éxito que el rechazo desmiente;
@@ -156,7 +156,28 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
         $partidos  = 0;
         $total     = count($tokens);
 
+        $mailers_privados = [];
         for ($i = 0; $i < $total; $i++) {
+            // El servicio de prueba resuelve un Mailer en un manager privado. Seguir la variable
+            // evita dejar ese envío fuera del guardián al sacarlo de la fachada global.
+            if (is_array($tokens[$i]) && $tokens[$i][0] === T_VARIABLE
+                && $this->texto($tokens, $i + 1) === '='
+                && isset($tokens[$i + 2]) && is_array($tokens[$i + 2]) && $tokens[$i + 2][0] === T_VARIABLE
+                && $this->texto($tokens, $i + 3) === '->'
+                && strtolower($this->texto($tokens, $i + 4)) === 'mailer'
+                && $this->texto($tokens, $i + 5) === '(') {
+                $mailers_privados[$this->texto($tokens, $i)] = true;
+            }
+            if (isset($mailers_privados[$this->texto($tokens, $i)])
+                && $this->texto($tokens, $i + 1) === '->') {
+                $tipo_privado = $this->tipo_de_la_sentencia($tokens, $i);
+                if ($tipo_privado === 'envio') {
+                    $envios++;
+                } elseif ($tipo_privado === 'encolado') {
+                    $encolados++;
+                }
+                continue;
+            }
             // `Mail::` (con o sin el namespace de la fachada delante): arranca una sentencia candidata.
             if ($this->es_el_nombre($this->texto($tokens, $i), 'Mail') && $this->texto($tokens, $i + 1) === '::') {
                 $tipo = $this->tipo_de_la_sentencia($tokens, $i);
@@ -389,20 +410,20 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     }
 
     /**
-     * Las cuentas de TODOS los archivos de `app/` que mencionan `Mail::` (los demás no pueden mandar nada por la fachada).
+     * Las cuentas de todos los archivos candidatos: fachada o mailer resuelto en un manager privado.
      *
      * @return array<string, array{envios: int, encolados: int, chequeos: int}> Ruta relativa => cuentas.
      */
-    private function cuentas_de_app(): array
+    private function cuentas_de_app(?array $rutas = null): array
     {
         $cuentas = [];
 
-        foreach ($this->archivos_de_app() as $ruta) {
+        foreach ($rutas ?? $this->archivos_de_app() as $ruta) {
             $codigo = (string) file_get_contents($ruta);
 
-            // Un archivo sin ningún `Mail::` no puede mandar nada por la fachada (ni con namespace delante: el `Mail::` sigue estando): se ahorra el
-            // `token_get_all()`, que en los archivos grandes es lo que más tarda.
-            if (! $this->menciona_la_fachada_mail($codigo)) {
+            // La optimización debe dejar pasar también managers privados: de otro modo el
+            // detector de tokens los vería en la unidad, pero el escaneo real los saltearía.
+            if (! $this->es_candidato_a_envio_de_correo($codigo)) {
                 continue;
             }
 
@@ -413,7 +434,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     }
 
     /**
-     * ¿El código menciona la fachada `Mail::`, con o sin namespace delante y escrita como sea?
+     * ¿El código menciona la fachada `Mail::` o resuelve un mailer desde un manager privado?
      *
      * 🔴 Sin distinguir mayúsculas: los nombres de clase de PHP no las distinguen, así que `\MAIL::to($a)->send($b)` es el mismo envío. Este filtro corre ANTES de
      * `analizar()` (que sí ve esa forma) y un archivo que no lo pasa se saltea entero: con `/Mail\s*::/` a secas, un envío escrito `\mail::` quedaba invisible
@@ -423,9 +444,9 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
      *
      * @return bool
      */
-    private function menciona_la_fachada_mail(string $codigo): bool
+    private function es_candidato_a_envio_de_correo(string $codigo): bool
     {
-        return preg_match('/Mail\s*::/i', $codigo) === 1;
+        return preg_match('/Mail\s*::|->\s*mailer\s*\(/i', $codigo) === 1;
     }
 
     /**
@@ -440,7 +461,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
      */
     public function test_el_filtro_de_archivos_ve_la_fachada_escrita_de_cualquier_forma(string $codigo, bool $esperado): void
     {
-        $this->assertSame($esperado, $this->menciona_la_fachada_mail('<?php ' . $codigo));
+        $this->assertSame($esperado, $this->es_candidato_a_envio_de_correo('<?php ' . $codigo));
     }
 
     /**
@@ -456,11 +477,43 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
             'en mayúsculas'                               => ['\\MAIL::to($a)->send($b);', true],
             'en minúsculas'                               => ['\\mail::to($a)->send($b);', true],
             'con un espacio antes de los dos puntos'      => ['Mail ::to($a)->send($b);', true],
+            'manager privado con envio'                  => ['$mailer = $manager->mailer(); $mailer->send($v, [], $cb);', true],
+            'manager privado con espacios'               => ['$mailer = $manager -> MAILER (); $mailer->send($v, [], $cb);', true],
             'un archivo que no la menciona'               => ['$x = 1; Cache::get("k");', false],
             'Mailer:: no es la fachada'                   => ['Mailer::to($a)->send($b);', false],
             'Mailable::class tampoco'                     => ['$c = Mailable::class;', false],
             'el use de la fachada sin llamarla'           => ['use Illuminate\\Support\\Facades\\Mail;', false],
         ];
+    }
+
+    public function test_el_servicio_privado_entra_al_escaneo_real_con_su_chequeo(): void
+    {
+        $cuentas = $this->cuentas_de_app();
+        $this->assertArrayHasKey('Services/Mail/PruebaDeCorreoService.php', $cuentas);
+        $this->assertSame(1, $cuentas['Services/Mail/PruebaDeCorreoService.php']['envios']);
+        $this->assertSame(1, $cuentas['Services/Mail/PruebaDeCorreoService.php']['chequeos']);
+    }
+
+    public function test_el_camino_real_de_escaneo_detecta_quitar_el_chequeo_a_un_mailer_privado(): void
+    {
+        // Los archivos temporales pasan por el mismo filtro y análisis que cuentas_de_app(),
+        // sin escribir fixtures dentro de app ni dejar excepciones por nombre de archivo.
+        $ruta = tempnam(sys_get_temp_dir(), 'correo-privado-');
+        try {
+            $envio = '<?php $mailer = $manager->mailer(); $mailer->send($vista, [], $callback);';
+            file_put_contents($ruta, $envio);
+            $sin_chequeo = array_values($this->cuentas_de_app([$ruta]));
+            $this->assertCount(1, $sin_chequeo, 'El filtro no puede saltear el envío privado.');
+            $this->assertGreaterThan($sin_chequeo[0]['chequeos'], $sin_chequeo[0]['envios']);
+
+            file_put_contents($ruta, $envio.' RechazosDeCorreoHelper::fallar_si_hubo_rechazos_del_mailer($mailer);');
+            $con_chequeo = array_values($this->cuentas_de_app([$ruta]));
+            $this->assertCount(1, $con_chequeo);
+            $this->assertSame(1, $con_chequeo[0]['envios']);
+            $this->assertSame(1, $con_chequeo[0]['chequeos']);
+        } finally {
+            unlink($ruta);
+        }
     }
 
     /**
@@ -583,7 +636,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     {
         return [
             'PasswordResetController (el código de recuperación)'   => ['Http/Controllers/CommonLaravel/PasswordResetController.php', 1, 0],
-            'OnlineConfigurationController (probar el SMTP)'        => ['Http/Controllers/OnlineConfigurationController.php', 1, 0],
+            'PruebaDeCorreoService (probar el remitente efectivo)'  => ['Services/Mail/PruebaDeCorreoService.php', 1, 0],
             'ProcessSendAdviseMail (el aviso de ingreso de stock)'  => ['Jobs/ProcessSendAdviseMail.php', 1, 0],
             'ClientePotencialController (el mail a un prospecto)'   => ['Http/Controllers/ClientePotencialController.php', 1, 0],
             'ErrorController (el aviso de un error del SPA)'        => ['Http/Controllers/CommonLaravel/ErrorController.php', 1, 0],
@@ -634,6 +687,10 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
             'Mail::html y Mail::plain mandan en el acto'            => ['Mail::html("x", $f); Mail::plain("vista", [], $f);', 2, 0, 0],
             'sendNow manda en el acto'                              => ['Mail::to($a)->sendNow($b);', 1, 0, 0],
             'dos envíos, un chequeo'                                => ['Mail::to($a)->send($b); Mail::to($c)->send($d); RechazosDeCorreoHelper::fallar_si_hubo_rechazos();', 2, 0, 1],
+            'mailer privado con chequeo de su instancia'          => ['$mailer = $manager->mailer(); $mailer->send($v, [], $cb); RechazosDeCorreoHelper::fallar_si_hubo_rechazos_del_mailer($mailer);', 1, 0, 1],
+            'mailer privado sin chequeo sigue siendo envio'       => ['$mailer = $manager->mailer(); $mailer->send($v, [], $cb);', 1, 0, 0],
+            'otra variable send no se confunde con un mailer'      => ['$otro->send($mensaje);', 0, 0, 0],
+            'resolver mailer privado no cuenta como envio'        => ['$mailer = $manager->mailer(); $mailer->failures();', 0, 0, 0],
             'un queue() es un encolado y NO un envío'               => ['Mail::to($a)->queue($b);', 0, 1, 0],
             'un later() es un encolado'                             => ['Mail::to($a)->later(60, $b);', 0, 1, 0],
             'un envío y un encolado, cada uno a su cuenta'          => ['Mail::to($a)->send($b); Mail::to($c)->queue($d);', 1, 1, 0],

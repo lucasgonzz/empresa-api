@@ -1062,7 +1062,10 @@ class ProcessRow {
 
             if (!ImportHelper::isIgnoredColumn($prop_to_add['excel_column'], $this->columns)) {
 
-                $excel_value = ImportHelper::getColumnValue($row, $prop_to_add['excel_column'], $this->columns);
+                // CSV/PhpSpreadsheet ya quitan las comillas de formato; en un nombre pueden indicar pulgadas.
+                $excel_value = ImportHelper::getColumnValue(
+                    $row, $prop_to_add['excel_column'], $this->columns, $prop_to_add['prop_key'] === 'name'
+                );
 
                 if (isset($prop_to_add['is_number'])) {
 
@@ -1161,9 +1164,9 @@ class ProcessRow {
 
         /*
          * Si tras normalizar los 4 identificadores la fila quedó sin ninguno utilizable
-         * (id, bar_code, sku ni provider_code), se registra como conflicto 'sin_identificador'.
-         * Son las filas que hoy caen al fallback por nombre o generan artículos duplicados
-         * sin que el usuario se entere (prompt 02, grupo 229).
+         * (id, bar_code, sku ni provider_code), se comprueba también el nombre.
+         * Un nombre válido alcanza para identificar la fila: no requiere inventar códigos.
+         * Solo se informa y omite si tampoco hay nombre utilizable (ticket 107).
          */
         if (
             empty($data['id'])
@@ -1171,8 +1174,6 @@ class ProcessRow {
             && empty($data['sku'])
             && empty($data['provider_code'])
         ) {
-            $this->registrar_sin_identificador($this->fila_actual, $data['name'] ?? null);
-
             /*
              * Sin ningún código y sin nombre, la fila no se puede identificar ni nombrar: es, por
              * ejemplo, el título de una sección con el código en espacios, que pasa checkRow() y
@@ -1185,6 +1186,7 @@ class ProcessRow {
              * la fila NO se saltea.
              */
             if (preg_replace('/\s+/u', '', (string) ($data['name'] ?? '')) === '') {
+                $this->registrar_sin_identificador($this->fila_actual, $data['name'] ?? null);
                 $this->contar_fila('sin_match_no_creado');
                 $this->sumar_durations();
                 return $this->observations;
@@ -1314,6 +1316,18 @@ class ProcessRow {
             se omite para no sobreescribirlo
         */
         $this->iniciar();
+        $fila_nombre_previa = null;
+        if (empty($data['id']) && empty($data['bar_code']) && empty($data['sku'])
+            && empty($data['provider_code']) && !empty($data['name']) && $this->import_history_id) {
+            $clave_nombre = ArticleIndexCache::normalize_name_for_match($data['name']);
+            $candidatos_nombre = ArticleIndexCache::index_entry_to_ids($this->article_index['names'][$clave_nombre] ?? null);
+            // Con varios candidatos la cascada debe informar la ambigüedad, sin elegir un fake arbitrario.
+            if (count(array_unique($candidatos_nombre)) <= 1) {
+                $fila_nombre_previa = ArticleIndexCache::registrar_fila_por_nombre(
+                    (int) $this->user->id, (int) $this->import_history_id, $clave_nombre, (int) $this->fila_actual
+                );
+            }
+        }
         $ya_estaba_en_excel = $this->ya_estaba_en_el_excel($data);
         $columna_de_prueba = \App\Services\Importacion\PlanillaDePrueba::SEPARAR_CODIGO;
         $separar_codigo_en_prueba = ImportHelper::getColumnValue($row, $columna_de_prueba, $this->columns) === '1';
@@ -1369,8 +1383,8 @@ class ProcessRow {
 
             $this->registrar_fila_sobrescrita($fila_origen_anterior, $this->fila_actual, $campo, $valor, $data['name'] ?? null);
 
-            if (in_array($campo, ['bar_code', 'sku', 'provider_code'], true)) {
-                // Fila repetida por bar_code/sku/provider_code: se hace merge sobre la fila anterior en cola.
+            if (in_array($campo, ['bar_code', 'sku', 'provider_code', 'name'], true)) {
+                // También sin código: la última fila por nombre actualiza la entrada ya encolada.
                 $this->contar_fila('merge_fila_repetida');
 
                 /*
@@ -1388,7 +1402,7 @@ class ProcessRow {
                 return $this->observations;
             }
 
-            // Fila repetida por id o name (o sin escalon detectado): se descarta sin mas, pero ya quedo reportada arriba.
+            // Fila repetida por id (o sin escalon detectado): se descarta sin mas, pero ya quedo reportada arriba.
             $this->contar_fila('fila_repetida_en_excel');
             $this->articles_repetidos++;
             $this->log('SE OMITIO EN PROCES ROW (fila repetida sin propiedades de variante)');
@@ -1572,6 +1586,10 @@ class ProcessRow {
          * larga donde estaba antes, arriba.
          */
         $data = $this->aplicar_back_out_de_iva($data, $articulo_ya_creado);
+
+        if (!is_null($fila_nombre_previa) && $escalon_de_match === 'name' && $articulo_ya_creado instanceof Article) {
+            $this->registrar_fila_sobrescrita($fila_nombre_previa, $this->fila_actual, 'name', $data['name'], $data['name']);
+        }
 
         // Marca si esta fila ya quedo resuelta (match, fake pendiente o creacion encolada);
         // si llega al final sin pasar por ninguna de esas ramas, cuenta 'sin_match_no_creado'.
@@ -2428,6 +2446,9 @@ class ProcessRow {
             } elseif (!empty($data['provider_code']) && !in_array('provider_code', $campos_pendientes, true)) {
                 $match_field = 'provider_code';
                 $match_value = $data['provider_code'];
+            } elseif (!empty($data['name'])) {
+                $match_field = 'name';
+                $match_value = ArticleIndexCache::normalize_name_for_match($data['name']);
             }
 
             if (!is_null($match_field)) {
@@ -2719,7 +2740,7 @@ class ProcessRow {
     }
 
     /**
-     * Cuando el identificador (bar_code, sku o provider_code) de la fila actual ya fue
+     * Cuando el identificador (bar_code, sku, provider_code o name) de la fila actual ya fue
      * procesado en una fila anterior del mismo Excel, actualiza el artículo ya encolado
      * con los datos de esta fila (última fila gana, generalizado a los tres escalones
      * que soportan merge — prompt 03, grupo 265; antes solo bar_code).
@@ -2731,12 +2752,15 @@ class ProcessRow {
      *
      * @param  array  $data  datos de la fila actual
      * @param  mixed  $row   fila cruda del Excel
-     * @param  string $campo 'bar_code'|'sku'|'provider_code'
+     * @param  string $campo 'bar_code'|'sku'|'provider_code'|'name'
      * @return void
      */
     protected function merge_fila_duplicada(array $data, $row, string $campo): void
     {
         $valor = isset($data[$campo]) ? $data[$campo] : null;
+        if ($campo === 'name') {
+            $valor = ArticleIndexCache::normalize_name_for_match($valor);
+        }
 
         if (empty($valor)) {
             $this->log('merge_fila_duplicada: valor vacio para campo ' . $campo . ', se omite');
@@ -2758,6 +2782,8 @@ class ProcessRow {
             $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['bar_codes'][$valor] ?? null);
         } elseif ($campo === 'sku') {
             $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['skus'][$valor] ?? null);
+        } elseif ($campo === 'name') {
+            $ids_en_indice = ArticleIndexCache::index_entry_to_ids($this->article_index['names'][$valor] ?? null);
         } elseif ($campo === 'provider_code') {
             $provider_id_idx = !is_null($data['provider_id'] ?? null)
                 ? (int) $data['provider_id']
@@ -3138,56 +3164,20 @@ class ProcessRow {
             return false;
         }
 
-        /*
-         * 5) Coincidencia por name.
-         *
-         * Desde el fix del 2/9/2026 este escalon solo se alcanza cuando la fila NO trae
-         * provider_code: si lo trae, el escalon 4 decide y retorna siempre. O sea que el
-         * if de $codigos_repetidos de aca abajo quedo sin efecto observable -- sus dos
-         * ramas terminan marcando 'name' igual, porque la rama que las diferenciaba
-         * (comparar los dos provider_code) es inalcanzable con $data['provider_code'] vacio.
-         *
-         * Se deja en pie a proposito y no se borra en el mismo commit que el arreglo de
-         * comportamiento: un diff que mezcla las dos cosas es mucho mas caro de revisar.
-         * Limpiarlo es una tarea aparte, y cuando se haga hay que mirar tambien que este
-         * escalon NUNCA mergea (procesar() lo manda al descarte, gana la PRIMERA fila), que
-         * es una asimetria propia y anterior a este fix.
-         */
+        // Sin códigos, el nombre usa el mismo criterio que el índice (conserva pulgadas y signos).
         if (!empty($data['name'])) {
-
-            if (!empty($art['name']) && $art['name'] === $data['name']) {
-
-                if ($codigos_repetidos) {
-
-                    // Rama inalcanzable desde el fix del 2/9/2026 (ver el comentario de arriba):
-                    // si la fila trajera provider_code, el escalon 4 ya habria retornado.
-                    if (!empty($data['provider_code']) && !empty($art['provider_code'])) {
-                        if ($art['provider_code'] === $data['provider_code']) {
-                            $this->escalon_repeticion = 'name';
-                            $this->log('Ya esta para crear, name+provider_code: '.$art['name'].' / '.$art['provider_code'].' = '.$data['name'].' / '.$data['provider_code']);
-                            return true;
-                        } else {
-                            // Mismo nombre pero distinto provider_code => NO repetido
-                            $this->log('Mismo name pero distinto provider_code con repetidos habilitados: '.$art['name'].' / '.$art['provider_code'].' != '.$data['name'].' / '.$data['provider_code']);
-                            return false;
-                        }
-                    }
-
-                    // Si falta alguno de los provider_code, no podemos garantizar que no esté repetido.
-                    // Por seguridad, consideramos repetido (conservador).
-                    $this->log('Name coincide pero falta provider_code para contrastar con repetidos habilitados. Se marca como repetido por seguridad: '.$art['name'].' = '.$data['name']);
-                    $this->escalon_repeticion = 'name';
-                    return true;
-
-                } else {
-                    // Si NO se permiten repetidos de provider_code, con que coincida el nombre basta.
-                    $this->log('Ya esta para crear, name: '.$art['name'].' = '.$data['name']);
-                    $this->escalon_repeticion = 'name';
-                    return true;
-                }
+            $nombre = ArticleIndexCache::normalize_name_for_match($data['name']);
+            $ids = ArticleIndexCache::index_entry_to_ids($this->article_index['names'][$nombre] ?? null);
+            if (count(array_unique($ids)) > 1) {
+                return false;
             }
-
-            return false;
+            $coincide = isset($art['__match_key'])
+                ? $art['__match_key'] === 'name|' . $nombre
+                : (!empty($art['name']) && ArticleIndexCache::normalize_name_for_match($art['name']) === $nombre);
+            if ($coincide) {
+                $this->escalon_repeticion = 'name';
+                return true;
+            }
         }
 
         return $repetido;

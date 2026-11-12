@@ -37,7 +37,7 @@ use Illuminate\Database\Eloquent\Model;
  * QUÉ LE PASA A LA FILA SEGÚN EL TIPO (misión importacion-mensaje-de-problemas,
  * 4/10/2026, leído de ProcessRow::procesar() y ArticleIndexCache::find_with_index()):
  *
- *   - 'ambiguo' es el ÚNICO tipo que SEGURO deja la fila afuera: no se crea ni se
+ *   - 'ambiguo' deja la fila afuera: no se crea ni se
  *     actualiza nada (ver TIPOS_QUE_SALTEAN_LA_FILA). No siempre es "el código coincide
  *     con más de un artículo": también sale por NOMBRE en una fila sin código que
  *     coincide con varios artículos, y cuando la fila coincide con UN solo artículo que
@@ -46,10 +46,11 @@ use Illuminate\Database\Eloquent\Model;
  *     puede traer además conflictos anteriores al match (un numero_invalido, un
  *     placeholder_descartado, un desempate_por_nombre_sin_resolver): igual cuenta como
  *     fila que no se importó.
+ *   - 'sin_identificador' sin nombre también deja la fila afuera. Sus registros históricos
+ *     con nombre válido son informativos: no corresponde pedir que inventen códigos.
  *   - Con el resto de los tipos que cuentan, el DATO se descarta y la fila SIGUE:
  *     'numero_invalido' y 'numero_fuera_de_rango' (ese campo no se toca),
- *     'placeholder_descartado' (ese código se anula), 'sin_identificador' (sin códigos,
- *     se busca por nombre; si tampoco trae nombre, la fila se saltea y no sigue),
+ *     'placeholder_descartado' (ese código se anula),
  *     'identificador_sin_asignar' (ese código único no se asigna)
  *     y 'desempate_por_nombre_sin_resolver' (se aplica a todos los candidatos). Después
  *     la fila se crea, se actualiza o NO, según el resto de la importación: "Solo
@@ -91,8 +92,9 @@ class ImportConflict extends Model
      * "no se importó porque no se pudo saber a qué artículo corresponde"
      * (ArticleImportHelper::contar_filas_con_problemas()).
      *
-     * 'sin_identificador' no va en esta lista porque solo saltea la fila cuando tampoco trae
-     * nombre: con nombre, la fila sigue y se busca por él. El tipo solo no alcanza para saberlo.
+     * 'sin_identificador' nuevo solo se registra sin códigos NI nombre y saltea la fila.
+     * Los historiales anteriores también lo guardaban con nombre válido: en esos casos
+     * es informativo. contar_filas_con_problemas() distingue ambos usando nombre_excel.
      */
     public const TIPOS_QUE_SALTEAN_LA_FILA = ['ambiguo'];
 

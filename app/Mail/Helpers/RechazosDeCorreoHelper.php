@@ -92,6 +92,20 @@ class RechazosDeCorreoHelper
             return [];
         }
 
+        return self::limpiar_rechazadas($rechazadas);
+    }
+
+    /** La prueba aislada tiene su propio manager: mirar la fachada leería otro envío. */
+    public static function fallar_si_hubo_rechazos_del_mailer(\Illuminate\Mail\Mailer $mailer): void
+    {
+        $rechazadas = self::limpiar_rechazadas($mailer->failures());
+        if (!empty($rechazadas)) {
+            throw new MailRechazadoPorElServidorException($rechazadas);
+        }
+    }
+
+    private static function limpiar_rechazadas($rechazadas): array
+    {
         if (! is_array($rechazadas)) {
             return [];
         }

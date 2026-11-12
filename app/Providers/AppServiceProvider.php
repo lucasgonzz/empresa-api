@@ -31,6 +31,11 @@ class AppServiceProvider extends ServiceProvider
     {
         Schema::defaultStringLength(191);
 
+        // Guardar al arrancar, también con config:cache: una casilla aplicada en runtime no
+        // puede convertirse en el respaldo de la próxima prueba de otro negocio.
+        $this->app->instance(\App\Services\Mail\PruebaDeCorreoService::class,
+            new \App\Services\Mail\PruebaDeCorreoService($this->app['config']->get('mail', [])));
+
         // Reintenta la conexión a MySQL ante una saturación transitoria de la cuenta compartida
         // de Hostinger (misión reintento-conexion-mysql, 15/9/2026) en vez de romper el request al
         // primer fallo. Ver el docblock de la clase para el detalle y la relación con el reintento

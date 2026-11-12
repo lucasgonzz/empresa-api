@@ -730,7 +730,7 @@ class InitExcelImport
                 }
             }
 
-            $nombre = ImportHelper::getColumnValue($row, 'nombre', $this->columns);
+            $nombre = ImportHelper::getColumnValue($row, 'nombre', $this->columns, true);
 
             if (!is_null($nombre)) {
                 $clave_nombre = ArticleIndexCache::normalize_name_for_match($nombre);

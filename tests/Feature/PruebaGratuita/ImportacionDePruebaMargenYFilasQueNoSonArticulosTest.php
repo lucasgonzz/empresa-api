@@ -475,6 +475,24 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         ];
     }
 
+    public function test_las_pulgadas_del_nombre_llegan_de_la_planilla_al_motor_y_a_la_base(): void
+    {
+        $this->analizador(['COD' => ['codigo_de_proveedor', 0.99], 'DESCRIPCION' => ['nombre', 0.99], 'PRECIO VENTA' => ['precio', 0.99]]);
+        Bus::fake();
+        $run = $this->avanzar($this->corrida([
+            ['COD', 'DESCRIPCION', 'PRECIO VENTA'],
+            ['PULG-1', 'Llave francesa 10"', 344.54],
+            ['PULG-2', 'Clavo espiralado 2 1/2"', 18395.34],
+        ]));
+        $this->assertSame('importando', $run->estado);
+        $filas = $this->correr_la_importacion();
+        $this->assertCount(2, $filas);
+        foreach (['PULG-1' => 'Llave francesa 10"', 'PULG-2' => 'Clavo espiralado 2 1/2"'] as $codigo => $nombre) {
+            $articulo = Article::where('user_id', $this->dueno->id)->where('provider_code', $codigo)->firstOrFail();
+            $this->assertSame($nombre, $articulo->name);
+        }
+    }
+
     public function test_un_precio_a_secas_se_pregunta_aunque_el_analizador_este_seguro_y_la_carga_espera(): void
     {
         $this->analizador($this->mapeo_del_analizador_seguro());

@@ -300,7 +300,7 @@ class FilaSinIdentificadorTest extends ImportTestCase
 
     /**
      * Guarda del comportamiento que no cambia: una fila con nombre y sin código se sigue creando
-     * y se sigue reportando como fila sin identificador.
+     * sin exigir un código ni una revisión inexistente.
      *
      * @return void
      */
@@ -314,7 +314,7 @@ class FilaSinIdentificadorTest extends ImportTestCase
 
         $this->assertBuckets($import, ['creado_nuevo' => 1]);
 
-        $this->assertSame([2], $this->filas_de_conflictos($import, 'sin_identificador'));
+        $this->assertSame([], $this->filas_de_conflictos($import, 'sin_identificador'));
 
         $this->assertTrue(
             Article::where('user_id', $this->tenant->id)->where('name', 'Articulo solo con nombre pesca')->exists(),

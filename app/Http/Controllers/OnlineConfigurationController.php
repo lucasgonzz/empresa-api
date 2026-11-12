@@ -5,12 +5,10 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Exceptions\MailRechazadoPorElServidorException;
 use App\Http\Controllers\CommonLaravel\ImageController;
-use App\Http\Controllers\Helpers\ClientMailConfigHelper;
-use App\Mail\Helpers\RechazosDeCorreoHelper;
+use App\Services\Mail\PruebaDeCorreoService;
 use App\Models\OnlineConfiguration;
 use App\Services\LogoPaletteAiService;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Validator;
 
@@ -242,58 +240,49 @@ class OnlineConfigurationController extends Controller
         $model->ofrecer_envio_zipnova = $request->boolean('ofrecer_envio_zipnova') ? 1 : 0;
     }
 
-    /**
-     * Envia un mail de prueba usando la configuracion SMTP propia del cliente (si esta activa y
-     * completa), para que el dueño del comercio pueda validar sus credenciales sin depender de
-     * que un comprador reciba (o no) un aviso real.
-     *
-     * @param Request $request Request con email_destino (obligatorio, formato email).
-     * @return \Illuminate\Http\JsonResponse
-     */
+    /** Prueba el remitente efectivo guardado, sin modificar los envíos normales. */
     public function testMail(Request $request) {
-        // Validacion puntual del formato del mail de destino: justificada porque este endpoint
-        // dispara un envio real de correo, no es la validacion general de formularios del ERP.
         $validator = Validator::make($request->all(), [
             'email_destino' => 'required|email',
         ]);
-
         if ($validator->fails()) {
             return response()->json(['message' => $validator->errors()->first()], 422);
         }
 
-        // Intenta aplicar en runtime la config SMTP del cliente. Si no hay configuracion activa
-        // y completa, no tiene sentido "probar" nada: el envio real caeria al .env igual.
-        $applied = ClientMailConfigHelper::apply($this->userId());
-
-        if (!$applied) {
-            return response()->json([
-                'message' => 'No hay una configuración de correo activa y completa para probar',
-            ], 422);
-        }
-
+        $detalle = [];
         try {
-            Mail::raw('Este es un mail de prueba de configuración SMTP de ComercioCity.', function ($message) use ($request) {
-                $message->to($request->email_destino)
-                        ->subject('Mail de prueba - ComercioCity');
-            });
+            $prueba = app(PruebaDeCorreoService::class);
+            $configuracion = $prueba->configuracion($this->userId());
+            $mail = $configuracion['mail'];
+            $detalle = [
+                'origen' => $configuracion['origen'],
+                'remitente' => $mail['mailers'][$mail['default']]['from']['address'] ?? ($mail['from']['address'] ?? null),
+            ];
+            $transporte = $mail['mailers'][$mail['default']]['transport'] ?? null;
+            if (in_array($transporte, ['log', 'array'], true)) {
+                return response()->json(array_merge($detalle, [
+                    'message' => 'El correo de prueba no se envió: el envío de correo está deshabilitado en este entorno.',
+                ]), 422);
+            }
+            $detalle['remitente'] = $prueba->enviar($configuracion, $request->email_destino);
 
-            // 🔴 Que Mail::raw() no haya tirado NO quiere decir que el mail haya salido: si el servidor SMTP rechaza la casilla de destino (un 550 en el RCPT TO),
-            // SwiftMailer no tira nada. Sin esta línea el botón decía "enviado correctamente" sobre un mail que nunca salió, justo el botón que existe para
-            // decirle al dueño si su correo anda.
-            RechazosDeCorreoHelper::fallar_si_hubo_rechazos();
-
-            return response()->json(['message' => 'Mail de prueba enviado correctamente'], 200);
+            return response()->json(array_merge($detalle, ['message' => 'Mail de prueba enviado correctamente']), 200);
         } catch (MailRechazadoPorElServidorException $e) {
-            // La misma forma de error de siempre (422 con `message`, que TestMailButton.vue muestra tal cual). Es una prueba de configuración: además del
-            // motivo dice qué mirar. El motivo sale de la excepción (una sola fuente: si cambia el texto, cambia acá también) y no repite la casilla de destino
-            // (la acaba de tipear quien lo lee).
-            return response()->json([
-                'message' => 'Error al enviar el mail de prueba: '.$e->getMessage().'. Probá con otra casilla de destino; si se repite, revisá la configuración de tu servidor de correo.',
-            ], 422);
-        } catch (\Exception $e) {
-            // Se devuelve el mensaje de error de SMTP tal cual: es la razon de ser del endpoint,
-            // le dice al dueño del comercio por que no le anda el correo (ej. auth rechazada).
-            return response()->json(['message' => 'Error al enviar el mail de prueba: '.$e->getMessage()], 422);
+            $consejo = ($detalle['origen'] ?? null) === 'propia'
+                ? 'Probá con otra casilla de destino; si se repite, revisá la configuración de tu servidor de correo.'
+                : 'Probá con otra casilla de destino; si se repite, contactá a ComercioCity.';
+            return response()->json(array_merge($detalle, [
+                'message' => 'Error al enviar el mail de prueba: '.$e->getMessage().'. '.$consejo,
+            ]), 422);
+        } catch (\Throwable $e) {
+            // El error del transporte puede incluir credenciales, hosts o diálogo SMTP.
+            // Informar el fallo real sin devolver el texto interno al navegador.
+            $consejo = ($detalle['origen'] ?? null) === 'propia'
+                ? 'Revisá la configuración guardada de tu correo y volvé a probar.'
+                : 'Volvé a probar en unos minutos; si se repite, contactá a ComercioCity.';
+            return response()->json(array_merge($detalle, [
+                'message' => 'Error al enviar el mail de prueba. '.$consejo,
+            ]), 422);
         }
     }
 
