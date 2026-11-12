@@ -41,7 +41,7 @@ use RecursiveIteratorIterator;
  * fija que ningún Mailable implemente `ShouldQueue` (si lo hiciera, `->send()` encolaría y el chequeo leería una lista vacía).
  *
  * 🔴 Puntos ciegos que QUEDAN (el detector cuenta CERO en estas formas; hoy no hay ninguna en `app/`): un alias de la fachada (`use ...\Mail as Correo`),
- * `$this->mailer->send(...)` o `app('mailer')->send(...)` (fuera de la fachada), llamar a `Mailable::send($mailer)` / `->queue()` directo sin pasar por la fachada, y un
+ * `$this->mailer->send(...)` o `app('mailer')->send(...)` (fuera de la fachada y sin una variable resuelta con `$manager->mailer()`), llamar a `Mailable::send($mailer)` / `->queue()` directo sin pasar por la fachada, y un
  * `PendingMail` que sale de la sentencia sin enviarse (`return Mail::to($a);`, `yield`, un array, `enviar(Mail::to($a), $b);`, `fn($a) => Mail::to($a)`, `??=`, un ternario):
  * su `->send()` queda en OTRA sentencia, que este detector no empareja (solo denuncia el guardado en una variable con `=`, `$p = Mail::to($a);`). Tampoco ve `Mail::driver()` ni
  * `Mail::getSwiftMailer()` (otros nombres para mandar), y un `->failures()` DENTRO de una closure del encadenado cuenta como "lee los rechazos".
@@ -70,7 +70,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     /**
      * Las llamadas a `RechazosDeCorreoHelper` que cuentan como "mirar los rechazos".
      */
-    const METODOS_DEL_HELPER = ['del_ultimo_envio', 'fallar_si_hubo_rechazos'];
+    const METODOS_DEL_HELPER = ['del_ultimo_envio', 'fallar_si_hubo_rechazos', 'fallar_si_hubo_rechazos_del_mailer'];
 
     /**
      * ENVÍOS INMEDIATOS que NO miran los rechazos, por decisión escrita (criterio: un punto se arregla si AFIRMA un éxito que el rechazo desmiente;
@@ -156,7 +156,28 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
         $partidos  = 0;
         $total     = count($tokens);
 
+        $mailers_privados = [];
         for ($i = 0; $i < $total; $i++) {
+            // El servicio de prueba resuelve un Mailer en un manager privado. Seguir la variable
+            // evita dejar ese envío fuera del guardián al sacarlo de la fachada global.
+            if (is_array($tokens[$i]) && $tokens[$i][0] === T_VARIABLE
+                && $this->texto($tokens, $i + 1) === '='
+                && isset($tokens[$i + 2]) && is_array($tokens[$i + 2]) && $tokens[$i + 2][0] === T_VARIABLE
+                && $this->texto($tokens, $i + 3) === '->'
+                && strtolower($this->texto($tokens, $i + 4)) === 'mailer'
+                && $this->texto($tokens, $i + 5) === '(') {
+                $mailers_privados[$this->texto($tokens, $i)] = true;
+            }
+            if (isset($mailers_privados[$this->texto($tokens, $i)])
+                && $this->texto($tokens, $i + 1) === '->') {
+                $tipo_privado = $this->tipo_de_la_sentencia($tokens, $i);
+                if ($tipo_privado === 'envio') {
+                    $envios++;
+                } elseif ($tipo_privado === 'encolado') {
+                    $encolados++;
+                }
+                continue;
+            }
             // `Mail::` (con o sin el namespace de la fachada delante): arranca una sentencia candidata.
             if ($this->es_el_nombre($this->texto($tokens, $i), 'Mail') && $this->texto($tokens, $i + 1) === '::') {
                 $tipo = $this->tipo_de_la_sentencia($tokens, $i);
@@ -583,7 +604,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     {
         return [
             'PasswordResetController (el código de recuperación)'   => ['Http/Controllers/CommonLaravel/PasswordResetController.php', 1, 0],
-            'OnlineConfigurationController (probar el SMTP)'        => ['Http/Controllers/OnlineConfigurationController.php', 1, 0],
+            'PruebaDeCorreoService (probar el remitente efectivo)'  => ['Services/Mail/PruebaDeCorreoService.php', 1, 0],
             'ProcessSendAdviseMail (el aviso de ingreso de stock)'  => ['Jobs/ProcessSendAdviseMail.php', 1, 0],
             'ClientePotencialController (el mail a un prospecto)'   => ['Http/Controllers/ClientePotencialController.php', 1, 0],
             'ErrorController (el aviso de un error del SPA)'        => ['Http/Controllers/CommonLaravel/ErrorController.php', 1, 0],
@@ -634,6 +655,10 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
             'Mail::html y Mail::plain mandan en el acto'            => ['Mail::html("x", $f); Mail::plain("vista", [], $f);', 2, 0, 0],
             'sendNow manda en el acto'                              => ['Mail::to($a)->sendNow($b);', 1, 0, 0],
             'dos envíos, un chequeo'                                => ['Mail::to($a)->send($b); Mail::to($c)->send($d); RechazosDeCorreoHelper::fallar_si_hubo_rechazos();', 2, 0, 1],
+            'mailer privado con chequeo de su instancia'          => ['$mailer = $manager->mailer(); $mailer->send($v, [], $cb); RechazosDeCorreoHelper::fallar_si_hubo_rechazos_del_mailer($mailer);', 1, 0, 1],
+            'mailer privado sin chequeo sigue siendo envio'       => ['$mailer = $manager->mailer(); $mailer->send($v, [], $cb);', 1, 0, 0],
+            'otra variable send no se confunde con un mailer'      => ['$otro->send($mensaje);', 0, 0, 0],
+            'resolver mailer privado no cuenta como envio'        => ['$mailer = $manager->mailer(); $mailer->failures();', 0, 0, 0],
             'un queue() es un encolado y NO un envío'               => ['Mail::to($a)->queue($b);', 0, 1, 0],
             'un later() es un encolado'                             => ['Mail::to($a)->later(60, $b);', 0, 1, 0],
             'un envío y un encolado, cada uno a su cuenta'          => ['Mail::to($a)->send($b); Mail::to($c)->queue($d);', 1, 1, 0],

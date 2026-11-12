@@ -60,6 +60,11 @@ class AnotarMailRechazadoPorElServidor
      */
     public function handle(MessageSent $evento): void
     {
+        // La prueba usa un manager privado y controla sus propios rechazos. Consultar acá
+        // el default global crearía otro mailer o atribuiría un rechazo viejo a esta prueba.
+        if (!empty($evento->data['prueba_correo_aislada'])) {
+            return;
+        }
         try {
             // Las casillas que el servidor rechazó en este envío (vacío si aceptó a todas).
             $rechazadas = RechazosDeCorreoHelper::del_ultimo_envio();
