@@ -236,6 +236,31 @@ class AdjuntoDeDocumentoEnSoporteTest extends EmpresaTestCase
         $this->assertSame(['path' => 'x'], $datos);
     }
 
+    public function test_un_adjunto_rechazado_no_traslada_al_sistema_una_conversacion_de_whatsapp()
+    {
+        // Sesión web propia con chat de Soporte: la que puede seguir en el sistema un ticket de WhatsApp.
+        $extension = \App\Models\ExtencionEmpresa::where('slug', 'support_chat')->first()
+            ?: \App\Models\ExtencionEmpresa::forceCreate(['slug' => 'support_chat', 'name' => 'support_chat']);
+        $this->dueno->extencions()->syncWithoutDetaching([$extension->id]);
+        $this->withHeader('Referer', rtrim((string) config('app.url'), '/') . '/');
+        // Cualquier salida al admin (leer la conversación, mandar el mensaje) quedaría registrada.
+        Http::fake(['*' => Http::response([], 500)]);
+
+        $ticket = SupportTicket::create(['user_id' => $this->dueno->id, 'status' => 'open', 'origen' => SupportTicket::ORIGEN_WHATSAPP]);
+        $mensajes_antes = SupportMessage::count();
+
+        $this->mandar(UploadedFile::fake()->create('lista enorme.pdf', 10241, 'application/pdf'), [
+            'support_ticket_id'   => $ticket->id,
+            'agentes_version'     => 1,
+            'traspasar_a_sistema' => 1,
+        ])->assertStatus(422)->assertJsonPath('code', 'adjunto_demasiado_grande');
+
+        // El rechazo corta ANTES del traspaso: no se consultó ni se avisó nada al admin, y el ticket sigue en WhatsApp.
+        Http::assertNothingSent();
+        $this->assertNull($ticket->fresh()->sistema_exclusivo_at);
+        $this->assertSame($mensajes_antes, SupportMessage::count());
+    }
+
     public function test_un_documento_que_manda_soporte_desde_el_admin_queda_con_su_nombre()
     {
         $ticket = SupportTicket::create(['user_id' => $this->dueno->id, 'status' => 'open']);

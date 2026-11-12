@@ -34,8 +34,19 @@ class SupportMessageController extends Controller
         $ticket = $ticket_id === null
             ? null
             : SupportTicket::whereKey($ticket_id)->where('user_id', $user_id)->firstOrFail();
-        if ($ticket && $ticket->origen === SupportTicket::ORIGEN_WHATSAPP) {
+        $de_whatsapp = $ticket && $ticket->origen === SupportTicket::ORIGEN_WHATSAPP;
+        if ($de_whatsapp) {
             abort_unless($soporte_web, 404);
+        }
+
+        // 🔴 Antes del traspaso de canal: un adjunto rechazado no puede dejar la conversación pasada al
+        // sistema sin que haya salido ningún mensaje.
+        $rechazo_del_adjunto = $this->rechazo_del_adjunto($request);
+        if ($rechazo_del_adjunto !== null) {
+            return $rechazo_del_adjunto;
+        }
+
+        if ($de_whatsapp) {
             if ($ticket->sistema_exclusivo_at === null) {
                 if (!$request->boolean('traspasar_a_sistema')) {
                     return response()->json([
@@ -47,11 +58,6 @@ class SupportMessageController extends Controller
                 $ticket->refresh();
             }
             $agentes = true;
-        }
-
-        $rechazo_del_adjunto = $this->rechazo_del_adjunto($request);
-        if ($rechazo_del_adjunto !== null) {
-            return $rechazo_del_adjunto;
         }
 
         $body = $request->input('body');
