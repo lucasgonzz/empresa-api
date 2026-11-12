@@ -409,6 +409,15 @@ class ImportacionDePruebaController extends Controller
             }
 
             $continuar = array_diff_key($preguntas, $guardadas) === [];
+            /*
+             * Red de seguridad de la prueba: dos respuestas que dejan dos columnas con el mismo dato (los dos
+             * precios como «precio de venta») se rechazan acá con un mensaje claro. Antes se guardaban y la
+             * carga volvía a preguntar lo mismo sin fin.
+             */
+            if ($continuar && !$run->modo_soporte && $run->alcance === null && $run->estado_publico() === 'columnas'
+                && (new PlanillaDePrueba($run))->decisiones_repiten_un_dato($run->hojas ?? [], $guardadas)) {
+                abort(422, 'Dos columnas quedaron con el mismo dato. Elegí una sola para ese dato; la otra puede ir a otro dato o quedar sin cargar (ignorar).');
+            }
             $run->decisiones = $guardadas;
             if ($continuar) {
                 $run->retirar_pregunta();

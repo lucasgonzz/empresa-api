@@ -133,7 +133,8 @@ class ImportacionDePruebaService
          * único pisaría el que cada artículo ya tiene: ahí queda como hasta hoy.
          */
         if (!$run->modo_soporte) {
-            $margen = PlanillaDePrueba::pregunta_del_margen($hojas);
+            // Filas sueltas con costo y sin ganancia en una hoja que sí trae esa columna: se pregunta solo por ellas.
+            $margen = PlanillaDePrueba::pregunta_del_margen($hojas, $planilla->contar_sin_ganancia($hojas));
             if ($margen !== [] && !isset($decisiones[PlanillaDePrueba::CLAVE_MARGEN])) {
                 DB::transaction(function () use ($run, $margen) {
                     $this->consultar($run, 'columnas', $margen);
@@ -159,9 +160,15 @@ class ImportacionDePruebaService
         }
         // Títulos de rubro y totales que no se importan: quedan en la corrida para contarlo en el resumen.
         foreach ($hojas as &$hoja) {
-            unset($hoja['filas_salteadas']);
+            unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado']);
             if (!empty($plan['salteadas'][$hoja['indice']])) {
                 $hoja['filas_salteadas'] = $plan['salteadas'][$hoja['indice']];
+            }
+            if (!empty($plan['sin_ganancia'][$hoja['indice']])) {
+                $hoja['filas_sin_ganancia'] = $plan['sin_ganancia'][$hoja['indice']];
+            }
+            if (!empty($plan['margen_agregado'][$hoja['indice']])) {
+                $hoja['filas_con_margen_agregado'] = $plan['margen_agregado'][$hoja['indice']];
             }
         }
         unset($hoja);
@@ -488,6 +495,19 @@ class ImportacionDePruebaService
         }
         if ($para_revisar > 0) {
             $texto .= $para_revisar === 1 ? ' 1 fila quedó para revisar.' : ' ' . $para_revisar . ' filas quedaron para revisar.';
+        }
+
+        // Los que traían costo y ninguna ganancia: o se les sumó la que contestó el dueño, o quedaron al costo.
+        $agregado = (int) array_sum(array_column($hojas, 'filas_con_margen_agregado'));
+        if ($agregado > 0 && $margen !== null) {
+            $texto .= $agregado === 1 ? ' Al que no traía ganancia le sumé un ' . $margen . ' %.'
+                : ' A los ' . $agregado . ' que no traían ganancia les sumé un ' . $margen . ' %.';
+        }
+        $sin_ganancia = (int) array_sum(array_column($hojas, 'filas_sin_ganancia'));
+        if ($sin_ganancia > 0) {
+            $texto .= $sin_ganancia === 1
+                ? ' 1 artículo quedó con costo y sin ganancia: decime qué ganancia le pongo y lo actualizo.'
+                : ' ' . $sin_ganancia . ' artículos quedaron con costo y sin ganancia: decime qué ganancia les pongo y los actualizo.';
         }
 
         // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.

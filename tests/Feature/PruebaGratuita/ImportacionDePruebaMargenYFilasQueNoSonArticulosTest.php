@@ -108,14 +108,14 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
      * @param  array      $campos  Lo que cambia de la corrida (modo_soporte…)
      * @return \App\Models\ImportacionDePrueba
      */
-    private function corrida(?array $filas = null, array $campos = []): ImportacionDePrueba
+    private function corrida(?array $filas = null, array $campos = [], ?string $fixture = null): ImportacionDePrueba
     {
         $uuid = (string) Str::uuid();
         $relativa = 'imported_files/prueba_' . $uuid . '.xlsx';
         $destino = storage_path('app/' . $relativa);
 
         if ($filas === null) {
-            copy(self::FIXTURE, $destino);
+            copy($fixture === null ? self::FIXTURE : __DIR__ . '/../../Import/fixtures/' . $fixture, $destino);
         } else {
             $libro = new Spreadsheet();
             $libro->getActiveSheet()->setTitle('Hoja 0')->fromArray($filas, null, 'A1', true);
@@ -181,6 +181,20 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         }
 
         return $filas;
+    }
+
+    /**
+     * Campo => posición en las filas que recibe el motor (el orden de la planilla preparada).
+     *
+     * @param  \App\Jobs\ProcessArticleChunk $lote
+     * @return array
+     */
+    private function columnas_del_lote(ProcessArticleChunk $lote): array
+    {
+        $columnas = new \ReflectionProperty(ProcessArticleChunk::class, 'columns');
+        $columnas->setAccessible(true);
+
+        return $columnas->getValue($lote);
     }
 
     private function mapeo_de_la_lista(): array
@@ -526,7 +540,7 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame('costo', $run->hojas[0]['columnas'][2]['campo']);
     }
 
-    public function test_dos_importes_sin_jerarquia_clara_se_preguntan_los_dos(): void
+    public function test_dos_precios_sin_jerarquia_clara_van_en_una_sola_pregunta(): void
     {
         $this->analizador([
             'Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97],
@@ -534,18 +548,51 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         ]);
         $run = $this->avanzar($this->corrida([
             ['Código', 'Descripción', 'Precio Lista', 'Precio Contado'],
-            ['A-1', 'Martillo', 1000, 900],
+            ['A-1', 'Martillo', 9800, 8820],
             ['A-2', 'Pinza', 2500.5, 2250],
         ]));
 
         $this->assertSame('columnas', $run->estado);
-        $this->assertSame(['columna_0_2', 'columna_0_3'], array_keys($run->preguntas));
-        $cierre = ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
-        $this->assertSame('En tu lista hay una columna que se llama «Precio Lista» (por ejemplo: 1.000,00 y 2.500,50).'
-            . ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?'
-            . ' Tu lista trae más de un importe (también «Precio Contado»): decime cuál es tu precio de venta de siempre.' . $cierre,
-            $run->preguntas['columna_0_2']['texto']);
-        $this->assertStringContainsString('(también «Precio Lista»)', $run->preguntas['columna_0_3']['texto']);
+        $this->assertSame(['precios_0'], array_keys($run->preguntas), 'Una sola pregunta por los dos precios, no una por columna.');
+        $pregunta = $run->preguntas['precios_0'];
+        $this->assertSame('Tu lista trae dos precios: «Precio Lista» (por ejemplo 9.800,00) y «Precio Contado» (por ejemplo 8.820,00).'
+            . ' ¿Con cuál querés que cargue el precio de venta? El otro lo dejo afuera.', $pregunta['texto']);
+        $this->assertSame([
+            ['valor' => 'columna_0_2', 'etiqueta' => 'Precio Lista'], ['valor' => 'columna_0_3', 'etiqueta' => 'Precio Contado'],
+        ], $pregunta['opciones']);
+
+        // Una respuesta que no es una de las dos columnas se rechaza.
+        $this->responder($run, ['precios_0' => 'precio'])->assertStatus(422);
+        $this->responder($run, ['precios_0' => 'columna_0_3'])->assertStatus(202);
+
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado, 'Con el precio elegido no se vuelve a preguntar.');
+        $this->assertSame(3, $run->hojas[0]['mapeo']['precio'], 'El elegido es el precio de venta.');
+        $this->assertNotContains(2, $run->hojas[0]['mapeo'], 'El otro queda afuera.');
+        $filas = $this->correr_la_importacion();
+        $this->assertCount(2, $filas);
+        $this->assertEqualsWithDelta(8820, (float) Article::where('user_id', $this->dueno->id)->where('provider_code', 'A-1')->value('price'), 0.01);
+    }
+
+    public function test_dos_respuestas_que_repiten_un_dato_se_rechazan_en_vez_de_preguntar_en_bucle(): void
+    {
+        $this->analizador(['Dato uno' => [null, 0.1], 'Dato dos' => [null, 0.1], 'Descripción' => ['nombre', 0.97]]);
+        $run = $this->avanzar($this->corrida([
+            ['Dato uno', 'Dato dos', 'Descripción'],
+            ['Bahco', 'Stanley', 'Martillo'],
+        ]));
+        $this->assertSame(['columna_0_0', 'columna_0_1'], array_keys($run->preguntas));
+
+        $this->responder($run, ['columna_0_0' => 'marca', 'columna_0_1' => 'marca'])
+            ->assertStatus(422)
+            ->assertJsonPath('message', 'Dos columnas quedaron con el mismo dato. Elegí una sola para ese dato; la otra puede ir a otro dato o quedar sin cargar (ignorar).');
+
+        // No se guardó nada ni cambió la consulta: se puede contestar bien con la misma revisión.
+        $run = $run->fresh();
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame([], $run->decisiones ?? []);
+        $this->responder($run, ['columna_0_0' => 'marca', 'columna_0_1' => 'ignorar'])->assertStatus(202);
     }
 
     public function test_un_costo_y_un_final_confirman_el_final_y_un_costo_con_precio_de_venta_no_preguntan(): void
@@ -557,7 +604,7 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $run = $this->avanzar($this->corrida(array_merge([['Código', 'Descripción', 'Costo', 'Final']], $filas)));
         $this->assertSame('columnas', $run->estado);
         $this->assertSame(['columna_0_3'], array_keys($run->preguntas));
-        $this->assertStringStartsWith('En tu lista hay una columna que se llama «Final» (por ejemplo: 1400, 3500). ¿Qué es? Puede ser a lo que vendés vos (precio de venta).', $run->preguntas['columna_0_3']['texto']);
+        $this->assertStringStartsWith('En tu lista hay una columna que se llama «Final» (por ejemplo: 1.400,00 y 3.500,00). ¿Qué es? Puede ser a lo que vendés vos (precio de venta).', $run->preguntas['columna_0_3']['texto']);
 
         // «Costo» y «Precio de venta»: los dos títulos lo dicen, no hay nada que preguntar (ni margen).
         ImportHistory::where('user_id', $this->dueno->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->update(['status' => 'terminado']);
@@ -646,6 +693,188 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame('subcategoría y unidades por bulto', PlanillaDePrueba::campos_en_palabras(['sub_categoria', 'u_individuales']));
         $this->assertSame('stock', PlanillaDePrueba::campos_en_palabras(['stock_actual']));
         $this->assertSame('', PlanillaDePrueba::campos_en_palabras([]));
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Correcciones de la revisión del delta
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_el_total_con_el_rotulo_en_la_columna_del_codigo_y_los_articulos_que_empiezan_con_total(): void
+    {
+        $mapeo = ['codigo_de_proveedor' => 0, 'nombre' => 1, 'costo' => 2];
+        $total = PlanillaDePrueba::FILA_TOTAL;
+
+        // El caso real del ensayo: «TOTAL LISTA» en la columna del código, el nombre vacío y el importe.
+        $this->assertSame($total, PlanillaDePrueba::motivo_para_saltear(['TOTAL LISTA', '', '1154150.97'], $mapeo, true));
+        $this->assertSame($total, PlanillaDePrueba::motivo_para_saltear(['Subtotal', '', ''], $mapeo, true));
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['TOTAL LISTA', '', '1154150.97'], $mapeo, false), 'En el medio de la planilla no es el total.');
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['TOTAL-2024', '', '1500'], $mapeo, true), 'Con números es un código.');
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['TOTAL LISTA', 'Aceite', '1500'], $mapeo, true), 'Con nombre es un artículo.');
+
+        // Artículos de verdad que empiezan con «total» o «suma», aunque sean la última fila.
+        foreach (['Total Quartz 7000 5W40', 'Suma dental x 12', 'Total 10W40', 'Total general de la lista completa'] as $nombre) {
+            $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['', $nombre, '15000'], $mapeo, true), $nombre);
+        }
+        foreach (['TOTAL LISTA', 'Total general', 'Suma total', 'Sub total sin IVA', 'SUMA DE IMPORTES', 'Totales'] as $rotulo) {
+            $this->assertSame($total, PlanillaDePrueba::motivo_para_saltear(['', $rotulo, '15000'], $mapeo, true), $rotulo);
+        }
+
+        // Debajo del total, un texto suelto es una nota al pie aunque esté en la columna del nombre.
+        $this->assertSame(PlanillaDePrueba::FILA_TITULO, PlanillaDePrueba::motivo_para_saltear(['', 'Precios sujetos a cambio.', ''], $mapeo, false, true));
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['', 'Precios sujetos a cambio.', ''], $mapeo, false, false), 'Antes del total es un artículo sin precio.');
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['A-9', 'Pinza', '100'], $mapeo, false, true), 'Un artículo completo debajo del total se importa.');
+    }
+
+    public function test_el_total_en_la_columna_del_codigo_y_la_nota_de_abajo_no_llegan_al_motor(): void
+    {
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        Bus::fake();
+        $run = $this->avanzar($this->corrida([
+            ['Código', 'Descripción', 'Precio de venta'],
+            ['A-1', 'Martillo', 100],
+            [null, 'Total Quartz 7000 5W40', 15000],
+            ['TOTAL LISTA', null, 15100],
+            [null, 'Consulte por descuentos por cantidad.', null],
+        ]));
+
+        $this->assertSame('importando', $run->estado);
+        $inicios = Bus::dispatched(ProcessArticleChunk::class);
+        $this->assertCount(1, $inicios);
+        $filas = $inicios->first()->get_row_from_csv();
+        $this->assertCount(2, $filas, 'El martillo y el aceite; ni el total ni la nota.');
+        $this->assertStringNotContainsString('TOTAL LISTA', json_encode($filas));
+        $this->assertStringContainsString('Total Quartz 7000 5W40', json_encode($filas));
+
+        $salteadas = $run->hojas[0]['filas_salteadas'];
+        $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
+        $this->assertSame(['Consulte por descuentos por cantidad'], $salteadas['textos_titulo']);
+        $frase = PlanillaDePrueba::texto_de_filas_salteadas($run->hojas);
+        $this->assertSame(' Dejé afuera 2 filas que no son artículos: “Consulte por descuentos por cantidad”, “TOTAL LISTA”.'
+            . ' Si alguna era un producto, decímelo y la cargo.', $frase);
+        $this->assertStringNotContainsString('.”.', $frase);
+    }
+
+    public function test_fixture_costos_y_margen_pregunta_el_porcentaje_el_final_y_la_ganancia_de_los_que_no_la_traen(): void
+    {
+        $this->analizador([
+            'Cod.' => ['codigo_de_proveedor', 0.97], 'Detalle' => ['nombre', 0.97], 'Costo s/IVA' => ['costo', 0.97],
+            '%' => ['margen_de_ganancia', 0.50], 'Final' => ['precio', 0.97],
+        ]);
+        $run = $this->avanzar($this->corrida(null, [], 'costos_y_margen.xlsx'));
+
+        // 1. Qué es el «%» y qué es el «Final» (al lado de un costo, se confirma). El costo no se pregunta.
+        //    (El «Detalle» lo pregunta el analizador de siempre: puede ser el nombre o la descripción.)
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_1', 'columna_0_3', 'columna_0_4'], array_keys($run->preguntas));
+        $this->assertTrue($run->hojas[0]['columnas'][2]['segura'], '«Costo s/IVA» dice lo que es.');
+        $this->assertStringStartsWith('En tu lista hay una columna que se llama «%» (por ejemplo: 50, 30). ¿Qué es? Puede ser «margen de ganancia».', $run->preguntas['columna_0_3']['texto']);
+        $this->assertStringStartsWith('En tu lista hay una columna que se llama «Final» (por ejemplo: 561,54 y 438,55). ¿Qué es?', $run->preguntas['columna_0_4']['texto']);
+        $this->responder($run, ['columna_0_1' => 'nombre', 'columna_0_3' => 'margen_de_ganancia', 'columna_0_4' => 'ignorar'])->assertStatus(202);
+
+        // 2. 11 de los 32 traen el costo y no el porcentaje: se pregunta la ganancia SOLO para esos.
+        $run = $this->avanzar($run);
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame([PlanillaDePrueba::CLAVE_MARGEN], array_keys($run->preguntas));
+        $this->assertStringStartsWith('En tu lista hay 11 artículos que traen el costo pero no la ganancia ni el precio de venta.'
+            . ' ¿Qué ganancia les sumamos a esos, que no la traen?', $run->preguntas[PlanillaDePrueba::CLAVE_MARGEN]['texto']);
+        $this->responder($run, ['margen_de_ganancia' => '40'])->assertStatus(202);
+
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado);
+        $this->assertSame(11, $run->hojas[0]['filas_con_margen_agregado']);
+        $this->assertArrayNotHasKey('filas_sin_ganancia', $run->hojas[0]);
+
+        // 3. Al motor llegan los 32: los que traían su porcentaje lo conservan y a los otros se les puso el 40.
+        $inicios = Bus::dispatched(ProcessArticleChunk::class);
+        $this->assertCount(1, $inicios);
+        $filas = $inicios->first()->get_row_from_csv();
+        $this->assertCount(32, $filas);
+        $columnas = $this->columnas_del_lote($inicios->first());
+        $margenes = array_column($filas, $columnas['margen_de_ganancia'], $columnas['nombre']);
+        $this->assertSame('40', (string) $margenes['Tornillo autoperforante 8x1'], 'No traía porcentaje.');
+        $this->assertSame('50', (string) $margenes['Tornillo fix 6x40'], 'Traía el suyo.');
+        // 11 que no traían porcentaje más los 3 que ya traían 40 de la planilla; ninguno queda vacío.
+        $this->assertSame(14, count(array_filter($margenes, function ($margen) { return (string) $margen === '40'; })));
+        $this->assertSame(0, count(array_filter($margenes, function ($margen) { return trim((string) $margen) === ''; })));
+    }
+
+    public function test_si_no_dice_la_ganancia_de_los_que_no_la_traen_el_resumen_los_cuenta_aparte(): void
+    {
+        $this->analizador([
+            'Cod.' => ['codigo_de_proveedor', 0.97], 'Detalle' => ['nombre', 0.97], 'Costo s/IVA' => ['costo', 0.97],
+            '%' => ['margen_de_ganancia', 0.97], 'Final' => [null, 0.97],
+        ]);
+        $run = $this->avanzar($this->corrida(null, ['columnas_previas' => [['hoja' => 'precios', 'columna' => 'B', 'campo' => 'nombre'], ['hoja' => 'precios', 'columna' => 'E', 'campo' => null]]], 'costos_y_margen.xlsx'));
+        $this->assertSame([PlanillaDePrueba::CLAVE_MARGEN], array_keys($run->preguntas));
+        $this->responder($run, ['margen_de_ganancia' => 'despues'])->assertStatus(202);
+
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado);
+        $this->assertSame(11, $run->hojas[0]['filas_sin_ganancia']);
+
+        $resumen = new \ReflectionMethod(ImportacionDePruebaService::class, 'resumen_en_palabras');
+        $resumen->setAccessible(true);
+        $this->assertSame(
+            'Cargué 32 artículos con su costo y su precio de venta. 11 artículos quedaron con costo y sin ganancia: decime qué ganancia les pongo y los actualizo.',
+            $resumen->invoke(app(ImportacionDePruebaService::class), $run, 32, 0, 0, 0)
+        );
+    }
+
+    public function test_fixture_stock_con_dos_precios_pregunta_una_vez_con_cual_y_carga_28(): void
+    {
+        $this->analizador([
+            'Codigo de barras' => ['codigo_de_barras', 0.97], 'Producto' => ['nombre', 0.97], 'Cant' => ['stock_actual', 0.97],
+            'Dep 1' => [null, 0.97], 'Dep 2' => [null, 0.97], 'Precio Lista' => ['precio', 0.97],
+            'Precio Contado' => [null, 0.97], 'Marca' => ['marca', 0.97],
+        ]);
+        $run = $this->avanzar($this->corrida(null, [], 'stock_deposito_con_precios.xlsx'));
+
+        $this->assertSame('columnas', $run->estado);
+        $this->assertCount(1, $run->hojas, 'La segunda hoja son notas sueltas: no se pregunta por ella.');
+        $this->assertSame(['precios_0'], array_keys($run->preguntas));
+        $this->assertSame('Tu lista trae dos precios: «Precio Lista» (por ejemplo 2.474,57) y «Precio Contado» (por ejemplo 2.227,11).'
+            . ' ¿Con cuál querés que cargue el precio de venta? El otro lo dejo afuera.', $run->preguntas['precios_0']['texto']);
+        $this->assertSame(['columna_0_5', 'columna_0_6'], array_column($run->preguntas['precios_0']['opciones'], 'valor'));
+
+        $this->responder($run, ['precios_0' => 'columna_0_5'])->assertStatus(202);
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado, 'Elegido el precio, no hay margen ni nada más que preguntar.');
+
+        $inicios = Bus::dispatched(ProcessArticleChunk::class);
+        $this->assertCount(1, $inicios);
+        $filas = $inicios->first()->get_row_from_csv();
+        $this->assertCount(28, $filas);
+        $columnas = $this->columnas_del_lote($inicios->first());
+        $precios = array_column($filas, $columnas['precio'], $columnas['nombre']);
+        $this->assertEqualsWithDelta(2474.57, (float) $precios['Martillo carpintero 500g'], 0.001, 'El precio de lista, no el de contado.');
+        $this->assertArrayNotHasKey('filas_salteadas', $run->hojas[0]);
+    }
+
+    public function test_fixture_mis_productos_pregunta_el_precio_y_la_columna_sin_titulo_y_carga_36(): void
+    {
+        $this->analizador(['articulo' => ['nombre', 0.97], 'precio' => ['precio', 0.99], 'hay' => [null, 0.97]]);
+        $run = $this->avanzar($this->corrida(null, [], 'mis_productos.xlsx'));
+
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_1', 'columna_0_2'], array_keys($run->preguntas));
+        $this->assertStringContainsString('que se llama «precio»', $run->preguntas['columna_0_1']['texto']);
+        $this->assertStringContainsString('¿Es lo que te cobra el proveedor o es a lo que vendés vos?', $run->preguntas['columna_0_1']['texto']);
+        $this->assertStringStartsWith('En tu lista hay una columna sin título (la C) (por ejemplo: ojo, preguntar a Mario). ¿Qué es?', $run->preguntas['columna_0_2']['texto']);
+
+        // Es su precio de venta: se carga tal cual, sin pedir costo ni margen, y sin exigir código.
+        $this->responder($run, ['columna_0_1' => 'precio', 'columna_0_2' => 'ignorar'])->assertStatus(202);
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado);
+
+        $inicios = Bus::dispatched(ProcessArticleChunk::class);
+        $this->assertCount(1, $inicios);
+        $filas = $inicios->first()->get_row_from_csv();
+        $this->assertCount(36, $filas, 'Las 36 filas con nombre, también las 5 que no traen precio.');
+        $this->assertArrayNotHasKey('filas_salteadas', $run->hojas[0]);
     }
 
     public function test_el_margen_acepta_un_porcentaje_libre_y_despues_deja_todo_como_hoy(): void
@@ -971,6 +1200,10 @@ class AnalizadorDeListaDeProveedorFalso extends AiExcelAnalyzer
     {
         $columnas = [];
         foreach ($this->mapeo as $titulo => $destino) {
+            // Solo las columnas de ESTA hoja: en un libro con una hoja de notas, la IA no le inventa un mapeo.
+            if (strpos($prompt, (string) $titulo) === false) {
+                continue;
+            }
             $columnas[] = [
                 'excel_column' => $titulo, 'system_property' => $destino[0],
                 'confidence' => $destino[1], 'interpretation_note' => null,

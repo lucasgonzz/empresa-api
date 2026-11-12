@@ -105,6 +105,10 @@ class PlanillaDePrueba
     private $proveedores;
     // Filas que `filas()` dejó afuera por no ser artículos: [índice de hoja => [motivo => cantidad, 'textos_<motivo>' => [...]]].
     private $salteadas = [];
+    // Filas con costo y sin ganancia ni precio, en hojas que sí traen esas columnas: [índice de hoja => cantidad].
+    private $sin_ganancia = [];
+    // Filas a las que `filas()` les puso el margen que contestó el dueño porque no lo traían: [índice => cantidad].
+    private $margen_agregado = [];
 
     public function __construct(ImportacionDePrueba $run)
     {
@@ -266,6 +270,10 @@ class PlanillaDePrueba
             // En la prueba un importe no se adivina: si el título no dice qué es, se le pregunta al dueño.
             if (!$this->run->modo_soporte) {
                 $columnas = self::dudar_de_los_importes($columnas);
+                // Una hoja con una sola columna que el analizador no reconoció es una hoja de notas: no se pregunta por ella.
+                if (count($columnas) === 1 && (reset($columnas)['campo'] ?? null) === null) {
+                    continue;
+                }
             }
 
             $proveedor = $this->run->provider_id;
@@ -279,6 +287,16 @@ class PlanillaDePrueba
                 'proveedor' => $this->proveedores[$proveedor] ?? null,
                 'bloque_descuentos' => $datos_hoja['descuentos'],
             ];
+        }
+
+        /*
+         * Una hoja de notas al lado de la lista («pedir cable a la distribuidora»): en la prueba, si el libro
+         * tiene una hoja con varias columnas, las que traen una sola no se cargan ni se pregunta por ellas.
+         * Un libro que es solo una lista de nombres, de una columna, se sigue leyendo.
+         */
+        $con_tabla = array_filter($hojas, function ($hoja) { return count($hoja['columnas']) > 1; });
+        if (!$this->run->modo_soporte && $con_tabla !== [] && count($con_tabla) < count($hojas)) {
+            $hojas = array_values($con_tabla);
         }
 
         return $hojas;
@@ -444,8 +462,10 @@ class PlanillaDePrueba
             }
             $opciones += $this->etiquetas;
             $disponibles = array_filter($opciones, 'is_string');
+            $grupo = array_flip(self::grupo_de_precios($hoja));
             foreach ($hoja['columnas'] as $posicion => $columna) {
-                if ($columna['segura']) {
+                // Los precios de un grupo no se preguntan de a uno: van juntos en una sola pregunta, más abajo.
+                if ($columna['segura'] || isset($grupo[$posicion])) {
                     continue;
                 }
                 $clave = self::clave_columna($hoja, (int) $posicion);
@@ -465,9 +485,86 @@ class PlanillaDePrueba
                 // Clave nueva y opcional: las respuestas más probables, por su `valor`, y «ignorar» siempre.
                 $preguntas[$clave]['sugeridas'] = array_merge($sugeridas, ['ignorar']);
             }
+            if ($grupo !== []) {
+                $clave = self::clave_de_precios($hoja);
+                $preguntas[$clave] = self::pregunta_de_precios($hoja, array_keys($grupo), count($hojas) > 1);
+            }
         }
 
         return $preguntas;
+    }
+
+    /**
+     * Las columnas de una hoja que son «un precio» sin que el título diga cuál (misión
+     * prueba-e2e-campana-imperio): «Precio Lista» y «Precio Contado». Con dos o más se hace UNA sola
+     * pregunta —con cuál se carga el precio de venta— en vez de una por columna: preguntadas de a una, las
+     * dos se contestaban «precio de venta» y la carga no salía nunca de «dos columnas al mismo dato».
+     *
+     * @param  array $hoja
+     * @return int[]  Posiciones; vacío si no llegan a dos (ahí cada una se pregunta sola)
+     */
+    public static function grupo_de_precios(array $hoja): array
+    {
+        $posiciones = [];
+        foreach ($hoja['columnas'] ?? [] as $posicion => $columna) {
+            if (!empty($columna['grupo_de_precios']) && empty($columna['segura'])) {
+                $posiciones[] = (int) $posicion;
+            }
+        }
+
+        return count($posiciones) >= 2 ? $posiciones : [];
+    }
+
+    public static function clave_de_precios(array $hoja): string
+    {
+        return 'precios_' . $hoja['indice'];
+    }
+
+    /**
+     * La pregunta única de una hoja con dos o más precios: una opción por columna (su `valor` es la clave
+     * de esa columna). La elegida se carga como precio de venta y las demás quedan afuera.
+     *
+     * @param  array $hoja
+     * @param  int[] $posiciones
+     * @param  bool  $varias_hojas
+     * @return array  {clave, texto, opciones, sugeridas}
+     */
+    private static function pregunta_de_precios(array $hoja, array $posiciones, bool $varias_hojas): array
+    {
+        $opciones = [];
+        $nombradas = [];
+        foreach ($posiciones as $posicion) {
+            $columna = $hoja['columnas'][$posicion];
+            $titulo = trim((string) ($columna['titulo'] ?? ''));
+            $titulo = $titulo !== '' ? $titulo : 'columna ' . Coordinate::stringFromColumnIndex($posicion + 1);
+            $ejemplo = ($columna['ejemplos'] ?? [])[0] ?? ($columna['muestra'] ?? '');
+            $opciones[] = ['valor' => self::clave_columna($hoja, $posicion), 'etiqueta' => $titulo];
+            $nombradas[] = '«' . $titulo . '»' . ($ejemplo === '' ? '' : ' (por ejemplo ' . self::como_plata($ejemplo) . ')');
+        }
+        $cuantos = [2 => 'dos', 3 => 'tres', 4 => 'cuatro'][count($posiciones)] ?? (string) count($posiciones);
+        $ultima = array_pop($nombradas);
+
+        return [
+            'clave' => self::clave_de_precios($hoja),
+            'texto' => ($varias_hojas ? 'La hoja «' . $hoja['nombre'] . '» de tu lista' : 'Tu lista') . ' trae ' . $cuantos . ' precios: '
+                . implode(', ', $nombradas) . ' y ' . $ultima . '. ¿Con cuál querés que cargue el precio de venta? '
+                . (count($posiciones) === 2 ? 'El otro lo dejo afuera.' : 'Los otros los dejo afuera.'),
+            'opciones' => $opciones,
+            'sugeridas' => array_column($opciones, 'valor'),
+        ];
+    }
+
+    /**
+     * Un importe escrito como plata («9.800,00»); lo que no es un número queda como vino.
+     *
+     * @param  mixed $valor
+     * @return string
+     */
+    private static function como_plata($valor): string
+    {
+        $numero = self::importe($valor);
+
+        return $numero === null ? (string) $valor : number_format((float) $numero, 2, ',', '.');
     }
 
     /**
@@ -528,12 +625,9 @@ class PlanillaDePrueba
         $cierre = ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
         // ¿Costo o precio de venta? Es LA pregunta de un importe: se hace directa, con la plata escrita como plata.
         $costo_o_venta = in_array('costo', $sugeridas, true) && in_array('precio', $sugeridas, true);
-        if ($costo_o_venta) {
-            $ejemplos = array_map(function ($ejemplo) {
-                $numero = self::importe($ejemplo);
-
-                return $numero === null ? $ejemplo : number_format((float) $numero, 2, ',', '.');
-            }, $ejemplos);
+        // Todo importe se muestra como plata, también el de una columna «Final» que solo puede ser el precio.
+        if (!empty($columna['importe']) || array_intersect($sugeridas, ['costo', 'precio']) !== []) {
+            $ejemplos = array_map(function ($ejemplo) { return self::como_plata($ejemplo); }, $ejemplos);
         }
         // Un ejemplo con coma adentro («2.054,90») no se puede separar del siguiente con otra coma.
         $separador = array_filter($ejemplos, function ($ejemplo) { return strpos($ejemplo, ',') !== false; }) === [] ? ', ' : ' y ';
@@ -622,12 +716,20 @@ class PlanillaDePrueba
             }
         }
 
+        $sin_tipo = [];
         foreach ($importes as $posicion) {
             $columnas[$posicion]['importe'] = true;
             $segun_titulo = self::importe_segun_titulo((string) ($columnas[$posicion]['titulo'] ?? ''), count($importes) > 1);
             if ($segun_titulo === null || $segun_titulo !== ($columnas[$posicion]['campo'] ?? null)) {
                 $columnas[$posicion]['segura'] = false;
             }
+            if ($segun_titulo === null) {
+                $sin_tipo[] = $posicion;
+            }
+        }
+        // Dos o más importes que el título no distingue («Precio Lista», «Precio Contado»): van en una sola pregunta.
+        foreach (count($sin_tipo) >= 2 ? $sin_tipo : [] as $posicion) {
+            $columnas[$posicion]['grupo_de_precios'] = true;
         }
 
         return $columnas;
@@ -869,19 +971,7 @@ class PlanillaDePrueba
     public function resolver_columnas(array $hojas, array $decisiones): array
     {
         foreach ($hojas as &$hoja) {
-            $mapeo = [];
-            foreach ($hoja['columnas'] as $posicion => $columna) {
-                $campo = $columna['segura'] ? $columna['campo'] : ($decisiones[self::clave_columna($hoja, (int) $posicion)] ?? null);
-                if (!isset($this->propiedades[$campo])) {
-                    continue;
-                }
-                $propiedad = $this->propiedades[$campo];
-                if (isset($mapeo[$propiedad])) {
-                    throw new InvalidArgumentException('Dos columnas de «' . $hoja['nombre'] . '» quedaron asignadas al mismo dato.');
-                }
-                $mapeo[$propiedad] = (int) $posicion;
-            }
-            $hoja['mapeo'] = ArticleImportColumnsNormalizer::normalize($mapeo);
+            $hoja['mapeo'] = ArticleImportColumnsNormalizer::normalize($this->mapeo_de_hoja($hoja, $decisiones));
             $hoja['descuentos_por_proveedor'] = $this->resolver_descuentos($hoja);
         }
         unset($hoja);
@@ -889,6 +979,62 @@ class PlanillaDePrueba
         return array_values(array_filter($hojas, function (array $hoja) {
             return array_intersect(['nombre', 'numero', 'codigo_de_barras', 'sku', 'codigo_de_proveedor'], array_keys($hoja['mapeo'])) !== [];
         }));
+    }
+
+    /**
+     * Propiedad del importador => posición de su columna, con lo seguro del análisis y lo que se contestó.
+     * En un grupo de precios, la columna elegida es el precio de venta y las demás quedan afuera.
+     *
+     * @param  array $hoja
+     * @param  array $decisiones
+     * @return array
+     *
+     * @throws InvalidArgumentException  Si dos columnas quedan asignadas al mismo dato
+     */
+    private function mapeo_de_hoja(array $hoja, array $decisiones): array
+    {
+        $grupo = array_flip(self::grupo_de_precios($hoja));
+        $elegida = $decisiones[self::clave_de_precios($hoja)] ?? null;
+        $mapeo = [];
+        foreach ($hoja['columnas'] as $posicion => $columna) {
+            $clave = self::clave_columna($hoja, (int) $posicion);
+            if (isset($grupo[$posicion])) {
+                $campo = $elegida === $clave ? 'precio' : null;
+            } else {
+                $campo = $columna['segura'] ? $columna['campo'] : ($decisiones[$clave] ?? null);
+            }
+            if (!isset($this->propiedades[$campo])) {
+                continue;
+            }
+            $propiedad = $this->propiedades[$campo];
+            if (isset($mapeo[$propiedad])) {
+                throw new InvalidArgumentException('Dos columnas de «' . $hoja['nombre'] . '» quedaron asignadas al mismo dato.');
+            }
+            $mapeo[$propiedad] = (int) $posicion;
+        }
+
+        return $mapeo;
+    }
+
+    /**
+     * ¿Estas respuestas dejan dos columnas de una hoja asignadas al mismo dato? Lo pregunta `prueba-resolver`
+     * antes de guardarlas: así se rechazan con un mensaje claro en vez de volver a preguntar lo mismo sin fin.
+     *
+     * @param  array $hojas
+     * @param  array $decisiones
+     * @return bool
+     */
+    public function decisiones_repiten_un_dato(array $hojas, array $decisiones): bool
+    {
+        try {
+            foreach ($hojas as $hoja) {
+                $this->mapeo_de_hoja($hoja, $decisiones);
+            }
+        } catch (InvalidArgumentException $error) {
+            return true;
+        }
+
+        return false;
     }
 
     private function resolver_descuentos(array $hoja): array
@@ -961,6 +1107,7 @@ class PlanillaDePrueba
             ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
             // La única fila que puede ser el total: la última con datos, sin contar las notas sueltas del pie.
             $cierre = $descarta ? $this->fila_de_cierre($ruta, $hoja) : null;
+            $despues_del_total = false;
             foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
                 $datos = [];
                 foreach ($hoja['mapeo'] as $campo => $posicion) {
@@ -970,14 +1117,24 @@ class PlanillaDePrueba
                     continue;
                 }
                 // Un título de rubro o el total al pie no son artículos: no llegan ni a los repetidos ni al motor.
-                $motivo = $descarta ? self::motivo_para_saltear($fila, $hoja['mapeo'], $numero === $cierre) : null;
+                $motivo = $descarta ? self::motivo_para_saltear($fila, $hoja['mapeo'], $numero === $cierre, $despues_del_total) : null;
                 if ($motivo !== null) {
+                    $despues_del_total = $despues_del_total || $motivo === self::FILA_TOTAL;
                     $this->anotar_salteada((int) $hoja['indice'], $motivo, $fila, $hoja['mapeo']);
                     continue;
                 }
                 // La ganancia que contestó el dueño, como si la planilla trajera la columna del margen.
                 if (isset($hoja['margen_respondido'])) {
                     $datos[self::CLAVE_MARGEN] = $hoja['margen_respondido'];
+                }
+                // Una fila con costo y sin ganancia ni precio, en una hoja que sí trae esas columnas.
+                if ($descarta && self::fila_sin_ganancia($datos, $hoja['mapeo'])) {
+                    if (isset($hoja['margen_para_vacias'])) {
+                        $datos[self::CLAVE_MARGEN] = $hoja['margen_para_vacias'];
+                        $this->margen_agregado[$hoja['indice']] = ($this->margen_agregado[$hoja['indice']] ?? 0) + 1;
+                    } else {
+                        $this->sin_ganancia[$hoja['indice']] = ($this->sin_ganancia[$hoja['indice']] ?? 0) + 1;
+                    }
                 }
                 if (empty($datos['proveedor']) && $hoja['proveedor'] !== null) {
                     $datos['proveedor'] = $hoja['proveedor'];
@@ -1115,12 +1272,14 @@ class PlanillaDePrueba
             if (!empty($hoja['descuentos_por_proveedor'])) {
                 $campos[self::DESCUENTOS_LATERALES] = true;
             }
-            if (isset($hoja['margen_respondido'])) {
+            if (isset($hoja['margen_respondido']) || isset($hoja['margen_para_vacias'])) {
                 $campos[self::CLAVE_MARGEN] = true;
             }
         }
         // `filas()` ya corrió para buscar repetidos: la cuenta de las salteadas es la de ESTA pasada.
         $this->salteadas = [];
+        $this->sin_ganancia = [];
+        $this->margen_agregado = [];
         $columnas = array_keys($campos);
         $ruta = storage_path('app/imported_files/prueba_' . $this->run->uuid . '.preparado');
         $csv = fopen($ruta, 'wb');
@@ -1144,7 +1303,79 @@ class PlanillaDePrueba
             fclose($csv);
         }
 
-        return ['ruta' => $ruta, 'filas' => $filas, 'columnas' => array_flip($columnas), 'salteadas' => $this->salteadas];
+        return [
+            'ruta' => $ruta, 'filas' => $filas, 'columnas' => array_flip($columnas), 'salteadas' => $this->salteadas,
+            'sin_ganancia' => $this->sin_ganancia, 'margen_agregado' => $this->margen_agregado,
+        ];
+    }
+
+    /**
+     * ¿La hoja trae el costo y además alguna columna que dice a cuánto se vende (margen, precio o una lista)?
+     * Es donde puede haber filas sueltas con costo y sin ganancia.
+     *
+     * @param  array $mapeo
+     * @return string[]  Los campos de venta de la hoja; vacío si no trae costo o no trae ninguno
+     */
+    private static function campos_de_venta(array $mapeo): array
+    {
+        if (!isset($mapeo['costo'])) {
+            return [];
+        }
+
+        return array_values(array_filter(array_keys($mapeo), function ($campo) {
+            return in_array($campo, [self::CLAVE_MARGEN, 'precio'], true)
+                || strpos((string) $campo, '%_') === 0 || strpos((string) $campo, '$_final_') === 0;
+        }));
+    }
+
+    /**
+     * ¿La fila trae el costo y deja vacías TODAS las columnas de venta de su hoja? Quedaría cargada al costo.
+     *
+     * @param  array $datos  Campo => valor de la fila
+     * @param  array $mapeo
+     * @return bool
+     */
+    private static function fila_sin_ganancia(array $datos, array $mapeo): bool
+    {
+        $de_venta = self::campos_de_venta($mapeo);
+        if ($de_venta === [] || trim((string) ($datos['costo'] ?? '')) === '') {
+            return false;
+        }
+        foreach ($de_venta as $campo) {
+            if (trim((string) ($datos[$campo] ?? '')) !== '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Cuántas filas traen el costo y ninguna ganancia ni precio, en las hojas que sí tienen esas columnas.
+     * Recorre la planilla; si ninguna hoja puede tener el caso, no la abre.
+     *
+     * @param  array $hojas  Hojas con `mapeo`
+     * @return int
+     */
+    public function contar_sin_ganancia(array $hojas): int
+    {
+        $candidatas = array_values(array_filter($hojas, function ($hoja) {
+            return self::campos_de_venta($hoja['mapeo'] ?? []) !== [];
+        }));
+        if ($candidatas === [] || $this->run->modo_soporte) {
+            return 0;
+        }
+        foreach ($candidatas as &$hoja) {
+            unset($hoja['margen_para_vacias']);
+        }
+        unset($hoja);
+
+        $this->sin_ganancia = [];
+        foreach ($this->filas($candidatas) as $fila) {
+            // Solo se cuenta: `filas()` va sumando en $this->sin_ganancia.
+        }
+
+        return (int) array_sum($this->sin_ganancia);
     }
 
     /**
@@ -1177,7 +1408,10 @@ class PlanillaDePrueba
      */
     private static function empieza_como_total(string $texto): bool
     {
-        return preg_match('/^(?:sub ?total(?:es)?|total(?:es)?|sumas?)(?: |$)/', self::titulo_comparable($texto)) === 1;
+        // Sin números y corto: la palabra de total y, como mucho, dos más («total lista», «sub total sin iva»).
+        // «Total Quartz 7000 5W40» y «Suma dental x 12» son artículos.
+        return preg_match('/\d/', $texto) !== 1
+            && preg_match('/^(?:sub ?total(?:es)?|total(?:es)?|sumas?)(?: [a-z]+){0,2}$/', self::titulo_comparable($texto)) === 1;
     }
 
     /**
@@ -1237,6 +1471,8 @@ class PlanillaDePrueba
         $con_dato = self::celdas_con_dato($fila);
         $texto = $motivo === self::FILA_TOTAL && isset($mapeo['nombre'], $con_dato[(int) $mapeo['nombre']])
             ? $con_dato[(int) $mapeo['nombre']] : (string) reset($con_dato);
+        // Sin el punto final: la frase del resumen ya cierra con el suyo.
+        $texto = rtrim($texto, '. ');
         $clave = 'textos_' . $motivo;
         if (count($this->salteadas[$indice][$clave] ?? []) < self::EJEMPLOS_DE_SALTEADAS) {
             $this->salteadas[$indice][$clave][] = mb_substr($texto, 0, 60);
@@ -1271,7 +1507,7 @@ class PlanillaDePrueba
      * @param  bool  $es_el_cierre  Si es la última fila con datos de la hoja (ver fila_de_cierre())
      * @return string|null          self::FILA_TITULO, self::FILA_TOTAL o null
      */
-    public static function motivo_para_saltear(array $fila, array $mapeo, bool $es_el_cierre = false): ?string
+    public static function motivo_para_saltear(array $fila, array $mapeo, bool $es_el_cierre = false, bool $despues_del_total = false): ?string
     {
         $con_dato = self::celdas_con_dato($fila);
         if ($con_dato === [] || count($con_dato) > 2) {
@@ -1286,15 +1522,32 @@ class PlanillaDePrueba
             }
         }
 
-        if ($es_el_cierre && $columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])
-            && self::empieza_como_total($con_dato[$columna_del_nombre])) {
-            $resto = array_diff_key($con_dato, [$columna_del_nombre => true]);
-            if ($resto === []) {
-                return self::FILA_TOTAL;
+        if ($es_el_cierre) {
+            /*
+             * El rótulo del total puede estar en la columna del nombre o, con el nombre vacío, en la del
+             * código («TOTAL LISTA» en la primera columna: así vino la lista del ensayo). Un rótulo no trae
+             * números, así que no se confunde con un código.
+             */
+            $rotulo = null;
+            if ($columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])) {
+                $rotulo = $columna_del_nombre;
+            } else {
+                foreach (array_keys($columnas_de_codigo) as $de_codigo) {
+                    if (isset($con_dato[$de_codigo])) {
+                        $rotulo = $de_codigo;
+                        break;
+                    }
+                }
             }
-            $otra = (int) array_key_first($resto);
-            if (!isset($columnas_de_codigo[$otra]) && self::importe($resto[$otra]) !== null) {
-                return self::FILA_TOTAL;
+            if ($rotulo !== null && self::empieza_como_total($con_dato[$rotulo])) {
+                $resto = array_diff_key($con_dato, [$rotulo => true]);
+                if ($resto === []) {
+                    return self::FILA_TOTAL;
+                }
+                $otra = (int) array_key_first($resto);
+                if (!isset($columnas_de_codigo[$otra]) && self::importe($resto[$otra]) !== null) {
+                    return self::FILA_TOTAL;
+                }
             }
         }
 
@@ -1305,6 +1558,10 @@ class PlanillaDePrueba
         $valor = $con_dato[$posicion];
         if (self::importe($valor) !== null || !preg_match('/\pL/u', $valor)) {
             return null;
+        }
+        // Debajo del total, un texto suelto es una nota al pie, esté en la columna que esté.
+        if ($despues_del_total) {
+            return self::FILA_TITULO;
         }
         if (self::es_titulo_decorado($valor)) {
             return self::FILA_TITULO;
@@ -1388,9 +1645,10 @@ class PlanillaDePrueba
      * @param  array $hojas  Hojas con `mapeo`
      * @return array         [] o [self::CLAVE_MARGEN => pregunta]
      */
-    public static function pregunta_del_margen(array $hojas): array
+    public static function pregunta_del_margen(array $hojas, int $sin_ganancia = 0): array
     {
-        if (array_filter($hojas, [self::class, 'hoja_necesita_margen']) === []) {
+        $para_todos = array_filter($hojas, [self::class, 'hoja_necesita_margen']) !== [];
+        if (!$para_todos && $sin_ganancia < 1) {
             return [];
         }
 
@@ -1404,9 +1662,16 @@ class PlanillaDePrueba
 
         $pregunta = [
             'clave' => self::CLAVE_MARGEN,
-            'texto' => 'Tu lista trae el costo pero no dice a cuánto vendés. ¿Qué ganancia le sumamos a todos para calcular el precio de venta?'
+            // Con columna de ganancia o de precio y filas que la dejan vacía, la pregunta es solo por esas filas.
+            'texto' => ($para_todos
+                    ? 'Tu lista trae el costo pero no dice a cuánto vendés. ¿Qué ganancia le sumamos a todos para calcular el precio de venta?'
+                    : ($sin_ganancia === 1
+                        ? 'En tu lista hay 1 artículo que trae el costo pero no la ganancia ni el precio de venta. ¿Qué ganancia le sumamos a ese, que no la trae?'
+                        : 'En tu lista hay ' . $sin_ganancia . ' artículos que traen el costo pero no la ganancia ni el precio de venta.'
+                            . ' ¿Qué ganancia les sumamos a esos, que no la traen?'))
                 . ' Puede ser ' . implode(' %, ', self::MARGENES_SUGERIDOS) . ' % u otro porcentaje que me digas.'
-                . ' Si preferís cargar los precios vos después, decímelo y dejo solo el costo.',
+                . ($para_todos ? ' Si preferís cargar los precios vos después, decímelo y dejo solo el costo.'
+                    : ' Si preferís cargarlo vos después, decímelo y los dejo solo con el costo.'),
             'opciones' => $opciones,
             'acepta_porcentaje' => true,
         ];
@@ -1448,9 +1713,12 @@ class PlanillaDePrueba
     {
         $margen = self::margen_de_respuesta($decisiones[self::CLAVE_MARGEN] ?? null);
         foreach ($hojas as &$hoja) {
-            unset($hoja['margen_respondido']);
+            unset($hoja['margen_respondido'], $hoja['margen_para_vacias']);
             if ($margen !== null && self::hoja_necesita_margen($hoja)) {
                 $hoja['margen_respondido'] = $margen;
+            } elseif ($margen !== null && self::campos_de_venta($hoja['mapeo'] ?? []) !== []) {
+                // La hoja trae ganancia o precio: el margen contestado va solo a las filas que los dejan vacíos.
+                $hoja['margen_para_vacias'] = $margen;
             }
         }
         unset($hoja);
