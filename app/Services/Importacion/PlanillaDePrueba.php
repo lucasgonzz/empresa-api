@@ -9,7 +9,9 @@ use App\Http\Controllers\Helpers\import\article\IdentifierNormalizer;
 use App\Http\Controllers\Helpers\import\excel\CsvDeHoja;
 use App\Http\Controllers\Helpers\import\excel\EncabezadosRepetidos;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
+use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Models\Address;
+use App\Models\Article;
 use App\Models\ImportacionDePrueba;
 use App\Models\PriceType;
 use App\Models\Provider;
@@ -63,6 +65,16 @@ class PlanillaDePrueba
         'aplicar_iva' => 'si lleva IVA', 'unidad_medida' => 'unidad de medida', 'u_individuales' => 'unidades por bulto',
         'medida' => 'medida', 'contenido' => 'contenido', 'in_offer' => 'en oferta', 'online' => 'visible en la tienda',
         'precio_pausado' => 'precio pausado', 'disponible_tienda_nube' => 'disponible en Tienda Nube',
+    ];
+
+    /*
+     * Cómo se nombra un campo en el RESUMEN final de la prueba («También tomé de tu lista: …»), cuando no
+     * alcanza la etiqueta de las opciones (misión prueba-e2e-campana-imperio, ronda 3, E1). «Número de
+     * artículo» o «código propio (SKU)» no le dicen nada a un comerciante: lo que se guardó es SU código.
+     */
+    private const ETIQUETAS_DEL_RESUMEN = [
+        'sku' => 'tu código de cada artículo',
+        'numero' => 'el número de los artículos que ya tenías cargados',
     ];
 
     /*
@@ -751,7 +763,7 @@ class PlanillaDePrueba
         });
         $palabras = [];
         foreach ($campos as $campo) {
-            $palabras[] = self::ETIQUETAS[$campo] ?? trim(str_replace(['$_final_', '%_', '_'], ['precio final de la lista ', 'margen de la lista ', ' '], (string) $campo));
+            $palabras[] = self::ETIQUETAS_DEL_RESUMEN[$campo] ?? self::ETIQUETAS[$campo] ?? trim(str_replace(['$_final_', '%_', '_'], ['precio final de la lista ', 'margen de la lista ', ' '], (string) $campo));
         }
         $palabras = array_values(array_unique($palabras));
         if (count($palabras) < 2) {
@@ -972,6 +984,10 @@ class PlanillaDePrueba
     {
         foreach ($hojas as &$hoja) {
             $hoja['mapeo'] = ArticleImportColumnsNormalizer::normalize($this->mapeo_de_hoja($hoja, $decisiones));
+            // Solo en la prueba: el código del dueño no se pierde en `numero` (ver el método).
+            if (!$this->run->modo_soporte) {
+                $hoja['mapeo'] = $this->codigo_del_dueno_como_sku($hoja);
+            }
             $hoja['descuentos_por_proveedor'] = $this->resolver_descuentos($hoja);
         }
         unset($hoja);
@@ -979,6 +995,95 @@ class PlanillaDePrueba
         return array_values(array_filter($hojas, function (array $hoja) {
             return array_intersect(['nombre', 'numero', 'codigo_de_barras', 'sku', 'codigo_de_proveedor'], array_keys($hoja['mapeo'])) !== [];
         }));
+    }
+
+    /**
+     * En la importación de la PRUEBA, la columna de códigos del dueño que quedó en `numero` pasa a `sku`
+     * (misión prueba-e2e-campana-imperio, ronda 3, E1).
+     *
+     * Por qué: para el importador `numero` es el id de un artículo que YA existe; sirve para encontrarlo y
+     * actualizarlo, nunca para dar de alta con ese número. En el ensayo del 12/11 la columna «Cod.» (1–32) de
+     * una planilla de alta terminó en `numero` (la eligió el analizador, pero lo mismo pasa si la elige el
+     * dueño en la pregunta o soporte con `--columnas`): los 32 artículos se crearon con su número correlativo
+     * y el código del dueño no quedó en ningún campo. Buscar «15» no encontraba su artículo 15. Peor: si un
+     * código coincidía con el id de un artículo que el dueño ya había cargado, lo pisaba.
+     *
+     * El SKU («código propio») es el campo natural del código del negocio, el importador lo usa también para
+     * encontrar el artículo en una segunda carga, y al terminar la importación la prueba lo suma al buscador
+     * del Listado y de Vender (`ImportacionDePruebaService::buscar_tambien_por_sku`).
+     *
+     * Se deja en `numero` solo cuando la planilla es, sin duda, una lista de artículos que el negocio ya tiene
+     * por su número (`son_articulos_por_numero`). Si la hoja ya trae una columna de SKU, `numero` no se toca
+     * (el código del dueño ya se guarda). Fuera de la prueba (modo soporte) no se llama: ahí `numero` sigue como siempre.
+     *
+     * @param  array $hoja  Hoja con su `mapeo` ya resuelto
+     * @return array        El mapeo, con `numero` pasado a `sku` si corresponde
+     */
+    private function codigo_del_dueno_como_sku(array $hoja): array
+    {
+        $mapeo = $hoja['mapeo'];
+        if (!isset($mapeo['numero']) || isset($mapeo['sku'])) {
+            return $mapeo;
+        }
+
+        // Código => nombre de esa fila (null si la hoja no trae nombre o la fila no lo tiene).
+        $filas = [];
+        $ruta = $this->ruta();
+        ExcelWorkbookReader::asegurar_csv($ruta, (int) $hoja['indice']);
+        foreach ($this->filas_crudas($ruta, (int) $hoja['indice'], (int) $hoja['inicio']) as $fila) {
+            $valor = IdentifierNormalizer::normalize(ImportHelper::getColumnValue($fila, 'numero', $mapeo));
+            if ($valor !== null) {
+                $nombre = isset($mapeo['nombre']) ? ImportHelper::getColumnValue($fila, 'nombre', $mapeo, true) : null;
+                $filas[(string) $valor] = self::texto_comparable($nombre);
+            }
+        }
+
+        // Una columna vacía tampoco sirve para buscar por número: pasa igual.
+        if ($filas === [] || !$this->son_articulos_por_numero($filas)) {
+            $mapeo['sku'] = $mapeo['numero'];
+            unset($mapeo['numero']);
+        }
+
+        return $mapeo;
+    }
+
+    /**
+     * ¿La hoja es una lista de artículos que el negocio ya tiene, por su número? Lo es solo si:
+     *  - ningún código es el SKU de un artículo del dueño (entonces es su código propio: se busca por SKU);
+     *  - TODOS los códigos son ids de artículos activos del dueño que no son de ejemplo;
+     *  - y en cada fila que trae nombre, el nombre es el de ese artículo. Sin esto, la lista de un proveedor
+     *    nuevo con códigos 40–45 pisaría los artículos 40–45 del negocio, que no tienen nada que ver.
+     *
+     * @param  array $filas  código => nombre comparable (o null)
+     * @return bool
+     */
+    private function son_articulos_por_numero(array $filas): bool
+    {
+        $owner_id = (int) $this->run->user_id;
+        $codigos = array_map('strval', array_keys($filas));
+
+        if (Article::where('user_id', $owner_id)->whereIn('sku', $codigos)->exists()) {
+            return false;
+        }
+        if (count(array_filter($codigos, 'ctype_digit')) !== count($codigos)) {
+            return false;
+        }
+
+        $nombres = Article::where('user_id', $owner_id)->where('status', 'active')
+            ->whereIn('id', array_map('intval', $codigos))
+            ->whereNotIn('id', SemillaRegistroHelper::tabla_disponible() ? SemillaRegistroHelper::ids($owner_id, 'articles') : [])
+            ->pluck('name', 'id')->all();
+
+        foreach ($filas as $codigo => $nombre) {
+            if (!array_key_exists((int) $codigo, $nombres)) {
+                return false;
+            }
+            if ($nombre !== null && self::texto_comparable($nombres[(int) $codigo]) !== $nombre) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

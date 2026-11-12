@@ -739,6 +739,13 @@ class DemoSetupHelper
          */
         if (self::es_setup_de_prueba($data)) {
             PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($user->id);
+
+            /*
+             * Y la tienda nace con el nombre del negocio (no el de la marca de ejemplo del rubro) y deja hacer
+             * un pedido de prueba sin registrarse ni stock (misión prueba-e2e-campana-imperio, ronda 3, E2).
+             * Va después de `DemoIndustriaService::preparar`, que es el que pone la identidad de ejemplo.
+             */
+            TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($user->id);
         }
 
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,

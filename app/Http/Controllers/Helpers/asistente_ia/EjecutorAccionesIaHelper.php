@@ -643,6 +643,9 @@ class EjecutorAccionesIaHelper {
             case AiMessageAction::TIPO_CUOTAS_TIENDA:
                 return PropuestaCuotasTiendaIaHelper::ejecutar($contexto, $accion);
 
+            case AiMessageAction::TIPO_DESCRIPCION_VERIFICADA:
+                return FichaWebArticuloIaHelper::ejecutar($contexto, $accion);
+
             case AiMessageAction::TIPO_UNIFICAR_BANCOS:
                 return PropuestaBancosChequesIaHelper::ejecutar($contexto, $accion);
 

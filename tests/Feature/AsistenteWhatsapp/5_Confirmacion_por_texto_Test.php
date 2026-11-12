@@ -137,9 +137,12 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
          * agente-mejoras-diario-30-10 (31/10/2026, B2) sumó armar_texto_de_promocion. La configuración
          * de cuotas de tienda (2/11/2026) agregó proponer_cuotas_tienda después de esas herramientas.
          * Son las mismas que fija ChatIa/15_Acciones_service_y_job_Test.
+         * Fichas verificadas (12/11/2026) agrega intencionalmente proponer_descripcion_verificada
+         * al final de las comunes. El censo crece una; el foreach sigue verificando TODOS los dispatch.
          */
-        $this->assertCount(48, $nombres, 'Cuarenta y cinco comunes más las tres del canal de WhatsApp.');
+        $this->assertCount(49, $nombres, 'Cuarenta y seis comunes más las tres del canal de WhatsApp.');
         $this->assertContains('proponer_cuotas_tienda', $nombres);
+        $this->assertContains('proponer_descripcion_verificada', $nombres);
 
         foreach ($nombres as $nombre) {
             $this->assertStringContainsString(

@@ -285,8 +285,10 @@ class Pedir_ayuda_a_soporte_Test extends EmpresaTestCase
         $nombres = HerramientasDeCarga::nombres();
         $this->assertSame(
             ['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda'],
-            array_slice($nombres, -3)
+            // Fichas verificadas añade una herramienta detrás, sin modificar este prefijo.
+            array_slice($nombres, -4, 3)
         );
+        $this->assertSame(['proponer_descripcion_verificada'], array_slice($nombres, -1));
 
         $descripcion = '';
         foreach (HerramientasDeCarga::definiciones() as $definicion) {

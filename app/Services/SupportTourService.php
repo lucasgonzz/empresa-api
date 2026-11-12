@@ -255,6 +255,16 @@ class SupportTourService
             if (PermisosIaHelper::puede($persona, 'article.store')) {
                 $pasos['listado.nuevo_articulo'] = 'Señalar la parte principal de Crear para abrir una ficha nueva de artículo.';
             }
+            // Ficha de un artículo existente (12/11/2026). Buscar, abrir y mirar el precio alcanzan con ver
+            // el Listado; cargar el precio y guardar, como en el SPA, piden poder editar artículos.
+            $pasos['listado.buscador'] = 'Señalar el buscador del Listado para que la persona escriba el nombre o código del artículo.';
+            $pasos['listado.abrir_ficha'] = 'Señalar la tabla del Listado para que la persona abra la ficha del artículo que elija. Avanza cuando se abre la ficha.';
+            $pasos['listado.pestana_precio'] = 'Señalar la pestaña Precio de la ficha del artículo. Usar después de listado.abrir_ficha.';
+            $pasos['listado.precio_final'] = 'Señalar el precio final del artículo en la pestaña Precio. Usar después de listado.pestana_precio.';
+            if (PermisosIaHelper::puede($persona, 'article.update')) {
+                $pasos['listado.setear_precio_final'] = 'Señalar Setear precio final, o el precio manual si no hay listas, para cargar el precio a mano. Usar después de listado.pestana_precio.';
+                $pasos['listado.guardar_articulo'] = 'Señalar Guardar y cerrar de la ficha del artículo. Avanza cuando la ficha se cierra.';
+            }
         }
         if (isset($pasos['vista.ventas'])) {
             $pasos['ventas.filtro_fecha'] = 'Señalar el control de fechas e histórico en Ventas.';

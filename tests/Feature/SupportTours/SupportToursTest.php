@@ -520,6 +520,67 @@ class SupportToursTest extends EmpresaTestCase
         $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $recorrido], $this->clave())->assertOk();
     }
 
+    public function test_el_catalogo_ofrece_la_ficha_del_articulo_segun_ver_y_editar_y_acepta_cambiar_un_precio(): void
+    {
+        $ruta = self::ADMIN_SYNC . '/catalogo?user_id=' . $this->empleado->id;
+        $catalogo = function () use ($ruta): array {
+            return collect($this->getJson($ruta, $this->clave())->assertOk()->json('pasos'))->pluck('descripcion', 'clave')->all();
+        };
+        $permiso = function (string $slug): void {
+            $this->empleado->permissions()->attach(PermissionEmpresa::unguarded(static function () use ($slug) {
+                return PermissionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+            })->id);
+        };
+        $ver = ['listado.buscador', 'listado.abrir_ficha', 'listado.pestana_precio', 'listado.precio_final'];
+        $editar = ['listado.setear_precio_final', 'listado.guardar_articulo'];
+
+        $this->assertEmpty(array_intersect(array_merge($ver, $editar), array_keys($catalogo())), 'Sin Listado no se ofrece la ficha.');
+        $permiso('article.index');
+        $pasos = $catalogo();
+        foreach ($ver as $clave) {
+            $this->assertArrayHasKey($clave, $pasos);
+        }
+        $this->assertEmpty(array_intersect($editar, array_keys($pasos)), 'Cargar el precio y guardar piden editar artículos.');
+        $permiso('article.update');
+        $pasos = $catalogo();
+        foreach ($editar as $clave) {
+            $this->assertArrayHasKey($clave, $pasos);
+        }
+        $this->assertStringContainsString('Avanza cuando se abre la ficha', $pasos['listado.abrir_ficha']);
+        $this->assertStringContainsString('Usar después de listado.abrir_ficha', $pasos['listado.pestana_precio']);
+        $this->assertStringContainsString('Usar después de listado.pestana_precio', $pasos['listado.setear_precio_final']);
+        $this->assertStringContainsString('Guardar y cerrar', $pasos['listado.guardar_articulo']);
+
+        // Son las mismas claves que el SPA publica en su catálogo de controles (la copia de la API).
+        $controles = array_column(\App\Services\SupportTourService::catalogo_de_soporte()['controles'] ?? [], 'clave');
+        foreach (array_merge($ver, $editar) as $clave) {
+            $this->assertContains($clave, $controles);
+        }
+
+        // Por WhatsApp y sin user_id el recorrido es para el dueño, que puede editar artículos.
+        $oferta = $this->datos(['tema' => 'guia_dinamica', 'titulo' => 'Cambiar el precio de un artículo']);
+        $recorrido = [
+            ['clave' => 'vista.listado', 'texto' => 'Vamos al Listado de artículos.'],
+            ['clave' => 'listado.buscador', 'texto' => 'Escribí el nombre o el código del artículo.'],
+            ['clave' => 'listado.abrir_ficha', 'texto' => 'Abrí el artículo con un clic en su fila.'],
+            ['clave' => 'listado.pestana_precio', 'texto' => 'Andá a la pestaña Precio.'],
+            ['clave' => 'listado.setear_precio_final', 'texto' => 'Cargá el precio nuevo.'],
+            ['clave' => 'listado.precio_final', 'texto' => 'Este es el precio final que se va a vender.'],
+            ['clave' => 'listado.guardar_articulo', 'texto' => 'Tocá Guardar y cerrar.'],
+        ];
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $recorrido], $this->clave())->assertOk();
+
+        // Al empleado que solo ve el Listado no se le puede programar el paso que carga el precio.
+        $this->empleado->permissions()->detach(PermissionEmpresa::where('slug', 'article.update')->first()->id);
+        $al_empleado = $oferta + ['user_id' => $this->empleado->id, 'recipient_phone' => '5493454622139'];
+        $al_empleado['uuid'] = (string) Str::uuid();
+        $this->postJson(self::ADMIN_SYNC, $al_empleado + ['pasos' => $recorrido], $this->clave())->assertJsonValidationErrors('pasos.4');
+        $solo_ver = array_values(array_filter($recorrido, static function (array $paso) use ($editar) {
+            return !in_array($paso['clave'], $editar, true);
+        }));
+        $this->postJson(self::ADMIN_SYNC, $al_empleado + ['pasos' => $solo_ver], $this->clave())->assertOk();
+    }
+
     public function test_la_repregunta_se_reintenta_sin_duplicar_y_la_nueva_guia_conserva_el_origen(): void
     {
         $status = 503;

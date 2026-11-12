@@ -126,6 +126,9 @@ class Tools_de_lectura_Test extends TestCase
             'exportar_excel'                           => ['titulo' => 'Tools B', 'columnas' => [['clave' => 'nombre', 'etiqueta' => 'Nombre']], 'filas' => []],
             // Misma misión (E2): los artículos sin rotación (el cálculo lo cubre su propio test).
             'consultar_articulos_sin_rotacion'         => ['limite' => 10],
+            // Fichas verificadas (12/11/2026): ejercita el despacho sin salir a internet; este nombre
+            // no existe en el comercio. El camino completo con evidencia lo prueba Fichas_web_de_articulos_Test.
+            'buscar_ficha_de_articulo'                 => ['articulo' => 'Ficha inexistente en este comercio', 'preparar_descripcion' => false],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

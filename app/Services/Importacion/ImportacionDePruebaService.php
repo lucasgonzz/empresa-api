@@ -4,6 +4,7 @@ namespace App\Services\Importacion;
 
 use App\Events\ImplementacionActualizada;
 use App\Http\Controllers\Helpers\ArticleImportHelper;
+use App\Http\Controllers\Helpers\GlobalSearchDefaultsHelper;
 use App\Http\Controllers\Helpers\ImageAssignmentRunHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\UserHelper;
@@ -16,6 +17,7 @@ use App\Models\EmbeddingRun;
 use App\Models\ImageAssignmentRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\TableColumnPreference;
 use App\Models\User;
 use App\Services\CupoEmbeddingsDePrueba;
 use App\Services\ImageAssignment\CupoImagenesDePrueba;
@@ -424,6 +426,11 @@ class ImportacionDePruebaService
             if ($otros !== '') {
                 $texto .= ' También tomé de tu lista: ' . mb_substr($otros, 0, 500) . '.';
             }
+            // El código del dueño quedó como SKU (ver `PlanillaDePrueba::codigo_del_dueno_como_sku`): se busca por él.
+            if (isset($campos['sku'])) {
+                self::buscar_tambien_por_sku((int) $run->user_id);
+                $texto .= ' Cada artículo lo encontrás por tu código en el Listado y en Vender.';
+            }
             $semilla_borrada_at = optional(PruebaHelper::config((int) $run->user_id))->semilla_borrada_at;
             if ($semilla_borrada_at !== null && $semilla_borrada_at->gte($historial->created_at)) {
                 $texto .= ' La información de ejemplo ya se reemplazó por la tuya.';
@@ -687,5 +694,47 @@ class ImportacionDePruebaService
                 ]);
             }
         });
+    }
+
+    /**
+     * Suma el SKU a las propiedades con las que busca el buscador general de artículos del dueño (el del
+     * Listado y el del modal de Vender), si todavía no está (misión prueba-e2e-campana-imperio, ronda 3, E1).
+     *
+     * El buscador busca en lo que tenga tildado la preferencia `global_search` del modelo `article`, y de
+     * fábrica son nombre, código de barras y código de proveedor (`GlobalSearchDefaultsHelper`): el SKU,
+     * donde la prueba guarda el código del dueño, no estaba. Se toca SOLO la fila de este dueño y solo desde
+     * la importación de la prueba; los empleados heredan la del dueño. Si el dueño ya tiene el SKU en la
+     * lista, tildado o destildado a mano, se respeta. Un fallo se loguea y no frena el resumen.
+     *
+     * @param  int $owner_id
+     * @return void
+     */
+    public static function buscar_tambien_por_sku(int $owner_id): void
+    {
+        try {
+            $fila = TableColumnPreference::where('user_id', $owner_id)->where('model_name', 'article')
+                ->where('preference_type', 'global_search')->first();
+            $columnas = !is_null($fila) && is_array($fila->columns) && $fila->columns !== []
+                ? array_values($fila->columns) : GlobalSearchDefaultsHelper::columns_for('article');
+
+            if (in_array('sku', array_column($columnas, 'key'), true)) {
+                return;
+            }
+
+            $columnas[] = [
+                'key' => 'sku', 'visible' => true, 'order' => count($columnas), 'width' => null,
+                'wrap_content' => false, 'keyword_mode' => 'alguna',
+            ];
+
+            TableColumnPreference::updateOrCreate(
+                ['user_id' => $owner_id, 'model_name' => 'article', 'preference_type' => 'global_search'],
+                [
+                    'columns' => $columnas,
+                    'settings' => !is_null($fila) && is_array($fila->settings) ? $fila->settings : GlobalSearchDefaultsHelper::settings(),
+                ]
+            );
+        } catch (Throwable $e) {
+            Log::warning('ImportacionDePruebaService: no se pudo sumar el SKU al buscador del dueño ' . $owner_id . ': ' . $e->getMessage());
+        }
     }
 }
