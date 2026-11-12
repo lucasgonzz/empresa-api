@@ -43,23 +43,14 @@ class PlanillaDePrueba
     // Por qué una fila no se importa: un título de sección o una nota suelta, o el total al pie.
     public const FILA_TITULO = 'titulo';
     public const FILA_TOTAL = 'total';
-
-    /*
-     * Palabras que puede tener el nombre de una fila de total («TOTAL LISTA», «Total general», «Suma de
-     * importes»). Lista cerrada a propósito: «Total Quartz 7000» o «Suma dental» son artículos.
-     */
-    private const PALABRAS_DE_TOTAL = [
-        'total', 'totales', 'subtotal', 'subtotales', 'sub', 'suma', 'sumas', 'general', 'generales', 'final',
-        'lista', 'listado', 'neto', 'bruto', 'importe', 'importes', 'iva', 'con', 'sin', 'incluido', 'de', 'del',
-        'la', 'el', 'los', 'las', 'en', 'pesos', 'articulos', 'productos', 'items', 'unidades', 'mercaderia',
-        'stock', 'inventario', 'valorizado', 'pagina', 'hoja',
-    ];
+    // Cuántos textos de filas salteadas se guardan y se muestran, para que el dueño pueda decir «ese sí era un producto».
+    public const EJEMPLOS_DE_SALTEADAS = 5;
 
     private $run;
     private $propiedades;
     private $nombres;
     private $proveedores;
-    // Filas que `filas()` dejó afuera por no ser artículos: [índice de hoja => [motivo => cantidad]].
+    // Filas que `filas()` dejó afuera por no ser artículos: [índice de hoja => [motivo => cantidad, 'textos_<motivo>' => [...]]].
     private $salteadas = [];
 
     public function __construct(ImportacionDePrueba $run)
@@ -679,8 +670,16 @@ class PlanillaDePrueba
     public function filas(array $hojas): \Generator
     {
         $ruta = $this->ruta();
+        /*
+         * El descarte de títulos y totales corre SOLO en la importación de la prueba. En modo soporte (un
+         * negocio que ya opera) queda lo de siempre: se saltean nada más que las filas vacías y los
+         * encabezados repetidos.
+         */
+        $descarta = !$this->run->modo_soporte;
         foreach ($hojas as $hoja) {
             ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
+            // La única fila que puede ser el total: la última con datos, sin contar las notas sueltas del pie.
+            $cierre = $descarta ? $this->fila_de_cierre($ruta, $hoja) : null;
             foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
                 $datos = [];
                 foreach ($hoja['mapeo'] as $campo => $posicion) {
@@ -690,9 +689,9 @@ class PlanillaDePrueba
                     continue;
                 }
                 // Un título de rubro o el total al pie no son artículos: no llegan ni a los repetidos ni al motor.
-                $motivo = self::motivo_para_saltear($fila, $hoja['mapeo']);
+                $motivo = $descarta ? self::motivo_para_saltear($fila, $hoja['mapeo'], $numero === $cierre) : null;
                 if ($motivo !== null) {
-                    $this->salteadas[$hoja['indice']][$motivo] = ($this->salteadas[$hoja['indice']][$motivo] ?? 0) + 1;
+                    $this->anotar_salteada((int) $hoja['indice'], $motivo, $fila, $hoja['mapeo']);
                     continue;
                 }
                 // La ganancia que contestó el dueño, como si la planilla trajera la columna del margen.
@@ -868,27 +867,12 @@ class PlanillaDePrueba
     }
 
     /**
-     * Por qué una fila de la planilla no es un artículo, o null si hay que importarla (misión
-     * prueba-e2e-campana-imperio, 11/11/2026).
+     * Las celdas con dato de una fila cruda, por posición y sin espacios alrededor.
      *
-     * Las listas de proveedor traen títulos de rubro («--- TORNILLERIA ---» en la columna del código y el
-     * resto vacío), notas sueltas al pie y una fila de total. Hasta hoy terminaban como artículos: el motor
-     * solo descarta la fila que no tiene código NI nombre. La regla es conservadora a propósito; ante la
-     * duda la fila se importa, como siempre:
-     *
-     *  - FILA_TITULO: la fila tiene UNA sola celda con dato en todo su ancho (no solo en las columnas
-     *    mapeadas) y es texto. Dos excepciones, que siguen siendo artículos: si esa celda está en la
-     *    columna del nombre (un artículo sin precio), salvo que venga decorada como título («--- X ---»,
-     *    «== X ==», «*** X»); y si está en una columna de código y parece un código (sin espacios y con
-     *    algún dígito).
-     *  - FILA_TOTAL: la fila no tiene código, su nombre está hecho solo de palabras de total («TOTAL
-     *    LISTA», «Total general», «Subtotal»; ver PALABRAS_DE_TOTAL) y su único otro dato es un importe.
-     *
-     * @param  array $fila   Celdas crudas de la fila, por posición
-     * @param  array $mapeo  Campo del importador => posición de su columna
-     * @return string|null   self::FILA_TITULO, self::FILA_TOTAL o null
+     * @param  array $fila
+     * @return array<int, string>
      */
-    public static function motivo_para_saltear(array $fila, array $mapeo): ?string
+    private static function celdas_con_dato(array $fila): array
     {
         $con_dato = [];
         foreach ($fila as $posicion => $valor) {
@@ -899,6 +883,116 @@ class PlanillaDePrueba
                 $con_dato[(int) $posicion] = $limpio;
             }
         }
+
+        return $con_dato;
+    }
+
+    /**
+     * ¿El texto empieza como el nombre de una fila de total? («TOTAL LISTA», «Total general», «Subtotal»,
+     * «Sub total», «Suma de importes»), sin acentos ni mayúsculas. «Stock total» no empieza así.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    private static function empieza_como_total(string $texto): bool
+    {
+        return preg_match('/^(?:sub ?total(?:es)?|total(?:es)?|sumas?)(?: |$)/', self::titulo_comparable($texto)) === 1;
+    }
+
+    /**
+     * ¿El texto es un título decorado? Abre y cierra con el mismo signo repetido («--- X ---», «*** X ***»,
+     * «=== X ===», «## X ##») y adentro no trae números: «-- Martillo 500g --» es un artículo.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    private static function es_titulo_decorado(string $texto): bool
+    {
+        return preg_match('/^([-=*#_~•·])\1+\s*(.*?)\s*\1{2,}$/u', $texto, $partes) === 1
+            && preg_match('/\pL/u', $partes[2]) === 1 && preg_match('/\d/', $partes[2]) !== 1;
+    }
+
+    /**
+     * El número de la última fila con datos de la hoja, sin contar las notas sueltas del pie (una fila con
+     * un único texto, como «Consulte por descuentos por cantidad.»). Es la única fila que puede ser el total:
+     * un «Total» en el medio de la planilla es un artículo.
+     *
+     * @param  string $ruta
+     * @param  array  $hoja
+     * @return int|null
+     */
+    private function fila_de_cierre(string $ruta, array $hoja): ?int
+    {
+        $cierre = null;
+        foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
+            $con_dato = self::celdas_con_dato($fila);
+            if ($con_dato === []) {
+                continue;
+            }
+            $valor = (string) reset($con_dato);
+            $es_nota = count($con_dato) === 1 && self::importe($valor) === null
+                && preg_match('/\pL/u', $valor) === 1 && !self::empieza_como_total($valor);
+            if (!$es_nota) {
+                $cierre = (int) $numero;
+            }
+        }
+
+        return $cierre;
+    }
+
+    /**
+     * Cuenta una fila salteada y guarda su texto (los primeros EJEMPLOS_DE_SALTEADAS de cada motivo).
+     *
+     * @param  int    $indice  Índice de la hoja
+     * @param  string $motivo  self::FILA_TITULO o self::FILA_TOTAL
+     * @param  array  $fila
+     * @param  array  $mapeo
+     * @return void
+     */
+    private function anotar_salteada(int $indice, string $motivo, array $fila, array $mapeo): void
+    {
+        $this->salteadas[$indice][$motivo] = ($this->salteadas[$indice][$motivo] ?? 0) + 1;
+
+        $con_dato = self::celdas_con_dato($fila);
+        $texto = $motivo === self::FILA_TOTAL && isset($mapeo['nombre'], $con_dato[(int) $mapeo['nombre']])
+            ? $con_dato[(int) $mapeo['nombre']] : (string) reset($con_dato);
+        $clave = 'textos_' . $motivo;
+        if (count($this->salteadas[$indice][$clave] ?? []) < self::EJEMPLOS_DE_SALTEADAS) {
+            $this->salteadas[$indice][$clave][] = mb_substr($texto, 0, 60);
+        }
+    }
+
+    /**
+     * Por qué una fila de la planilla no es un artículo, o null si hay que importarla (misión
+     * prueba-e2e-campana-imperio, 11/11/2026).
+     *
+     * Las listas de proveedor traen títulos de rubro («--- TORNILLERIA ---» en la columna del código y el
+     * resto vacío), notas sueltas al pie y una fila de total. Hasta hoy terminaban como artículos: el motor
+     * solo descarta la fila que no tiene código NI nombre.
+     *
+     * 🔴 La regla es conservadora a propósito: descartar de más es perder un artículo sin que nadie lo vea.
+     * Ante la duda la fila se importa, como siempre.
+     *
+     *  - FILA_TOTAL: solo la fila de cierre de la hoja (`$es_el_cierre`: la última con datos, sin contar las
+     *    notas sueltas de abajo), sin código, con un nombre que EMPIEZA con total, subtotal o suma, y con un
+     *    importe como único otro dato (o ninguno). «Total» o «Suma» en el medio de la planilla, «Stock total»
+     *    y un total con dos datos al lado son artículos.
+     *  - FILA_TITULO: la fila tiene UN solo valor en todo su ancho, es texto, y además:
+     *      · está decorado de apertura y de cierre con el mismo signo y sin números adentro («--- X ---»,
+     *        «*** X ***», «=== X ===», «## X ##»); o
+     *      · está en una columna de código, la hoja tiene columna de nombre, y no parece un código (un código
+     *        no tiene espacios y trae algún dígito): es un rubro suelto, como «--- TORNILLERIA ---».
+     *    Un nombre suelto en la columna del NOMBRE («Martillo», «**Martillo carpintero», «-- Martillo 500g --»)
+     *    no se descarta: es un artículo sin precio.
+     *
+     * @param  array $fila          Celdas crudas de la fila, por posición
+     * @param  array $mapeo         Campo del importador => posición de su columna
+     * @param  bool  $es_el_cierre  Si es la última fila con datos de la hoja (ver fila_de_cierre())
+     * @return string|null          self::FILA_TITULO, self::FILA_TOTAL o null
+     */
+    public static function motivo_para_saltear(array $fila, array $mapeo, bool $es_el_cierre = false): ?string
+    {
+        $con_dato = self::celdas_con_dato($fila);
         if ($con_dato === [] || count($con_dato) > 2) {
             return null;
         }
@@ -911,67 +1005,76 @@ class PlanillaDePrueba
             }
         }
 
-        if (count($con_dato) === 1) {
-            $posicion = (int) array_key_first($con_dato);
-            $valor = $con_dato[$posicion];
-            if (self::importe($valor) !== null || !preg_match('/\pL/u', $valor)) {
-                return null;
+        if ($es_el_cierre && $columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])
+            && self::empieza_como_total($con_dato[$columna_del_nombre])) {
+            $resto = array_diff_key($con_dato, [$columna_del_nombre => true]);
+            if ($resto === []) {
+                return self::FILA_TOTAL;
             }
-            if ($posicion === $columna_del_nombre) {
-                return preg_match('/^[-=*#_~<>•·]{2,}/u', $valor) ? self::FILA_TITULO : null;
+            $otra = (int) array_key_first($resto);
+            if (!isset($columnas_de_codigo[$otra]) && self::importe($resto[$otra]) !== null) {
+                return self::FILA_TOTAL;
             }
-            if (isset($columnas_de_codigo[$posicion]) && !preg_match('/\s/u', $valor) && preg_match('/\d/', $valor)) {
-                return null;
-            }
+        }
 
+        if (count($con_dato) !== 1) {
+            return null;
+        }
+        $posicion = (int) array_key_first($con_dato);
+        $valor = $con_dato[$posicion];
+        if (self::importe($valor) !== null || !preg_match('/\pL/u', $valor)) {
+            return null;
+        }
+        if (self::es_titulo_decorado($valor)) {
+            return self::FILA_TITULO;
+        }
+        $parece_un_codigo = !preg_match('/\s/u', $valor) && preg_match('/\d/', $valor);
+        if (isset($columnas_de_codigo[$posicion]) && $columna_del_nombre !== null && !$parece_un_codigo) {
             return self::FILA_TITULO;
         }
 
-        if ($columna_del_nombre === null || !isset($con_dato[$columna_del_nombre])) {
-            return null;
-        }
-        $otra = array_keys(array_diff_key($con_dato, [$columna_del_nombre => true]))[0];
-        if (isset($columnas_de_codigo[$otra]) || self::importe($con_dato[$otra]) === null) {
-            return null;
-        }
-        $palabras = array_filter(explode(' ', self::titulo_comparable($con_dato[$columna_del_nombre])), 'strlen');
-        if ($palabras === [] || array_diff($palabras, self::PALABRAS_DE_TOTAL) !== []
-            || array_intersect($palabras, ['total', 'totales', 'subtotal', 'subtotales', 'suma', 'sumas']) === []) {
-            return null;
-        }
-
-        return self::FILA_TOTAL;
+        return null;
     }
 
     /**
-     * La frase del resumen sobre las filas que no se importaron por no ser artículos, o '' si no hubo.
+     * La frase del resumen sobre las filas que no se importaron por no ser artículos, o '' si no hubo. Dice
+     * cuántas fueron y CUÁLES (los primeros textos, con el total al final), para que el dueño pueda avisar
+     * si alguna sí era un producto.
      *
-     * @param  array $hojas  Hojas guardadas en la corrida, con `filas_salteadas` => [motivo => cantidad]
-     * @return string        Por ejemplo « Dejé afuera 7 filas que no son artículos: 6 títulos o notas sueltas y 1 total.»
+     * @param  array $hojas  Hojas guardadas en la corrida, con `filas_salteadas`
+     * @return string        Por ejemplo « Dejé afuera 3 filas que no son artículos: “--- TORNILLERIA ---”,
+     *                       “--- PINTURERIA ---”, “TOTAL LISTA”. Si alguna era un producto, decímelo y la cargo.»
      */
     public static function texto_de_filas_salteadas(array $hojas): string
     {
-        $titulos = 0;
-        $totales = 0;
+        $filas = 0;
+        $titulos = [];
+        $totales = [];
         foreach ($hojas as $hoja) {
-            $titulos += (int) ($hoja['filas_salteadas'][self::FILA_TITULO] ?? 0);
-            $totales += (int) ($hoja['filas_salteadas'][self::FILA_TOTAL] ?? 0);
+            $salteadas = $hoja['filas_salteadas'] ?? [];
+            $filas += (int) ($salteadas[self::FILA_TITULO] ?? 0) + (int) ($salteadas[self::FILA_TOTAL] ?? 0);
+            $titulos = array_merge($titulos, array_values($salteadas['textos_' . self::FILA_TITULO] ?? []));
+            $totales = array_merge($totales, array_values($salteadas['textos_' . self::FILA_TOTAL] ?? []));
         }
-        $filas = $titulos + $totales;
         if ($filas === 0) {
             return '';
         }
 
-        $partes = [];
-        if ($titulos > 0) {
-            $partes[] = $titulos . ($titulos === 1 ? ' título o nota suelta' : ' títulos o notas sueltas');
+        // El total va siempre a la vista, al final; el resto del cupo es para los títulos, en su orden.
+        $totales = array_slice($totales, 0, 2);
+        $titulos = array_slice($titulos, 0, self::EJEMPLOS_DE_SALTEADAS - count($totales));
+        $entre_comillas = function ($texto) {
+            return '“' . $texto . '”';
+        };
+        $partes = array_map($entre_comillas, $titulos);
+        if ($partes !== [] && $filas > count($titulos) + count($totales)) {
+            $partes[] = '…';
         }
-        if ($totales > 0) {
-            $partes[] = $totales . ($totales === 1 ? ' total' : ' totales');
-        }
+        $partes = array_merge($partes, array_map($entre_comillas, $totales));
 
-        return ' Dejé afuera ' . $filas . ($filas === 1 ? ' fila que no es un artículo: ' : ' filas que no son artículos: ')
-            . implode(' y ', $partes) . '.';
+        return ' Dejé afuera ' . $filas . ($filas === 1 ? ' fila que no es un artículo' : ' filas que no son artículos')
+            . ($partes === [] ? '' : ': ' . implode(', ', $partes)) . '.'
+            . ($filas === 1 ? ' Si era un producto, decímelo y la cargo.' : ' Si alguna era un producto, decímelo y la cargo.');
     }
 
     /**

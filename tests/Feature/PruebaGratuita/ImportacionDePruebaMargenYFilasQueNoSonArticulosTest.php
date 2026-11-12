@@ -30,7 +30,9 @@ use Tests\EmpresaTestCase;
  *     La respuesta viaja como una columna `margen_de_ganancia` de la planilla preparada. Con solo precio de
  *     venta no se pregunta nada.
  *  N. FILAS QUE NO SON ARTÍCULOS. Un título de rubro («--- TORNILLERIA ---»), una nota suelta al pie y la
- *     fila del total no llegan al motor, y el resumen dice cuántas se dejaron afuera.
+ *     fila del total no llegan al motor, y el resumen dice cuántas y CUÁLES se dejaron afuera. La regla es
+ *     conservadora (un «Total» en el medio, un nombre suelto o «**Martillo» son artículos) y corre solo en
+ *     la prueba: en modo soporte no se descarta nada nuevo.
  *
  * El fixture es la lista con la que se hizo el ensayo real: membrete de 6 filas, cabecera en la fila 7 y
  * repetida en la 44, 5 títulos «--- RUBRO ---», 50 artículos, «PRECIO» que es el costo, «TOTAL LISTA» y
@@ -276,20 +278,21 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         // 5. El resumen dice cuántas filas dejó afuera y con qué ganancia calculó el precio.
         $run = $run->fresh();
         // 5 títulos de rubro y la nota del pie; y el total. (La columna JSON no conserva el orden de las claves.)
-        $this->assertSame(6, $run->hojas[0]['filas_salteadas']['titulo']);
-        $this->assertSame(1, $run->hojas[0]['filas_salteadas']['total']);
-        $this->assertCount(2, $run->hojas[0]['filas_salteadas']);
+        $salteadas = $run->hojas[0]['filas_salteadas'];
+        $this->assertSame(6, $salteadas['titulo']);
+        $this->assertSame(1, $salteadas['total']);
+        $this->assertSame(self::TITULOS, $salteadas['textos_titulo'], 'Se guardan los primeros cinco textos, en su orden.');
+        $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
         // Sin cupo de imágenes: el cierre de la importación no sale a buscar fotos (no es lo que se mide acá).
         \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
-        $this->assertSame(
-            ' Dejé afuera 7 filas que no son artículos: 6 títulos o notas sueltas y 1 total.',
-            PlanillaDePrueba::texto_de_filas_salteadas($run->hojas)
-        );
+        $frase = ' Dejé afuera 7 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
+            . ' “--- ELECTRICIDAD ---”, …, “TOTAL LISTA”. Si alguna era un producto, decímelo y la cargo.';
+        $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
         $run = $this->avanzar($run);
         $resultado = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 31)
             ->where('texto', 'like', '%artículos creados%')->firstOrFail();
         $this->assertStringContainsString('50 artículos creados y 0 actualizados.', $resultado->texto);
-        $this->assertStringContainsString('Dejé afuera 7 filas que no son artículos: 6 títulos o notas sueltas y 1 total.', $resultado->texto);
+        $this->assertStringContainsString(trim($frase), $resultado->texto);
         $this->assertStringContainsString('Calculé el precio de venta sumándole 40 % de ganancia al costo.', $resultado->texto);
     }
 
@@ -422,12 +425,12 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
     /**
      * @dataProvider filas_de_la_planilla
      */
-    public function test_que_filas_no_son_articulos(?string $esperado, array $fila, string $caso): void
+    public function test_que_filas_no_son_articulos(?string $esperado, array $fila, bool $es_el_cierre, string $caso): void
     {
         // Columnas de la lista: A código, B nombre, C costo, D IVA, E unidad (sin mapear), F bulto (sin mapear).
         $mapeo = ['codigo_de_proveedor' => 0, 'nombre' => 1, 'costo' => 2, 'iva' => 3];
 
-        $this->assertSame($esperado, PlanillaDePrueba::motivo_para_saltear($fila, $mapeo), $caso);
+        $this->assertSame($esperado, PlanillaDePrueba::motivo_para_saltear($fila, $mapeo, $es_el_cierre), $caso);
     }
 
     public function filas_de_la_planilla(): array
@@ -436,46 +439,167 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $total = PlanillaDePrueba::FILA_TOTAL;
 
         return [
-            // Títulos de sección y notas sueltas: un único texto en toda la fila.
-            [$titulo, ['--- TORNILLERIA ---', '', '', '', '', ''], 'título en la columna del código'],
-            [$titulo, ['HERRAMIENTAS ELÉCTRICAS', '', '', '', '', ''], 'título sin decorar en la columna del código'],
-            [$titulo, ['LINEA 2000', '', '', '', '', ''], 'un título puede traer números'],
-            [$titulo, ['Consulte por descuentos por cantidad.', '', '', '', '', ''], 'nota al pie'],
-            [$titulo, ['', '', '', '', '', 'Precios sujetos a cambio'], 'nota en una columna sin mapear'],
-            [$titulo, ['', '--- PINTURERIA ---', '', '', '', ''], 'título decorado en la columna del nombre'],
-            [$titulo, ["\u{00A0}", '== SANITARIOS ==', ' ', '', '', ''], 'los espacios duros no cuentan como dato'],
-            // Lo que parece lo mismo y es un artículo: ante la duda, se importa.
-            [null, ['', 'Tornillo sin precio', '', '', '', ''], 'un artículo sin código ni precio'],
-            [null, ['DL-1002', '', '', '', '', ''], 'un código solo sigue yendo al motor'],
-            [null, ['7790001112223', '', '', '', '', ''], 'un código de barras solo'],
-            [null, ['', '', '1500', '', '', ''], 'un importe solo no es un título'],
-            [null, ['DL-1002', 'TORNILLO AUTOPERFORANTE 8X1', '2054.9', '10.5', 'UN', '100'], 'un artículo completo'],
-            [null, ['--- OFERTA ---', 'Taladro', '', '', '', ''], 'con dos datos ya no es un título'],
-            // El total al pie: sin código, nombre de total, y un importe como único otro dato.
-            [$total, ['', 'TOTAL LISTA', '1154150.97', '', '', ''], 'el total del fixture'],
-            [$total, ['', 'Total general', '$ 1.154.150,97', '', '', ''], 'con formato de plata'],
-            [$total, ['', 'Subtotal', '', '', '', '350000'], 'el importe en una columna sin mapear'],
-            [$total, ['', 'SUMA DE IMPORTES', '9000', '', '', ''], 'suma'],
-            [$total, ['', 'Sub total sin IVA', '9000', '', '', ''], 'sub total en dos palabras'],
-            // Lo que se llama parecido y es un artículo.
-            [null, ['', 'Total Quartz 7000 10W40', '15300', '', '', ''], 'una marca que se llama Total'],
-            [null, ['', 'Suma dental', '900', '', '', ''], 'un producto que empieza con suma'],
-            [null, ['T-1', 'TOTAL LISTA', '1154150.97', '', '', ''], 'con código es un artículo'],
-            [null, ['', 'TOTAL LISTA', '1154150.97', '21', '', ''], 'con más de un dato al lado no es el total'],
-            [null, ['', 'TOTAL LISTA', 'ver detalle', '', '', ''], 'sin importe no es el total'],
-            [null, ['', '', '', '', '', ''], 'una fila vacía la saltea quien la lee, no esta regla'],
+            // TÍTULOS: un único valor en toda la fila, decorado de los dos lados o suelto en la columna del código.
+            [$titulo, ['--- TORNILLERIA ---', '', '', '', '', ''], false, 'rubro en la columna del código'],
+            [$titulo, ['HERRAMIENTAS ELÉCTRICAS', '', '', '', '', ''], false, 'rubro sin decorar en la columna del código'],
+            [$titulo, ['LINEA 2000', '', '', '', '', ''], false, 'un rubro puede traer números si tiene espacios'],
+            [$titulo, ['Consulte por descuentos por cantidad.', '', '', '', '', ''], false, 'nota al pie en la columna del código'],
+            [$titulo, ['', '--- PINTURERIA ---', '', '', '', ''], false, 'decorado de los dos lados en la columna del nombre'],
+            [$titulo, ['', '*** OFERTAS ***', '', '', '', ''], false, 'con asteriscos'],
+            [$titulo, ['', '=== SANITARIOS ===', '', '', '', ''], false, 'con iguales'],
+            [$titulo, ['', '## ELECTRICIDAD ##', '', '', '', ''], false, 'con numerales'],
+            [$titulo, ["\u{00A0}", '== SANITARIOS ==', ' ', '', '', ''], false, 'los espacios duros no cuentan como dato'],
+            [$titulo, ['--- TORNILLERIA ---', '', '', '', '', ''], true, 'un título también puede ser la última fila'],
+            // Lo que parece un título y es un artículo: ante la duda, se importa.
+            [null, ['', '**Martillo carpintero', '', '', '', ''], false, 'decorado solo de apertura: es un nombre'],
+            [null, ['', '-- Martillo 500g --', '', '', '', ''], false, 'decorado, pero con números adentro: es un artículo'],
+            [null, ['', 'Martillo', '', '', '', ''], false, 'un nombre suelto es un artículo sin precio'],
+            [null, ['', 'Tornillo sin precio', '', '', '', ''], false, 'otro artículo sin código ni precio'],
+            [null, ['', '--- OFERTA', '', '', '', ''], false, 'sin cierre no es un título'],
+            [null, ['', '--- OFERTA ***', '', '', '', ''], false, 'abre y cierra con signos distintos'],
+            [null, ['DL-1002', '', '', '', '', ''], false, 'un código solo sigue yendo al motor'],
+            [null, ['ABC123', '', '', '', '', ''], false, 'un código de texto solo, también'],
+            [null, ['7790001112223', '', '', '', '', ''], false, 'un código de barras solo'],
+            [null, ['', '', '1500', '', '', ''], false, 'un importe solo no es un título'],
+            [null, ['', '', '', '', '', 'Precios sujetos a cambio'], false, 'una nota sin decorar fuera de la columna del código'],
+            [null, ['DL-1002', 'TORNILLO AUTOPERFORANTE 8X1', '2054.9', '10.5', 'UN', '100'], false, 'un artículo completo'],
+            [null, ['--- OFERTA ---', 'Taladro', '', '', '', ''], false, 'con dos datos ya no es un título'],
+            // TOTAL: solo la fila de cierre, sin código, con nombre que empieza con total/subtotal/suma y un importe como mucho.
+            [$total, ['', 'TOTAL LISTA', '1154150.97', '', '', ''], true, 'el total del fixture'],
+            [$total, ['', 'Total general', '$ 1.154.150,97', '', '', ''], true, 'con formato de plata'],
+            [$total, ['', 'Subtotal', '', '', '', '350000'], true, 'el importe en una columna sin mapear'],
+            [$total, ['', 'SUMA DE IMPORTES', '9000', '', '', ''], true, 'suma'],
+            [$total, ['', 'Sub total sin IVA', '9000', '', '', ''], true, 'sub total en dos palabras'],
+            [$total, ['', 'Totales', '5', '', '', ''], true, 'en plural'],
+            [$total, ['', 'TOTAL', '', '', '', ''], true, 'el total sin importe'],
+            // Las mismas filas en el MEDIO de la planilla son artículos.
+            [null, ['', 'Suma', '4500', '', '', ''], false, 'Suma en el medio'],
+            [null, ['', 'Total', '1500', '', '', ''], false, 'Total en el medio'],
+            [null, ['', 'Subtotal', '', '120000', '', ''], false, 'Subtotal en el medio'],
+            [null, ['', 'TOTAL LISTA', '1154150.97', '', '', ''], false, 'hasta el total del fixture, si no es el cierre'],
+            // Y en el cierre, lo que no es un total.
+            [null, ['', 'Stock total', '15', '', '', ''], true, 'no empieza con total'],
+            [null, ['', 'Totalmente nuevo', '100', '', '', ''], true, 'totalmente no es total'],
+            [null, ['T-1', 'TOTAL LISTA', '1154150.97', '', '', ''], true, 'con código es un artículo'],
+            [null, ['', 'TOTAL LISTA', '1154150.97', '21', '', ''], true, 'con más de un dato al lado no es el total'],
+            [null, ['', 'TOTAL LISTA', 'ver detalle', '', '', ''], true, 'sin importe al lado no es el total'],
+            [null, ['', '', '', '', '', ''], true, 'una fila vacía la saltea quien la lee, no esta regla'],
         ];
     }
 
-    public function test_el_resumen_de_las_filas_que_no_se_importaron(): void
+    public function test_los_casos_que_encontro_la_revision_se_importan(): void
+    {
+        // Una planilla del dueño sin códigos: A nombre, B precio.
+        $sin_codigos = ['nombre' => 0, 'precio' => 1];
+        foreach ([['Suma', '4500'], ['Total', '1500'], ['Stock total', '15'], ['**Martillo carpintero', ''], ['-- Martillo 500g --', ''], ['Martillo', '']] as $fila) {
+            $this->assertNull(PlanillaDePrueba::motivo_para_saltear($fila, $sin_codigos), json_encode($fila, JSON_UNESCAPED_UNICODE));
+        }
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['', 'Subtotal', '', '120000'], ['codigo_de_proveedor' => 0, 'nombre' => 1, 'costo' => 3]));
+
+        // Una fila con solo un código de texto: sin columna de nombre no hay con qué decir que es un rubro.
+        $solo_codigos = ['codigo_de_proveedor' => 0, 'costo' => 1];
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['TANZA', ''], $solo_codigos));
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['Caña telescópica', ''], $solo_codigos));
+        // Con columna de nombre, un texto suelto en la columna del código es un rubro; un código, no.
+        $con_nombre = ['codigo_de_proveedor' => 0, 'nombre' => 1, 'costo' => 2];
+        $this->assertSame(PlanillaDePrueba::FILA_TITULO, PlanillaDePrueba::motivo_para_saltear(['TANZA', '', ''], $con_nombre));
+        $this->assertNull(PlanillaDePrueba::motivo_para_saltear(['TZ-40', '', ''], $con_nombre));
+    }
+
+    /**
+     * La misma planilla leída en la prueba y en modo soporte: lo que llega al motor.
+     *
+     * @return array [filas de la planilla, mapeo de la IA]
+     */
+    private function planilla_con_totales_en_el_medio(): array
+    {
+        return [[
+            ['Código', 'Descripción', 'Precio de venta'],
+            ['A-1', 'Martillo', 100],
+            [null, 'Total', 1500],
+            ['A-2', 'Pinza', 200],
+            ['--- HERRAMIENTAS DE MANO ---', null, null],
+            [null, 'Suma', 4500],
+            [null, '**Martillo carpintero', null],
+            ['A-3', 'Sierra', 300],
+            [null, 'TOTAL', 6600],
+            ['Precios sujetos a cambio', null, null],
+        ], ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]];
+    }
+
+    public function test_en_la_prueba_solo_se_descartan_el_titulo_la_nota_y_el_total_del_pie(): void
+    {
+        [$filas, $mapeo] = $this->planilla_con_totales_en_el_medio();
+        $this->analizador($mapeo);
+        $run = $this->corrida($filas);
+
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado);
+
+        $inicios = Bus::dispatched(ProcessArticleChunk::class);
+        $this->assertCount(1, $inicios);
+        $columnas = array_flip(['proveedor', PlanillaDePrueba::SEPARAR_CODIGO, 'codigo_de_proveedor', 'nombre', 'precio']);
+        $nombres = array_column($inicios->first()->get_row_from_csv(), $columnas['nombre']);
+
+        // «Total» y «Suma» del medio y el nombre suelto son artículos; el título, el total del pie y la nota, no.
+        $this->assertSame(['Martillo', 'Total', 'Pinza', 'Suma', '**Martillo carpintero', 'Sierra'], $nombres);
+        $salteadas = $run->hojas[0]['filas_salteadas'];
+        $this->assertSame(2, $salteadas['titulo']);
+        $this->assertSame(1, $salteadas['total']);
+        $this->assertSame(
+            ' Dejé afuera 3 filas que no son artículos: “--- HERRAMIENTAS DE MANO ---”, “Precios sujetos a cambio”, “TOTAL”.'
+            . ' Si alguna era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas($run->hojas)
+        );
+    }
+
+    public function test_en_modo_soporte_no_se_descarta_nada_nuevo(): void
+    {
+        // Negocio que ya opera (sin vencimiento): ahí la planilla se lee como hasta hoy.
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        PruebaHelper::olvidar_cache();
+        [$filas, $mapeo] = $this->planilla_con_totales_en_el_medio();
+        $this->analizador($mapeo);
+        $run = $this->avanzar($this->corrida($filas, ['modo_soporte' => true]));
+
+        $this->assertSame('confirmacion', $run->estado);
+        $this->assertStringContainsString('con 9 filas para importar', $run->preguntas['confirmacion']['texto'], 'Las nueve filas con datos, títulos y totales incluidos.');
+        $this->assertStringNotContainsString('Dejé afuera', $run->preguntas['confirmacion']['texto']);
+
+        $planilla = new PlanillaDePrueba($run);
+        $leidas = iterator_to_array($planilla->filas($planilla->resolver_columnas($run->hojas, [])), false);
+        $this->assertCount(9, $leidas);
+        $this->assertSame('--- HERRAMIENTAS DE MANO ---', $leidas[3]['codigo_de_proveedor']);
+        $this->assertSame('TOTAL', $leidas[7]['nombre']);
+    }
+
+    public function test_el_resumen_dice_cuales_filas_quedaron_afuera(): void
     {
         $this->assertSame('', PlanillaDePrueba::texto_de_filas_salteadas([['indice' => 0]]));
-        $this->assertSame(' Dejé afuera 1 fila que no es un artículo: 1 total.', PlanillaDePrueba::texto_de_filas_salteadas([
-            ['filas_salteadas' => ['total' => 1]],
-        ]));
-        $this->assertSame(' Dejé afuera 4 filas que no son artículos: 3 títulos o notas sueltas y 1 total.', PlanillaDePrueba::texto_de_filas_salteadas([
-            ['filas_salteadas' => ['titulo' => 1]], ['filas_salteadas' => ['titulo' => 2, 'total' => 1]],
-        ]));
+        $this->assertSame(
+            ' Dejé afuera 1 fila que no es un artículo: “TOTAL LISTA”. Si era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => ['total' => 1, 'textos_total' => ['TOTAL LISTA']]]])
+        );
+        // Dos hojas, más títulos que cupo: los primeros, puntos suspensivos y el total a la vista al final.
+        $this->assertSame(
+            ' Dejé afuera 8 filas que no son artículos: “--- A ---”, “--- B ---”, “--- C ---”, “--- D ---”, …, “Total general”.'
+            . ' Si alguna era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas([
+                ['filas_salteadas' => ['titulo' => 2, 'textos_titulo' => ['--- A ---', '--- B ---']]],
+                ['filas_salteadas' => ['titulo' => 5, 'total' => 1, 'textos_titulo' => ['--- C ---', '--- D ---', '--- E ---', '--- F ---', '--- G ---'], 'textos_total' => ['Total general']]],
+            ])
+        );
+        // Sin total, entran cinco títulos.
+        $this->assertSame(
+            ' Dejé afuera 2 filas que no son artículos: “--- A ---”, “--- B ---”. Si alguna era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => ['titulo' => 2, 'textos_titulo' => ['--- A ---', '--- B ---']]]])
+        );
+        // Una corrida guardada antes de que existieran los textos: dice cuántas, sin inventar cuáles.
+        $this->assertSame(
+            ' Dejé afuera 3 filas que no son artículos. Si alguna era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => ['titulo' => 2, 'total' => 1]]])
+        );
     }
 }
 
