@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\import\article\ImportFailureHandler;
+use App\Http\Controllers\Helpers\PrimeraVentaDeLaPruebaHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use Illuminate\Bus\Queueable;
@@ -80,6 +81,9 @@ class BorrarSemillaDePruebaJob implements ShouldQueue
         $resumen = SemillaRegistroHelper::borrar_lo_sembrado($this->owner_id);
 
         PruebaHelper::marcar_semilla_borrada($this->owner_id, $this->origen);
+
+        // El borrado deja cerradas las cajas de ejemplo: se vuelve a abrir la de efectivo (prueba-primera-venta).
+        PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($this->owner_id);
 
         Log::info('BorrarSemillaDePruebaJob: listo.', $resumen);
     }

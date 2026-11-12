@@ -732,6 +732,15 @@ class DemoSetupHelper
 
         $etapas['whatsapp'] = self::cronometrar($t_etapa);
 
+        /*
+         * Prueba gratuita (misión prueba-primera-venta, 12/11/2026): el negocio nace listo para su primera
+         * venta, con la sucursal del dueño fijada y su caja de efectivo abierta. Va después de `semilla:datos`,
+         * que cierra cajas al sembrar los días. Solo en la prueba: la demo de un lead queda idéntica.
+         */
+        if (self::es_setup_de_prueba($data)) {
+            PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($user->id);
+        }
+
         // El token de ingreso lo emite admin-api y viaja en el payload. Se guarda aca, al final,
         // porque el migrate:fresh del arranque de este metodo vacia la tabla.
         if (!empty($data['demo_ingreso_token'])) {

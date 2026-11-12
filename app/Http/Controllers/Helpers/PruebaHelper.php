@@ -550,6 +550,9 @@ class PruebaHelper
         SemillaRegistroHelper::borrar_lo_sembrado($owner_id);
         self::marcar_semilla_borrada($owner_id, $origen);
 
+        // El borrado deja cerradas las cajas de ejemplo: se vuelve a abrir la de efectivo (prueba-primera-venta).
+        PrimeraVentaDeLaPruebaHelper::dejar_lista_para_vender($owner_id);
+
         return true;
     }
 
