@@ -242,7 +242,7 @@ class CodigosDeProveedorTest extends ImportTestCase
         ]);
 
         $this->assertSame(2, $this->conflictos($import, 'placeholder_descartado'), 'F7 y F8');
-        $this->assertSame(2, $this->conflictos($import, 'sin_identificador'), 'F7 y F8 quedan sin ningún identificador');
+        $this->assertSame(0, $this->conflictos($import, 'sin_identificador'), 'F7 y F8 tienen nombre válido aunque su código sea un placeholder');
     }
 
     /**

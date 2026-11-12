@@ -289,7 +289,7 @@ class ArticleIndexCache
                 }
             }
 
-            $nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+            $nombre = ImportHelper::getColumnValue($row, 'nombre', $columns, true);
 
             if (!is_null($nombre)) {
                 $clave = self::normalize_name_for_match($nombre);
@@ -1562,6 +1562,18 @@ class ArticleIndexCache
         return (int) $index['created_by_import'][(int) $article_id] === $import_history_id_actual;
     }
 
+    /** Guarda la fila vigente de un nombre en el índice de ESTA importación, también entre lotes. */
+    public static function registrar_fila_por_nombre(int $user_id, int $import_id, string $nombre, int $fila): ?int
+    {
+        $key = self::cache_key($user_id);
+        self::get_index($user_id);
+        $nombre = self::normalize_name_for_match($nombre);
+        $anterior = self::$runtime_index_by_key[$key]['filas_por_nombre'][$import_id][$nombre] ?? null;
+        self::$runtime_index_by_key[$key]['filas_por_nombre'][$import_id][$nombre] = $fila;
+        self::$runtime_dirty_by_key[$key] = true;
+        return is_null($anterior) ? null : (int) $anterior;
+    }
+
     public static function find_with_index(
         array $data,
         array $index,
@@ -2027,7 +2039,10 @@ class ArticleIndexCache
                 if ($name_resolved['status'] === 'match') {
 
                     // Incidente Servian (grupo 294): mismo criterio que bar_code/sku arriba.
-                    if (self::matched_article_created_by_this_import($index, $name_resolved['article']->id, $import_history_id_actual)) {
+                    if (self::matched_article_created_by_this_import($index, $name_resolved['article']->id, $import_history_id_actual)
+                        && (!empty($data['bar_code']) || !empty($data['sku']) || !empty($data['provider_code'])
+                            || !empty($name_resolved['article']->bar_code) || !empty($name_resolved['article']->sku)
+                            || !empty($name_resolved['article']->provider_code))) {
                         Self::log('name matchea un articulo creado por esta misma importacion en un chunk anterior: se reporta ambiguo, no se fusiona.');
                         return self::con_escalon(null, new AmbiguousMatch('name', (string) $data['name'], [$name_resolved['article']->id]));
                     }
@@ -2697,6 +2712,14 @@ class ArticleIndexCache
                         $out['provider_codes'][$prov_id][$codigo] = $union;
                     }
                 }
+            }
+        }
+
+        foreach (($nuevo['filas_por_nombre'] ?? []) as $import_id => $filas) {
+            foreach ($filas as $nombre => $fila) {
+                $out['filas_por_nombre'][$import_id][$nombre] = max(
+                    (int) ($out['filas_por_nombre'][$import_id][$nombre] ?? 0), (int) $fila
+                );
             }
         }
 

@@ -15,7 +15,7 @@ use Illuminate\Support\Facades\Notification;
  * Misión importacion-mensaje-de-problemas (4/10/2026). Importando la lista de la demo con
  * problemas, el aviso decía "La importacion termino con 3 filas que no se pudieron procesar por
  * codigos duplicados o incompletos en el Excel" y las tres filas se habían importado. De todos los
- * tipos de import_conflicts, el ÚNICO que seguro deja la fila afuera es 'ambiguo'
+ * tipos de import_conflicts, 'ambiguo' deja la fila afuera
  * (ProcessRow::procesar() corta antes de crear o actualizar). Con el resto el dato se descarta y
  * la fila sigue, pero que después se cree o se actualice algo depende del resto de la importación
  * ("Solo actualizar" sin match, otro proveedor, repetida por nombre o id) y no queda registrado:
@@ -26,7 +26,7 @@ use Illuminate\Support\Facades\Notification;
  * Archivo 31_problemas_de_la_lista_de_la_demo.xlsx (ver generar_problemas_de_la_demo.php):
  *   F2  PD-01, código de barras nuevo, costo 1000      -> se crea limpio
  *   F3  PD-03, costo y precio "consultar"              -> 2 numero_invalido, se crea sin costo ni precio
- *   F4  sin ningún código                              -> sin_identificador, se crea sin códigos
+ *   F4  sin ningún código                              -> nombre válido, se crea sin códigos ni incidencia
  *   F5  código de barras "S/N", PD-05                  -> placeholder_descartado, se crea con PD-05
  *   F6  repite PD-01 y su código de barras             -> fila_sobrescrita F2 -> F6 (no cuenta)
  *   F7  código de barras 7790007 (A7 y A8), "consultar" -> ambiguo + numero_invalido, NO se importa
@@ -44,9 +44,9 @@ class MensajeDeResultadoTest extends ImportTestCase
 
     const BASE = 'Importación de Excel finalizada correctamente';
 
-    /** El mensaje del archivo entero: 1 fila no importada (F7) y 3 con datos para revisar (F3, F4, F5). */
+    /** El mensaje del archivo entero: 1 fila no importada (F7) y 2 con datos para revisar (F3, F5). */
     const MENSAJE_DEL_ARCHIVO_ENTERO = 'Importación de Excel finalizada correctamente. 1 fila no se importó '
-        . 'porque no se pudo saber a qué artículo corresponde. 3 filas tienen datos para revisar. Revisá el '
+        . 'porque no se pudo saber a qué artículo corresponde. 2 filas tienen datos para revisar. Revisá el '
         . 'detalle en Historial de importaciones.';
 
     /**
@@ -95,8 +95,8 @@ class MensajeDeResultadoTest extends ImportTestCase
     }
 
     /**
-     * El archivo entero, con "Crear y actualizar": una fila no se importó (F7) y tres tienen
-     * datos para revisar (F3, F4, F5).
+     * El archivo entero, con "Crear y actualizar": una fila no se importó (F7) y dos tienen
+     * datos para revisar (F3, F5).
      *
      * @return void
      */
@@ -106,16 +106,16 @@ class MensajeDeResultadoTest extends ImportTestCase
 
         /* El fixture deja lo que dice que deja. */
         $this->assertSame([3, 3, 7], $this->filas_de_conflictos($import, 'numero_invalido'));
-        $this->assertSame([4], $this->filas_de_conflictos($import, 'sin_identificador'));
+        $this->assertSame([], $this->filas_de_conflictos($import, 'sin_identificador'), 'Un nombre válido no exige inventar códigos.');
         $this->assertSame([5], $this->filas_de_conflictos($import, 'placeholder_descartado'));
         $this->assertSame([7], $this->filas_de_conflictos($import, 'ambiguo'));
         $this->assertSame([2 => 6], $this->sobrescrituras($import));
 
         /* conflicts_count no cambia de significado: problemas para revisar, sin los informativos. */
-        $this->assertSame(6, (int) $import->conflicts_count);
+        $this->assertSame(5, (int) $import->conflicts_count);
 
         $this->assertSame(
-            ['no_importadas' => 1, 'para_revisar' => 3],
+            ['no_importadas' => 1, 'para_revisar' => 2],
             ArticleImportHelper::contar_filas_con_problemas($import->id)
         );
 
@@ -136,11 +136,11 @@ class MensajeDeResultadoTest extends ImportTestCase
             ],
             array_keys($aviso->import_stats)
         );
-        $this->assertSame(6, $aviso->import_stats['conflicts_count']);
+        $this->assertSame(5, $aviso->import_stats['conflicts_count']);
         $this->assertSame((int) $import->id, $aviso->import_stats['import_history_id']);
 
         /*
-         * Con "Crear y actualizar", F3, F4 y F5 crearon su artículo sin el dato que no servía.
+         * Con "Crear y actualizar", F3 y F5 crearon su artículo sin el dato que no servía; F4 se creó por nombre.
          * El mensaje igual no lo afirma: con "Solo actualizar" las mismas filas no crean nada
          * (ver el test de abajo) y el aviso no puede saber cuál de las dos cosas pasó.
          */
@@ -191,13 +191,13 @@ class MensajeDeResultadoTest extends ImportTestCase
 
         /* Los mismos problemas que con "Crear y actualizar". */
         $this->assertSame([3, 3, 7], $this->filas_de_conflictos($import, 'numero_invalido'));
-        $this->assertSame([4], $this->filas_de_conflictos($import, 'sin_identificador'));
+        $this->assertSame([], $this->filas_de_conflictos($import, 'sin_identificador'), 'Un nombre válido no exige inventar códigos.');
         $this->assertSame([5], $this->filas_de_conflictos($import, 'placeholder_descartado'));
         $this->assertSame([7], $this->filas_de_conflictos($import, 'ambiguo'));
-        $this->assertSame(6, (int) $import->conflicts_count);
+        $this->assertSame(5, (int) $import->conflicts_count);
 
         $this->assertSame(
-            ['no_importadas' => 1, 'para_revisar' => 3],
+            ['no_importadas' => 1, 'para_revisar' => 2],
             ArticleImportHelper::contar_filas_con_problemas($import->id)
         );
 
@@ -332,6 +332,35 @@ class MensajeDeResultadoTest extends ImportTestCase
             ['no_importadas' => 0, 'para_revisar' => 0],
             ArticleImportHelper::contar_filas_con_problemas($historial->id + 1000000)
         );
+    }
+
+    public function test_historial_sin_codigos_distingue_nombres_validos_de_omisiones_reales()
+    {
+        $historial = ImportHistory::create([
+            'user_id' => $this->tenant->id, 'employee_id' => $this->tenant->id,
+            'model_name' => 'article', 'articles_match' => 0,
+            'created_models' => 34, 'updated_models' => 0,
+        ]);
+        // Ticket 107: versiones anteriores dejaron una marca en cada nombre válido.
+        for ($fila = 1; $fila <= 36; $fila++) {
+            ImportConflict::create([
+                'import_history_id' => $historial->id, 'fila' => $fila,
+                'tipo' => 'sin_identificador', 'nombre_excel' => 'Producto ' . $fila,
+            ]);
+        }
+        $this->assertSame(['no_importadas' => 0, 'para_revisar' => 0],
+            ArticleImportHelper::contar_filas_con_problemas($historial->id));
+
+        ImportConflict::create(['import_history_id' => $historial->id,
+            'fila' => 37, 'tipo' => 'sin_identificador', 'nombre_excel' => null]);
+        ImportConflict::create(['import_history_id' => $historial->id,
+            'fila' => 38, 'tipo' => 'ambiguo', 'nombre_excel' => 'Nombre que coincide con varios']);
+        ImportConflict::create(['import_history_id' => $historial->id,
+            'fila' => 39, 'tipo' => 'numero_invalido', 'nombre_excel' => 'Importe a revisar']);
+        ImportConflict::create(['import_history_id' => $historial->id,
+            'fila' => 40, 'tipo' => 'sin_identificador', 'nombre_excel' => "\t\n\r\u{00A0}\u{2003}"]);
+        $this->assertSame(['no_importadas' => 3, 'para_revisar' => 1],
+            ArticleImportHelper::contar_filas_con_problemas($historial->id));
     }
 
     /**

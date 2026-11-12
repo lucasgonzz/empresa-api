@@ -152,11 +152,12 @@ class ArticleImportHelper {
      * importacion-mensaje-de-problemas, 4/10/2026):
      *
      *   - no_importadas: filas con algún tipo de ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA
-     *     (hoy solo 'ambiguo'): ProcessRow::procesar() corta antes de crear o actualizar.
+     *     y las sin_identificador sin nombre: ProcessRow corta antes de crear o actualizar.
      *     Es lo único que seguro dejó la fila afuera.
      *   - para_revisar: filas con algún tipo que no está en TIPOS_QUE_NO_CUENTAN ni en
-     *     TIPOS_QUE_SALTEAN_LA_FILA (un número inválido, un código descartado, sin
-     *     códigos...). El dato con problema se descartó y la fila siguió; si después se
+     *     TIPOS_QUE_SALTEAN_LA_FILA (un número inválido o un código descartado).
+     *     sin_identificador con nombre válido es informativo y no cuenta.
+     *     El dato con problema se descartó y la fila siguió; si después se
      *     creó, se actualizó o no depende del resto de la importación ("Solo actualizar"
      *     sin match, otro proveedor, repetida por nombre o id) y eso NO queda registrado,
      *     así que esta cuenta no dice que se hayan importado. Una fila que ya cuenta como
@@ -175,13 +176,16 @@ class ArticleImportHelper {
         $tipos_que_saltean = ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA;
         $tipos_que_no_son_para_revisar = array_merge(
             ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA,
-            ImportConflict::TIPOS_QUE_NO_CUENTAN
+            ImportConflict::TIPOS_QUE_NO_CUENTAN,
+            ['sin_identificador']
         );
 
-        /* Las guardas de lista vacía evitan un "IN ()", que es SQL inválido. */
-        $saltea = '0';
+        // Antes se registraba sin_identificador también con nombre válido. Esos registros
+        // históricos son informativos; sin nombre la fila realmente quedó afuera.
+        $saltea = "MAX(CASE WHEN tipo = 'sin_identificador' AND COALESCE(nombre_excel, '') REGEXP '^[[:space:]]*$' THEN 1 ELSE 0 END)";
         if (count($tipos_que_saltean) > 0) {
-            $saltea = 'MAX(CASE WHEN tipo IN (' . implode(',', array_fill(0, count($tipos_que_saltean), '?')) . ') THEN 1 ELSE 0 END)';
+            $saltea = 'MAX(CASE WHEN tipo IN (' . implode(',', array_fill(0, count($tipos_que_saltean), '?')) . ') '
+                . "OR (tipo = 'sin_identificador' AND COALESCE(nombre_excel, '') REGEXP '^[[:space:]]*$') THEN 1 ELSE 0 END)";
         }
 
         $para_revisar = 'MAX(1)';
