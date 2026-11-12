@@ -203,7 +203,9 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $run = $this->avanzar($run);
         $this->assertSame('columnas', $run->estado);
         $this->assertSame(['columna_0_2'], array_keys($run->preguntas));
-        $this->assertSame('¿Me confirmás si el precio de la columna C de «LISTA NOV» es de venta o es el costo?', $run->preguntas['columna_0_2']['texto']);
+        $this->assertSame('En tu lista hay una columna que se llama «PRECIO» (por ejemplo: 2054.9, 849.57). ¿Qué es?'
+            . ' Puede ser lo que te cobra el proveedor (costo) o a lo que vendés vos (precio de venta).'
+            . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.', $run->preguntas['columna_0_2']['texto']);
         $this->assertSame(7 + 1, (int) $run->hojas[0]['inicio'], 'La cabecera está en la fila 7, después del membrete.');
 
         // 2. «Es el costo» → la misma corrida pregunta el margen, con la forma de cualquier pregunta.
@@ -294,6 +296,148 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertStringContainsString('50 artículos creados y 0 actualizados.', $resultado->texto);
         $this->assertStringContainsString(trim($frase), $resultado->texto);
         $this->assertStringContainsString('Calculé el precio de venta sumándole 40 % de ganancia al costo.', $resultado->texto);
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Ítem O: las preguntas, en palabras del dueño
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_las_preguntas_de_la_lista_real_usan_articulos_de_ejemplo_y_no_un_titulo_de_rubro(): void
+    {
+        // Lo que dudó el analizador en el ensayo real: el código, el «PRECIO» y el «BULTO».
+        $this->analizador([
+            'COD' => ['codigo_de_proveedor', 0.50], 'DESCRIPCION' => ['nombre', 0.97], 'PRECIO' => ['precio', 0.60],
+            'IVA' => ['iva', 0.97], 'U.M.' => [null, 0.97], 'BULTO' => [null, 0.30],
+        ]);
+        $run = $this->avanzar($this->corrida());
+
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_0', 'columna_0_2', 'columna_0_5'], array_keys($run->preguntas));
+        $this->assertSame(['DL-1002', 'DL-1003'], $run->hojas[0]['columnas'][0]['ejemplos'], 'La primera fila de datos es «--- TORNILLERIA ---»: no sirve de ejemplo.');
+
+        $cierre = ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
+        $codigo = 'En tu lista hay una columna que se llama «COD» (por ejemplo: DL-1002, DL-1003). ¿Qué es?'
+            . ' Puede ser el código que usa tu proveedor, un código tuyo o el código de barras.' . $cierre;
+        $bulto = 'En tu lista hay una columna que se llama «BULTO» (por ejemplo: 100, 12). ¿Qué es?'
+            . ' Puede ser el stock que tenés o cuántas unidades trae el bulto o la caja.' . $cierre;
+        $this->assertSame($codigo, $run->preguntas['columna_0_0']['texto']);
+        $this->assertSame($bulto, $run->preguntas['columna_0_5']['texto']);
+        $this->assertSame(['codigo_de_proveedor', 'sku', 'codigo_de_barras', 'ignorar'], $run->preguntas['columna_0_0']['sugeridas']);
+        $this->assertSame(['stock_actual', 'u_individuales', 'ignorar'], $run->preguntas['columna_0_5']['sugeridas']);
+
+        // La forma de siempre: clave, texto y opciones con sus `valor`; `sugeridas` es un agregado.
+        $this->assertSame(['clave', 'texto', 'opciones', 'sugeridas'], array_keys($run->preguntas['columna_0_0']));
+        $valores = array_column($run->preguntas['columna_0_0']['opciones'], 'valor');
+        foreach (['ignorar', 'codigo_de_proveedor', 'sku', 'codigo_de_barras', 'costo', 'precio', 'stock_actual', 'u_individuales'] as $valor) {
+            $this->assertContains($valor, $valores, $valor);
+        }
+
+        // El aviso que lee el dueño: cabecera nueva, preguntas numeradas y separadas por una línea en blanco.
+        $aviso = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 31)->firstOrFail();
+        $this->assertStringStartsWith("Ya leí tu lista. Antes de cargarla necesito que me aclares esto:\n\n1. " . $codigo . "\n\n2. En tu lista hay una columna que se llama «PRECIO»", $aviso->texto);
+        $this->assertStringEndsWith("\n\n3. " . $bulto, $aviso->texto);
+
+        // Ni una pregunta, ni el aviso, ni los ejemplos guardados nombran un título, el total o la nota del pie.
+        $todo = json_encode([$run->preguntas, $aviso->texto, array_column($run->hojas[0]['columnas'], 'ejemplos'), array_column($run->hojas[0]['columnas'], 'muestra')], JSON_UNESCAPED_UNICODE);
+        foreach (array_merge(self::TITULOS, ['TOTAL LISTA', 'Consulte por descuentos', 'columna A', 'LISTA NOV', 'Qué dato querés cargar']) as $intruso) {
+            $this->assertStringNotContainsString($intruso, $todo, $intruso);
+        }
+    }
+
+    public function test_el_texto_de_una_columna_dudosa_segun_su_familia(): void
+    {
+        $columna = function (?string $campo, string $titulo, array $ejemplos, bool $segura = false) {
+            return ['campo' => $campo, 'segura' => $segura, 'titulo' => $titulo, 'muestra' => $ejemplos[0] ?? '', 'ejemplos' => $ejemplos];
+        };
+        $hoja = ['indice' => 0, 'nombre' => 'Precios', 'columnas' => [
+            0 => $columna(null, 'Código', ['A-1', 'A-2']),
+            1 => $columna('nombre', 'Descripción', ['Martillo'], true),
+            2 => $columna(null, 'Importe', ['1500', '2300.5']),
+            3 => $columna(null, 'Cant.', ['4', '12']),
+            4 => $columna('marca', 'Fabricante', ['Bahco']),
+            5 => $columna(null, '', ['x']),
+            6 => $columna('sku', 'Dato', []),
+        ]];
+        $planilla = new PlanillaDePrueba(new ImportacionDePrueba(['user_id' => $this->dueno->id]));
+        $textos = array_column($planilla->preguntas_columnas([$hoja]), 'texto', 'clave');
+        $cierre = ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
+
+        // Un código.
+        $this->assertSame('En tu lista hay una columna que se llama «Código» (por ejemplo: A-1, A-2). ¿Qué es?'
+            . ' Puede ser el código que usa tu proveedor, un código tuyo o el código de barras.' . $cierre, $textos['columna_0_0']);
+        // Un importe.
+        $this->assertSame('En tu lista hay una columna que se llama «Importe» (por ejemplo: 1500, 2300.5). ¿Qué es?'
+            . ' Puede ser lo que te cobra el proveedor (costo) o a lo que vendés vos (precio de venta).' . $cierre, $textos['columna_0_2']);
+        // Una cantidad.
+        $this->assertSame('En tu lista hay una columna que se llama «Cant.» (por ejemplo: 4, 12). ¿Qué es?'
+            . ' Puede ser el stock que tenés o cuántas unidades trae el bulto o la caja.' . $cierre, $textos['columna_0_3']);
+        // Fuera de las tres familias: lo que sugirió el analizador, con su etiqueta.
+        $this->assertSame('En tu lista hay una columna que se llama «Fabricante» (por ejemplo: Bahco). ¿Qué es? Puede ser «marca».' . $cierre, $textos['columna_0_4']);
+        // Sin título se la ubica por su letra; sin pista, no se sugiere nada.
+        $this->assertSame('En tu lista hay una columna sin título (la F) (por ejemplo: x). ¿Qué es?' . $cierre, $textos['columna_0_5']);
+        // La familia sale primero de lo que dudó el analizador, aunque el título no diga nada; y sin ejemplos no se inventa uno.
+        $this->assertSame('En tu lista hay una columna que se llama «Dato». ¿Qué es?'
+            . ' Puede ser el código que usa tu proveedor, un código tuyo o el código de barras.' . $cierre, $textos['columna_0_6']);
+
+        // Con más de una hoja con datos sí se dice en cuál está.
+        $otra = ['indice' => 1, 'nombre' => 'Ofertas', 'columnas' => [0 => $columna(null, 'Cod', ['B-9'])]];
+        $varias = array_column($planilla->preguntas_columnas([$hoja, $otra]), 'texto', 'clave');
+        $this->assertStringStartsWith('En la hoja «Ofertas» de tu lista hay una columna que se llama «Cod» (por ejemplo: B-9). ¿Qué es?', $varias['columna_1_0']);
+        $this->assertStringStartsWith('En la hoja «Precios» de tu lista hay una columna que se llama «Código»', $varias['columna_0_0']);
+
+        // Una corrida analizada antes de este cambio trae solo `muestra`: se usa como ejemplo.
+        $vieja = ['indice' => 0, 'nombre' => 'Hoja', 'columnas' => [0 => ['campo' => null, 'segura' => false, 'titulo' => 'Stock', 'muestra' => '7']]];
+        $this->assertStringStartsWith('En tu lista hay una columna que se llama «Stock» (por ejemplo: 7). ¿Qué es?', array_values($planilla->preguntas_columnas([$vieja]))[0]['texto']);
+    }
+
+    public function test_las_opciones_tienen_etiquetas_legibles_y_los_mismos_valores(): void
+    {
+        $lista = \App\Models\PriceType::create(['user_id' => $this->dueno->id, 'name' => 'ZZ Mayorista']);
+        $planilla = new PlanillaDePrueba(new ImportacionDePrueba(['user_id' => $this->dueno->id]));
+        $hoja = ['indice' => 0, 'nombre' => 'Hoja', 'columnas' => [0 => ['campo' => null, 'segura' => false, 'titulo' => 'Dato', 'muestra' => '', 'ejemplos' => []]]];
+        $etiquetas = array_column(array_values($planilla->preguntas_columnas([$hoja]))[0]['opciones'], 'etiqueta', 'valor');
+
+        foreach ([
+            'u_individuales' => 'unidades por bulto', 'in_offer' => 'en oferta', 'sub_categoria' => 'subcategoría',
+            'codigo_de_proveedor' => 'código de proveedor', 'precio' => 'precio de venta', 'stock_actual' => 'stock',
+            'codigo_de_barras' => 'código de barras', 'moneda' => 'moneda del costo (pesos o dólares)', 'ignorar' => 'Ignorar',
+            'price_type_' . $lista->id . '_final_price' => 'Lista ZZ Mayorista: precio de venta final',
+            'price_type_' . $lista->id . '_percentage' => 'Lista ZZ Mayorista: margen de ganancia (%)',
+            'price_type_' . $lista->id . '_setear' => 'Lista ZZ Mayorista: fijar el precio final (sí o no)',
+        ] as $valor => $etiqueta) {
+            $this->assertSame($etiqueta, $etiquetas[$valor] ?? null, $valor);
+        }
+        foreach ($etiquetas as $valor => $etiqueta) {
+            $this->assertStringNotContainsString('_', $etiqueta, 'La etiqueta de «' . $valor . '» sigue cruda.');
+        }
+        // Los `valor` son las claves del importador, las mismas que resuelve el mapeo previo.
+        foreach (array_keys($etiquetas) as $valor) {
+            $this->assertSame($valor, $planilla->resolver_campo_previo((string) $valor), (string) $valor);
+        }
+    }
+
+    public function test_un_aviso_lleva_tres_preguntas_como_mucho_y_avisa_que_faltan(): void
+    {
+        $this->analizador([
+            'Dato uno' => [null, 0.1], 'Dato dos' => [null, 0.1], 'Dato tres' => [null, 0.1],
+            'Dato cuatro' => [null, 0.1], 'Descripción' => ['nombre', 0.97],
+        ]);
+        $run = $this->avanzar($this->corrida([
+            ['Dato uno', 'Dato dos', 'Dato tres', 'Dato cuatro', 'Descripción'],
+            ['a', 'b', 'c', 'd', 'Martillo'],
+            ['e', 'f', 'g', 'h', 'Pinza'],
+        ]));
+
+        $this->assertCount(4, $run->preguntas);
+        $aviso = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 31)->firstOrFail();
+        $this->assertStringContainsString("\n\n3. En tu lista hay una columna que se llama «Dato tres» (por ejemplo: c, g).", $aviso->texto);
+        $this->assertStringNotContainsString('4. ', $aviso->texto);
+        $this->assertStringNotContainsString('Dato cuatro', $aviso->texto);
+        $this->assertStringEndsWith(' Después te consulto lo que falte.', $aviso->texto);
+
+        $pendientes = $this->getJson(self::BASE . 'prueba-pendientes?user_id=' . $this->dueno->id . '&support_ticket_id=31', ['X-Admin-Api-Key' => self::CLAVE])
+            ->assertOk()->json('pendientes.0.preguntas');
+        $this->assertSame([true, true, true, false], array_column($pendientes, 'ya_consultada'));
     }
 
     public function test_el_margen_acepta_un_porcentaje_libre_y_despues_deja_todo_como_hoy(): void

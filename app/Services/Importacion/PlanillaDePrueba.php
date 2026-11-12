@@ -46,9 +46,62 @@ class PlanillaDePrueba
     // Cuántos textos de filas salteadas se guardan y se muestran, para que el dueño pueda decir «ese sí era un producto».
     public const EJEMPLOS_DE_SALTEADAS = 5;
 
+    /*
+     * Cómo se le nombra cada campo al dueño en las OPCIONES de una pregunta (misión
+     * prueba-e2e-campana-imperio, ítem O). Solo cambia la `etiqueta`: el `valor` de la opción sigue siendo la
+     * clave del importador, que es lo que usan el admin y el monitor. Un campo que no está acá cae a su
+     * clave con espacios, como antes.
+     */
+    private const ETIQUETAS = [
+        'numero' => 'número de artículo', 'nombre' => 'nombre del artículo', 'codigo_de_barras' => 'código de barras',
+        'sku' => 'código propio (SKU)', 'codigo_de_proveedor' => 'código de proveedor', 'costo' => 'costo',
+        'precio' => 'precio de venta', 'iva' => 'IVA', 'margen_de_ganancia' => 'margen de ganancia',
+        'categoria' => 'categoría', 'sub_categoria' => 'subcategoría', 'marca' => 'marca', 'descripcion' => 'descripción',
+        'stock_actual' => 'stock', 'stock_minimo' => 'stock mínimo', 'descuentos' => 'descuentos del proveedor (%)',
+        'descuentos_montos' => 'descuentos del proveedor (en pesos)', 'recargos' => 'recargos (%)',
+        'recargos_montos' => 'recargos (en pesos)', 'proveedor' => 'proveedor', 'moneda' => 'moneda del costo (pesos o dólares)',
+        'aplicar_iva' => 'si lleva IVA', 'unidad_medida' => 'unidad de medida', 'u_individuales' => 'unidades por bulto',
+        'medida' => 'medida', 'contenido' => 'contenido', 'in_offer' => 'en oferta', 'online' => 'visible en la tienda',
+        'precio_pausado' => 'precio pausado', 'disponible_tienda_nube' => 'disponible en Tienda Nube',
+    ];
+
+    /*
+     * Las respuestas más probables de una columna dudosa, por familia, y cómo se le dicen al dueño. La
+     * familia sale de lo que dudó el analizador (su campo sugerido) o, si ese campo no es de ninguna, del título.
+     */
+    private const FAMILIAS = [
+        'codigo' => [
+            'campos' => ['codigo_de_proveedor', 'sku', 'codigo_de_barras'],
+            'tambien' => ['numero'],
+            'titulo' => '/^(?:cod|codigo|codigos|code|sku|ref|referencia|id|ean|barras|nro|numero)(?: |$)/',
+        ],
+        'importe' => [
+            'campos' => ['costo', 'precio'],
+            'tambien' => [],
+            'titulo' => '/(?:^| )(?:precio|precios|costo|costos|importe|importes|valor|pvp)(?: |$)/',
+        ],
+        'cantidad' => [
+            'campos' => ['stock_actual', 'u_individuales'],
+            'tambien' => ['stock_minimo'],
+            'titulo' => '/(?:^| )(?:stock|cant|cantidad|cantidades|unid|unidades|bulto|bultos|caja|cajas|pack|existencia|existencias|hay|disponible)(?: |$)/',
+        ],
+    ];
+
+    private const FRASES = [
+        'codigo_de_proveedor' => 'el código que usa tu proveedor', 'sku' => 'un código tuyo',
+        'codigo_de_barras' => 'el código de barras', 'costo' => 'lo que te cobra el proveedor (costo)',
+        'precio' => 'a lo que vendés vos (precio de venta)', 'stock_actual' => 'el stock que tenés',
+        'u_individuales' => 'cuántas unidades trae el bulto o la caja',
+    ];
+
+    // Cuántos ejemplos de una columna se muestran en su pregunta.
+    private const EJEMPLOS_POR_COLUMNA = 2;
+
     private $run;
     private $propiedades;
     private $nombres;
+    // Etiqueta legible de cada campo para las opciones de las preguntas (ver ETIQUETAS).
+    private $etiquetas;
     private $proveedores;
     // Filas que `filas()` dejó afuera por no ser artículos: [índice de hoja => [motivo => cantidad, 'textos_<motivo>' => [...]]].
     private $salteadas = [];
@@ -58,11 +111,13 @@ class PlanillaDePrueba
         $this->run = $run;
         $this->propiedades = [];
         $this->nombres = [];
+        $this->etiquetas = [];
         $this->proveedores = Provider::where('user_id', $run->user_id)->pluck('name', 'id')->all();
         foreach (array_merge(AiExcelAnalyzer::propiedades_importables(), ['stock_minimo']) as $campo) {
             $canonico = ArticleImportColumnsNormalizer::normalize_property_key($campo);
             $this->propiedades[$canonico] = $canonico;
             $this->nombres[$canonico] = str_replace('_', ' ', $canonico);
+            $this->etiquetas[$canonico] = self::ETIQUETAS[$canonico] ?? $this->nombres[$canonico];
         }
 
         foreach (Address::where('user_id', $run->user_id)->whereNull('buyer_id')->get(['id', 'street']) as $deposito) {
@@ -71,6 +126,8 @@ class PlanillaDePrueba
                 $campo = 'address_' . $deposito->id . '_' . $subtipo;
                 $this->propiedades[$campo] = $prefijo . $clave;
                 $this->nombres[$campo] = 'Depósito ' . $deposito->street . ($prefijo === '' ? '' : ' (' . $subtipo . ')');
+                $this->etiquetas[$campo] = 'Depósito ' . $deposito->street
+                    . ['amount' => ': stock', 'min' => ': stock mínimo', 'max' => ': stock máximo'][$subtipo];
             }
         }
 
@@ -86,6 +143,10 @@ class PlanillaDePrueba
                 $campo = 'price_type_' . $lista->id . '_' . $subtipo;
                 $this->propiedades[$campo] = $prefijo . $clave;
                 $this->nombres[$campo] = 'Lista ' . $lista->name . ' (' . $subtipo . ')';
+                $this->etiquetas[$campo] = 'Lista ' . $lista->name . [
+                    'final_price' => ': precio de venta final', 'percentage' => ': margen de ganancia (%)',
+                    'setear' => ': fijar el precio final (sí o no)', 'visible_en_tienda' => ': visible en la tienda (sí o no)',
+                ][$subtipo];
             }
         }
     }
@@ -188,7 +249,9 @@ class PlanillaDePrueba
                     'campo' => $campo,
                     'segura' => $segura,
                     'titulo' => mb_substr(trim((string) ($titulos[$posicion] ?? $columna['excel_column'])), 0, 100),
-                    'muestra' => $muestras[$posicion],
+                    // El ejemplo sale de filas que son artículos, nunca de un título de rubro ni del total.
+                    'muestra' => $datos_hoja['ejemplos'][$posicion][0] ?? '',
+                    'ejemplos' => $datos_hoja['ejemplos'][$posicion] ?? [],
                 ];
             }
 
@@ -269,6 +332,7 @@ class PlanillaDePrueba
     private function leer_datos_de_hoja(string $ruta, int $indice, int $inicio): array
     {
         $muestras = [];
+        $ejemplos = [];
         $bloques = [];
         $ultima_columna_del_encabezado = -1;
         foreach ($this->filas_crudas($ruta, $indice, max(1, $inicio - 1)) as $numero => $fila) {
@@ -279,6 +343,22 @@ class PlanillaDePrueba
                     }
                 }
                 continue;
+            }
+
+            /*
+             * Los ejemplos que ve el dueño en las preguntas: hasta dos valores distintos por columna, y solo
+             * de filas que parecen un artículo. Una fila con un único dato (un título de rubro, una nota) o
+             * la del total no sirven de ejemplo: «--- TORNILLERIA ---» no es un código.
+             */
+            $con_dato = self::celdas_con_dato($fila);
+            $es_un_total = count($con_dato) === 2 && array_filter($con_dato, function ($valor) { return self::empieza_como_total($valor); }) !== [];
+            if (count($con_dato) >= 2 && !$es_un_total) {
+                foreach ($con_dato as $posicion => $valor) {
+                    $valor = mb_substr($valor, 0, 40);
+                    if (count($ejemplos[$posicion] ?? []) < self::EJEMPLOS_POR_COLUMNA && !in_array($valor, $ejemplos[$posicion] ?? [], true)) {
+                        $ejemplos[$posicion][] = $valor;
+                    }
+                }
             }
 
             // El encabezado del bloque está a la derecha de la tabla, con el importe al lado.
@@ -326,7 +406,7 @@ class PlanillaDePrueba
             }
         }
 
-        return compact('muestras', 'descuentos', 'columnas_del_bloque');
+        return compact('muestras', 'ejemplos', 'descuentos', 'columnas_del_bloque');
     }
 
     private static function porcentajes_del_bloque(string $valor): ?string
@@ -357,26 +437,98 @@ class PlanillaDePrueba
                     $opciones[$columna['campo']] = null;
                 }
             }
-            $opciones += $this->nombres;
+            $opciones += $this->etiquetas;
+            $disponibles = array_filter($opciones, 'is_string');
             foreach ($hoja['columnas'] as $posicion => $columna) {
                 if ($columna['segura']) {
                     continue;
                 }
                 $clave = self::clave_columna($hoja, (int) $posicion);
-                $letra = Coordinate::stringFromColumnIndex((int) $posicion + 1);
-                $referencia = 'columna ' . $letra . ' de «' . $hoja['nombre'] . '»';
-                if (self::titulo_comparable($columna['titulo']) === 'precio' && isset($opciones['precio'], $opciones['costo'])) {
-                    $texto = '¿Me confirmás si el precio de la ' . $referencia . ' es de venta o es el costo?';
-                } else {
-                    $referencia .= $columna['titulo'] !== '' ? ' (' . $columna['titulo'] . ')' : '';
-                    $referencia .= $columna['muestra'] !== '' ? ', por ejemplo «' . $columna['muestra'] . '»' : '';
-                    $texto = '¿Qué dato querés cargar con la ' . $referencia . '?';
-                }
-                $preguntas[$clave] = self::pregunta($clave, $texto, array_filter($opciones, 'is_string'));
+                $sugeridas = self::sugeridas_para($columna, $disponibles);
+                $preguntas[$clave] = self::pregunta(
+                    $clave,
+                    self::texto_de_columna($hoja, (int) $posicion, $columna, $sugeridas, $disponibles, count($hojas) > 1),
+                    $disponibles
+                );
+                // Clave nueva y opcional: las respuestas más probables, por su `valor`, y «ignorar» siempre.
+                $preguntas[$clave]['sugeridas'] = array_merge($sugeridas, ['ignorar']);
             }
         }
 
         return $preguntas;
+    }
+
+    /**
+     * Las respuestas más probables para una columna dudosa, por el `valor` de sus opciones (misión
+     * prueba-e2e-campana-imperio, ítem O). La familia —código, importe o cantidad— sale de lo que dudó el
+     * analizador (su campo sugerido) y, si ese campo no es de ninguna, del título de la columna. Fuera de las tres
+     * familias, la única sugerencia es el campo que propuso el analizador, si propuso alguno.
+     *
+     * @param  array $columna      Columna analizada: `campo`, `titulo`
+     * @param  array $disponibles  Opciones que se pueden elegir: valor => etiqueta
+     * @return string[]            Valores sugeridos, sin «ignorar»
+     */
+    public static function sugeridas_para(array $columna, array $disponibles): array
+    {
+        $campo = $columna['campo'] ?? null;
+        $titulo = self::titulo_comparable($columna['titulo'] ?? '');
+        $familia = null;
+        foreach (self::FAMILIAS as $nombre => $datos) {
+            if ($campo !== null && in_array($campo, array_merge($datos['campos'], $datos['tambien']), true)) {
+                $familia = $nombre;
+                break;
+            }
+        }
+        if ($familia === null) {
+            foreach (self::FAMILIAS as $nombre => $datos) {
+                if ($titulo !== '' && preg_match($datos['titulo'], $titulo)) {
+                    $familia = $nombre;
+                    break;
+                }
+            }
+        }
+
+        $candidatas = $familia !== null ? self::FAMILIAS[$familia]['campos'] : ($campo !== null ? [$campo] : []);
+
+        return array_values(array_filter($candidatas, function ($valor) use ($disponibles) {
+            return isset($disponibles[$valor]);
+        }));
+    }
+
+    /**
+     * El texto de la pregunta de una columna dudosa, en palabras de comerciante: cómo se llama la columna,
+     * uno o dos ejemplos de artículos de verdad, y qué puede ser. No nombra la letra de la columna (salvo
+     * que no tenga título) ni la hoja (salvo que el libro tenga más de una con datos).
+     *
+     * @param  array    $hoja
+     * @param  int      $posicion
+     * @param  array    $columna
+     * @param  string[] $sugeridas    Valores de las respuestas más probables
+     * @param  array    $disponibles  valor => etiqueta
+     * @param  bool     $varias_hojas
+     * @return string
+     */
+    private static function texto_de_columna(array $hoja, int $posicion, array $columna, array $sugeridas, array $disponibles, bool $varias_hojas): string
+    {
+        $titulo = trim((string) ($columna['titulo'] ?? ''));
+        // Una corrida analizada antes de este cambio trae solo `muestra`.
+        $ejemplos = $columna['ejemplos'] ?? (($columna['muestra'] ?? '') !== '' ? [$columna['muestra']] : []);
+
+        $texto = 'En ' . ($varias_hojas ? 'la hoja «' . $hoja['nombre'] . '» de tu lista' : 'tu lista') . ' hay una columna '
+            . ($titulo !== '' ? 'que se llama «' . $titulo . '»' : 'sin título (la ' . Coordinate::stringFromColumnIndex($posicion + 1) . ')')
+            . ($ejemplos === [] ? '' : ' (por ejemplo: ' . implode(', ', $ejemplos) . ')')
+            . '. ¿Qué es?';
+
+        $frases = [];
+        foreach ($sugeridas as $valor) {
+            $frases[] = self::FRASES[$valor] ?? '«' . $disponibles[$valor] . '»';
+        }
+        if ($frases !== []) {
+            $ultima = array_pop($frases);
+            $texto .= ' Puede ser ' . ($frases === [] ? '' : implode(', ', $frases) . ' o ') . $ultima . '.';
+        }
+
+        return $texto . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
     }
 
     /**

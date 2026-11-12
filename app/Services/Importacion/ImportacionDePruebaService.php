@@ -28,7 +28,8 @@ use Throwable;
 
 class ImportacionDePruebaService
 {
-    public const LIMITE_PREGUNTAS_POR_AVISO = 6;
+    // Tres como mucho por aviso: más preguntas juntas no las contesta nadie. El resto va en el siguiente.
+    public const LIMITE_PREGUNTAS_POR_AVISO = 3;
 
     public static function dueno_activo(int $user_id): bool
     {
@@ -323,7 +324,13 @@ class ImportacionDePruebaService
 
         $mensajes = array_column(array_slice($preguntas, 0, self::LIMITE_PREGUNTAS_POR_AVISO), 'texto');
         $texto = $prefacio !== '' ? $prefacio . ' ' : '';
-        $texto .= count($mensajes) > 1 ? "Para seguir con la carga de tu Excel, necesito aclarar estos datos.\n\n" : '';
+        if (count($mensajes) > 1) {
+            // Varias preguntas: numeradas, cada una en su renglón y separadas por una línea en blanco.
+            $texto .= "Ya leí tu lista. Antes de cargarla necesito que me aclares esto:\n\n";
+            foreach (array_values($mensajes) as $orden => $mensaje) {
+                $mensajes[$orden] = ($orden + 1) . '. ' . $mensaje;
+            }
+        }
         $texto .= implode("\n\n", $mensajes);
         if (ImportacionDePrueba::where('user_id', $run->user_id)
             ->where('support_ticket_id', $run->support_ticket_id)
