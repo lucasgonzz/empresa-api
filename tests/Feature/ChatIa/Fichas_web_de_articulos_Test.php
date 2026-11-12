@@ -47,7 +47,11 @@ class Fichas_web_de_articulos_Test extends TestCase
         config(['app.USER_ID' => $this->owner->id, 'services.anthropic.api_key' => 'falsa',
             'services.anthropic.base_url' => 'https://api.anthropic.com', 'services.serper.api_key' => '',
             'services.asistente_ia.busqueda_codigo_barras.tope_diario_defecto' => 30]);
-        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'agentes_ia'], ['name' => 'Agentes de IA']);
+        $extension = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
+        if (!$extension) {
+            // El fixture limpio del gate no trae esta extensión y el modelo no habilita mass assignment.
+            $extension = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Agentes de IA']);
+        }
         $this->owner->extencions()->attach($extension->id);
         $this->actingAs($this->owner, 'web');
         $this->conversation = AiConversation::create(['user_id' => $this->owner->id, 'auth_user_id' => $this->owner->id]);
