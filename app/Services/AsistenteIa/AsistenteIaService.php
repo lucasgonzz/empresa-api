@@ -2136,6 +2136,13 @@ Qué podés afirmar:
 - SOLO lo que salga de las herramientas de consulta o del contexto de esta
   conversación. Nunca inventes números, precios, saldos, stock ni fechas.
 - Si no tenés el dato, decilo en una oración y ofrecé qué sí podés consultar.
+- Para fichas técnicas, elaboración, origen y notas de cata de un artículo existente, llamá a
+  buscar_ficha_de_articulo: sí tenés búsqueda web para eso, también por WhatsApp. Mostrá las fuentes
+  y los faltantes; nunca reemplaces una búsqueda por un texto de referencia inventado. Si pidieron
+  agregarla a Descripción, mandá preparar_descripcion:true: la búsqueda arma la propuesta real y
+  deja pendiente el único sí para guardar. No preguntes «¿la agrego?» antes de prepararla. Si sólo
+  pidieron información, preparar_descripcion:false; si después piden asignarla, usá
+  proponer_descripcion_verificada con la consulta_id que ya tenés, sin repetir la búsqueda.
 - Las herramientas devuelven 20 registros por vez. Varias te dicen además cuántos hay EN
   TOTAL (encontrados) y cuántos te mandaron (en_esta_lista): cuando difieren, el número del
   negocio es el total, nunca la cantidad de filas que tenés a la vista.
@@ -2930,9 +2937,13 @@ VENTA_CONFIRMA;
 - proponer_alta crea, proponer_edicion cambia campos y proponer_baja borra (o anula una
   venta, o borra un gasto o una tarea). Al confirmar, la carga pasa por la MISMA pantalla que
   usa la persona: se crea, se edita o se borra exactamente como si lo hiciera ella desde ABM.
-- Un campo que no existe en que_puedo_cargar no existe: no lo inventes ni lo adivines por el
-  nombre. Si la persona nombra algo que no está (un color favorito, una nota que la pantalla no
-  tiene), decile que esa pantalla no lo carga. Un campo obligatorio que la persona no dijo se
+- Un campo que no aparece en que_puedo_cargar no se manda por el ABM genérico. Eso NO significa
+  que el sistema no pueda modificarlo: puede ser una relación o tener su propia herramienta.
+  Antes de negar una capacidad, revisá las herramientas específicas y que_acciones_de_pantalla_hay
+  (las rutas pueden estar en inglés: descripción = description). Las descripciones de los artículos
+  son secciones relacionadas, no un campo article.description: buscar_ficha_de_articulo investiga
+  en internet y proponer_descripcion_verificada las agrega al artículo existente.
+  Nunca inventes un campo. Un campo obligatorio que la persona no dijo se
   pregunta; uno opcional que no dijo no se manda. Las relaciones (categoría, proveedor, marca,
   localidad, vendedor, lista de precios) van por su NOMBRE, nunca por un número.
 - 🔴 Excepción: en el ALTA DE UN ARTÍCULO la categoría y la subcategoría van SIEMPRE que alguna del
@@ -5941,6 +5952,24 @@ CONFIRMACION;
                     return \App\Http\Controllers\Helpers\asistente_ia\ArticulosSinRotacionIaHelper::consultar((int) $owner_id, $input);
                 },
             ],
+            [
+                'name' => 'buscar_ficha_de_articulo',
+                'description' => 'BUSCA EN INTERNET información verificable de un artículo YA EXISTENTE, por nombre, código o articulo_id; acepta un enlace público del productor. Sirve para notas de cata, elaboración, origen/terroir y ficha técnica. OBLIGATORIO decidir preparar_descripcion: true cuando la persona pidió buscar Y agregar/asignar la información a Descripción (la búsqueda ya prepara una propuesta REAL con los extractos y las fuentes, sin guardarla); false si pidió sólo información. Con true no pidas primero permiso para preparar la propuesta ni llames a proponer_descripcion_verificada otra vez: presentá lo preparado y esperá un único sí para guardar. Sí tenés búsqueda web también por WhatsApp y para artículos existentes sin código de barras. Nunca uses características típicas ni conocimientos propios. found=false/error se informa tal cual, no es falta permanente de capacidad.',
+                'input_schema' => ['type' => 'object', 'properties' => [
+                    'articulo_id' => ['type' => 'integer', 'description' => 'ID real del artículo que devolvió una consulta anterior.'],
+                    'articulo' => ['type' => 'string', 'description' => 'Nombre o código si todavía no tenés articulo_id.'],
+                    'pedido' => ['type' => 'string', 'description' => 'Qué información pidió la persona, por ejemplo elaboración, origen y nota de cata.'],
+                    'preparar_descripcion' => ['type' => 'boolean', 'description' => 'true si la persona pidió agregar/asignar/completar Descripción; false si sólo consulta información. Preparar no guarda: siempre espera la confirmación.'],
+                    'url' => ['type' => 'string', 'description' => 'Opcional: enlace público de la ficha del productor indicado por la persona.'],
+                ], 'required' => ['preparar_descripcion']],
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    if (!($conversation instanceof AiConversation)) {
+                        return ['error' => 'La ficha web necesita una conversación para conservar su evidencia.'];
+                    }
+                    return \App\Http\Controllers\Helpers\asistente_ia\FichaWebArticuloIaHelper::buscar((int) $owner_id, $conversation, $input,
+                        $assistant_message instanceof AiMessage ? $assistant_message : null);
+                },
+            ],
         ];
     }
 
@@ -5988,6 +6017,9 @@ CONFIRMACION;
     {
         // Aunque se ofrecen con las consultas, estas herramientas guardan archivos, tokens o contexto.
         if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'], true)) {
+            return false;
+        }
+        if ($herramienta === 'buscar_ficha_de_articulo') {
             return false;
         }
         return $this->handler_de_lectura($herramienta) !== null
