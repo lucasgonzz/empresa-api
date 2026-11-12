@@ -2,14 +2,11 @@
 
 namespace App\Http\Controllers\Helpers;
 
-use App\Http\Middleware\VerifyCsrfToken;
 use App\Models\AiConversation;
 use App\Models\MostradorReporte;
 use App\Models\User;
-use App\Services\VinculacionMaestra;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\RateLimiter;
 
 /**
  * Lógica del mostrador del módulo IA del lado del dueño (misión modulo-ia-mostrador):
@@ -65,7 +62,7 @@ class MostradorHelper
         return (bool) $persona->admin_access;
     }
 
-    /** El acceso de ComercioCity puede operar el ERP sin ver el chat privado de la persona. */
+    /** Identifica los ingresos técnicos; el maestro tiene acceso completo y el soporte firmado no. */
     public static function sesion_de_comerciocity(Request $request): bool
     {
         if (!$request->hasSession()) {
@@ -83,98 +80,28 @@ class MostradorHelper
         return self::sesion_de_comerciocity($request) && !self::maestro_autorizado($request);
     }
 
-    public static function autorizar_maestro(Request $request, ?string $documento): void
+    /** La identidad maestra se acredita sólo con la sesión web del servidor. */
+    public static function es_sesion_maestra(Request $request): bool
     {
-        $hash = self::hash_para_dueno_maestro($request);
-        if ($hash === '') {
-            return;
-        }
-
-        $dueno = $request->user('web');
-        $id = (int) $dueno->id;
-        $navegador = VinculacionMaestra::cookie_vigente($request, $id)
-            && VinculacionMaestra::origen_valido($request)
-            && app(VerifyCsrfToken::class)->token_de_sesion_valido($request);
-        if (!$navegador && !self::clave_maestra_valida($request->input('password'), $id, $hash)) {
-            return;
-        }
-
-        // El comando genérico resuelve al primer dueño como respaldo. Para el chat privado
-        // hace falta el documento exacto, salvo cuando la base tiene un único dueño.
-        if ($documento === null
-            ? User::whereNull('owner_id')->limit(2)->pluck('id')->count() !== 1
-            : ($documento !== (string) $dueno->doc_number
-                || User::where('doc_number', $documento)->limit(2)->pluck('id')->count() !== 1)) {
-            return;
-        }
-
-        $firma = self::firma_maestra($id, $hash);
-        $request->session()->put(self::AUTORIZACION_MAESTRA, $navegador ? 'navegador:' . $firma : $firma);
-        Log::info('Login maestro autorizado para el asistente personal', ['user_id' => $id]);
+        return $request->hasSession()
+            && !$request->session()->has('acceso_soporte_token_id')
+            && !$request->session()->has('demo_ingreso_token_id')
+            && (bool) $request->session()->get('master_login_bypass_user_last_activity', false)
+            && $request->user('web') instanceof User;
     }
 
-    private static function clave_maestra_valida($clave, int $id, string $hash): bool
-    {
-        if (!is_string($clave) || $clave === '' || strlen($clave) > 72) {
-            return false;
-        }
-
-        $limite = 'asistente-maestro:' . $id;
-        if (RateLimiter::tooManyAttempts($limite, 10)) {
-            return false;
-        }
-        RateLimiter::hit($limite, 60);
-
-        if (!password_verify($clave, $hash)) {
-            return false;
-        }
-
-        RateLimiter::clear($limite);
-
-        return true;
-    }
-
+    /** El maestro audita como el dueño; no requiere otra credencial ni un navegador vinculado. */
     public static function maestro_autorizado(Request $request): bool
     {
-        $hash = self::hash_para_dueno_maestro($request);
-        if ($hash === '') {
+        if (!self::es_sesion_maestra($request)) {
             return false;
         }
 
-        // Volver a verificar el hash vigente corta el acceso al cambiar o quitar la clave de la instancia.
-        $id = (int) $request->user('web')->id;
-        $firma = self::firma_maestra($id, $hash);
-        $marca = (string) $request->session()->get(self::AUTORIZACION_MAESTRA, '');
-
-        // Una sesión de navegador vinculado conserva el permiso mientras siga presentando
-        // su propia cookie de confianza, incluso después de cambiar de pestaña.
-        return hash_equals($firma, $marca)
-            || (hash_equals('navegador:' . $firma, $marca) && VinculacionMaestra::cookie_vigente($request, $id));
-    }
-
-    private static function hash_para_dueno_maestro(Request $request): string
-    {
-        if (!$request->hasSession()
-            || $request->session()->has('acceso_soporte_token_id')
-            || $request->session()->has('demo_ingreso_token_id')
-            || !$request->session()->get('master_login_bypass_user_last_activity', false)) {
-            return '';
-        }
-
-        // La autorización pertenece al dueño resuelto por el guard web, también en bases compartidas.
+        // La identidad se resuelve del guard web, nunca de un campo enviado por el navegador.
         $dueno = $request->user('web');
-        if (!$dueno instanceof User || $dueno->owner_id
-            || (int) UserHelper::userId(false) !== (int) $dueno->id
-            || (int) UserHelper::userId(true) !== (int) $dueno->id) {
-            return '';
-        }
-
-        return (string) config('acceso_soporte.asistente_maestro_password_hash', '');
-    }
-
-    private static function firma_maestra(int $id, string $hash): string
-    {
-        return hash_hmac('sha256', config('app.url') . ':' . $id . ':' . $hash, (string) config('app.key'));
+        return $dueno instanceof User && !$dueno->owner_id
+            && (int) UserHelper::userId(false) === (int) $dueno->id
+            && (int) UserHelper::userId(true) === (int) $dueno->id;
     }
 
     /**

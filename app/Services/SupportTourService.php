@@ -28,7 +28,7 @@ class SupportTourService
 {
     public const VERSION_SOPORTE_WEB = 1;
 
-    public static function sesion_web_propia(Request $request, User $persona): bool
+    public static function sesion_web_propia(Request $request, User $persona, bool $permitir_maestro = false): bool
     {
         $usuario_web = $request->user('web');
         if (!$request->hasSession() || $usuario_web === null || (int) $usuario_web->id !== (int) $persona->id) {
@@ -37,8 +37,12 @@ class SupportTourService
 
         $sesion = $request->session();
 
-        if ($sesion->has('acceso_soporte_token_id') || $sesion->get('master_login_bypass_user_last_activity', false)) {
+        if ($sesion->has('acceso_soporte_token_id') || (!$permitir_maestro && $sesion->get('master_login_bypass_user_last_activity', false))) {
             return false;
+        }
+
+        if ($permitir_maestro && $sesion->get('master_login_bypass_user_last_activity', false)) {
+            return true;
         }
 
         if (PruebaHelper::puede_haber_prueba()) {
