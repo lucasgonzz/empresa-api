@@ -187,8 +187,9 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
     {
         return [
             'COD' => ['codigo_de_proveedor', 0.97], 'DESCRIPCION' => ['nombre', 0.97],
-            // «PRECIO» a secas: la IA duda, y el circuito le pregunta al dueño si es de venta o el costo.
-            'PRECIO' => ['precio', 0.60], 'IVA' => ['iva', 0.97],
+            // «PRECIO» a secas: aunque la IA lo dé por precio de venta con toda la confianza (así pasó en
+            // producción), el circuito le pregunta al dueño si es de venta o el costo.
+            'PRECIO' => ['precio', 0.99], 'IVA' => ['iva', 0.97],
             'U.M.' => [null, 0.97], 'BULTO' => [null, 0.97],
         ];
     }
@@ -203,9 +204,7 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $run = $this->avanzar($run);
         $this->assertSame('columnas', $run->estado);
         $this->assertSame(['columna_0_2'], array_keys($run->preguntas));
-        $this->assertSame('En tu lista hay una columna que se llama «PRECIO» (por ejemplo: 2054.9, 849.57). ¿Qué es?'
-            . ' Puede ser lo que te cobra el proveedor (costo) o a lo que vendés vos (precio de venta).'
-            . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.', $run->preguntas['columna_0_2']['texto']);
+        $this->assertSame(self::PREGUNTA_DEL_PRECIO, $run->preguntas['columna_0_2']['texto']);
         $this->assertSame(7 + 1, (int) $run->hojas[0]['inicio'], 'La cabecera está en la fila 7, después del membrete.');
 
         // 2. «Es el costo» → la misma corrida pregunta el margen, con la forma de cualquier pregunta.
@@ -292,10 +291,13 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
         $run = $this->avanzar($run);
         $resultado = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 31)
-            ->where('texto', 'like', '%artículos creados%')->firstOrFail();
-        $this->assertStringContainsString('50 artículos creados y 0 actualizados.', $resultado->texto);
+            ->where('texto', 'like', 'Cargué%')->firstOrFail();
+        $this->assertStringStartsWith('Cargué 50 artículos con su costo y un 40 % de ganancia.', $resultado->texto);
+        $this->assertStringContainsString(' También tomé de tu lista: código de proveedor e IVA.', $resultado->texto);
+        foreach (['codigo de proveedor', 'unidad medida', 'encontré estos datos', 'creados'] as $jerga) {
+            $this->assertStringNotContainsString($jerga, $resultado->texto, $jerga);
+        }
         $this->assertStringContainsString(trim($frase), $resultado->texto);
-        $this->assertStringContainsString('Calculé el precio de venta sumándole 40 % de ganancia al costo.', $resultado->texto);
     }
 
     // -----------------------------------------------------------------------------------------------------
@@ -366,8 +368,8 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame('En tu lista hay una columna que se llama «Código» (por ejemplo: A-1, A-2). ¿Qué es?'
             . ' Puede ser el código que usa tu proveedor, un código tuyo o el código de barras.' . $cierre, $textos['columna_0_0']);
         // Un importe.
-        $this->assertSame('En tu lista hay una columna que se llama «Importe» (por ejemplo: 1500, 2300.5). ¿Qué es?'
-            . ' Puede ser lo que te cobra el proveedor (costo) o a lo que vendés vos (precio de venta).' . $cierre, $textos['columna_0_2']);
+        $this->assertSame('En tu lista hay una columna que se llama «Importe» (por ejemplo: 1.500,00 y 2.300,50).'
+            . ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?' . $cierre, $textos['columna_0_2']);
         // Una cantidad.
         $this->assertSame('En tu lista hay una columna que se llama «Cant.» (por ejemplo: 4, 12). ¿Qué es?'
             . ' Puede ser el stock que tenés o cuántas unidades trae el bulto o la caja.' . $cierre, $textos['columna_0_3']);
@@ -438,6 +440,212 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $pendientes = $this->getJson(self::BASE . 'prueba-pendientes?user_id=' . $this->dueno->id . '&support_ticket_id=31', ['X-Admin-Api-Key' => self::CLAVE])
             ->assertOk()->json('pendientes.0.preguntas');
         $this->assertSame([true, true, true, false], array_column($pendientes, 'ya_consultada'));
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Ítem P: un importe no se adivina
+    // -----------------------------------------------------------------------------------------------------
+
+    const PREGUNTA_DEL_PRECIO = 'En tu lista hay una columna que se llama «PRECIO» (por ejemplo: 2.054,90 y 849,57).'
+        . ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?'
+        . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
+
+    /**
+     * El caso de producción: el analizador da «PRECIO» por precio de venta con TODA la confianza.
+     */
+    private function mapeo_del_analizador_seguro(): array
+    {
+        return [
+            'COD' => ['codigo_de_proveedor', 0.97], 'DESCRIPCION' => ['nombre', 0.97], 'PRECIO' => ['precio', 0.99],
+            'IVA' => ['iva', 0.97], 'U.M.' => [null, 0.97], 'BULTO' => [null, 0.97],
+        ];
+    }
+
+    public function test_un_precio_a_secas_se_pregunta_aunque_el_analizador_este_seguro_y_la_carga_espera(): void
+    {
+        $this->analizador($this->mapeo_del_analizador_seguro());
+        Bus::fake();
+        $run = $this->avanzar($this->corrida());
+
+        $this->assertSame('columnas', $run->estado, 'No se carga nada sin saber si «PRECIO» es el costo o el precio de venta.');
+        $this->assertSame(['columna_0_2'], array_keys($run->preguntas));
+        $this->assertSame(self::PREGUNTA_DEL_PRECIO, $run->preguntas['columna_0_2']['texto']);
+        $this->assertSame(['costo', 'precio', 'ignorar'], $run->preguntas['columna_0_2']['sugeridas']);
+        $valores = array_column($run->preguntas['columna_0_2']['opciones'], 'valor');
+        $this->assertContains('costo', $valores);
+        $this->assertContains('precio', $valores);
+
+        // Mientras no conteste, volver a avanzar no escribe nada.
+        $run = $this->avanzar($run);
+        $this->assertSame('columnas', $run->estado);
+        Bus::assertNotDispatched(ProcessArticleChunk::class);
+        $this->assertSame(0, Article::where('user_id', $this->dueno->id)->where('provider_code', 'like', 'DL-%')->count());
+    }
+
+    public function test_si_contesta_que_es_su_precio_de_venta_se_carga_tal_cual_y_no_se_pregunta_el_margen(): void
+    {
+        $this->analizador($this->mapeo_del_analizador_seguro());
+        $run = $this->avanzar($this->corrida());
+        $this->responder($run, ['columna_0_2' => 'precio'])->assertStatus(202);
+
+        Bus::fake();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado, 'Con precio de venta no hay margen que preguntar.');
+        $this->assertCount(50, $this->correr_la_importacion());
+
+        $historial = ImportHistory::findOrFail($run->import_history_id);
+        (new FinalizeArticleImport($this->dueno->id, $historial->id, $historial->import_status_id))->handle();
+
+        $articulos = Article::where('user_id', $this->dueno->id)->where('provider_code', 'like', 'DL-%')->get();
+        $this->assertCount(50, $articulos);
+        $tornillo = $articulos->firstWhere('provider_code', 'DL-1002');
+        $this->assertEqualsWithDelta(2054.9, (float) $tornillo->price, 0.01, 'El importe de la lista es el precio de venta.');
+        foreach ($articulos as $articulo) {
+            $this->assertEmpty((float) $articulo->cost, $articulo->provider_code);
+            $this->assertEmpty((float) $articulo->percentage_gain, $articulo->provider_code);
+            $this->assertGreaterThan(0, (float) $articulo->price, $articulo->provider_code);
+        }
+
+        \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
+        $this->avanzar($run);
+        $resultado = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 31)
+            ->where('texto', 'like', 'Cargué%')->firstOrFail();
+        $this->assertStringStartsWith('Cargué 50 artículos con su precio de venta (sin costo).', $resultado->texto);
+    }
+
+    public function test_con_el_mapeo_previo_que_fija_el_costo_no_se_pregunta_costo_o_venta_pero_si_el_margen(): void
+    {
+        $this->analizador($this->mapeo_del_analizador_seguro());
+        $run = $this->corrida(null, ['columnas_previas' => [['hoja' => 'LISTA NOV', 'columna' => 'C', 'campo' => 'costo']]]);
+
+        $run = $this->avanzar($run);
+
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame([PlanillaDePrueba::CLAVE_MARGEN], array_keys($run->preguntas), 'Soporte ya confirmó que es el costo: solo falta el margen.');
+        $this->assertTrue($run->hojas[0]['columnas'][2]['segura']);
+        $this->assertSame('costo', $run->hojas[0]['columnas'][2]['campo']);
+    }
+
+    public function test_dos_importes_sin_jerarquia_clara_se_preguntan_los_dos(): void
+    {
+        $this->analizador([
+            'Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97],
+            'Precio Lista' => ['precio', 0.97], 'Precio Contado' => [null, 0.97],
+        ]);
+        $run = $this->avanzar($this->corrida([
+            ['Código', 'Descripción', 'Precio Lista', 'Precio Contado'],
+            ['A-1', 'Martillo', 1000, 900],
+            ['A-2', 'Pinza', 2500.5, 2250],
+        ]));
+
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_2', 'columna_0_3'], array_keys($run->preguntas));
+        $cierre = ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
+        $this->assertSame('En tu lista hay una columna que se llama «Precio Lista» (por ejemplo: 1.000,00 y 2.500,50).'
+            . ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?'
+            . ' Tu lista trae más de un importe (también «Precio Contado»): decime cuál es tu precio de venta de siempre.' . $cierre,
+            $run->preguntas['columna_0_2']['texto']);
+        $this->assertStringContainsString('(también «Precio Lista»)', $run->preguntas['columna_0_3']['texto']);
+    }
+
+    public function test_un_costo_y_un_final_confirman_el_final_y_un_costo_con_precio_de_venta_no_preguntan(): void
+    {
+        $filas = [['A-1', 'Martillo', 1000, 1400], ['A-2', 'Pinza', 2500, 3500]];
+
+        // «Costo» dice lo que es; «Final» al lado de un costo se confirma.
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Costo' => ['costo', 0.97], 'Final' => ['precio', 0.97]]);
+        $run = $this->avanzar($this->corrida(array_merge([['Código', 'Descripción', 'Costo', 'Final']], $filas)));
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_3'], array_keys($run->preguntas));
+        $this->assertStringStartsWith('En tu lista hay una columna que se llama «Final» (por ejemplo: 1400, 3500). ¿Qué es? Puede ser a lo que vendés vos (precio de venta).', $run->preguntas['columna_0_3']['texto']);
+
+        // «Costo» y «Precio de venta»: los dos títulos lo dicen, no hay nada que preguntar (ni margen).
+        ImportHistory::where('user_id', $this->dueno->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->update(['status' => 'terminado']);
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Costo' => ['costo', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        Bus::fake();
+        $run = $this->avanzar($this->corrida(array_merge([['Código', 'Descripción', 'Costo', 'Precio de venta']], $filas)));
+        $this->assertSame('importando', $run->estado);
+    }
+
+    public function test_que_dice_el_titulo_de_un_importe(): void
+    {
+        foreach (['Costo', 'COSTO S/IVA', 'costos', 'Precio de costo', 'Precio compra', 'P. Costo'] as $titulo) {
+            $this->assertSame('costo', PlanillaDePrueba::importe_segun_titulo($titulo), $titulo);
+        }
+        foreach (['Precio de venta', 'Precio venta', 'PVP', 'Precio público', 'Precio al público', 'Venta', 'Final', 'Precio final'] as $titulo) {
+            $this->assertSame('precio', PlanillaDePrueba::importe_segun_titulo($titulo), $titulo);
+        }
+        foreach (['PRECIO', 'Importe', 'Valor', '$', 'P. Lista', 'Lista', 'Precio lista', 'Precio unitario', 'Unitario', '', 'Precio Contado', 'Mayorista'] as $titulo) {
+            $this->assertNull(PlanillaDePrueba::importe_segun_titulo($titulo), $titulo);
+        }
+        // Con más de un importe en la hoja, «final» se confirma.
+        $this->assertNull(PlanillaDePrueba::importe_segun_titulo('Final', true));
+        $this->assertNull(PlanillaDePrueba::importe_segun_titulo('Precio final', true));
+        $this->assertSame('precio', PlanillaDePrueba::importe_segun_titulo('Precio de venta', true));
+
+        $columna = function (?string $campo, string $titulo) {
+            return ['campo' => $campo, 'segura' => true, 'titulo' => $titulo, 'muestra' => '1', 'ejemplos' => ['1']];
+        };
+        // El título dice costo y el analizador lo dio por precio de venta: se pregunta.
+        $contradicha = PlanillaDePrueba::dudar_de_los_importes([0 => $columna('nombre', 'Descripción'), 1 => $columna('precio', 'Costo s/IVA')]);
+        $this->assertTrue($contradicha[0]['segura']);
+        $this->assertArrayNotHasKey('importe', $contradicha[0]);
+        $this->assertFalse($contradicha[1]['segura']);
+        $this->assertTrue($contradicha[1]['importe']);
+        // Sin ningún importe no cambia nada.
+        $sin_importes = [0 => $columna('nombre', 'Descripción'), 1 => $columna('stock_actual', 'Stock')];
+        $this->assertSame($sin_importes, PlanillaDePrueba::dudar_de_los_importes($sin_importes));
+    }
+
+    public function test_en_modo_soporte_un_precio_a_secas_no_suma_preguntas(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        PruebaHelper::olvidar_cache();
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Precio' => ['precio', 0.97]]);
+        $run = $this->avanzar($this->corrida([
+            ['Código', 'Descripción', 'Precio'],
+            ['SP-1', 'Pinza universal', 1000],
+        ], ['modo_soporte' => true]));
+
+        $this->assertSame('confirmacion', $run->estado, 'En un negocio que ya opera queda el circuito de siempre.');
+    }
+
+    public function test_el_resumen_dice_que_se_cargo_en_palabras_y_con_singular_y_plural(): void
+    {
+        $resumen = new \ReflectionMethod(ImportacionDePruebaService::class, 'resumen_en_palabras');
+        $resumen->setAccessible(true);
+        $servicio = app(ImportacionDePruebaService::class);
+        $corrida = function (array $mapeo, array $extra = [], array $decisiones = []) {
+            return new ImportacionDePrueba(['user_id' => $this->dueno->id, 'decisiones' => $decisiones, 'hojas' => [['indice' => 0, 'mapeo' => $mapeo] + $extra]]);
+        };
+
+        $this->assertSame(
+            'Cargué 50 artículos con su costo y un 40 % de ganancia.',
+            $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2], ['margen_respondido' => '40'], ['margen_de_ganancia' => '40']), 50, 0, 0, 0)
+        );
+        $this->assertSame(
+            'Cargué 50 artículos con su precio de venta (sin costo).',
+            $resumen->invoke($servicio, $corrida(['nombre' => 1, 'precio' => 2]), 50, 0, 0, 0)
+        );
+        $this->assertSame(
+            'Cargué 1 artículo con su costo y su precio de venta. 1 fila quedó para revisar.',
+            $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2, 'precio' => 3]), 1, 0, 0, 1)
+        );
+        $this->assertSame(
+            'Cargué 12 artículos con su costo (el precio de venta lo cargás vos después). 10 son nuevos y 2 ya los tenías: los actualicé.'
+            . ' 3 filas quedaron sin cargar. 2 filas quedaron para revisar.',
+            $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2], [], ['margen_de_ganancia' => 'despues']), 10, 2, 3, 2)
+        );
+        $this->assertSame(
+            'Cargué 1 artículo. Ya lo tenías: lo actualicé. 1 fila quedó sin cargar.',
+            $resumen->invoke($servicio, $corrida(['nombre' => 1, 'stock_actual' => 2]), 0, 1, 1, 0)
+        );
+
+        $this->assertSame('código de proveedor, IVA y unidad de medida', PlanillaDePrueba::campos_en_palabras(['unidad_medida', 'iva', 'codigo_de_proveedor']));
+        $this->assertSame('código de proveedor e IVA', PlanillaDePrueba::campos_en_palabras(['iva', 'codigo_de_proveedor']));
+        $this->assertSame('subcategoría y unidades por bulto', PlanillaDePrueba::campos_en_palabras(['sub_categoria', 'u_individuales']));
+        $this->assertSame('stock', PlanillaDePrueba::campos_en_palabras(['stock_actual']));
+        $this->assertSame('', PlanillaDePrueba::campos_en_palabras([]));
     }
 
     public function test_el_margen_acepta_un_porcentaje_libre_y_despues_deja_todo_como_hoy(): void

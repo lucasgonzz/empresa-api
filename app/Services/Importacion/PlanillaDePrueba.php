@@ -78,7 +78,7 @@ class PlanillaDePrueba
         'importe' => [
             'campos' => ['costo', 'precio'],
             'tambien' => [],
-            'titulo' => '/(?:^| )(?:precio|precios|costo|costos|importe|importes|valor|pvp)(?: |$)/',
+            'titulo' => '/(?:^| )(?:precio|precios|costo|costos|importe|importes|valor|pvp|unitario|contado|final)(?: |$)/',
         ],
         'cantidad' => [
             'campos' => ['stock_actual', 'u_individuales'],
@@ -263,6 +263,11 @@ class PlanillaDePrueba
                 }
             }
 
+            // En la prueba un importe no se adivina: si el título no dice qué es, se le pregunta al dueño.
+            if (!$this->run->modo_soporte) {
+                $columnas = self::dudar_de_los_importes($columnas);
+            }
+
             $proveedor = $this->run->provider_id;
             $inferido = (int) ($resultado['provider_id'] ?? 0);
             if (!$proveedor && ($resultado['provider_confidence'] ?? '') === 'alto' && isset($this->proveedores[$inferido])) {
@@ -445,9 +450,16 @@ class PlanillaDePrueba
                 }
                 $clave = self::clave_columna($hoja, (int) $posicion);
                 $sugeridas = self::sugeridas_para($columna, $disponibles);
+                // Los títulos de los importes de la hoja, para avisar cuando hay más de uno.
+                $importes = [];
+                foreach ($hoja['columnas'] as $otra) {
+                    if (!empty($otra['importe'])) {
+                        $importes[] = trim((string) ($otra['titulo'] ?? ''));
+                    }
+                }
                 $preguntas[$clave] = self::pregunta(
                     $clave,
-                    self::texto_de_columna($hoja, (int) $posicion, $columna, $sugeridas, $disponibles, count($hojas) > 1),
+                    self::texto_de_columna($hoja, (int) $posicion, $columna, $sugeridas, $disponibles, count($hojas) > 1, $importes),
                     $disponibles
                 );
                 // Clave nueva y opcional: las respuestas más probables, por su `valor`, y «ignorar» siempre.
@@ -472,8 +484,8 @@ class PlanillaDePrueba
     {
         $campo = $columna['campo'] ?? null;
         $titulo = self::titulo_comparable($columna['titulo'] ?? '');
-        $familia = null;
-        foreach (self::FAMILIAS as $nombre => $datos) {
+        $familia = !empty($columna['importe']) ? 'importe' : null;
+        foreach ($familia === null ? self::FAMILIAS : [] as $nombre => $datos) {
             if ($campo !== null && in_array($campo, array_merge($datos['campos'], $datos['tambien']), true)) {
                 $familia = $nombre;
                 break;
@@ -508,16 +520,40 @@ class PlanillaDePrueba
      * @param  bool     $varias_hojas
      * @return string
      */
-    private static function texto_de_columna(array $hoja, int $posicion, array $columna, array $sugeridas, array $disponibles, bool $varias_hojas): string
+    private static function texto_de_columna(array $hoja, int $posicion, array $columna, array $sugeridas, array $disponibles, bool $varias_hojas, array $importes = []): string
     {
         $titulo = trim((string) ($columna['titulo'] ?? ''));
         // Una corrida analizada antes de este cambio trae solo `muestra`.
         $ejemplos = $columna['ejemplos'] ?? (($columna['muestra'] ?? '') !== '' ? [$columna['muestra']] : []);
+        $cierre = ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
+        // ¿Costo o precio de venta? Es LA pregunta de un importe: se hace directa, con la plata escrita como plata.
+        $costo_o_venta = in_array('costo', $sugeridas, true) && in_array('precio', $sugeridas, true);
+        if ($costo_o_venta) {
+            $ejemplos = array_map(function ($ejemplo) {
+                $numero = self::importe($ejemplo);
+
+                return $numero === null ? $ejemplo : number_format((float) $numero, 2, ',', '.');
+            }, $ejemplos);
+        }
+        // Un ejemplo con coma adentro («2.054,90») no se puede separar del siguiente con otra coma.
+        $separador = array_filter($ejemplos, function ($ejemplo) { return strpos($ejemplo, ',') !== false; }) === [] ? ', ' : ' y ';
 
         $texto = 'En ' . ($varias_hojas ? 'la hoja «' . $hoja['nombre'] . '» de tu lista' : 'tu lista') . ' hay una columna '
             . ($titulo !== '' ? 'que se llama «' . $titulo . '»' : 'sin título (la ' . Coordinate::stringFromColumnIndex($posicion + 1) . ')')
-            . ($ejemplos === [] ? '' : ' (por ejemplo: ' . implode(', ', $ejemplos) . ')')
-            . '. ¿Qué es?';
+            . ($ejemplos === [] ? '' : ' (por ejemplo: ' . implode($separador, $ejemplos) . ')')
+            . '.';
+
+        if ($costo_o_venta) {
+            $texto .= ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?';
+            $otros = array_values(array_filter($importes, function ($otro) use ($titulo) { return $otro !== '' && $otro !== $titulo; }));
+            if (count($importes) > 1) {
+                $texto .= ' Tu lista trae más de un importe' . ($otros === [] ? '' : ' (también «' . implode('», «', $otros) . '»)')
+                    . ': decime cuál es tu precio de venta de siempre.';
+            }
+
+            return $texto . $cierre;
+        }
+        $texto .= ' ¿Qué es?';
 
         $frases = [];
         foreach ($sugeridas as $valor) {
@@ -528,7 +564,100 @@ class PlanillaDePrueba
             $texto .= ' Puede ser ' . ($frases === [] ? '' : implode(', ', $frases) . ' o ') . $ultima . '.';
         }
 
-        return $texto . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.';
+        return $texto . $cierre;
+    }
+
+    /**
+     * Qué dice el TÍTULO de una columna de importe, sin mirar nada más: `costo`, `precio` (de venta) o null
+     * si no lo dice («precio», «importe», «valor», «$», «p. lista», «precio unitario», sin título…).
+     *
+     * Con más de un importe en la hoja, «final» y «precio final» dejan de ser claros: al lado de un costo
+     * puede ser un precio calculado que no cierra, y hay que confirmarlo.
+     *
+     * @param  string $titulo
+     * @param  bool   $varios  Si la hoja tiene más de una columna de importe
+     * @return string|null
+     */
+    public static function importe_segun_titulo(string $titulo, bool $varios = false): ?string
+    {
+        $titulo = self::titulo_comparable($titulo);
+        if (preg_match('/^(?:costos?|p costo|precio (?:de )?(?:costo|compra))(?: |$)/', $titulo)) {
+            return 'costo';
+        }
+        if (preg_match('/^(?:precio (?:de |al )?(?:venta|publico)|pvp|p v p|venta|publico)(?: |$)/', $titulo)) {
+            return 'precio';
+        }
+        if (!$varios && preg_match('/^(?:precio )?final(?: |$)/', $titulo)) {
+            return 'precio';
+        }
+
+        return null;
+    }
+
+    /**
+     * En la prueba, un importe no se adivina (misión prueba-e2e-campana-imperio, ítem P).
+     *
+     * El caso real: la lista de un proveedor con una sola columna «PRECIO», que es su costo. El analizador
+     * la dio por precio de venta con confianza alta, no se preguntó nada y se cargaron 57 artículos con el
+     * costo del proveedor como precio de venta y el costo vacío: el negocio iba a vender al costo.
+     *
+     * Son importes las columnas que el analizador asignó a costo o a precio de venta y las que dejó sin
+     * asignar con título de importe. Cada una queda segura SOLO si su título dice sin vueltas qué es
+     * (ver importe_segun_titulo()) y el analizador coincide; si no, deja de ser segura y se pregunta. El
+     * mapeo previo (`columnas_previas`) se aplica después y la vuelve a dejar segura: lo que soporte ya
+     * confirmó no se vuelve a preguntar.
+     *
+     * @param  array $columnas  Columnas analizadas de una hoja
+     * @return array            Las mismas, con `importe` => true en las de importe
+     */
+    public static function dudar_de_los_importes(array $columnas): array
+    {
+        $importes = [];
+        foreach ($columnas as $posicion => $columna) {
+            $campo = $columna['campo'] ?? null;
+            $titulo = self::titulo_comparable($columna['titulo'] ?? '');
+            if (in_array($campo, ['costo', 'precio'], true)
+                || ($campo === null && $titulo !== '' && preg_match(self::FAMILIAS['importe']['titulo'], $titulo))) {
+                $importes[] = $posicion;
+            }
+        }
+
+        foreach ($importes as $posicion) {
+            $columnas[$posicion]['importe'] = true;
+            $segun_titulo = self::importe_segun_titulo((string) ($columnas[$posicion]['titulo'] ?? ''), count($importes) > 1);
+            if ($segun_titulo === null || $segun_titulo !== ($columnas[$posicion]['campo'] ?? null)) {
+                $columnas[$posicion]['segura'] = false;
+            }
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * Los campos de la planilla dichos en palabras («código de proveedor, IVA y unidad de medida»), para el
+     * resumen de la importación. Un campo propio del negocio (un depósito, una lista) va con su nombre.
+     *
+     * @param  string[] $campos  Claves del mapeo
+     * @return string
+     */
+    public static function campos_en_palabras(array $campos): string
+    {
+        // Siempre en el mismo orden (el de ETIQUETAS): la columna JSON donde vive el mapeo no conserva el suyo.
+        $orden = array_flip(array_keys(self::ETIQUETAS));
+        usort($campos, function ($a, $b) use ($orden) {
+            return [$orden[$a] ?? PHP_INT_MAX, (string) $a] <=> [$orden[$b] ?? PHP_INT_MAX, (string) $b];
+        });
+        $palabras = [];
+        foreach ($campos as $campo) {
+            $palabras[] = self::ETIQUETAS[$campo] ?? trim(str_replace(['$_final_', '%_', '_'], ['precio final de la lista ', 'margen de la lista ', ' '], (string) $campo));
+        }
+        $palabras = array_values(array_unique($palabras));
+        if (count($palabras) < 2) {
+            return (string) ($palabras[0] ?? '');
+        }
+        $ultima = array_pop($palabras);
+
+        return implode(', ', $palabras) . (preg_match('/^h?i/i', $ultima) ? ' e ' : ' y ') . $ultima;
     }
 
     /**

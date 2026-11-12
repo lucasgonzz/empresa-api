@@ -135,6 +135,16 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
             ],
         ]);
         $run = $this->corrida($archivo, 'analizar');
+        /*
+         * Misión prueba-e2e-campana-imperio (ítem P): en la prueba, una columna «precio» a secas ya no se da
+         * por precio de venta sin preguntar. Este test mide las hojas y los repetidos, no esa pregunta (la
+         * cubre ImportacionDePruebaMargenYFilasQueNoSonArticulosTest), así que el precio llega confirmado por
+         * el mapeo previo, como cuando soporte ya lo habló con el cliente.
+         */
+        $run->update(['columnas_previas' => [
+            ['hoja' => 'Hoja 0', 'columna' => 'D', 'campo' => 'precio'],
+            ['hoja' => 'Hoja 1', 'columna' => 'D', 'campo' => 'precio'],
+        ]]);
         $this->analizador(array_fill(0, 2, ['nombre' => 0.98, 'codigo_de_barras' => 0.99, 'codigo_de_proveedor' => 0.94, 'precio' => 0.92]));
         $servicio = app(ImportacionDePruebaService::class);
         $servicio->avanzar($run);
@@ -217,8 +227,8 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->assertSame(['columna_0_3'], array_keys($run->preguntas));
         $aviso = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 20)->firstOrFail();
         // Texto en palabras del dueño desde la misión prueba-e2e-campana-imperio (ítem O): sin letra de columna ni hoja.
-        $this->assertSame('En tu lista hay una columna que se llama «precio» (por ejemplo: 8989.3, 9580). ¿Qué es?'
-            . ' Puede ser lo que te cobra el proveedor (costo) o a lo que vendés vos (precio de venta).'
+        $this->assertSame('En tu lista hay una columna que se llama «precio» (por ejemplo: 8.989,30 y 9.580,00).'
+            . ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?'
             . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.', $aviso->texto);
 
         $this->postJson(self::BASE . 'prueba-resolver/' . $run->uuid, [

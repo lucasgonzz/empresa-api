@@ -370,27 +370,26 @@ class ImportacionDePruebaService
             $omitidas = max($problemas['no_importadas'], ($conteos['ambiguo'] ?? 0) + ($conteos['bloqueado_otro_proveedor'] ?? 0)
                 + ($conteos['sin_match_no_creado'] ?? 0) + ($conteos['sin_clasificar'] ?? 0));
             $estado = $omitidas > 0 || $problemas['para_revisar'] > 0 ? 'parcial' : 'completado';
-            $detalle = $creados . ($creados === 1 ? ' artículo creado y ' : ' artículos creados y ')
-                . $actualizados . ($actualizados === 1 ? ' actualizado.' : ' actualizados.');
-            if ($omitidas > 0) {
-                $detalle .= ' ' . $omitidas . ' filas quedaron sin importar.';
-            }
-            if ($problemas['para_revisar'] > 0) {
-                $detalle .= ' ' . $problemas['para_revisar'] . ' filas quedaron con datos para revisar.';
-            }
-            // Títulos de rubro, notas sueltas y totales de la planilla: se cuentan, no se importaron.
-            $detalle .= PlanillaDePrueba::texto_de_filas_salteadas($run->hojas ?? []);
-            $margen = PlanillaDePrueba::margen_de_respuesta(($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null);
-            if ($margen !== null && array_filter($run->hojas ?? [], function ($hoja) { return isset($hoja['margen_respondido']); }) !== []) {
-                $detalle .= ' Calculé el precio de venta sumándole ' . $margen . ' % de ganancia al costo.';
-            }
-
-            $texto = ($estado === 'completado' ? 'Terminé de importar tu catálogo. ' : 'Procesé tu catálogo y quedaron datos para revisar. ') . $detalle;
             if ($run->modo_soporte) {
+                // El resumen de soporte queda como estaba; solo se corrige el singular («1 fila quedó…»).
+                $detalle = $creados . ($creados === 1 ? ' artículo creado y ' : ' artículos creados y ')
+                    . $actualizados . ($actualizados === 1 ? ' actualizado.' : ' actualizados.');
+                if ($omitidas > 0) {
+                    $detalle .= ' ' . ($omitidas === 1 ? '1 fila quedó sin importar.' : $omitidas . ' filas quedaron sin importar.');
+                }
+                if ($problemas['para_revisar'] > 0) {
+                    $detalle .= ' ' . ($problemas['para_revisar'] === 1 ? '1 fila quedó con datos para revisar.'
+                        : $problemas['para_revisar'] . ' filas quedaron con datos para revisar.');
+                }
+                $texto = ($estado === 'completado' ? 'Terminé de importar tu catálogo. ' : 'Procesé tu catálogo y quedaron datos para revisar. ') . $detalle;
                 $run->aviso('resultado', 'Archivo «' . mb_substr($run->nombre, 0, 110) . '». ' . $texto);
                 $run->update(['estado' => 'terminado']);
                 return;
             }
+
+            // En la prueba el resumen va en palabras del dueño: qué se cargó y con qué precio.
+            $detalle = $this->resumen_en_palabras($run, $creados, $actualizados, $omitidas, (int) $problemas['para_revisar']);
+            $texto = $detalle;
 
             $lote = $this->iniciar_imagenes($run, $historial);
             $vigente = PruebaHelper::en_periodo_vigente((int) $run->user_id);
@@ -413,8 +412,10 @@ class ImportacionDePruebaService
             foreach ($run->hojas ?? [] as $hoja) {
                 $campos += $hoja['mapeo'] ?? [];
             }
-            if ($campos !== []) {
-                $texto .= ' En el archivo encontré estos datos: ' . mb_substr(str_replace('_', ' ', implode(', ', array_keys($campos))), 0, 700) . '.';
+            // Lo demás que traía la lista, dicho en palabras (el nombre, el costo y el precio ya los nombra el resumen).
+            $otros = PlanillaDePrueba::campos_en_palabras(array_values(array_diff(array_keys($campos), ['nombre', 'costo', 'precio', PlanillaDePrueba::CLAVE_MARGEN])));
+            if ($otros !== '') {
+                $texto .= ' También tomé de tu lista: ' . mb_substr($otros, 0, 500) . '.';
             }
             $semilla_borrada_at = optional(PruebaHelper::config((int) $run->user_id))->semilla_borrada_at;
             if ($semilla_borrada_at !== null && $semilla_borrada_at->gte($historial->created_at)) {
@@ -433,6 +434,64 @@ class ImportacionDePruebaService
             $run->estado = $lote !== null ? 'imagenes' : ($vigente ? 'indexar' : 'terminado');
             $this->guardar_hitos($run);
         });
+    }
+
+    /**
+     * El resumen de una importación de la prueba, sin jerga y con singular y plural (misión
+     * prueba-e2e-campana-imperio, ítem P): «Cargué 50 artículos con su costo y un 40 % de ganancia.»,
+     * «Cargué 50 artículos con su precio de venta (sin costo).», «1 fila quedó para revisar.».
+     *
+     * @param  ImportacionDePrueba $run
+     * @param  int $creados
+     * @param  int $actualizados
+     * @param  int $omitidas       Filas que el motor no pudo cargar
+     * @param  int $para_revisar   Filas cargadas con algún dato a revisar
+     * @return string
+     */
+    private function resumen_en_palabras(ImportacionDePrueba $run, int $creados, int $actualizados, int $omitidas, int $para_revisar): string
+    {
+        $hojas = $run->hojas ?? [];
+        $campos = [];
+        foreach ($hojas as $hoja) {
+            $campos += $hoja['mapeo'] ?? [];
+        }
+        $margen = PlanillaDePrueba::margen_de_respuesta(($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null);
+        $con_margen_respondido = $margen !== null
+            && array_filter($hojas, function ($hoja) { return isset($hoja['margen_respondido']); }) !== [];
+        $trae_precio = isset($campos['precio']) || isset($campos[PlanillaDePrueba::CLAVE_MARGEN])
+            || array_filter(array_keys($campos), function ($campo) {
+                return strpos((string) $campo, '%_') === 0 || strpos((string) $campo, '$_final_') === 0;
+            }) !== [];
+
+        if ($con_margen_respondido) {
+            $con = ' con su costo y un ' . $margen . ' % de ganancia';
+        } elseif (isset($campos['costo']) && $trae_precio) {
+            $con = ' con su costo y su precio de venta';
+        } elseif ($trae_precio) {
+            $con = ' con su precio de venta (sin costo)';
+        } elseif (isset($campos['costo'])) {
+            $con = ' con su costo (el precio de venta lo cargás vos después)';
+        } else {
+            $con = '';
+        }
+
+        $total = $creados + $actualizados;
+        $texto = 'Cargué ' . $total . ($total === 1 ? ' artículo' : ' artículos') . $con . '.';
+        if ($creados > 0 && $actualizados > 0) {
+            $texto .= ' ' . $creados . ($creados === 1 ? ' es nuevo' : ' son nuevos') . ' y '
+                . $actualizados . ($actualizados === 1 ? ' ya lo tenías: lo actualicé.' : ' ya los tenías: los actualicé.');
+        } elseif ($actualizados > 0) {
+            $texto .= $actualizados === 1 ? ' Ya lo tenías: lo actualicé.' : ' Ya los tenías: los actualicé.';
+        }
+        if ($omitidas > 0) {
+            $texto .= $omitidas === 1 ? ' 1 fila quedó sin cargar.' : ' ' . $omitidas . ' filas quedaron sin cargar.';
+        }
+        if ($para_revisar > 0) {
+            $texto .= $para_revisar === 1 ? ' 1 fila quedó para revisar.' : ' ' . $para_revisar . ' filas quedaron para revisar.';
+        }
+
+        // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.
+        return $texto . PlanillaDePrueba::texto_de_filas_salteadas($hojas);
     }
 
     private function iniciar_imagenes(ImportacionDePrueba $run, ImportHistory $historial): ?ImageAssignmentRun
