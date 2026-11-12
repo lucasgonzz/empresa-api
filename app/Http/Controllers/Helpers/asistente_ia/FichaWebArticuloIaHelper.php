@@ -15,11 +15,18 @@ use Illuminate\Support\Str;
 /** Une evidencia y escritura: el modelo no puede sustituir la ficha verificada por texto inventado. */
 class FichaWebArticuloIaHelper
 {
-    public static function buscar($owner_id, AiConversation $conversation, array $input): array
+    public static function buscar($owner_id, AiConversation $conversation, array $input, AiMessage $mensaje = null): array
     {
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
         if ((int) $owner_id !== $contexto->owner_id || !self::autorizado($contexto, 'article.index')) {
             return ['error' => 'Tu usuario no tiene permiso para consultar las fichas de artículos de este negocio.'];
+        }
+        if (!isset($input['preparar_descripcion']) || !is_bool($input['preparar_descripcion'])) {
+            return ['error' => 'Reenviá buscar_ficha_de_articulo indicando preparar_descripcion: true si la persona pidió agregar/asignar la ficha a Descripción, false si pidió sólo consultarla. No pidas otro permiso para preparar la propuesta: todavía no guarda nada.'];
+        }
+        if ($input['preparar_descripcion'] && (!$mensaje || !$mensaje->acciones_habilitadas
+            || (int) $mensaje->ai_conversation_id !== (int) $conversation->id)) {
+            return ['error' => 'Para preparar la descripción tienen que estar habilitadas las acciones en esta conversación. No se guardó ningún cambio.'];
         }
         $query = Article::where('user_id', $owner_id);
         if (!empty($input['articulo_id'])) {
@@ -65,6 +72,20 @@ class FichaWebArticuloIaHelper
                 return ['title' => $d->title, 'content' => strip_tags((string) $d->content)];
             })->all();
             $result['siguiente'] = 'Si la persona pidió asignarla, llamá ahora a proponer_descripcion_verificada con consulta_id. Conserva todas las descripciones anteriores y espera confirmación.';
+            if ($input['preparar_descripcion']) {
+                // Un pedido de buscar Y asignar no debe terminar con "¿la agrego?" sin nada que
+                // confirmar. Preparar aquí es reversible; la escritura sigue exigiendo el único sí.
+                $propuesta = self::proponer($contexto, $mensaje, ['consulta_id' => $id]);
+                if (!empty($propuesta['ok'])) {
+                    $propuesta['nota'] = $mensaje->confirma_por_texto()
+                        ? 'La propuesta real ya está preparada y espera el sí de la persona. Mostrá sus datos y preguntá si confirma; no digas tarjeta ni que ya quedó guardado.'
+                        : AccionesIaHelper::NOTA_PROPUESTA;
+                }
+                $result['propuesta'] = $propuesta;
+                $result['siguiente'] = !empty($propuesta['ok'])
+                    ? 'La propuesta real YA se creó. No armes otra ni pidas permiso para prepararla: presentá la ficha y sus fuentes y esperá la confirmación para guardarla.'
+                    : 'La búsqueda se completó, pero no se pudo preparar la propuesta: explicá el error de propuesta y no digas que quedó guardada.';
+            }
         }
         return $result;
     }
@@ -122,7 +143,8 @@ class FichaWebArticuloIaHelper
             dispatch((new \App\Jobs\ProcessSyncArticleDescriptionTiendaNube($article))->afterCommit());
         }
         return ['texto' => 'Se agregó la ficha verificada a ' . $article->name . ', conservando sus descripciones anteriores.',
-            'ruta' => '/listado-de-articulos', 'article_id' => (int) $article->id, 'description_ids' => $ids];
+            'ruta' => ['name' => 'article', 'params' => new \stdClass(), 'texto' => 'Ver en el Listado'],
+            'entidad' => 'article', 'article_id' => (int) $article->id, 'description_ids' => $ids];
     }
 
     protected static function autorizado(ContextoDeCargaIa $contexto, $permiso): bool

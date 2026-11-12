@@ -2139,7 +2139,10 @@ Qué podés afirmar:
 - Para fichas técnicas, elaboración, origen y notas de cata de un artículo existente, llamá a
   buscar_ficha_de_articulo: sí tenés búsqueda web para eso, también por WhatsApp. Mostrá las fuentes
   y los faltantes; nunca reemplaces una búsqueda por un texto de referencia inventado. Si pidieron
-  agregarla a Descripción y tenés acciones habilitadas, seguí con proponer_descripcion_verificada.
+  agregarla a Descripción, mandá preparar_descripcion:true: la búsqueda arma la propuesta real y
+  deja pendiente el único sí para guardar. No preguntes «¿la agrego?» antes de prepararla. Si sólo
+  pidieron información, preparar_descripcion:false; si después piden asignarla, usá
+  proponer_descripcion_verificada con la consulta_id que ya tenés, sin repetir la búsqueda.
 - Las herramientas devuelven 20 registros por vez. Varias te dicen además cuántos hay EN
   TOTAL (encontrados) y cuántos te mandaron (en_esta_lista): cuando difieren, el número del
   negocio es el total, nunca la cantidad de filas que tenés a la vista.
@@ -5951,18 +5954,20 @@ CONFIRMACION;
             ],
             [
                 'name' => 'buscar_ficha_de_articulo',
-                'description' => 'BUSCA EN INTERNET información verificable de un artículo YA EXISTENTE, por su nombre, código o articulo_id; acepta un enlace público del productor. Es la herramienta para notas de cata, elaboración, origen de viñedos/terroir y ficha técnica de vinos, y para completar descripciones de otros productos. Sí podés buscar esta información en internet: no está limitado a altas por código de barras. Lee las páginas y devuelve secciones, fuentes, faltantes y consulta_id sin guardar la descripción. Si pidieron asignarla, seguí en la misma vuelta con proponer_descripcion_verificada. Nunca completes datos con características típicas ni conocimientos propios. Si found=false o hay error, contá ese resultado; no significa que carezcas de búsqueda web.',
+                'description' => 'BUSCA EN INTERNET información verificable de un artículo YA EXISTENTE, por nombre, código o articulo_id; acepta un enlace público del productor. Sirve para notas de cata, elaboración, origen/terroir y ficha técnica. OBLIGATORIO decidir preparar_descripcion: true cuando la persona pidió buscar Y agregar/asignar la información a Descripción (la búsqueda ya prepara una propuesta REAL con los extractos y las fuentes, sin guardarla); false si pidió sólo información. Con true no pidas primero permiso para preparar la propuesta ni llames a proponer_descripcion_verificada otra vez: presentá lo preparado y esperá un único sí para guardar. Sí tenés búsqueda web también por WhatsApp y para artículos existentes sin código de barras. Nunca uses características típicas ni conocimientos propios. found=false/error se informa tal cual, no es falta permanente de capacidad.',
                 'input_schema' => ['type' => 'object', 'properties' => [
                     'articulo_id' => ['type' => 'integer', 'description' => 'ID real del artículo que devolvió una consulta anterior.'],
                     'articulo' => ['type' => 'string', 'description' => 'Nombre o código si todavía no tenés articulo_id.'],
                     'pedido' => ['type' => 'string', 'description' => 'Qué información pidió la persona, por ejemplo elaboración, origen y nota de cata.'],
+                    'preparar_descripcion' => ['type' => 'boolean', 'description' => 'true si la persona pidió agregar/asignar/completar Descripción; false si sólo consulta información. Preparar no guarda: siempre espera la confirmación.'],
                     'url' => ['type' => 'string', 'description' => 'Opcional: enlace público de la ficha del productor indicado por la persona.'],
-                ], 'required' => []],
-                'handler' => function (array $input, $owner_id, $conversation = null) {
+                ], 'required' => ['preparar_descripcion']],
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
                     if (!($conversation instanceof AiConversation)) {
                         return ['error' => 'La ficha web necesita una conversación para conservar su evidencia.'];
                     }
-                    return \App\Http\Controllers\Helpers\asistente_ia\FichaWebArticuloIaHelper::buscar((int) $owner_id, $conversation, $input);
+                    return \App\Http\Controllers\Helpers\asistente_ia\FichaWebArticuloIaHelper::buscar((int) $owner_id, $conversation, $input,
+                        $assistant_message instanceof AiMessage ? $assistant_message : null);
                 },
             ],
         ];

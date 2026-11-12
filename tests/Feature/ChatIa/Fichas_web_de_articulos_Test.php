@@ -94,7 +94,7 @@ class Fichas_web_de_articulos_Test extends TestCase
     protected function buscar(array $input = [])
     {
         $results = app(AsistenteIaService::class)->execute_tool_calls([['type' => 'tool_use', 'id' => 'ficha-1',
-            'name' => 'buscar_ficha_de_articulo', 'input' => array_merge(['articulo' => 'La Mascota Malbec', 'pedido' => 'Elaboración, origen y nota de cata'], $input)]], $this->conversation, $this->message);
+            'name' => 'buscar_ficha_de_articulo', 'input' => array_merge(['articulo' => 'La Mascota Malbec', 'pedido' => 'Elaboración, origen y nota de cata', 'preparar_descripcion' => false], $input)]], $this->conversation, $this->message);
         $this->assertEmpty($results[0]['is_error'] ?? false, $results[0]['content']);
         return json_decode($results[0]['content'], true);
     }
@@ -126,7 +126,11 @@ class Fichas_web_de_articulos_Test extends TestCase
         $this->assertTrue($propuesta['requiere_confirmacion']);
         $this->assertSame(AiMessageAction::TIPO_DESCRIPCION_VERIFICADA, $propuesta['tipo']);
         $this->assertContains($propuesta['tipo'], HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES);
-        $this->confirmar($propuesta['tarjeta_id'])->assertOk();
+        $confirmed = $this->confirmar($propuesta['tarjeta_id'])->assertOk();
+        $confirmed->assertJsonPath('model.resultado.ruta.name', 'article');
+        $confirmed->assertJsonPath('model.resultado.ruta.texto', 'Ver en el Listado');
+        $confirmed->assertJsonPath('model.resultado.entidad', 'article');
+        $this->assertInstanceOf(\stdClass::class, json_decode($confirmed->getContent())->model->resultado->ruta->params);
         $this->assertSame(4, $this->article->descriptions()->count());
         $this->assertSame('Contenido anterior.', $previa->fresh()->content);
         foreach ($this->article->descriptions()->where('ai_generated', true)->get() as $d) {
@@ -335,6 +339,33 @@ class Fichas_web_de_articulos_Test extends TestCase
         $this->article->bodega_id = null;
         $this->article->save();
         $this->confirmar($p['tarjeta_id'])->assertStatus(422);
+        $this->assertSame(0, $this->article->descriptions()->count());
+    }
+
+    public function test_pedido_buscar_y_asignar_prepara_propuesta_real_en_una_llamada_sin_pedir_dos_veces_el_si()
+    {
+        $this->message->canal = 'whatsapp';
+        $this->message->save();
+        $r = $this->buscar(['preparar_descripcion' => true]);
+        $this->assertTrue($r['found']);
+        $this->assertTrue($r['propuesta']['ok']);
+        $this->assertTrue($r['propuesta']['requiere_confirmacion']);
+        $this->assertStringContainsString('propuesta real ya está preparada', $r['propuesta']['nota']);
+        $this->assertSame(1, AiMessageAction::where('ai_message_id', $this->message->id)->where('estado', 'propuesta')->count());
+        $this->assertSame(0, $this->article->descriptions()->count());
+        $this->confirmar($r['propuesta']['tarjeta_id'])->assertOk();
+        $this->assertSame(3, $this->article->descriptions()->count());
+    }
+
+    public function test_solo_consultar_no_crea_tarjeta_y_la_decision_omitida_se_pide_a_la_herramienta_sin_salir_a_internet()
+    {
+        $r = $this->buscar(['preparar_descripcion' => null]);
+        $this->assertStringContainsString('preparar_descripcion', $r['error']);
+        Http::assertNothingSent();
+        $r = $this->buscar(['preparar_descripcion' => false]);
+        $this->assertTrue($r['found']);
+        $this->assertArrayNotHasKey('propuesta', $r);
+        $this->assertSame(0, AiMessageAction::where('ai_message_id', $this->message->id)->count());
         $this->assertSame(0, $this->article->descriptions()->count());
     }
 }
