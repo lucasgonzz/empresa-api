@@ -901,6 +901,54 @@
 			}
 		},
 		{
+			"clave": "listado.buscador",
+			"ancla": null,
+			"selector": "#listado [data-testid=\"buscador-general\"]",
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.abrir_ficha",
+			"ancla": null,
+			"selector": "#listado .cont-table:has([data-testid^=\"article-row-\"]), #listado .cont-cards:has(.card-component.apretable)",
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.pestana_precio",
+			"ancla": null,
+			"selector": "#article.show [data-testid=\"nav-item-Precio\"]",
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.setear_precio_final",
+			"ancla": "listado.campo_precio_manual",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.precio_final",
+			"ancla": "listado.campo_precio_final",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.guardar_articulo",
+			"ancla": "listado.boton_guardar_articulo",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
 			"clave": "ventas.filtro_fecha",
 			"ancla": "ventas.control_fecha",
 			"selector": null,
