@@ -398,7 +398,8 @@ class ImportacionDePruebaController extends Controller
             foreach ($datos['respuestas'] as $clave => $respuesta) {
                 $pregunta = $preguntas[$clave] ?? null;
                 if ($pregunta === null || (!in_array($respuesta, array_column($pregunta['opciones'], 'valor'), true)
-                    && !self::codigo_de_stock_valido($run, $pregunta, $respuesta))) {
+                    && !self::codigo_de_stock_valido($run, $pregunta, $respuesta)
+                    && !self::porcentaje_valido($pregunta, $respuesta))) {
                     abort(422, 'La respuesta no coincide con las opciones de la consulta.');
                 }
                 if (isset($guardadas[$clave]) && $guardadas[$clave] !== $respuesta) {
@@ -408,6 +409,15 @@ class ImportacionDePruebaController extends Controller
             }
 
             $continuar = array_diff_key($preguntas, $guardadas) === [];
+            /*
+             * Red de seguridad de la prueba: dos respuestas que dejan dos columnas con el mismo dato (los dos
+             * precios como «precio de venta») se rechazan acá con un mensaje claro. Antes se guardaban y la
+             * carga volvía a preguntar lo mismo sin fin.
+             */
+            if ($continuar && !$run->modo_soporte && $run->alcance === null && $run->estado_publico() === 'columnas'
+                && (new PlanillaDePrueba($run))->decisiones_repiten_un_dato($run->hojas ?? [], $guardadas)) {
+                abort(422, 'Dos columnas quedaron con el mismo dato. Elegí una sola para ese dato; la otra puede ir a otro dato o quedar sin cargar (ignorar).');
+            }
             $run->decisiones = $guardadas;
             if ($continuar) {
                 $run->retirar_pregunta();
@@ -435,6 +445,21 @@ class ImportacionDePruebaController extends Controller
         $codigo = PlanillaStockExistente::codigo_de_respuesta($respuesta);
 
         return $codigo !== null && (new PlanillaStockExistente($run))->codigo_inequivoco($codigo);
+    }
+
+    /**
+     * Una pregunta marcada con `acepta_porcentaje` (la del margen de ganancia) admite, además de sus opciones,
+     * un porcentaje libre: «35», «35 %» o «35,5», mayor a 0 y hasta PlanillaDePrueba::MARGEN_MAXIMO. Quien
+     * no conozca la marca responde con una de las opciones, como en cualquier otra pregunta.
+     *
+     * @param  array  $pregunta
+     * @param  string $respuesta
+     * @return bool
+     */
+    private static function porcentaje_valido(array $pregunta, string $respuesta): bool
+    {
+        return ($pregunta['acepta_porcentaje'] ?? false) === true
+            && PlanillaDePrueba::margen_de_respuesta($respuesta) !== null;
     }
 
     private static function comprobar_dueno(int $user_id, bool $modo_soporte): void

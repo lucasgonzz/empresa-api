@@ -741,7 +741,20 @@ class ArticleController extends Controller
         
         $inventory_linkage_helper = new InventoryLinkageHelper();
         $inventory_linkage_helper->checkArticle($model);
-        
+
+        /*
+         * Hito de la prueba gratuita (misión prueba-e2e-campana-imperio, 11/11/2026): el dueño editó desde la
+         * ficha un artículo que ya existía (nombre, costo, precio, stock). Cero costo fuera de una prueba.
+         *
+         * Va acá y en ningún otro lado a propósito: este método solo lo alcanza `PUT api/article/{id}`, o sea
+         * el formulario del artículo. La importación de Excel, la actualización masiva y el alta (`store` y
+         * `newArticle`, que tienen su propio hito `prueba.articulo_creado`) no pasan por acá. Después del
+         * commit, igual que el del alta: `update()` corre adentro de la transacción del historial de precios.
+         */
+        \Illuminate\Support\Facades\DB::afterCommit(function () use ($model) {
+            PruebaHitosHelper::emitir('prueba.articulo_actualizado', ['id' => (int) $model->id]);
+        });
+
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
     }
 

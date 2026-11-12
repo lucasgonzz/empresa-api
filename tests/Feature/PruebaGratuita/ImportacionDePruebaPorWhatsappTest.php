@@ -135,6 +135,16 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
             ],
         ]);
         $run = $this->corrida($archivo, 'analizar');
+        /*
+         * Misión prueba-e2e-campana-imperio (ítem P): en la prueba, una columna «precio» a secas ya no se da
+         * por precio de venta sin preguntar. Este test mide las hojas y los repetidos, no esa pregunta (la
+         * cubre ImportacionDePruebaMargenYFilasQueNoSonArticulosTest), así que el precio llega confirmado por
+         * el mapeo previo, como cuando soporte ya lo habló con el cliente.
+         */
+        $run->update(['columnas_previas' => [
+            ['hoja' => 'Hoja 0', 'columna' => 'D', 'campo' => 'precio'],
+            ['hoja' => 'Hoja 1', 'columna' => 'D', 'campo' => 'precio'],
+        ]]);
         $this->analizador(array_fill(0, 2, ['nombre' => 0.98, 'codigo_de_barras' => 0.99, 'codigo_de_proveedor' => 0.94, 'precio' => 0.92]));
         $servicio = app(ImportacionDePruebaService::class);
         $servicio->avanzar($run);
@@ -197,6 +207,13 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
             ['Otro proveedor', 'O-1', 'Artículo existente', 150, null, null, 'pesos'],
         ]]);
         $run = $this->corrida($archivo, 'analizar');
+        /*
+         * Misión prueba-e2e-campana-imperio (11/11/2026): al contestar «es el costo», la prueba ahora pregunta
+         * también el margen de ganancia. Este test mide la descripción y los descuentos laterales, no esa
+         * pregunta (la cubre ImportacionDePruebaMargenYFilasQueNoSonArticulosTest), así que la corrida nace con
+         * ella ya contestada «lo cargo yo después», que es el comportamiento de siempre.
+         */
+        $run->update(['decisiones' => [PlanillaDePrueba::CLAVE_MARGEN => PlanillaDePrueba::MARGEN_DESPUES]]);
         $this->analizador([[
             'proveedor' => 0.99, 'codigo_de_proveedor' => 0.99, 'descripcion' => 0.60,
             'precio' => 0.97, 'columna_e' => 0, 'columna_f' => 0,
@@ -209,7 +226,10 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->assertSame('columnas', $run->estado);
         $this->assertSame(['columna_0_3'], array_keys($run->preguntas));
         $aviso = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 20)->firstOrFail();
-        $this->assertSame('¿Me confirmás si el precio de la columna D de «Hoja 0» es de venta o es el costo?', $aviso->texto);
+        // Texto en palabras del dueño desde la misión prueba-e2e-campana-imperio (ítem O): sin letra de columna ni hoja.
+        $this->assertSame('En tu lista hay una columna que se llama «precio» (por ejemplo: 8.989,30 y 9.580,00).'
+            . ' ¿Es lo que te cobra el proveedor o es a lo que vendés vos?'
+            . ' Si es otra cosa, decime cuál; y si no la querés cargar, decime que no la cargue.', $aviso->texto);
 
         $this->postJson(self::BASE . 'prueba-resolver/' . $run->uuid, [
             'user_id' => $this->dueno->id, 'support_ticket_id' => 20, 'revision' => 1,
@@ -254,7 +274,8 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $run->update(['preguntas' => $preguntas, 'decisiones' => ['columna_0_0' => 'ignorar'], 'revision' => 1]);
         $consulta = self::BASE . 'prueba-pendientes?user_id=' . $this->dueno->id . '&support_ticket_id=20';
         $respuesta = $this->getJson($consulta, ['X-Admin-Api-Key' => self::CLAVE])->assertOk();
-        $this->assertSame([true, true, true, true, true, false], array_column($respuesta->json('pendientes.0.preguntas'), 'ya_consultada'));
+        // Desde la misión prueba-e2e-campana-imperio (ítem O) un aviso lleva tres preguntas como mucho, no seis.
+        $this->assertSame([true, true, false, false, false, false], array_column($respuesta->json('pendientes.0.preguntas'), 'ya_consultada'));
     }
 
     public function test_conserva_nombre_y_descripcion_si_existen_y_consulta_una_columna_con_datos_tardios(): void
@@ -704,10 +725,11 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
         $this->assertSame('columnas', $run->estado);
         $this->assertSame(['columna_0_2', 'columna_0_3'], array_keys($run->preguntas));
         $aviso = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 74)->firstOrFail();
-        $this->assertStringContainsString('columna C', $aviso->texto);
-        $this->assertStringContainsString('columna D', $aviso->texto);
-        $this->assertStringNotContainsString('columna A', $aviso->texto);
-        $this->assertStringNotContainsString('columna B', $aviso->texto);
+        // Desde la misión prueba-e2e-campana-imperio (ítem O) la pregunta nombra la columna por su título, no por su letra.
+        $this->assertStringContainsString('«precio»', $aviso->texto);
+        $this->assertStringContainsString('«stock_actual»', $aviso->texto);
+        $this->assertStringNotContainsString('«columna_a»', $aviso->texto);
+        $this->assertStringNotContainsString('«marca»', $aviso->texto);
         $opciones = array_column($run->preguntas['columna_0_3']['opciones'], 'valor');
         $this->assertContains('ignorar', $opciones);
         $this->assertNotContains('nombre', $opciones);

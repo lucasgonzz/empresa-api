@@ -36,7 +36,21 @@ class DemoIndustriaService
         return rtrim(ApiUrlHelper::public_base(), '/').'/'.ltrim($ruta, '/');
     }
 
-    public static function preparar(User $user, $slug)
+    /**
+     * Le da a la instancia la identidad y el catálogo del rubro.
+     *
+     * `$nombre_del_negocio` (misión prueba-e2e-campana-imperio, 11/11/2026) es el nombre que el negocio
+     * cargó en el alta de su PRUEBA GRATUITA: si viene, `company_name` del dueño y de sus empleados queda con
+     * ese nombre y no con el de la marca de ejemplo del rubro («Punto Fierro · Demo»), que es lo que el
+     * dueño leía debajo de su nombre. Todo lo demás (logo, tienda, proveedores, portadas) sigue siendo el de
+     * la marca de ejemplo. La demo no lo manda (null) y queda idéntica.
+     *
+     * @param \App\Models\User $user Dueño de la instancia.
+     * @param string $slug Rubro de `config('demo_industrias')`.
+     * @param string|null $nombre_del_negocio
+     * @return bool
+     */
+    public static function preparar(User $user, $slug, $nombre_del_negocio = null)
     {
         $perfil = self::resolver($slug);
         if (!$perfil) {
@@ -44,14 +58,16 @@ class DemoIndustriaService
         }
 
         $nombre = $perfil['nombre_demo'];
+        $nombre_del_negocio = is_string($nombre_del_negocio) ? trim($nombre_del_negocio) : '';
+        $nombre_visible = $nombre_del_negocio !== '' ? $nombre_del_negocio : $nombre;
         $logo = self::url($perfil['logo_url']);
-        $user->company_name = $nombre;
+        $user->company_name = $nombre_visible;
         $user->image_url = $logo;
         $user->save();
 
         // Los empleados también muestran la identidad del negocio en su sesión.
         User::where('owner_id', $user->id)->update([
-            'company_name' => $nombre,
+            'company_name' => $nombre_visible,
             'image_url' => $logo,
         ]);
 

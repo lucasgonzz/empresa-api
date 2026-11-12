@@ -803,6 +803,16 @@ class SaleController extends Controller
             // Hito de la prueba gratuita (C2, misión prueba-experiencia-empresa): cero costo fuera de una prueba.
             PruebaHitosHelper::emitir('prueba.venta', ['id' => (int) $model->id]);
 
+            /*
+             * Segundo hito de la misma venta, solo si entró a la cuenta corriente del cliente (misión
+             * prueba-e2e-campana-imperio, 11/11/2026). La pregunta la contesta PruebaHelper mirando el
+             * movimiento que dejó la venta, no las banderas del request; fuera de una prueba no consulta
+             * nada y nunca tira. Nombre completo a propósito: no se tocan los `use` de este controller.
+             */
+            if (\App\Http\Controllers\Helpers\PruebaHelper::venta_a_cuenta_corriente($model)) {
+                PruebaHitosHelper::emitir('prueba.venta_cc', ['id' => (int) $model->id]);
+            }
+
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 201);
 
         } catch(\Throwable $e) {

@@ -37,13 +37,22 @@ class PruebaHelper
     /** Largo mínimo de la contraseña que manda el alta (decisión de Lucas, 3/11/2026: la única regla). */
     const PASSWORD_MINIMO = 8;
 
-    /** Los hitos de la prueba (C2). Cada uno se emite una sola vez, salvo `prueba.ingreso`. */
+    /**
+     * Los hitos de la prueba (C2). Cada uno se emite una sola vez, salvo `prueba.ingreso`.
+     *
+     * `prueba.articulo_actualizado` y `prueba.venta_cc` se sumaron en la misión prueba-e2e-campana-imperio
+     * (11/11/2026): el dueño editó un artículo que ya existía desde su ficha, y guardó una venta que entró a
+     * la cuenta corriente de un cliente. Misma forma que el resto (`datos: {id}`); un admin anterior los
+     * recibe como un `prueba.*` más.
+     */
     const TIPOS_DE_HITO = [
         'prueba.ingreso',
         'prueba.importo',
         'prueba.articulo_creado',
+        'prueba.articulo_actualizado',
         'prueba.venta',
         'prueba.cliente_creado',
+        'prueba.venta_cc',
         'prueba.pago_cc',
         'prueba.compra',
         'prueba.gasto',
@@ -558,6 +567,38 @@ class PruebaHelper
             'origen' => self::origen_de_importacion($owner_id),
             'modelo' => (string) $modelo,
         ], (int) $owner_id);
+    }
+
+    /**
+     * ¿Esta venta recién guardada entró a la cuenta corriente de su cliente? Es lo que decide el hito
+     * `prueba.venta_cc` (misión prueba-e2e-campana-imperio, 11/11/2026).
+     *
+     * No se adivina con las banderas del request: se lee el HECHO, el movimiento con «debe» que
+     * `SaleHelper::create_current_acount()` deja en `current_acounts` cuando la venta tiene cliente, va a la
+     * cuenta (`save_current_acount` y no `omitir_en_cuenta_corriente`) y no es un presupuesto a confirmar.
+     * Una venta de mostrador, o la de un cliente que paga en el acto y no va a su cuenta, da false.
+     *
+     * Fuera de una instancia de prueba no consulta nada (la primera guarda no toca la base), y nunca tira:
+     * se llama después del commit de la venta, y un hito no puede convertir en error una venta ya guardada.
+     *
+     * @param \App\Models\Sale|null $sale
+     * @return bool
+     */
+    public static function venta_a_cuenta_corriente($sale)
+    {
+        if (!self::puede_haber_prueba() || is_null($sale) || empty($sale->client_id)) {
+            return false;
+        }
+
+        try {
+            return DB::table('current_acounts')
+                ->where('sale_id', (int) $sale->id)
+                ->where('client_id', (int) $sale->client_id)
+                ->where('debe', '>', 0)
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

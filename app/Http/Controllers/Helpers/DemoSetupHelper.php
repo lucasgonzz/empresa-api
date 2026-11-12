@@ -674,7 +674,7 @@ class DemoSetupHelper
         self::tienda($semilla_sembro);
 
         if ($industria !== '') {
-            DemoIndustriaService::preparar($user, $industria);
+            DemoIndustriaService::preparar($user, $industria, self::nombre_del_negocio_de_la_prueba($data));
         }
 
         // La cuenta de Mercado Pago con la que cobra la tienda de la demo sobrevive al rearmado.
@@ -1211,6 +1211,30 @@ class DemoSetupHelper
     private static function es_setup_de_prueba(array $data)
     {
         return (isset($data['prueba']) && is_array($data['prueba'])) || self::es_instancia_de_prueba();
+    }
+
+    /**
+     * El nombre del negocio que hay que conservar después de aplicar el rubro (misión
+     * prueba-e2e-campana-imperio, 11/11/2026).
+     *
+     * `DemoIndustriaService::preparar()` le pone al dueño el nombre de la marca de ejemplo del rubro
+     * («Punto Fierro · Demo»). En la demo está bien: es un negocio inventado. En la PRUEBA el alta de la
+     * landing manda en `company_name` el nombre que cargó el negocio, y es el que tiene que leer en su
+     * sistema. Devuelve ese nombre solo en un setup de prueba que lo trae; null en la demo (queda idéntica)
+     * y en el pool de pruebas que se arma antes de tener lead (no hay nombre: queda el del rubro).
+     *
+     * @param array<string, mixed> $data
+     * @return string|null
+     */
+    private static function nombre_del_negocio_de_la_prueba(array $data)
+    {
+        if (!self::es_setup_de_prueba($data) || !isset($data['company_name']) || !is_string($data['company_name'])) {
+            return null;
+        }
+
+        $nombre = trim($data['company_name']);
+
+        return $nombre === '' ? null : $nombre;
     }
 
     /**
