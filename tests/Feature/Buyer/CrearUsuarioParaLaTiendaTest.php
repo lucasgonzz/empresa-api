@@ -126,6 +126,118 @@ class CrearUsuarioParaLaTiendaTest extends EmpresaTestCase
         $this->assertNotSame('12347', $fila->password, 'La clave se guarda hasheada.');
     }
 
+    /** @test */
+    public function dos_clientes_pueden_compartir_telefono_sin_compartir_cuenta()
+    {
+        $uno = $this->crear_cliente_de($this->dueno);
+        $dos = $this->crear_cliente_de($this->dueno);
+        $primera = $this->crear_usuario_para($uno)->assertStatus(201);
+        $segunda = $this->crear_usuario_para($dos)->assertStatus(201);
+        $this->assertNotSame($primera->json('model.id'), $segunda->json('model.id'));
+        $this->assertNotSame($primera->json('model.email'), $segunda->json('model.email'));
+        $this->assertSame(1, $this->compradores_de($this->dueno, $uno));
+        $this->assertSame(1, $this->compradores_de($this->dueno, $dos));
+    }
+
+    /** @test */
+    public function el_telefono_de_otro_comercio_no_bloquea_ni_vincula_su_cuenta()
+    {
+        $ajeno = $this->crear_comprador_de($this->otro_dueno, ['phone' => '1122334455', 'email' => 'ajeno@test.local']);
+        $cliente = $this->crear_cliente_de($this->dueno);
+        $respuesta = $this->crear_usuario_para($cliente)->assertStatus(201);
+        $this->assertNotSame($ajeno->id, $respuesta->json('model.id'));
+        $this->assertSame('ajeno@test.local', $ajeno->fresh()->email);
+        $this->assertNull($ajeno->fresh()->comercio_city_client_id);
+    }
+
+    /** @test */
+    public function un_correo_invalido_devuelve_validacion_sin_crear_cuenta()
+    {
+        $cliente = $this->crear_cliente_de($this->dueno);
+        foreach (['', 'correo-invalido', str_repeat('a', 130).'@test.local'] as $correo) {
+            $this->crear_usuario_para($cliente, ['email' => $correo])->assertStatus(422)->assertJsonValidationErrors('email');
+            $this->assertSame(0, $this->compradores_de($this->dueno, $cliente));
+        }
+    }
+
+    /** @test */
+    public function un_cliente_ajeno_no_puede_vincularse_desde_el_alta()
+    {
+        $cliente = $this->crear_cliente_de($this->otro_dueno);
+        $this->crear_usuario_para($cliente)->assertStatus(404);
+        $this->assertSame(0, Buyer::where('user_id', $this->dueno->id)->count());
+    }
+
+    /** @test */
+    public function un_correo_existente_del_comercio_no_crea_ni_reasigna_otra_cuenta()
+    {
+        $otro_cliente = $this->crear_cliente_de($this->dueno);
+        $existente = $this->crear_comprador_de($this->dueno, [
+            'email' => 'cuenta@test.local', 'comercio_city_client_id' => $otro_cliente->id,
+            'password' => 'hash-original', 'visible_password' => 'clave-original',
+        ]);
+        $cliente = $this->crear_cliente_de($this->dueno);
+        $this->crear_usuario_para($cliente, ['email' => 'cuenta@test.local'])->assertStatus(422)->assertJsonValidationErrors('email');
+        $this->assertSame(0, $this->compradores_de($this->dueno, $cliente));
+        $this->assertSame($otro_cliente->id, (int) $existente->fresh()->comercio_city_client_id);
+        $this->assertSame('hash-original', $existente->fresh()->password);
+        $this->assertSame('clave-original', $existente->fresh()->visible_password);
+    }
+
+    /** @test */
+    public function repetir_un_cliente_existente_no_exige_revalidar_su_correo()
+    {
+        $cliente = $this->crear_cliente_de($this->dueno);
+        $primera = $this->crear_usuario_para($cliente)->assertStatus(201);
+        $repetida = $this->crear_usuario_para($cliente, ['email' => ''])->assertStatus(200);
+        $this->assertSame($primera->json('model.id'), $repetida->json('model.id'));
+        $this->assertSame(1, $this->compradores_de($this->dueno, $cliente));
+    }
+
+    /** @test */
+    public function el_correo_respeta_el_limite_legacy_de_110_caracteres()
+    {
+        $cliente = $this->crear_cliente_de($this->dueno);
+        $correo = str_repeat('a', 60).'@'.str_repeat('b', 44).'.test';
+        $this->assertSame(110, strlen($correo));
+        $this->crear_usuario_para($cliente, ['email' => 'a'.$correo])->assertStatus(422)->assertJsonValidationErrors('email');
+        $this->assertSame(0, $this->compradores_de($this->dueno, $cliente));
+        $this->crear_usuario_para($cliente, ['email' => $correo])->assertStatus(201);
+    }
+
+    /** @test */
+    public function el_correo_de_otro_comercio_no_impide_el_alta()
+    {
+        $cliente = $this->crear_cliente_de($this->dueno);
+        $correo = 'cliente-'.$cliente->id.'@test.local';
+        $ajeno = $this->crear_comprador_de($this->otro_dueno, ['email' => $correo]);
+        $respuesta = $this->crear_usuario_para($cliente)->assertStatus(201);
+        $this->assertNotSame($ajeno->id, $respuesta->json('model.id'));
+        $this->assertSame($this->otro_dueno->id, (int) $ajeno->fresh()->user_id);
+    }
+
+    /** @test */
+    public function los_datos_que_exceden_columnas_legacy_devuelven_validacion()
+    {
+        $cliente = $this->crear_cliente_de($this->dueno);
+        foreach (['name', 'phone', 'address'] as $campo) {
+            $this->crear_usuario_para($cliente, [$campo => str_repeat('x', 129)])
+                ->assertStatus(422)->assertJsonValidationErrors($campo);
+            $this->assertSame(0, $this->compradores_de($this->dueno, $cliente));
+        }
+    }
+
+    /** @test */
+    public function el_correo_se_normaliza_y_un_segundo_cliente_no_duplica_el_login()
+    {
+        $cliente = $this->crear_cliente_de($this->dueno);
+        $primera = $this->crear_usuario_para($cliente, ['email' => '  MiCuenta@Test.Local  '])->assertStatus(201);
+        $this->assertSame('micuenta@test.local', $primera->json('model.email'));
+        $otro = $this->crear_cliente_de($this->dueno);
+        $this->crear_usuario_para($otro, ['email' => ' MICUENTA@test.local '])->assertStatus(422)->assertJsonValidationErrors('email');
+        $this->assertSame(0, $this->compradores_de($this->dueno, $otro));
+    }
+
     // -------------------------------------------------------------------------------------------
     //  El doble clic
     // -------------------------------------------------------------------------------------------
@@ -304,7 +416,7 @@ class CrearUsuarioParaLaTiendaTest extends EmpresaTestCase
     public function sin_id_cada_post_crea_un_comprador_como_siempre()
     {
         $primera = $this->postJson('api/buyer', ['name' => 'Comprador del ABM', 'email' => 'abm@test.local']);
-        $segunda = $this->postJson('api/buyer', ['id' => null, 'name' => 'Comprador del ABM', 'email' => 'abm@test.local']);
+        $segunda = $this->postJson('api/buyer', ['id' => null, 'name' => 'Otro comprador del ABM', 'email' => 'otro-abm@test.local']);
 
         $primera->assertStatus(201);
         $segunda->assertStatus(201);

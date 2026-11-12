@@ -6,9 +6,11 @@ use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\BuyerHelper;
 use App\Models\Buyer;
+use App\Models\Client;
 use App\Models\Message;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class BuyerController extends Controller
 {
@@ -74,6 +76,19 @@ class BuyerController extends Controller
      */
     public function store(Request $request) {
 
+        // Resolver al dueño antes del lock evita fijar una foto REPEATABLE READ con el SELECT
+        // de userId() mientras otra alta todavía no confirmó su comprador.
+        $user_id = $this->userId();
+
+        if ($request->filled('id')) {
+            $ajeno = TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(
+                Client::class, $request->id, $user_id, 'El cliente no existe o no es de tu cuenta.'
+            );
+            if ($ajeno) {
+                return $ajeno;
+            }
+        }
+
         $password = '1234';
 
         if (isset($request->num)) {
@@ -127,25 +142,29 @@ class BuyerController extends Controller
             //    último cliente recién creado, podía terminar en deadlock (500).
             // El SELECT de abajo es la primera lectura consistente de la transacción, así que ya
             // ve lo que commiteó el POST que esperábamos.
-            DB::transaction(function () use ($request, $password, $hash, &$model, &$existente) {
+            DB::transaction(function () use ($request, $password, $hash, $user_id, &$model, &$existente) {
 
-                DB::table('users')->where('id', $this->userId())->lockForUpdate()->first(['id']);
+                DB::table('users')->where('id', $user_id)->lockForUpdate()->first(['id']);
 
                 // El de menor id: si ya hay duplicados viejos, se devuelve siempre el mismo y no
                 // se suma un tercero.
-                $existente = Buyer::where('user_id', $this->userId())
+                $existente = Buyer::where('user_id', $user_id)
                                     ->where('comercio_city_client_id', $request->id)
                                     ->orderBy('id')
                                     ->first();
 
                 if (is_null($existente)) {
-                    $model = $this->crear_comprador($request, $password, $hash);
+                    $model = $this->crear_comprador($request, $password, $hash, $user_id);
                 }
             });
         } else {
 
-            // Alta desde el ABM de compradores: sin cliente de por medio no hay nada que duplicar.
-            $model = $this->crear_comprador($request, $password, $hash);
+            // Comparte el candado con la ficha y con el registro de tienda: dos altas del mismo
+            // comercio no pueden validar simultáneamente un correo todavía libre.
+            DB::transaction(function () use ($request, $password, $hash, $user_id, &$model) {
+                DB::table('users')->where('id', $user_id)->lockForUpdate()->first(['id']);
+                $model = $this->crear_comprador($request, $password, $hash, $user_id);
+            });
         }
 
         if (!is_null($existente)) {
@@ -178,7 +197,25 @@ class BuyerController extends Controller
      * @param  string  $hash  Esa misma clave ya hasheada, para `password` (se calcula afuera de los locks).
      * @return \App\Models\Buyer
      */
-    protected function crear_comprador(Request $request, $password, $hash) {
+    protected function crear_comprador(Request $request, $password, $hash, $user_id) {
+
+        if (is_string($request->email)) {
+            $request->merge(['email' => strtolower(trim($request->email))]);
+        }
+
+        // El teléfono puede pertenecer a una familia o a varios clientes: no identifica una cuenta.
+        // El login sí usa correo + comercio. No reutilizamos ni reseteamos otra cuenta por coincidencia.
+        // Se valida solo al crear: repetir la ficha de un comprador existente sigue siendo idempotente.
+        $request->validate([
+            'email' => ['required', 'email', 'max:110', Rule::unique('buyers', 'email')->where(function ($query) use ($user_id) {
+                return $query->where('user_id', $user_id);
+            })],
+            'name' => 'required|string|max:128',
+            'phone' => 'nullable|string|max:128',
+            'ciudad' => 'nullable|string',
+            'barrio' => 'nullable|string',
+            'address' => 'nullable|string|max:128',
+        ], ['email.unique' => 'Este correo ya tiene un usuario en la tienda. Vinculá ese comprador al cliente desde Tienda online → Clientes.']);
 
         return Buyer::create([
             'num'                       => $this->num('buyers'),
@@ -192,7 +229,7 @@ class BuyerController extends Controller
             'visible_password'          => $password,
             'password'                  => $hash,
             'comercio_city_client_id'   => $request->id,
-            'user_id'                   => $this->userId(),
+            'user_id'                   => $user_id,
         ]);
     }
 
