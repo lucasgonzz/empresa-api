@@ -410,20 +410,20 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     }
 
     /**
-     * Las cuentas de TODOS los archivos de `app/` que mencionan `Mail::` (los demás no pueden mandar nada por la fachada).
+     * Las cuentas de todos los archivos candidatos: fachada o mailer resuelto en un manager privado.
      *
      * @return array<string, array{envios: int, encolados: int, chequeos: int}> Ruta relativa => cuentas.
      */
-    private function cuentas_de_app(): array
+    private function cuentas_de_app(?array $rutas = null): array
     {
         $cuentas = [];
 
-        foreach ($this->archivos_de_app() as $ruta) {
+        foreach ($rutas ?? $this->archivos_de_app() as $ruta) {
             $codigo = (string) file_get_contents($ruta);
 
-            // Un archivo sin ningún `Mail::` no puede mandar nada por la fachada (ni con namespace delante: el `Mail::` sigue estando): se ahorra el
-            // `token_get_all()`, que en los archivos grandes es lo que más tarda.
-            if (! $this->menciona_la_fachada_mail($codigo)) {
+            // La optimización debe dejar pasar también managers privados: de otro modo el
+            // detector de tokens los vería en la unidad, pero el escaneo real los saltearía.
+            if (! $this->es_candidato_a_envio_de_correo($codigo)) {
                 continue;
             }
 
@@ -434,7 +434,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
     }
 
     /**
-     * ¿El código menciona la fachada `Mail::`, con o sin namespace delante y escrita como sea?
+     * ¿El código menciona la fachada `Mail::` o resuelve un mailer desde un manager privado?
      *
      * 🔴 Sin distinguir mayúsculas: los nombres de clase de PHP no las distinguen, así que `\MAIL::to($a)->send($b)` es el mismo envío. Este filtro corre ANTES de
      * `analizar()` (que sí ve esa forma) y un archivo que no lo pasa se saltea entero: con `/Mail\s*::/` a secas, un envío escrito `\mail::` quedaba invisible
@@ -444,9 +444,9 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
      *
      * @return bool
      */
-    private function menciona_la_fachada_mail(string $codigo): bool
+    private function es_candidato_a_envio_de_correo(string $codigo): bool
     {
-        return preg_match('/Mail\s*::/i', $codigo) === 1;
+        return preg_match('/Mail\s*::|->\s*mailer\s*\(/i', $codigo) === 1;
     }
 
     /**
@@ -461,7 +461,7 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
      */
     public function test_el_filtro_de_archivos_ve_la_fachada_escrita_de_cualquier_forma(string $codigo, bool $esperado): void
     {
-        $this->assertSame($esperado, $this->menciona_la_fachada_mail('<?php ' . $codigo));
+        $this->assertSame($esperado, $this->es_candidato_a_envio_de_correo('<?php ' . $codigo));
     }
 
     /**
@@ -477,11 +477,43 @@ class TodoEnvioDeMailMiraLosRechazosTest extends TestCase
             'en mayúsculas'                               => ['\\MAIL::to($a)->send($b);', true],
             'en minúsculas'                               => ['\\mail::to($a)->send($b);', true],
             'con un espacio antes de los dos puntos'      => ['Mail ::to($a)->send($b);', true],
+            'manager privado con envio'                  => ['$mailer = $manager->mailer(); $mailer->send($v, [], $cb);', true],
+            'manager privado con espacios'               => ['$mailer = $manager -> MAILER (); $mailer->send($v, [], $cb);', true],
             'un archivo que no la menciona'               => ['$x = 1; Cache::get("k");', false],
             'Mailer:: no es la fachada'                   => ['Mailer::to($a)->send($b);', false],
             'Mailable::class tampoco'                     => ['$c = Mailable::class;', false],
             'el use de la fachada sin llamarla'           => ['use Illuminate\\Support\\Facades\\Mail;', false],
         ];
+    }
+
+    public function test_el_servicio_privado_entra_al_escaneo_real_con_su_chequeo(): void
+    {
+        $cuentas = $this->cuentas_de_app();
+        $this->assertArrayHasKey('Services/Mail/PruebaDeCorreoService.php', $cuentas);
+        $this->assertSame(1, $cuentas['Services/Mail/PruebaDeCorreoService.php']['envios']);
+        $this->assertSame(1, $cuentas['Services/Mail/PruebaDeCorreoService.php']['chequeos']);
+    }
+
+    public function test_el_camino_real_de_escaneo_detecta_quitar_el_chequeo_a_un_mailer_privado(): void
+    {
+        // Los archivos temporales pasan por el mismo filtro y análisis que cuentas_de_app(),
+        // sin escribir fixtures dentro de app ni dejar excepciones por nombre de archivo.
+        $ruta = tempnam(sys_get_temp_dir(), 'correo-privado-');
+        try {
+            $envio = '<?php $mailer = $manager->mailer(); $mailer->send($vista, [], $callback);';
+            file_put_contents($ruta, $envio);
+            $sin_chequeo = array_values($this->cuentas_de_app([$ruta]));
+            $this->assertCount(1, $sin_chequeo, 'El filtro no puede saltear el envío privado.');
+            $this->assertGreaterThan($sin_chequeo[0]['chequeos'], $sin_chequeo[0]['envios']);
+
+            file_put_contents($ruta, $envio.' RechazosDeCorreoHelper::fallar_si_hubo_rechazos_del_mailer($mailer);');
+            $con_chequeo = array_values($this->cuentas_de_app([$ruta]));
+            $this->assertCount(1, $con_chequeo);
+            $this->assertSame(1, $con_chequeo[0]['envios']);
+            $this->assertSame(1, $con_chequeo[0]['chequeos']);
+        } finally {
+            unlink($ruta);
+        }
     }
 
     /**
