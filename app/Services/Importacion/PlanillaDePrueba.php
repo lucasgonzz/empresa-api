@@ -27,10 +27,40 @@ class PlanillaDePrueba
     // Valor del mapeo previo que deja una columna afuera de la importación.
     public const CAMPO_IGNORAR = 'ignorar';
 
+    /*
+     * La pregunta del margen (misión prueba-e2e-campana-imperio, 11/11/2026; pedido de Lucas: «si importás
+     * el costo también tenés que poner el margen de ganancia»). Sale cuando una hoja trae el costo y ninguna
+     * columna dice a cuánto se vende. La clave es la del campo del importador: la respuesta viaja como una
+     * columna `margen_de_ganancia` más de la planilla preparada.
+     */
+    public const CLAVE_MARGEN = 'margen_de_ganancia';
+    // Respuesta que deja todo como hoy: se carga el costo y el dueño pone los precios después.
+    public const MARGEN_DESPUES = 'despues';
+    // Porcentajes que se ofrecen como opción cerrada. Además se acepta cualquier otro (`acepta_porcentaje`).
+    public const MARGENES_SUGERIDOS = ['20', '30', '40', '50'];
+    public const MARGEN_MAXIMO = 1000;
+
+    // Por qué una fila no se importa: un título de sección o una nota suelta, o el total al pie.
+    public const FILA_TITULO = 'titulo';
+    public const FILA_TOTAL = 'total';
+
+    /*
+     * Palabras que puede tener el nombre de una fila de total («TOTAL LISTA», «Total general», «Suma de
+     * importes»). Lista cerrada a propósito: «Total Quartz 7000» o «Suma dental» son artículos.
+     */
+    private const PALABRAS_DE_TOTAL = [
+        'total', 'totales', 'subtotal', 'subtotales', 'sub', 'suma', 'sumas', 'general', 'generales', 'final',
+        'lista', 'listado', 'neto', 'bruto', 'importe', 'importes', 'iva', 'con', 'sin', 'incluido', 'de', 'del',
+        'la', 'el', 'los', 'las', 'en', 'pesos', 'articulos', 'productos', 'items', 'unidades', 'mercaderia',
+        'stock', 'inventario', 'valorizado', 'pagina', 'hoja',
+    ];
+
     private $run;
     private $propiedades;
     private $nombres;
     private $proveedores;
+    // Filas que `filas()` dejó afuera por no ser artículos: [índice de hoja => [motivo => cantidad]].
+    private $salteadas = [];
 
     public function __construct(ImportacionDePrueba $run)
     {
@@ -659,6 +689,16 @@ class PlanillaDePrueba
                 if (array_filter($datos, function ($valor) { return $valor !== null && $valor !== ''; }) === []) {
                     continue;
                 }
+                // Un título de rubro o el total al pie no son artículos: no llegan ni a los repetidos ni al motor.
+                $motivo = self::motivo_para_saltear($fila, $hoja['mapeo']);
+                if ($motivo !== null) {
+                    $this->salteadas[$hoja['indice']][$motivo] = ($this->salteadas[$hoja['indice']][$motivo] ?? 0) + 1;
+                    continue;
+                }
+                // La ganancia que contestó el dueño, como si la planilla trajera la columna del margen.
+                if (isset($hoja['margen_respondido'])) {
+                    $datos[self::CLAVE_MARGEN] = $hoja['margen_respondido'];
+                }
                 if (empty($datos['proveedor']) && $hoja['proveedor'] !== null) {
                     $datos['proveedor'] = $hoja['proveedor'];
                 }
@@ -795,7 +835,12 @@ class PlanillaDePrueba
             if (!empty($hoja['descuentos_por_proveedor'])) {
                 $campos[self::DESCUENTOS_LATERALES] = true;
             }
+            if (isset($hoja['margen_respondido'])) {
+                $campos[self::CLAVE_MARGEN] = true;
+            }
         }
+        // `filas()` ya corrió para buscar repetidos: la cuenta de las salteadas es la de ESTA pasada.
+        $this->salteadas = [];
         $columnas = array_keys($campos);
         $ruta = storage_path('app/imported_files/prueba_' . $this->run->uuid . '.preparado');
         $csv = fopen($ruta, 'wb');
@@ -819,7 +864,214 @@ class PlanillaDePrueba
             fclose($csv);
         }
 
-        return ['ruta' => $ruta, 'filas' => $filas, 'columnas' => array_flip($columnas)];
+        return ['ruta' => $ruta, 'filas' => $filas, 'columnas' => array_flip($columnas), 'salteadas' => $this->salteadas];
+    }
+
+    /**
+     * Por qué una fila de la planilla no es un artículo, o null si hay que importarla (misión
+     * prueba-e2e-campana-imperio, 11/11/2026).
+     *
+     * Las listas de proveedor traen títulos de rubro («--- TORNILLERIA ---» en la columna del código y el
+     * resto vacío), notas sueltas al pie y una fila de total. Hasta hoy terminaban como artículos: el motor
+     * solo descarta la fila que no tiene código NI nombre. La regla es conservadora a propósito; ante la
+     * duda la fila se importa, como siempre:
+     *
+     *  - FILA_TITULO: la fila tiene UNA sola celda con dato en todo su ancho (no solo en las columnas
+     *    mapeadas) y es texto. Dos excepciones, que siguen siendo artículos: si esa celda está en la
+     *    columna del nombre (un artículo sin precio), salvo que venga decorada como título («--- X ---»,
+     *    «== X ==», «*** X»); y si está en una columna de código y parece un código (sin espacios y con
+     *    algún dígito).
+     *  - FILA_TOTAL: la fila no tiene código, su nombre está hecho solo de palabras de total («TOTAL
+     *    LISTA», «Total general», «Subtotal»; ver PALABRAS_DE_TOTAL) y su único otro dato es un importe.
+     *
+     * @param  array $fila   Celdas crudas de la fila, por posición
+     * @param  array $mapeo  Campo del importador => posición de su columna
+     * @return string|null   self::FILA_TITULO, self::FILA_TOTAL o null
+     */
+    public static function motivo_para_saltear(array $fila, array $mapeo): ?string
+    {
+        $con_dato = [];
+        foreach ($fila as $posicion => $valor) {
+            // \s con /u para que un espacio duro cuente como vacío; con UTF-8 inválido se deja el valor crudo.
+            $limpio = preg_replace('/^\s+|\s+$/u', '', (string) $valor);
+            $limpio = $limpio === null ? trim((string) $valor) : $limpio;
+            if ($limpio !== '') {
+                $con_dato[(int) $posicion] = $limpio;
+            }
+        }
+        if ($con_dato === [] || count($con_dato) > 2) {
+            return null;
+        }
+
+        $columna_del_nombre = isset($mapeo['nombre']) ? (int) $mapeo['nombre'] : null;
+        $columnas_de_codigo = [];
+        foreach (['numero', 'codigo_de_barras', 'sku', 'codigo_de_proveedor'] as $campo) {
+            if (isset($mapeo[$campo])) {
+                $columnas_de_codigo[(int) $mapeo[$campo]] = true;
+            }
+        }
+
+        if (count($con_dato) === 1) {
+            $posicion = (int) array_key_first($con_dato);
+            $valor = $con_dato[$posicion];
+            if (self::importe($valor) !== null || !preg_match('/\pL/u', $valor)) {
+                return null;
+            }
+            if ($posicion === $columna_del_nombre) {
+                return preg_match('/^[-=*#_~<>•·]{2,}/u', $valor) ? self::FILA_TITULO : null;
+            }
+            if (isset($columnas_de_codigo[$posicion]) && !preg_match('/\s/u', $valor) && preg_match('/\d/', $valor)) {
+                return null;
+            }
+
+            return self::FILA_TITULO;
+        }
+
+        if ($columna_del_nombre === null || !isset($con_dato[$columna_del_nombre])) {
+            return null;
+        }
+        $otra = array_keys(array_diff_key($con_dato, [$columna_del_nombre => true]))[0];
+        if (isset($columnas_de_codigo[$otra]) || self::importe($con_dato[$otra]) === null) {
+            return null;
+        }
+        $palabras = array_filter(explode(' ', self::titulo_comparable($con_dato[$columna_del_nombre])), 'strlen');
+        if ($palabras === [] || array_diff($palabras, self::PALABRAS_DE_TOTAL) !== []
+            || array_intersect($palabras, ['total', 'totales', 'subtotal', 'subtotales', 'suma', 'sumas']) === []) {
+            return null;
+        }
+
+        return self::FILA_TOTAL;
+    }
+
+    /**
+     * La frase del resumen sobre las filas que no se importaron por no ser artículos, o '' si no hubo.
+     *
+     * @param  array $hojas  Hojas guardadas en la corrida, con `filas_salteadas` => [motivo => cantidad]
+     * @return string        Por ejemplo « Dejé afuera 7 filas que no son artículos: 6 títulos o notas sueltas y 1 total.»
+     */
+    public static function texto_de_filas_salteadas(array $hojas): string
+    {
+        $titulos = 0;
+        $totales = 0;
+        foreach ($hojas as $hoja) {
+            $titulos += (int) ($hoja['filas_salteadas'][self::FILA_TITULO] ?? 0);
+            $totales += (int) ($hoja['filas_salteadas'][self::FILA_TOTAL] ?? 0);
+        }
+        $filas = $titulos + $totales;
+        if ($filas === 0) {
+            return '';
+        }
+
+        $partes = [];
+        if ($titulos > 0) {
+            $partes[] = $titulos . ($titulos === 1 ? ' título o nota suelta' : ' títulos o notas sueltas');
+        }
+        if ($totales > 0) {
+            $partes[] = $totales . ($totales === 1 ? ' total' : ' totales');
+        }
+
+        return ' Dejé afuera ' . $filas . ($filas === 1 ? ' fila que no es un artículo: ' : ' filas que no son artículos: ')
+            . implode(' y ', $partes) . '.';
+    }
+
+    /**
+     * ¿Esta hoja, ya con su mapeo resuelto, trae el costo sin decir a cuánto se vende? Ni margen, ni precio
+     * de venta, ni el margen o el precio final de una lista de precios.
+     *
+     * @param  array $hoja  Hoja con `mapeo`
+     * @return bool
+     */
+    public static function hoja_necesita_margen(array $hoja): bool
+    {
+        $mapeo = $hoja['mapeo'] ?? [];
+        if (!isset($mapeo['costo']) || isset($mapeo[self::CLAVE_MARGEN]) || isset($mapeo['precio'])) {
+            return false;
+        }
+        foreach (array_keys($mapeo) as $campo) {
+            if (strpos((string) $campo, '%_') === 0 || strpos((string) $campo, '$_final_') === 0) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * La pregunta del margen, con la forma de todas las preguntas del circuito (`{clave, texto, opciones}`)
+     * más `acepta_porcentaje`, que le avisa a quien responde que también vale un número libre. Vacío si
+     * ninguna hoja la necesita.
+     *
+     * @param  array $hojas  Hojas con `mapeo`
+     * @return array         [] o [self::CLAVE_MARGEN => pregunta]
+     */
+    public static function pregunta_del_margen(array $hojas): array
+    {
+        if (array_filter($hojas, [self::class, 'hoja_necesita_margen']) === []) {
+            return [];
+        }
+
+        // Las opciones se arman a mano: como clave de un array PHP, «20» se volvería el entero 20, y el
+        // `valor` de una opción tiene que ser texto, como en todas las preguntas y como llega la respuesta.
+        $opciones = [];
+        foreach (self::MARGENES_SUGERIDOS as $porcentaje) {
+            $opciones[] = ['valor' => (string) $porcentaje, 'etiqueta' => $porcentaje . ' %'];
+        }
+        $opciones[] = ['valor' => self::MARGEN_DESPUES, 'etiqueta' => 'Lo cargo yo después'];
+
+        $pregunta = [
+            'clave' => self::CLAVE_MARGEN,
+            'texto' => 'Tu lista trae el costo pero no dice a cuánto vendés. ¿Qué ganancia le sumamos a todos para calcular el precio de venta?'
+                . ' Puede ser ' . implode(' %, ', self::MARGENES_SUGERIDOS) . ' % u otro porcentaje que me digas.'
+                . ' Si preferís cargar los precios vos después, decímelo y dejo solo el costo.',
+            'opciones' => $opciones,
+            'acepta_porcentaje' => true,
+        ];
+
+        return [self::CLAVE_MARGEN => $pregunta];
+    }
+
+    /**
+     * El porcentaje de una respuesta a la pregunta del margen, normalizado («35», «35 %», «35,5» → «35»,
+     * «35», «35.5»), o null si no es un porcentaje válido (mayor a 0 y hasta MARGEN_MAXIMO). «despues» y
+     * cualquier texto dan null: no se aplica ningún margen.
+     *
+     * @param  mixed $respuesta
+     * @return string|null
+     */
+    public static function margen_de_respuesta($respuesta): ?string
+    {
+        if (!is_scalar($respuesta) || !preg_match('/^\s*(\d{1,4})(?:[.,](\d{1,2}))?\s*%?\s*$/', (string) $respuesta, $partes)) {
+            return null;
+        }
+        $porcentaje = (float) ($partes[1] . '.' . ($partes[2] ?? '0'));
+        if ($porcentaje <= 0 || $porcentaje > self::MARGEN_MAXIMO) {
+            return null;
+        }
+
+        return rtrim(rtrim(number_format($porcentaje, 2, '.', ''), '0'), '.');
+    }
+
+    /**
+     * Deja en las hojas que lo necesitan el margen que contestó el dueño (`margen_respondido`): `filas()` lo
+     * escribe en cada fila y `escribir()` suma la columna, así el motor lo trata como una columna asignada a
+     * `margen_de_ganancia`. Con «lo cargo yo después» no toca nada.
+     *
+     * @param  array $hojas       Hojas con `mapeo`
+     * @param  array $decisiones  Respuestas guardadas de la corrida
+     * @return array              Las mismas hojas
+     */
+    public static function aplicar_margen(array $hojas, array $decisiones): array
+    {
+        $margen = self::margen_de_respuesta($decisiones[self::CLAVE_MARGEN] ?? null);
+        foreach ($hojas as &$hoja) {
+            unset($hoja['margen_respondido']);
+            if ($margen !== null && self::hoja_necesita_margen($hoja)) {
+                $hoja['margen_respondido'] = $margen;
+            }
+        }
+        unset($hoja);
+
+        return $hojas;
     }
 
     private static function escribir_fila($csv, array $fila): void

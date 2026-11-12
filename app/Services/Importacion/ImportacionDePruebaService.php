@@ -122,6 +122,26 @@ class ImportacionDePruebaService
             return;
         }
 
+        /*
+         * La pregunta del margen (misión prueba-e2e-campana-imperio, 11/11/2026): la lista trae el costo y
+         * ninguna columna dice a cuánto se vende. Va después de las columnas —recién ahí se sabe si el
+         * «precio» dudoso era el costo— y antes de los repetidos. Usa el estado `columnas`, que cualquier
+         * admin ya conoce, y la misma forma de pregunta; la respuesta queda en `decisiones` con su clave.
+         *
+         * Solo en la prueba gratuita. En la importación desde soporte de un negocio que ya opera, un margen
+         * único pisaría el que cada artículo ya tiene: ahí queda como hasta hoy.
+         */
+        if (!$run->modo_soporte) {
+            $margen = PlanillaDePrueba::pregunta_del_margen($hojas);
+            if ($margen !== [] && !isset($decisiones[PlanillaDePrueba::CLAVE_MARGEN])) {
+                DB::transaction(function () use ($run, $margen) {
+                    $this->consultar($run, 'columnas', $margen);
+                });
+                return;
+            }
+            $hojas = PlanillaDePrueba::aplicar_margen($hojas, $decisiones);
+        }
+
         $coincidencias = $planilla->coincidencias($hojas, $decisiones);
         if ($coincidencias['preguntas'] !== []) {
             DB::transaction(function () use ($run, $coincidencias) {
@@ -136,6 +156,14 @@ class ImportacionDePruebaService
             $this->fallar($run, 'El archivo no tiene filas con artículos para importar.');
             return;
         }
+        // Títulos de rubro y totales que no se importan: quedan en la corrida para contarlo en el resumen.
+        foreach ($hojas as &$hoja) {
+            unset($hoja['filas_salteadas']);
+            if (!empty($plan['salteadas'][$hoja['indice']])) {
+                $hoja['filas_salteadas'] = $plan['salteadas'][$hoja['indice']];
+            }
+        }
+        unset($hoja);
 
         if ($run->modo_soporte && !$this->confirmar_plan($run, $plan, $hojas)) {
             @unlink($plan['ruta']);
@@ -200,6 +228,7 @@ class ImportacionDePruebaService
         $archivo = mb_substr(preg_replace('/\s+/u', ' ', $run->nombre), 0, 110);
         $texto = 'Preparé «' . $archivo . '» con ' . $plan['filas'] . ' filas para importar al catálogo.'
             . ($detalle !== '' ? ' Datos del archivo: ' . $detalle . '.' : '')
+            . PlanillaDePrueba::texto_de_filas_salteadas($hojas)
             . ' Se actualizarán los artículos que coincidan y se crearán los que falten.';
         return $this->confirmar_huella($run, $huella, $texto);
     }
@@ -341,6 +370,12 @@ class ImportacionDePruebaService
             }
             if ($problemas['para_revisar'] > 0) {
                 $detalle .= ' ' . $problemas['para_revisar'] . ' filas quedaron con datos para revisar.';
+            }
+            // Títulos de rubro, notas sueltas y totales de la planilla: se cuentan, no se importaron.
+            $detalle .= PlanillaDePrueba::texto_de_filas_salteadas($run->hojas ?? []);
+            $margen = PlanillaDePrueba::margen_de_respuesta(($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null);
+            if ($margen !== null && array_filter($run->hojas ?? [], function ($hoja) { return isset($hoja['margen_respondido']); }) !== []) {
+                $detalle .= ' Calculé el precio de venta sumándole ' . $margen . ' % de ganancia al costo.';
             }
 
             $texto = ($estado === 'completado' ? 'Terminé de importar tu catálogo. ' : 'Procesé tu catálogo y quedaron datos para revisar. ') . $detalle;
