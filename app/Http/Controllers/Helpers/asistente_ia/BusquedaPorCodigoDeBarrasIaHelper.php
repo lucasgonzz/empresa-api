@@ -291,7 +291,13 @@ class BusquedaPorCodigoDeBarrasIaHelper
         $listado = \Illuminate\Support\Facades\Schema::hasTable('product_enrichments')
             ? (int) \App\Models\ProductEnrichment::where('user_id', (int) $owner_id)
                 ->whereBetween('search_started_at', [Carbon::now()->startOfDay(), Carbon::now()->endOfDay()])->sum('search_attempts') : 0;
-        return $assistant + $listado;
+        // Las fichas por nombre pueden usar Serper. Contar su evento real evita inventar
+        // una fila de tokens de IA para una búsqueda que ese proveedor no factura por tokens.
+        $fichas_serper = \Illuminate\Support\Facades\Schema::hasTable('serper_usage_events')
+            ? (int) \App\Models\SerperUsageEvent::where('user_id', (int) $owner_id)
+                ->where('process', 'ficha_articulo_web')->where('endpoint', 'search')
+                ->whereBetween('occurred_at', [Carbon::now()->startOfDay(), Carbon::now()->endOfDay()])->count() : 0;
+        return $assistant + $listado + $fichas_serper;
     }
 
     /**

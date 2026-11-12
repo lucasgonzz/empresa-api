@@ -85,6 +85,8 @@ class Acciones_service_y_job_Test extends TestCase
         'exportar_excel',
         // Misma misión (E2): los artículos sin rotación, atrás del Excel.
         'consultar_articulos_sin_rotacion',
+        // Fichas verificadas de artículos existentes (12/11/2026): capacidad nueva intencional, al final.
+        'buscar_ficha_de_articulo',
     ];
 
     /**
@@ -783,7 +785,8 @@ class Acciones_service_y_job_Test extends TestCase
         // (agente-cuotas-tienda, 2/11/2026): incorporación explícita, al final para conservar el caché.
         // El número se toca SOLO cuando se agrega o se saca una herramienta a propósito: si se mueve
         // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
-        $this->assertCount(45, HerramientasDeCarga::definiciones());
+        // Fichas verificadas agrega UNA propuesta al final; se conserva cada prefijo y su despacho.
+        $this->assertCount(46, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -870,6 +873,7 @@ class Acciones_service_y_job_Test extends TestCase
                 'pedir_ayuda_a_soporte',
                 'armar_texto_de_promocion',
                 'proponer_cuotas_tienda',
+                'proponer_descripcion_verificada',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
         );

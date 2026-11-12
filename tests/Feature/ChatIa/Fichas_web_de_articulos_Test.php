@@ -4,13 +4,18 @@ namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FichaWebArticuloIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiTokenUsage;
 use App\Models\Article;
 use App\Models\Description;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
+use App\Models\SerperUsageEvent;
+use App\Models\PermissionEmpresa;
+use App\Models\Bodega;
 use App\Services\AsistenteIa\AsistenteIaService;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use App\Services\ProductFacts\ArticleWebFactsService;
@@ -79,6 +84,9 @@ class Fichas_web_de_articulos_Test extends TestCase
             if ($request->url() === self::URL) {
                 return Http::response('<html><p>' . self::TEXTO . '</p></html>', 200, ['Content-Type' => 'text/html']);
             }
+            if ($request->url() === 'https://google.serper.dev/search') {
+                return Http::response(['organic' => [['link' => self::URL, 'title' => 'Bodega oficial']], 'credits' => 1]);
+            }
             throw new \RuntimeException('Solicitud inesperada: ' . $request->url());
         });
     }
@@ -108,7 +116,9 @@ class Fichas_web_de_articulos_Test extends TestCase
         $r = $this->buscar();
         $this->assertTrue($r['found'], json_encode($r));
         $this->assertCount(3, $r['sections']);
-        $this->assertSame([['url' => self::URL, 'title' => 'Resultado de búsqueda web']], $r['sources']);
+        $this->assertSame(self::URL, $r['sources'][0]['url']);
+        $this->assertSame('Resultado de búsqueda web', $r['sources'][0]['title']);
+        $this->assertCount(3, $r['sources'][0]['evidence']);
         $this->assertSame(1, BusquedaPorCodigoDeBarrasIaHelper::busquedas_web_de_hoy($this->owner->id));
         $this->assertSame(1, $this->article->descriptions()->count());
         $propuesta = $this->proponer($r['consulta_id']);
@@ -133,7 +143,7 @@ class Fichas_web_de_articulos_Test extends TestCase
         $this->extraction['sections'][1]['evidence'] = 'Esta cita no está en ninguna página.';
         $r = $this->buscar();
         $this->assertTrue($r['found']);
-        $this->assertSame(['Nariz'], array_column($r['sections'], 'title'));
+        $this->assertSame(['Olfato'], array_column($r['sections'], 'title'));
         $this->extraction['sections'][2]['evidence'] = 'Otra cita inventada.';
         $r = $this->buscar();
         $this->assertFalse($r['found']);
@@ -172,6 +182,8 @@ class Fichas_web_de_articulos_Test extends TestCase
         $saved = $this->article->descriptions()->where('title', 'Origen')->firstOrFail();
         $this->assertStringNotContainsString('<script', $saved->content);
         $this->assertStringNotContainsString('<img', $saved->content);
+        $this->assertStringNotContainsString('alert', $saved->content);
+        $this->assertSame('Origen: Cruz de Piedra, Maipú, Mendoza.', $saved->content);
     }
 
     public function test_no_admite_articulo_ajeno_ni_evidencia_de_otra_conversacion()
@@ -257,6 +269,73 @@ class Fichas_web_de_articulos_Test extends TestCase
         $r = $this->buscar(['articulo' => 'La Mascota']);
         $this->assertCount(2, $r['opciones']);
         Http::assertNothingSent();
+    }
+
+    public function test_una_cita_real_no_habilita_publicar_un_resumen_inventado_ni_un_titulo_con_hechos()
+    {
+        $this->extraction['sections'][0]['content'] = 'Viñedos del Valle de Uco y crianza de 24 meses.';
+        $this->extraction['sections'][1]['title'] = 'Crianza durante 24 meses';
+        $r = $this->buscar();
+        $this->assertSame(['Origen', 'Olfato'], array_column($r['sections'], 'title'));
+        $this->assertSame('Origen: Cruz de Piedra, Maipú, Mendoza.', $r['sections'][0]['content']);
+        $p = $this->proponer($r['consulta_id']);
+        $this->confirmar($p['tarjeta_id'])->assertOk();
+        $published = $this->article->descriptions()->pluck('content')->implode(' ');
+        $this->assertStringNotContainsString('Valle de Uco', $published);
+        $this->assertStringNotContainsString('24 meses', $published);
+        $sources = $this->article->descriptions()->first()->ai_sources;
+        $this->assertSame('Origen: Cruz de Piedra, Maipú, Mendoza.', $sources[0]['evidence'][0]['quote']);
+    }
+
+    public function test_serper_cuenta_el_evento_real_del_cupo_sin_inventar_consumo_de_tokens()
+    {
+        config(['services.serper.api_key' => 'clave-falsa-serper']);
+        $r = $this->buscar();
+        $this->assertTrue($r['found']);
+        $this->assertSame(1, BusquedaPorCodigoDeBarrasIaHelper::busquedas_web_de_hoy($this->owner->id));
+        $this->assertSame(1, SerperUsageEvent::where('user_id', $this->owner->id)->where('process', 'ficha_articulo_web')->count());
+        $this->assertSame(0, AiTokenUsage::where('user_id', $this->owner->id)->where('proceso', BusquedaPorCodigoDeBarrasIaHelper::PROCESO_WEB)->count());
+        $this->assertSame(1, AiTokenUsage::where('user_id', $this->owner->id)->where('proceso', 'ficha_articulo_extraccion')->count());
+    }
+
+    public function test_el_permiso_de_edicion_del_empleado_se_revalida_si_se_retiro_despues_de_la_propuesta()
+    {
+        $employee = User::create(['name' => 'Empleado con permiso', 'email' => uniqid() . '@test.local', 'password' => 'sin-uso', 'owner_id' => $this->owner->id]);
+        foreach (['article.index', 'article.update'] as $slug) {
+            $permission = PermissionEmpresa::where('slug', $slug)->first();
+            if (!$permission) {
+                $permission = PermissionEmpresa::forceCreate(['name' => $slug, 'slug' => $slug]);
+            }
+            $employee->permissions()->attach($permission->id);
+        }
+        $this->conversation->auth_user_id = $employee->id;
+        $this->conversation->save();
+        $this->actingAs($employee, 'web');
+        $r = $this->buscar();
+        $this->assertTrue($r['found']);
+        $p = $this->proponer($r['consulta_id']);
+        $this->assertTrue($p['ok']);
+        $employee->permissions()->detach(PermissionEmpresa::where('slug', 'article.update')->value('id'));
+        $employee->unsetRelation('permissions');
+        // El ejecutor revalida article.update aunque el canal ya haya autenticado a la persona.
+        $result = EjecutorAccionesIaHelper::confirmar($this->conversation, $p['tarjeta_id'], $employee, function () { return 1; });
+        $this->assertSame(422, $result['status']);
+        // La ruta web añade su propia restricción de acceso al asistente para empleados.
+        $this->confirmar($p['tarjeta_id'])->assertForbidden();
+        $this->assertSame(0, $this->article->descriptions()->count());
+    }
+
+    public function test_revalida_la_bodega_separada_del_nombre_al_confirmar()
+    {
+        $bodega = Bodega::forceCreate(['name' => 'Mascota Vineyards', 'user_id' => $this->owner->id]);
+        $this->article->bodega_id = $bodega->id;
+        $this->article->save();
+        $r = $this->buscar();
+        $p = $this->proponer($r['consulta_id']);
+        $this->article->bodega_id = null;
+        $this->article->save();
+        $this->confirmar($p['tarjeta_id'])->assertStatus(422);
+        $this->assertSame(0, $this->article->descriptions()->count());
     }
 }
 

@@ -135,7 +135,7 @@ class FichaWebArticuloIaHelper
 
     protected static function identidad(Article $article): string
     {
-        return hash('sha256', json_encode([$article->name, $article->bar_code, $article->brand_id]));
+        return hash('sha256', json_encode([$article->name, $article->bar_code, $article->brand_id, $article->bodega_id]));
     }
 
     protected static function clave($id): string

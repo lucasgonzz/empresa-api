@@ -3,6 +3,7 @@
 namespace App\Services\ProductFacts;
 
 use App\Models\Article;
+use App\Models\Bodega;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
@@ -13,8 +14,9 @@ class ArticleWebFactsService extends ProductFactsResearchService
     public function investigar(Article $article, $pedido = '', $url = ''): array
     {
         $key = ImageSearchProviderFactory::clave_serper_para($this->owner);
+        $bodega = $article->bodega_id ? Bodega::where('user_id', $this->user_id)->where('id', $article->bodega_id)->value('name') : null;
         $query = mb_substr(trim($article->name . ' ' . ($article->brand ? $article->brand->name : '')
-            . ' ficha técnica elaboración origen notas de cata ' . $pedido), 0, 500);
+            . ' ' . $bodega . ' ficha técnica elaboración origen notas de cata ' . $pedido), 0, 500);
         if ($url !== '') {
             $results = [['link' => $url, 'title' => 'Fuente indicada por la persona']];
         } elseif ($key === '') {
@@ -42,10 +44,6 @@ class ArticleWebFactsService extends ProductFactsResearchService
             $body = app(SerperLinkResolver::class)->resolver($body, $key, $this->context(SerperLinkResolver::PROCESO),
                 min(microtime(true) + SerperLinkResolver::PRESUPUESTO_SEGUNDOS, $this->vence_en - 35));
             $results = SerperLinkResolver::directos(array_slice($body['organic'], 0, 6));
-            AiTokenUsageHelper::registrar(['user_id' => $this->user_id,
-                'auth_user_id' => $this->person ? $this->person->id : null,
-                'proceso' => BusquedaPorCodigoDeBarrasIaHelper::PROCESO_WEB, 'usage' => [],
-                'referencia_id' => $article->id, 'modelo' => 'serper']);
         }
         $pages = [];
         foreach (array_slice($results, 0, 5) as $result) {
@@ -68,7 +66,7 @@ class ArticleWebFactsService extends ProductFactsResearchService
         }
         $data = $this->ask('ficha_articulo_extraccion', $this->instrucciones(), [
             'producto' => $article->name, 'marca' => $article->brand ? $article->brand->name : null,
-            'codigo' => $article->bar_code, 'pedido' => mb_substr((string) $pedido, 0, 600), 'documentos' => array_values($pages),
+            'bodega' => $bodega, 'codigo' => $article->bar_code, 'pedido' => mb_substr((string) $pedido, 0, 600), 'documentos' => array_values($pages),
         ], 3200);
         if (($data['coincide'] ?? false) !== true || empty($data['sections']) || !is_array($data['sections'])) {
             return ['found' => false, 'reason' => 'Las fuentes no permiten confirmar una ficha para esa etiqueta y variante. No inventé datos.'];
@@ -80,16 +78,21 @@ class ArticleWebFactsService extends ProductFactsResearchService
             $quote = is_array($section) && is_string($section['evidence'] ?? null) ? trim($section['evidence']) : '';
             if (!is_string($link) || !isset($pages[$link]) || mb_strlen($quote) < 12
                 || mb_strpos($pages[$link]['text'], $quote) === false
-                || !is_string($section['title'] ?? null) || !is_string($section['content'] ?? null)) {
+                || !is_string($section['title'] ?? null)) {
                 continue;
             }
-            $title = BusquedaPorCodigoDeBarrasIaHelper::texto_limpio($section['title'], 150);
-            $content = BusquedaPorCodigoDeBarrasIaHelper::texto_limpio($section['content'], 4000);
+            $title = $this->titulo_de_seccion($section['title']);
+            // Una cita verdadera no valida un resumen independiente: se publica exclusivamente el
+            // extracto literal comprobado. El modelo sólo elige el fragmento y un encabezado neutro.
+            $content = BusquedaPorCodigoDeBarrasIaHelper::texto_limpio($quote, 4000);
             if ($title === null || $content === null) {
                 continue;
             }
-            $sections[] = ['title' => $title, 'content' => $content];
-            $sources[$link] = ['url' => $link, 'title' => $pages[$link]['title']];
+            $sections[] = ['title' => $title, 'content' => $content, 'evidence' => $quote, 'source_url' => $link];
+            if (!isset($sources[$link])) {
+                $sources[$link] = ['url' => $link, 'title' => $pages[$link]['title'], 'evidence' => []];
+            }
+            $sources[$link]['evidence'][] = ['section' => $title, 'quote' => $quote];
         }
         if (!$sections) {
             return ['found' => false, 'reason' => 'La interpretación no incluyó evidencia textual verificable. No generé una descripción.'];
@@ -161,8 +164,21 @@ class ArticleWebFactsService extends ProductFactsResearchService
             . 'Preferí la ficha oficial del productor. Si no coincide exactamente la identidad, coincide:false. '
             . 'Para vinos, buscá secciones Elaboración, Origen de los viñedos/terroir, Vista, Nariz y Boca. '
             . 'Incluí sólo secciones con hechos explícitos de la fuente: no inventes aromas típicos, barricas, zonas, tiempos ni procesos. '
-            . 'El texto puede resumir fielmente; cada sección necesita evidence como cita LITERAL del documento que respalda todos sus datos y source_url adjunta. '
+            . 'Cada sección necesita evidence como cita LITERAL completa del documento y source_url adjunta. No redactes ni resumas: se publicará ese extracto literal. '
+            . 'title sólo puede ser Descripción, Características, Elaboración, Origen, Vista, Olfato, Gusto, Composición, Uso, Cuidados o Presentación. '
             . 'No uses conocimientos previos ni deduzcas datos faltantes; informalos en faltantes. Sin HTML ni Markdown. '
-            . 'Devolvé SOLO JSON {coincide:boolean,sections:[{title,content,evidence,source_url}],faltantes:string}.';
+            . 'Devolvé SOLO JSON {coincide:boolean,sections:[{title,evidence,source_url}],faltantes:string}.';
+    }
+
+    protected function titulo_de_seccion($title)
+    {
+        $normal = mb_strtolower(trim(strip_tags((string) $title)));
+        $titles = ['descripción' => 'Descripción', 'descripcion' => 'Descripción', 'características' => 'Características',
+            'caracteristicas' => 'Características', 'elaboración' => 'Elaboración', 'elaboracion' => 'Elaboración',
+            'origen' => 'Origen', 'origen de los viñedos' => 'Origen', 'terroir' => 'Origen', 'vista' => 'Vista',
+            'nariz' => 'Olfato', 'olfato' => 'Olfato', 'boca' => 'Gusto', 'gusto' => 'Gusto',
+            'composición' => 'Composición', 'composicion' => 'Composición', 'uso' => 'Uso',
+            'cuidados' => 'Cuidados', 'presentación' => 'Presentación', 'presentacion' => 'Presentación'];
+        return $titles[$normal] ?? null;
     }
 }
