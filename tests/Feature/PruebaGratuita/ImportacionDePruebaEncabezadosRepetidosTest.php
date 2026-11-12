@@ -114,6 +114,15 @@ class ImportacionDePruebaEncabezadosRepetidosTest extends EmpresaTestCase
             'uuid' => $uuid, 'user_id' => $this->dueno->id, 'support_ticket_id' => 20,
             'clave' => hash_file('sha256', $destino), 'archivo' => $relativa, 'nombre' => 'Catálogo.xlsx',
             'origen' => 'martin', 'estado' => 'analizar',
+            /*
+             * Misión prueba-e2e-campana-imperio (11/11/2026): una planilla con costo y sin precio de venta
+             * ahora pregunta el margen de ganancia. Estos tests miden los encabezados repetidos, no esa
+             * pregunta (la cubre ImportacionDePruebaMargenYFilasQueNoSonArticulosTest), así que la corrida
+             * nace con ella ya contestada «lo cargo yo después», que es el comportamiento de siempre.
+             */
+            'decisiones' => [
+                \App\Services\Importacion\PlanillaDePrueba::CLAVE_MARGEN => \App\Services\Importacion\PlanillaDePrueba::MARGEN_DESPUES,
+            ],
         ]);
     }
 

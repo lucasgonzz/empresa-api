@@ -197,6 +197,13 @@ class ImportacionDePruebaPorWhatsappTest extends EmpresaTestCase
             ['Otro proveedor', 'O-1', 'Artículo existente', 150, null, null, 'pesos'],
         ]]);
         $run = $this->corrida($archivo, 'analizar');
+        /*
+         * Misión prueba-e2e-campana-imperio (11/11/2026): al contestar «es el costo», la prueba ahora pregunta
+         * también el margen de ganancia. Este test mide la descripción y los descuentos laterales, no esa
+         * pregunta (la cubre ImportacionDePruebaMargenYFilasQueNoSonArticulosTest), así que la corrida nace con
+         * ella ya contestada «lo cargo yo después», que es el comportamiento de siempre.
+         */
+        $run->update(['decisiones' => [PlanillaDePrueba::CLAVE_MARGEN => PlanillaDePrueba::MARGEN_DESPUES]]);
         $this->analizador([[
             'proveedor' => 0.99, 'codigo_de_proveedor' => 0.99, 'descripcion' => 0.60,
             'precio' => 0.97, 'columna_e' => 0, 'columna_f' => 0,
