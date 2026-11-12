@@ -257,6 +257,7 @@ class HerramientasDeCarga
      * @var array<int, string>
      */
     const NUNCA_AUTO_CONFIRMABLES = [
+        AiMessageAction::TIPO_DESCRIPCION_VERIFICADA,
         AiMessageAction::TIPO_CUOTAS_TIENDA,
         AiMessageAction::TIPO_BAJA,
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
@@ -1778,6 +1779,15 @@ class HerramientasDeCarga
             ],
         ];
 
+        $definiciones[] = [
+            'name' => 'proponer_descripcion_verificada',
+            'description' => 'Agrega la ficha técnica, elaboración y notas de cata verificadas a las DESCRIPCIONES de un artículo ya cargado. Usala después de buscar_ficha_de_articulo cuando la persona pidió asignar la información. Pasá consulta_id exactamente como lo devolvió la búsqueda; el texto y las fuentes se recuperan de esa evidencia, no los reescribas. Conserva todas las descripciones existentes. Siempre espera confirmación, también en directo; mostrá la ficha y las fuentes antes del sí. No es un campo del ABM article: esta herramienta sí guarda las secciones de Descripción.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'consulta_id' => ['type' => 'string', 'description' => 'Identificador que devolvió buscar_ficha_de_articulo en ESTA conversación.'],
+                'reemplaza_a' => ['type' => 'integer'],
+            ], 'required' => ['consulta_id']],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2031,6 +2041,10 @@ class HerramientasDeCarga
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
 
         switch ($tool_name) {
+
+            case 'proponer_descripcion_verificada':
+                // Publica información de fuentes externas: el texto y las fuentes se revisan antes del sí.
+                return self::resultado(\App\Http\Controllers\Helpers\asistente_ia\FichaWebArticuloIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'consultar_opciones_de_carga':
                 return self::resultado(OpcionesDeCargaIaHelper::opciones_de_carga($contexto));
