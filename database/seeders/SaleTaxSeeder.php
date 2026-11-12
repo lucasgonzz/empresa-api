@@ -2,6 +2,7 @@
 
 namespace Database\Seeders;
 
+use App\Http\Controllers\Helpers\DemoSetupHelper;
 use App\Models\SaleTax;
 use Illuminate\Database\Seeder;
 
@@ -26,7 +27,8 @@ class SaleTaxSeeder extends Seeder
             'name'          => 'Ingresos Brutos',
             'percentage'    => 3,
             'apply_to_all'  => true,
-            'activo'        => 1,
+            // En una prueba gratuita nace apagado: ver DemoSetupHelper::impuestos_sobre_ventas_nacen_activos().
+            'activo'        => DemoSetupHelper::impuestos_sobre_ventas_nacen_activos() ? 1 : 0,
             'user_id'       => config('app.USER_ID'),
         ]);
     }

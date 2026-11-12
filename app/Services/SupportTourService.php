@@ -208,7 +208,7 @@ class SupportTourService
     public function catalogo_dinamico(User $dueno, User $persona): array
     {
         $pasos = [
-            'indicacion' => 'Mostrar una instrucción textual en la pantalla actual, sin resaltar un control. Sirve cuando no hay un ancla exacta para el paso.',
+            'indicacion' => 'Mostrar una instrucción textual en la pantalla actual, sin resaltar un control. La tarjeta queda acoplada a un costado y la persona sigue usando el sistema. No navega: usala después de un paso que ya dejó a la persona en la pantalla o la solapa de la que habla.',
             'tutoriales.abrir' => 'Señalar el enlace Tutoriales del Centro de Recursos.',
             'vista.alertas' => 'Abrir Alertas y mostrar una indicación textual dentro de esa pantalla.',
         ];
@@ -240,6 +240,7 @@ class SupportTourService
             $pasos['abm.porcentaje_recargo'] = 'Señalar Porcentaje en la edición del recargo predefinido. Usar después de abm.editar_recargo. La persona edita y guarda.';
             $pasos['abm.editar_descuento'] = 'Abrir ABM → Precios → Descuentos y señalar la lista para que la persona elija qué descuento de venta editar.';
             $pasos['abm.porcentaje_descuento'] = 'Señalar Porcentaje en la edición del descuento predefinido. Usar después de abm.editar_descuento. La persona edita y guarda.';
+            $pasos += $this->solapas_del_abm($dueno);
         }
         if (isset($pasos['vista.tesoreria'])) {
             $pasos['caja.historial_aperturas'] = 'Señalar Aperturas en Tesorería. La persona elige la caja cuyo historial quiere abrir.';
@@ -300,6 +301,44 @@ class SupportTourService
         }
         if (isset($catalogo['listado.revertir_importacion'])) {
             $catalogo['listado.revertir_importacion']['requiere_destino'] = true;
+        }
+
+        return $catalogo;
+    }
+
+    /**
+     * Grupos y solapas del ABM que el recorrido puede abrir y señalar (12/11/2026).
+     *
+     * Salen de resources/soporte/catalogo-soporte.json, que es una COPIA del catálogo que genera
+     * empresa-spa (`node scripts/generar-catalogo-soporte.cjs --api ../empresa-api`) a partir de las
+     * solapas reales del ABM. La clave es la misma que el SPA pone como `data-tour` en cada solapa.
+     *
+     * @return array<string, string> clave => descripción para el planificador.
+     */
+    private function solapas_del_abm(User $dueno): array
+    {
+        $pasos = [];
+        foreach (self::catalogo_de_soporte()['abm'] ?? [] as $entrada) {
+            foreach ($entrada['extenciones'] as $extencion) {
+                if (!PermisosIaHelper::tiene_extencion($dueno, $extencion)) {
+                    continue 2;
+                }
+            }
+            $pasos[$entrada['clave']] = $entrada['tipo'] === 'grupo'
+                ? 'Abrir el ABM y señalar el grupo «' . $entrada['texto'] . '» para que la persona lo toque.'
+                : 'Abrir ABM → ' . $entrada['grupo'] . ' y señalar la solapa «' . $entrada['texto'] . '» para que la persona la toque. Las indicaciones que sigan se muestran en esa solapa.';
+        }
+
+        return $pasos;
+    }
+
+    public static function catalogo_de_soporte(): array
+    {
+        static $catalogo = null;
+        if ($catalogo === null) {
+            $ruta = resource_path('soporte/catalogo-soporte.json');
+            $datos = is_file($ruta) ? json_decode((string) file_get_contents($ruta), true) : null;
+            $catalogo = is_array($datos) ? $datos : [];
         }
 
         return $catalogo;

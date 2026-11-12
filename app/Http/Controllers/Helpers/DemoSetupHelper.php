@@ -498,6 +498,9 @@ class DemoSetupHelper
          */
         SemillaRegistroHelper::abrir_lote($user->id, 'demo-setup');
 
+        // Los seeders no reciben el payload: así sabe SaleTaxSeeder que está armando una prueba.
+        self::$armando_prueba = self::es_setup_de_prueba($data);
+
         foreach ($seeders as $seeder) {
             Artisan::call('db:seed', ['--class' => $seeder, '--force' => true]);
         }
@@ -1200,6 +1203,29 @@ class DemoSetupHelper
      * instancias de prueba que ya existen está ExtencionSupportChatEnPruebaSeeder.
      */
     const EXTENCION_SOPORTE_DE_LA_PRUEBA = 'support_chat';
+
+    /**
+     * El setup en curso arma una prueba gratuita (lo fija run() antes de correr los seeders).
+     *
+     * @var bool
+     */
+    private static $armando_prueba = false;
+
+    /**
+     * Si los impuestos sobre ventas de los datos de ejemplo nacen activos.
+     *
+     * En una DEMO sí: sin un `sale_tax` activo el renglón de IIBB de los reportes da cero. En una PRUEBA
+     * gratuita no (12/11/2026): el negocio carga sus precios reales desde el primer día, e Ingresos Brutos
+     * al 3 % activo se los encarecía un 3,1 % (el cálculo divide por 0,97) sin que nadie lo hubiera
+     * configurado. La fila se crea igual, apagada, para que el dueño la encuentre en ABM → Precios →
+     * Impuestos sobre ventas si la quiere usar.
+     *
+     * @return bool
+     */
+    public static function impuestos_sobre_ventas_nacen_activos()
+    {
+        return !self::$armando_prueba && !self::es_instancia_de_prueba();
+    }
 
     /**
      * Si este setup arma una prueba gratuita: trae el objeto `prueba` (el alta de la landing) o corre en

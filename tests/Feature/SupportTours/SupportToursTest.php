@@ -466,6 +466,50 @@ class SupportToursTest extends EmpresaTestCase
         $this->assertNotContains('vender.recargos', $claves());
     }
 
+    public function test_el_catalogo_ofrece_las_solapas_del_abm_con_ruta_y_ancla_y_acepta_un_recorrido_con_ellas(): void
+    {
+        $ruta = self::ADMIN_SYNC . '/catalogo?user_id=' . $this->empleado->id;
+        $catalogo = function () use ($ruta): array {
+            return collect($this->getJson($ruta, $this->clave())->assertOk()->json('pasos'))->pluck('descripcion', 'clave')->all();
+        };
+        $grupo = 'abm.grupo.precios';
+        $solapa = 'abm.solapa.precios.impuestos_sobre_ventas';
+        $larga = 'abm.solapa.facturacion.metodo_de_pago_seleccionado_para_facturacion';
+
+        $this->assertArrayNotHasKey($grupo, $catalogo(), 'Sin acceso al ABM no se ofrecen sus solapas.');
+        $permiso = PermissionEmpresa::unguarded(function () {
+            return PermissionEmpresa::firstOrCreate(['slug' => 'abm'], ['name' => 'ABM']);
+        });
+        $this->empleado->permissions()->attach($permiso->id);
+
+        $pasos = $catalogo();
+        $this->assertSame('Abrir el ABM y señalar el grupo «Precios» para que la persona lo toque.', $pasos[$grupo]);
+        $this->assertStringContainsString('Abrir ABM → Precios y señalar la solapa «Impuestos sobre ventas»', $pasos[$solapa]);
+        $this->assertArrayHasKey($larga, $pasos);
+        $this->assertStringContainsString('acoplada', $pasos['indicacion']);
+        // Lo que depende de una extensión del comercio solo se ofrece si la tiene.
+        $this->assertArrayNotHasKey('abm.grupo.vinoteca', $pasos);
+        $this->assertArrayNotHasKey('abm.solapa.integraciones.whatsapp_bot', $pasos);
+        $this->dueno->extencions()->attach(ExtencionEmpresa::firstOrCreate(['slug' => 'vinoteca'], ['name' => 'Vinoteca'])->id);
+        $this->assertArrayHasKey('abm.solapa.vinoteca.cepas', $catalogo());
+
+        foreach (array_keys($pasos) as $clave) {
+            $this->assertMatchesRegularExpression('/^[a-z0-9_.]{1,80}$/D', $clave, 'El Admin rechaza una clave con otro formato.');
+        }
+
+        // Por WhatsApp y sin user_id el recorrido es para el dueño, que tiene todo el ABM.
+        $oferta = $this->datos(['tema' => 'guia_dinamica', 'titulo' => 'Desactivar Ingresos Brutos']);
+        $recorrido = [
+            ['clave' => $grupo, 'texto' => 'Dentro de ABM, tocá Precios.'],
+            ['clave' => $solapa, 'texto' => 'Ahora tocá Impuestos sobre ventas.'],
+            ['clave' => 'indicacion', 'texto' => 'Abrí Ingresos Brutos y destildá Activo.'],
+            ['clave' => $larga, 'texto' => 'Esta solapa tiene la clave más larga del catálogo.'],
+        ];
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => [['clave' => 'abm.solapa.precios.no_existe', 'texto' => 'x']]], $this->clave())
+            ->assertJsonValidationErrors('pasos.0');
+        $this->postJson(self::ADMIN_SYNC, $oferta + ['pasos' => $recorrido], $this->clave())->assertOk();
+    }
+
     public function test_la_repregunta_se_reintenta_sin_duplicar_y_la_nueva_guia_conserva_el_origen(): void
     {
         $status = 503;

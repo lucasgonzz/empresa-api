@@ -1,0 +1,1132 @@
+{
+	"version": 1,
+	"abm": [
+		{
+			"clave": "abm.grupo.articulos",
+			"tipo": "grupo",
+			"texto": "Articulos",
+			"view": "articulos",
+			"sub_view": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.categorias",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Categorias",
+			"view": "articulos",
+			"sub_view": "categorias",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.sub_categorias",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Sub Categorias",
+			"view": "articulos",
+			"sub_view": "sub-categorias",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.marcas",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Marcas",
+			"view": "articulos",
+			"sub_view": "marcas",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.combos",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Combos",
+			"view": "articulos",
+			"sub_view": "combos",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.tipo_de_envases",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Tipo de envases",
+			"view": "articulos",
+			"sub_view": "tipo-de-envases",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.ubicaciones_de_articulo",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Ubicaciones de articulo",
+			"view": "articulos",
+			"sub_view": "ubicaciones-de-articulo",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.tipos_de_propiedad_de_articulo",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Tipos de Propiedad de Articulo",
+			"view": "articulos",
+			"sub_view": "tipos-de-propiedad-de-articulo",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.valores_de_propiedad_de_articulo",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Valores de Propiedad de Articulo",
+			"view": "articulos",
+			"sub_view": "valores-de-propiedad-de-articulo",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.posiciones_de_columnas",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Posiciones de columnas",
+			"view": "articulos",
+			"sub_view": "posiciones-de-columnas",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.rangos_de_pre_importacion",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Rangos de pre importacion",
+			"view": "articulos",
+			"sub_view": "rangos-de-pre-importacion",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.articulos.disenos_de_etiquetas",
+			"tipo": "solapa",
+			"grupo": "Articulos",
+			"texto": "Diseños de etiquetas",
+			"view": "articulos",
+			"sub_view": "diseños-de-etiquetas",
+			"sub_view_inicial": "categorias",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.precios",
+			"tipo": "grupo",
+			"texto": "Precios",
+			"view": "precios",
+			"sub_view": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.listas_de_precios",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Listas de precios",
+			"view": "precios",
+			"sub_view": "listas-de-precios",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.descuentos",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Descuentos",
+			"view": "precios",
+			"sub_view": "descuentos",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.recargos",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Recargos",
+			"view": "precios",
+			"sub_view": "recargos",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.rangos_de_precio",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Rangos de precio",
+			"view": "precios",
+			"sub_view": "rangos-de-precio",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.grupos_de_articulos",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Grupos de articulos",
+			"view": "precios",
+			"sub_view": "grupos-de-articulos",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.descuentos_para_metodo_de_pago",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Descuentos para Metodo de pago",
+			"view": "precios",
+			"sub_view": "descuentos-para-metodo-de-pago",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.precios.impuestos_sobre_ventas",
+			"tipo": "solapa",
+			"grupo": "Precios",
+			"texto": "Impuestos sobre ventas",
+			"view": "precios",
+			"sub_view": "impuestos-sobre-ventas",
+			"sub_view_inicial": "listas-de-precios",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.ventas",
+			"tipo": "grupo",
+			"texto": "Ventas",
+			"view": "ventas",
+			"sub_view": "estados-de-venta",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.ventas.estados_de_venta",
+			"tipo": "solapa",
+			"grupo": "Ventas",
+			"texto": "Estados de venta",
+			"view": "ventas",
+			"sub_view": "estados-de-venta",
+			"sub_view_inicial": "estados-de-venta",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.ventas.tipos_de_venta",
+			"tipo": "solapa",
+			"grupo": "Ventas",
+			"texto": "Tipos de venta",
+			"view": "ventas",
+			"sub_view": "tipos-de-venta",
+			"sub_view_inicial": "estados-de-venta",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.ventas.remitentes",
+			"tipo": "solapa",
+			"grupo": "Ventas",
+			"texto": "Remitentes",
+			"view": "ventas",
+			"sub_view": "remitentes",
+			"sub_view_inicial": "estados-de-venta",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.ventas.reputaciones",
+			"tipo": "solapa",
+			"grupo": "Ventas",
+			"texto": "Reputaciones",
+			"view": "ventas",
+			"sub_view": "reputaciones",
+			"sub_view_inicial": "estados-de-venta",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.ventas.disenos_de_vender",
+			"tipo": "solapa",
+			"grupo": "Ventas",
+			"texto": "Diseños de Vender",
+			"view": "ventas",
+			"sub_view": "diseños-de-vender",
+			"sub_view_inicial": "estados-de-venta",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.cuenta_corriente",
+			"tipo": "grupo",
+			"texto": "Cuenta corriente",
+			"view": "cuenta-corriente",
+			"sub_view": "metodos-de-pago",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.cuenta_corriente.metodos_de_pago",
+			"tipo": "solapa",
+			"grupo": "Cuenta corriente",
+			"texto": "Metodos de Pago",
+			"view": "cuenta-corriente",
+			"sub_view": "metodos-de-pago",
+			"sub_view_inicial": "metodos-de-pago",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.cuenta_corriente.cuotas",
+			"tipo": "solapa",
+			"grupo": "Cuenta corriente",
+			"texto": "Cuotas",
+			"view": "cuenta-corriente",
+			"sub_view": "cuotas",
+			"sub_view_inicial": "metodos-de-pago",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.comisiones",
+			"tipo": "grupo",
+			"texto": "Comisiones",
+			"view": "comisiones",
+			"sub_view": "comisiones",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.comisiones.comisiones",
+			"tipo": "solapa",
+			"grupo": "Comisiones",
+			"texto": "Comisiones",
+			"view": "comisiones",
+			"sub_view": "comisiones",
+			"sub_view_inicial": "comisiones",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.comisiones.comisiones_por_venta_terminada",
+			"tipo": "solapa",
+			"grupo": "Comisiones",
+			"texto": "Comisiones por Venta Terminada",
+			"view": "comisiones",
+			"sub_view": "comisiones-por-venta-terminada",
+			"sub_view_inicial": "comisiones",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.comisiones.comision_por_promocion",
+			"tipo": "solapa",
+			"grupo": "Comisiones",
+			"texto": "Comision por Promocion",
+			"view": "comisiones",
+			"sub_view": "comision-por-promocion",
+			"sub_view_inicial": "comisiones",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.tesoreria",
+			"tipo": "grupo",
+			"texto": "Tesoreria",
+			"view": "tesoreria",
+			"sub_view": "turno-caja",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tesoreria.turno_caja",
+			"tipo": "solapa",
+			"grupo": "Tesoreria",
+			"texto": "Turno Caja",
+			"view": "tesoreria",
+			"sub_view": "turno-caja",
+			"sub_view_inicial": "turno-caja",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tesoreria.concepto_movimiento",
+			"tipo": "solapa",
+			"grupo": "Tesoreria",
+			"texto": "Concepto movimiento",
+			"view": "tesoreria",
+			"sub_view": "concepto-movimiento",
+			"sub_view_inicial": "turno-caja",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tesoreria.cajas_por_defecto",
+			"tipo": "solapa",
+			"grupo": "Tesoreria",
+			"texto": "Cajas por defecto",
+			"view": "tesoreria",
+			"sub_view": "cajas-por-defecto",
+			"sub_view_inicial": "turno-caja",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tesoreria.bancos_de_cheques",
+			"tipo": "solapa",
+			"grupo": "Tesoreria",
+			"texto": "Bancos de cheques",
+			"view": "tesoreria",
+			"sub_view": "bancos-de-cheques",
+			"sub_view_inicial": "turno-caja",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tesoreria.impuestos_de_retencion",
+			"tipo": "solapa",
+			"grupo": "Tesoreria",
+			"texto": "Impuestos de retención",
+			"view": "tesoreria",
+			"sub_view": "impuestos-de-retención",
+			"sub_view_inicial": "turno-caja",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.gastos",
+			"tipo": "grupo",
+			"texto": "Gastos",
+			"view": "gastos",
+			"sub_view": "sub-categorías-de-gasto",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.gastos.sub_categorias_de_gasto",
+			"tipo": "solapa",
+			"grupo": "Gastos",
+			"texto": "Sub categorías de gasto",
+			"view": "gastos",
+			"sub_view": "sub-categorías-de-gasto",
+			"sub_view_inicial": "sub-categorías-de-gasto",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.gastos.categorias_de_gasto",
+			"tipo": "solapa",
+			"grupo": "Gastos",
+			"texto": "Categorias de Gasto",
+			"view": "gastos",
+			"sub_view": "categorias-de-gasto",
+			"sub_view_inicial": "sub-categorías-de-gasto",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.facturacion",
+			"tipo": "grupo",
+			"texto": "Facturacion",
+			"view": "facturacion",
+			"sub_view": "puntos-de-venta-afip",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.facturacion.puntos_de_venta_afip",
+			"tipo": "solapa",
+			"grupo": "Facturacion",
+			"texto": "Puntos de venta AFIP",
+			"view": "facturacion",
+			"sub_view": "puntos-de-venta-afip",
+			"sub_view_inicial": "puntos-de-venta-afip",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.facturacion.metodo_de_pago_seleccionado_para_facturacion",
+			"tipo": "solapa",
+			"grupo": "Facturacion",
+			"texto": "Metodo de pago seleccionado para Facturacion",
+			"view": "facturacion",
+			"sub_view": "metodo-de-pago-seleccionado-para-facturacion",
+			"sub_view_inicial": "puntos-de-venta-afip",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.inventario",
+			"tipo": "grupo",
+			"texto": "Inventario",
+			"view": "inventario",
+			"sub_view": "vinculaciones-de-inventario",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.inventario.vinculaciones_de_inventario",
+			"tipo": "solapa",
+			"grupo": "Inventario",
+			"texto": "Vinculaciones de inventario",
+			"view": "inventario",
+			"sub_view": "vinculaciones-de-inventario",
+			"sub_view_inicial": "vinculaciones-de-inventario",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.inventario.estados_de_movimiento_de_deposito",
+			"tipo": "solapa",
+			"grupo": "Inventario",
+			"texto": "Estados de Movimiento de deposito",
+			"view": "inventario",
+			"sub_view": "estados-de-movimiento-de-deposito",
+			"sub_view_inicial": "vinculaciones-de-inventario",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.produccion",
+			"tipo": "grupo",
+			"texto": "Produccion",
+			"view": "produccion",
+			"sub_view": "estados-de-produccion",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.produccion.estados_de_produccion",
+			"tipo": "solapa",
+			"grupo": "Produccion",
+			"texto": "Estados de Produccion",
+			"view": "produccion",
+			"sub_view": "estados-de-produccion",
+			"sub_view_inicial": "estados-de-produccion",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.produccion.grupos_de_estados_de_produccion",
+			"tipo": "solapa",
+			"grupo": "Produccion",
+			"texto": "Grupos de Estados de Produccion",
+			"view": "produccion",
+			"sub_view": "grupos-de-estados-de-produccion",
+			"sub_view_inicial": "estados-de-produccion",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.produccion.tipo_de_rutas",
+			"tipo": "solapa",
+			"grupo": "Produccion",
+			"texto": "Tipo de rutas",
+			"view": "produccion",
+			"sub_view": "tipo-de-rutas",
+			"sub_view_inicial": "estados-de-produccion",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.impresion",
+			"tipo": "grupo",
+			"texto": "Impresion",
+			"view": "impresion",
+			"sub_view": "pdfs-de-ofertas-(plantillas)",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.impresion.pdfs_de_ofertas_plantillas",
+			"tipo": "solapa",
+			"grupo": "Impresion",
+			"texto": "PDFs de ofertas (plantillas)",
+			"view": "impresion",
+			"sub_view": "pdfs-de-ofertas-(plantillas)",
+			"sub_view_inicial": "pdfs-de-ofertas-(plantillas)",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.impresion.diseno_de_pdf",
+			"tipo": "solapa",
+			"grupo": "Impresion",
+			"texto": "Diseño de PDF",
+			"view": "impresion",
+			"sub_view": "diseño-de-pdf",
+			"sub_view_inicial": "pdfs-de-ofertas-(plantillas)",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.sucursales",
+			"tipo": "grupo",
+			"texto": "Sucursales",
+			"view": "sucursales",
+			"sub_view": "sucursales",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.sucursales.sucursales",
+			"tipo": "solapa",
+			"grupo": "Sucursales",
+			"texto": "Sucursales",
+			"view": "sucursales",
+			"sub_view": "sucursales",
+			"sub_view_inicial": "sucursales",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.sucursales.provincias",
+			"tipo": "solapa",
+			"grupo": "Sucursales",
+			"texto": "Provincias",
+			"view": "sucursales",
+			"sub_view": "provincias",
+			"sub_view_inicial": "sucursales",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.sucursales.localidades",
+			"tipo": "solapa",
+			"grupo": "Sucursales",
+			"texto": "Localidades",
+			"view": "sucursales",
+			"sub_view": "localidades",
+			"sub_view_inicial": "sucursales",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.tienda_online",
+			"tipo": "grupo",
+			"texto": "Tienda online",
+			"view": "tienda-online",
+			"sub_view": "banners",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tienda_online.banners",
+			"tipo": "solapa",
+			"grupo": "Tienda online",
+			"texto": "Banners",
+			"view": "tienda-online",
+			"sub_view": "banners",
+			"sub_view_inicial": "banners",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tienda_online.dia_de_entrega",
+			"tipo": "solapa",
+			"grupo": "Tienda online",
+			"texto": "Dia de entrega",
+			"view": "tienda-online",
+			"sub_view": "dia-de-entrega",
+			"sub_view_inicial": "banners",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tienda_online.zonas_de_envio",
+			"tipo": "solapa",
+			"grupo": "Tienda online",
+			"texto": "Formas de envío",
+			"view": "tienda-online",
+			"sub_view": "zonas-de-envio",
+			"sub_view_inicial": "banners",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.tienda_online.metodos_de_pago",
+			"tipo": "solapa",
+			"grupo": "Tienda online",
+			"texto": "Metodos de pago",
+			"view": "tienda-online",
+			"sub_view": "metodos-de-pago",
+			"sub_view_inicial": "banners",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.grupo.integraciones",
+			"tipo": "grupo",
+			"texto": "Integraciones",
+			"view": "integraciones",
+			"sub_view": "conectores-de-plataforma",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.integraciones.conectores_de_plataforma",
+			"tipo": "solapa",
+			"grupo": "Integraciones",
+			"texto": "Sistema",
+			"view": "integraciones",
+			"sub_view": "conectores-de-plataforma",
+			"sub_view_inicial": "conectores-de-plataforma",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.integraciones.tienda_online",
+			"tipo": "solapa",
+			"grupo": "Integraciones",
+			"texto": "Tienda online",
+			"view": "integraciones",
+			"sub_view": "tienda-online",
+			"sub_view_inicial": "conectores-de-plataforma",
+			"extenciones": []
+		},
+		{
+			"clave": "abm.solapa.integraciones.whatsapp_bot",
+			"tipo": "solapa",
+			"grupo": "Integraciones",
+			"texto": "WhatsApp",
+			"view": "integraciones",
+			"sub_view": "whatsapp-bot",
+			"sub_view_inicial": "conectores-de-plataforma",
+			"extenciones": [
+				"agentes_ia"
+			]
+		},
+		{
+			"clave": "abm.grupo.vinoteca",
+			"tipo": "grupo",
+			"texto": "Vinoteca",
+			"view": "vinoteca",
+			"sub_view": "bodegas",
+			"extenciones": [
+				"vinoteca"
+			]
+		},
+		{
+			"clave": "abm.solapa.vinoteca.bodegas",
+			"tipo": "solapa",
+			"grupo": "Vinoteca",
+			"texto": "Bodegas",
+			"view": "vinoteca",
+			"sub_view": "bodegas",
+			"sub_view_inicial": "bodegas",
+			"extenciones": [
+				"vinoteca"
+			]
+		},
+		{
+			"clave": "abm.solapa.vinoteca.cepas",
+			"tipo": "solapa",
+			"grupo": "Vinoteca",
+			"texto": "Cepas",
+			"view": "vinoteca",
+			"sub_view": "cepas",
+			"sub_view_inicial": "bodegas",
+			"extenciones": [
+				"vinoteca"
+			]
+		},
+		{
+			"clave": "abm.grupo.meli",
+			"tipo": "grupo",
+			"texto": "Meli",
+			"view": "meli",
+			"sub_view": "tipo-de-publicacion",
+			"extenciones": [
+				"usa_mercado_libre"
+			]
+		},
+		{
+			"clave": "abm.solapa.meli.tipo_de_publicacion",
+			"tipo": "solapa",
+			"grupo": "Meli",
+			"texto": "Tipo de publicacion",
+			"view": "meli",
+			"sub_view": "tipo-de-publicacion",
+			"sub_view_inicial": "tipo-de-publicacion",
+			"extenciones": [
+				"usa_mercado_libre"
+			]
+		},
+		{
+			"clave": "abm.solapa.meli.modo_de_compra",
+			"tipo": "solapa",
+			"grupo": "Meli",
+			"texto": "Modo de compra",
+			"view": "meli",
+			"sub_view": "modo-de-compra",
+			"sub_view_inicial": "tipo-de-publicacion",
+			"extenciones": [
+				"usa_mercado_libre"
+			]
+		},
+		{
+			"clave": "abm.solapa.meli.condicion",
+			"tipo": "solapa",
+			"grupo": "Meli",
+			"texto": "Condicion",
+			"view": "meli",
+			"sub_view": "condicion",
+			"sub_view_inicial": "tipo-de-publicacion",
+			"extenciones": [
+				"usa_mercado_libre"
+			]
+		},
+		{
+			"clave": "abm.grupo.puntos",
+			"tipo": "grupo",
+			"texto": "Puntos",
+			"view": "puntos",
+			"sub_view": "sistemas-de-puntos",
+			"extenciones": [
+				"puntos_clientes"
+			]
+		},
+		{
+			"clave": "abm.solapa.puntos.sistemas_de_puntos",
+			"tipo": "solapa",
+			"grupo": "Puntos",
+			"texto": "Sistemas de puntos",
+			"view": "puntos",
+			"sub_view": "sistemas-de-puntos",
+			"sub_view_inicial": "sistemas-de-puntos",
+			"extenciones": [
+				"puntos_clientes"
+			]
+		}
+	],
+	"pantallas": [
+		{
+			"clave": "vista.listado",
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "vista.vender",
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vista.ventas",
+			"ruta": {
+				"name": "sale",
+				"params": {
+					"view": "todas",
+					"sub_view": "todos"
+				}
+			}
+		},
+		{
+			"clave": "vista.compras",
+			"ruta": {
+				"name": "provider",
+				"params": {
+					"view": "compras"
+				}
+			}
+		},
+		{
+			"clave": "vista.reportes",
+			"ruta": {
+				"name": "reportes",
+				"params": {
+					"view": "estado-de-resultados"
+				}
+			}
+		},
+		{
+			"clave": "vista.tesoreria",
+			"ruta": {
+				"name": "caja"
+			}
+		},
+		{
+			"clave": "vista.gastos",
+			"ruta": {
+				"name": "expense"
+			}
+		},
+		{
+			"clave": "vista.cheques",
+			"ruta": {
+				"name": "cheque",
+				"params": {
+					"sub_view": "recibido",
+					"sub_sub_view": "pendientes"
+				}
+			}
+		},
+		{
+			"clave": "vista.agenda",
+			"ruta": {
+				"name": "pending",
+				"params": {
+					"view": "por-realizar"
+				}
+			}
+		},
+		{
+			"clave": "vista.comprobantes",
+			"ruta": {
+				"name": "comprobantes"
+			}
+		},
+		{
+			"clave": "vista.abm",
+			"ruta": {
+				"name": "abm",
+				"params": {
+					"view": "articulos",
+					"sub_view": "categorias"
+				}
+			}
+		},
+		{
+			"clave": "vista.alertas",
+			"ruta": {
+				"name": "alertas"
+			}
+		},
+		{
+			"clave": "vista.clientes",
+			"ruta": {
+				"name": "client",
+				"params": {
+					"view": "clientes"
+				}
+			}
+		},
+		{
+			"clave": "vista.proveedores",
+			"ruta": {
+				"name": "provider",
+				"params": {
+					"view": "proveedores"
+				}
+			}
+		},
+		{
+			"clave": "vista.presupuestos",
+			"ruta": {
+				"name": "budget"
+			}
+		}
+	],
+	"controles": [
+		{
+			"clave": "tutoriales.abrir",
+			"ancla": null,
+			"selector": "[data-nav-tutoriales]",
+			"ruta": null
+		},
+		{
+			"clave": "listado.filtro",
+			"ancla": "listado.boton_filtrar",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.nuevo_articulo",
+			"ancla": null,
+			"selector": "#dropdown_article [data-testid=\"btn-crear-article\"]",
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "ventas.filtro_fecha",
+			"ancla": "ventas.control_fecha",
+			"selector": null,
+			"ruta": {
+				"name": "sale",
+				"params": {
+					"view": "todas",
+					"sub_view": "todos"
+				}
+			}
+		},
+		{
+			"clave": "compras.filtro_fecha",
+			"ancla": "compras.control_fecha",
+			"selector": null,
+			"ruta": {
+				"name": "provider",
+				"params": {
+					"view": "compras"
+				}
+			}
+		},
+		{
+			"clave": "compras.nueva",
+			"ancla": "compras.boton_crear",
+			"selector": null,
+			"ruta": {
+				"name": "provider",
+				"params": {
+					"view": "compras"
+				}
+			}
+		},
+		{
+			"clave": "listado.crear",
+			"ancla": null,
+			"selector": "#dropdown_article .dropdown-toggle-split",
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.submenu_exportacion",
+			"ancla": "listado.submenu_exportacion",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.opcion_nueva_exportacion",
+			"ancla": "listado.opcion_nueva_exportacion",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.opcion_historial_exportaciones",
+			"ancla": "listado.opcion_historial_exportaciones",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.historial_importaciones",
+			"ancla": "listado.opcion_historial_importaciones",
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "listado.revertir_importacion",
+			"ancla": null,
+			"selector": null,
+			"ruta": {
+				"name": "article"
+			}
+		},
+		{
+			"clave": "vender.buscar_articulo",
+			"ancla": null,
+			"selector": "#search-article",
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vender.campo_busqueda",
+			"ancla": null,
+			"selector": "#search-article-search-modal-input",
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vender.resultados_busqueda",
+			"ancla": null,
+			"selector": "[data-tour=\"vender.resultados_buscador_articulos\"], [data-tour=\"vender.busqueda_sin_resultados\"]",
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vender.codigo_barras",
+			"ancla": "vender.campo_codigo_barras",
+			"selector": null,
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vender.recargos",
+			"ancla": "vender.interruptores_recargos",
+			"selector": null,
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vender.total",
+			"ancla": "vender.total",
+			"selector": null,
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "abm.editar_recargo",
+			"ancla": null,
+			"selector": "[data-modelo-abm=\"surchage\"] .cont-table:has([data-testid^=\"surchage-row-\"]), [data-modelo-abm=\"surchage\"] .cont-cards:has(.card-component.apretable)",
+			"ruta": {
+				"name": "abm",
+				"params": {
+					"view": "precios",
+					"sub_view": "recargos"
+				}
+			}
+		},
+		{
+			"clave": "abm.porcentaje_recargo",
+			"ancla": null,
+			"selector": "[data-modelo-en-edicion=\"surchage\"] #surchage.show #surchage-percentage:not(:disabled)",
+			"ruta": {
+				"name": "abm",
+				"params": {
+					"view": "precios",
+					"sub_view": "recargos"
+				}
+			}
+		},
+		{
+			"clave": "abm.editar_descuento",
+			"ancla": null,
+			"selector": "[data-modelo-abm=\"discount\"] .cont-table:has([data-testid^=\"discount-row-\"]), [data-modelo-abm=\"discount\"] .cont-cards:has(.card-component.apretable)",
+			"ruta": {
+				"name": "abm",
+				"params": {
+					"view": "precios",
+					"sub_view": "descuentos"
+				}
+			}
+		},
+		{
+			"clave": "abm.porcentaje_descuento",
+			"ancla": null,
+			"selector": "[data-modelo-en-edicion=\"discount\"] #discount.show #discount-percentage:not(:disabled)",
+			"ruta": {
+				"name": "abm",
+				"params": {
+					"view": "precios",
+					"sub_view": "descuentos"
+				}
+			}
+		},
+		{
+			"clave": "vender.metodos_pago",
+			"ancla": null,
+			"selector": "[data-tour=\"vender.boton_cobrar\"]:not(:disabled)",
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "vender.reparto_pago",
+			"ancla": "vender.reparto_pago",
+			"selector": null,
+			"ruta": {
+				"name": "vender"
+			}
+		},
+		{
+			"clave": "caja.historial_aperturas",
+			"ancla": null,
+			"selector": ".cont-table:has([data-tour=\"caja.historial_aperturas\"])",
+			"ruta": {
+				"name": "caja"
+			}
+		},
+		{
+			"clave": "caja.reabrir_apertura",
+			"ancla": null,
+			"selector": "#aperturas-caja [data-tour=\"caja.reabrir_apertura\"]:not(:disabled)",
+			"ruta": {
+				"name": "caja"
+			}
+		},
+		{
+			"clave": "soporte.abrir",
+			"ancla": "soporte.abrir",
+			"selector": null,
+			"ruta": null
+		},
+		{
+			"clave": "soporte.conversacion",
+			"ancla": "soporte.conversacion",
+			"selector": null,
+			"ruta": null
+		},
+		{
+			"clave": "soporte.escribir",
+			"ancla": "soporte.escribir",
+			"selector": null,
+			"ruta": null
+		}
+	]
+}
