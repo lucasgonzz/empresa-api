@@ -116,6 +116,8 @@ class AiMessageAction extends Model
     // Lote de configuración de cuotas de tienda: siempre con confirmación.
     const TIPO_CUOTAS_TIENDA = 'cuotas_tienda';
 
+    const TIPO_DESCRIPCION_VERIFICADA = 'descripcion_verificada';
+
     /**
      * Colgarle a un ARTÍCULO una foto que el dueño mandó (misión asistente-ventas-y-fotos,
      * 21/9/2026). Es la hermana de TIPO_FOTO_SUCURSAL y la mecánica de la foto es la misma, pero

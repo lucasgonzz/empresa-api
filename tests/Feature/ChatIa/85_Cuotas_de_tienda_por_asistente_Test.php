@@ -291,14 +291,15 @@ class Cuotas_de_tienda_por_asistente_Test extends TestCase
     public function test_herramienta_se_agrega_al_final_del_registro_con_despacho_y_esquema()
     {
         $nombres = HerramientasDeCarga::nombres();
-        $this->assertSame('proponer_cuotas_tienda', end($nombres));
+        // Fichas verificadas agrega una propuesta AL FINAL, sin mover la de cuotas ni sus campos.
+        $this->assertSame(['proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -2));
         $this->assertTrue(HerramientasDeCarga::maneja('proponer_cuotas_tienda'));
         $this->assertContains('proponer_cuotas_tienda', HerramientasDeCarga::nombres(true));
         $definiciones = HerramientasDeCarga::definiciones();
-        $ultima = end($definiciones);
-        $this->assertSame(['cuotas'], $ultima['input_schema']['required']);
-        $this->assertSame(['cantidad_cuotas'], $ultima['input_schema']['properties']['cuotas']['items']['required']);
-        $this->assertSame(36, $ultima['input_schema']['properties']['cuotas']['maxItems']);
+        $de_cuotas = $definiciones[count($definiciones) - 2];
+        $this->assertSame(['cuotas'], $de_cuotas['input_schema']['required']);
+        $this->assertSame(['cantidad_cuotas'], $de_cuotas['input_schema']['properties']['cuotas']['items']['required']);
+        $this->assertSame(36, $de_cuotas['input_schema']['properties']['cuotas']['maxItems']);
         $this->assertTrue(HerramientasDeCarga::es_de_carga('proponer_cuotas_tienda'));
     }
 

@@ -263,7 +263,8 @@ class Articulos_sin_rotacion_Test extends TestCase
 
         $nombres = $servicio->nombres_de_lectura();
 
-        $this->assertSame('consultar_articulos_sin_rotacion', end($nombres), 'Al final: el orden del registro es el prefijo del caché.');
+        // Fichas verificadas añade la búsqueda web detrás: se conserva el prefijo anterior exacto.
+        $this->assertSame(['consultar_articulos_sin_rotacion', 'buscar_ficha_de_articulo'], array_slice($nombres, -2), 'Las capacidades nuevas se añaden al final del prefijo del caché.');
         $this->assertTrue($servicio->maneja_lectura('consultar_articulos_sin_rotacion'));
         $this->assertTrue(McpHerramientasHelper::existe('consultar_articulos_sin_rotacion'));
 
