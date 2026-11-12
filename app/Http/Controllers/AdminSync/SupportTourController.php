@@ -32,7 +32,8 @@ class SupportTourController extends Controller
             'pasos' => 'required_if:tema,' . SupportTour::GUIA_DINAMICA
                 . '|prohibited_unless:tema,' . SupportTour::GUIA_DINAMICA . '|array|min:1|max:8',
             'pasos.*' => 'required|array:clave,texto,destino',
-            'pasos.*.clave' => 'required|string|max:64',
+            // El Admin acepta claves de hasta 80 caracteres y una solapa del ABM llega a 67.
+            'pasos.*.clave' => 'required|string|max:80',
             'pasos.*.texto' => 'required|string|max:240',
             'pasos.*.destino' => 'sometimes|required|integer|min:1|max:9007199254740991',
             'import_history_id' => 'required_if:tema,' . SupportTour::REVERTIR_IMPORTACION_ARTICULOS
