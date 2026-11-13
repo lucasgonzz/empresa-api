@@ -21,7 +21,13 @@ class AltaBebidasIaHelper
 
     public static function instrucciones(): string
     {
-        return 'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B7): este bloque viaja con las
+         * instrucciones de carga y su «cajas × botellas» se filtró a un presupuesto («una caja» salió
+         * como 6 botellas). La primera oración lo acota: solo el alta y su stock inicial.
+         */
+        return 'Esto aplica SOLO al alta de bebidas (proponer_alta) y a su stock inicial; NUNCA a ventas, presupuestos ni pedidos: ahí la cantidad son unidades de venta del artículo y "una caja" es 1 (con presentación, el precio ya es el de la caja). '
+            .'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
             .'El tipo de bebida se guarda en categoría/subcategoría de Crear; nunca en marca ni en un campo inventado. '
             .'Mandá bebida.es_vino booleano; solo vinos llevan cepa EXISTENTE. Nunca crees proveedor, bodega o cepa sin consentimiento. '
             .'Presentación es la cantidad de unidades de VENTA y puede cambiar el precio según la configuración: usa el mismo cálculo de Crear. Preguntá si corresponde vender por botella (1) o por presentación. '

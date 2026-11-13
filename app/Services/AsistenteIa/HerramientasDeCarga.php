@@ -1092,7 +1092,7 @@ class HerramientasDeCarga
                                     ],
                                     'cantidad'        => [
                                         'type'        => 'number',
-                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el artículo se vende por caja o presentación (con el módulo Vinoteca el precio del artículo ya es el de la caja), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
                                     ],
                                     'precio_unitario' => [
                                         'type'        => 'number',
@@ -1297,7 +1297,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_presupuesto',
-                'description'  => 'Arma la tarjeta de un PRESUPUESTO por el mismo camino que el "guardar como presupuesto" de la pantalla de Vender: NO vende nada y NO descuenta stock. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. 🔴 El cliente es obligatorio: un presupuesto es para alguien, y de ahí sale la lista de precios. Un presupuesto no toca stock, ni caja, ni cuenta corriente: eso pasa recién cuando la persona lo confirma desde la pantalla de Presupuestos, y eso NO lo hacés vos. Después de crearlo podés pasar el link del PDF con consultar_link_de_pdf. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un PRESUPUESTO por el mismo camino que el "guardar como presupuesto" de la pantalla de Vender: NO vende nada y NO descuenta stock. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. 🔴 El cliente es obligatorio: un presupuesto es para alguien, y de ahí sale la lista de precios. Un presupuesto no toca stock, ni caja, ni cuenta corriente: eso pasa recién cuando la persona lo confirma desde la pantalla de Presupuestos, y eso NO lo hacés vos. Después de crearlo podés pasar el link del PDF con consultar_link_de_pdf. 🔴 Un presupuesto ya creado NO se corrige con esta herramienta: llamarla de nuevo crea uno NUEVO con otro número y el anterior sigue existiendo; si la respuesta trae presupuesto_anterior, decíselo así a la persona (nunca "corregí el N° X") y ofrecé borrar el anterior con proponer_borrado_por_pantalla (ruta api/budget/{budget}, parametros {"numero": N}). Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1319,7 +1319,7 @@ class HerramientasDeCarga
                                     ],
                                     'cantidad'        => [
                                         'type'        => 'number',
-                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el artículo se vende por caja o presentación (con el módulo Vinoteca el precio del artículo ya es el de la caja), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
                                     ],
                                     'precio_unitario' => [
                                         'type'        => 'number',
