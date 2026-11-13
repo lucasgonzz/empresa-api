@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\CargaSinPropuestaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FormatoDeWhatsappIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Models\AiConversation;
@@ -32,6 +33,7 @@ use Tests\TestCase;
  *     volvió, porque no hay un después;
  *   - A6: «el loop terminó sin texto final en la iteración 3 (después de 2 rondas de herramientas)» → «No
  *     llegué a terminar…» con vueltas de sobra;
+ *   - A8: «los asteriscos se ven crudos»: en WhatsApp *x* es negrita.
  *
  * 🔴 Nada sale a la red: el modelo es un Http::fake con las respuestas en una secuencia que, agotada,
  * contesta un 500 (así una llamada de más queda grabada y el conteo la ve).
@@ -672,5 +674,77 @@ class Veracidad_del_turno_Test extends TestCase
         $this->assertStringContainsString('No llegué a terminar', $texto);
         $this->assertStringContainsString('la llamada de cierre (sin_texto) volvió sin texto', (string) $service->detalle_tecnico());
         $this->assertCount(3, $this->bodies_enviados(), 'Una sola llamada de cierre, nada más.');
+    }
+
+    // ---------------------------------------------------------------------
+    // A8 — el formato de WhatsApp
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 Conversación 5: «los asteriscos se ven crudos». Por WhatsApp la regla es la de WhatsApp (*negrita*,
+     * sin ** ni # ni tablas); el panel y la app, sin cambios.
+     *
+     * @test
+     */
+    public function por_whatsapp_la_regla_de_formato_es_la_de_whatsapp_y_en_el_panel_la_de_siempre()
+    {
+        $service = new AsistenteIaService();
+
+        list($conversation) = $this->conversacion([], 'Hola');
+
+        $whatsapp = $service->build_system_prompt($conversation, $this->comercio, true, true, false);
+
+        $this->assertStringContainsString('*negrita* con UN asterisco de cada lado', $whatsapp);
+        $this->assertStringContainsString('Nunca uses doble asterisco (**)', $whatsapp);
+        $this->assertStringNotContainsString('Está prohibido el markdown', $whatsapp);
+        $this->assertStringNotContainsString('los símbolos se ven crudos', $whatsapp);
+
+        $sistema = $service->build_system_prompt($conversation, $this->comercio, true, false, false);
+
+        $this->assertStringContainsString('Está prohibido el markdown', $sistema);
+        $this->assertStringNotContainsString('*negrita* con UN asterisco', $sistema);
+    }
+
+    /**
+     * El saneo de la salida, solo por WhatsApp: **x** → *x* y los títulos sin #. El panel, tal cual.
+     *
+     * @test
+     */
+    public function por_whatsapp_se_sanea_el_markdown_y_en_el_panel_no()
+    {
+        $con_markdown = "**Total:** $5.000 en 3 ventas.\n## Detalle\nMartes: $2.000";
+
+        $this->el_modelo_contesta([
+            $this->end_turn($con_markdown),
+            $this->end_turn($con_markdown),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], '¿Cuánto vendí?', AiMessage::CANAL_WHATSAPP, false);
+        $this->assertSame("*Total:* $5.000 en 3 ventas.\n*Detalle*\nMartes: $2.000", (new AsistenteIaService())->responder($conversation, $assistant));
+
+        list($conversation, $assistant) = $this->conversacion([], '¿Cuánto vendí?', null, false);
+        $this->assertSame($con_markdown, (new AsistenteIaService())->responder($conversation, $assistant));
+    }
+
+    /**
+     * El saneo, caso por caso.
+     *
+     * @test
+     */
+    public function el_saneo_de_whatsapp_caso_por_caso()
+    {
+        $casos = [
+            '**Nieto Senetiner** quedó en 9.'         => '*Nieto Senetiner* quedó en 9.',
+            '*Ya* estaba bien.'                       => '*Ya* estaba bien.',
+            "### Resumen\nTodo ok."                   => "*Resumen*\nTodo ok.",
+            '__nota__ al pie'                         => '_nota_ al pie',
+            "```\ncodigo\n```"                        => 'codigo',
+            'Precio: $5.000 ** sin pareja'            => 'Precio: $5.000  sin pareja',
+            'snake_case_de_un_campo queda'            => 'snake_case_de_un_campo queda',
+        ];
+
+        foreach ($casos as $entrada => $salida) {
+            $this->assertSame($salida, FormatoDeWhatsappIaHelper::sanear($entrada), 'Entrada: ' . $entrada);
+        }
     }
 }

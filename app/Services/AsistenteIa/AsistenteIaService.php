@@ -27,6 +27,7 @@ use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FormatoDeWhatsappIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
@@ -1904,6 +1905,15 @@ class AsistenteIaService
         $final_text = $this->con_los_bloques_de_envio($final_text, $assistant_message);
 
         /*
+         * A8 de la misión asistente-truvari-pedidos-fallidos: por WhatsApp, el markdown que WhatsApp no
+         * entiende (**x**, ## títulos) pasa a su formato (*x*). Antes de las menciones, que cruzan el
+         * texto final. El sistema y el MCP, tal cual.
+         */
+        if ($es_whatsapp) {
+            $final_text = FormatoDeWhatsappIaHelper::sanear($final_text);
+        }
+
+        /*
          * §1 del contrato: las menciones salen de cruzar lo que devolvieron las tools de ESTA
          * respuesta contra el texto que escribió el modelo. Va acá y no adentro del loop porque
          * recién con el texto final se sabe a quién nombró.
@@ -2251,9 +2261,10 @@ class AsistenteIaService
          * Misión app-ia-y-memoria (29/10/2026): en la app la pantalla SÍ muestra markdown simple y hay
          * gráficos, tablas e imágenes. El formato cambia la regla dura de "Formato de la respuesta" (no se
          * puede corregir después: el modelo ya leyó "prohibido el markdown") y el bloque del canal va donde
-         * va el de WhatsApp. En el sistema y en WhatsApp, el texto de siempre, byte a byte.
+         * va el de WhatsApp. En el sistema (y el MCP), el texto de siempre, byte a byte; WhatsApp tiene el
+         * suyo desde la misión asistente-truvari-pedidos-fallidos (A8): ver formato_de_whatsapp().
          */
-        $formato = $es_app ? $this->formato_de_la_app() : $this->formato_de_texto_plano();
+        $formato = $es_app ? $this->formato_de_la_app() : ($es_whatsapp ? $this->formato_de_whatsapp() : $this->formato_de_texto_plano());
         $bloque_de_la_app = $es_app ? $this->bloque_de_la_app() : '';
 
         /*
@@ -2368,7 +2379,8 @@ SYSTEM;
     }
 
     /**
-     * La regla de formato de siempre (sistema, WhatsApp, MCP): texto plano. Es el MISMO texto que había
+     * La regla de formato de siempre (sistema y MCP; WhatsApp tiene la suya desde A8 de la misión
+     * asistente-truvari-pedidos-fallidos): texto plano. Es el MISMO texto que había
      * en build_system_prompt() antes de la misión app-ia-y-memoria, con su línea en blanco final.
      *
      * @return string
@@ -2382,6 +2394,33 @@ Formato de la respuesta (regla dura):
   interpreta markdown y los símbolos se ven crudos.
 - Si tenés que enumerar, usá líneas cortas separadas por salto de línea, empezando
   cada una con la cosa nombrada. Nunca con "- " ni "* ".
+
+FORMATO;
+    }
+
+    /**
+     * La regla de formato de WhatsApp (A8 de la misión asistente-truvari-pedidos-fallidos, 13/11/2026).
+     *
+     * 🔴 EL CASO REAL (Truvari, conversación 5 del 12/11/2026). El dueño pidió negrita con asteriscos y el
+     * asistente le contestó que «los asteriscos se ven crudos»: era la regla de texto plano de la pantalla
+     * del sistema, que viajaba igual por WhatsApp. En WhatsApp *así* ES negrita y _así_ cursiva (los avisos
+     * del sistema ya la usan: AvisosDelAsistenteHelper, RecordatoriosDelAsistenteHelper). Lo que WhatsApp
+     * no entiende es el markdown de doble asterisco, los títulos con # y las tablas: eso sigue prohibido, y
+     * además se sanea a la salida (FormatoDeWhatsappIaHelper::sanear()). El sistema y el MCP, sin cambios.
+     *
+     * @return string
+     */
+    protected function formato_de_whatsapp(): string
+    {
+        return <<<FORMATO
+Formato de la respuesta (regla dura):
+- Estás en WhatsApp, que tiene su propio formato: *negrita* con UN asterisco de cada lado y
+  _cursiva_ con un guion bajo de cada lado. Usá negrita solo para un rótulo corto o un dato clave
+  (un total, un número de comprobante), o cuando te la pidan.
+- Nunca uses doble asterisco (**), almohadillas (#) para títulos, tablas ni bloques de código:
+  WhatsApp no los entiende y se ven crudos.
+- Si tenés que enumerar, usá líneas cortas separadas por salto de línea, empezando cada una con la
+  cosa nombrada. Nunca con "- " ni "* ".
 
 FORMATO;
     }
