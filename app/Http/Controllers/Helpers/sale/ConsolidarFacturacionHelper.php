@@ -66,7 +66,7 @@ class ConsolidarFacturacionHelper extends Controller
         ];
     }
 
-    private static function importe_de_renglones(Sale $venta, array $factores): float
+    private static function importe_de_renglones(Sale $venta, array $factores, bool $redondear = true): float
     {
         $importe = 0;
         foreach ($factores as $relacion => $factor) {
@@ -74,7 +74,7 @@ class ConsolidarFacturacionHelper extends Controller
                 $importe += SaleHelper::getTotalItem($renglon) * $factor;
             }
         }
-        return round($importe, 2);
+        return $redondear ? round($importe, 2) : $importe;
     }
 
     private static function aviso_de_importes(Sale $venta, array $factores): ?string
@@ -317,6 +317,18 @@ class ConsolidarFacturacionHelper extends Controller
                 }
             }
 
+            $bruto_acumulado = $ventas_originales->sum(function (Sale $venta) use ($factores) {
+                return self::importe_de_renglones($venta, $factores[$venta->id], false);
+            });
+            $primera_venta = $ventas_originales->first();
+            $cotizacion = $primera_venta->moneda_id == 2 ? (float) $primera_venta->valor_dolar : 1;
+            if (round($bruto_acumulado, 2) !== $total_consolidado
+                || ($cotizacion > 0 && round($bruto_acumulado * $cotizacion, 2) !== round($total_consolidado * $cotizacion, 2))) {
+                foreach ($ventas_originales as $venta) {
+                    $factores[$venta->id] = self::factores_de_recargo($venta, true);
+                }
+            }
+
             /** Usa el sale_type_id de la primera venta como referencia; todas deben ser del mismo tipo. */
             $sale_type_id = $ventas_originales->first()->sale_type_id;
 
@@ -454,7 +466,7 @@ class ConsolidarFacturacionHelper extends Controller
      * Materializa los ajustes de cada remito sobre su propia base.
      * Los ajustes directos ya vienen en el precio de los renglones originales.
      */
-    private static function factores_de_recargo(Sale $venta): array
+    private static function factores_de_recargo(Sale $venta, bool $materializar_redondeo = false): array
     {
         $recargo = 1.0;
         if (!$venta->aplicar_recargos_directo_a_items) {
@@ -472,12 +484,44 @@ class ConsolidarFacturacionHelper extends Controller
 
         $factor_total = self::factor_de_ajustes_por_importe($venta);
 
-        return [
+        $factores = [
             'articles' => $recargo * $descuento * $factor_total * (1 - (float) $venta->descuento / 100),
             'combos' => $recargo * $descuento * $factor_total,
             'services' => $factor_total * ($venta->surchages_in_services ? $recargo : 1.0)
                 * ($venta->discounts_in_services ? $descuento : 1.0),
         ];
+
+        // Si la suma ya cierra, conservar los precios precisos originales con sus ajustes.
+        if (!$materializar_redondeo) {
+            return $factores;
+        }
+
+        // Cada remito aporta su total ya redondeado, no la suma sin redondear de todos
+        // los remitos. Sólo materializamos ese residuo si los ajustes explican su total
+        // AL CENTAVO. Una diferencia real sigue pasando intacta al aviso y a la guarda.
+        $brutos = [];
+        foreach ($factores as $relacion => $factor) {
+            $brutos[$relacion] = $venta->{$relacion}->sum(function ($item) use ($factor) {
+                return SaleHelper::getTotalItem($item) * $factor;
+            });
+        }
+        $bruto = array_sum($brutos);
+        $total = round((float) $venta->total, 2);
+        if (round($bruto, 2) === $total) {
+            // Evita que restar importes grandes agregue ruido binario a la clave
+            // de agrupación. Ocho decimales siguen muy por debajo de un centavo.
+            $residuo = round($total - $bruto, 8);
+            // Orden fijo: artículos antes que combos y servicios. Un servicio sin
+            // recargo conserva su precio cuando hay artículos sobre los que repartir.
+            foreach ($brutos as $relacion => $importe) {
+                if ($importe > 0 && $importe + $residuo > 0) {
+                    $factores[$relacion] *= ($importe + $residuo) / $importe;
+                    break;
+                }
+            }
+        }
+
+        return $factores;
     }
 
     private static function factor_de_ajustes_por_importe(Sale $venta): float
