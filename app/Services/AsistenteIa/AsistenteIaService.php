@@ -23,6 +23,7 @@ use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EnvioSinPropuestaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ImagenPrometidaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ImagenPorWhatsappIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
@@ -380,6 +381,15 @@ class AsistenteIaService
     protected $pedidos_de_imagen = [];
 
     /**
+     * true si este turno de WhatsApp tiene pedir_imagen (misión asistente-truvari-pedidos-fallidos, C1,
+     * 13/11/2026): ImagenPorWhatsappIaHelper::disponible(). Lo fija responder_con_el_modelo() y lo miran
+     * el despacho de execute_tool_calls() y la guarda de la imagen prometida.
+     *
+     * @var bool
+     */
+    protected $imagen_por_whatsapp = false;
+
+    /**
      * true mientras corre el loop de responder(): solo ahí se escribe la línea de progreso antes de cada
      * herramienta. El servidor MCP llama a execute_tool_calls() sin el loop y su mensaje no pasa por el
      * job que la vuelve a null (ver ProgresoIaHelper).
@@ -627,9 +637,11 @@ class AsistenteIaService
         $this->ofrecer_soporte = ! is_null($this->manual_de_prueba)
             && PermisosIaHelper::tiene_extencion($owner, 'support_chat');
 
+        $this->imagen_por_whatsapp = $es_whatsapp && ImagenPorWhatsappIaHelper::disponible($conversation, $owner);
+
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
         $messages = $this->build_messages_payload($conversation);
-        $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app);
+        $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app, $conversation);
 
         /*
          * La nota con el resultado REAL de la confirmación viaja pegada al "sí" de la persona: el
@@ -841,8 +853,12 @@ class AsistenteIaService
          * el aviso honesto (el resto de la respuesta queda). Ver ImagenPrometidaIaHelper (y sus falsos
          * positivos: las fotos del catálogo, los gráficos, los diseños de PDF y las tarjetas de venta o
          * presupuesto no son pedidos de generar una imagen; los ofrecimientos no son afirmaciones).
+         *
+         * Desde la misión asistente-truvari-pedidos-fallidos (C1, 13/11/2026) también por WhatsApp, cuando el
+         * turno tiene pedir_imagen ahí (ImagenPorWhatsappIaHelper::disponible()). Sin la herramienta, la guarda
+         * no mira: pedirle al modelo que llame a algo que no tiene sería otra promesa rota.
          */
-        $guarda_de_imagen = (bool) $es_app;
+        $guarda_de_imagen = (bool) $es_app || $this->imagen_por_whatsapp;
 
         /* true si el único reintento del turno lo pidió la guarda de la imagen. Solo para el log. */
         $reintento_de_la_imagen = false;
@@ -1395,7 +1411,7 @@ class AsistenteIaService
 
                 $messages[] = [
                     'role'    => 'user',
-                    'content' => ImagenPrometidaIaHelper::nota_para_reintentar(),
+                    'content' => ImagenPrometidaIaHelper::nota_para_reintentar($es_whatsapp),
                 ];
 
                 $toco_una_carga = true;
@@ -2272,7 +2288,11 @@ class AsistenteIaService
          * contestaba "no tengo forma de generar una imagen". Va en el lugar del bloque de la app (son
          * excluyentes): la regla de a dónde mandar a la persona cuando pide una imagen nueva.
          */
-        $bloque_de_la_imagen = $es_app ? '' : $this->bloque_de_la_imagen_fuera_de_la_app($conversation, $owner);
+        $bloque_de_la_imagen = $es_app ? '' : (
+            $es_whatsapp && ImagenPorWhatsappIaHelper::disponible($conversation, $owner)
+                ? $this->bloque_de_la_imagen_por_whatsapp()
+                : $this->bloque_de_la_imagen_fuera_de_la_app($conversation, $owner)
+        );
 
         /*
          * Misión app-ia-y-memoria (E2, 29/10/2026): las reglas de la memoria del negocio (qué se
@@ -2535,6 +2555,26 @@ APP;
             . '  mismo usuario y contraseña del sistema; ahí se la pide al agente.' . "\n"
             . '  Si te piden una, decí eso en una línea y ofrecé armarle el texto de la oferta mientras tanto.' . "\n"
             . $cierre;
+    }
+
+    /**
+     * La regla de las IMÁGENES NUEVAS por WhatsApp cuando el turno tiene pedir_imagen (misión
+     * asistente-truvari-pedidos-fallidos, C1, 13/11/2026), con su salto de línea final. Va en lugar de
+     * bloque_de_la_imagen_fuera_de_la_app().
+     *
+     * EL CASO REAL (Truvari, conversación 4): «generá para ese producto una imagen de 6 botellas» y el
+     * asistente contestó «andá a ia.comerciocity.com». Ahora la pide y la imagen le llega por el mismo chat.
+     *
+     * @return string
+     */
+    protected function bloque_de_la_imagen_por_whatsapp(): string
+    {
+        return '- Imágenes nuevas (una placa para redes, la imagen de una oferta, la foto de una caja de un' . "\n"
+            . '  producto): pedilas con pedir_imagen, con un prompt detallado. Por acá no aparecen en tu' . "\n"
+            . '  mensaje: cuando están listas le llegan a la persona en otro mensaje por este chat, con el' . "\n"
+            . '  link. Decí en una línea «' . ImagenPorWhatsappIaHelper::FRASE_PARA_EL_DUENO . '», sin prometer tiempos.' . "\n"
+            . '  🔴 No la mandes a otra app ni digas que no se puede, y nunca digas que la pediste si no' . "\n"
+            . '  llamaste a pedir_imagen en este mensaje.' . "\n";
     }
 
     /**
@@ -5416,9 +5456,10 @@ CONFIRMACION;
      * @param bool $es_whatsapp true si el mensaje entró por WhatsApp.
      * @param User|null $owner El dueño de la conversación (para las herramientas de la memoria).
      * @param bool $es_app true si el mensaje entró por la app «ComercioCity IA».
+     * @param AiConversation|null $conversation Para saber si por WhatsApp se puede pedir una imagen (C1).
      * @return array<int, array<string, mixed>>
      */
-    public function build_tools($con_acciones = false, $es_whatsapp = false, $owner = null, $es_app = false): array
+    public function build_tools($con_acciones = false, $es_whatsapp = false, $owner = null, $es_app = false, $conversation = null): array
     {
         $tools = $this->herramientas_de_lectura();
 
@@ -5438,6 +5479,13 @@ CONFIRMACION;
             foreach (HerramientasDeLaApp::definiciones($con_acciones) as $definicion) {
                 $tools[] = $definicion;
             }
+        } elseif ($es_whatsapp && $conversation instanceof AiConversation && ImagenPorWhatsappIaHelper::disponible($conversation, $owner)) {
+            /*
+             * Misión asistente-truvari-pedidos-fallidos (C1, 13/11/2026): por WhatsApp, pedir_imagen sola (sin
+             * gráficos ni tablas, que ahí no se dibujan) y con la descripción del canal. Va donde van las de la
+             * app (los dos canales son excluyentes); sin la condición, WhatsApp manda lo de antes.
+             */
+            $tools[] = HerramientasDeLaApp::definicion_de_pedir_imagen_por_whatsapp();
         }
 
         /*
@@ -6674,7 +6722,16 @@ CONFIRMACION;
                  * app. En el sistema, en WhatsApp o desde MCP caen en "Tool desconocida", igual que una
                  * que no está declarada.
                  */
-                if ($assistant_message instanceof AiMessage && $assistant_message->es_de_la_app() && HerramientasDeLaApp::maneja($tool_name)) {
+                /*
+                 * C1 de asistente-truvari-pedidos-fallidos (13/11/2026): por WhatsApp se despacha SOLO
+                 * pedir_imagen, y solo si este turno la tiene declarada.
+                 */
+                $de_la_app_por_whatsapp = $this->imagen_por_whatsapp
+                    && $tool_name === HerramientasDeLaApp::PEDIR_IMAGEN
+                    && $assistant_message instanceof AiMessage
+                    && $assistant_message->es_de_whatsapp();
+
+                if ($assistant_message instanceof AiMessage && ($assistant_message->es_de_la_app() || $de_la_app_por_whatsapp) && HerramientasDeLaApp::maneja($tool_name)) {
                     $de_la_app = HerramientasDeLaApp::ejecutar($tool_name, $tool_input, $conversation, $assistant_message, count($this->bloques));
 
                     if (! is_null($de_la_app['bloque'])) {

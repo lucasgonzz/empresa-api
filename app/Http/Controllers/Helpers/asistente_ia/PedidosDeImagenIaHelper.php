@@ -17,7 +17,8 @@ use Illuminate\Support\Str;
  * §4 E1.7 del plan): el pedido, el tope diario, la llegada del resultado y el bloque `imagen_generada`
  * del mensaje que la muestra.
  *
- * El circuito: pedir_imagen (herramienta del agente, solo en la app) → pedir() deja el pedido
+ * El circuito: pedir_imagen (herramienta del agente en la app y, desde el 13/11/2026, por WhatsApp con
+ * ImagenPorWhatsappIaHelper::disponible()) → pedir() deja el pedido
  * `pendiente` y el bloque → el job de respuesta guarda el mensaje y despacha
  * EnviarPedidoDeImagenAlAdminJob (C2.1) → el admin la genera por API de OpenAI y la devuelve por
  * admin-sync/ia-imagenes/{uuid}/resultado (C1.4) → recibir_resultado() la guarda y el bloque pasa a
@@ -199,6 +200,23 @@ class PedidosDeImagenIaHelper
                 'bloque'   => self::bloque_del_pedido($pedido),
                 'texto'    => 'No se pudo pedir la imagen: la generación de imágenes no está disponible en este sistema. '
                     . 'Decíselo a la persona en una línea, sin prometer que se va a generar.',
+                'es_error' => false,
+            ];
+        }
+
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (C1, 13/11/2026): por WhatsApp no hay bloque que la
+         * muestre. La imagen vuelve como un aviso por el mismo chat (ImagenPorWhatsappIaHelper), así que
+         * la frase que se le dicta al modelo es otra: «te la mando por acá», nunca «aparece acá».
+         */
+        if ($assistant_message->es_de_whatsapp()) {
+
+            return [
+                'pedido'   => $pedido,
+                'bloque'   => self::bloque_del_pedido($pedido),
+                'texto'    => 'Listo: la imagen quedó pedida. Por WhatsApp no aparece en este mensaje: cuando esté lista le llega a la persona en otro mensaje por este mismo chat, con el link para verla. '
+                    . 'Decile en una línea «' . ImagenPorWhatsappIaHelper::FRASE_PARA_EL_DUENO . '»: no prometas tiempos, no digas que ya está ni pongas un link.'
+                    . (isset($referencia['nombre']) ? ' Artículo: ' . $referencia['nombre'] . '.' : ''),
                 'es_error' => false,
             ];
         }
@@ -436,6 +454,9 @@ class PedidosDeImagenIaHelper
 
         self::borrar_referencia_temporal($pedido);
         self::actualizar_bloque($pedido->refresh());
+
+        /* Pedida por WhatsApp: el turno prometió «te la mando por acá»; el aviso dice que no se pudo. */
+        ImagenPorWhatsappIaHelper::avisar($pedido);
     }
 
     /**
@@ -460,6 +481,9 @@ class PedidosDeImagenIaHelper
 
         self::borrar_referencia_temporal($pedido);
         self::actualizar_bloque($pedido->refresh(), $para_el_dueno);
+
+        /* Pedida por WhatsApp: el aviso con el motivo (C1, 13/11/2026). */
+        ImagenPorWhatsappIaHelper::avisar($pedido, $para_el_dueno);
     }
 
     /**
@@ -685,6 +709,12 @@ class PedidosDeImagenIaHelper
 
         self::borrar_referencia_temporal($pedido);
         self::actualizar_bloque($pedido);
+
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (C1): si la pidió por WhatsApp, la imagen le vuelve por
+         * ahí como un aviso con el link público (ImagenPorWhatsappIaHelper). En la app no hace nada.
+         */
+        ImagenPorWhatsappIaHelper::avisar($pedido);
 
         return IaImagenPedido::ESTADO_LISTA;
     }

@@ -38,7 +38,8 @@ use Illuminate\Support\Facades\DB;
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/avisos-pendientes?spa_url=   → 200 {avisos:[{id, tipo, ai_conversation_id, texto, ruta, url|null}]}
  *        (`id` = "escaneo_factura:{uuid}", "envio_fallido:{uuid}" o, desde el 30/10/2026,
- *        "turno_sin_terminar:{uuid}": ver TIPO_TURNO_SIN_TERMINAR)
+ *        "turno_sin_terminar:{uuid}": ver TIPO_TURNO_SIN_TERMINAR; desde el 13/11/2026,
+ *        "imagen_por_whatsapp:{uuid}" con `url` = el link público de la imagen: ver ImagenPorWhatsappIaHelper)
  *   POST admin-sync/asistente/avisos/avisado {id, url?, whatsapp_message_id?} → 200 {ok:true} · 404
  *
  * 🔴 SEGUNDO TIPO DESDE EL 19/10/2026: `envio_fallido` (misión asistente-arreglos-segunda-prueba, N3).
@@ -331,6 +332,33 @@ class AvisosDelAsistenteHelper
         }
 
         /*
+         * 🔴 QUINTO TIPO DESDE EL 13/11/2026: `imagen_por_whatsapp` (misión asistente-truvari-pedidos-fallidos,
+         * C1). La imagen que el dueño pidió por WhatsApp, ya generada (o el aviso de que no se pudo): CON
+         * `url`, que es el link público de la imagen (ImagenPorWhatsappIaHelper::url_publica). El admin la
+         * manda como a los demás tipos: `texto`, una línea en blanco y la `url`. Sin `ruta`: no hay pantalla
+         * del sistema que abrir.
+         */
+        try {
+
+            foreach (self::imagenes_pendientes($dueno) as $fila) {
+
+                $avisos[] = [
+                    'id'                 => AiAvisoDelAsistente::TIPO_IMAGEN_POR_WHATSAPP . ':' . (string) $fila->uuid,
+                    'tipo'               => AiAvisoDelAsistente::TIPO_IMAGEN_POR_WHATSAPP,
+                    'ai_conversation_id' => empty($fila->ai_conversation_id) ? null : (int) $fila->ai_conversation_id,
+                    'texto'              => (string) $fila->texto,
+                    'ruta'               => '',
+                    'url'                => ImagenPorWhatsappIaHelper::url_publica((string) $fila->uuid, (int) $dueno->id),
+                ];
+
+                $orden[] = [self::momento($fila->created_at), 4, (int) $fila->id];
+            }
+
+        } catch (\Throwable $e) {
+            // Sin la tabla, siguen saliendo los demás.
+        }
+
+        /*
          * 🔴 CUARTO TIPO DESDE EL 3/11/2026: `importacion_lista` (misión cruzada prueba-martin-importacion,
          * programa «Prueba gratuita de 7 días»). El Excel que el negocio en prueba le mandó a Martín por el
          * ticket se analizó en segundo plano (AvisosDeImportacionHelper); esto le avisa por WhatsApp que ya
@@ -368,6 +396,30 @@ class AvisosDelAsistenteHelper
         }
 
         return array_slice($avisos, 0, self::TOPE_AVISOS);
+    }
+
+    /**
+     * Las imágenes pedidas por WhatsApp que todavía no salieron, de las últimas HORAS_DEL_AVISO horas (C1,
+     * 13/11/2026). Vacío si la tabla no existe.
+     *
+     * @param  \App\Models\User  $dueno
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function imagenes_pendientes(User $dueno)
+    {
+        if (!AvisosDeTurnosIaHelper::hay_tabla()) {
+
+            return collect();
+        }
+
+        return self::sin_conversaciones_trasladadas(AiAvisoDelAsistente::where('owner_id', (int) $dueno->id))
+                    ->where('tipo', AiAvisoDelAsistente::TIPO_IMAGEN_POR_WHATSAPP)
+                    ->whereNull('avisado_por_whatsapp_at')
+                    ->where('created_at', '>=', Carbon::now()->subHours(self::HORAS_DEL_AVISO))
+                    ->orderBy('created_at')
+                    ->orderBy('id')
+                    ->limit(self::TOPE_AVISOS)
+                    ->get();
     }
 
     public static function sin_conversaciones_trasladadas(\Illuminate\Database\Eloquent\Builder $query): \Illuminate\Database\Eloquent\Builder
@@ -437,6 +489,14 @@ class AvisosDelAsistenteHelper
         if (!is_null($uuid_de_turno)) {
 
             return self::marcar_turno_avisado($dueno, $uuid_de_turno, self::url_segura($url), $whatsapp_message_id);
+        }
+
+        /* La imagen pedida por WhatsApp (13/11/2026): misma tabla y mismas garantías que el turno. */
+        $uuid_de_imagen = self::uuid_del_tipo($id, AiAvisoDelAsistente::TIPO_IMAGEN_POR_WHATSAPP);
+
+        if (!is_null($uuid_de_imagen)) {
+
+            return self::marcar_turno_avisado($dueno, $uuid_de_imagen, self::url_segura($url), $whatsapp_message_id, AiAvisoDelAsistente::TIPO_IMAGEN_POR_WHATSAPP);
         }
 
         /* La importación lista (3/11/2026): misma tabla que el turno, sin conversación que escribir. */
@@ -622,16 +682,18 @@ class AvisosDelAsistenteHelper
      * @param  mixed  $whatsapp_message_id
      * @return bool  false si no existe o no es de este dueño (el 404 del contrato).
      */
-    protected static function marcar_turno_avisado(User $dueno, $uuid, $url, $whatsapp_message_id): bool
+    protected static function marcar_turno_avisado(User $dueno, $uuid, $url, $whatsapp_message_id, $tipo = AiAvisoDelAsistente::TIPO_TURNO_SIN_TERMINAR): bool
     {
         if (!AvisosDeTurnosIaHelper::hay_tabla()) {
 
             return false;
         }
 
-        return DB::transaction(function () use ($dueno, $uuid, $url, $whatsapp_message_id) {
+        return DB::transaction(function () use ($dueno, $uuid, $url, $whatsapp_message_id, $tipo) {
 
+            /* Por tipo (13/11/2026): el uuid de la imagen es el de su pedido y no puede sellar otra fila. */
             $fila = AiAvisoDelAsistente::where('owner_id', (int) $dueno->id)
+                                        ->where('tipo', (string) $tipo)
                                         ->where('uuid', $uuid)
                                         ->lockForUpdate()
                                         ->first();

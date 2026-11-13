@@ -181,6 +181,37 @@ class HerramientasDeLaApp
     }
 
     /**
+     * pedir_imagen para WhatsApp (misión asistente-truvari-pedidos-fallidos, C1, 13/11/2026): la misma
+     * herramienta y el mismo esquema que en la app, con la descripción del canal. Ahí la imagen no aparece en
+     * el mensaje: vuelve después como un aviso por el mismo chat, con el link (ImagenPorWhatsappIaHelper). La
+     * suma AsistenteIaService::build_tools() solo cuando ImagenPorWhatsappIaHelper::disponible().
+     *
+     * @return array<string, mixed>
+     */
+    public static function definicion_de_pedir_imagen_por_whatsapp(): array
+    {
+        $definicion = null;
+
+        foreach (self::definiciones(false) as $candidata) {
+            if ($candidata['name'] === self::PEDIR_IMAGEN) {
+                $definicion = $candidata;
+            }
+        }
+
+        $definicion['description'] = 'Pide que se GENERE una imagen nueva (una placa para redes, un cartel para el local, una foto de producto ilustrativa, el fondo de una promo, '
+            . 'la foto de una caja de 6 botellas de un vino). Usala cuando la persona pide una imagen: no la mandes a otra app ni digas que no se puede. '
+            . 'Escribí el prompt en español, detallado: qué se ve, el texto que tiene que llevar escrito (entre comillas y tal cual), los colores, el estilo y para qué es. '
+            . 'Si es para el negocio, usá su nombre. Por WhatsApp la imagen NO aparece en este mensaje: cuando esté lista le llega a la persona en otro mensaje por este mismo chat, con el link para verla. '
+            . 'Después de llamarla decí en una línea «la pedí; te la mando por acá cuando esté lista», sin prometer tiempos ni decir que ya está; si la respuesta dice que no se pudo, contalo tal cual. '
+            . 'Pedir una imagen NO autoriza a preparar promociones, envíos ni mensajes a clientes: si te parece útil, ofrecelo en una línea y no lo armes hasta que la persona lo pida. '
+            . 'Para editar una foto que la persona mandó por acá usá su imagen_id. Para generar otra imagen de un artículo basándote en su foto actual, usá su articulo_id real (buscalo antes por nombre o código). '
+            . 'Si la persona pidió la cantidad de la presentación del artículo («una caja de 6») y no dio otro número, mandá usar_presentacion. '
+            . 'Por acá no se publica la imagen en el artículo: si la quiere en la ficha, decile que la cargue desde el sistema o desde la app ComercioCity IA.';
+
+        return $definicion;
+    }
+
+    /**
      * Los nombres de las herramientas de la app.
      *
      * @return array<int, string>

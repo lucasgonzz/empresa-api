@@ -143,7 +143,9 @@ class AvisosDeTurnosIaHelper
             }
 
             /* Uno por mensaje: el job y el vigía no pueden dejar dos para el mismo turno. */
-            $ya = AiAvisoDelAsistente::where('ai_message_id', (int) $assistant->id)->first();
+            $ya = AiAvisoDelAsistente::where('ai_message_id', (int) $assistant->id)
+                                    ->where('tipo', AiAvisoDelAsistente::TIPO_TURNO_SIN_TERMINAR)
+                                    ->first();
 
             if (!is_null($ya)) {
 
@@ -185,7 +187,14 @@ class AvisosDeTurnosIaHelper
             return collect();
         }
 
+        /*
+         * 🔴 SOLO LOS DE ESTE TIPO (misión asistente-truvari-pedidos-fallidos, C1, 13/11/2026). La tabla la
+         * comparten la importación lista y la imagen por WhatsApp, que AvisosDelAsistenteHelper sirve con su
+         * propio prefijo: sin el filtro, la misma fila salía dos veces (como `turno_sin_terminar:` y con el
+         * suyo) y el dueño recibía el aviso repetido.
+         */
         return AvisosDelAsistenteHelper::sin_conversaciones_trasladadas(AiAvisoDelAsistente::where('owner_id', (int) $dueno->id))
+                                    ->where('tipo', AiAvisoDelAsistente::TIPO_TURNO_SIN_TERMINAR)
                                     ->whereNull('avisado_por_whatsapp_at')
                                     ->where('created_at', '>=', Carbon::now()->subHours(self::HORAS_DEL_AVISO))
                                     ->orderBy('created_at')
