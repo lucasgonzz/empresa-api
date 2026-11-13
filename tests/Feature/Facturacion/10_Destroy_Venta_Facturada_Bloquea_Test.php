@@ -906,6 +906,11 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
         $this->nota_de_credito($con_nc, $factura);
         $factura->delete();
 
+        $otro = User::forceCreate(['name' => 'Otro dueño de prueba', 'email' => uniqid().'@ejemplo.test', 'password' => 'hash-inutil']);
+        $venta_ajena = Sale::create(['user_id' => $otro->id, 'total' => 1]);
+        $ticket_ajeno = AfipTicket::create(['sale_id' => $venta_ajena->id, 'cae' => self::CAE]);
+        $ticket_ajeno->delete();
+
         $comando = new SembrarDatosDePrueba();
         $comando->preparar_para_test();
         $comando->limpiar_para_test();
@@ -913,6 +918,32 @@ class Destroy_Venta_Facturada_Bloquea_Test extends EmpresaTestCase
         $this->assertSoftDeleted('sales', ['id' => $con_factura->id]);
         $this->assertSoftDeleted('sales', ['id' => $con_nc->id]);
         $this->assertSame(0, Sale::where('user_id', $user_id)->count(), 'El reseteo tenía que dejar al usuario sin ventas vivas.');
+        $this->assertNotNull(Sale::find($venta_ajena->id), 'El reset sólo alcanza al usuario de la semilla.');
+        $this->assertNotNull(AfipTicket::withTrashed()->find($ticket_ajeno->id), 'La evidencia fiscal de otro dueño se conserva, incluso borrada lógicamente.');
+    }
+
+    /** @test */
+    public function el_reset_no_purga_evidencia_fiscal_en_el_entorno_de_un_negocio()
+    {
+        $venta = $this->crear_venta_cc('zz-v10 Reset prohibido');
+        $factura = $this->facturar($venta, self::CAE);
+        $factura->delete();
+        $antes = $this->foto($venta);
+        $comando = new SembrarDatosDePrueba();
+        $comando->preparar_para_test();
+
+        config(['app.env' => 'production', 'app.FOR_USER' => 'negocio']);
+        $rechazado = false;
+        try {
+            $comando->limpiar_para_test();
+        } catch (\LogicException $e) {
+            $rechazado = true;
+            $this->assertStringContainsString('base de tests verificada', $e->getMessage());
+        }
+
+        $this->assertTrue($rechazado, 'La limpieza directa tampoco puede purgar comprobantes de un negocio.');
+        $this->assertNotNull(AfipTicket::withTrashed()->find($factura->id));
+        $this->assert_nada_tocado($antes, $venta, 'Reset prohibido en producción');
     }
 
     /**

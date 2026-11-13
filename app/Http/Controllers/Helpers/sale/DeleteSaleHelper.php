@@ -48,7 +48,8 @@ class DeleteSaleHelper {
 	 *     mismo que la SPA y que `BudgetController::anular()`: un intento sin respuesta puede terminar
 	 *     autorizado en ARCA, y entonces la factura quedaria huerfana. El mensaje cambia segun haya
 	 *     CAE (se anula con nota de credito) o no (primero se resuelve la factura). `AfipTicket` usa
-	 *     SoftDeletes, asi que un intento ya eliminado desde la factura no cuenta.
+	 *     SoftDeletes: un rechazo o intento sin número ya eliminado no cuenta. Desde soporte #121,
+	 *     un CAE o un intento numerado incierto sigue bloqueando aunque se haya borrado lógicamente.
 	 *     Una factura con CAE que ya tiene su nota de credito TAMBIEN frena: borrar la venta saca del
 	 *     Libro IVA la factura y la NC, y las dos siguen en ARCA.
 	 *  2. Una nota de credito viva (`nota_credito_afip_tickets`) aunque su factura ya no este: pasa
@@ -68,6 +69,12 @@ class DeleteSaleHelper {
         if (\App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::intento_incierto($sale->id)) {
             return 'La venta tiene una emisión pendiente de verificar en ARCA. Consultá ese comprobante antes de borrar la venta.';
         }
+
+		// Conserva el motivo específico de la NC viva cuando su factura se borró lógicamente.
+		// La evidencia fiscal oculta sigue bloqueando la baja; sólo cambia qué comprobante se explica.
+		if (!$sale->afip_tickets()->exists() && $sale->nota_credito_afip_tickets()->exists()) {
+			return 'La venta tiene una nota de crédito emitida ante ARCA: no se puede borrar.';
+		}
 
 		$facturacion = Self::estado_de_facturacion($sale);
 
@@ -120,8 +127,8 @@ class DeleteSaleHelper {
 	}
 
 	/**
-	 * Que tan facturada esta una venta segun sus `AfipTicket` vivos: 'con_cae' si alguno tiene CAE,
-	 * 'sin_cae' si tiene tickets pero ninguno con CAE, null si no tiene ninguno.
+	 * Que tan facturada esta una venta: conserva CAE e intentos inciertos aunque estén borrados
+	 * lógicamente y luego considera los demás tickets vivos ('sin_cae'); sin evidencia devuelve null.
 	 *
 	 * "Tiene CAE" es no nulo y distinto de '': el mismo criterio que
 	 * `SaleHelper::motivo_por_el_que_no_se_puede_editar()` y `AfipTicketController::destroy()`.

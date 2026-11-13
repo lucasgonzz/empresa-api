@@ -1041,6 +1041,8 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
      */
     public function el_rechazo_de_la_pantalla_llega_como_422_con_su_mensaje_y_la_tarjeta_sigue_propuesta()
     {
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::RESUELTO);
+
         $cliente = Client::where('user_id', $this->dueno->id)->first();
 
         $this->assertNotNull($cliente, 'El fixture trae clientes');
@@ -1062,6 +1064,8 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado(), 'El rechazo se mide al confirmar, no durante una autoejecución.');
 
         $confirmacion = $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id']);
 
@@ -1484,6 +1488,9 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
      */
     public function una_fila_sin_user_id_se_verifica_por_sus_padres_y_un_catalogo_global_no_se_escribe()
     {
+        // Acá se mide la tenencia al proponer; no la actualización de la variante.
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::RESUELTO);
+
         $otro = $this->otro_dueno();
 
         $ajeno = Article::create(['name' => 'Artículo ajeno I3', 'user_id' => $otro->id, 'status' => 'active', 'final_price' => 100, 'cost' => 50, 'stock' => 1, 'iva_id' => 2]);
@@ -1506,6 +1513,9 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue(!empty($propia['ok']), json_encode($propia));
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($propia['tarjeta_id'])->estado_guardado());
+        $this->assertEquals(77, $variante_propia->fresh()->price, 'La propuesta propia pasó la tenencia sin ejecutar la pantalla.');
 
         // Forjada con la variante ajena: 422 y el precio no cambió.
         $forjada = AiMessageAction::create([
@@ -1675,6 +1685,8 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
      */
     public function una_tarjeta_cuyo_registro_cambia_de_dueno_antes_de_confirmar_corta_con_422()
     {
+        $this->dueno_en(ConfianzaDelAgenteIaHelper::RESUELTO);
+
         $otro = $this->otro_dueno();
 
         $caja = $this->caja_de_prueba('Caja P55 que cambia de dueño');

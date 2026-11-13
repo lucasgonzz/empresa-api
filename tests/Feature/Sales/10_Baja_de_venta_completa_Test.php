@@ -20,8 +20,9 @@ use Tests\EmpresaTestCase;
  * ⚠️ El test preexistente `4_Eliminar_venta_Test.php` NO servía para eso: ya estaba en rojo en
  * `develop` antes de esta misión, porque resuelve el cliente por el nombre 'Lucas Gonzalez', que el
  * fixture actual (`TestingFerreteriaSeeder`) no siembra — `$client` viene null y revienta en
- * `$client->id`. Es un test viejo de otro fixture. No se tocó (queda como hallazgo fuera de alcance),
- * pero tampoco se lo podía usar de red de seguridad.
+ * `$client->id`. En aquella misión no se tocó y no podía usarse de red de seguridad. Soporte #121
+ * (13/11/2026) reemplazó ese residuo por una venta propia creada por el endpoint y comprobó baja
+ * y reposición de stock; este caso sigue cubriendo además la reversión de un pedido online.
  *
  * La venta se arma por el camino real: se confirma un pedido online, que es el mismo camino que
  * después va a tener que revertirse al cancelarlo.

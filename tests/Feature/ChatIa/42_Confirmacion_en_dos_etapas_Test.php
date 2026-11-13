@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Models\AiConversation;
@@ -66,6 +67,9 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
     /** @var AsistenteIaService */
     protected $service;
 
+    /** @var string|null Modo original, para no dejar una configuración global alterada. */
+    protected $confianza_original;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -74,6 +78,12 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+        $this->confianza_original = $this->dueno->agente_confianza;
+
+        // Estos escenarios miden el clic humano, también para tareas: ninguna carga debe
+        // autoejecutarse al proponer por el modo que haya traído el fixture del negocio.
+        $this->dueno->agente_confianza = ConfianzaDelAgenteIaHelper::CAUTELOSO;
+        $this->dueno->save();
 
         $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
 
@@ -89,6 +99,10 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
     protected function tearDown(): void
     {
         $this->limpiar_escenarios();
+
+        if (!is_null($this->dueno)) {
+            DB::table('users')->where('id', $this->dueno->id)->update(['agente_confianza' => $this->confianza_original]);
+        }
 
         parent::tearDown();
     }
@@ -285,6 +299,8 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
 
         $this->assertTrue($alta['ok'], json_encode($alta));
 
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($alta['tarjeta_id'])->estado_guardado(), 'El alta espera el clic que mide este escenario.');
+
         $this->confirmar($conversation, $assistant, $alta['tarjeta_id'])->assertStatus(200);
 
         $this->assertSame($base, $nivel_del_alta, 'El alta genérica no puede correr adentro de una transacción del ejecutor.');
@@ -304,6 +320,8 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue($tarea['ok'], json_encode($tarea));
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarea['tarjeta_id'])->estado_guardado(), 'La tarea también espera confirmación manual.');
 
         $this->confirmar($conversation2, $assistant2, $tarea['tarjeta_id'])->assertStatus(200);
 
@@ -334,6 +352,8 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue($alta['ok'], json_encode($alta));
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($alta['tarjeta_id'])->estado_guardado(), 'Todavía no ocurrió ninguno de los dos clics.');
 
         $tarjeta_id = (int) $alta['tarjeta_id'];
         $segundo_clic = null;
@@ -391,6 +411,8 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue($alta['ok'], json_encode($alta));
+
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($alta['tarjeta_id'])->estado_guardado(), 'El controller debe ejecutarse recién al confirmar.');
 
         Brand::creating(function () {
             throw new HttpResponseException(response()->json(['message' => 'La pantalla no la quiso'], 422));
