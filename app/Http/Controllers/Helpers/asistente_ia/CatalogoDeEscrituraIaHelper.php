@@ -2632,6 +2632,18 @@ class CatalogoDeEscrituraIaHelper
 
         $cuerpo = self::cuerpo_del_metodo($clase, $metodo);
 
+        // El historial envolvió los métodos públicos: reflejar sólo el wrapper ocultaba todos
+        // los campos reales. El mapa es explícito y revisado; no habilita lecturas de otros métodos.
+        $delegados = [
+            \App\Http\Controllers\ArticleController::class => [
+                'store' => 'store_sin_historial',
+                'update' => 'update_sin_historial',
+            ],
+        ];
+        if (isset($delegados[$clase][$metodo])) {
+            $cuerpo .= "\n".self::cuerpo_del_metodo($clase, $delegados[$clase][$metodo]);
+        }
+
         $claves = [];
 
         if (!is_null($cuerpo)) {
