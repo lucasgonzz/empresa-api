@@ -2,10 +2,13 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\BudgetController;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper as Catalogo;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionDePantallaIaHelper as Ejecutor;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\Budget;
+use App\Models\Client;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -202,8 +205,140 @@ class PropuestaAccionDePantallaIaHelper
      */
     public static function proponer_borrado(ContextoDeCargaIa $contexto, AiMessage $mensaje, $ruta, array $parametros, $descripcion, $reemplaza_a = null)
     {
+        // Un presupuesto se resuelve por su N° y la tarjeta dice cuál es (B8, ver borrado_de_presupuesto()).
+        if (preg_match(self::RUTA_BORRADO_DE_PRESUPUESTO, Catalogo::normalizar_ruta($ruta), $m)) {
+
+            $resuelto = self::borrado_de_presupuesto($contexto, $m[1], $parametros);
+
+            if (RespuestaDeCargaIa::es_negativa($resuelto)) {
+
+                return $resuelto;
+            }
+
+            $ruta = 'api/budget/{budget}';
+            $parametros = ['budget' => $resuelto['id']];
+            $descripcion = $resuelto['descripcion'];
+        }
+
         // El aviso de la tarjeta viaja también en la respuesta (armar_tarjeta lo suma como `aviso`).
         return self::armar_tarjeta($contexto, $mensaje, 'DELETE', $ruta, $parametros, [], $descripcion, $reemplaza_a, AiMessageAction::TIPO_BORRADO_PANTALLA, self::AVISO_BORRADO);
+    }
+
+    /**
+     * `DELETE api/budget/{budget}`, con el {param} literal o con el número metido en la ruta.
+     */
+    const RUTA_BORRADO_DE_PRESUPUESTO = '#^api/budget/(\{[A-Za-z_]+\}|\d+)$#';
+
+    /**
+     * El presupuesto que se quiere borrar, resuelto del dueño, o la respuesta negativa (misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026, B8).
+     *
+     * 🔴 EL CASO REAL. «Borrá los presupuestos 25 y 26» → «no tengo una ruta de borrado». Y el 25 que
+     * dice el dueño es el N° (`budgets.num`), no el id: en Truvari el N° 25 era el id 28. Por eso:
+     *
+     *  - `parametros.numero` va SOLO por número y `parametros.id` SOLO por id.
+     *  - `parametros.budget` (o el número metido en la ruta) puede ser cualquiera de los dos: si es
+     *    el N° de uno y el id de OTRO, se pregunta; nunca se adivina cuál se borra.
+     *  - Un confirmado no se borra (ya movió stock, caja o cuenta corriente): el error dice que se
+     *    anula, y BudgetController::destroy() también lo frena si cambia entre la tarjeta y el clic.
+     *  - La descripción de la tarjeta la arma el sistema: «Borrar el presupuesto N° 25 de <cliente>
+     *    ($ total)», que es lo que la persona tiene que ver antes de confirmar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $de_la_ruta  El {param} literal o el número que vino en la ruta.
+     * @param  array  $parametros
+     * @return array{id: int, descripcion: string}|array
+     */
+    protected static function borrado_de_presupuesto(ContextoDeCargaIa $contexto, $de_la_ruta, array $parametros)
+    {
+        $por_numero = null;
+        $por_id = null;
+        $cualquiera = null;
+
+        if (isset($parametros['numero']) && is_numeric($parametros['numero'])) {
+
+            $por_numero = (int) $parametros['numero'];
+
+        } elseif (isset($parametros['id']) && is_numeric($parametros['id'])) {
+
+            $por_id = (int) $parametros['id'];
+
+        } elseif (isset($parametros['budget']) && is_numeric($parametros['budget'])) {
+
+            $cualquiera = (int) $parametros['budget'];
+
+        } elseif (ctype_digit((string) $de_la_ruta)) {
+
+            $cualquiera = (int) $de_la_ruta;
+        }
+
+        if (is_null($por_numero) && is_null($por_id) && is_null($cualquiera)) {
+
+            return RespuestaDeCargaIa::faltan(['el N° del presupuesto que hay que borrar (va en parametros como {"numero": N})']);
+        }
+
+        $base = function () use ($contexto) {
+            return Budget::where('user_id', $contexto->owner_id);
+        };
+
+        if (!is_null($por_numero)) {
+
+            $presupuesto = $base()->where('num', $por_numero)->first();
+
+        } elseif (!is_null($por_id)) {
+
+            $presupuesto = $base()->where('id', $por_id)->first();
+
+        } else {
+
+            $con_ese_numero = $base()->where('num', $cualquiera)->first();
+            $con_ese_id = $base()->where('id', $cualquiera)->first();
+
+            if (!is_null($con_ese_numero) && !is_null($con_ese_id) && (int) $con_ese_numero->id !== (int) $con_ese_id->id) {
+
+                return RespuestaDeCargaIa::error(
+                    'El ' . $cualquiera . ' puede ser dos presupuestos distintos: el N° ' . $cualquiera . ' (de ' . self::cliente_del_presupuesto($con_ese_numero)
+                    . ') o el que tiene id ' . $cualquiera . ', que es el N° ' . (int) $con_ese_id->num . ' (de ' . self::cliente_del_presupuesto($con_ese_id) . '). '
+                    . 'No se borró nada: volvé a llamar con parametros {"numero": N} si es el número que ve la persona, o {"id": N} si es el id que devolvió una consulta.'
+                );
+            }
+
+            $presupuesto = !is_null($con_ese_numero) ? $con_ese_numero : $con_ese_id;
+        }
+
+        if (is_null($presupuesto)) {
+
+            $buscado = !is_null($por_numero) ? $por_numero : (!is_null($por_id) ? $por_id : $cualquiera);
+
+            return RespuestaDeCargaIa::error('No encontré el presupuesto ' . $buscado . ' entre los de este negocio. No se borró nada.');
+        }
+
+        if ((int) $presupuesto->budget_status_id === BudgetController::ESTADO_CONFIRMADO) {
+
+            return RespuestaDeCargaIa::error(
+                'El presupuesto N° ' . (int) $presupuesto->num . ' está confirmado (ya movió stock, caja o cuenta corriente), así que no se borra: se anula, desde Presupuestos '
+                . 'o con proponer_accion_de_pantalla (POST api/budget/{id}/anular). No se borró nada.'
+            );
+        }
+
+        return [
+            'id'          => (int) $presupuesto->id,
+            'descripcion' => 'Borrar el presupuesto N° ' . (int) $presupuesto->num . ' de ' . self::cliente_del_presupuesto($presupuesto)
+                . ' (' . FormatoIaHelper::monto((float) $presupuesto->total) . ')',
+        ];
+    }
+
+    /**
+     * El nombre del cliente de un presupuesto, o "sin cliente".
+     *
+     * @param  \App\Models\Budget  $presupuesto
+     * @return string
+     */
+    protected static function cliente_del_presupuesto($presupuesto)
+    {
+        $nombre = Client::where('id', (int) $presupuesto->client_id)->value('name');
+
+        return is_null($nombre) || trim((string) $nombre) === '' ? 'sin cliente' : trim((string) $nombre);
     }
 
     /**
