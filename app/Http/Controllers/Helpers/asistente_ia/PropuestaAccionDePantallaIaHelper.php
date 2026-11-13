@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\BudgetController;
+use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper as Catalogo;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionDePantallaIaHelper as Ejecutor;
 use App\Models\AiMessage;
@@ -12,6 +13,7 @@ use App\Models\Client;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Validation\ValidationException;
 
 /**
  * Las tres herramientas de acciones de pantalla del asistente (misión asistente-mcp, 22/9/2026,
@@ -397,6 +399,37 @@ class PropuestaAccionDePantallaIaHelper
 
         $declaracion = $resuelta['declaracion'];
 
+        $fiscal = null;
+        if ($declaracion['accion'] === 'SaleController@makeAfipTicket') {
+            try {
+                // No se ofrece ninguna configuración antes de comprobar la venta y el negocio.
+                FacturaDeVentaHelper::venta($cuerpo['sale_id'] ?? null, $contexto->owner_id, $contexto->persona);
+                $faltantes_fiscales = [];
+                if (!FacturaDeVentaHelper::es_id($cuerpo['ventas_afip_information_id'] ?? null)) {
+                    $faltantes_fiscales[] = 'el emisor y el punto de venta para esta factura (no elijas uno por tu cuenta)';
+                }
+                if (!FacturaDeVentaHelper::es_id($cuerpo['afip_tipo_comprobante_id'] ?? null)) {
+                    $faltantes_fiscales[] = 'el tipo de comprobante que querés emitir';
+                }
+                if ($faltantes_fiscales) {
+                    $emisores = FacturaDeVentaHelper::opciones_emisor($contexto->owner_id);
+                    if (!$emisores) {
+                        return RespuestaDeCargaIa::error('No hay un emisor con configuración fiscal completa en este negocio. Revisá sus datos de facturación antes de pedir la factura.');
+                    }
+                    return RespuestaDeCargaIa::faltan($faltantes_fiscales, [
+                        'ventas_afip_information_id' => $emisores,
+                        'afip_tipo_comprobante_id' => FacturaDeVentaHelper::opciones_tipo(),
+                    ]);
+                }
+                $fiscal = FacturaDeVentaHelper::preparar(FacturaDeVentaHelper::datos_del_cuerpo($cuerpo), $contexto->owner_id, $contexto->persona);
+                $cuerpo['afip_fecha_emision'] = $fiscal['data']['afip_fecha_emision'];
+                $descripcion = 'Emitir '.$fiscal['tipo']->name.' de la venta N° '.($fiscal['venta']->num ?? $fiscal['venta']->id);
+            } catch (ValidationException $e) {
+                $errores = $e->errors();
+                return RespuestaDeCargaIa::error($errores['facturacion'][0] ?? $e->getMessage());
+            }
+        }
+
         /*
          * 🔴 La tarjeta guarda la ruta RESUELTA (con sus {param}) y los valores que el router LIGÓ,
          * no lo que escribió el modelo. Antes guardaba la ruta del catálogo con los `parametros`
@@ -438,15 +471,15 @@ class PropuestaAccionDePantallaIaHelper
             $mensaje,
             $tipo,
             'pantalla:'.md5($metodo.'|'.$uri_concreta.'|'.json_encode($cuerpo)),
-            [
+            array_merge([
                 'metodo'     => $metodo,
                 'ruta'       => $declaracion['ruta'],
                 'parametros' => $parametros_ligados,
                 'cuerpo'     => $cuerpo,
-            ],
+            ], $fiscal ? ['firma_fiscal_ia' => $fiscal['huella']] : []),
             [
                 'titulo'    => mb_substr($descripcion, 0, self::LARGO_TITULO),
-                'renglones' => self::renglones($accion_legible, $cuerpo),
+                'renglones' => $fiscal ? $fiscal['resumen'] : self::renglones($accion_legible, $cuerpo),
                 'aviso'     => $aviso,
             ],
             $reemplaza_a

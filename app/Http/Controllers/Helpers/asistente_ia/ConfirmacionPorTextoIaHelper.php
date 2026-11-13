@@ -553,6 +553,8 @@ class ConfirmacionPorTextoIaHelper
                 'nota'       => self::NOTA_EJECUTADA,
             ];
 
+            $respuesta = self::con_resultado_fiscal($respuesta, is_null($model) ? null : $model->resultado);
+
             // Un envío a clientes que salió (no uno cancelado) se cuenta como envío, no como carga (N3).
             if (!is_null($model)
                 && in_array((string) $model->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)
@@ -651,12 +653,24 @@ class ConfirmacionPorTextoIaHelper
         return $detalle;
     }
 
+    public static function con_resultado_fiscal(array $respuesta, $resultado): array
+    {
+        $resultado = is_object($resultado) ? (array) $resultado : $resultado;
+        if (is_array($resultado) && isset($resultado['estado_fiscal'])
+            && in_array($resultado['estado_fiscal'], ['emitida', 'rechazada', 'pendiente_verificacion'], true)) {
+            $respuesta['estado_fiscal'] = $resultado['estado_fiscal'];
+            $respuesta['nota'] = 'Repetí el resultado fiscal tal como vino. Sólo con estado_fiscal emitida podés decir que ARCA autorizó la factura. Si fue rechazada o quedó pendiente de verificación, no la anuncies emitida ni vuelvas a emitir por tu cuenta.';
+        }
+        return $respuesta;
+    }
+
     /**
      * Las claves del resultado, además de `numero` y `total`, que viajan en `detalle` tal cual.
      * Las agrega quien arma cada resultado (EjecutorGenericoIaHelper para las altas y ediciones,
      * PropuestaActualizacionMasivaIaHelper para la masiva).
      */
     const CLAVES_DEL_DETALLE = [
+        'estado_fiscal',
         'precio_de_venta_texto',
         'campos_guardados',
         'campos_que_no_quedaron',

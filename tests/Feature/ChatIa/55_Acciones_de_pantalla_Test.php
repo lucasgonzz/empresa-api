@@ -1133,6 +1133,13 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
     public function una_accion_que_emite_comprobantes_ante_arca_siempre_deja_tarjeta_incluso_en_directo()
     {
         $venta = $this->venta_de_prueba();
+        // Una tarjeta fiscal sólo se ofrece con los datos que después se le van a confirmar a ARCA.
+        $emisor = \App\Models\AfipInformation::create([
+            'user_id' => $this->dueno->id, 'cuit' => '20111111112', 'punto_venta' => 7,
+            'razon_social' => 'Emisor de prueba P55',
+            'iva_condition_id' => \App\Models\IvaCondition::where('name', 'Monotributista')->firstOrFail()->id,
+        ]);
+        $tipo = \App\Models\AfipTipoComprobante::where('codigo', 11)->firstOrFail();
 
         $this->assertNotNull($venta, 'El test tiene que tener una venta del dueño');
         $this->assertNull($venta->fresh()->deleted_at, 'La venta tiene que estar viva, como pedía la búsqueda de antes');
@@ -1173,7 +1180,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
             'metodo'      => 'POST',
             'ruta'        => 'api/afip-ticket',
-            'cuerpo'      => ['sale_id' => $venta->id],
+            'cuerpo'      => ['sale_id' => $venta->id, 'ventas_afip_information_id' => $emisor->id, 'afip_tipo_comprobante_id' => $tipo->id],
             'descripcion' => 'Facturar la venta',
         ]);
 

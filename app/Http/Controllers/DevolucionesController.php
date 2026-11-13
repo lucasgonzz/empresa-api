@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
@@ -56,6 +57,9 @@ class DevolucionesController extends Controller
     }
 
     function store(Request $request) {
+        // Compra no usa la venta; la devolución de venta comparte su exclusión fiscal.
+        $ventas_fiscales = $request->tipo !== 'compra' && $request->sale_id ? [$request->sale_id] : [];
+        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($request) {
 
         /*
             Devolución de COMPRA (nota de crédito a proveedor, 1/10/2026): todo su camino vive en
@@ -283,8 +287,7 @@ class DevolucionesController extends Controller
 
             return response(null, 500);
         }
-
-
+        });
     }
 
     function set_pivot_percentage($request, $relation) {

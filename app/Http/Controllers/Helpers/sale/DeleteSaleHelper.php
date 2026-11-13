@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\sale;
 
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
@@ -63,6 +64,10 @@ class DeleteSaleHelper {
 	 * @return string|null
 	 */
 	static function motivo_por_el_que_no_se_puede_eliminar($sale) {
+
+        if (\App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::intento_incierto($sale->id)) {
+            return 'La venta tiene una emisión pendiente de verificar en ARCA. Consultá ese comprobante antes de borrar la venta.';
+        }
 
 		$facturacion = Self::estado_de_facturacion($sale);
 
@@ -127,6 +132,13 @@ class DeleteSaleHelper {
 	 */
 	static function estado_de_facturacion($sale) {
 
+        if (\App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::facturas_autorizadas($sale->id)->exists()) {
+            return 'con_cae';
+        }
+        if (\App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::intento_incierto($sale->id)) {
+            return 'sin_cae';
+        }
+
 		$sale->loadMissing('afip_tickets');
 
 		$tiene_tickets = false;
@@ -182,6 +194,9 @@ class DeleteSaleHelper {
 	 * @return bool  true si la venta se dio de baja; false si ya estaba eliminada y no se hizo nada.
 	 */
 	static function eliminar_venta($model, $instance, $compensar_caja = false, $payment_methods = null, $helper_caja = null) {
+        // El mismo candado de emitir evita borrar la venta mientras ARCA procesa su factura.
+        $ventas_fiscales = [$model->id];
+        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($model, $instance, $compensar_caja, $payment_methods, $helper_caja) {
 
 		/*
 			🔴 Transaccion + candado sobre la fila de la venta (auditoria de stock, 5/9/2026).
@@ -227,11 +242,29 @@ class DeleteSaleHelper {
 				\App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion($payment_methods->pluck('pivot.caja_id')->all());
 			}
 
-			Self::ejecutar_baja($model, $instance, $compensar_caja, $payment_methods, $helper_caja);
+            // El controller pudo haber validado antes de que terminara otra emisión.
+            $motivo_fiscal = null;
+            if (\App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::intento_incierto($viva->id)) {
+                $motivo_fiscal = 'La venta tiene una emisión pendiente de verificar en ARCA. Consultá ese comprobante antes de cancelar el pedido o borrar la venta.';
+            } else if ($instance instanceof \App\Http\Controllers\OrderController) {
+                // La cancelación conserva su criterio vigente: una factura con NC sí la permite.
+                if (($viva->afip_tickets()->exists() || \App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::facturas_autorizadas($viva->id)->exists())
+                    && !$viva->nota_credito_afip_tickets()->exists()) {
+                    $motivo_fiscal = 'La venta del pedido tiene una factura pendiente de resolver. Hacé la nota de crédito antes de cancelar el pedido.';
+                }
+            } else {
+                $motivo_fiscal = Self::motivo_por_el_que_no_se_puede_eliminar($viva);
+            }
+            if ($motivo_fiscal !== null) {
+                \App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::rechazar($motivo_fiscal);
+            }
+
+			Self::ejecutar_baja($viva, $instance, $compensar_caja, $payment_methods, $helper_caja);
 
 			return true;
 		});
-	}
+        });
+    }
 
 	/**
 	 * El cuerpo de la baja, ya con el candado tomado. No llamar directo: entrar siempre por

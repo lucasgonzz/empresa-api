@@ -8,6 +8,9 @@ use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWsfeHelper;
 use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
+use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
+use App\Http\Controllers\Helpers\Afip\TransporteDeFacturaHelper;
 use App\Models\AfipTicket;
 use App\Models\Sale;
 use Illuminate\Http\Request;
@@ -116,53 +119,49 @@ class AfipTicketController extends Controller
      * - Las notas de crédito AFIP suelen tener `sale_id` nulo y enlazan la venta en `sale_nota_credito_id`.
      */
     function consultar_comprobante($afip_ticket_id) {
-
-        $afip_ticket = AfipTicket::find($afip_ticket_id);
-
-        if ($afip_ticket) {
-
-            $afip_tipo_comprobante = $afip_ticket->afip_tipo_comprobante;
-
-            $testing = !$afip_ticket->afip_information->afip_ticket_production;
-
-            // Comprobantes de exportación (si tipo es 19, 20, etc.)
-            if (
-                $afip_tipo_comprobante->codigo == 19
-            ) {
-
-                Log::info('Exportacion');
-                $afip_wsaa = new AfipWSAAHelper($testing, 'wsfex');
-                $afip_wsaa->checkWsaa();
-
-
-                $helper = new AfipFexHelper($afip_ticket, $testing);
-                
-            } else {
-                
-                Log::info('NO Exportacion');
-                $afip_wsaa = new AfipWSAAHelper($testing, 'wsfe');
-                $afip_wsaa->checkWsaa();
-
-                $helper = new AfipWsfeHelper($afip_ticket, $testing);
+        if (!FacturaDeVentaHelper::es_id($afip_ticket_id)) {
+            return response()->json(null, 404);
+        }
+        $ticket = AfipTicket::find($afip_ticket_id);
+        $sale_id = $ticket ? ($ticket->sale_id ?: $ticket->sale_nota_credito_id) : null;
+        if (!$ticket || !$sale_id || !Sale::where('user_id', $this->userId())->where('id', $sale_id)->exists()) {
+            return response()->json(null, 404);
+        }
+        return CandadoDeFacturaHelper::ventas([$sale_id], function () use ($afip_ticket_id, $sale_id) {
+            $ticket = AfipTicket::where('id', $afip_ticket_id)->lockForUpdate()->first();
+            $venta = Sale::where('user_id', $this->userId())->where('id', $sale_id)->first();
+            if (!$ticket || !$venta || (int) ($ticket->sale_id ?: $ticket->sale_nota_credito_id) !== (int) $sale_id) {
+                return response()->json(null, 404);
             }
-
-            $helper->consultar_comprobante();
-        }
-
-        $afip_ticket = AfipTicket::find($afip_ticket_id);
-
-        /** ID de venta para `fullModel`: factura (`sale_id`) o NC AFIP (`sale_nota_credito_id`). */
-        $sale_id_para_full_model = null;
-        if ($afip_ticket) {
-            $sale_id_para_full_model = !is_null($afip_ticket->sale_id)
-                ? $afip_ticket->sale_id
-                : $afip_ticket->sale_nota_credito_id;
-        }
-
-        return response()->json([
-            'sale' => $this->fullModel('Sale', $sale_id_para_full_model),
-            'afip_ticket'   => $afip_ticket,
-        ], 200);
+            $emisor = $ticket->afip_information;
+            if (!$emisor || (int) $emisor->user_id !== (int) $this->userId() || !$ticket->afip_tipo_comprobante) {
+                return response()->json(['message' => 'No se puede verificar la configuración fiscal de ese comprobante. Revisala antes de consultar.'], 422);
+            }
+            if (trim((string) $ticket->cbte_numero) === '' || !$ticket->cbte_tipo || !$ticket->punto_venta) {
+                return response()->json(['message' => 'El intento no tiene un número fiscal completo para consultar. Revisá sus errores de facturación.'], 422);
+            }
+            if (($ticket->cuit_negocio && preg_replace('/\D/', '', $ticket->cuit_negocio) !== preg_replace('/\D/', '', $emisor->cuit))
+                || (int) $ticket->punto_venta !== (int) $emisor->punto_venta) {
+                return response()->json(['message' => 'La configuración del emisor no coincide con el comprobante guardado. Revisala antes de consultar.'], 422);
+            }
+            if (!$ticket->cae && $ticket->firma_datos_fiscales) {
+                FacturaDeVentaHelper::fijar_contexto($ticket, FacturaDeVentaHelper::reconstruir_intento($ticket, $this->userId()));
+            } else {
+                // Un comprobante autorizado conserva su identidad aunque después tenga devoluciones.
+                // Se consulta para backfill, con el emisor/tipo ya verificados y fijados para esta llamada.
+                $ticket->setRelation('afip_information', $emisor);
+                $ticket->setRelation('afip_tipo_comprobante', $ticket->afip_tipo_comprobante);
+                if ($ticket->sale_id) {
+                    $ticket->setRelation('sale', $venta);
+                }
+            }
+            // Una consulta con CAE sigue ejecutándose: puede reparar IVA/ganancia. La transición
+            // fiscal y el saldo son idempotentes dentro del helper, no se omite la lectura remota.
+            app(TransporteDeFacturaHelper::class)->consultar($ticket);
+            return response()->json([
+                'sale' => $this->fullModel('Sale', $sale_id), 'afip_ticket' => $ticket->fresh(),
+            ], 200);
+        });
     }
 
     /**
@@ -172,9 +171,24 @@ class AfipTicketController extends Controller
      * @return \Illuminate\Http\JsonResponse Respuesta con `sale` recargada vía `fullModel`.
      */
     function destroy($id) {
+        if (!FacturaDeVentaHelper::es_id($id)) {
+            return response()->json(null, 404);
+        }
         $model = AfipTicket::find($id);
 
         if (!$model) {
+            return response()->json(null, 404);
+        }
+        $sale_id = $model->sale_id ?: $model->sale_nota_credito_id;
+        if (!$sale_id || !Sale::where('user_id', $this->userId())->where('id', $sale_id)->exists()) {
+            return response()->json(null, 404);
+        }
+        return CandadoDeFacturaHelper::ventas([$sale_id], function () use ($id, $sale_id) {
+        // Un CAE pudo llegar después de la primera lectura. El borrado comparte exclusión con
+        // emisión/conciliación y decide sólo con la fila actual, sin ocultar efectos fiscales.
+        $model = AfipTicket::where('id', $id)->lockForUpdate()->first();
+        if (!$model || (int) ($model->sale_id ?: $model->sale_nota_credito_id) !== (int) $sale_id
+            || !Sale::where('user_id', $this->userId())->where('id', $sale_id)->exists()) {
             return response()->json(null, 404);
         }
 
@@ -196,6 +210,11 @@ class AfipTicketController extends Controller
                 'message' => 'No se puede eliminar un comprobante que ya tiene CAE autorizado por ARCA. Para anularlo hay que emitir una Nota de Crédito.',
             ], 422);
         }
+        if (trim((string) $model->cbte_numero) !== '' && $model->resultado !== 'R') {
+            return response()->json([
+                'message' => 'No se puede eliminar un intento numerado cuya emisión no está resuelta. Consultá su resultado en ARCA antes de emitir otro comprobante.',
+            ], 422);
+        }
 
         /** ID de venta asociada: factura usa `sale_id`; NC AFIP usa `sale_nota_credito_id`. */
         $sale_id = !is_null($model->sale_id)
@@ -203,5 +222,6 @@ class AfipTicketController extends Controller
             : $model->sale_nota_credito_id;
         $model->delete();
         return response()->json(['sale' => $this->fullModel('Sale', $sale_id)], 200);
+        });
     }
 }

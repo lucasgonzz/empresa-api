@@ -62,12 +62,17 @@ class Destroy_Afip_Ticket_Bloquea_Con_Cae_Test extends EmpresaTestCase
      */
     protected function crear_afip_ticket_con_cae($cae)
     {
+        $venta = \App\Models\Sale::create(['user_id' => \Illuminate\Support\Facades\Auth::id(),
+            'total' => 1000, 'sub_total' => 1000, 'moneda_id' => 1]);
         $afip_ticket = new AfipTicket();
+        $afip_ticket->sale_id      = $venta->id;
         $afip_ticket->cae          = $cae;
         $afip_ticket->cbte_tipo    = '1';
         $afip_ticket->cbte_letra   = 'A';
         $afip_ticket->punto_venta  = '1';
         $afip_ticket->cbte_numero  = '773';
+        // Sin CAE, el caso que se puede borrar es un rechazo definitivo: un número incierto no lo es.
+        $afip_ticket->resultado    = empty($cae) ? 'R' : 'A';
         $afip_ticket->save();
 
         return $afip_ticket;
