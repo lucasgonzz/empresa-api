@@ -425,6 +425,78 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
         $this->assertSame('Sin stock: Malbec', $tercero[0]['detalle']);
     }
 
+    /**
+     * 🔴 Re-revisión: los movimientos que no avisan (ventas que no llegan a cero, ingresos) también dejan atrás
+     * al cursor, así la consulta siguiente no los vuelve a leer; pero el cursor nunca pasa por encima de una
+     * transición vigente.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_cursor_de_stock_avanza_sobre_los_movimientos_que_no_avisan()
+    {
+        $this->preferencias(['agente_aviso_stock_cero' => 1, 'agente_aviso_stock_desde' => '2026-10-16 09:00:00']);
+
+        $vendido = Article::create(['name' => 'Se vende mucho', 'user_id' => $this->comercio->id, 'status' => 'active']);
+        DB::table('articles')->where('id', $vendido->id)->update(['stock' => 100]);
+
+        for ($i = 0; $i < 40; $i++) {
+            $ultimo = $this->movimiento($vendido, '2026-10-16 10:00:00', ['amount' => -1, 'stock_resultante' => 200 - $i]);
+        }
+
+        $this->assertSame([], $this->avisos_del_dueno());
+        $this->assertSame($ultimo, (int) $this->cursor('agente_aviso_stock_cursor'), 'Lo que no avisa queda atrás del cursor.');
+        $this->assertSame(0, DB::table('stock_movements')->where('id', '>', $this->cursor('agente_aviso_stock_cursor'))->where('user_id', $this->comercio->id)->count(), 'La consulta siguiente no lee nada.');
+
+        // Una transición entre movimientos que no avisan: el cursor se para justo antes de ella.
+        $antes = $this->movimiento($vendido, '2026-10-16 10:05:00', ['amount' => 5, 'stock_resultante' => 105]);
+        $this->sin_stock('Aceite', '2026-10-16 10:06:00');
+        $transicion = (int) DB::table('stock_movements')->max('id');
+        $despues = $this->movimiento($vendido, '2026-10-16 10:07:00', ['amount' => -1, 'stock_resultante' => 104]);
+
+        $avisos = $this->avisos_del_dueno();
+        $this->assertCount(1, $avisos);
+        $this->assertSame('recordatorio:stock_cero:' . $transicion, $avisos[0]['id']);
+        $this->assertSame($antes, (int) $this->cursor('agente_aviso_stock_cursor'), 'Nunca más allá de la transición vigente.');
+
+        $this->avisado($avisos[0]['id'])->assertStatus(200);
+        $this->assertSame([], $this->avisos_del_dueno());
+        $this->assertSame($despues, (int) $this->cursor('agente_aviso_stock_cursor'));
+    }
+
+    /**
+     * 🔴 Re-revisión: en horas fijas, los pedidos de una hora que venció sin salir quedan atrás del cursor (si
+     * no, más de 500 juntados dejaban vacíos los resúmenes siguientes); los de la hora pendiente, no.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function en_horas_fijas_el_cursor_saltea_los_pedidos_de_una_hora_vencida()
+    {
+        $this->preferencias([
+            'agente_aviso_pedidos'       => 'horas',
+            'agente_aviso_pedidos_horas' => '07:00,10:00',
+            'agente_aviso_pedidos_desde' => '2026-10-16 06:00:00',
+        ]);
+
+        $this->pedido(60, '2026-10-16 06:20:00');
+        $vencido = $this->pedido(61, '2026-10-16 06:40:00'); // su hora (07:00) venció: 10:30 - 3 h = 07:30
+        $vigente = $this->pedido(62, '2026-10-16 09:00:00');
+
+        $avisos = $this->avisos_del_dueno();
+
+        $this->assertSame((int) $vencido->id, (int) $this->cursor('agente_aviso_pedidos_cursor'));
+        $this->assertCount(1, $avisos);
+        $this->assertSame('10:00', $avisos[0]['hora']);
+        $this->assertStringContainsString('N° 62', $avisos[0]['texto']);
+        $this->assertStringNotContainsString('N° 61', $avisos[0]['texto']);
+
+        // Sellado el de las 10, todo queda atrás.
+        $this->avisado($avisos[0]['id'])->assertStatus(200);
+        $this->assertSame((int) $vigente->id, (int) $this->cursor('agente_aviso_pedidos_cursor'));
+        $this->assertSame([], $this->avisos_del_dueno());
+    }
+
     // ------------------------------------------------------------------------------------ 5
 
     /**

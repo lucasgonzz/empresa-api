@@ -448,6 +448,8 @@ class AvisosDelDuenoIaHelper
         $hoy = $ahora->copy()->startOfDay();
         $dias = $limite->lt($hoy) ? [$hoy->copy()->subDay(), $hoy] : [$hoy];
 
+        $cursor = self::saltear_pedidos_que_ya_no_avisan($dueno, $horas, $desde, $limite, $ahora, $cursor);
+
         $avisos = [];
 
         foreach ($dias as $dia) {
@@ -483,6 +485,78 @@ class AvisosDelDuenoIaHelper
         }
 
         return $avisos;
+    }
+
+    /**
+     * 🔴 EN HORAS FIJAS EL CURSOR TAMBIÉN AVANZA SOBRE LO QUE YA NO PUEDE AVISAR (re-revisión del bloque C). Si
+     * los resúmenes no salen (ventana cerrada sin plantilla) y se juntan más pedidos que FILAS_POR_LECTURA, los
+     * resúmenes siguientes salían vacíos y el aviso moría en silencio. Un pedido ya no puede avisar si su hora
+     * fija venció o ya se selló: se calcula hasta qué momento todas las horas fijas desde el cursor están
+     * vencidas o selladas, y se avanza sobre el tramo inicial de pedidos creados hasta ese momento. Nunca más
+     * allá de un pedido que todavía puede entrar en un resumen pendiente.
+     *
+     * @param  array<int, string>  $horas
+     * @return int  El cursor con que sigue la consulta.
+     */
+    protected static function saltear_pedidos_que_ya_no_avisan(User $dueno, array $horas, Carbon $desde, Carbon $limite, Carbon $ahora, $cursor): int
+    {
+        $momentos = [];
+        $dia = $limite->copy()->startOfDay()->subDay();
+
+        while (!$dia->gt($ahora)) {
+            foreach ($horas as $hora) {
+                $momento = $dia->copy()->setTimeFromTimeString($hora . ':00');
+                if ($momento->gt($desde) && !$momento->gt($ahora)) {
+                    $momentos[] = $momento;
+                }
+            }
+            $dia->addDay();
+        }
+
+        usort($momentos, function ($a, $b) {
+            return $a->lt($b) ? -1 : ($a->eq($b) ? 0 : 1);
+        });
+
+        $muerto = null;
+
+        foreach ($momentos as $momento) {
+
+            if ($momento->lt($limite) || count(self::sellados($dueno, AiAvisoDelAsistente::TIPO_PEDIDOS_HORA, [self::clave_de_hora($desde, $momento)]))) {
+                $muerto = $momento;
+                continue;
+            }
+
+            break;
+        }
+
+        if (is_null($muerto)) {
+
+            return (int) $cursor;
+        }
+
+        $muertos_hasta = null;
+
+        foreach (Order::where('id', '>', (int) $cursor)
+                        ->where('user_id', (int) $dueno->id)
+                        ->orderBy('id')
+                        ->limit(self::FILAS_POR_LECTURA)
+                        ->get(['id', 'created_at']) as $pedido) {
+
+            if (Carbon::parse($pedido->created_at)->gt($muerto)) {
+                break;
+            }
+
+            $muertos_hasta = (int) $pedido->id;
+        }
+
+        if (is_null($muertos_hasta)) {
+
+            return (int) $cursor;
+        }
+
+        self::avanzar_cursor($dueno, 'agente_aviso_pedidos_cursor', $muertos_hasta);
+
+        return $muertos_hasta;
     }
 
     protected static function clave_de_hora(Carbon $desde, Carbon $momento): string
@@ -631,22 +705,29 @@ class AvisosDelDuenoIaHelper
             $cursor = (int) $ofrecido['hasta_id'];
         }
 
-        $movimientos = self::transiciones_a_cero($dueno, $cursor);
+        $movimientos = self::movimientos_despues_del_cursor($dueno, $cursor);
 
         if (!count($movimientos)) {
 
             return [];
         }
 
-        $vencidos_hasta = null;
+        /*
+         * 🔴 EL CURSOR AVANZA SOBRE TODO LO QUE YA NO PUEDE AVISAR (re-revisión del bloque C). Un comercio que
+         * vende mucho y casi nunca llega a cero recorría cada 5 minutos todos sus movimientos desde que prendió
+         * el aviso, y eso crecía día a día. Se avanza hasta el último id de lo leído que no es una transición a
+         * cero o ya venció, pero nunca más allá de la primera transición vigente: esa queda para el aviso.
+         */
+        $excluidos = self::conceptos_excluidos();
+        $muertos_hasta = null;
         $vigentes = [];
 
         foreach ($movimientos as $movimiento) {
 
-            if (Carbon::parse($movimiento->created_at)->lt($limite)) {
+            if (!self::es_transicion_a_cero($movimiento, $excluidos) || Carbon::parse($movimiento->created_at)->lt($limite)) {
 
                 if (!count($vigentes)) {
-                    $vencidos_hasta = (int) $movimiento->id;
+                    $muertos_hasta = (int) $movimiento->id;
                 }
 
                 continue;
@@ -655,8 +736,8 @@ class AvisosDelDuenoIaHelper
             $vigentes[] = $movimiento;
         }
 
-        if (!is_null($vencidos_hasta)) {
-            self::avanzar_cursor($dueno, 'agente_aviso_stock_cursor', $vencidos_hasta);
+        if (!is_null($muertos_hasta)) {
+            self::avanzar_cursor($dueno, 'agente_aviso_stock_cursor', $muertos_hasta);
         }
 
         if (!count($vigentes)) {
@@ -705,41 +786,56 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
-     * Los movimientos de stock del dueño después del cursor que dejaron un artículo sin variantes sin stock
-     * habiendo tenido antes, sin los de la importación de Excel ni los de la masiva. Por la clave primaria y
-     * con LIMIT (D3: la tabla no tiene índice por user_id ni por created_at).
+     * TODOS los movimientos de stock del dueño después del cursor, por la clave primaria y con LIMIT (D3: la
+     * tabla no tiene índice por user_id ni por created_at). Se filtran en PHP (es_transicion_a_cero()) para que
+     * el cursor pueda avanzar también sobre los que no avisan.
      *
      * @param  \App\Models\User  $dueno
      * @param  int  $cursor
      * @return array<int, object>
      */
-    protected static function transiciones_a_cero(User $dueno, $cursor): array
+    protected static function movimientos_despues_del_cursor(User $dueno, $cursor): array
     {
-        $consulta = DB::table('stock_movements')
-                        ->where('id', '>', (int) $cursor)
-                        ->where('user_id', (int) $dueno->id)
-                        ->whereNull('article_variant_id')
-                        ->whereNotNull('article_id')
-                        ->where('amount', '<', 0)
-                        ->whereNotNull('stock_resultante')
-                        ->where('stock_resultante', '<=', 0)
-                        ->whereRaw('(stock_resultante - amount) > 0')
-                        ->where(function ($q) {
-                            $q->whereNull('observations')->orWhere('observations', 'not like', self::OBSERVACION_DE_LA_MASIVA);
-                        });
+        return DB::table('stock_movements')
+                    ->where('id', '>', (int) $cursor)
+                    ->where('user_id', (int) $dueno->id)
+                    ->orderBy('id')
+                    ->limit(self::FILAS_POR_LECTURA)
+                    ->get(['id', 'article_id', 'article_variant_id', 'amount', 'stock_resultante', 'concepto_stock_movement_id', 'observations', 'created_at'])
+                    ->all();
+    }
 
-        $excluidos = self::conceptos_excluidos();
+    /**
+     * true si el movimiento dejó un artículo sin variantes sin stock habiendo tenido antes, y no es de la
+     * importación de Excel ni de la actualización masiva.
+     *
+     * @param  object  $movimiento
+     * @param  array<int, int>  $excluidos  Los ids de conceptos que no cuentan.
+     * @return bool
+     */
+    protected static function es_transicion_a_cero($movimiento, array $excluidos): bool
+    {
+        if (!is_null($movimiento->article_variant_id) || is_null($movimiento->article_id) || is_null($movimiento->stock_resultante)) {
 
-        if (count($excluidos)) {
-            $consulta->where(function ($q) use ($excluidos) {
-                $q->whereNull('concepto_stock_movement_id')->orWhereNotIn('concepto_stock_movement_id', $excluidos);
-            });
+            return false;
         }
 
-        return $consulta->orderBy('id')
-                        ->limit(self::FILAS_POR_LECTURA)
-                        ->get(['id', 'article_id', 'created_at'])
-                        ->all();
+        $cantidad = (float) $movimiento->amount;
+        $resultante = (float) $movimiento->stock_resultante;
+
+        if ($cantidad >= 0 || $resultante > 0 || ($resultante - $cantidad) <= 0) {
+
+            return false;
+        }
+
+        if (!is_null($movimiento->concepto_stock_movement_id) && in_array((int) $movimiento->concepto_stock_movement_id, $excluidos, true)) {
+
+            return false;
+        }
+
+        $masiva = rtrim(self::OBSERVACION_DE_LA_MASIVA, '%');
+
+        return !(is_string($movimiento->observations) && strpos($movimiento->observations, $masiva) === 0);
     }
 
     /**
