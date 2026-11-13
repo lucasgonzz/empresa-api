@@ -122,12 +122,21 @@ class PropuestaAvisosDelDuenoIaHelper
         if ($cambian_los_pedidos) {
             $columnas['agente_aviso_pedidos'] = $nuevas['pedidos'];
             $columnas['agente_aviso_pedidos_horas'] = count($nuevas['horas']) ? implode(',', $nuevas['horas']) : null;
-            $columnas['agente_aviso_pedidos_desde'] = $nuevas['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO ? null : $ahora->format('Y-m-d H:i:s');
+
+            if ($nuevas['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO) {
+                $columnas['agente_aviso_pedidos_desde'] = null;
+                $columnas['agente_aviso_pedidos_cursor'] = null;
+            } elseif ($actuales['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO) {
+                /* Recién al prenderlo arranca el cursor: cambiar solo las horas o el modo no lo reinicia. */
+                $columnas['agente_aviso_pedidos_desde'] = $ahora->format('Y-m-d H:i:s');
+                $columnas['agente_aviso_pedidos_cursor'] = AvisosDelDuenoIaHelper::ultimo_id('orders');
+            }
         }
 
         if ($nuevas['stock_cero'] !== $actuales['stock_cero']) {
             $columnas['agente_aviso_stock_cero'] = $nuevas['stock_cero'] ? 1 : 0;
             $columnas['agente_aviso_stock_desde'] = $nuevas['stock_cero'] ? $ahora->format('Y-m-d H:i:s') : null;
+            $columnas['agente_aviso_stock_cursor'] = $nuevas['stock_cero'] ? AvisosDelDuenoIaHelper::ultimo_id('stock_movements') : null;
         }
 
         if (count($columnas)) {

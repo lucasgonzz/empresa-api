@@ -36,6 +36,14 @@ class AddAvisosDelDuenoToUsers extends Migration
                 $table->timestamp('agente_aviso_pedidos_desde')->nullable();
             }
 
+            /*
+             * El cursor por id de `orders` (revisión independiente, D3/D4): el último pedido avisado o salteado.
+             * Las lecturas van por `id > cursor` con LIMIT, nunca por fecha.
+             */
+            if (!Schema::hasColumn('users', 'agente_aviso_pedidos_cursor')) {
+                $table->unsignedBigInteger('agente_aviso_pedidos_cursor')->nullable();
+            }
+
             if (!Schema::hasColumn('users', 'agente_aviso_stock_cero')) {
                 $table->boolean('agente_aviso_stock_cero')->default(false);
             }
@@ -43,13 +51,21 @@ class AddAvisosDelDuenoToUsers extends Migration
             if (!Schema::hasColumn('users', 'agente_aviso_stock_desde')) {
                 $table->timestamp('agente_aviso_stock_desde')->nullable();
             }
+
+            /*
+             * El cursor por id de `stock_movements` (D3): esa tabla no tiene índice por user_id ni por
+             * created_at y en algunos clientes tiene millones de filas; se lee solo por clave primaria.
+             */
+            if (!Schema::hasColumn('users', 'agente_aviso_stock_cursor')) {
+                $table->unsignedBigInteger('agente_aviso_stock_cursor')->nullable();
+            }
         });
     }
 
     public function down()
     {
         Schema::table('users', function (Blueprint $table) {
-            foreach (['agente_aviso_pedidos', 'agente_aviso_pedidos_horas', 'agente_aviso_pedidos_desde', 'agente_aviso_stock_cero', 'agente_aviso_stock_desde'] as $columna) {
+            foreach (['agente_aviso_pedidos', 'agente_aviso_pedidos_horas', 'agente_aviso_pedidos_desde', 'agente_aviso_pedidos_cursor', 'agente_aviso_stock_cero', 'agente_aviso_stock_desde', 'agente_aviso_stock_cursor'] as $columna) {
                 if (Schema::hasColumn('users', $columna)) {
                     $table->dropColumn($columna);
                 }

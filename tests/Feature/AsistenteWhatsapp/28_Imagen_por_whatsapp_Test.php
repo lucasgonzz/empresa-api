@@ -317,6 +317,64 @@ class Imagen_por_whatsapp_Test extends AsistenteWhatsappTestCase
         $this->assertNull($avisos[0]['url']);
     }
 
+    /**
+     * 🔴 D6 de la revisión: si publicar la copia lanza (disco sin permiso), el aviso sale igual, sin link y sin
+     * decir «tocá el link»; y si no se puede armar el link público (sin APP_URL), tampoco lo promete.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function si_no_se_puede_publicar_el_aviso_sale_sin_link()
+    {
+        $this->anunciar_avisos();
+
+        $disco_roto = \Mockery::mock(\Illuminate\Contracts\Filesystem\Filesystem::class);
+        $disco_roto->shouldReceive('exists')->andReturn(false);
+        $disco_roto->shouldReceive('put')->andThrow(new \RuntimeException('Permission denied'));
+        Storage::set('public', $disco_roto);
+
+        $assistant = $this->turno('generá para ese producto una imagen de 6 botellas', [
+            $this->pide_la_imagen(),
+            $this->end_turn('La pedí; te la mando por acá cuando esté lista.'),
+        ]);
+        $pedido = IaImagenPedido::where('ai_message_id', $assistant->id)->firstOrFail();
+
+        $this->post('api/admin-sync/ia-imagenes/' . $pedido->uuid . '/resultado', ['estado' => 'lista', 'imagen' => $this->png()], $this->headers())
+            ->assertStatus(200);
+
+        $avisos = $this->avisos_pendientes();
+        $this->assertCount(1, $avisos, 'El aviso sale aunque no se haya podido publicar la copia.');
+        $this->assertNull($avisos[0]['url']);
+        $this->assertStringNotContainsString('Tocá el link', $avisos[0]['texto']);
+        $this->assertStringContainsString('no pude prepararte el link', $avisos[0]['texto']);
+    }
+
+    /**
+     * Sin APP_URL no hay link público que armar: el texto no dice «tocá el link».
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function sin_url_publica_el_texto_no_promete_el_link()
+    {
+        $this->anunciar_avisos();
+        config(['app.APP_URL' => '', 'app.APP_ENV' => 'production']);
+
+        $assistant = $this->turno('generá para ese producto una imagen de 6 botellas', [
+            $this->pide_la_imagen(),
+            $this->end_turn('La pedí; te la mando por acá cuando esté lista.'),
+        ]);
+        $pedido = IaImagenPedido::where('ai_message_id', $assistant->id)->firstOrFail();
+
+        $this->post('api/admin-sync/ia-imagenes/' . $pedido->uuid . '/resultado', ['estado' => 'lista', 'imagen' => $this->png()], $this->headers())
+            ->assertStatus(200);
+
+        $avisos = $this->avisos_pendientes();
+        $this->assertCount(1, $avisos);
+        $this->assertNull($avisos[0]['url']);
+        $this->assertStringNotContainsString('Tocá el link', $avisos[0]['texto']);
+    }
+
     // ------------------------------------------------------------------------------------ 4
 
     /**

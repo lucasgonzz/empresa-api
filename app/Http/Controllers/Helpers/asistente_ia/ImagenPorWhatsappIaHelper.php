@@ -150,13 +150,16 @@ class ImagenPorWhatsappIaHelper
 
             $publicada = $pedido->estado === IaImagenPedido::ESTADO_LISTA ? self::publicar($pedido) : null;
 
+            /* «Tocá el link» solo si de verdad va a haber link (revisión independiente, D6). */
+            $con_link = !is_null($publicada) && !is_null(self::url_publica((string) $pedido->uuid, (int) $pedido->user_id));
+
             return AiAvisoDelAsistente::create([
                 'uuid'               => (string) $pedido->uuid,
                 'owner_id'           => (int) $conversation->user_id,
                 'ai_conversation_id' => (int) $conversation->id,
                 'ai_message_id'      => (int) $mensaje->id,
                 'tipo'               => AiAvisoDelAsistente::TIPO_IMAGEN_POR_WHATSAPP,
-                'texto'              => self::texto($pedido, !is_null($publicada), $para_el_dueno),
+                'texto'              => self::texto($pedido, $con_link, $para_el_dueno),
             ]);
 
         } catch (\Throwable $e) {
@@ -262,35 +265,52 @@ class ImagenPorWhatsappIaHelper
      */
     public static function publicar(IaImagenPedido $pedido)
     {
-        $existente = self::ruta_publica($pedido);
+        /*
+         * 🔴 NUNCA LANZA (revisión independiente, D6): corre adentro de avisar(), y un disco sin permiso o un
+         * archivo ilegible dejaban al dueño sin ningún aviso. Si no se puede publicar, el aviso sale igual, sin
+         * link y diciendo dónde la ve.
+         */
+        try {
 
-        if (!is_null($existente)) {
+            $existente = self::ruta_publica($pedido);
 
-            return $existente;
-        }
+            if (!is_null($existente)) {
 
-        if (empty($pedido->path) || !Storage::disk('local')->exists((string) $pedido->path)) {
+                return $existente;
+            }
+
+            if (empty($pedido->path) || !Storage::disk('local')->exists((string) $pedido->path)) {
+
+                return null;
+            }
+
+            $binario = (string) Storage::disk('local')->get((string) $pedido->path);
+            $mime = AsistenteImagenHelper::media_type($binario);
+
+            if ($mime === 'image/webp') {
+
+                $binario = self::webp_a_png($binario);
+                $mime = is_null($binario) ? null : 'image/png';
+            }
+
+            if ($mime !== 'image/png' && $mime !== 'image/jpeg') {
+
+                return null;
+            }
+
+            $ruta = self::base_publica($pedido) . ($mime === 'image/png' ? '.png' : '.jpg');
+
+            return Storage::disk('public')->put($ruta, $binario) ? $ruta : null;
+
+        } catch (\Throwable $e) {
+
+            Log::warning('ImagenPorWhatsappIaHelper: no se pudo publicar la imagen; el aviso sale sin link', [
+                'ia_imagen_pedido_id' => (int) $pedido->id,
+                'error'               => $e->getMessage(),
+            ]);
 
             return null;
         }
-
-        $binario = (string) Storage::disk('local')->get((string) $pedido->path);
-        $mime = AsistenteImagenHelper::media_type($binario);
-
-        if ($mime === 'image/webp') {
-
-            $binario = self::webp_a_png($binario);
-            $mime = is_null($binario) ? null : 'image/png';
-        }
-
-        if ($mime !== 'image/png' && $mime !== 'image/jpeg') {
-
-            return null;
-        }
-
-        $ruta = self::base_publica($pedido) . ($mime === 'image/png' ? '.png' : '.jpg');
-
-        return Storage::disk('public')->put($ruta, $binario) ? $ruta : null;
     }
 
     /**

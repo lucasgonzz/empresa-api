@@ -11,6 +11,7 @@ use App\Models\AiMessageAction;
 use App\Models\Article;
 use App\Models\ArticleVariant;
 use App\Models\Buyer;
+use App\Models\ConceptoStockMovement;
 use App\Models\Order;
 use App\Models\OrderStatus;
 use App\Services\AsistenteIa\HerramientasDeCarga;
@@ -52,10 +53,27 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
         ]);
     }
 
-    /** Prende los avisos del dueño con su cursor. */
+    /**
+     * Prende los avisos del dueño. Sin cursor dado, arranca donde arranca la tarjeta: el id más alto de la tabla
+     * en ese momento.
+     */
     protected function preferencias(array $columnas)
     {
+        if (isset($columnas['agente_aviso_pedidos']) && !array_key_exists('agente_aviso_pedidos_cursor', $columnas)) {
+            $columnas['agente_aviso_pedidos_cursor'] = AvisosDelDuenoIaHelper::ultimo_id('orders');
+        }
+
+        if (!empty($columnas['agente_aviso_stock_cero']) && !array_key_exists('agente_aviso_stock_cursor', $columnas)) {
+            $columnas['agente_aviso_stock_cursor'] = AvisosDelDuenoIaHelper::ultimo_id('stock_movements');
+        }
+
         DB::table('users')->where('id', $this->comercio->id)->update($columnas);
+    }
+
+    /** Un cursor del dueño, tal como quedó en la base. */
+    protected function cursor($columna)
+    {
+        return DB::table('users')->where('id', $this->comercio->id)->value($columna);
     }
 
     /**
@@ -87,23 +105,31 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
         return $pedido->fresh();
     }
 
-    /** Un artículo con su stock y un movimiento que lo bajó a esa hora. */
-    protected function sin_stock($nombre, $movido_a, $stock = 0)
+    /**
+     * Un artículo con su stock y un movimiento que lo bajó a esa hora (de 3 unidades: antes tenía stock).
+     *
+     * @return Article
+     */
+    protected function sin_stock($nombre, $movido_a, $stock = 0, array $del_movimiento = [])
     {
         $articulo = Article::create(['name' => $nombre, 'user_id' => $this->comercio->id, 'status' => 'active']);
         DB::table('articles')->where('id', $articulo->id)->update(['stock' => $stock]);
 
-        DB::table('stock_movements')->insert([
-            'article_id'       => $articulo->id,
-            'user_id'          => $this->comercio->id,
-            'amount'           => -3,
-            'stock_resultante' => $stock,
-            'concepto'         => 'Venta',
-            'created_at'       => $movido_a,
-            'updated_at'       => $movido_a,
-        ]);
+        $this->movimiento($articulo, $movido_a, array_merge(['amount' => -3, 'stock_resultante' => $stock], $del_movimiento));
 
         return $articulo;
+    }
+
+    /** Un movimiento de stock de un artículo; devuelve su id. */
+    protected function movimiento(Article $articulo, $movido_a, array $columnas)
+    {
+        return (int) DB::table('stock_movements')->insertGetId(array_merge([
+            'article_id' => $articulo->id,
+            'user_id'    => $this->comercio->id,
+            'concepto'   => 'Venta',
+            'created_at' => $movido_a,
+            'updated_at' => $movido_a,
+        ], $columnas));
     }
 
     /** Solo los ítems de los avisos del dueño (los de la Agenda tienen tarea_id). */
@@ -179,9 +205,35 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
     public function el_aviso_de_un_pedido_vence_como_un_recordatorio()
     {
         $this->preferencias(['agente_aviso_pedidos' => 'al_toque', 'agente_aviso_pedidos_desde' => '2026-10-16 06:00:00']);
-        $this->pedido(70, '2026-10-16 07:00:00');
+        $vencido = $this->pedido(70, '2026-10-16 07:00:00');
 
         $this->assertSame([], $this->avisos_del_dueno());
+        $this->assertSame((int) $vencido->id, (int) $this->cursor('agente_aviso_pedidos_cursor'), 'El vencido queda atrás del cursor.');
+    }
+
+    /**
+     * 🔴 D4: con el cursor por id, lo sellado queda atrás y lo que se lee después es siempre lo nuevo; un vencido
+     * del principio se saltea sin tapar a los nuevos.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function al_toque_el_cursor_avanza_al_sellar_y_los_nuevos_no_se_atrasan()
+    {
+        $this->preferencias(['agente_aviso_pedidos' => 'al_toque', 'agente_aviso_pedidos_desde' => '2026-10-16 06:00:00']);
+        $this->pedido(70, '2026-10-16 07:00:00'); // vencido
+        $primero = $this->pedido(71, '2026-10-16 09:00:00');
+        $segundo = $this->pedido(72, '2026-10-16 10:00:00');
+
+        $ids = array_column($this->avisos_del_dueno(), 'id');
+        $this->assertCount(2, $ids);
+
+        $this->avisado($ids[0])->assertStatus(200);
+        $this->assertSame((int) $primero->id, (int) $this->cursor('agente_aviso_pedidos_cursor'));
+
+        $despues = $this->avisos_del_dueno();
+        $this->assertCount(1, $despues);
+        $this->assertStringStartsWith('recordatorio:pedido_tienda:' . $segundo->id . '-', $despues[0]['id']);
     }
 
     // ------------------------------------------------------------------------------------ 3
@@ -239,37 +291,138 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
     // ------------------------------------------------------------------------------------ 4
 
     /**
-     * 🔴 Stock cero: los artículos sin variantes que un movimiento dejó en cero, agrupados en un aviso; el que
-     * tiene variantes, el que repuso stock y el movido antes del cursor, no.
+     * 🔴 Stock cero: los artículos sin variantes que un movimiento pasó de tener stock a no tenerlo, en UN solo
+     * aviso cuyo id es el del último movimiento incluido; el que tiene variantes, el que repuso stock y el movido
+     * antes de prender el aviso, no. Ya en cero, otra venta no vuelve a avisar.
      *
      * @group asistente-whatsapp
      * @test
      */
     public function stock_cero_agrupa_los_articulos_que_se_quedaron_sin_stock()
     {
+        $this->sin_stock('Antes del cursor', '2026-10-16 08:50:00');
         $this->preferencias(['agente_aviso_stock_cero' => 1, 'agente_aviso_stock_desde' => '2026-10-16 09:00:00']);
 
         $coratina = $this->sin_stock('Aceite Coratina 500 ml', '2026-10-16 10:10:00');
-        $malbec = $this->sin_stock('Malbec Reserva', '2026-10-16 10:20:00', -1);
-        $this->sin_stock('Antes del cursor', '2026-10-16 08:50:00');
+        $this->sin_stock('Malbec Reserva', '2026-10-16 10:20:00', -1);
         $repuesto = $this->sin_stock('Repuesto después', '2026-10-16 10:00:00');
         DB::table('articles')->where('id', $repuesto->id)->update(['stock' => 5]);
         $con_variantes = $this->sin_stock('Remera con talles', '2026-10-16 10:00:00');
         ArticleVariant::create(['article_id' => $con_variantes->id, 'variant_description' => 'Talle M']);
+        $ultimo = (int) DB::table('stock_movements')->max('id');
 
         $avisos = $this->avisos_del_dueno();
 
         $this->assertCount(1, $avisos);
-        $this->assertSame('recordatorio:stock_cero:2026-10-16:' . $coratina->id . '.' . $malbec->id, $avisos[0]['id']);
+        $this->assertSame('recordatorio:stock_cero:' . $ultimo, $avisos[0]['id']);
         $this->assertSame('10:20', $avisos[0]['hora']);
         $this->assertSame('2 artículos sin stock: Aceite Coratina 500 ml y Malbec Reserva', $avisos[0]['detalle']);
-        $this->assertStringContainsString('- Malbec Reserva (stock -1)', $avisos[0]['texto']);
+        $this->assertSame("📦 Se quedaron sin stock: Aceite Coratina 500 ml y Malbec Reserva.\nSi querés, te ayudo a reponerlos.", $avisos[0]['texto']);
 
-        // Uno por artículo y por día: sellado, no vuelve a salir hoy aunque se mueva otra vez.
+        // Sellado avanza el cursor; otra venta con el artículo ya en cero no es una transición.
         $this->avisado($avisos[0]['id'])->assertStatus(200);
-        DB::table('stock_movements')->insert(['article_id' => $coratina->id, 'user_id' => $this->comercio->id, 'amount' => -1, 'created_at' => '2026-10-16 10:25:00', 'updated_at' => '2026-10-16 10:25:00']);
+        $this->assertSame($ultimo, (int) $this->cursor('agente_aviso_stock_cursor'));
+        $this->movimiento($coratina, '2026-10-16 10:25:00', ['amount' => -1, 'stock_resultante' => -1]);
         $this->assertSame([], $this->avisos_del_dueno());
-        $this->assertSame(2, AiAvisoDelAsistente::where('owner_id', $this->comercio->id)->where('tipo', AiAvisoDelAsistente::TIPO_STOCK_CERO)->count());
+        $this->assertSame(1, AiAvisoDelAsistente::where('owner_id', $this->comercio->id)->where('tipo', AiAvisoDelAsistente::TIPO_STOCK_CERO)->count());
+    }
+
+    /**
+     * 🔴 D1: un artículo que queda en cero a las 23:55 y se avisa no vuelve a avisarse a las 00:05.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_stock_cero_de_las_23_55_no_se_repite_despues_de_medianoche()
+    {
+        Carbon::setTestNow(Carbon::parse('2026-10-16 23:55:00'));
+        $this->preferencias(['agente_aviso_stock_cero' => 1, 'agente_aviso_stock_desde' => '2026-10-16 20:00:00']);
+        $this->sin_stock('Aceite', '2026-10-16 23:50:00');
+
+        $avisos = $this->avisos_del_dueno();
+        $this->assertCount(1, $avisos);
+        $this->avisado($avisos[0]['id'])->assertStatus(200);
+
+        Carbon::setTestNow(Carbon::parse('2026-10-17 00:05:00'));
+        $this->assertSame([], $this->avisos_del_dueno());
+    }
+
+    /**
+     * 🔴 D2: sin transición no hay aviso. Un artículo que ya estaba en negativo, una importación de Excel y la
+     * actualización masiva del listado no avisan.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function sin_transicion_ni_por_importacion_ni_por_masiva_no_avisa()
+    {
+        $this->preferencias(['agente_aviso_stock_cero' => 1, 'agente_aviso_stock_desde' => '2026-10-16 09:00:00']);
+
+        $negativo = Article::create(['name' => 'Sin control de stock', 'user_id' => $this->comercio->id, 'status' => 'active']);
+        DB::table('articles')->where('id', $negativo->id)->update(['stock' => -11]);
+        $this->movimiento($negativo, '2026-10-16 10:00:00', ['amount' => -1, 'stock_resultante' => -11]);
+
+        $importacion = ConceptoStockMovement::where('name', 'Importacion de excel')->first();
+        if (is_null($importacion)) {
+            $importacion = new ConceptoStockMovement();
+            $importacion->name = 'Importacion de excel';
+            $importacion->save();
+        }
+        $this->sin_stock('Importado en cero', '2026-10-16 10:05:00', 0, ['concepto_stock_movement_id' => $importacion->id, 'concepto' => 'Importacion de excel']);
+        $this->sin_stock('Masiva en cero', '2026-10-16 10:06:00', 0, ['observations' => 'Actualizacion masiva del listado (set)', 'concepto' => 'Ingreso manual']);
+
+        $this->assertSame([], $this->avisos_del_dueno());
+    }
+
+    /**
+     * 🔴 D2: 221 artículos que se quedan sin stock en la misma tanda son UN solo aviso (fuera de las 24 h cada
+     * ítem es una plantilla paga).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function muchos_articulos_en_cero_son_un_solo_aviso()
+    {
+        $this->preferencias(['agente_aviso_stock_cero' => 1, 'agente_aviso_stock_desde' => '2026-10-16 09:00:00']);
+
+        for ($i = 0; $i < 221; $i++) {
+            $this->sin_stock(sprintf('Art %03d', $i), '2026-10-16 10:00:00');
+        }
+
+        $avisos = $this->avisos_del_dueno();
+
+        $this->assertCount(1, $avisos);
+        $this->assertStringStartsWith('221 artículos sin stock: Art 000, Art 001', $avisos[0]['detalle']);
+        $this->assertStringEndsWith('Art 009 y 211 más', $avisos[0]['detalle']);
+    }
+
+    /**
+     * 🔴 D5: el id ofrecido no cambia si entra otra transición antes del sello (el admin ve siempre el mismo
+     * id y el mismo texto); lo nuevo sale después, en su propio aviso.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_aviso_de_stock_ofrecido_no_cambia_hasta_que_se_sella()
+    {
+        $this->preferencias(['agente_aviso_stock_cero' => 1, 'agente_aviso_stock_desde' => '2026-10-16 09:00:00']);
+        $this->sin_stock('Aceite', '2026-10-16 10:00:00');
+
+        $primero = $this->avisos_del_dueno();
+        $this->assertCount(1, $primero);
+
+        $this->sin_stock('Malbec', '2026-10-16 10:10:00');
+        $ultimo = (int) DB::table('stock_movements')->max('id');
+
+        $segundo = $this->avisos_del_dueno();
+        $this->assertSame($primero, $segundo, 'Mismo id y mismo texto hasta el sello.');
+
+        $this->avisado($primero[0]['id'])->assertStatus(200);
+        $tercero = $this->avisos_del_dueno();
+
+        $this->assertCount(1, $tercero);
+        $this->assertSame('recordatorio:stock_cero:' . $ultimo, $tercero[0]['id']);
+        $this->assertSame('Sin stock: Malbec', $tercero[0]['detalle']);
     }
 
     // ------------------------------------------------------------------------------------ 5
@@ -305,7 +458,10 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
 
         $otro = $this->otro_dueno();
         $ajeno = Article::create(['name' => 'De otro', 'user_id' => $otro->id, 'status' => 'active']);
-        $this->avisado('recordatorio:stock_cero:2026-10-16:' . $ajeno->id)->assertStatus(404);
+        $movimiento_ajeno = (int) DB::table('stock_movements')->insertGetId([
+            'article_id' => $ajeno->id, 'user_id' => $otro->id, 'amount' => -1, 'stock_resultante' => 0, 'created_at' => self::AHORA, 'updated_at' => self::AHORA,
+        ]);
+        $this->avisado('recordatorio:stock_cero:' . $movimiento_ajeno)->assertStatus(404);
     }
 
     // ------------------------------------------------------------------------------------ 6
@@ -387,6 +543,19 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
         $this->assertTrue($preferencias['stock_cero']);
         $this->assertSame(self::AHORA, $preferencias['pedidos_desde']->format('Y-m-d H:i:s'));
         $this->assertSame(self::AHORA, $preferencias['stock_desde']->format('Y-m-d H:i:s'));
+        $this->assertSame(AvisosDelDuenoIaHelper::ultimo_id('orders'), $preferencias['pedidos_cursor'], 'El cursor arranca en el último pedido de ahora.');
+        $this->assertSame(AvisosDelDuenoIaHelper::ultimo_id('stock_movements'), $preferencias['stock_cursor']);
+
+        // Cambiar solo las horas no reinicia el cursor ni el desde.
+        $this->pedido(90, '2026-10-16 10:29:00');
+        Carbon::setTestNow(Carbon::parse('2026-10-16 10:45:00'));
+        $horas = json_decode(HerramientasDeCarga::ejecutar('proponer_avisos_por_whatsapp', ['horas' => ['09:00', '21:00']], $conversacion, $confirma)['content'], true);
+        PropuestaAvisosDelDuenoIaHelper::ejecutar(\App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa::de_la_conversacion($conversacion), AiMessageAction::find($horas['tarjeta_id']));
+        $despues = AvisosDelDuenoIaHelper::preferencias($this->comercio->fresh());
+        $this->assertSame(['09:00', '21:00'], $despues['horas']);
+        $this->assertSame($preferencias['pedidos_cursor'], $despues['pedidos_cursor']);
+        $this->assertSame(self::AHORA, $despues['pedidos_desde']->format('Y-m-d H:i:s'));
+        Carbon::setTestNow(Carbon::parse(self::AHORA));
 
         // Apagar los pedidos deja el stock como estaba.
         $tarjeta2 = json_decode(HerramientasDeCarga::ejecutar('proponer_avisos_por_whatsapp', ['pedidos_tienda' => 'apagado'], $conversacion, $confirma)['content'], true);
@@ -398,6 +567,7 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
         $preferencias = AvisosDelDuenoIaHelper::preferencias($this->comercio->fresh());
         $this->assertSame(AvisosDelDuenoIaHelper::PEDIDOS_APAGADO, $preferencias['pedidos']);
         $this->assertNull($preferencias['pedidos_desde']);
+        $this->assertNull($preferencias['pedidos_cursor']);
         $this->assertTrue($preferencias['stock_cero']);
     }
 

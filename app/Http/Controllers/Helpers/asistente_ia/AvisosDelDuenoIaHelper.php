@@ -3,11 +3,11 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\OrderHelper;
-use App\Http\Controllers\Helpers\agenda\AgendaTareaHelper;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\Article;
+use App\Models\ConceptoStockMovement;
 use App\Models\Order;
 use App\Models\User;
 use Carbon\Carbon;
@@ -33,15 +33,25 @@ use Illuminate\Support\Facades\Schema;
  *
  *   recordatorio:pedido_tienda:{order_id}-{created_at unix}              un pedido nuevo, «al toque»
  *   recordatorio:pedidos_tienda:{desde unix}:{Y-m-d}:{HHMM}              el resumen de una hora fija
- *   recordatorio:stock_cero:{Y-m-d}:{article_id}.{article_id}…           artículos que llegaron a stock <= 0
+ *   recordatorio:stock_cero:{id del último movimiento incluido}          los artículos que se quedaron sin stock
  *
- * 🔴 APAGADOS POR DEFECTO Y DESDE «AHORA». Las preferencias viven en `users` del dueño (migración
- * 2026_11_13_100000) y las cambia la tarjeta de proponer_avisos_por_whatsapp (PropuestaAvisosDelDuenoIaHelper).
- * Al prender uno se guarda el cursor (`*_desde`): nunca se avisa un pedido o un movimiento anterior.
+ * 🔴 APAGADOS POR DEFECTO Y CON CURSOR POR ID (revisión independiente del bloque C, D3/D4). Las preferencias
+ * viven en `users` del dueño (migración 2026_11_13_100000) y las cambia la tarjeta de proponer_avisos_por_whatsapp
+ * (PropuestaAvisosDelDuenoIaHelper). Al prender un aviso se guarda el cursor: el id más alto de `orders` o de
+ * `stock_movements` en ese momento. Esta consulta corre cada 5 minutos en bases de millones de movimientos en
+ * hosting compartido, y `stock_movements` no tiene índice por user_id ni por created_at: TODA lectura va por
+ * `id > cursor` (la clave primaria) con LIMIT. El cursor avanza al sellar lo que salió y al saltear lo que venció.
  *
- * 🔴 LO QUE YA SALIÓ QUEDA SELLADO EN `ai_avisos_del_asistente` (una fila por pedido, por resumen y por artículo
- * y día, nacida con `avisado_por_whatsapp_at`): el camino de avisos nunca la ofrece y acá no se vuelve a
- * ofrecer. El sello es idempotente: un reintento del admin no deja dos mensajes en la conversación.
+ * 🔴 STOCK CERO ES LA TRANSICIÓN, Y COMO MUCHO UN AVISO POR CONSULTA (D1, D2, D5). Cuenta solo el movimiento que
+ * pasó un artículo de tener stock a no tenerlo (`stock_resultante <= 0` y `stock_resultante - amount > 0`), que no
+ * sea de una importación de Excel ni de la actualización masiva del listado. Todos los que haya van en UN solo
+ * ítem («Se quedaron sin stock: A, B, C y N más»): fuera de las 24 h cada ítem es una plantilla paga de Meta. El
+ * ítem se congela al ofrecerlo (su id es el del último movimiento incluido) hasta que se sella o vence, así un
+ * reintento del admin ve siempre el mismo id y el mismo texto.
+ *
+ * 🔴 LO QUE YA SALIÓ QUEDA SELLADO EN `ai_avisos_del_asistente` (una fila por aviso, nacida con
+ * `avisado_por_whatsapp_at`): el camino de avisos nunca la ofrece y acá no se vuelve a ofrecer. El sello es
+ * idempotente: un reintento del admin no deja dos mensajes en la conversación.
  *
  * 🔴 Y VENCEN COMO LOS RECORDATORIOS (HORAS_DE_GRACIA): si en tres horas no salieron (ventana cerrada sin
  * plantilla, admin caído), ya no se ofrecen. «Entró un pedido» de ayer no es un aviso.
@@ -70,11 +80,14 @@ class AvisosDelDuenoIaHelper
     /** Como los recordatorios: pasadas estas horas el aviso ya no sirve y no se ofrece más. */
     const HORAS_DE_GRACIA = RecordatoriosDelAsistenteHelper::HORAS_DE_GRACIA;
 
-    /** Cuántos ítems de cada tipo viajan por consulta como mucho. */
-    const TOPE_POR_TIPO = 10;
+    /** Cuántos pedidos «al toque» viajan por consulta como mucho. */
+    const TOPE_DE_PEDIDOS = 10;
 
-    /** Cuántos artículos van en un mismo aviso de stock (el id los lleva a todos). */
-    const ARTICULOS_POR_AVISO = 10;
+    /** Cuántas filas se leen por consulta después del cursor (clave primaria + LIMIT). */
+    const FILAS_POR_LECTURA = 500;
+
+    /** Cuántos artículos se nombran en el aviso de stock (el resto va en «y N más»). */
+    const ARTICULOS_NOMBRADOS = 10;
 
     /** Cuántos pedidos se nombran en el resumen de una hora fija (el resto va en «y N más»). */
     const PEDIDOS_EN_EL_RESUMEN = 8;
@@ -82,8 +95,17 @@ class AvisosDelDuenoIaHelper
     /** Cuántas horas fijas puede tener el dueño. */
     const MAX_HORAS = 12;
 
+    /** Los movimientos de stock que no son una venta ni un uso: la importación de Excel. */
+    const CONCEPTOS_EXCLUIDOS = ['Importacion de excel'];
+
+    /** La observación con la que la actualización masiva del listado deja sus movimientos (MasiveUpdateHelper). */
+    const OBSERVACION_DE_LA_MASIVA = 'Actualizacion masiva del listado%';
+
     /** El texto que se le ofreció al admin por id (lo que queda en la conversación es lo que salió). */
     const CLAVE_TEXTO_OFRECIDO = 'asistente_ia:aviso_del_dueno_ofrecido:';
+
+    /** El ítem de stock cero ya ofrecido, por dueño (congelado hasta que se sella o vence). */
+    const CLAVE_STOCK_OFRECIDO = 'asistente_ia:stock_cero_ofrecido:';
 
     /** La parte de la tienda en la SPA. */
     const RUTA_DE_LA_TIENDA = '/online';
@@ -102,7 +124,7 @@ class AvisosDelDuenoIaHelper
 
             try {
                 self::$hay_columnas = Schema::hasColumn('users', 'agente_aviso_pedidos')
-                    && Schema::hasColumn('users', 'agente_aviso_stock_desde')
+                    && Schema::hasColumn('users', 'agente_aviso_stock_cursor')
                     && AvisosDeTurnosIaHelper::hay_tabla();
             } catch (\Throwable $e) {
                 self::$hay_columnas = false;
@@ -116,11 +138,14 @@ class AvisosDelDuenoIaHelper
      * Las preferencias del dueño, ya normalizadas.
      *
      * @param  \App\Models\User  $dueno
-     * @return array{pedidos: string, horas: array<int, string>, pedidos_desde: \Carbon\Carbon|null, stock_cero: bool, stock_desde: \Carbon\Carbon|null}
+     * @return array{pedidos: string, horas: array<int, string>, pedidos_desde: \Carbon\Carbon|null, pedidos_cursor: int|null, stock_cero: bool, stock_desde: \Carbon\Carbon|null, stock_cursor: int|null}
      */
     public static function preferencias(User $dueno): array
     {
-        $vacias = ['pedidos' => self::PEDIDOS_APAGADO, 'horas' => [], 'pedidos_desde' => null, 'stock_cero' => false, 'stock_desde' => null];
+        $vacias = [
+            'pedidos' => self::PEDIDOS_APAGADO, 'horas' => [], 'pedidos_desde' => null, 'pedidos_cursor' => null,
+            'stock_cero' => false, 'stock_desde' => null, 'stock_cursor' => null,
+        ];
 
         if (!self::hay_columnas()) {
 
@@ -128,7 +153,8 @@ class AvisosDelDuenoIaHelper
         }
 
         $fila = DB::table('users')->where('id', (int) $dueno->id)->first([
-            'agente_aviso_pedidos', 'agente_aviso_pedidos_horas', 'agente_aviso_pedidos_desde', 'agente_aviso_stock_cero', 'agente_aviso_stock_desde',
+            'agente_aviso_pedidos', 'agente_aviso_pedidos_horas', 'agente_aviso_pedidos_desde', 'agente_aviso_pedidos_cursor',
+            'agente_aviso_stock_cero', 'agente_aviso_stock_desde', 'agente_aviso_stock_cursor',
         ]);
 
         if (is_null($fila)) {
@@ -145,12 +171,26 @@ class AvisosDelDuenoIaHelper
         }
 
         return [
-            'pedidos'       => $modo,
-            'horas'         => $horas,
-            'pedidos_desde' => empty($fila->agente_aviso_pedidos_desde) ? null : Carbon::parse($fila->agente_aviso_pedidos_desde),
-            'stock_cero'    => (bool) $fila->agente_aviso_stock_cero,
-            'stock_desde'   => empty($fila->agente_aviso_stock_desde) ? null : Carbon::parse($fila->agente_aviso_stock_desde),
+            'pedidos'        => $modo,
+            'horas'          => $horas,
+            'pedidos_desde'  => empty($fila->agente_aviso_pedidos_desde) ? null : Carbon::parse($fila->agente_aviso_pedidos_desde),
+            'pedidos_cursor' => is_null($fila->agente_aviso_pedidos_cursor) ? null : (int) $fila->agente_aviso_pedidos_cursor,
+            'stock_cero'     => (bool) $fila->agente_aviso_stock_cero,
+            'stock_desde'    => empty($fila->agente_aviso_stock_desde) ? null : Carbon::parse($fila->agente_aviso_stock_desde),
+            'stock_cursor'   => is_null($fila->agente_aviso_stock_cursor) ? null : (int) $fila->agente_aviso_stock_cursor,
         ];
+    }
+
+    /**
+     * El id más alto de la tabla ahora (el cursor con el que arranca un aviso recién prendido). Por la clave
+     * primaria: no recorre la tabla.
+     *
+     * @param  string  $tabla  orders | stock_movements
+     * @return int
+     */
+    public static function ultimo_id($tabla): int
+    {
+        return (int) DB::table((string) $tabla)->max('id');
     }
 
     /**
@@ -225,16 +265,16 @@ class AvisosDelDuenoIaHelper
 
             $avisos = [];
 
-            if ($preferencias['pedidos'] === self::PEDIDOS_AL_TOQUE && !is_null($preferencias['pedidos_desde'])) {
-                $avisos = array_merge($avisos, self::pedidos_al_toque($dueno, $preferencias['pedidos_desde'], $ahora));
+            if ($preferencias['pedidos'] === self::PEDIDOS_AL_TOQUE) {
+                $avisos = array_merge($avisos, self::pedidos_al_toque($dueno, $preferencias, $ahora));
             }
 
             if ($preferencias['pedidos'] === self::PEDIDOS_HORAS && !is_null($preferencias['pedidos_desde'])) {
-                $avisos = array_merge($avisos, self::pedidos_por_hora($dueno, $preferencias['horas'], $preferencias['pedidos_desde'], $ahora));
+                $avisos = array_merge($avisos, self::pedidos_por_hora($dueno, $preferencias, $ahora));
             }
 
-            if ($preferencias['stock_cero'] && !is_null($preferencias['stock_desde'])) {
-                $avisos = array_merge($avisos, self::stock_cero($dueno, $preferencias['stock_desde'], $ahora));
+            if ($preferencias['stock_cero']) {
+                $avisos = array_merge($avisos, self::stock_cero($dueno, $preferencias, $ahora));
             }
 
             foreach ($avisos as $i => $aviso) {
@@ -264,26 +304,65 @@ class AvisosDelDuenoIaHelper
         }
     }
 
+    /* ─────────────────────────────── los cursores ─────────────────────────────── */
+
+    /**
+     * Avanza un cursor (nunca lo retrocede). Por la tabla, sin tocar `updated_at` del dueño.
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  string  $columna  agente_aviso_pedidos_cursor | agente_aviso_stock_cursor
+     * @param  int  $hasta
+     * @return void
+     */
+    protected static function avanzar_cursor(User $dueno, $columna, $hasta)
+    {
+        DB::table('users')
+            ->where('id', (int) $dueno->id)
+            ->where(function ($q) use ($columna, $hasta) {
+                $q->whereNull($columna)->orWhere($columna, '<', (int) $hasta);
+            })
+            ->update([$columna => (int) $hasta]);
+    }
+
+    /**
+     * El cursor de un aviso prendido sin cursor (no debería pasar: la tarjeta lo deja). Arranca desde ahora.
+     *
+     * @return int
+     */
+    protected static function cursor_o_desde_ahora(User $dueno, $cursor, $columna, $tabla): int
+    {
+        if (!is_null($cursor)) {
+
+            return (int) $cursor;
+        }
+
+        $desde_ahora = self::ultimo_id($tabla);
+        self::avanzar_cursor($dueno, $columna, $desde_ahora);
+
+        return $desde_ahora;
+    }
+
     /* ─────────────────────────────── pedidos al toque ─────────────────────────────── */
 
     /**
-     * Un ítem por pedido nuevo de la tienda, desde el cursor y adentro de la gracia.
+     * Un ítem por pedido nuevo de la tienda, después del cursor y adentro de la gracia. Los vencidos del
+     * principio se saltean avanzando el cursor (D4: lo que queda después del cursor siempre es lo nuevo).
      *
      * @return array<int, array{momento: \Carbon\Carbon, item: array}>
      */
-    protected static function pedidos_al_toque(User $dueno, Carbon $desde, Carbon $ahora): array
+    protected static function pedidos_al_toque(User $dueno, array $preferencias, Carbon $ahora): array
     {
+        $cursor = self::cursor_o_desde_ahora($dueno, $preferencias['pedidos_cursor'], 'agente_aviso_pedidos_cursor', 'orders');
         $limite = $ahora->copy()->subHours(self::HORAS_DE_GRACIA);
 
-        $pedidos = Order::where('user_id', (int) $dueno->id)
-                        ->where('created_at', '>', $desde->format('Y-m-d H:i:s'))
-                        ->where('created_at', '>=', $limite->format('Y-m-d H:i:s'))
-                        ->where('created_at', '<=', $ahora->format('Y-m-d H:i:s'))
-                        ->orderBy('created_at')
+        $pedidos = Order::where('id', '>', $cursor)
+                        ->where('user_id', (int) $dueno->id)
                         ->orderBy('id')
-                        ->limit(self::TOPE_POR_TIPO * 3)
+                        ->limit(self::TOPE_DE_PEDIDOS * 3)
                         ->get();
 
+        $vencidos_hasta = null;
+        $avisos = [];
         $claves = [];
 
         foreach ($pedidos as $pedido) {
@@ -292,15 +371,23 @@ class AvisosDelDuenoIaHelper
 
         $sellados = self::sellados($dueno, AiAvisoDelAsistente::TIPO_PEDIDO_TIENDA, $claves);
 
-        $avisos = [];
-
         foreach ($pedidos as $pedido) {
 
-            if (isset($sellados[self::clave_de_pedido($pedido)]) || count($avisos) >= self::TOPE_POR_TIPO) {
+            $momento = Carbon::parse($pedido->created_at);
+
+            if ($momento->lt($limite)) {
+
+                /* Vencido: si todo lo anterior también venció, el cursor lo puede dejar atrás. */
+                if (!count($avisos)) {
+                    $vencidos_hasta = (int) $pedido->id;
+                }
+
                 continue;
             }
 
-            $momento = Carbon::parse($pedido->created_at);
+            if ($momento->gt($ahora) || isset($sellados[self::clave_de_pedido($pedido)]) || count($avisos) >= self::TOPE_DE_PEDIDOS) {
+                continue;
+            }
 
             $avisos[] = [
                 'momento' => $momento,
@@ -311,6 +398,10 @@ class AvisosDelDuenoIaHelper
                     self::texto_del_pedido($pedido)
                 ),
             ];
+        }
+
+        if (!is_null($vencidos_hasta)) {
+            self::avanzar_cursor($dueno, 'agente_aviso_pedidos_cursor', $vencidos_hasta);
         }
 
         return $avisos;
@@ -338,18 +429,21 @@ class AvisosDelDuenoIaHelper
 
     /**
      * Un resumen por cada hora fija que pasó adentro de la gracia, con los pedidos que entraron desde la hora
-     * fija anterior (o desde el cursor, si es más nuevo). Sin pedidos, no hay aviso: se avisa lo que hay.
+     * fija anterior. Sin pedidos, no hay aviso: se avisa lo que hay. El sello se mira ANTES de armar el resumen.
      *
-     * @param  array<int, string>  $horas
      * @return array<int, array{momento: \Carbon\Carbon, item: array}>
      */
-    protected static function pedidos_por_hora(User $dueno, array $horas, Carbon $desde, Carbon $ahora): array
+    protected static function pedidos_por_hora(User $dueno, array $preferencias, Carbon $ahora): array
     {
+        $horas = $preferencias['horas'];
+        $desde = $preferencias['pedidos_desde'];
+
         if (!count($horas)) {
 
             return [];
         }
 
+        $cursor = self::cursor_o_desde_ahora($dueno, $preferencias['pedidos_cursor'], 'agente_aviso_pedidos_cursor', 'orders');
         $limite = $ahora->copy()->subHours(self::HORAS_DE_GRACIA);
         $hoy = $ahora->copy()->startOfDay();
         $dias = $limite->lt($hoy) ? [$hoy->copy()->subDay(), $hoy] : [$hoy];
@@ -366,15 +460,13 @@ class AvisosDelDuenoIaHelper
                     continue;
                 }
 
-                $resumen = self::resumen_de_la_hora($dueno, $horas, $desde, $momento);
-
-                if (is_null($resumen)) {
+                if (count(self::sellados($dueno, AiAvisoDelAsistente::TIPO_PEDIDOS_HORA, [self::clave_de_hora($desde, $momento)]))) {
                     continue;
                 }
 
-                $clave = self::clave_de_hora($desde, $momento);
+                $resumen = self::resumen_de_la_hora($dueno, $horas, $desde, $momento, $cursor);
 
-                if (count(self::sellados($dueno, AiAvisoDelAsistente::TIPO_PEDIDOS_HORA, [$clave]))) {
+                if (is_null($resumen)) {
                     continue;
                 }
 
@@ -390,7 +482,7 @@ class AvisosDelDuenoIaHelper
             }
         }
 
-        return array_slice($avisos, 0, self::TOPE_POR_TIPO);
+        return $avisos;
     }
 
     protected static function clave_de_hora(Carbon $desde, Carbon $momento): string
@@ -399,12 +491,32 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
+     * Los pedidos de una hora fija: después del cursor, con LIMIT, entre la hora fija anterior y esta.
+     *
+     * @return \Illuminate\Support\Collection
+     */
+    protected static function pedidos_de_la_hora(User $dueno, Carbon $inicio, Carbon $momento, $cursor)
+    {
+        return Order::where('id', '>', (int) $cursor)
+                    ->where('user_id', (int) $dueno->id)
+                    ->orderBy('id')
+                    ->limit(self::FILAS_POR_LECTURA)
+                    ->get()
+                    ->filter(function ($pedido) use ($inicio, $momento) {
+                        $creado = Carbon::parse($pedido->created_at);
+
+                        return $creado->gt($inicio) && !$creado->gt($momento);
+                    })
+                    ->values();
+    }
+
+    /**
      * El detalle y el texto del resumen de una hora fija, o null si no entró ningún pedido.
      *
      * @param  array<int, string>  $horas
-     * @return array{detalle: string, texto: string}|null
+     * @return array{detalle: string, texto: string, hasta_id: int}|null
      */
-    protected static function resumen_de_la_hora(User $dueno, array $horas, Carbon $desde, Carbon $momento)
+    protected static function resumen_de_la_hora(User $dueno, array $horas, Carbon $desde, Carbon $momento, $cursor)
     {
         $inicio = self::hora_fija_anterior($horas, $momento);
 
@@ -412,12 +524,7 @@ class AvisosDelDuenoIaHelper
             $inicio = $desde->copy();
         }
 
-        $pedidos = Order::where('user_id', (int) $dueno->id)
-                        ->where('created_at', '>', $inicio->format('Y-m-d H:i:s'))
-                        ->where('created_at', '<=', $momento->format('Y-m-d H:i:s'))
-                        ->orderBy('created_at')
-                        ->orderBy('id')
-                        ->get();
+        $pedidos = self::pedidos_de_la_hora($dueno, $inicio, $momento, $cursor);
 
         $cuantos = $pedidos->count();
 
@@ -444,22 +551,25 @@ class AvisosDelDuenoIaHelper
         }
 
         $desde_las = $inicio->isSameDay($momento) ? 'desde las ' . $inicio->format('H:i') : 'desde ayer a las ' . $inicio->format('H:i');
+        $hasta_id = (int) $pedidos->last()->id;
 
         if ($cuantos === 1) {
 
             $pedido = $pedidos->first();
 
             return [
-                'detalle' => 'Pedido N° ' . self::numero_del_pedido($pedido) . ' de la tienda: ' . self::comprador($pedido) . ', ' . self::pesos($total),
-                'texto'   => '🛒 Revisé la tienda a las ' . $momento->format('H:i') . ': entró *1 pedido nuevo* ' . $desde_las . ":\n"
+                'detalle'  => 'Pedido N° ' . self::numero_del_pedido($pedido) . ' de la tienda: ' . self::comprador($pedido) . ', ' . self::pesos($total),
+                'texto'    => '🛒 Revisé la tienda a las ' . $momento->format('H:i') . ': entró *1 pedido nuevo* ' . $desde_las . ":\n"
                     . implode("\n", $renglones) . "\nSi querés el detalle, preguntame.",
+                'hasta_id' => $hasta_id,
             ];
         }
 
         return [
-            'detalle' => $cuantos . ' pedidos nuevos en la tienda ' . $desde_las . ', ' . self::pesos($total) . ' en total',
-            'texto'   => '🛒 Revisé la tienda a las ' . $momento->format('H:i') . ': entraron *' . $cuantos . ' pedidos nuevos* ' . $desde_las
+            'detalle'  => $cuantos . ' pedidos nuevos en la tienda ' . $desde_las . ', ' . self::pesos($total) . ' en total',
+            'texto'    => '🛒 Revisé la tienda a las ' . $momento->format('H:i') . ': entraron *' . $cuantos . ' pedidos nuevos* ' . $desde_las
                 . ' (' . self::pesos($total) . " en total):\n" . implode("\n", $renglones) . "\nSi querés el detalle de alguno, preguntame.",
+            'hasta_id' => $hasta_id,
         ];
     }
 
@@ -492,134 +602,203 @@ class AvisosDelDuenoIaHelper
     /* ─────────────────────────────── stock cero ─────────────────────────────── */
 
     /**
-     * Los artículos (sin variantes) que un movimiento de stock dejó en cero o menos, desde el cursor y adentro
-     * de la gracia, que siguen así y no se avisaron hoy. Agrupados de a ARTICULOS_POR_AVISO.
+     * UN solo ítem con los artículos (sin variantes) que un movimiento pasó de tener stock a no tenerlo,
+     * después del cursor y adentro de la gracia, que siguen sin stock. Se congela al ofrecerlo (ver el 🔴 del
+     * docblock de la clase). Los movimientos vencidos del principio se saltean avanzando el cursor.
      *
      * @return array<int, array{momento: \Carbon\Carbon, item: array}>
      */
-    protected static function stock_cero(User $dueno, Carbon $desde, Carbon $ahora): array
+    protected static function stock_cero(User $dueno, array $preferencias, Carbon $ahora): array
     {
+        $cursor = self::cursor_o_desde_ahora($dueno, $preferencias['stock_cursor'], 'agente_aviso_stock_cursor', 'stock_movements');
         $limite = $ahora->copy()->subHours(self::HORAS_DE_GRACIA);
-        $inicio = $desde->gt($limite) ? $desde : $limite;
 
-        $movimientos = DB::table('stock_movements')
-                        ->where('user_id', (int) $dueno->id)
-                        ->whereNull('article_variant_id')
-                        ->whereNotNull('article_id')
-                        ->where('amount', '<', 0)
-                        ->where('created_at', '>', $inicio->format('Y-m-d H:i:s'))
-                        ->where('created_at', '<=', $ahora->format('Y-m-d H:i:s'))
-                        ->groupBy('article_id')
-                        ->select('article_id', DB::raw('MAX(created_at) as ultimo'))
-                        ->get();
+        $clave_ofrecido = self::CLAVE_STOCK_OFRECIDO . (int) $dueno->id;
+        $ofrecido = Cache::get($clave_ofrecido);
 
-        if (!$movimientos->count()) {
+        if (is_array($ofrecido) && isset($ofrecido['hasta_id'], $ofrecido['item'], $ofrecido['momento']) && (int) $ofrecido['hasta_id'] > $cursor) {
+
+            $momento = Carbon::parse($ofrecido['momento']);
+
+            if (!$momento->lt($limite)) {
+
+                return [['momento' => $momento, 'item' => $ofrecido['item']]];
+            }
+
+            /* Venció sin salir: se deja atrás y se arma lo que venga después. */
+            self::avanzar_cursor($dueno, 'agente_aviso_stock_cursor', (int) $ofrecido['hasta_id']);
+            Cache::forget($clave_ofrecido);
+            $cursor = (int) $ofrecido['hasta_id'];
+        }
+
+        $movimientos = self::transiciones_a_cero($dueno, $cursor);
+
+        if (!count($movimientos)) {
 
             return [];
         }
 
-        $ultimo = [];
+        $vencidos_hasta = null;
+        $vigentes = [];
 
         foreach ($movimientos as $movimiento) {
-            $ultimo[(int) $movimiento->article_id] = Carbon::parse($movimiento->ultimo);
+
+            if (Carbon::parse($movimiento->created_at)->lt($limite)) {
+
+                if (!count($vigentes)) {
+                    $vencidos_hasta = (int) $movimiento->id;
+                }
+
+                continue;
+            }
+
+            $vigentes[] = $movimiento;
+        }
+
+        if (!is_null($vencidos_hasta)) {
+            self::avanzar_cursor($dueno, 'agente_aviso_stock_cursor', $vencidos_hasta);
+        }
+
+        if (!count($vigentes)) {
+
+            return [];
+        }
+
+        $hasta_id = (int) end($vigentes)->id;
+        $momento = null;
+
+        $ultimo_por_articulo = [];
+
+        foreach ($vigentes as $movimiento) {
+            $ultimo_por_articulo[(int) $movimiento->article_id] = true;
+            $creado = Carbon::parse($movimiento->created_at);
+            $momento = is_null($momento) || $creado->gt($momento) ? $creado : $momento;
         }
 
         $articulos = Article::where('user_id', (int) $dueno->id)
-                            ->whereIn('id', array_keys($ultimo))
+                            ->whereIn('id', array_keys($ultimo_por_articulo))
                             ->whereNotNull('stock')
                             ->where('stock', '<=', 0)
                             ->whereDoesntHave('article_variants')
-                            ->orderBy('id')
-                            ->get(['id', 'name', 'stock']);
+                            ->orderBy('name')
+                            ->get(['id', 'name', 'stock'])
+                            ->all();
 
-        $hoy = $ahora->copy()->startOfDay();
-        $claves = [];
+        if (!count($articulos)) {
 
-        foreach ($articulos as $articulo) {
-            $claves[] = self::clave_de_stock((int) $articulo->id, $hoy);
+            /* Los que se quedaron en cero ya se repusieron: no hay nada que avisar de este tramo. */
+            self::avanzar_cursor($dueno, 'agente_aviso_stock_cursor', $hasta_id);
+
+            return [];
         }
 
-        $sellados = self::sellados($dueno, AiAvisoDelAsistente::TIPO_STOCK_CERO, $claves);
+        $item = self::item(
+            self::PREFIJO_STOCK . $hasta_id,
+            $momento,
+            self::detalle_de_stock($articulos),
+            self::texto_de_stock($articulos)
+        );
 
-        $sin_avisar = [];
+        Cache::put($clave_ofrecido, ['hasta_id' => $hasta_id, 'momento' => $momento->format('Y-m-d H:i:s'), 'item' => $item], Carbon::now()->addDay());
 
-        foreach ($articulos as $articulo) {
-            if (!isset($sellados[self::clave_de_stock((int) $articulo->id, $hoy)])) {
-                $sin_avisar[] = $articulo;
-            }
-        }
-
-        $avisos = [];
-
-        foreach (array_chunk($sin_avisar, self::ARTICULOS_POR_AVISO) as $grupo) {
-
-            $ids = [];
-            $momento = null;
-
-            foreach ($grupo as $articulo) {
-                $ids[] = (int) $articulo->id;
-                $movido = $ultimo[(int) $articulo->id];
-                $momento = is_null($momento) || $movido->gt($momento) ? $movido : $momento;
-            }
-
-            $avisos[] = [
-                'momento' => $momento,
-                'item'    => self::item(
-                    self::PREFIJO_STOCK . $hoy->format('Y-m-d') . ':' . implode('.', $ids),
-                    $momento,
-                    self::detalle_de_stock($grupo),
-                    self::texto_de_stock($grupo)
-                ),
-            ];
-
-            if (count($avisos) >= self::TOPE_POR_TIPO) {
-                break;
-            }
-        }
-
-        return $avisos;
-    }
-
-    protected static function clave_de_stock($article_id, Carbon $dia): string
-    {
-        return 's' . (int) $article_id . '-' . $dia->format('Ymd');
+        return [['momento' => $momento, 'item' => $item]];
     }
 
     /**
-     * @param  array<int, \App\Models\Article>  $grupo
-     * @return string
+     * Los movimientos de stock del dueño después del cursor que dejaron un artículo sin variantes sin stock
+     * habiendo tenido antes, sin los de la importación de Excel ni los de la masiva. Por la clave primaria y
+     * con LIMIT (D3: la tabla no tiene índice por user_id ni por created_at).
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  int  $cursor
+     * @return array<int, object>
      */
-    protected static function detalle_de_stock(array $grupo): string
+    protected static function transiciones_a_cero(User $dueno, $cursor): array
     {
-        $nombres = array_map(function ($articulo) {
-            return self::nombre_corto((string) $articulo->name);
-        }, $grupo);
+        $consulta = DB::table('stock_movements')
+                        ->where('id', '>', (int) $cursor)
+                        ->where('user_id', (int) $dueno->id)
+                        ->whereNull('article_variant_id')
+                        ->whereNotNull('article_id')
+                        ->where('amount', '<', 0)
+                        ->whereNotNull('stock_resultante')
+                        ->where('stock_resultante', '<=', 0)
+                        ->whereRaw('(stock_resultante - amount) > 0')
+                        ->where(function ($q) {
+                            $q->whereNull('observations')->orWhere('observations', 'not like', self::OBSERVACION_DE_LA_MASIVA);
+                        });
 
-        if (count($nombres) === 1) {
+        $excluidos = self::conceptos_excluidos();
 
-            return 'Sin stock: ' . $nombres[0];
+        if (count($excluidos)) {
+            $consulta->where(function ($q) use ($excluidos) {
+                $q->whereNull('concepto_stock_movement_id')->orWhereNotIn('concepto_stock_movement_id', $excluidos);
+            });
         }
 
-        return count($nombres) . ' artículos sin stock: ' . self::enumerar($nombres);
+        return $consulta->orderBy('id')
+                        ->limit(self::FILAS_POR_LECTURA)
+                        ->get(['id', 'article_id', 'created_at'])
+                        ->all();
     }
 
     /**
-     * @param  array<int, \App\Models\Article>  $grupo
+     * Los ids de los conceptos de stock que no cuentan (la importación de Excel).
+     *
+     * @return array<int, int>
+     */
+    protected static function conceptos_excluidos(): array
+    {
+        return ConceptoStockMovement::whereIn('name', self::CONCEPTOS_EXCLUIDOS)->pluck('id')->map(function ($id) {
+            return (int) $id;
+        })->all();
+    }
+
+    /**
+     * @param  array<int, \App\Models\Article>  $articulos
      * @return string
      */
-    protected static function texto_de_stock(array $grupo): string
+    protected static function detalle_de_stock(array $articulos): string
     {
-        if (count($grupo) === 1) {
+        if (count($articulos) === 1) {
 
-            return '📦 Se quedó sin stock *' . self::nombre_corto((string) $grupo[0]->name) . '* (stock ' . self::cantidad($grupo[0]->stock) . ').'
+            return 'Sin stock: ' . self::nombre_corto((string) $articulos[0]->name);
+        }
+
+        return count($articulos) . ' artículos sin stock: ' . self::lista_de_nombres($articulos);
+    }
+
+    /**
+     * @param  array<int, \App\Models\Article>  $articulos
+     * @return string
+     */
+    protected static function texto_de_stock(array $articulos): string
+    {
+        if (count($articulos) === 1) {
+
+            return '📦 Se quedó sin stock *' . self::nombre_corto((string) $articulos[0]->name) . '* (stock ' . self::cantidad($articulos[0]->stock) . ').'
                 . "\nSi querés, te ayudo a reponerlo.";
         }
 
-        $renglones = array_map(function ($articulo) {
-            return '- ' . self::nombre_corto((string) $articulo->name) . ' (stock ' . self::cantidad($articulo->stock) . ')';
-        }, $grupo);
+        return '📦 Se quedaron sin stock: ' . self::lista_de_nombres($articulos) . ".\nSi querés, te ayudo a reponerlos.";
+    }
 
-        return '📦 Se quedaron sin stock *' . count($grupo) . " artículos*:\n" . implode("\n", $renglones) . "\nSi querés, te ayudo a reponerlos.";
+    /** «A, B, C y N más» con ARTICULOS_NOMBRADOS nombres como mucho. */
+    protected static function lista_de_nombres(array $articulos): string
+    {
+        $nombres = [];
+
+        foreach (array_slice($articulos, 0, self::ARTICULOS_NOMBRADOS) as $articulo) {
+            $nombres[] = self::nombre_corto((string) $articulo->name);
+        }
+
+        $resto = count($articulos) - count($nombres);
+
+        if ($resto > 0) {
+            $nombres[] = $resto . ' más';
+        }
+
+        return self::enumerar($nombres);
     }
 
     /* ─────────────────────────────── el sello ─────────────────────────────── */
@@ -649,8 +828,8 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
-     * Sella el aviso como mandado y lo deja en la conversación de WhatsApp del dueño, UNA sola vez.
-     * false (el 404 del contrato) si el id no parsea o lo que nombra no es de este dueño.
+     * Sella el aviso como mandado, avanza su cursor y lo deja en la conversación de WhatsApp del dueño, UNA
+     * sola vez. false (el 404 del contrato) si el id no parsea o lo que nombra no es de este dueño.
      *
      * @param  \App\Models\User  $dueno
      * @param  mixed  $id
@@ -676,13 +855,7 @@ class AvisosDelDuenoIaHelper
             /* El dueño bloqueado serializa dos sellos casi juntos del mismo aviso (un reintento del admin). */
             User::where('id', (int) $dueno->id)->lockForUpdate()->first();
 
-            $sellados = self::sellados($dueno, $partes['tipo'], $partes['claves']);
-
-            $nuevas = array_values(array_filter($partes['claves'], function ($clave) use ($sellados) {
-                return !isset($sellados[$clave]);
-            }));
-
-            if (!count($nuevas)) {
+            if (count(self::sellados($dueno, $partes['tipo'], [$partes['clave']]))) {
 
                 return true;
             }
@@ -695,16 +868,22 @@ class AvisosDelDuenoIaHelper
             $wamid = $wamid === '' ? null : mb_substr($wamid, 0, 128);
             $ahora = Carbon::now();
 
-            foreach ($nuevas as $clave) {
-                AiAvisoDelAsistente::create([
-                    'uuid'                    => $clave,
-                    'owner_id'                => (int) $dueno->id,
-                    'ai_conversation_id'      => is_null($conversacion) ? null : (int) $conversacion->id,
-                    'tipo'                    => $partes['tipo'],
-                    'texto'                   => $texto,
-                    'avisado_por_whatsapp_at' => $ahora,
-                    'whatsapp_message_id'     => is_null($wamid) ? null : mb_substr($wamid, 0, 191),
-                ]);
+            AiAvisoDelAsistente::create([
+                'uuid'                    => $partes['clave'],
+                'owner_id'                => (int) $dueno->id,
+                'ai_conversation_id'      => is_null($conversacion) ? null : (int) $conversacion->id,
+                'tipo'                    => $partes['tipo'],
+                'texto'                   => $texto,
+                'avisado_por_whatsapp_at' => $ahora,
+                'whatsapp_message_id'     => $wamid,
+            ]);
+
+            if (!is_null($partes['cursor'])) {
+                self::avanzar_cursor($dueno, $partes['cursor'][0], $partes['cursor'][1]);
+            }
+
+            if ($partes['tipo'] === AiAvisoDelAsistente::TIPO_STOCK_CERO) {
+                Cache::forget(self::CLAVE_STOCK_OFRECIDO . (int) $dueno->id);
             }
 
             if (!is_null($conversacion)) {
@@ -727,12 +906,12 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
-     * Las partes de un id propio: el tipo del sello, sus claves, un texto de repuesto y el título de una
-     * conversación nueva; o null si no tiene la forma o no es de este dueño.
+     * Las partes de un id propio: el tipo y la clave del sello, el cursor que avanza, un texto de repuesto y el
+     * título de una conversación nueva; o null si no tiene la forma o no es de este dueño.
      *
      * @param  \App\Models\User  $dueno
      * @param  mixed  $id
-     * @return array{tipo: string, claves: array<int, string>, texto: string, titulo: string}|null
+     * @return array{tipo: string, clave: string, cursor: array|null, texto: string, titulo: string}|null
      */
     protected static function partes_del_id(User $dueno, $id)
     {
@@ -754,7 +933,8 @@ class AvisosDelDuenoIaHelper
 
             return [
                 'tipo'   => AiAvisoDelAsistente::TIPO_PEDIDO_TIENDA,
-                'claves' => [self::clave_de_pedido($pedido)],
+                'clave'  => self::clave_de_pedido($pedido),
+                'cursor' => ['agente_aviso_pedidos_cursor', (int) $pedido->id],
                 'texto'  => self::texto_del_pedido($pedido),
                 'titulo' => 'Pedido N° ' . self::numero_del_pedido($pedido) . ' de la tienda',
             ];
@@ -762,7 +942,7 @@ class AvisosDelDuenoIaHelper
 
         if (preg_match('/^' . preg_quote(self::PREFIJO_HORA, '/') . '(\d{1,12}):(\d{4}-\d{2}-\d{2}):(\d{2})(\d{2})$/', $id, $m)) {
 
-            $dia = AgendaTareaHelper::parsear_fecha($m[2]);
+            $dia = \App\Http\Controllers\Helpers\agenda\AgendaTareaHelper::parsear_fecha($m[2]);
 
             if (is_null($dia) || (int) $m[3] > 23 || (int) $m[4] > 59 || $dia->gt(Carbon::today())) {
 
@@ -771,47 +951,37 @@ class AvisosDelDuenoIaHelper
 
             $desde = Carbon::createFromTimestamp((int) $m[1]);
             $momento = $dia->copy()->setTime((int) $m[3], (int) $m[4]);
-            /* La hora anterior sale de las horas de HOY del dueño (con la de este aviso, por si la cambió). */
-            $horas = array_values(array_unique(array_merge([$momento->format('H:i')], self::preferencias($dueno)['horas'])));
+            $preferencias = self::preferencias($dueno);
+
+            /* La hora anterior sale de las horas del dueño (con la de este aviso, por si la cambió). */
+            $horas = array_values(array_unique(array_merge([$momento->format('H:i')], $preferencias['horas'])));
             sort($horas);
-            $resumen = self::resumen_de_la_hora($dueno, $horas, $desde, $momento);
+            $cursor = is_null($preferencias['pedidos_cursor']) ? 0 : $preferencias['pedidos_cursor'];
+            $resumen = self::resumen_de_la_hora($dueno, $horas, $desde, $momento, $cursor);
 
             return [
                 'tipo'   => AiAvisoDelAsistente::TIPO_PEDIDOS_HORA,
-                'claves' => [self::clave_de_hora($desde, $momento)],
+                'clave'  => self::clave_de_hora($desde, $momento),
+                'cursor' => is_null($resumen) ? null : ['agente_aviso_pedidos_cursor', $resumen['hasta_id']],
                 'texto'  => is_null($resumen) ? '🛒 Revisé la tienda a las ' . $momento->format('H:i') . '.' : $resumen['texto'],
                 'titulo' => 'Pedidos de la tienda',
             ];
         }
 
-        if (preg_match('/^' . preg_quote(self::PREFIJO_STOCK, '/') . '(\d{4}-\d{2}-\d{2}):(\d{1,10}(?:\.\d{1,10}){0,' . (self::ARTICULOS_POR_AVISO - 1) . '})$/', $id, $m)) {
+        if (preg_match('/^' . preg_quote(self::PREFIJO_STOCK, '/') . '(\d{1,15})$/', $id, $m)) {
 
-            $dia = AgendaTareaHelper::parsear_fecha($m[1]);
+            $movimiento = DB::table('stock_movements')->where('id', (int) $m[1])->where('user_id', (int) $dueno->id)->first(['id']);
 
-            if (is_null($dia) || $dia->gt(Carbon::today())) {
-
-                return null;
-            }
-
-            $ids = array_values(array_unique(array_map('intval', explode('.', $m[2]))));
-
-            $articulos = Article::withTrashed()->where('user_id', (int) $dueno->id)->whereIn('id', $ids)->orderBy('id')->get(['id', 'name', 'stock']);
-
-            if ($articulos->count() !== count($ids)) {
+            if (is_null($movimiento)) {
 
                 return null;
-            }
-
-            $claves = [];
-
-            foreach ($ids as $article_id) {
-                $claves[] = self::clave_de_stock($article_id, $dia);
             }
 
             return [
                 'tipo'   => AiAvisoDelAsistente::TIPO_STOCK_CERO,
-                'claves' => $claves,
-                'texto'  => self::texto_de_stock($articulos->all()),
+                'clave'  => 's' . (int) $movimiento->id,
+                'cursor' => ['agente_aviso_stock_cursor', (int) $movimiento->id],
+                'texto'  => '📦 Se quedaron artículos sin stock.',
                 'titulo' => 'Artículos sin stock',
             ];
         }
