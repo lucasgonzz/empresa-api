@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Models\AiConversation;
@@ -11,10 +12,12 @@ use App\Models\Article;
 use App\Models\Budget;
 use App\Models\Client;
 use App\Models\ExtencionEmpresa;
+use App\Models\Provider;
 use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeCarga;
 use Database\Seeders\testing\TestingFerreteriaSeeder;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Tests\EmpresaTestCase;
 
 /**
@@ -217,6 +220,64 @@ class Presupuesto_por_caja_y_correccion_Test extends EmpresaTestCase
             'cliente' => TestingFerreteriaSeeder::CLIENTE_CONTADO,
         ]);
         $this->assertArrayNotHasKey('presupuesto_anterior', $tercera);
+    }
+
+    /**
+     * 🔴 Revisión independiente: con Vinoteca, pero con PRECIO MANUAL o con costo de lista del
+     * proveedor + IVA, setFinalPrice no multiplica por la presentación: el precio no es el de la caja
+     * y la tarjeta no puede decir «caja de 6». Tampoco con un precio dictado.
+     *
+     * @test
+     */
+    public function con_precio_manual_o_costo_de_lista_mas_iva_no_es_la_caja()
+    {
+        $manual = $this->vino('zz-p111 Manual', 7000);
+        DB::table('articles')->where('id', $manual->id)->update(['price' => 7000]);
+
+        $proveedor = Provider::create(['name' => 'zz-p111 Lista mas IVA', 'user_id' => $this->dueno->id, 'price_from_cost_mas_iva' => 1]);
+        $de_lista = $this->vino('zz-p111 De lista', 9000);
+        DB::table('articles')->where('id', $de_lista->id)->update(['provider_id' => $proveedor->id, 'price' => null]);
+
+        $normal = $this->vino('zz-p111 Normal', 12000);
+        DB::table('articles')->where('id', $normal->id)->update(['price' => null]);
+
+        $this->assertFalse(ArticleHelper::presentacion_multiplica_el_precio(Article::with('provider')->find($manual->id), $this->dueno));
+        $this->assertFalse(ArticleHelper::presentacion_multiplica_el_precio(Article::with('provider')->find($de_lista->id), $this->dueno));
+        $this->assertTrue(ArticleHelper::presentacion_multiplica_el_precio(Article::with('provider')->find($normal->id), $this->dueno));
+
+        list($conversation, $assistant) = $this->conversacion('Presupuesto con precio manual');
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_presupuesto', [
+            'items'   => [
+                ['articulo' => 'zz-p111 Manual', 'cantidad' => 1],
+                ['articulo' => 'zz-p111 De lista', 'cantidad' => 1],
+                ['articulo' => 'zz-p111 Normal', 'cantidad' => 1],
+            ],
+            'cliente' => TestingFerreteriaSeeder::CLIENTE_CONTADO,
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        $renglones = [];
+        foreach (AiMessageAction::find($respuesta['tarjeta_id'])->presentacion['renglones'] as $renglon) {
+            if ($renglon['etiqueta'] === 'Artículo') {
+                $renglones[] = $renglon['valor'];
+            }
+        }
+
+        $this->assertCount(3, $renglones);
+        $this->assertStringNotContainsString('caja', $renglones[0], 'Precio manual: no es el de la caja.');
+        $this->assertStringNotContainsString('caja', $renglones[1], 'Costo de lista + IVA: no es el de la caja.');
+        $this->assertStringContainsString('(caja de 6)', $renglones[2], 'Modo normal: sí es el de la caja.');
+
+        // Con un precio dictado tampoco.
+        list($conversation, $assistant) = $this->conversacion('Presupuesto con precio dictado');
+
+        $dictado = $this->herramienta($conversation, $assistant, 'proponer_presupuesto', [
+            'items'   => [['articulo' => 'zz-p111 Normal', 'cantidad' => 1, 'precio_unitario' => 500]],
+            'cliente' => TestingFerreteriaSeeder::CLIENTE_CONTADO,
+        ]);
+        $this->assertStringNotContainsString('caja', AiMessageAction::find($dictado['tarjeta_id'])->presentacion['renglones'][0]['valor']);
     }
 
     /**

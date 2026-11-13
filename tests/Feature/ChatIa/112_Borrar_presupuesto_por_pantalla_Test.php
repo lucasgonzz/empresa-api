@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\BudgetController;
+use App\Http\Controllers\Helpers\DeleteModelsHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Models\AiConversation;
@@ -252,5 +253,44 @@ class Borrar_presupuesto_por_pantalla_Test extends EmpresaTestCase
 
         $this->deleteJson('api/budget/' . $propio->id)->assertStatus(200);
         $this->assertNull(Budget::find($propio->id));
+    }
+
+    /**
+     * 🔴 El borrado masivo de la selección del listado (`PUT api/delete/budget`) respeta el 422 de
+     * destroy(): un confirmado no vuelve en `deleted_models` (la SPA lo sacaría de pantalla aunque
+     * siguiera vivo) y viaja en `not_deleted` con el motivo; uno sin confirmar sí se borra.
+     *
+     * @test
+     */
+    public function el_borrado_masivo_no_cuenta_como_borrado_un_confirmado()
+    {
+        $this->assertContains('budget', DeleteModelsHelper::MODELOS_QUE_RESPETAN_RECHAZO);
+
+        $confirmado = $this->presupuesto(990132, BudgetController::ESTADO_CONFIRMADO);
+        $sin_confirmar = $this->presupuesto(990133);
+
+        Auth::forgetGuards();
+        $this->actingAs($this->dueno, 'sanctum');
+
+        // Un solo registro: el camino síncrono de DeleteController.
+        $response = $this->putJson('api/delete/budget', ['from_filter' => 0, 'models_id' => [$confirmado->id]]);
+
+        $response->assertStatus(200);
+        $this->assertCount(0, $response->json('models'), 'El confirmado no puede volver como eliminado.');
+        $this->assertEquals($confirmado->id, $response->json('not_deleted.0.id'));
+        $this->assertStringContainsString('anularlo', $response->json('not_deleted.0.message'));
+        $this->assertNotNull(Budget::find($confirmado->id));
+
+        // Varios registros (el camino del job): cuenta solo el que sí se borró.
+        $resultado = DeleteModelsHelper::process_delete('budget', [$confirmado->id, $sin_confirmar->id]);
+
+        $this->assertEquals(1, $resultado['deleted_count']);
+        $this->assertCount(1, $resultado['deleted_models']);
+        $this->assertEquals($sin_confirmar->id, $resultado['deleted_models'][0]->id);
+        $this->assertCount(1, $resultado['not_deleted']);
+        $this->assertEquals($confirmado->id, $resultado['not_deleted'][0]['id']);
+
+        $this->assertNotNull(Budget::find($confirmado->id));
+        $this->assertNull(Budget::find($sin_confirmar->id));
     }
 }

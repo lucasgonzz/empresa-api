@@ -171,6 +171,12 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
         $this->assertNull($ticket_ajeno->fresh()->admin_ticket_id);
     }
 
+    /*
+     * Hasta el 12/11/2026 la sesión técnica de este caso era el login maestro. Lucas pidió que el
+     * maestro que entra como el dueño vea Soporte entero, también las conversaciones de WhatsApp
+     * (misión maestro-auditoria-completa / maestro-asistente-completo): ese caso pasa al test de abajo.
+     * La sesión técnica que sigue leyendo solo las referencias ERP es el acceso firmado de soporte.
+     */
     public function test_la_sesion_tecnica_lee_solo_las_referencias_de_sus_tickets_erp(): void
     {
         $ticket_erp = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'open']);
@@ -181,7 +187,7 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
             ]),
         ]);
 
-        $this->withSession(['master_login_bypass_user_last_activity' => true])
+        $this->withSession(['acceso_soporte_token_id' => 7])
             ->getJson('/api/support-ticket?agentes=1')->assertOk()
             ->assertJsonCount(1, 'models')->assertJsonPath('models.0.admin_ticket_id', 82);
         $this->assertDatabaseMissing('support_tickets', ['uuid' => $ticket_wa['uuid']]);
@@ -383,5 +389,21 @@ class TrasladoDeAgentesTest extends AsistenteWhatsappTestCase
             ])->assertOk();
             $this->assertSame($traspasado !== null, $tour->fresh()->question_ticket_uuid === $ticket->uuid);
         }
+    }
+
+    /** El maestro que entra como el dueño ve Soporte entero, incluidas las conversaciones de WhatsApp. */
+    public function test_el_maestro_como_dueno_ve_tambien_las_conversaciones_de_whatsapp(): void
+    {
+        $ticket_erp = SupportTicket::create(['user_id' => $this->comercio->id, 'status' => 'open']);
+        $ticket_wa = ['uuid' => (string) Str::uuid(), 'origen' => 'whatsapp', 'status' => 'open'];
+        Http::fake([
+            self::INBOUND . '/agentes/soporte*' => Http::response([
+                'models' => [$ticket_wa], 'ticket_numbers' => [$ticket_erp->uuid => 82],
+            ]),
+        ]);
+
+        $this->withSession(['master_login_bypass_user_last_activity' => true])
+            ->getJson('/api/support-ticket?agentes=1')->assertOk()->assertJsonCount(2, 'models');
+        $this->assertDatabaseHas('support_tickets', ['uuid' => $ticket_wa['uuid']]);
     }
 }

@@ -201,11 +201,13 @@ class Ficha_y_cuenta_de_mencion_Test extends TestCase
 
         $ficha = $this->getJson('api/articles/' . $articulo->id . '/ficha-asistente')->json('model');
 
+        // Misión asistente-truvari-pedidos-fallidos (13/11/2026): `stock_sin_cargar` al final (el stock
+        // NULL no es 0); la SPA vieja la ignora.
         $this->assertEquals(
             ['id', 'nombre', 'imagen_url', 'codigo', 'precio', 'proveedor', 'stock_total',
-             'tiene_depositos', 'depositos', 'listas_de_precios'],
+             'tiene_depositos', 'depositos', 'listas_de_precios', 'stock_sin_cargar'],
             array_keys($ficha),
-            'La ficha devuelve las diez claves del contrato y nada más.'
+            'La ficha devuelve las once claves del contrato y nada más.'
         );
     }
 

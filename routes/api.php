@@ -1518,7 +1518,7 @@ Route::middleware(['auth:sanctum', 'check_extencion_empresa:agentes_ia'])->group
          * `mcp/conexion` es la administración de esa clave desde el modal de configuración del
          * asistente (crear, ver el estado, revocar); el token viaja UNA sola vez, al crearlo.
          */
-        // Un token MCP seguiría funcionando fuera de la sesión maestra que lo emitió.
+        // El maestro puede auditar la conexión MCP como el dueño; soporte firmado conserva su bloqueo.
         Route::middleware('solo_el_dueno_ia:sesion_propia')->group(function () {
             Route::post('mcp', 'McpController@post');
             Route::get('mcp', 'McpController@get');

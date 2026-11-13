@@ -316,14 +316,22 @@ class PedidoDeAyudaASoporteIaHelper
     /** El aviso cuando la herramienta contestó que se llegó al tope del día. */
     const AVISO_TOPE = 'Ojo: hoy ya se usó el máximo de pedidos a soporte desde acá, así que este no se mandó. Si lo necesitás, escribilo en el chat de Ayuda del sistema.';
 
-    /** Lo que afirma un pedido a soporte hecho, normalizado. */
-    const AFIRMA_UN_PEDIDO = '/\b(?:(?:listo|hecho|ya esta|ya quedo|quedo|queda)\b(?:\s+\S+){0,4}?\s+(?:el\s+)?pedid[oa]s?\b(?:\s+\S+){0,3}?\s+soporte|(?:le|les)\s+(?:pedi|escribi|mande|deje|pase|avise|consulte|hice el pedido)\s+(?:a\s+)?soporte|(?:pedi|deje pedid[oa]|deje el pedido|mande el pedido|hice el pedido|pase el pedido|escribi)\s+a\s+soporte|deje pedid[oa]\b(?:\s+\S+){0,6}?\s+soporte|dejo pedid[oa]\b(?:\s+\S+){0,6}?\s+soporte|(?:ya\s+)?(?:lo|la|los|las)\s+(?:sume|sumo|agregue|agrego|incluyo|inclui)\s+(?:al|en el|a el)\s+pedido|soporte\s+ya\s+(?:lo|la)\s+(?:tiene|recibio))\b/';
+    /*
+     * Lo que afirma un pedido a soporte hecho, normalizado.
+     *
+     * 🔴 D3 de la revisión independiente (13/11/2026): normalizar() saca las tildes, así que «pedí» y
+     * «escribí» (primera persona) se leen igual que el imperativo del voseo («Pedí a soporte que te lo
+     * habiliten», «Escribí a soporte por el chat de Ayuda»). Esos dos verbos cuentan solo con «le»/«les»
+     * delante («Le pedí a soporte»), que el imperativo no lleva. Y un pedido con día, fecha, «ayer» o
+     * «todavía» es un repaso (REPASO_DEL_PEDIDO): «Le pedí a soporte el martes y todavía no contestaron».
+     */
+    const AFIRMA_UN_PEDIDO = '/\b(?:(?:listo|hecho|ya esta|ya quedo|quedo|queda)\b(?:\s+\S+){0,4}?\s+(?:el\s+)?pedid[oa]s?\b(?:\s+\S+){0,3}?\s+soporte|(?:le|les)\s+(?:pedi|escribi|mande|deje|pase|avise|consulte|hice el pedido)\s+(?:a\s+)?soporte|(?:deje pedid[oa]|deje el pedido|mande el pedido|hice el pedido|pase el pedido)\s+a\s+soporte|deje pedid[oa]\b(?:\s+\S+){0,6}?\s+soporte|dejo pedid[oa]\b(?:\s+\S+){0,6}?\s+soporte|(?:ya\s+)?(?:lo|la|los|las)\s+(?:sume|sumo|agregue|agrego|incluyo|inclui)\s+(?:al|en el|a el)\s+pedido|soporte\s+ya\s+(?:lo|la)\s+(?:tiene|recibio))\b/';
 
     /** Lo que desarma la afirmación si va antes: un condicional, una oferta, una negación, un repaso. */
     const DESARMA_EL_PEDIDO = '/(?:^|\s)(?:si|cuando|queres que|puedo|podria|podes|te ofrezco|preferis|no|nunca|ni)\s/';
 
     /** Un pedido de ANTES de este turno contado como tal. */
-    const REPASO_DEL_PEDIDO = '/\b(?:antes|hace un rato|hace un momento|ayer|mas temprano|esta manana|esta tarde|a las \d|el de las|el anterior|el primero|ya estaba)\b/';
+    const REPASO_DEL_PEDIDO = '/\b(?:antes|hace un rato|hace un momento|ayer|anteayer|mas temprano|esta manana|esta tarde|a las \d|el de las|el anterior|el primero|ya estaba|todavia|aun no|lunes|martes|miercoles|jueves|viernes|sabado|domingo|la semana pasada|el otro dia|\d{1,2} \d{1,2})\b/';
 
     /**
      * true si el texto da por hecho un pedido a soporte.

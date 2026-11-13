@@ -2477,12 +2477,17 @@ class ConsultasSistemaIaHelper
             'trabaja_con_depositos'     => count($todas) >= 2,
             'depositos_encontrados'     => count($todas),
             'depositos_en_esta_lista'   => count($mostradas),
-            // El stock de la ficha del artículo: el número que muestra el listado.
-            'stock_total_del_articulo'  => is_null($articulo->stock) ? 0.0 : (float) $articulo->stock,
+            // El stock de la ficha del artículo: el número que muestra el listado. NULL no es 0
+            // (misión asistente-truvari-pedidos-fallidos, B3): viaja en null y lo dice
+            // `stock_sin_cargar`, al final.
+            'stock_total_del_articulo'  => is_null($articulo->stock) ? null : (float) $articulo->stock,
             // La suma del reparto por sucursal. Si difiere del de arriba, el dato está roto y hay
             // que decirlo, no elegir uno.
             'stock_sumado_por_deposito' => round($repartido, 2),
             'depositos'                 => $mostradas,
+            // B3 (13/11/2026), al final: el artículo nunca tuvo stock cargado en la ficha. No es un
+            // dato roto contra el reparto ni un stock en cero.
+            'stock_sin_cargar'          => is_null($articulo->stock),
         ];
 
         /*

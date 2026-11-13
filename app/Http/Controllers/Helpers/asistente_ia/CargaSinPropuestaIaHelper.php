@@ -39,11 +39,25 @@ class CargaSinPropuestaIaHelper
     /** Lo que reemplaza la pregunta si el reintento tampoco armó la propuesta. */
     const TEXTO_HONESTO = 'Ojo: todavía no lo dejé preparado, así que un «sí» ahora no registra nada. Decime «dale» y lo preparo con estos datos.';
 
-    /** Los verbos de una carga en primera persona del presente, normalizados. */
-    const VERBO = '(?:cargo|registro|preparo|elimino|borro|creo|armo|guardo|agendo|actualizo|cambio|corrijo|confirmo|anulo|modifico|ajusto|dejo asi|doy de alta|doy de baja|hago|subo|bajo|aplico|paso)';
+    /*
+     * 🔴 D5 de la revisión independiente (13/11/2026): los verbos se separan en dos. Los que SOLO son una
+     * carga («¿Cargo las 6?», «¿Registro el pago?», «¿Lo elimino?») valen solos; los que también ofrecen
+     * información o un trabajo («¿Te paso el detalle?», «¿Te armo un presupuesto?», «¿Te hago un resumen?»,
+     * «¿Te bajo el Excel?», «¿Cambio algo?») valen solo con el pronombre del objeto ya nombrado: «¿Lo dejo
+     * así?», «¿Lo preparo así?», «¿Lo cambio?». Con el dueño en "directo", tomar una oferta por una
+     * confirmación terminaría en una escritura que nadie pidió.
+     */
+
+    /** Los verbos de carga en primera persona del presente que no pueden ser otra cosa, normalizados. */
+    const VERBO_DE_CARGA = '(?:cargo|registro|elimino|borro|agendo|anulo|doy de alta|doy de baja)';
+
+    /** Los que necesitan el pronombre del objeto («lo», «la», «los», «las») para ser una carga. */
+    const VERBO_CON_PRONOMBRE = '(?:preparo|guardo|actualizo|cambio|corrijo|confirmo|modifico|ajusto|dejo|aplico|creo|armo|hago|paso|subo|bajo)';
 
     /** Los mismos en subjuntivo, para «¿Querés que lo registre?». */
-    const VERBO_SUBJUNTIVO = '(?:cargue|registre|prepare|elimine|borre|cree|arme|guarde|agende|actualice|cambie|corrija|confirme|anule|modifique|ajuste|deje asi|de de alta|de de baja|haga|suba|baje|aplique)';
+    const SUBJUNTIVO_DE_CARGA = '(?:cargue|registre|elimine|borre|agende|anule|de de alta|de de baja)';
+
+    const SUBJUNTIVO_CON_PRONOMBRE = '(?:prepare|guarde|actualice|cambie|corrija|confirme|modifique|ajuste|deje|aplique|cree|arme|haga|pase|suba|baje)';
 
     /**
      * true si alguna de las últimas oraciones del texto pide confirmar una carga.
@@ -53,18 +67,42 @@ class CargaSinPropuestaIaHelper
      */
     public static function pide_confirmar_una_carga($texto)
     {
-        /*
-         * Solo una confirmación con los DATOS de la carga (lo que pide la regla de la confirmación por texto:
-         * «decí los datos exactos y preguntá si lo registrás»): una cantidad, un monto o un número. «Es un
-         * aceite. ¿Lo cargo?» —sin un dato— es ofrecer la carga, no confirmarla: el sí que siga es un pedido.
-         */
-        if (! self::trae_los_datos($texto)) {
-            return false;
+        $oraciones = VeracidadDelTurnoIaHelper::oraciones($texto);
+        $total = count($oraciones);
+
+        foreach ($oraciones as $indice => $oracion) {
+
+            if ($indice < $total - self::ORACIONES_DEL_FINAL || ! self::oracion_pide_confirmar($oracion)) {
+                continue;
+            }
+
+            /*
+             * Solo una confirmación con los DATOS de la carga (lo que pide la regla de la confirmación por
+             * texto: «decí los datos exactos y preguntá si lo registrás»), en la MISMA oración de la pregunta o
+             * en la de antes (D5 de la revisión): un dígito en cualquier parte del texto no alcanza. «Es un
+             * aceite. ¿Lo cargo?» —sin un dato— es ofrecer la carga, no confirmarla.
+             */
+            $con_la_de_antes = $oracion . ' ' . ($indice > 0 ? $oraciones[$indice - 1] : '');
+
+            if (self::trae_los_datos($con_la_de_antes)) {
+                return true;
+            }
         }
 
-        $oraciones = VeracidadDelTurnoIaHelper::oraciones($texto);
+        return false;
+    }
 
-        foreach (array_slice($oraciones, -self::ORACIONES_DEL_FINAL) as $oracion) {
+    /**
+     * true si alguna de las últimas oraciones del texto pide confirmar una carga, traiga o no los datos (D1
+     * de la revisión independiente): es lo que se mira en la respuesta ANTERIOR del asistente para saber si
+     * el «sí» de la persona contesta un pedido de confirmación.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function termina_pidiendo_confirmar($texto)
+    {
+        foreach (array_slice(VeracidadDelTurnoIaHelper::oraciones($texto), -self::ORACIONES_DEL_FINAL) as $oracion) {
 
             if (self::oracion_pide_confirmar($oracion)) {
                 return true;
@@ -158,17 +196,37 @@ class CargaSinPropuestaIaHelper
             return false;
         }
 
-        /* «¿Lo cargo?», «¿Lo registro así?», «¿Los elimino?», «¿Te lo preparo?», «Y, ¿lo dejo así?». */
-        if (preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno|bien)\s+)?(?:(?:te|se|le|les)\s+)?(?:(?:lo|la|los|las)\s+)?' . self::VERBO . '\b/', $n)) {
+        /*
+         * Convertir lo que se mostró en otra cosa («¿Te lo armo en un presupuesto?», «¿Te lo paso en un
+         * Excel?») es ofrecer un trabajo nuevo, no confirmar una carga: con el dueño en modo directo, el
+         * reintento podía terminar armando algo que nadie pidió (revisión independiente, 13/11/2026).
+         */
+        if (preg_match('/\b(?:en|como)\s+(?:(?:un|una|el|la)\s+)?(?:presupuesto|excel|pdf|planilla|lista|tabla|resumen|archivo|imagen|mensaje)\b/', $n)) {
+            return false;
+        }
+
+        $apertura = '^(?:(?:y|entonces|listo|dale|ok|bueno|bien)\s+)?(?:(?:te|se|le|les)\s+)?';
+
+        /* «¿Lo cargo?», «¿Cargo las 6 unidades?», «¿Los elimino?», «¿Lo registro así?». */
+        if (preg_match('/' . $apertura . '(?:(?:lo|la|los|las)\s+)?' . self::VERBO_DE_CARGA . '\b/', $n)) {
             return true;
         }
 
-        /* «¿Confirmás?», «¿Me confirmás?», «¿Lo confirmás así?», «¿Confirmás estos datos del alta?» — no «¿Me confirmás que figura así?». */
-        if (preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno)\s+)?(?:(?:me|lo|la|los|las|me lo|me la)\s+)?confirmas\b(?!\s+(?:que|si|cual|como|donde)\b)/', $n)) {
+        /* «¿Lo dejo así?», «¿Te lo preparo?», «¿Lo cambio?» — y no «¿Te armo un presupuesto?» ni «¿Cambio algo?». */
+        if (preg_match('/' . $apertura . '(?:lo|la|los|las)\s+' . self::VERBO_CON_PRONOMBRE . '\b/', $n)) {
             return true;
         }
 
-        /* «¿Querés que lo registre?», «¿Querés que te lo cargue así?». */
-        return (bool) preg_match('/\bqueres que\s+(?:(?:te|se|le|les)\s+)?(?:(?:lo|la|los|las)\s+)?' . self::VERBO_SUBJUNTIVO . '\b/', $n);
+        /*
+         * «¿Confirmás?», «¿Me confirmás?», «¿Lo confirmás así?», «¿Confirmás estos datos del alta?» — no «¿Me
+         * confirmás que figura así?» ni, desde D5 de la revisión, «¿Me confirmás el nombre?» (un artículo
+         * detrás: pregunta por un dato).
+         */
+        if (preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno)\s+)?(?:(?:me|lo|la|los|las|me lo|me la)\s+)?confirmas\b(?!\s+(?:que|si|cual|como|donde|el|la|los|las|su|sus|tu|tus|un|una)\b)/', $n)) {
+            return true;
+        }
+
+        /* «¿Querés que lo registre?», «¿Querés que te lo cargue así?» — no «¿Querés que te arme un presupuesto?». */
+        return (bool) preg_match('/\bqueres que\s+(?:(?:te|se|le|les)\s+)?(?:(?:(?:lo|la|los|las)\s+)?' . self::SUBJUNTIVO_DE_CARGA . '|(?:lo|la|los|las)\s+' . self::SUBJUNTIVO_CON_PRONOMBRE . ')\b/', $n);
     }
 }

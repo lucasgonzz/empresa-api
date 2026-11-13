@@ -1806,9 +1806,27 @@ class AsistenteIaService
          *     ve; si contaba algo hecho antes, el aviso no dice "no pude" ni la invita a repetirlo.
          */
         if ($confirma_en_whatsapp && $this->afirma_una_carga_que_no_se_hizo($final_text, $tools, $conversation, $assistant_message, true) !== '') {
-            return $this->respuesta_sin_terminar(
-                $conversation, $assistant_message, null, 'el modelo afirmó que registró una carga sin confirmación del sistema'
-            );
+
+            /*
+             * D1 de la revisión independiente de la misión asistente-truvari-pedidos-fallidos: un pago dado
+             * por hecho sigue como desde 9ea73bbc (lo hecho, sin el modelo); cualquier otra carga cambia solo
+             * las oraciones que la dan por hecha y el resto de la respuesta queda.
+             */
+            if ($this->habla_de_un_pago($final_text)) {
+                return $this->respuesta_sin_terminar(
+                    $conversation, $assistant_message, null, 'el modelo afirmó que registró una carga sin confirmación del sistema'
+                );
+            }
+
+            Log::warning('AsistenteIaService: por texto, el texto da por hecha una carga que no se ejecutó; se cambian esas oraciones por el aviso.', [
+                'ai_conversation_id'   => $conversation->id,
+                'ai_message_id'        => $assistant_message->id,
+                'hubo_reintento'       => ! is_null($texto_antes_del_reintento),
+                'herramientas_pedidas' => $herramientas_pedidas,
+                'texto'                => mb_substr($final_text, 0, 300),
+            ]);
+
+            $final_text = TarjetaPrometidaIaHelper::sin_las_cargas_dadas_por_hechas($final_text, TarjetaPrometidaIaHelper::AVISO_POR_TEXTO);
         }
 
         if ($guarda_de_tarjeta && ! $la_tarjeta_cambio_el_texto) {
@@ -4177,11 +4195,29 @@ CONFIRMACION;
 
         /* A5: «Me lo anoto» sin un guardar_en_contexto ok. */
         if ($guarda === 'anotacion') {
+
+            /* D4 de la revisión independiente: con una carga armada o hecha en el turno, «te anoto el gasto» es esa carga. */
+            if (EnvioSinPropuestaIaHelper::el_turno_ya_armo_o_resolvio_algo($herramientas_pedidas)
+                || AiMessageAction::where('ai_message_id', $assistant_message->id)->exists()) {
+                return false;
+            }
+
             return AnotacionPrometidaIaHelper::dice_que_lo_anota($saneado) && ! $this->hubo_herramienta_ok(HerramientasDeContexto::GUARDAR);
         }
 
         /* A4: «Reviso y te confirmo», «Dame un momento». */
         if ($guarda === 'promesa') {
+
+            /*
+             * D2 de la revisión independiente: si el turno dejó algo que SÍ corre después —una tarea o un
+             * recordatorio, una imagen que se genera en segundo plano—, «te aviso en un rato» puede ser verdad.
+             */
+            foreach ($herramientas_pedidas as $herramienta) {
+                if (preg_match('/tarea|recordatorio|imagen/', (string) $herramienta)) {
+                    return false;
+                }
+            }
+
             return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
         }
 
@@ -4424,6 +4460,22 @@ CONFIRMACION;
         }
 
         /*
+         * 🔴 D1 de la revisión independiente (13/11/2026): por texto, un sí no alcanza. «Si» a «¿Te paso las
+         * ventas de octubre?» y «Las ventas de octubre quedaron en $3.200.000» es una consulta, no una carga.
+         * Fuera de los pagos (el caso de 9ea73bbc, que sigue igual), la guarda solo corre si la respuesta
+         * anterior del asistente pidió confirmar una carga («¿Lo cargo?», «¿Confirmás?», «¿Lo registro así?»):
+         * ése es el sí que Truvari contestó y el asistente convirtió en «Quedó en 9 unidades».
+         */
+        if ($confirma_en_whatsapp && ! $this->habla_de_un_pago($saneado)) {
+
+            $anterior = $this->respuesta_anterior_del_asistente($conversation, $assistant_message);
+
+            if (is_null($anterior) || ! CargaSinPropuestaIaHelper::termina_pidiendo_confirmar((string) $anterior->contenido)) {
+                return '';
+            }
+        }
+
+        /*
          * A1 de la misión asistente-truvari-pedidos-fallidos (13/11/2026): por texto ya no se filtra por
          * pago (9ea73bbc lo acotaba a «el pago» y a las acciones de pago): mira TODA carga.
          */
@@ -4480,6 +4532,18 @@ CONFIRMACION;
         }
 
         return '';
+    }
+
+    /**
+     * true si el texto habla de un pago («el pago», «un pago»): la forma que miraba la guarda por texto
+     * desde 9ea73bbc.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    protected function habla_de_un_pago($texto): bool
+    {
+        return (bool) preg_match('/\b(?:el|un|tu|su) pago\b/iu', (string) $texto);
     }
 
     /**
@@ -5923,7 +5987,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_stock_por_deposito',
-                'description' => 'Devuelve cómo está repartido el stock de un artículo entre las sucursales o depósitos del negocio, incluidas las que están en cero (que suele ser justo el dato que se busca). Si trabaja_con_depositos es false, el negocio tiene una sola sucursal y no hay reparto que contar. 🔴 Vienen DOS totales: stock_total_del_articulo, que es el de la ficha y el que muestra el listado, y stock_sumado_por_deposito, que es la suma del reparto. Si no coinciden, decilo: es un dato roto que el comerciante tiene que saber, y no elijas uno de los dos por tu cuenta.',
+                'description' => 'Devuelve cómo está repartido el stock de un artículo entre las sucursales o depósitos del negocio, incluidas las que están en cero (que suele ser justo el dato que se busca). Si trabaja_con_depositos es false, el negocio tiene una sola sucursal y no hay reparto que contar. 🔴 Vienen DOS totales: stock_total_del_articulo, que es el de la ficha y el que muestra el listado, y stock_sumado_por_deposito, que es la suma del reparto. Si no coinciden, decilo: es un dato roto que el comerciante tiene que saber, y no elijas uno de los dos por tu cuenta. Excepción: si stock_sin_cargar es true (stock_total_del_articulo viene null), no es un dato roto: la ficha nunca tuvo stock cargado y lo que hay es el reparto por depósito.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [

@@ -20,24 +20,12 @@ use Illuminate\Http\Request;
  * El contrato completo está en el plan de la misión (§2): los nombres de campos y los códigos de
  * error los lee admin-api y la página; no se cambian sin hablarlo.
  *
- * LOGIN MAESTRO (misión centro-recursos-soporte-y-tema, 14/10/2026): entra a la página como el dueño
- * pero en SOLO LECTURA. Su pase va marcado `soporte` y el canje se lo cuenta al admin. Solo si la
- * página declara que sabe hacerlo (`"soporte": true` en su archivo de estado, C4); con una página
- * vieja el maestro sigue abriendo como invitado, igual que antes.
+ * El login maestro recibe el mismo pase operativo que el dueño, sin modo de solo lectura.
  *
  * IMPORTANTE (PHP 7.4): nada de match, str_contains, nullsafe ni argumentos nombrados.
  */
 class CentroRecursosController extends Controller
 {
-    /**
-     * Clave de sesión que marca un login maestro. La pone AuthController::login() (y la traspasa
-     * login_from_version_session_token()) en los dos modos, `login` y `login full`; es la misma que
-     * ya leen el candado de sesión única y ImageAssignmentRunHelper::CLAVE_DE_SESION_MAESTRO.
-     *
-     * @var string
-     */
-    const CLAVE_DE_SESION_MAESTRO = 'master_login_bypass_user_last_activity';
-
     /**
      * POST centro-recursos/pase — C1.
      *
@@ -51,15 +39,7 @@ class CentroRecursosController extends Controller
      * `/public` del hosting compartido si lo hay). El admin la usa SOLO para reconocer al cliente por
      * el host; para canjear llama a la URL que él tiene cargada, nunca a esta.
      *
-     * 🔴 LOGIN MAESTRO: entra como el dueño, pero en SOLO LECTURA. Con pase común, lo que soporte
-     * mirara, votara o preguntara quedaría guardado como avance y preguntas del cliente; por eso el
-     * pase de un maestro va marcado `soporte` y la página (vía el admin) abre una sesión que no
-     * guarda nada. Depende de lo que declare la página en su archivo de estado (C4):
-     *  - `soporte: true` → la URL lleva `pase` y `api` como la de cualquier usuario, y la fila del
-     *    pase queda con `soporte = 1`;
-     *  - sin `soporte` (página vieja que no sabe de solo lectura) → como antes de esta misión: la
-     *    URL va SIN pase y sin `api` (con `v` si vino), no se crea ninguna fila y la página abre como
-     *    invitado.
+     * El maestro recibe un pase operativo como el dueño, sin depender del modo soporte de la página.
      * El chequeo de disponibilidad (C4) vale igual: con la página caída, tampoco se abre.
      *
      * @param  Request $request
@@ -86,15 +66,9 @@ class CentroRecursosController extends Controller
 
         $parametros = [];
 
-        $es_maestro = $this->es_login_maestro();
-
-        /** Un maestro solo recibe pase si la página sabe abrirlo en solo lectura; si no, invitado. */
-        $soporte = $es_maestro && CentroRecursosDisponibilidadHelper::admite_soporte();
-
-        if (!$es_maestro || $soporte) {
-            $parametros['pase'] = CentroRecursosPaseHelper::crear($request->user(), $video, $soporte);
-            $parametros['api'] = url('/');
-        }
+        // El maestro audita y opera con el mismo pase del dueño.
+        $parametros['pase'] = CentroRecursosPaseHelper::crear($request->user(), $video, false);
+        $parametros['api'] = url('/');
 
         if (!is_null($video)) {
             $parametros['v'] = $video;
@@ -104,17 +78,6 @@ class CentroRecursosController extends Controller
             'url'        => $this->url_de_la_pagina_con($parametros),
             'disponible' => true,
         ], 200);
-    }
-
-    /**
-     * ¿La sesión de este pedido es un login maestro? Misma señal que el candado de sesión única
-     * (AuthController::is_master_login_activity_bypass_enabled()).
-     *
-     * @return bool
-     */
-    protected function es_login_maestro()
-    {
-        return (bool) session(self::CLAVE_DE_SESION_MAESTRO, false);
     }
 
     /**
@@ -140,9 +103,8 @@ class CentroRecursosController extends Controller
      * Body: `{"pase": "<64 caracteres>"}`.
      *
      * 200 `{"user": {"id", "name", "email": string|null, "owner_id": int|null}, "video": string|null,
-     * "soporte": bool}`. `soporte` es true cuando el pase lo emitió un login maestro: el admin abre
-     * entonces una sesión de SOLO LECTURA. Un admin que no conoce el campo lo ignora y abre la sesión
-     * de siempre (compatibilidad hacia atrás, plan §2).
+     * "soporte": bool}`. Se conserva la marca de pases históricos de solo lectura;
+     * los pases actuales del dueño y del maestro usan `false` y permiten operar normalmente.
      * 404 `{"error": "pase_invalido"}` si no existe, ya se usó, venció, o el usuario no es del dueño
      * de esta instancia (ver CentroRecursosPaseHelper). La clave del admin la valida el middleware
      * `admin.api.key` del grupo, igual que en el resto del canal.

@@ -1099,7 +1099,7 @@ class HerramientasDeCarga
                                     ],
                                     'cantidad'        => [
                                         'type'        => 'number',
-                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el artículo se vende por caja o presentación (con el módulo Vinoteca el precio del artículo ya es el de la caja), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
+                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el precio del artículo es el de la caja o presentación (la tarjeta lo muestra como "(caja de N)"), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
                                     ],
                                     'precio_unitario' => [
                                         'type'        => 'number',
@@ -1326,7 +1326,7 @@ class HerramientasDeCarga
                                     ],
                                     'cantidad'        => [
                                         'type'        => 'number',
-                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el artículo se vende por caja o presentación (con el módulo Vinoteca el precio del artículo ya es el de la caja), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
+                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el precio del artículo es el de la caja o presentación (la tarjeta lo muestra como "(caja de N)"), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
                                     ],
                                     'precio_unitario' => [
                                         'type'        => 'number',

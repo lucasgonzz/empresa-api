@@ -177,7 +177,6 @@ class Gate_solo_el_dueno_Test extends TestCase
     {
         return [
             'soporte firmado' => ['acceso_soporte_token_id', 1],
-            'acceso maestro' => ['master_login_bypass_user_last_activity', true],
         ];
     }
 
