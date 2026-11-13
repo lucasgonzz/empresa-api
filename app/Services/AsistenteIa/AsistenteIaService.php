@@ -3044,6 +3044,16 @@ VARIAS;
 
             if (! PermisosIaHelper::tiene_extencion($owner, $slug)) {
 
+                /*
+                 * Misión asistente-truvari-pedidos-fallidos (13/11/2026, F6): en una vinoteca el dueño
+                 * llama «combos» o «promos» a las promociones de vinoteca (botón Promos del Listado),
+                 * que no son el módulo Combos. Sin esta aclaración el modelo contestó «no veo los
+                 * combos» sin buscarlas.
+                 */
+                if ($slug === PermisosIaHelper::EXTENCION_COMBOS && PermisosIaHelper::tiene_extencion($owner, 'vinoteca')) {
+                    $texto .= '; las promos de vinoteca, que el dueño puede llamar combos o promos, sí se consultan con consultar_datos, entidad promocion_vinoteca';
+                }
+
                 $apagados[] = $texto;
             }
         }
@@ -5538,7 +5548,7 @@ CONFIRMACION;
         return [
             [
                 'name' => 'consultar_stock_de_articulos',
-                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo.',
+                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
