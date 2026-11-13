@@ -132,6 +132,16 @@ class SupportToursTest extends EmpresaTestCase
             ->assertJsonPath('model.0.uuid', $vieja['uuid']);
     }
 
+    public function test_el_maestro_puede_ver_y_aceptar_los_recorridos_del_dueno(): void
+    {
+        $this->withSession(['master_login_bypass_user_last_activity' => true]);
+        $this->getJson('/api/user')->assertOk()->assertJsonPath('user.robotito_soporte_habilitado', true);
+        $oferta = $this->datos();
+        $this->postJson(self::ADMIN_SYNC, $oferta, $this->clave())->assertOk();
+        $this->getJson('/api/support-tour/pending')->assertOk()->assertJsonPath('model.0.uuid', $oferta['uuid']);
+        $this->postJson($this->ruta($oferta, 'accept'))->assertOk()->assertJsonPath('model.uuid', $oferta['uuid']);
+    }
+
     public function test_sesion_de_prueba_vigente_anuncia_robotito_y_marca_el_mensaje_firmado(): void
     {
         PruebaHelper::olvidar_cache();

@@ -206,7 +206,7 @@ class PruebaHelper
     {
         return self::puede_haber_prueba()
             && self::es_sesion_web_del_dueno($user, $request)
-            && self::en_periodo_vigente((int) $user->id);
+            && (MostradorHelper::maestro_autorizado($request) || self::en_periodo_vigente((int) $user->id));
     }
 
     /** La conversación trasladada sigue siendo privada aunque termine la prueba. */
@@ -220,8 +220,7 @@ class PruebaHelper
         $dueno_web = $request->user('web');
 
         return $dueno_web !== null && (int) $dueno_web->id === (int) $user->id
-            && !$sesion->has('acceso_soporte_token_id')
-            && !$sesion->get('master_login_bypass_user_last_activity', false);
+            && !$sesion->has('acceso_soporte_token_id');
     }
 
     public static function error_catalogo_para_probar_agente(int $owner_id): ?array

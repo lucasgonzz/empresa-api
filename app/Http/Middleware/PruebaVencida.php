@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\MostradorHelper;
 use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -31,7 +32,8 @@ class PruebaVencida
      */
     public function handle(Request $request, Closure $next)
     {
-        if (!PruebaHelper::puede_haber_prueba()) {
+        // Auditar no reactiva la prueba ni cambia el vencimiento del negocio.
+        if (MostradorHelper::es_sesion_maestra($request) || !PruebaHelper::puede_haber_prueba()) {
             return $next($request);
         }
 

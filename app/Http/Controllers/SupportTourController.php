@@ -151,7 +151,7 @@ class SupportTourController extends Controller
     private function persona(Request $request): User
     {
         $persona = $request->user();
-        abort_unless($persona instanceof User && SupportTourService::sesion_web_propia($request, $persona), 403);
+        abort_unless($persona instanceof User && SupportTourService::sesion_web_propia($request, $persona, true), 403);
 
         return $persona;
     }

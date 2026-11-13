@@ -34,7 +34,7 @@ class VerificacionDePerfilConLoginMaestroTest extends TestCase
         $login->assertJsonPath('user.skip_offline_articles_sync', $modo === 'login');
         $this->usar_cookie($login);
         $this->getJson('/api/user')->assertOk()
-            ->assertJsonPath('user.id', $usuario->id)
+            ->assertJsonPath('user.id', $dueno->id)
             ->assertJsonPath('user.es_acceso_maestro', true);
 
         $logout = $this->postJson('/logout')->assertOk();
@@ -85,7 +85,7 @@ class VerificacionDePerfilConLoginMaestroTest extends TestCase
             'doc_number' => $empleado ? $usuario->doc_number . ' ' . $modo : $modo,
         ])->assertOk()
             ->assertJsonPath('login', true)
-            ->assertJsonPath('user.id', $usuario->id)
+            ->assertJsonPath('user.id', $usuario->owner_id ?: $usuario->id)
             ->assertJsonPath('user.es_acceso_maestro', true);
     }
 
