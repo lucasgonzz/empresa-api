@@ -15,6 +15,7 @@ use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
 
 /**
@@ -29,6 +30,8 @@ use Tests\TestCase;
  *   - A4: «Busco la publicación del Nieto Senetiner Brut Nature en la tienda y te paso el link.», «Reviso y
  *     te confirmo en un momento.», «Voy a revisar la consulta de ese artículo. Dame un momento.»: nunca
  *     volvió, porque no hay un después;
+ *   - A6: «el loop terminó sin texto final en la iteración 3 (después de 2 rondas de herramientas)» → «No
+ *     llegué a terminar…» con vueltas de sobra;
  *
  * 🔴 Nada sale a la red: el modelo es un Http::fake con las respuestas en una secuencia que, agotada,
  * contesta un 500 (así una llamada de más queda grabada y el conteo la ve).
@@ -598,5 +601,76 @@ class Veracidad_del_turno_Test extends TestCase
         foreach ($no_prometen as $texto) {
             $this->assertFalse(PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($texto), 'No tendría que prometer: ' . $texto);
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // A6 — una vuelta sin texto después de herramientas va a la llamada de cierre
+    // ---------------------------------------------------------------------
+
+    protected function consulta_de_stock()
+    {
+        return $this->tool_use('consultar_stock_de_articulos', ['busqueda' => '']);
+    }
+
+    /**
+     * 🔴 Mensaje 64: «el loop terminó sin texto final en la iteración 3». Con vueltas de sobra, la vuelta
+     * siguiente es la llamada de cierre (tool_choice none + la nota de cierre) y la persona lee lo que el
+     * modelo cuenta, no el «No llegué a terminar». Y el log dice con qué volvió la vuelta vacía.
+     *
+     * @test
+     */
+    public function una_vuelta_sin_texto_despues_de_herramientas_va_a_la_llamada_de_cierre()
+    {
+        Log::spy();
+
+        $this->el_modelo_contesta([
+            $this->consulta_de_stock(),
+            $this->respuesta('end_turn', [['type' => 'thinking', 'thinking' => 'pienso', 'signature' => 'firma-p107']]),
+            $this->end_turn('No veo la bodega en el listado que tengo a mano; decime cuál es y la cargo.'),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], 'Tenés que ir a ABM y en Vinoteca ahí te figura el nombre de la bodega');
+
+        $service = new AsistenteIaService();
+        $texto = $service->responder($conversation, $assistant);
+
+        $this->assertSame('No veo la bodega en el listado que tengo a mano; decime cuál es y la cargo.', $texto);
+        $this->assertNull($service->detalle_tecnico(), 'No terminó en respuesta_sin_terminar().');
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(3, $bodies);
+        $this->assertArrayNotHasKey('tool_choice', $bodies[1]);
+        $this->assertSame(['type' => 'none'], $bodies[2]['tool_choice'], 'La tercera es la llamada de cierre.');
+        $this->assertStringContainsString('[El sistema: se terminó el tiempo de esta respuesta y ya no podés llamar herramientas.', $this->ultimo_turno_como_texto($bodies[2]));
+
+        Log::shouldHaveReceived('warning')->withArgs(function ($mensaje, $contexto = []) {
+            return strpos($mensaje, 'volvió sin texto después de herramientas') !== false
+                && ($contexto['stop_reason'] ?? null) === 'end_turn'
+                && ($contexto['tipos_de_bloque'] ?? null) === ['thinking'];
+        })->once();
+    }
+
+    /**
+     * Si la llamada de cierre también vuelve vacía, recién ahí lo hecho armado sin el modelo.
+     *
+     * @test
+     */
+    public function si_el_cierre_tambien_vuelve_vacio_va_lo_hecho_sin_el_modelo()
+    {
+        $this->el_modelo_contesta([
+            $this->consulta_de_stock(),
+            $this->respuesta('end_turn', []),
+            $this->respuesta('end_turn', []),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], 'Tenés que ir a ABM y en Vinoteca ahí te figura el nombre de la bodega');
+
+        $service = new AsistenteIaService();
+        $texto = $service->responder($conversation, $assistant);
+
+        $this->assertStringContainsString('No llegué a terminar', $texto);
+        $this->assertStringContainsString('la llamada de cierre (sin_texto) volvió sin texto', (string) $service->detalle_tecnico());
+        $this->assertCount(3, $this->bodies_enviados(), 'Una sola llamada de cierre, nada más.');
     }
 }

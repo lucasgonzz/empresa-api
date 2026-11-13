@@ -817,6 +817,15 @@ class AsistenteIaService
          */
         $reintento_de_veracidad = '';
 
+        /*
+         * A6 de la misma misión: true cuando una vuelta normal volvió SIN TEXTO después de rondas de
+         * herramientas y todavía quedan vueltas: la vuelta siguiente es la llamada de cierre (tool_choice
+         * none + NOTA_DE_CIERRE), en vez de contestar de una con respuesta_sin_terminar().
+         */
+        $forzar_el_cierre = false;
+
+        /* Los tipos de bloque de la última respuesta del modelo, para el log del final sin texto (A6). */
+        $tipos_de_bloque = [];
 
         /*
          * 🔴 MISIÓN app-ia-imagen-prometida (29/10/2026): LA IMAGEN QUE EL TEXTO PROMETE TIENE QUE ESTAR
@@ -936,7 +945,7 @@ class AsistenteIaService
             $cerrando = $iterations > 0
                 && $rondas_de_herramientas > 0
                 && is_null($texto_antes_del_reintento)
-                && ($iterations + 1 >= $max_iterations || $vencio_el_presupuesto);
+                && ($iterations + 1 >= $max_iterations || $vencio_el_presupuesto || $forzar_el_cierre);
 
             if ($vencio_el_presupuesto && ! $cerrando) {
                 /*
@@ -958,7 +967,9 @@ class AsistenteIaService
             $segundos_del_cierre = 0;
 
             if ($cerrando) {
-                $motivo_del_cierre   = $vencio_el_presupuesto ? ($sin_ventana_para_otra_vuelta ? 'ventana' : 'presupuesto') : 'techo';
+                $motivo_del_cierre   = $vencio_el_presupuesto
+                    ? ($sin_ventana_para_otra_vuelta ? 'ventana' : 'presupuesto')
+                    : ($forzar_el_cierre && $iterations + 1 < $max_iterations ? 'sin_texto' : 'techo');
                 $segundos_del_cierre = min(self::TIMEOUT_SEGUNDOS, $this->techo_de_la_llamada_de_cierre($assistant_message) - $transcurrido);
 
                 if ($segundos_del_cierre < self::SEGUNDOS_MINIMOS_DEL_CIERRE) {
@@ -1208,6 +1219,12 @@ class AsistenteIaService
                 ? $response_body['content']
                 : [];
 
+            $tipos_de_bloque = [];
+
+            foreach ($content_blocks as $bloque_de_la_respuesta) {
+                $tipos_de_bloque[] = is_array($bloque_de_la_respuesta) ? (string) ($bloque_de_la_respuesta['type'] ?? '') : gettype($bloque_de_la_respuesta);
+            }
+
             /*
              * 🔴 (B) de la misión asistente-tarjeta-sin-accion: una respuesta que TRAE bloques
              * `tool_use` se ejecuta aunque el `stop_reason` diga otra cosa. Antes se miraba sólo el
@@ -1291,6 +1308,38 @@ class AsistenteIaService
 
             // end_turn (o stop_reason desconocido): extraer el texto y salir.
             $final_text = $this->extract_response_text($response_body, $this->nombres_de_herramientas($tools));
+
+            /*
+             * 🔴 MISIÓN asistente-truvari-pedidos-fallidos (A6, 13/11/2026): UNA VUELTA SIN TEXTO DESPUÉS DE
+             * HERRAMIENTAS NO ES EL FINAL. Truvari, mensaje 64: «el loop terminó sin texto final en la
+             * iteración 3 (después de 2 rondas de herramientas)» y el dueño leyó «No llegué a terminar…
+             * escribime seguí» con 21 vueltas y más de un minuto todavía disponibles. Si quedan vueltas, la
+             * siguiente es la llamada de cierre (tool_choice none + NOTA_DE_CIERRE): el modelo solo puede
+             * escribir y cuenta lo que hizo. Si el cierre también vuelve vacío, recién ahí
+             * respuesta_sin_terminar() (como siempre). Con un reintento de guarda en curso no: vuelve a su
+             * texto de antes.
+             */
+            if (! $cerrando
+                && $rondas_de_herramientas > 0
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && trim(TextoFinalIaHelper::limpiar($final_text, $this->nombres_de_herramientas($tools))) === '') {
+
+                Log::warning('AsistenteIaService: la vuelta volvió sin texto después de herramientas; la siguiente es la llamada de cierre.', [
+                    'ai_conversation_id' => $conversation->id,
+                    'ai_message_id'      => $assistant_message->id,
+                    'iterations'         => $iterations,
+                    'rondas'             => $rondas_de_herramientas,
+                    'stop_reason'        => $stop_reason,
+                    'tipos_de_bloque'    => $tipos_de_bloque,
+                    'modelo'             => $model,
+                ]);
+
+                $forzar_el_cierre = true;
+                $final_text = '';
+
+                continue;
+            }
 
             if (TextoFinalIaHelper::contiene_prosa_cjk($final_text)) {
                 if (! $cerrando && $rondas_de_herramientas === 0 && is_null($confirmacion_determinista)
@@ -1605,8 +1654,12 @@ class AsistenteIaService
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [
                 'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $assistant_message->id,
                 'iterations'         => $iterations,
                 'cierre'             => $motivo_del_cierre,
+                /* A6: con qué volvió la última respuesta (end_turn con solo `thinking`, un tool_use cortado…). */
+                'stop_reason'        => $stop_reason,
+                'tipos_de_bloque'    => $tipos_de_bloque,
             ]);
 
             /*
