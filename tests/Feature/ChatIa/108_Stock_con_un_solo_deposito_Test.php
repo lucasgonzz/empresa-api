@@ -160,6 +160,45 @@ class Stock_con_un_solo_deposito_Test extends EmpresaTestCase
     }
 
     /**
+     * El alta de bebidas en cajas, con una sola sucursal, no pide el depósito: va a la única.
+     *
+     * @test
+     */
+    public function el_alta_de_bebidas_en_cajas_con_una_sola_sucursal_no_pide_deposito()
+    {
+        $unica = $this->unica();
+
+        $vinoteca = ExtencionEmpresa::firstOrCreate(['slug' => 'vinoteca'], ['name' => 'vinoteca']);
+        $this->dueno->extencions()->syncWithoutDetaching([$vinoteca->id]);
+        User::where('id', $this->dueno->id)->update(['agente_alta_bebidas' => 1, 'listas_de_precio' => 0]);
+        $this->dueno = User::find($this->dueno->id);
+        $this->dueno->load('extencions');
+
+        list($conversation, $assistant) = $this->conversacion('Dalo de alta con 2 cajas de 6');
+
+        $datos = [
+            'name'            => 'zz-p108 Malbec de alta',
+            'cost'            => 5000,
+            'percentage_gain' => 30,
+            'presentacion'    => 1,
+            'aplicar_iva'     => false,
+            'provider_id'     => DB::table('providers')->insertGetId(['name' => 'zz-p108 Proveedor', 'user_id' => $this->dueno->id]),
+            'category_id'     => DB::table('categories')->insertGetId(['name' => 'zz-p108 Vinos', 'user_id' => $this->dueno->id]),
+            'bodega_id'       => DB::table('bodegas')->insertGetId(['name' => 'zz-p108 Bodega', 'user_id' => $this->dueno->id]),
+            'cepa_id'         => DB::table('cepas')->insertGetId(['name' => 'zz-p108 Malbec', 'user_id' => $this->dueno->id]),
+            'bebida'          => ['es_vino' => true, 'botellas_por_caja' => 6, 'cajas' => 2, 'cajas_confirmadas' => true, 'sin_imagen' => true],
+        ];
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_alta', ['entidad' => 'article', 'datos' => $datos]);
+
+        $this->assertTrue(!empty($respuesta['ok']), 'Con una sola sucursal no tiene que pedir el depósito: ' . json_encode($respuesta));
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+        $this->assertSame((int) $unica->id, (int) $accion->datos['extras']['stock_inicial']['address_id']);
+        $this->assertEquals(12, $accion->datos['extras']['stock_inicial']['cantidad']);
+    }
+
+    /**
      * Con dos sucursales sigue mandando el nombre: uno que no existe es error con las opciones.
      *
      * @test
