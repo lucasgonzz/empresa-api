@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\CargaSinPropuestaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TarjetaPrometidaIaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -25,6 +26,9 @@ use Tests\TestCase;
  *     Oliva Familia Zuccardi Coratina 500 ml en 6 unidades.» sin ninguna carga hecha;
  *   - A2: «El aceite … pasa a 6 unidades de stock. ¿Lo cargo?» y «Dejo el Nieto Senetiner Brut Nature en 9
  *     unidades. ¿Lo cargo?» sin ninguna propuesta: el «Si» no tenía nada que registrar;
+ *   - A4: «Busco la publicación del Nieto Senetiner Brut Nature en la tienda y te paso el link.», «Reviso y
+ *     te confirmo en un momento.», «Voy a revisar la consulta de ese artículo. Dame un momento.»: nunca
+ *     volvió, porque no hay un después;
  *
  * 🔴 Nada sale a la red: el modelo es un Http::fake con las respuestas en una secuencia que, agotada,
  * contesta un 500 (así una llamada de más queda grabada y el conteo la ve).
@@ -44,6 +48,8 @@ class Veracidad_del_turno_Test extends TestCase
     const DEJE_EL_STOCK = 'Dejé el stock del Aceite de Oliva Familia Zuccardi Coratina 500 ml en 6 unidades. Puede ser que se cargaran con el alta o por una reposición posterior a la consulta; ahora coincide con lo que ves.';
 
     const LO_CARGO = 'Dejo el Nieto Senetiner Brut Nature en 9 unidades. ¿Lo cargo?';
+
+    const BUSCO_Y_TE_PASO = 'Busco la publicación del Nieto Senetiner Brut Nature en la tienda y te paso el link.';
 
     /** @var User */
     protected $comercio;
@@ -479,6 +485,118 @@ class Veracidad_del_turno_Test extends TestCase
 
         foreach ($no_piden as $texto) {
             $this->assertFalse(CargaSinPropuestaIaHelper::pide_confirmar_una_carga($texto), 'No tendría que pedir confirmar: ' . $texto);
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // A4 — no existe un «después»
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 Mensaje 172: «Busco la publicación… y te paso el link.» y el turno terminó. Un reintento con la
+     * nota («este mensaje es tu ÚNICA respuesta»), en cualquier canal y también sin acciones.
+     *
+     * @test
+     */
+    public function la_promesa_de_buscar_y_pasar_despues_reintenta_y_la_persona_lee_el_reintento()
+    {
+        $this->el_modelo_contesta([
+            $this->end_turn(self::BUSCO_Y_TE_PASO),
+            $this->end_turn('No tengo una consulta que me devuelva el link de la tienda de ese artículo.'),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], 'Pasame el link de la tienda del Nieto Senetiner Brut Nature', AiMessage::CANAL_WHATSAPP, false);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame('No tengo una consulta que me devuelva el link de la tienda de ese artículo.', $texto);
+
+        $bodies = $this->bodies_enviados();
+
+        $this->assertCount(2, $bodies);
+        $this->assertStringContainsString('este mensaje es tu ÚNICA respuesta', $this->ultimo_turno_como_texto($bodies[1]));
+        $this->assertSame(self::BUSCO_Y_TE_PASO, $bodies[1]['messages'][count($bodies[1]['messages']) - 2]['content']);
+    }
+
+    /**
+     * Si el reintento vuelve a prometer, la persona no lee la promesa: lo demás queda y va el aviso.
+     * Corre también en el panel del sistema.
+     *
+     * @test
+     */
+    public function si_sigue_prometiendo_se_cambia_la_oracion_por_el_aviso_tambien_en_el_panel()
+    {
+        $prometido = "Hay 3 unidades del Nieto Senetiner Brut Nature.\nReviso cómo está publicado el artículo en la tienda y te confirmo si hay algo que lo esté frenando.";
+
+        $this->el_modelo_contesta([
+            $this->end_turn($prometido),
+            $this->end_turn("Hay 3 unidades del Nieto Senetiner Brut Nature.\nReviso y te confirmo en un momento."),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], '¿Y por qué en la tienda figura otra cosa?', null);
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertSame("Hay 3 unidades del Nieto Senetiner Brut Nature.\n\n" . PromesaDeAccionFuturaIaHelper::TEXTO_HONESTO, $texto);
+        $this->assertCount(2, $this->bodies_enviados());
+    }
+
+    /**
+     * La regla fija del prompt, en todos los canales: no existe un después.
+     *
+     * @test
+     */
+    public function el_prompt_dice_que_no_existe_un_despues_en_todos_los_canales()
+    {
+        $service = new AsistenteIaService();
+
+        foreach ([[false, false], [true, false], [false, true]] as $caso) {
+
+            list($conversation) = $this->conversacion([], 'Hola');
+
+            $prompt = $service->build_system_prompt($conversation, $this->comercio, true, $caso[0], $caso[1]);
+
+            $this->assertStringContainsString('No existe un «después»', $prompt);
+            $this->assertStringContainsString('«reviso y te confirmo»', $prompt);
+        }
+    }
+
+    /**
+     * El detector, con los seis mensajes de Truvari y lo que no tiene que tocar.
+     *
+     * @test
+     */
+    public function el_detector_de_la_promesa_de_una_accion_futura()
+    {
+        $prometen = [
+            "La tienda puede tardar en reflejar el cambio.\nReviso cómo está publicado el artículo en la tienda y te confirmo si hay algo que lo esté frenando.",
+            self::BUSCO_Y_TE_PASO,
+            "Para proponerlo necesito pasar por la consulta del stock del artículo.\nReviso y te confirmo en un momento.",
+            'Tenés razón en la diferencia, y la reviso en la conversación anterior antes de contestarte cualquier cosa. Dame un momento.',
+            'Reviso esa conversación para ver de dónde salió el link del Aceite Coratina; si lo dio una herramienta, la uso para el Nieto Senetiner.',
+            'Lo busco tal como lo nombrás, Rutini Cabernet Malbec, y te paso lo que devuelva.',
+            'Voy a revisar la consulta de ese artículo. Dame un momento.',
+        ];
+
+        foreach ($prometen as $texto) {
+            $this->assertTrue(PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($texto), 'Tendría que prometer: ' . $texto);
+        }
+
+        $no_prometen = [
+            'No tengo el link a mano. Decime el nombre exacto como figura en la tienda o pedímelo de nuevo en un rato y lo busco.',
+            'Eso se hace por la acción de pantalla, así que lo verifico la próxima vez que me lo pidas.',
+            'Si querés, lo reviso.',
+            '¿Querés que lo revise?',
+            'Revisé la tienda: está publicado.',
+            'Te paso el link: https://truvaribebidas.com.ar/articulos/nieto-senetiner-brut-nature/1000',
+            'Veo que el artículo tiene 3 unidades.',
+            'No puedo revisar eso desde acá.',
+            'Subí el Excel y lo reviso.',
+            PromesaDeAccionFuturaIaHelper::TEXTO_HONESTO,
+        ];
+
+        foreach ($no_prometen as $texto) {
+            $this->assertFalse(PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($texto), 'No tendría que prometer: ' . $texto);
         }
     }
 }

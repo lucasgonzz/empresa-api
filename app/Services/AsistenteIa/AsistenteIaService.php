@@ -32,6 +32,7 @@ use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
@@ -301,8 +302,9 @@ class AsistenteIaService
      * Las guardas de VERACIDAD DEL TURNO (misión asistente-truvari-pedidos-fallidos, 13/11/2026), en el
      * orden en que se miran: la primera que dispara se lleva el único reintento del turno.
      *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
+     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento».
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'promesa'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -2241,6 +2243,10 @@ Qué podés afirmar:
 - SOLO lo que salga de las herramientas de consulta o del contexto de esta
   conversación. Nunca inventes números, precios, saldos, stock ni fechas.
 - Si no tenés el dato, decilo en una oración y ofrecé qué sí podés consultar.
+- 🔴 No existe un «después»: cada respuesta tuya termina el turno, no seguís trabajando en segundo
+  plano y no le volvés a escribir a la persona por tu cuenta. Nunca cierres con «dame un momento»,
+  «reviso y te confirmo» ni «busco y te paso el link»: hacé la consulta AHORA, en esta misma
+  respuesta, y contestá con el resultado; o decí que desde acá no lo podés hacer.
 - Para fichas técnicas, elaboración, origen y notas de cata de un artículo existente, llamá a
   buscar_ficha_de_articulo: sí tenés búsqueda web para eso, también por WhatsApp. Mostrá las fuentes
   y los faltantes; nunca reemplaces una búsqueda por un texto de referencia inventado. Si pidieron
@@ -4014,6 +4020,11 @@ CONFIRMACION;
             return $por_texto && $this->pide_confirmar_una_carga_sin_propuesta($saneado, $tools, $conversation, $assistant_message, $herramientas_pedidas);
         }
 
+        /* A4: «Reviso y te confirmo», «Dame un momento». */
+        if ($guarda === 'promesa') {
+            return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
+        }
+
         return false;
     }
 
@@ -4026,6 +4037,10 @@ CONFIRMACION;
      */
     protected function nota_de_veracidad($guarda, array $tools): string
     {
+        if ($guarda === 'promesa') {
+            return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4038,6 +4053,10 @@ CONFIRMACION;
      */
     protected function texto_honesto_de_la_guarda($guarda, $texto): string
     {
+        if ($guarda === 'promesa') {
+            return PromesaDeAccionFuturaIaHelper::sin_lo_prometido($texto);
+        }
+
         return CargaSinPropuestaIaHelper::texto_honesto($texto);
     }
 
