@@ -69,13 +69,15 @@ class AsistenteConLoginMaestroTest extends TestCase
         $this->getJson('/api/ai-conversations/' . $this->hilo->id . '/messages')->assertOk();
     }
 
-    public function test_un_documento_de_empleado_resuelve_su_dueno_sin_cambiar_permisos(): void
+    // El documento de un empleado abre la sesión de ESE empleado (lo usa la verificación de perfil
+    // de soporte): el maestro ve lo que ve el empleado y el chat privado del dueño sigue cerrado.
+    public function test_un_documento_de_empleado_abre_su_perfil_sin_el_chat_del_dueno(): void
     {
         $empleado = User::factory()->create(['owner_id' => $this->dueno->id, 'doc_number' => '99876452', 'admin_access' => false]);
         $this->ingresar($empleado->doc_number . ' login')
-            ->assertJsonPath('user.id', $this->dueno->id)->assertJsonPath('user.asistente_personal_autorizado', true);
+            ->assertJsonPath('user.id', $empleado->id)->assertJsonPath('user.asistente_personal_autorizado', false);
         $this->assertFalse((bool) $empleado->fresh()->admin_access);
-        $this->getJson('/api/ai-conversations/' . $this->hilo->id . '/messages')->assertOk();
+        $this->assertContains($this->getJson('/api/ai-conversations/' . $this->hilo->id . '/messages')->status(), [403, 404]);
     }
 
     public function test_el_maestro_de_otro_comercio_no_lee_hilos_ajenos(): void
@@ -84,7 +86,7 @@ class AsistenteConLoginMaestroTest extends TestCase
         AgentesIaHelper::fijar($otro, true);
         config(['app.USER_ID' => $this->dueno->id]);
         $empleado = User::factory()->create(['owner_id' => $otro->id, 'doc_number' => '99876559', 'admin_access' => false]);
-        $this->ingresar($empleado->doc_number . ' login')->assertJsonPath('user.id', $otro->id)
+        $this->ingresar($otro->doc_number . ' login')->assertJsonPath('user.id', $otro->id)
             ->assertJsonPath('user.asistente_personal_autorizado', true);
         $this->getJson('/api/ai-conversations/' . $this->hilo->id . '/messages')->assertNotFound();
     }
@@ -97,7 +99,7 @@ class AsistenteConLoginMaestroTest extends TestCase
         $this->getJson('/api/user')->assertOk()->assertJsonPath('user.es_sesion_soporte', false);
     }
 
-    public function test_un_maestro_legado_autenticado_como_empleado_se_normaliza_a_su_comercio(): void
+    public function test_un_maestro_autenticado_como_empleado_conserva_su_perfil_sin_chat_privado(): void
     {
         $otro = User::factory()->create(['owner_id' => null, 'doc_number' => '99876557']);
         AgentesIaHelper::fijar($otro, true);
@@ -105,10 +107,10 @@ class AsistenteConLoginMaestroTest extends TestCase
         $this->actingAs($empleado, 'web')->withSession([
             'master_login_bypass_user_last_activity' => true, 'skip_offline_articles_sync' => true,
             'auth_user' => $empleado, 'owner' => $otro,
-        ])->getJson('/api/user')->assertOk()->assertJsonPath('user.id', $otro->id)
-            ->assertJsonPath('user.asistente_personal_autorizado', true)
+        ])->getJson('/api/user')->assertOk()->assertJsonPath('user.id', $empleado->id)
+            ->assertJsonPath('user.asistente_personal_autorizado', false)
             ->assertJsonPath('user.skip_offline_articles_sync', true);
-        $this->getJson('/api/ai-conversations/' . $this->hilo->id . '/messages')->assertNotFound();
+        $this->assertContains($this->getJson('/api/ai-conversations/' . $this->hilo->id . '/messages')->status(), [403, 404]);
         $this->assertFalse((bool) $empleado->fresh()->admin_access);
     }
 
@@ -132,10 +134,9 @@ class AsistenteConLoginMaestroTest extends TestCase
         $this->usar_cookie($respuesta);
     }
 
-    public function test_una_transferencia_maestra_legada_reemplaza_la_identidad_tecnica_del_destino(): void
+    public function test_una_transferencia_maestra_reemplaza_la_identidad_tecnica_del_destino(): void
     {
-        $empleado = User::factory()->create(['owner_id' => $this->dueno->id, 'admin_access' => false]);
-        $token = \App\Http\Controllers\Helpers\VersionSessionTransferHelper::create_for_user($empleado->id, true, true);
+        $token = \App\Http\Controllers\Helpers\VersionSessionTransferHelper::create_for_user($this->dueno->id, true, true);
         $this->withSession(['acceso_soporte_token_id' => 7, 'demo_ingreso_token_id' => 8]);
         $respuesta = $this->postJson('/login-from-version-session-token', ['token' => $token])
             ->assertOk()->assertJsonPath('login', true)->assertJsonPath('user.id', $this->dueno->id)

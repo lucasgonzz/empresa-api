@@ -492,12 +492,6 @@ class AuthController extends Controller
             }
 
             if ($candidate) {
-                if ($transfer['master_login_bypass'] && $candidate->owner_id) {
-                    $candidate = User::where('id', $candidate->owner_id)->whereNull('owner_id')->first();
-                    if (!$candidate) {
-                        return response()->json(['login' => false, 'user' => null], 200);
-                    }
-                }
                 Auth::login($candidate, false);
 
                 if ($es_transferencia_de_demo) {
@@ -635,19 +629,6 @@ class AuthController extends Controller
     }
 
     public function get_user() {
-        // Una sesión maestra de una versión anterior pudo autenticar al empleado indicado.
-        // Al refrescar se normaliza al dueño de ese mismo comercio, sin persistir permisos.
-        $persona_web = Auth::guard('web')->user();
-        if ($this->is_master_login_activity_bypass_enabled() && $persona_web && $persona_web->owner_id
-            && !$this->es_sesion_de_soporte() && !$this->es_sesion_de_demo()) {
-            $dueno = User::where('id', $persona_web->owner_id)->whereNull('owner_id')->first();
-            if (!$dueno) {
-                return response()->json(['user' => null], 403);
-            }
-            Auth::guard('web')->login($dueno, false);
-            Auth::setUser($dueno);
-            UserHelper::set_sessions($dueno);
-        }
         /**
          * Se evita escribir last_activity/session_id cuando la sesión no tiene que ocupar el
          * candado de sesión única: el login maestro (acceso de soporte), el ingreso a la demo
@@ -994,11 +975,6 @@ class AuthController extends Controller
 
             if (!$user) {
                 $user = User::whereNull('owner_id')->first();
-            }
-
-            // Auditar un empleado abre el dueño de ESE comercio, sin cambiar permisos persistidos.
-            if ($user && $user->owner_id) {
-                $user = User::where('id', $user->owner_id)->whereNull('owner_id')->first();
             }
 
             /** Evita errores cuando no hay usuarios aptos para login maestro. */
