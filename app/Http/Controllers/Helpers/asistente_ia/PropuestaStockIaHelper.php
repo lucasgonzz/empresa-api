@@ -478,7 +478,18 @@ class PropuestaStockIaHelper
          * qué depósito?": si no nombró ninguno, va la tarjeta del stock TOTAL, que al confirmar escribe
          * en la única sucursal si el artículo ya reparte (D3/D15) o en el total si todavía no.
          */
-        if (count($depositos) === 1 && EntradaDeCargaIa::texto($input, 'deposito') === '') {
+        if (count($depositos) === 1) {
+
+            /*
+             * 🔴 Misión asistente-truvari-pedidos-fallidos (13/11/2026, B2): con UNA sola sucursal va
+             * al total AUNQUE llegue `deposito`. En Truvari el modelo mandó «Florida» —un nombre que
+             * salió del ejemplo de la descripción de esta herramienta y que no existe en ese negocio—,
+             * resolver_deposito() contestó «No encontré ningún depósito…» y el asistente le preguntó
+             * al dueño a qué depósito iban los 6 que pidió. Con un solo depósito no hay nada que
+             * elegir. Se saca `deposito` del input porque proponer_stock_total() lo rechaza (es su
+             * guarda del negocio SIN depósitos).
+             */
+            unset($input['deposito']);
 
             return self::proponer_stock_total($contexto, $mensaje, $input, $articulo);
         }

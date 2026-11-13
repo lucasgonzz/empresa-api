@@ -12,7 +12,7 @@ class CatalogoArticuloConHistorialTest extends TestCase
     {
         foreach (['store', 'update'] as $metodo) {
             $campos = Catalogo::claves_que_lee(ArticleController::class, $metodo);
-            foreach (['name', 'provider_id', 'category_id', 'cepa_id', 'bodega_id', 'presentacion', 'percentage_gain', 'iva_id'] as $campo) {
+            foreach (['name', 'provider_id', 'category_id', 'cepa_id', 'bodega_id', 'presentacion', 'percentage_gain', 'iva_id', 'online'] as $campo) {
                 $this->assertContains($campo, $campos, $metodo.' debe leer '.$campo);
             }
         }
@@ -23,6 +23,8 @@ class CatalogoArticuloConHistorialTest extends TestCase
         $declaracion = Catalogo::declaracion('article');
         $this->assertArrayHasKey('name', $declaracion['campos']);
         $this->assertArrayHasKey('provider_id', $declaracion['campos']);
+        // Truvari (13/11/2026, F2): publicar o despublicar en la tienda por el ABM genérico.
+        $this->assertArrayHasKey('online', $declaracion['campos']);
         $this->assertArrayNotHasKey('stock', $declaracion['campos']);
         $this->assertArrayNotHasKey('final_price', $declaracion['campos']);
         $this->assertNotContains('stock', Catalogo::claves_que_lee(ArticleController::class, 'store'));

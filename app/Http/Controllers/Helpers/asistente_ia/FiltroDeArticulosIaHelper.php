@@ -5,8 +5,10 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Http\Controllers\Helpers\agenda\AgendaTareaHelper;
 use App\Http\Controllers\Helpers\ColumnFiltersHelper;
 use App\Models\Article;
+use App\Models\Bodega;
 use App\Models\Brand;
 use App\Models\Category;
+use App\Models\Cepa;
 use App\Models\Provider;
 use App\Models\SubCategory;
 use App\Models\User;
@@ -60,7 +62,18 @@ class FiltroDeArticulosIaHelper
         'categoria'     => ['modelo' => Category::class,    'etiqueta' => 'Categoría',    'plural' => 'categorias',     'articulo' => 'ninguna categoría'],
         'sub_categoria' => ['modelo' => SubCategory::class, 'etiqueta' => 'Subcategoría', 'plural' => 'sub_categorias', 'articulo' => 'ninguna subcategoría'],
         'marca'         => ['modelo' => Brand::class,       'etiqueta' => 'Marca',        'plural' => 'marcas',         'articulo' => 'ninguna marca'],
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B1), al final: bodega y cepa, SOLO
+         * con el módulo Vinoteca (`extension`). Fernando (Truvari) pidió «vinculá todos los Weinert al
+         * proveedor Grupo Vid» y el asistente no tenía cómo filtrar por bodega. Las dos tablas tienen
+         * `user_id` y `name`, así que se resuelven por nombre igual que las otras cuatro.
+         */
+        'bodega'        => ['modelo' => Bodega::class,      'etiqueta' => 'Bodega',       'plural' => 'bodegas',        'articulo' => 'ninguna bodega', 'extension' => 'vinoteca'],
+        'cepa'          => ['modelo' => Cepa::class,        'etiqueta' => 'Cepa',         'plural' => 'cepas',          'articulo' => 'ninguna cepa',   'extension' => 'vinoteca'],
     ];
+
+    /** El módulo que tiene que tener el negocio para que bodega y cepa existan (B1). */
+    const EXTENSION_VINOTECA = 'vinoteca';
 
     /**
      * El catálogo de campos filtrables: nombre para la IA → columna de `articles`, tipo del
@@ -98,8 +111,9 @@ class FiltroDeArticulosIaHelper
          * El resto de las columnas por las que la lupa del listado filtra (src/models/article.js),
          * para que "todos los filtros que ya se pueden hacer desde la interfaz" sea literal: lo que
          * se edita como text/number/checkbox se filtra con el mismo tipo. Las relaciones por select
-         * (IVA, unidad de medida, bodega, cepa) no entran: se filtran por id y a la IA le llegan por
-         * nombre; si hacen falta, se suman como `relacion` con su modelo.
+         * (IVA, unidad de medida) no entran: se filtran por id y a la IA le llegan por nombre; si hacen
+         * falta, se suman como `relacion` con su modelo. Bodega y cepa se sumaron así el 13/11/2026
+         * (al final de la lista, solo con Vinoteca: ver RELACIONES).
          */
         'sku'                         => ['columna' => 'sku',                            'tipo' => 'text',     'etiqueta' => 'SKU'],
         'plu'                         => ['columna' => 'plu',                            'tipo' => 'text',     'etiqueta' => 'PLU'],
@@ -125,6 +139,9 @@ class FiltroDeArticulosIaHelper
          */
         'margen_en_lista'             => ['columna' => null,                             'tipo' => 'margen_en_lista',      'etiqueta' => 'Margen en la lista'],
         'precio_fijo_en_lista'        => ['columna' => null,                             'tipo' => 'precio_fijo_en_lista', 'etiqueta' => 'Precio fijo en la lista'],
+        // Misión asistente-truvari-pedidos-fallidos (B1), al final por el prefijo del caché: solo con Vinoteca.
+        'bodega'                      => ['columna' => 'bodega_id',                      'tipo' => 'search',   'etiqueta' => 'Bodega',                      'relacion' => 'bodega'],
+        'cepa'                        => ['columna' => 'cepa_id',                        'tipo' => 'search',   'etiqueta' => 'Cepa',                        'relacion' => 'cepa'],
     ];
 
     /** Los dos tipos de filtro que van por lista de precio (ver traducir_por_lista()). */
@@ -215,6 +232,17 @@ class FiltroDeArticulosIaHelper
             $definicion = self::CAMPOS[$campo];
             $tipo = $definicion['tipo'];
             $etiqueta = $definicion['etiqueta'];
+
+            // Bodega y cepa existen solo con Vinoteca (B1): también para en_blanco / no_en_blanco.
+            if (isset($definicion['relacion'])) {
+
+                $sin_modulo = self::motivo_si_la_relacion_no_esta($owner_id, $definicion['relacion']);
+
+                if (!is_null($sin_modulo)) {
+
+                    return RespuestaDeCargaIa::error($sin_modulo);
+                }
+            }
 
             if (!in_array($operador, self::OPERADORES[$tipo], true)) {
 
@@ -690,6 +718,32 @@ class FiltroDeArticulosIaHelper
     }
 
     /**
+     * Por qué una relación no se puede usar en este negocio, o null si se puede (B1, 13/11/2026). Hoy
+     * solo bodega y cepa la tienen: existen con el módulo Vinoteca, que es el que las muestra en la
+     * pantalla. Sin él, la columna está en la tabla pero el dueño no la ve ni la carga.
+     *
+     * @param  int  $owner_id
+     * @param  string  $relacion
+     * @return string|null
+     */
+    public static function motivo_si_la_relacion_no_esta($owner_id, $relacion)
+    {
+        if (!isset(self::RELACIONES[$relacion]['extension'])) {
+
+            return null;
+        }
+
+        $extension = self::RELACIONES[$relacion]['extension'];
+
+        if (PermisosIaHelper::tiene_extencion(User::find((int) $owner_id), $extension)) {
+
+            return null;
+        }
+
+        return self::RELACIONES[$relacion]['etiqueta'] . ' existe solo con el módulo Vinoteca, y este negocio no lo tiene: no se puede filtrar ni asignar por ' . mb_strtolower(self::RELACIONES[$relacion]['etiqueta']) . '.';
+    }
+
+    /**
      * Resuelve por NOMBRE un proveedor, una categoría, una subcategoría o una marca del dueño.
      *
      * Búsqueda por `name LIKE %nombre%`: si encaja uno solo, es ese; si encajan varios y uno coincide
@@ -701,7 +755,7 @@ class FiltroDeArticulosIaHelper
      * La usa también el constructor B para resolver categorías por nombre (contrato §6).
      *
      * @param  int  $owner_id
-     * @param  string  $relacion  proveedor | categoria | sub_categoria | marca
+     * @param  string  $relacion  proveedor | categoria | sub_categoria | marca | bodega | cepa (las dos últimas, con Vinoteca)
      * @param  string  $nombre
      * @return \Illuminate\Database\Eloquent\Model|array  El modelo, o la respuesta negativa.
      */
@@ -714,6 +768,13 @@ class FiltroDeArticulosIaHelper
             return RespuestaDeCargaIa::error(
                 'No conozco la relación "' . $relacion . '". Valen: ' . implode(', ', array_keys(self::RELACIONES)) . '.'
             );
+        }
+
+        $sin_modulo = self::motivo_si_la_relacion_no_esta($owner_id, $relacion);
+
+        if (!is_null($sin_modulo)) {
+
+            return RespuestaDeCargaIa::error($sin_modulo);
         }
 
         $definicion = self::RELACIONES[$relacion];

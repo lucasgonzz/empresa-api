@@ -1065,7 +1065,24 @@ class BudgetController extends Controller
 
     public function destroy($id) {
 
-        $model = Budget::find($id);
+        /*
+            Mision asistente-truvari-pedidos-fallidos (13/11/2026, B8): el asistente borra
+            presupuestos por esta ruta (proponer_borrado_por_pantalla). Antes era `Budget::find($id)`
+            sin dueño ni estado: un id ajeno se borraba igual, y un confirmado tambien (el comentario
+            de abajo dice que no se puede, pero nada lo frenaba). Ahora solo los del dueño (404 si no)
+            y un confirmado da 422 con el camino: se anula primero. Protege tambien a la pantalla.
+        */
+        $model = Budget::where('id', $id)
+                        ->where('user_id', $this->userId())
+                        ->first();
+
+        if (is_null($model)) {
+            return response()->json(['message' => 'El presupuesto no existe.'], 404);
+        }
+
+        if ($model->budget_status_id == Self::ESTADO_CONFIRMADO) {
+            return response()->json(['message' => 'El presupuesto N° '.$model->num.' esta confirmado y no se puede eliminar: primero hay que anularlo.'], 422);
+        }
 
         // Quito esto porque los presupuestos confirmados no se pueden eliminar, y los sin confirmar no impactan en la cuenta corriente
         // if (BudgetHelper::deleteCurrentAcount($model)) {

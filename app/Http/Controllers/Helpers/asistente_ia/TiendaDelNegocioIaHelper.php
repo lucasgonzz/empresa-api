@@ -60,6 +60,41 @@ class TiendaDelNegocioIaHelper
     }
 
     /**
+     * El link de la ficha de un artículo (o de una promo de vinoteca) en la tienda del negocio, o null
+     * si no hay link que dar: la tienda sin dirección guardada, el artículo sin publicar
+     * (`online` = 0) o sin slug. Es la forma que resuelve tienda-api (`/articulos/{slug}/{comercio}`,
+     * ArticleController::show, que busca primero el artículo y después la promo de vinoteca online).
+     *
+     * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B4): hasta acá el link lo armaba solo
+     * PropuestaPromocionWhatsappIaHelper, y Fernando (Truvari) recibió una vez el link del Coratina
+     * (armado a mano por el modelo) y después "no tengo herramienta para eso". Ahora sale de acá, para
+     * la promoción y para las consultas, y el modelo lo pasa tal cual: nunca lo arma.
+     *
+     * @param  string|null  $tienda  La dirección de url(); null o vacía = sin link.
+     * @param  object|null  $articulo  Con `online` y `slug` (un Article, una promo o una fila).
+     * @param  int  $owner_id
+     * @return string|null
+     */
+    public static function link_del_articulo($tienda, $articulo, $owner_id)
+    {
+        $tienda = is_null($tienda) ? '' : trim((string) $tienda);
+
+        if ($tienda === '' || is_null($articulo) || !(int) $articulo->online) {
+
+            return null;
+        }
+
+        $slug = trim((string) $articulo->slug);
+
+        if ($slug === '') {
+
+            return null;
+        }
+
+        return rtrim($tienda, '/') . '/articulos/' . rawurlencode($slug) . '/' . (int) $owner_id;
+    }
+
+    /**
      * Cuántos artículos activos del negocio figuran publicados en la tienda (`articles.online = 1`). Es
      * lo que permite decir "tiene 6.319 artículos publicados" en vez de "no tiene tienda". Protegido:
      * si la cuenta falla, null (no se dice nada que no se sepa).

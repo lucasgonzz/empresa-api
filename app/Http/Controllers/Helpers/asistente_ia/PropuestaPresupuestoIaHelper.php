@@ -6,6 +6,7 @@ use App\Http\Controllers\BudgetController;
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Article;
+use App\Models\Budget;
 use App\Models\Client;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -172,6 +173,25 @@ class PropuestaPresupuestoIaHelper
 
         $presentacion = self::presentacion($renglones, $cliente, $lista, $descuento, $sucursal, $observaciones, $totales);
 
+        $anterior = self::presupuesto_anterior($contexto, $cliente);
+
+        $extra = [];
+
+        if (!is_null($anterior)) {
+
+            $aviso = 'Este es un presupuesto NUEVO: el N° ' . $anterior['numero'] . ' sigue existiendo. Si querías corregirlo, después podés borrar el anterior.';
+
+            $presentacion['aviso'] = trim((string) $presentacion['aviso'] . ' ' . $aviso);
+
+            $extra['presupuesto_anterior'] = [
+                'numero'         => $anterior['numero'],
+                'presupuesto_id' => $anterior['presupuesto_id'],
+                'nota'           => 'Esta tarjeta crea un presupuesto NUEVO, con otro número: el N° ' . $anterior['numero'] . ' para este cliente sigue existiendo. '
+                    . 'No digas que lo corregiste. Si la persona quería cambiar el anterior, ofrecé borrarlo con proponer_borrado_por_pantalla '
+                    . '(ruta api/budget/{budget}, parametros {"numero": ' . $anterior['numero'] . '}).',
+            ];
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
@@ -186,7 +206,55 @@ class PropuestaPresupuestoIaHelper
             . (count($renglones) === 1 ? ' artículo' : ' artículos')
             . ' · ' . FormatoIaHelper::monto($totales['total']);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
+    }
+
+    /**
+     * El último presupuesto que esta conversación ya CREÓ para el mismo cliente y que todavía existe,
+     * o null (misión asistente-truvari-pedidos-fallidos, 13/11/2026, B7).
+     *
+     * 🔴 EL CASO REAL. Fernando pidió corregir las cantidades del presupuesto N° 25 y el asistente le
+     * dijo «Corrijo el presupuesto 25»: la tarjeta creó el N° 26 y el 25 quedó vivo. Esta herramienta
+     * no edita: crea. Se mira por CLIENTE y no por la clave de la tarjeta (artículos + cliente) a
+     * propósito: una corrección que además suma o saca un artículo cambia la clave y es el mismo
+     * malentendido. Que la tarjeta avise «el N° X sigue existiendo» es verdad en los dos casos.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Client  $cliente
+     * @return array{numero: int, presupuesto_id: int}|null
+     */
+    protected static function presupuesto_anterior(ContextoDeCargaIa $contexto, $cliente)
+    {
+        $creadas = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+            ->where('tipo', AiMessageAction::TIPO_PRESUPUESTO)
+            ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+            ->orderBy('id', 'DESC')
+            ->get();
+
+        foreach ($creadas as $creada) {
+
+            $datos = is_array($creada->datos) ? $creada->datos : [];
+
+            $client_id = isset($datos['payload']['client_id']) ? (int) $datos['payload']['client_id'] : 0;
+
+            $resultado = $creada->resultado;
+
+            $presupuesto_id = is_object($resultado) && isset($resultado->presupuesto_id) ? (int) $resultado->presupuesto_id : 0;
+
+            if ($client_id !== (int) $cliente->id || $presupuesto_id <= 0) {
+                continue;
+            }
+
+            $budget = Budget::where('user_id', $contexto->owner_id)->where('id', $presupuesto_id)->first(['id', 'num']);
+
+            if (is_null($budget)) {
+                continue;
+            }
+
+            return ['numero' => (int) $budget->num, 'presupuesto_id' => (int) $budget->id];
+        }
+
+        return null;
     }
 
     /**

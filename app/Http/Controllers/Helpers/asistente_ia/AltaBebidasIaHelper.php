@@ -21,13 +21,19 @@ class AltaBebidasIaHelper
 
     public static function instrucciones(): string
     {
-        return 'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B7): este bloque viaja con las
+         * instrucciones de carga y su «cajas × botellas» se filtró a un presupuesto («una caja» salió
+         * como 6 botellas). La primera oración lo acota: solo el alta y su stock inicial.
+         */
+        return 'Esto aplica SOLO al alta de bebidas (proponer_alta) y a su stock inicial; NUNCA a ventas, presupuestos ni pedidos: ahí la cantidad son unidades de venta del artículo y "una caja" es 1 (con presentación, el precio ya es el de la caja). '
+            .'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
             .'El tipo de bebida se guarda en categoría/subcategoría de Crear; nunca en marca ni en un campo inventado. '
             .'Mandá bebida.es_vino booleano; solo vinos llevan cepa EXISTENTE. Nunca crees proveedor, bodega o cepa sin consentimiento. '
             .'Presentación es la cantidad de unidades de VENTA y puede cambiar el precio según la configuración: usa el mismo cálculo de Crear. Preguntá si corresponde vender por botella (1) o por presentación. '
             .'Botellas por caja logística va en bebida.botellas_por_caja y no implica presentación de venta. '
             .'Si el stock se dio en cajas, mandá bebida.cajas y bebida.cajas_confirmadas=true solo después de que el dueño haya dicho que son cajas; '
-            .'el sistema convierte una sola vez. No mandes además stock_inicial. Elegí explícitamente el depósito para ese ingreso. '
+            .'el sistema convierte una sola vez. No mandes además stock_inicial. Si el negocio tiene más de una sucursal, elegí explícitamente el depósito para ese ingreso; con una sola, no lo mandes ni lo preguntes. '
             .'Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras. '
             .'Si no hay coincidencia verificada, informalo y mandá bebida.sin_imagen=true para mostrar ese límite. '
             .'Una única propuesta muestra datos, imagen, conversión y depósito; SIEMPRE requiere confirmación, incluso en modo directo.';
@@ -106,7 +112,8 @@ class AltaBebidasIaHelper
                 return RespuestaDeCargaIa::error('No mezcles stock en cajas con otro stock en unidades. No se cargó nada.');
             }
             $depositos = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
-            if (!empty($depositos['depositos']) && empty($extras['deposito'])) return RespuestaDeCargaIa::faltan(['depósito donde entran las cajas']);
+            // B2 (13/11/2026): con una sola sucursal no hay depósito que preguntar (va a la única, D12).
+            if (isset($depositos['depositos']) && count($depositos['depositos']) > 1 && empty($extras['deposito'])) return RespuestaDeCargaIa::faltan(['depósito donde entran las cajas']);
             $extras['stock_inicial'] = $unidades;
             $bebida['stock_unidades'] = $unidades;
             $renglones[] = ['etiqueta' => 'Conversión del stock', 'valor' => (int) $cajas.' cajas × '.(int) $botellas.' botellas = '.$unidades.' unidades sueltas'];

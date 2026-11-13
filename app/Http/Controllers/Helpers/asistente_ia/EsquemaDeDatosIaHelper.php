@@ -536,6 +536,30 @@ class EsquemaDeDatosIaHelper
             ],
             'relaciones'  => [],
         ],
+        /*
+         * LAS PROMOS DE VINOTECA (misión asistente-truvari-pedidos-fallidos, 13/11/2026, B5). Fernando
+         * (Truvari) preguntó «¿el Combo Pinot Noir está habilitado en la tienda?» y el asistente
+         * contestó «las herramientas no me muestran los combos ni si están publicados»: en una
+         * vinoteca lo que el dueño llama combo o promo es una fila de `promocion_vinotecas` (el botón
+         * Promos del Listado), que hasta acá era una entidad derivada sin descripción y sin la palabra
+         * "combo" en ningún lado (que_puedo_consultar busca por entidad, etiqueta y módulo). La
+         * etiqueta lleva "combos" y "promos" para que buscar cualquiera de las dos la encuentre, y
+         * CatalogoDeDatosIaHelper::consultar_datos() le suma a cada fila el `link_tienda` de su ficha
+         * (tienda-api resuelve `/articulos/{slug}/{comercio}` también para una promo con online = 1).
+         */
+        'promocion_vinoteca' => [
+            'etiqueta'    => 'promos de vinoteca (combos y promociones del boton Promos)',
+            'descripcion' => 'Las promos de vinoteca: el boton Promos del Listado (modulo Vinoteca). El dueño tambien les dice combos: "el Combo Pinot Noir" suele ser una de estas, y no un combo de la entidad combo. `online` dice si esta publicada en la tienda, `final_price` es su precio y `stock` cuantas hay. Cada fila trae `link_tienda`, el link de su ficha en la tienda (null si no esta publicada, no tiene slug o el negocio no tiene la direccion de la tienda): pasalo tal cual, nunca lo armes. Lo que se vendio de cada promo en un pedido de la tienda esta en renglon_de_pedido_promo.',
+            'campos'      => [
+                'name'        => ['tipo' => 'text',     'etiqueta' => 'nombre'],
+                'final_price' => ['tipo' => 'number',   'etiqueta' => 'precio'],
+                'stock'       => ['tipo' => 'number',   'etiqueta' => 'stock'],
+                'online'      => ['tipo' => 'checkbox', 'etiqueta' => 'publicada en la tienda'],
+                'slug'        => ['tipo' => 'text',     'etiqueta' => 'direccion dentro de la tienda (slug)'],
+                'created_at'  => ['tipo' => 'date',     'etiqueta' => 'fecha de alta'],
+            ],
+            'relaciones'  => [],
+        ],
     ];
 
     /**
@@ -731,7 +755,7 @@ class EsquemaDeDatosIaHelper
         'renglon_de_pedido' => [
             'tabla'       => 'article_order',
             'etiqueta'    => 'renglones de pedido de la tienda online (un articulo dentro de un pedido)',
-            'descripcion' => 'Cada articulo de un pedido que entro por el ecommerce, con su cantidad y precio. `fecha_pedido`, `numero_pedido`, `buyer_id` y `order_status_id` vienen del pedido. 🔴 Para plata va `importe` (unidades x precio), nunca `price`, que es el precio de UNA unidad. Estos renglones no tienen descuento propio: el del pedido vive en el encabezado y no se prorratea.',
+            'descripcion' => 'Cada articulo de un pedido que entro por el ecommerce, con su cantidad y precio. `fecha_pedido`, `numero_pedido`, `buyer_id` y `order_status_id` vienen del pedido. 🔴 Para plata va `importe` (unidades x precio), nunca `price`, que es el precio de UNA unidad. Estos renglones no tienen descuento propio: el del pedido vive en el encabezado y no se prorratea. 🔴 Son SOLO los articulos sueltos: las promos de vinoteca del pedido estan en renglon_de_pedido_promo y los combos en renglon_de_pedido_combo. El total del pedido es la suma de los importes de las TRES: si los renglones de aca no llegan al total, faltan los de las otras dos, no es que el pedido este mal.',
             'modulo'      => 'tienda online',
             'padre'       => ['tabla' => 'orders', 'columna_local' => 'order_id', 'columna_padre' => 'id', 'entidad' => 'order'],
             'campos_del_padre' => [
@@ -753,6 +777,61 @@ class EsquemaDeDatosIaHelper
             'campos_calculados' => [
                 'importe' => [
                     'expresion' => 'article_order.amount * COALESCE(article_order.price, 0)',
+                    'etiqueta'  => 'importe del renglon en plata (unidades x precio unitario)',
+                ],
+            ],
+        ],
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B6): el pedido N° 77 de Truvari, por
+         * $188.000, mostró un solo renglón de $48.000 («los totales no cierran»). El resto era una
+         * promo de vinoteca, que vive en `order_promocion_vinoteca` y no en `article_order`. Las dos
+         * tablas hermanas tienen las mismas columnas de plata que `article_order` (amount, price,
+         * cost) y la misma cuenta en OrderHelper::get_total(): `price * amount`, sin descuento propio.
+         */
+        'renglon_de_pedido_promo' => [
+            'tabla'       => 'order_promocion_vinoteca',
+            'etiqueta'    => 'renglones de pedido de la tienda online que son una promo de vinoteca (un combo de vinos)',
+            'descripcion' => 'Cada promo de vinoteca (boton Promos; el dueño les dice combos) dentro de un pedido que entro por el ecommerce, con su cantidad y precio. `fecha_pedido`, `numero_pedido`, `buyer_id` y `order_status_id` vienen del pedido. 🔴 Para plata va `importe` (unidades x precio), nunca `price`. El total del pedido es la suma de los importes de renglon_de_pedido (articulos sueltos), renglon_de_pedido_promo y renglon_de_pedido_combo.',
+            'modulo'      => 'tienda online',
+            'padre'       => ['tabla' => 'orders', 'columna_local' => 'order_id', 'columna_padre' => 'id', 'entidad' => 'order'],
+            'campos_del_padre' => [
+                'fecha_pedido'    => ['columna' => 'orders.created_at',      'tipo' => 'date',   'etiqueta' => 'fecha del pedido'],
+                'numero_pedido'   => ['columna' => 'orders.num',             'tipo' => 'number', 'etiqueta' => 'numero del pedido'],
+                'buyer_id'        => ['columna' => 'orders.buyer_id',        'tipo' => 'search', 'etiqueta' => 'comprador'],
+                'order_status_id' => ['columna' => 'orders.order_status_id', 'tipo' => 'search', 'etiqueta' => 'estado del pedido'],
+            ],
+            'condiciones_fijas' => [],
+            'etiquetas' => [
+                'amount' => 'unidades',
+                'price'  => 'precio unitario (de UNA unidad: para plata va importe)',
+            ],
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'order_promocion_vinoteca.amount * COALESCE(order_promocion_vinoteca.price, 0)',
+                    'etiqueta'  => 'importe del renglon en plata (unidades x precio unitario)',
+                ],
+            ],
+        ],
+        'renglon_de_pedido_combo' => [
+            'tabla'       => 'order_combo',
+            'etiqueta'    => 'renglones de pedido de la tienda online que son un combo',
+            'descripcion' => 'Cada combo dentro de un pedido que entro por el ecommerce, con su cantidad y precio. `fecha_pedido`, `numero_pedido`, `buyer_id` y `order_status_id` vienen del pedido. 🔴 Para plata va `importe` (unidades x precio), nunca `price`. El total del pedido es la suma de los importes de renglon_de_pedido (articulos sueltos), renglon_de_pedido_promo y renglon_de_pedido_combo.',
+            'modulo'      => 'tienda online',
+            'padre'       => ['tabla' => 'orders', 'columna_local' => 'order_id', 'columna_padre' => 'id', 'entidad' => 'order'],
+            'campos_del_padre' => [
+                'fecha_pedido'    => ['columna' => 'orders.created_at',      'tipo' => 'date',   'etiqueta' => 'fecha del pedido'],
+                'numero_pedido'   => ['columna' => 'orders.num',             'tipo' => 'number', 'etiqueta' => 'numero del pedido'],
+                'buyer_id'        => ['columna' => 'orders.buyer_id',        'tipo' => 'search', 'etiqueta' => 'comprador'],
+                'order_status_id' => ['columna' => 'orders.order_status_id', 'tipo' => 'search', 'etiqueta' => 'estado del pedido'],
+            ],
+            'condiciones_fijas' => [],
+            'etiquetas' => [
+                'amount' => 'unidades',
+                'price'  => 'precio unitario (de UNA unidad: para plata va importe)',
+            ],
+            'campos_calculados' => [
+                'importe' => [
+                    'expresion' => 'order_combo.amount * COALESCE(order_combo.price, 0)',
                     'etiqueta'  => 'importe del renglon en plata (unidades x precio unitario)',
                 ],
             ],

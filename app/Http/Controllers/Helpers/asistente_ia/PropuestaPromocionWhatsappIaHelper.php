@@ -1550,7 +1550,8 @@ class PropuestaPromocionWhatsappIaHelper
             }
 
             return [
-                'link'       => rtrim($tienda, '/') . '/articulos/' . rawurlencode((string) $modelo->slug) . '/' . (int) $contexto->owner_id,
+                // B4 (13/11/2026): el mismo armado que devuelven las consultas.
+                'link'       => TiendaDelNegocioIaHelper::link_del_articulo($tienda, $modelo, $contexto->owner_id),
                 'article_id' => (int) $modelo->id,
                 'nombre'     => (string) $modelo->name,
             ];
@@ -1644,7 +1645,7 @@ class PropuestaPromocionWhatsappIaHelper
             $articulos[] = [
                 'article_id' => (int) $modelo->id,
                 'nombre'     => (string) $modelo->name,
-                'link'       => rtrim($tienda, '/') . '/articulos/' . rawurlencode((string) $modelo->slug) . '/' . (int) $contexto->owner_id,
+                'link'       => TiendaDelNegocioIaHelper::link_del_articulo($tienda, $modelo, $contexto->owner_id),
             ];
         }
 

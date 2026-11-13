@@ -100,7 +100,9 @@ class Consultas_helper_Test extends TestCase
         // que le permite al asistente ofrecer la foto o decir que no hay. Una clave más al final no
         // le cambia nada al canal "sistema:" de admin-api, que lee por nombre.
         $primera = $resultado[0];
-        $this->assertEquals(['id', 'nombre', 'codigo', 'precio', 'stock', 'tiene_imagen'], array_keys($primera));
+        // Misión asistente-truvari-pedidos-fallidos (13/11/2026): cuatro claves más AL FINAL, por el
+        // mismo motivo (el stock sin cargar no es 0, y el link de la tienda viene armado).
+        $this->assertEquals(['id', 'nombre', 'codigo', 'precio', 'stock', 'tiene_imagen', 'stock_sin_cargar', 'stock_en_depositos', 'publicado_en_tienda', 'link_tienda'], array_keys($primera));
         $this->assertIsInt($primera['id']);
         $this->assertIsFloat($primera['precio']);
         $this->assertIsBool($primera['tiene_imagen']);

@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\asistente_ia\EsquemaDeDatosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TiendaDelNegocioIaHelper;
+use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -324,12 +326,14 @@ class CatalogoDeDatosIaHelper
 
         'combo' => [
             'etiqueta'    => 'combos',
-            'descripcion' => 'Los combos de articulos con su precio.',
+            // Misión asistente-truvari-pedidos-fallidos (13/11/2026, B5): `online` y la referencia a las promos de vinoteca.
+            'descripcion' => 'Los combos de articulos con su precio (modulo Combos). `online` dice si esta publicado en la tienda: un combo publicado se ve en la portada de la tienda, no tiene ficha propia. En una vinoteca, lo que el dueño llama combo o promo suele ser una promocion_vinoteca (boton Promos): si aca no esta, buscalo ahi.',
             'campos'      => [
-                'name'       => ['tipo' => 'text',   'etiqueta' => 'nombre'],
-                'price'      => ['tipo' => 'number', 'etiqueta' => 'precio'],
-                'cost'       => ['tipo' => 'number', 'etiqueta' => 'costo'],
-                'created_at' => ['tipo' => 'date',   'etiqueta' => 'fecha de alta'],
+                'name'       => ['tipo' => 'text',     'etiqueta' => 'nombre'],
+                'price'      => ['tipo' => 'number',   'etiqueta' => 'precio'],
+                'cost'       => ['tipo' => 'number',   'etiqueta' => 'costo'],
+                'created_at' => ['tipo' => 'date',     'etiqueta' => 'fecha de alta'],
+                'online'     => ['tipo' => 'checkbox', 'etiqueta' => 'publicado en la tienda'],
             ],
             'relaciones'  => [],
         ],
@@ -584,6 +588,8 @@ class CatalogoDeDatosIaHelper
             $lista[] = self::proyectar($declaracion, $proyeccion, $fila, $etiquetas);
         }
 
+        $lista = self::con_link_de_tienda($owner_id, $entidad, $lista);
+
         $respuesta = [
             'entidad'                 => $entidad,
             'etiqueta'                => $declaracion['etiqueta'],
@@ -605,6 +611,56 @@ class CatalogoDeDatosIaHelper
         }
 
         return $respuesta;
+    }
+
+    /**
+     * Las entidades cuyas filas llevan, al final, el `link_tienda` de su ficha en la tienda (misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026, B5): entidad => tabla. Solo la promo de vinoteca:
+     * es la que tiene ficha propia en tienda-api y no tiene otra consulta que la devuelva (los artículos
+     * lo traen en consultar_stock_de_articulos).
+     *
+     * @var array<string, string>
+     */
+    const ENTIDADES_CON_LINK_DE_TIENDA = [
+        'promocion_vinoteca' => 'promocion_vinotecas',
+    ];
+
+    /**
+     * Le suma a cada registro de una entidad de ENTIDADES_CON_LINK_DE_TIENDA su `link_tienda`, armado
+     * por TiendaDelNegocioIaHelper::link_del_articulo() (el mismo de los artículos y de la promoción
+     * por WhatsApp). `online` y `slug` se leen aparte por id, así viaja aunque el modelo haya pedido
+     * otros campos. Dos consultas por página: el dueño y las filas.
+     *
+     * @param  int  $owner_id
+     * @param  string  $entidad
+     * @param  array  $lista
+     * @return array
+     */
+    protected static function con_link_de_tienda(int $owner_id, string $entidad, array $lista): array
+    {
+        if (! isset(self::ENTIDADES_CON_LINK_DE_TIENDA[$entidad]) || empty($lista)) {
+            return $lista;
+        }
+
+        $ids = array_map(function ($registro) {
+            return (int) $registro['id'];
+        }, $lista);
+
+        $filas = DB::table(self::ENTIDADES_CON_LINK_DE_TIENDA[$entidad])
+            ->where('user_id', $owner_id)
+            ->whereIn('id', $ids)
+            ->get(['id', 'online', 'slug'])
+            ->keyBy('id');
+
+        $tienda = \App\Http\Controllers\Helpers\asistente_ia\TiendaDelNegocioIaHelper::url(\App\Models\User::find($owner_id));
+
+        foreach ($lista as $indice => $registro) {
+            $fila = $filas->get((int) $registro['id']);
+
+            $lista[$indice]['link_tienda'] = \App\Http\Controllers\Helpers\asistente_ia\TiendaDelNegocioIaHelper::link_del_articulo($tienda, $fila, $owner_id);
+        }
+
+        return $lista;
     }
 
     /**

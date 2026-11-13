@@ -338,6 +338,33 @@ class CatalogoDeAccionesDePantallaIaHelper
         'pending' => [Escritura::OP_ALTA => 'proponer_tarea', Escritura::OP_EDICION => 'proponer_cambios_en_tarea'],
     ];
 
+    /**
+     * Palabras en español que también encuentran una acción (misión asistente-truvari-pedidos-fallidos,
+     * 13/11/2026, B8). Fernando (Truvari) pidió «borrá los presupuestos 25 y 26» y el asistente contestó
+     * «no tengo una ruta de borrado»: `DELETE api/budget/{budget}` estaba en el catálogo, pero lo buscó
+     * como «presupuesto» y «borrar», y las rutas están en inglés. Si la ruta contiene la palabra en
+     * inglés de la izquierda, la búsqueda también la encuentra por las de la derecha. Las de método
+     * (`DELETE`, etc.) van por el método de la acción. Solo agrega coincidencias: nunca saca una.
+     *
+     * @var array<string, string>
+     */
+    const SINONIMOS_DE_RUTA = [
+        'budget'   => 'presupuesto presupuestos',
+        'sale'     => 'venta ventas',
+        'article'  => 'articulo articulos producto productos',
+        'client'   => 'cliente clientes',
+        'provider' => 'proveedor proveedores',
+        'order'    => 'pedido pedidos',
+        'expense'  => 'gasto gastos',
+    ];
+
+    /** @var array<string, string>  método => palabras en español (ver SINONIMOS_DE_RUTA). */
+    const SINONIMOS_DE_METODO = [
+        'DELETE' => 'borrar eliminar baja',
+        'PUT'    => 'editar modificar',
+        'GET'    => 'ver consultar',
+    ];
+
     /** @var array<string, array<string, mixed>>|null  ['METODO uri' => fila] */
     protected static $catalogo = null;
 
@@ -390,6 +417,7 @@ class CatalogoDeAccionesDePantallaIaHelper
 
                 $pajar = ConsultasSistemaIaHelper::normalize_text($fila['ruta'].' '.$fila['modulo'].' '.$fila['accion']);
                 $pajar .= ' '.str_replace(['-', '_', '/'], ' ', $pajar);
+                $pajar .= self::sinonimos_de($fila);
 
                 foreach ($palabras as $palabra) {
 
@@ -430,6 +458,33 @@ class CatalogoDeAccionesDePantallaIaHelper
             'paginas'     => $paginas,
             'como_sigo'   => $como_sigo,
         ];
+    }
+
+    /**
+     * Las palabras en español de una acción, para la búsqueda (ver SINONIMOS_DE_RUTA), con un
+     * espacio adelante; vacío si no tiene ninguna.
+     *
+     * @param  array  $fila
+     * @return string
+     */
+    protected static function sinonimos_de(array $fila): string
+    {
+        $extra = '';
+
+        foreach (self::SINONIMOS_DE_RUTA as $en_ingles => $en_espanol) {
+
+            if (strpos($fila['ruta'], $en_ingles) !== false) {
+
+                $extra .= ' '.$en_espanol;
+            }
+        }
+
+        if (isset(self::SINONIMOS_DE_METODO[$fila['metodo']])) {
+
+            $extra .= ' '.self::SINONIMOS_DE_METODO[$fila['metodo']];
+        }
+
+        return $extra;
     }
 
     /**
