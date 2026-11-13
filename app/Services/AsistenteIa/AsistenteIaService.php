@@ -5935,7 +5935,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_stock_por_deposito',
-                'description' => 'Devuelve cómo está repartido el stock de un artículo entre las sucursales o depósitos del negocio, incluidas las que están en cero (que suele ser justo el dato que se busca). Si trabaja_con_depositos es false, el negocio tiene una sola sucursal y no hay reparto que contar. 🔴 Vienen DOS totales: stock_total_del_articulo, que es el de la ficha y el que muestra el listado, y stock_sumado_por_deposito, que es la suma del reparto. Si no coinciden, decilo: es un dato roto que el comerciante tiene que saber, y no elijas uno de los dos por tu cuenta.',
+                'description' => 'Devuelve cómo está repartido el stock de un artículo entre las sucursales o depósitos del negocio, incluidas las que están en cero (que suele ser justo el dato que se busca). Si trabaja_con_depositos es false, el negocio tiene una sola sucursal y no hay reparto que contar. 🔴 Vienen DOS totales: stock_total_del_articulo, que es el de la ficha y el que muestra el listado, y stock_sumado_por_deposito, que es la suma del reparto. Si no coinciden, decilo: es un dato roto que el comerciante tiene que saber, y no elijas uno de los dos por tu cuenta. Excepción: si stock_sin_cargar es true (stock_total_del_articulo viene null), no es un dato roto: la ficha nunca tuvo stock cargado y lo que hay es el reparto por depósito.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
