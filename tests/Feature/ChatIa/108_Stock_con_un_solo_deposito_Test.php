@@ -51,7 +51,7 @@ class Stock_con_un_solo_deposito_Test extends EmpresaTestCase
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
         $this->confianza_original = $this->dueno->agente_confianza;
 
-        $extencion = ExtencionEmpresa::firstOrCreate(['slug' => 'agentes_ia'], ['name' => 'agentes_ia']);
+        $extencion = (ExtencionEmpresa::where('slug', 'agentes_ia')->first() ?: ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'agentes_ia']));
         $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
 
         User::where('id', $this->dueno->id)->update(['agente_confianza' => 'cauteloso']);
@@ -168,7 +168,7 @@ class Stock_con_un_solo_deposito_Test extends EmpresaTestCase
     {
         $unica = $this->unica();
 
-        $vinoteca = ExtencionEmpresa::firstOrCreate(['slug' => 'vinoteca'], ['name' => 'vinoteca']);
+        $vinoteca = (ExtencionEmpresa::where('slug', 'vinoteca')->first() ?: ExtencionEmpresa::forceCreate(['slug' => 'vinoteca', 'name' => 'vinoteca']));
         $this->dueno->extencions()->syncWithoutDetaching([$vinoteca->id]);
         User::where('id', $this->dueno->id)->update(['agente_alta_bebidas' => 1, 'listas_de_precio' => 0]);
         $this->dueno = User::find($this->dueno->id);

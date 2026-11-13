@@ -115,7 +115,7 @@ class Bodega_y_cepa_en_filtros_y_masiva_Test extends TestCase
 
     protected function dar_extension($slug)
     {
-        $extencion = ExtencionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+        $extencion = (ExtencionEmpresa::where('slug', $slug)->first() ?: ExtencionEmpresa::forceCreate(['slug' => $slug, 'name' => $slug]));
 
         $this->comercio->extencions()->syncWithoutDetaching([$extencion->id]);
         $this->comercio->load('extencions');

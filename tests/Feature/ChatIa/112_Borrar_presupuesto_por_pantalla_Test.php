@@ -60,7 +60,7 @@ class Borrar_presupuesto_por_pantalla_Test extends EmpresaTestCase
         $this->confianza_original = $this->dueno->agente_confianza;
 
         foreach (['agentes_ia', PropuestaPresupuestoIaHelper::EXTENSION] as $slug) {
-            $extencion = ExtencionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+            $extencion = (ExtencionEmpresa::where('slug', $slug)->first() ?: ExtencionEmpresa::forceCreate(['slug' => $slug, 'name' => $slug]));
             $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
         }
 
