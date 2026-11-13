@@ -17,6 +17,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BloquesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ColumnasDeLaAppIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorCodigoDeBarrasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\CargaSinPropuestaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EnvioSinPropuestaIaHelper;
@@ -297,6 +298,13 @@ class AsistenteIaService
         . 'No digas que no podés hacerlo: lo hacés en el próximo mensaje. No le menciones este aviso.]';
 
     /**
+     * Las guardas de VERACIDAD DEL TURNO (misión asistente-truvari-pedidos-fallidos, 13/11/2026), en el
+     * orden en que se miran: la primera que dispara se lleva el único reintento del turno.
+     *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
+     */
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta'];
+
+    /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
      * cruzar todavía contra el texto (misión agente-ia-mano-derecha, §1 del contrato).
      *
@@ -396,6 +404,17 @@ class AsistenteIaService
     protected $ventas_repetidas_del_turno = [];
 
     /**
+     * Qué contestó cada herramienta en la respuesta que se está generando (misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026): `[{nombre, ok, codigo}]`, en orden. `ok` es true si
+     * no fue un error y, cuando la respuesta trae la clave `ok`, si vale true; `codigo` es el `codigo` (o
+     * `code`) de una respuesta negativa. Lo miran las guardas de veracidad del turno: «Me lo anoto» solo
+     * con un guardar_en_contexto ok, «quedó pedido a soporte» solo con un pedir_ayuda_a_soporte ok.
+     *
+     * @var array<int, array{nombre: string, ok: bool, codigo: string|null}>
+     */
+    protected $herramientas_del_turno = [];
+
+    /**
      * El detalle técnico de una respuesta que terminó en respuesta_sin_terminar() (segunda ronda de
      * arreglos, F3), o null. El job lo guarda en `error_mensaje` del mensaje aunque quede `listo`: el
      * mensaje no es un error para la persona, pero lo que lo cortó tiene que quedar a la vista para
@@ -475,6 +494,7 @@ class AsistenteIaService
         $this->pedidos_de_imagen = [];
         $this->cargas_vistas_de_otras_conversaciones = [];
         $this->ventas_repetidas_del_turno = [];
+        $this->herramientas_del_turno = [];
         $this->detalle_tecnico = null;
         $this->marcar_progreso = true;
         $this->manual_de_prueba = null;
@@ -738,8 +758,17 @@ class AsistenteIaService
             && ! $assistant_message->confirma_por_texto()
             && is_null($confirmacion_determinista);
 
-        $confirma_en_whatsapp = $es_whatsapp && $con_acciones && is_null($confirmacion_determinista)
-            && ConfirmacionDeterministaIaHelper::es_afirmacion($this->pedido_de_la_persona($conversation, $assistant_message));
+        /*
+         * 🔴 MISIÓN asistente-truvari-pedidos-fallidos (A1, 13/11/2026): LA GUARDA DE LA CARGA DADA POR
+         * HECHA TAMBIÉN CORRE EN LOS CANALES QUE CONFIRMAN POR TEXTO, PARA TODA CARGA. Hasta acá, por
+         * WhatsApp, solo miraba un texto que nombrara «el pago» (9ea73bbc): Truvari contestó «Si» y el
+         * asistente dijo «Quedó en 9 unidades el Nieto Senetiner Brut Nature» y «Dejé el stock del
+         * Aceite… en 6 unidades» sin ninguna carga hecha. Ahora: un canal sin botones (WhatsApp, MCP), con
+         * acciones, sin confirmación determinista, y la persona contestó un sí —solo, o al empezar el
+         * mensaje: «Sí, tal cual…», «Si, no me preguntes tantas veces»—.
+         */
+        $confirma_en_whatsapp = $assistant_message->confirma_por_texto() && $con_acciones && is_null($confirmacion_determinista)
+            && $this->empieza_con_un_si($this->pedido_de_la_persona($conversation, $assistant_message));
 
         /* Las herramientas que el modelo pidió en este turno, en orden: rastro para el log de la guarda. */
         $herramientas_pedidas = [];
@@ -776,6 +805,14 @@ class AsistenteIaService
         $guarda_de_envio = $con_acciones
             && $assistant_message->confirma_por_texto()
             && is_null($confirmacion_determinista);
+
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (13/11/2026): la guarda de VERACIDAD que pidió el único
+         * reintento del turno ('carga_sin_propuesta', 'soporte', 'anotacion', 'promesa'), o ''. Solo para
+         * el log de un reintento que falla. Ver guarda_de_veracidad_que_dispara().
+         */
+        $reintento_de_veracidad = '';
+
 
         /*
          * 🔴 MISIÓN app-ia-imagen-prometida (29/10/2026): LA IMAGEN QUE EL TEXTO PROMETE TIENE QUE ESTAR
@@ -854,7 +891,7 @@ class AsistenteIaService
                         'ai_conversation_id' => $conversation->id,
                         'ai_message_id'      => $assistant_message->id,
                         'iterations'         => $iterations,
-                        'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
+                        'clase'              => $reintento_de_veracidad !== '' ? $reintento_de_veracidad : ($reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'))),
                     ]);
 
                     $final_text = $texto_antes_del_reintento;
@@ -1069,7 +1106,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: falló el reintento de la tarjeta prometida; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
+                    'clase'              => $reintento_de_veracidad !== '' ? $reintento_de_veracidad : ($reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'))),
                     'excepcion'          => get_class($e),
                     'error'              => $e->getMessage(),
                 ]);
@@ -1082,7 +1119,7 @@ class AsistenteIaService
                 Log::warning('AsistenteIaService: el reintento de la tarjeta prometida volvió con error; se sigue con el texto anterior.', [
                     'ai_conversation_id' => $conversation->id,
                     'ai_message_id'      => $assistant_message->id,
-                    'clase'              => $reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta')),
+                    'clase'              => $reintento_de_veracidad !== '' ? $reintento_de_veracidad : ($reintento_de_la_imagen ? 'imagen' : ($reintento_del_envio ? 'envio' : ($reintento_de_la_carga ? 'carga' : 'tarjeta'))),
                     'http'               => $response->status(),
                 ]);
 
@@ -1393,14 +1430,20 @@ class AsistenteIaService
                         'content' => $final_text,
                     ];
 
+                    /* A1: por texto no hay tarjeta que nombrar; la nota dice cómo se confirma acá. */
                     $messages[] = [
                         'role'    => 'user',
-                        'content' => TarjetaPrometidaIaHelper::nota_para_reintentar_carga(
-                            $this->de_carga($herramientas_pedidas),
-                            $tarjetas_propuestas > 0,
-                            $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message),
-                            $es_una_correccion
-                        ),
+                        'content' => $guarda_de_tarjeta
+                            ? TarjetaPrometidaIaHelper::nota_para_reintentar_carga(
+                                $this->de_carga($herramientas_pedidas),
+                                $tarjetas_propuestas > 0,
+                                $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message),
+                                $es_una_correccion
+                            )
+                            : TarjetaPrometidaIaHelper::nota_para_reintentar_carga_por_texto(
+                                $this->de_carga($herramientas_pedidas),
+                                $tarjetas_propuestas > 0
+                            ),
                     ];
 
                     $toco_una_carga = true;
@@ -1452,6 +1495,56 @@ class AsistenteIaService
                 $final_text = '';
 
                 continue;
+            }
+
+            /*
+             * 🔴 MISIÓN asistente-truvari-pedidos-fallidos (13/11/2026): LAS GUARDAS DE VERACIDAD DEL TURNO.
+             * El texto no puede pedir confirmar una carga que no se propuso (A2), dar por hecho un pedido a
+             * soporte que no salió (A7), decir «me lo anoto» sin haber guardado nada (A5) ni prometer algo
+             * para después de esta respuesta (A4): no hay un después. Mismo y único reintento del turno; si
+             * ya lo usó otra guarda, las de después del bucle cambian esas oraciones (texto_veraz()).
+             */
+            if (! $cerrando
+                && is_null($texto_antes_del_reintento)
+                && $iterations < $max_iterations
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+
+                $guarda_de_veracidad = $this->guarda_de_veracidad_que_dispara($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas, $guarda_de_envio);
+
+                if ($guarda_de_veracidad !== '') {
+
+                    Log::warning('AsistenteIaService: el texto afirma algo que el turno no hizo; se reintenta una vez.', [
+                        'ai_conversation_id'   => $conversation->id,
+                        'ai_message_id'        => $assistant_message->id,
+                        'guarda'               => $guarda_de_veracidad,
+                        'iterations'           => $iterations,
+                        'herramientas_pedidas' => $herramientas_pedidas,
+                        'modelo'               => $model,
+                        'texto'                => mb_substr($final_text, 0, 300),
+                    ]);
+
+                    $texto_antes_del_reintento = $final_text;
+                    $reintento_de_veracidad    = $guarda_de_veracidad;
+
+                    $messages[] = [
+                        'role'    => 'assistant',
+                        'content' => $final_text,
+                    ];
+
+                    $messages[] = [
+                        'role'    => 'user',
+                        'content' => $this->nota_de_veracidad($guarda_de_veracidad, $tools),
+                    ];
+
+                    /* Armar una carga es decisión del Profundo, como en cualquier turno que toca una carga. */
+                    if ($guarda_de_veracidad === 'carga_sin_propuesta') {
+                        $toco_una_carga = true;
+                    }
+
+                    $final_text = '';
+
+                    continue;
+                }
             }
 
             break;
@@ -1723,6 +1816,15 @@ class AsistenteIaService
             ]);
 
             $final_text = EnvioSinPropuestaIaHelper::texto_honesto($final_text);
+        }
+
+        /*
+         * Misión asistente-truvari-pedidos-fallidos, después del reintento (o sin él): las guardas de
+         * veracidad cambian SOLO las oraciones que todavía afirman lo que el turno no hizo. Si el texto ya
+         * es el honesto de la tarjeta, no hay nada que mirar.
+         */
+        if (! $la_tarjeta_cambio_el_texto) {
+            $final_text = $this->texto_veraz($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas, $guarda_de_envio, ! is_null($texto_antes_del_reintento));
         }
 
         /*
@@ -3828,6 +3930,167 @@ CONFIRMACION;
     }
 
     /**
+     * true si el texto pide confirmar una CARGA y no hay propuesta que confirmar (A2 de la misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026). Ver CargaSinPropuestaIaHelper. Solo por texto
+     * ($guarda_de_envio trae las mismas condiciones: canal sin botones, con acciones, sin confirmación
+     * determinista), y nunca cuando es un envío (eso lo mira la guarda del envío, antes).
+     *
+     * @param  string  $saneado
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  array<int, string>  $herramientas_pedidas
+     * @return bool
+     */
+    protected function pide_confirmar_una_carga_sin_propuesta($saneado, array $tools, AiConversation $conversation, AiMessage $assistant_message, array $herramientas_pedidas): bool
+    {
+        if (! CargaSinPropuestaIaHelper::pide_confirmar_una_carga($saneado)) {
+            return false;
+        }
+
+        if (EnvioSinPropuestaIaHelper::pide_confirmar_un_envio($saneado)) {
+            return false;
+        }
+
+        if (EnvioSinPropuestaIaHelper::el_turno_ya_armo_o_resolvio_algo($herramientas_pedidas)
+            || AiMessageAction::where('ai_message_id', $assistant_message->id)->exists()) {
+            return false;
+        }
+
+        return ! $this->hay_tarjetas_pendientes_de_antes($conversation, $assistant_message);
+    }
+
+    /**
+     * La guarda de VERACIDAD DEL TURNO que dispara sobre el texto, o '' (misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026; ver VeracidadDelTurnoIaHelper). Se miran en el orden
+     * de GUARDAS_DE_VERACIDAD: la primera que dispara se lleva el único reintento. Nunca rompe el turno: si
+     * algo falla, ''.
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  bool  $por_texto  true si corre la guarda de la carga sin propuesta (la misma condición que la del envío).
+     * @return string
+     */
+    protected function guarda_de_veracidad_que_dispara($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message, array $herramientas_pedidas, $por_texto): string
+    {
+        try {
+            $saneado = TextoFinalIaHelper::sanear((string) $texto, $this->nombres_de_herramientas($tools));
+
+            foreach (self::GUARDAS_DE_VERACIDAD as $guarda) {
+
+                if ($this->dispara_la_guarda_de_veracidad($guarda, $saneado, $tools, $conversation, $assistant_message, $herramientas_pedidas, $por_texto)) {
+                    return $guarda;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('AsistenteIaService: no se pudo revisar la veracidad del texto; se deja como está.', [
+                'ai_message_id' => (int) $assistant_message->id,
+                'error'         => $e->getMessage(),
+            ]);
+        }
+
+        return '';
+    }
+
+    /**
+     * true si la guarda de veracidad dispara sobre el texto (ya saneado).
+     *
+     * @param  string  $guarda
+     * @param  string  $saneado
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  bool  $por_texto
+     * @return bool
+     */
+    protected function dispara_la_guarda_de_veracidad($guarda, $saneado, array $tools, AiConversation $conversation, AiMessage $assistant_message, array $herramientas_pedidas, $por_texto): bool
+    {
+        /* A2: «¿Lo cargo?» sin propuesta, por texto. */
+        if ($guarda === 'carga_sin_propuesta') {
+            return $por_texto && $this->pide_confirmar_una_carga_sin_propuesta($saneado, $tools, $conversation, $assistant_message, $herramientas_pedidas);
+        }
+
+        return false;
+    }
+
+    /**
+     * La nota del reintento de una guarda de veracidad.
+     *
+     * @param  string  $guarda
+     * @param  array<int, array<string, mixed>>  $tools
+     * @return string
+     */
+    protected function nota_de_veracidad($guarda, array $tools): string
+    {
+        return CargaSinPropuestaIaHelper::nota_para_reintentar();
+    }
+
+    /**
+     * El texto con las oraciones de la guarda cambiadas por su aviso honesto.
+     *
+     * @param  string  $guarda
+     * @param  string  $texto
+     * @return string
+     */
+    protected function texto_honesto_de_la_guarda($guarda, $texto): string
+    {
+        return CargaSinPropuestaIaHelper::texto_honesto($texto);
+    }
+
+    /**
+     * Las guardas de veracidad DESPUÉS del bucle (con su reintento, o sin él si no quedaba vuelta o lo usó
+     * otra guarda): cada una que todavía dispara cambia SOLO sus oraciones por su aviso honesto. Se
+     * revisan todas, una detrás de otra, sobre el texto que va quedando.
+     *
+     * @param  string  $texto
+     * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @param  array<int, string>  $herramientas_pedidas
+     * @param  bool  $por_texto
+     * @param  bool  $hubo_reintento
+     * @return string
+     */
+    protected function texto_veraz($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message, array $herramientas_pedidas, $por_texto, $hubo_reintento): string
+    {
+        $texto = (string) $texto;
+
+        foreach (self::GUARDAS_DE_VERACIDAD as $guarda) {
+
+            try {
+                $saneado = TextoFinalIaHelper::sanear($texto, $this->nombres_de_herramientas($tools));
+
+                if (! $this->dispara_la_guarda_de_veracidad($guarda, $saneado, $tools, $conversation, $assistant_message, $herramientas_pedidas, $por_texto)) {
+                    continue;
+                }
+
+                Log::warning('AsistenteIaService: el texto afirma algo que el turno no hizo; se cambian esas oraciones por el aviso honesto.', [
+                    'ai_conversation_id'   => $conversation->id,
+                    'ai_message_id'        => $assistant_message->id,
+                    'guarda'               => $guarda,
+                    'hubo_reintento'       => (bool) $hubo_reintento,
+                    'herramientas_pedidas' => $herramientas_pedidas,
+                    'texto'                => mb_substr($texto, 0, 300),
+                ]);
+
+                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto);
+            } catch (\Throwable $e) {
+                Log::warning('AsistenteIaService: no se pudo corregir la veracidad del texto; se deja como está.', [
+                    'ai_message_id' => (int) $assistant_message->id,
+                    'guarda'        => $guarda,
+                    'error'         => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $texto;
+    }
+
+    /**
      * true si la respuesta ANTERIOR del asistente dejó una tarjeta que sigue `propuesta`: el texto que
      * afirma una tarjeta puede estar hablando de ésa (*"¿y la tarjeta?"* → *"te la dejé, tocá
      * Confirmar"*).
@@ -3946,7 +4209,8 @@ CONFIRMACION;
      * @param  array<int, array<string, mixed>>  $tools
      * @param  AiConversation  $conversation
      * @param  AiMessage  $assistant_message
-     * @param  bool  $confirma_en_whatsapp
+     * @param  bool  $confirma_en_whatsapp  true en un canal que confirma por texto (WhatsApp, MCP) después
+     *                                      de un sí: ahí no hay tarjeta que el texto pueda estar nombrando.
      * @return string
      */
     protected function afirma_una_carga_que_no_se_hizo($texto, array $tools, AiConversation $conversation, AiMessage $assistant_message, bool $confirma_en_whatsapp = false): string
@@ -3964,21 +4228,17 @@ CONFIRMACION;
             return '';
         }
 
-        if ($confirma_en_whatsapp && ! preg_match('/\b(?:el|un|tu|su) pago\b/iu', $saneado)) {
-            return '';
-        }
-
+        /*
+         * A1 de la misión asistente-truvari-pedidos-fallidos (13/11/2026): por texto ya no se filtra por
+         * pago (9ea73bbc lo acotaba a «el pago» y a las acciones de pago): mira TODA carga.
+         */
         $acciones = AiMessageAction::where('ai_message_id', $assistant_message->id);
-
-        if ($confirma_en_whatsapp) {
-            $acciones->where('tipo', AiMessageAction::TIPO_PAGO);
-        }
 
         $ejecutada = (clone $acciones)
             ->whereIn('estado', [AiMessageAction::ESTADO_CONFIRMADA, AiMessageAction::ESTADO_EN_CURSO])
             ->exists();
 
-        if ($ejecutada) {
+        if ($ejecutada || $this->se_confirmo_una_carga_durante_el_turno($conversation, $assistant_message)) {
             return '';
         }
 
@@ -4025,6 +4285,53 @@ CONFIRMACION;
         }
 
         return '';
+    }
+
+    /**
+     * true si el pedido de la persona es un sí, o EMPIEZA con uno (A1 de la misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026): «Si», «Dale», y también «Sí, tal cual. Eh, sí, de
+     * todas maneras me fijé…» o «Si, no me preguntes tantas veces» (Truvari, 12/11). Se mira el primer
+     * pedazo, hasta la primera coma, punto o salto de línea, con la misma regla estricta de
+     * ConfirmacionDeterministaIaHelper::es_afirmacion(): «Si la presentación es 6» no es un sí.
+     *
+     * @param  string  $pedido
+     * @return bool
+     */
+    protected function empieza_con_un_si($pedido): bool
+    {
+        $pedido = trim((string) $pedido);
+
+        if ($pedido === '' || preg_match('/[?¿]/u', $pedido)) {
+            return false;
+        }
+
+        if (ConfirmacionDeterministaIaHelper::es_afirmacion($pedido)) {
+            return true;
+        }
+
+        $partes = preg_split('/[,.;:!\n]/u', $pedido, 2);
+        $primero = is_array($partes) ? trim((string) $partes[0]) : '';
+
+        return $primero !== '' && $primero !== $pedido && ConfirmacionDeterministaIaHelper::es_afirmacion($primero);
+    }
+
+    /**
+     * true si en ESTE turno el modelo confirmó una carga con confirmar_carga_pendiente y la herramienta
+     * contestó ok (A1 de la misión asistente-truvari-pedidos-fallidos): por texto, el «sí» con varias
+     * tarjetas esperando lo resuelve el modelo con esa herramienta, y la tarjeta confirmada sigue colgada
+     * del mensaje que la propuso, no de éste. El texto que la cuenta no miente.
+     *
+     * 🔴 Por la herramienta y no por `resuelta_at` desde el alta del mensaje: una tarjeta confirmada en el
+     * mismo segundo en que se creó este mensaje (la de la respuesta anterior) pasaba por confirmada en el
+     * turno.
+     *
+     * @param  AiConversation  $conversation
+     * @param  AiMessage  $assistant_message
+     * @return bool
+     */
+    protected function se_confirmo_una_carga_durante_el_turno(AiConversation $conversation, AiMessage $assistant_message): bool
+    {
+        return $this->hubo_herramienta_ok('confirmar_carga_pendiente');
     }
 
     /**
@@ -6316,12 +6623,16 @@ CONFIRMACION;
                 }
 
                 $tool_results[] = $tool_result;
+
+                $this->anotar_lo_que_contesto($tool_name, $content, $tool_desconocida || $error_de_la_herramienta);
             } catch (\Throwable $exception) {
                 Log::warning('AsistenteIaService: error en tool call.', [
                     'ai_conversation_id' => $conversation->id,
                     'tool'               => $tool_name,
                     'error'              => $exception->getMessage(),
                 ]);
+
+                $this->anotar_lo_que_contesto($tool_name, null, true);
 
                 // Devuelve el error a Claude para que pueda continuar sin romper el flujo.
                 $tool_results[] = [
@@ -6334,6 +6645,88 @@ CONFIRMACION;
         }
 
         return $tool_results;
+    }
+
+    /**
+     * Anota en $herramientas_del_turno qué contestó una herramienta (misión
+     * asistente-truvari-pedidos-fallidos). Nunca rompe el loop.
+     *
+     * @param  string  $tool_name
+     * @param  mixed  $content  El content del tool_result (JSON casi siempre), o null si tiró una excepción.
+     * @param  bool  $con_error
+     * @return void
+     */
+    protected function anotar_lo_que_contesto($tool_name, $content, $con_error)
+    {
+        try {
+            $datos = is_string($content) ? json_decode($content, true) : null;
+
+            $ok = ! $con_error;
+            $codigo = null;
+
+            if (is_array($datos)) {
+
+                if (array_key_exists('ok', $datos)) {
+                    $ok = $ok && $datos['ok'] === true;
+                }
+
+                if (isset($datos['error'])) {
+                    $ok = false;
+                }
+
+                if (isset($datos['codigo']) && is_scalar($datos['codigo'])) {
+                    $codigo = (string) $datos['codigo'];
+                } elseif (isset($datos['code']) && is_scalar($datos['code'])) {
+                    $codigo = (string) $datos['code'];
+                }
+            }
+
+            $this->herramientas_del_turno[] = [
+                'nombre' => (string) $tool_name,
+                'ok'     => (bool) $ok,
+                'codigo' => $codigo,
+            ];
+        } catch (\Throwable $e) {
+            // El rastro es para las guardas: si no se pudo anotar, la guarda mira como si no hubiera salido bien.
+        }
+    }
+
+    /**
+     * true si en esta respuesta la herramienta contestó bien al menos una vez.
+     *
+     * @param  string  $nombre
+     * @return bool
+     */
+    protected function hubo_herramienta_ok($nombre): bool
+    {
+        foreach ($this->herramientas_del_turno as $herramienta) {
+
+            if ($herramienta['nombre'] === (string) $nombre && $herramienta['ok']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * El código de la última respuesta negativa de la herramienta en esta respuesta, o null.
+     *
+     * @param  string  $nombre
+     * @return string|null
+     */
+    protected function codigo_de_la_herramienta($nombre)
+    {
+        $codigo = null;
+
+        foreach ($this->herramientas_del_turno as $herramienta) {
+
+            if ($herramienta['nombre'] === (string) $nombre && ! $herramienta['ok'] && ! is_null($herramienta['codigo'])) {
+                $codigo = $herramienta['codigo'];
+            }
+        }
+
+        return $codigo;
     }
 
     /**

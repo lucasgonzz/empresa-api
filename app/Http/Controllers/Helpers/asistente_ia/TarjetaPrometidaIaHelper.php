@@ -1013,6 +1013,44 @@ class TarjetaPrometidaIaHelper
     }
 
     /**
+     * La nota del reintento de la carga dada por hecha en un canal que confirma POR TEXTO (WhatsApp, MCP),
+     * después de un sí (A1 de la misión asistente-truvari-pedidos-fallidos, 13/11/2026). Acá no hay
+     * tarjeta que nombrar: la carga se propone con la proponer_, queda hecha o esperando el sí, y eso es
+     * lo que el modelo cuenta.
+     *
+     * 🔴 EL CASO REAL (Truvari, 12/11/2026). «¿Lo cargo?» sin haber llamado a ninguna proponer_, el dueño
+     * contestó «Si» y el asistente dijo «Quedó en 9 unidades el Nieto Senetiner Brut Nature» sin nada
+     * hecho. El sí era a una propuesta que no existía: la nota le pide armarla AHORA.
+     *
+     * @param  array<int, string>  $herramientas_de_carga  Las de carga que el modelo pidió en el turno.
+     * @param  bool  $hay_propuesta  true si ESTE mensaje dejó una carga esperando el sí.
+     * @return string
+     */
+    public static function nota_para_reintentar_carga_por_texto(array $herramientas_de_carga, $hay_propuesta)
+    {
+        if ($hay_propuesta) {
+
+            return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero NO se ejecutó: quedó esperando que la persona te diga que sí. '
+                . 'Volvé a contestar con los datos exactos de lo que vas a cargar y preguntá si lo registrás, sin decir que ya está hecho. Sin la palabra tarjeta. '
+                . self::FRASE_DE_LA_RESPUESTA_COMPLETA
+                . 'No le menciones este aviso a la persona.]';
+        }
+
+        $pedidas = count($herramientas_de_carga)
+            ? 'Pediste ' . implode(', ', array_values(array_unique($herramientas_de_carga))) . ' y ninguna terminó en una carga: mirá lo que te contestó. '
+            : 'No llamaste a ninguna herramienta proponer_ ni a confirmar_carga_pendiente. ';
+
+        return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero con este mensaje no se registró nada. '
+            . $pedidas
+            . 'Si la persona te dijo que sí a algo que le preguntaste antes, esa propuesta no existía: llamá AHORA a la herramienta proponer_ que corresponde con los datos que ya tenés, '
+            . 'y contá lo que te devuelva (si quedó hecha, con su número; si quedó esperando el sí, con los datos exactos y la pregunta de si lo registrás). '
+            . 'Si lo que dijiste ya figuraba registrado ANTES de este mensaje, NO lo cargues de nuevo: decí con qué número y fecha figura. '
+            . 'Si te faltan datos, pedíselos a la persona. '
+            . self::FRASE_DE_LA_RESPUESTA_COMPLETA
+            . 'No le menciones este aviso a la persona.]';
+    }
+
+    /**
      * Las oraciones del texto: se corta después de un punto, un signo de cierre o un salto de línea.
      * "400.000" o "15/10" no se cortan (no hay espacio después del punto).
      *
@@ -1627,6 +1665,16 @@ class TarjetaPrometidaIaHelper
             ['/\bapliqué\s+(?:el|la)\s+(?:descuento|recargo|oferta)/u', null],
             ['/\ble\s+(?:agregué|puse|sumé|saqué)\b/u', null],
             ['/\bbajé\s+(?:el|los)\s+precios?\b/u', null],
+            /*
+             * Misión asistente-truvari-pedidos-fallidos (A3, 13/11/2026). Truvari, por WhatsApp: «Dejé el
+             * stock del Aceite de Oliva Familia Zuccardi Coratina 500 ml en 6 unidades.» y «Corregí el
+             * presupuesto 25 con 1 unidad en cada renglón…», las dos sin ninguna carga hecha. El verbo
+             * con la CANTIDAD detrás (no «Te dejé el detalle abajo») y «corregí» con lo que se corrigió.
+             */
+            ['/\bdejé\b' . $v . '{0,80}?\ben\s+\$?\s?\d/u', null],
+            ['/\bcorregí\b/u', '/^' . $adverbio . '(?:' . self::ENTIDAD_DE_CARGA . '|' . self::OBJETO_DE_UN_CAMBIO . '|(?:el|la|los|las) (?:cantidad|cantidades|renglon|renglones|unidades|total|importe)\b)/u'],
+            ['/\b(?:lo|la|los|las)\s+corregí\b/u', null],
+            ['/\bpuse\s+(?:el|la|los|las)\s+(?:stock|precio|costo|margen|cantidad|cantidades)\b/u', null],
         ];
     }
 
@@ -1650,6 +1698,12 @@ class TarjetaPrometidaIaHelper
             ['/^' . self::APERTURA . '(?:(?:el|la|los|las) )?' . self::PARTICIPIO_AL_EMPEZAR . '\b/u', 'b'],
             /* (c) "Gasto N° 3 registrado", "Proveedor Distribuidora Norte creado", "Teléfono actualizado". */
             ['/^' . self::APERTURA . '(?:(?:el|la|los|las) )?' . self::QUE_SE_CARGO . '\b(?P<entre>' . $v . '{0,40}?)\b' . $participio . '\b/u', 'c'],
+            /*
+             * (a) con la CANTIDAD en vez del participio (A3 de la misión asistente-truvari-pedidos-fallidos):
+             * «Quedó en 9 unidades el Nieto Senetiner Brut Nature.», «Quedó el NIETO SENETINER BRUT NATURE
+             * en 9 unidades.», «Ya está en 6». Truvari lo leyó dos veces con el stock sin tocar.
+             */
+            ['/\b(?:quedo|quedaron|ya esta|ya estan)\b(?P<entre>' . $v . '{0,60}?)\ben\s+\$?\s?\d/u', 'a'],
         ];
     }
 
@@ -1676,6 +1730,15 @@ class TarjetaPrometidaIaHelper
             '/\b(?:te|le|les)\s+(?:cargo|registro|agendo)\s+(?:el|la|un|una)\s+(?:gasto|pago|cobro|venta|tarea|recordatorio|presupuesto|compra)/u',
             /* "Le cambio el teléfono". */
             '/\ble\s+cambio\s+(?:el|la)\s+(?:tel[eé]fono|precio|fecha|nombre|direcci[oó]n|mail|stock|categor[ií]a)/u',
+            /*
+             * A3 de la misión asistente-truvari-pedidos-fallidos (13/11/2026): «El aceite … pasa a 6 unidades
+             * de stock.», «Dejo el Nieto Senetiner Brut Nature en 9 unidades.», «Corrijo el presupuesto 25…».
+             * Con la pregunta al final («¿Lo cargo?») no prometen nada: lo mira la guarda de la carga sin
+             * propuesta (CargaSinPropuestaIaHelper).
+             */
+            '/\b(?:pasa|pasan)\s+a\s+(?:tener\s+)?\$?\s?\d/u',
+            '/\bdejo\b(?:[^.!?\n]|(?<=\d)\.(?=\d)){0,80}?\ben\s+\$?\s?\d/u',
+            '/\bcorrijo\s+(?:el|la|los|las)\s+(?:presupuesto|venta|pedido|precio|stock|gasto|pago|cantidad|cantidades|renglón|renglones|compra|tarea)/u',
         ];
     }
 
