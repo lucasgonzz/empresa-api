@@ -156,7 +156,7 @@ class AltaDeArticuloConFotoIaHelper
      */
     public static function claves()
     {
-        return [self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION, self::MARGENES, self::STOCK_INICIAL, self::DEPOSITO];
+        return [self::CON_FOTO, self::IMAGEN_ID, self::DESCRIPCION, self::MARGENES, self::STOCK_INICIAL, self::DEPOSITO, AltaBebidasIaHelper::CLAVE];
     }
 
     /**
@@ -720,6 +720,10 @@ class AltaDeArticuloConFotoIaHelper
     protected static function limpiar(array $extras, $es_articulo = true)
     {
         $limpios = [];
+
+        if (array_key_exists(AltaBebidasIaHelper::CLAVE, $extras)) {
+            $limpios[AltaBebidasIaHelper::CLAVE] = json_decode(json_encode($extras[AltaBebidasIaHelper::CLAVE]), true);
+        }
 
         if (array_key_exists(self::CON_FOTO, $extras)) {
 

@@ -297,7 +297,7 @@ class CatalogoDeEscrituraIaHelper
             'aviso_de_baja'      => 'El artículo va a la papelera (se puede restaurar desde ABM > Papelera). Si está publicado en Tienda Nube, también se saca de ahí.',
             'aviso_de_alta'      => null,
             'extension'          => null,
-            'revisado'           => 'ArticleController: store() y update() leen campo por campo y calculan el precio final (setFinalPrice); update(Request) NO recibe $id (lo lee de $request->id); los dos iteran price_types y tags sin guarda (claves_de_pantalla). destroy() es soft delete + baja en Tienda Nube solo si USA_TIENDA_NUBE. Las columnas de Mercado Libre, Tienda Nube, vinoteca y autopartes quedan solo_lectura: se cargan desde sus pantallas.',
+            'revisado'           => 'ArticleController: store() y update() leen campo por campo y calculan el precio final (setFinalPrice); update(Request) NO recibe $id (lo lee de $request->id); los dos iteran price_types y tags sin guarda (claves_de_pantalla). destroy() es soft delete + baja en Tienda Nube solo si USA_TIENDA_NUBE. Las columnas de Mercado Libre, Tienda Nube, autopartes y propiedades de distribuidora quedan solo_lectura en el genérico. Bodega, cepa, origen y presentación sí los lee Crear. El alta optativa de bebidas puede cargar unidades_por_bulto mediante su helper, solo si esa propiedad está habilitada.',
         ],
         'client' => [
             'etiqueta'           => 'clientes',
@@ -1592,6 +1592,9 @@ class CatalogoDeEscrituraIaHelper
 
             $respuesta['listas_de_precio'] = MargenesPorListaIaHelper::para_que_puedo_cargar($contexto);
             $respuesta['depositos'] = PropuestaStockIaHelper::para_que_puedo_cargar($contexto);
+            if (AltaBebidasIaHelper::activa($contexto->owner)) {
+                $respuesta['alta_bebidas'] = ['activa' => true, 'instrucciones' => AltaBebidasIaHelper::instrucciones()];
+            }
 
             /*
              * Y el árbol de categorías y subcategorías (misión asistente-altas-y-conversacion,

@@ -2068,6 +2068,9 @@ class AsistenteIaService
          */
         $confianza = ConfianzaDelAgenteIaHelper::guardada($owner);
         $bloque_de_carga = $con_acciones ? $this->bloque_de_carga($confianza) . $this->bloque_de_modulos_apagados($owner) : '';
+        if ($con_acciones && \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::activa($owner)) {
+            $bloque_de_carga .= "\n".\App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::instrucciones()."\n";
+        }
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -5967,6 +5970,19 @@ CONFIRMACION;
                         return ['error' => 'La ficha web necesita una conversación para conservar su evidencia.'];
                     }
                     return \App\Http\Controllers\Helpers\asistente_ia\FichaWebArticuloIaHelper::buscar((int) $owner_id, $conversation, $input,
+                        $assistant_message instanceof AiMessage ? $assistant_message : null);
+                },
+            ],
+            [
+                'name' => 'buscar_imagen_de_bebida',
+                'description' => 'Busca automáticamente una foto verificada por el nombre REAL de una bebida NUEVA, sin exigir ni inventar código de barras. Solo si que_puedo_cargar de article informa alta_bebidas activa. No crea artículos ni asigna fotos: devuelve imagen_id para la única propuesta proponer_alta. Si found=false, informar el límite y ofrecer alta sin foto; nunca sustituir por una imagen dudosa.',
+                'input_schema' => ['type' => 'object', 'properties' => [
+                    'nombre' => ['type' => 'string'],
+                    'identificacion' => ['type' => 'string', 'description' => 'Bodega, cepa, variedad o volumen reales ya informados. No inventar.'],
+                ], 'required' => ['nombre']],
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    if (!($conversation instanceof AiConversation)) return ['error' => 'La búsqueda requiere una conversación.'];
+                    return \App\Http\Controllers\Helpers\asistente_ia\BusquedaImagenBebidaIaHelper::buscar((int) $owner_id, $conversation, $input,
                         $assistant_message instanceof AiMessage ? $assistant_message : null);
                 },
             ],

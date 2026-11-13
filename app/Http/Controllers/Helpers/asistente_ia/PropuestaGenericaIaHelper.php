@@ -106,6 +106,7 @@ class PropuestaGenericaIaHelper
      */
     public static function proponer_alta(ContextoDeCargaIa $contexto, AiMessage $mensaje, $entidad, array $datos, $reemplaza_a = null, array $extras = [])
     {
+        $stock_heredado = !array_key_exists('stock_inicial', $extras);
         $declaracion = self::entidad_para($contexto, $entidad, Catalogo::OP_ALTA);
 
         if (RespuestaDeCargaIa::es_negativa($declaracion)) {
@@ -254,7 +255,37 @@ class PropuestaGenericaIaHelper
             $aviso_de_la_categoria = $con_categoria['aviso'];
         }
 
+        $bebida = [];
+        $renglones_bebida = [];
+        $bebida_pedida = $es_articulo ? AltaBebidasIaHelper::heredar($contexto, $reemplaza_a, isset($extras[AltaBebidasIaHelper::CLAVE]) ? $extras[AltaBebidasIaHelper::CLAVE] : []) : [];
+        if ($es_articulo && (count($bebida_pedida) || isset($extras[AltaBebidasIaHelper::CLAVE]))) {
+            $bebida = $bebida_pedida;
+            unset($extras[AltaBebidasIaHelper::CLAVE]);
+            // Un pedido explícito de quitar tiene prioridad sobre extras y metadatos heredados.
+            if (!empty($extras[AltaDeArticuloConFotoIaHelper::QUITAR_STOCK])) {
+                unset($bebida['cajas'], $bebida['cajas_confirmadas'], $bebida['stock_unidades']);
+            }
+            if (!empty($extras[AltaDeArticuloConFotoIaHelper::QUITAR_FOTO])) $bebida['sin_imagen'] = true;
+            if (AltaBebidasIaHelper::activa($contexto->owner) && empty($extras['imagen_id']) && empty($extras['con_foto_de_la_conversacion']) && empty($bebida['sin_imagen'])) {
+                $busqueda = BusquedaImagenBebidaIaHelper::buscar($contexto->owner_id, $contexto->conversation, [
+                    'nombre' => $validado['payload']['name'] ?? '',
+                    'identificacion' => trim(($validado['nombres']['bodega_id'] ?? '').' '.($validado['nombres']['cepa_id'] ?? '')),
+                ], $mensaje);
+                if (!empty($busqueda['imagen_id'])) $extras['imagen_id'] = $busqueda['imagen_id'];
+                else $bebida['sin_imagen'] = true;
+            }
+            $preparada = AltaBebidasIaHelper::preparar($contexto, $validado, $extras, $bebida, $stock_heredado);
+            if (RespuestaDeCargaIa::es_negativa($preparada)) return $preparada;
+            $extras = $preparada['extras'];
+            $bebida = $preparada['bebida'];
+            $renglones_bebida = $preparada['renglones'];
+        }
+
         $payload = self::payload_de_alta($declaracion, $validado['payload']);
+        if (count($bebida) && PermisosIaHelper::tiene_extencion($contexto->owner, 'articulos_con_propiedades_de_distribuidora')) {
+            $payload['unidades_por_bulto'] = $bebida['botellas_por_caja'];
+            $renglones_bebida[] = ['etiqueta' => 'Unidades por bulto guardadas', 'valor' => (string) $bebida['botellas_por_caja']];
+        }
 
         $nombre = self::nombre_pedido($declaracion, $validado['payload']);
 
@@ -313,6 +344,10 @@ class PropuestaGenericaIaHelper
             'payload'   => $payload,
             'pedidos'   => $validado['pedidos'],
         ];
+        if (count($bebida)) {
+            $datos_de_la_tarjeta[AltaBebidasIaHelper::CLAVE] = $bebida;
+            $renglones = array_merge($renglones, $renglones_bebida);
+        }
 
         /*
          * Los extras van en `datos.extras` y NO en el payload: la pantalla de artículos no los recibe
@@ -430,6 +465,12 @@ class PropuestaGenericaIaHelper
         $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria);
 
         $extra_de_la_respuesta = $avisa_al_modelo ? ['aviso' => $aviso] : [];
+        if (count($bebida)) $extra_de_la_respuesta['requiere_confirmacion'] = true;
+        if (AltaBebidasIaHelper::activa($contexto->owner) && in_array($declaracion['entidad'], ['bodega', 'cepa', 'provider'], true)) {
+            // Una relación que falta no autoriza inventar catálogos antes del alta de la bebida.
+            $extra_de_la_respuesta['requiere_confirmacion'] = true;
+            $extra_de_la_respuesta['aviso'] = 'Este registro es nuevo: esperá la confirmación de la persona para crearlo. Si ya existe uno que corresponda, usá el existente.';
+        }
 
         /*
          * 🔴 UNA MARCA QUE SALE SOLO DE LA FOTO ESPERA EL SÍ, también en "directo" (misión
