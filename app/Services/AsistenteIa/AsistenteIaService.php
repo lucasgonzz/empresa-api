@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AnotacionPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
@@ -302,9 +303,10 @@ class AsistenteIaService
      * Las guardas de VERACIDAD DEL TURNO (misión asistente-truvari-pedidos-fallidos, 13/11/2026), en el
      * orden en que se miran: la primera que dispara se lleva el único reintento del turno.
      *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
+     *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
      *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento».
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'promesa'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'anotacion', 'promesa'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -4020,6 +4022,11 @@ CONFIRMACION;
             return $por_texto && $this->pide_confirmar_una_carga_sin_propuesta($saneado, $tools, $conversation, $assistant_message, $herramientas_pedidas);
         }
 
+        /* A5: «Me lo anoto» sin un guardar_en_contexto ok. */
+        if ($guarda === 'anotacion') {
+            return AnotacionPrometidaIaHelper::dice_que_lo_anota($saneado) && ! $this->hubo_herramienta_ok(HerramientasDeContexto::GUARDAR);
+        }
+
         /* A4: «Reviso y te confirmo», «Dame un momento». */
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
@@ -4037,6 +4044,10 @@ CONFIRMACION;
      */
     protected function nota_de_veracidad($guarda, array $tools): string
     {
+        if ($guarda === 'anotacion') {
+            return AnotacionPrometidaIaHelper::nota_para_reintentar(in_array(HerramientasDeContexto::GUARDAR, $this->nombres_de_herramientas($tools), true));
+        }
+
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
         }
@@ -4053,6 +4064,10 @@ CONFIRMACION;
      */
     protected function texto_honesto_de_la_guarda($guarda, $texto): string
     {
+        if ($guarda === 'anotacion') {
+            return AnotacionPrometidaIaHelper::sin_lo_anotado($texto);
+        }
+
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::sin_lo_prometido($texto);
         }
