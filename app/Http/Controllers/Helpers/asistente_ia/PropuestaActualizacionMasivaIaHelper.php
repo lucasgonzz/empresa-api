@@ -98,6 +98,13 @@ class PropuestaActualizacionMasivaIaHelper
         'categoria'     => ['prop' => 'category_id',     'etiqueta' => 'Categoría'],
         'sub_categoria' => ['prop' => 'sub_category_id', 'etiqueta' => 'Subcategoría'],
         'marca'         => ['prop' => 'brand_id',        'etiqueta' => 'Marca'],
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B1): bodega y cepa, solo con el módulo
+         * Vinoteca. La resolución por nombre (y el corte sin el módulo) es la de
+         * FiltroDeArticulosIaHelper::resolver_relacion(), así que acá no hay otra guarda que mantener.
+         */
+        'bodega'        => ['prop' => 'bodega_id',       'etiqueta' => 'Bodega'],
+        'cepa'          => ['prop' => 'cepa_id',         'etiqueta' => 'Cepa'],
     ];
 
     /**
@@ -1944,7 +1951,8 @@ class PropuestaActualizacionMasivaIaHelper
     }
 
     /**
-     * asignar un proveedor, una categoría, una subcategoría o una marca, por nombre.
+     * asignar un proveedor, una categoría, una subcategoría, una marca, una bodega o una cepa (las dos
+     * últimas, con Vinoteca), por nombre.
      *
      * @param  string  $campo
      * @param  string  $operacion
