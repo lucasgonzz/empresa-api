@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
@@ -1307,7 +1308,7 @@ class PropuestaVentaIaHelper
                 'precio'         => $precio,
                 'precio_dictado' => $precio_dictado,
                 'origen'         => $origen,
-                'caja_de'        => self::caja_de($contexto, $article),
+                'caja_de'        => is_null($precio_dictado) && $origen === 'final_price' ? self::caja_de($contexto, $article) : null,
             ];
         }
 
@@ -1322,7 +1323,8 @@ class PropuestaVentaIaHelper
      * Malbec» y el asistente cargó 6 unidades: las botellas de la caja. Con el módulo Vinoteca el
      * artículo ES la caja: ArticleHelper multiplica el precio final por `presentacion`
      * (VinotecaPriceHelper::calcular_presentacion), así que una unidad del artículo cuesta lo que la
-     * caja y «una caja» es cantidad 1. La cantidad no se toca acá (es la que mandó el modelo): esto
+     * caja y «una caja» es cantidad 1 —solo cuando el precio sale del modo normal del cálculo y es el
+     * de la lista del artículo (sin precio dictado ni lista de precios aparte)—. La cantidad no se toca acá (es la que mandó el modelo): esto
      * solo hace que la tarjeta lo diga («1 × Perro Callejero Malbec (caja de 6)») para que el dueño
      * vea qué está confirmando, y la descripción de la herramienta le dice al modelo que no
      * multiplique.
@@ -1338,6 +1340,19 @@ class PropuestaVentaIaHelper
         }
 
         if (!UserHelper::hasExtencion('vinoteca', $contexto->owner)) {
+            return null;
+        }
+
+        /*
+         * 🔴 Revisión independiente (13/11/2026): la multiplicación por la presentación se aplica
+         * SOLO en el modo normal del cálculo; con precio manual o con costo de lista + IVA el precio
+         * NO es el de la caja. Se pregunta con la MISMA condición de setFinalPrice
+         * (ArticleHelper::presentacion_multiplica_el_precio()), sobre el artículo con su proveedor:
+         * resolver_articulo() trae columnas acotadas y sin provider_id.
+         */
+        $completo = Article::with('provider')->where('user_id', $contexto->owner_id)->where('id', (int) $article->id)->first();
+
+        if (is_null($completo) || !ArticleHelper::presentacion_multiplica_el_precio($completo, $contexto->owner)) {
             return null;
         }
 

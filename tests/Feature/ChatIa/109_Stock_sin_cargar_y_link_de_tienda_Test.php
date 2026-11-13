@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\FichaArticuloIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TiendaDelNegocioIaHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Models\Address;
@@ -149,6 +150,35 @@ class Stock_sin_cargar_y_link_de_tienda_Test extends TestCase
         // Sin la dirección de la tienda no hay link (y publicado sigue diciendo la verdad).
         $this->assertNull(TiendaDelNegocioIaHelper::link_del_articulo(null, $publicado, $this->comercio->id));
         $this->assertNull(TiendaDelNegocioIaHelper::link_del_articulo('', $publicado, $this->comercio->id));
+    }
+
+    /**
+     * El reparto por depósito y la ficha de hover tampoco informan como 0 un stock sin cargar. En el
+     * reparto viaja null; la ficha sigue numérica (la pinta la SPA) pero con la marca.
+     *
+     * @test
+     */
+    public function el_reparto_por_deposito_y_la_ficha_marcan_el_stock_sin_cargar()
+    {
+        Address::create(['street' => 'Local p109 reparto', 'user_id' => $this->comercio->id]);
+
+        $coratina = $this->articulo(['name' => 'Coratina reparto p109', 'stock' => null]);
+        $agotado = $this->articulo(['name' => 'Agotado reparto p109', 'stock' => 0]);
+
+        $sin_cargar = ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, '', 0, $coratina->id);
+        $this->assertNull($sin_cargar['stock_total_del_articulo']);
+        $this->assertTrue($sin_cargar['stock_sin_cargar']);
+        $this->assertSame('stock_sin_cargar', array_keys($sin_cargar)[count($sin_cargar) - 1], 'La clave nueva va al final.');
+
+        $en_cero = ConsultasSistemaIaHelper::stock_por_deposito($this->comercio->id, '', 0, $agotado->id);
+        $this->assertSame(0.0, $en_cero['stock_total_del_articulo']);
+        $this->assertFalse($en_cero['stock_sin_cargar']);
+
+        $ficha = FichaArticuloIaHelper::ficha($coratina->id, $this->comercio->id, $this->comercio);
+        $this->assertSame(0.0, $ficha['stock_total'], 'La SPA pinta un número: sigue numérico.');
+        $this->assertTrue($ficha['stock_sin_cargar']);
+
+        $this->assertFalse(FichaArticuloIaHelper::ficha($agotado->id, $this->comercio->id, $this->comercio)['stock_sin_cargar']);
     }
 
     /**
