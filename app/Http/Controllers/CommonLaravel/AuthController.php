@@ -57,16 +57,17 @@ class AuthController extends Controller
              * Marca la sesión actual como login maestro para evitar
              * ocupar el lock de sesión única del usuario.
              */
+            session()->forget(['acceso_soporte_token_id', 'demo_ingreso_token_id']);
             session()->put($this->master_login_bypass_activity_key, true);
             $user = $this->procesar_login();
-            MostradorHelper::autorizar_maestro($request, $this->documento_login_maestro);
             /** Solo en login maestro básico se omite descarga offline. */
             $skip_offline_articles_sync = $this->master_login_mode === 'login';
             
             $login = true;
         } else if (Auth::attempt(['doc_number' => $request->doc_number, 
                            'password' => $request->password], $request->remember)) {
-            /** Limpia bypass en logins normales. */
+            /** Un ingreso propio reemplaza cualquier identidad técnica anterior. */
+            session()->forget(['acceso_soporte_token_id', 'demo_ingreso_token_id']);
             session()->forget($this->master_login_bypass_activity_key);
 
             /*
@@ -180,6 +181,7 @@ class AuthController extends Controller
              */
             $this->removeUserLastActivity($auth_user);
 
+            session()->forget(['acceso_soporte_token_id', 'demo_ingreso_token_id']);
             session()->forget($this->master_login_bypass_activity_key);
 
             if ($this->checkUserLastActivity()) {
@@ -504,6 +506,7 @@ class AuthController extends Controller
                      * Sin esto, cada redirección de un login maestro tomaría el candado del
                      * cliente real en la versión destino.
                      */
+                    session()->forget(['acceso_soporte_token_id', 'demo_ingreso_token_id']);
                     session()->put($this->master_login_bypass_activity_key, true);
                     session()->put('skip_offline_articles_sync', $transfer['skip_offline_articles_sync']);
 
@@ -546,7 +549,7 @@ class AuthController extends Controller
                     // Mismo flag que login() y get_user() (misión imagenes-catalogo-completo): el
                     // SPA destino usa este `user` directo, sin pasar por auth/me.
                     $user->es_acceso_maestro = $this->is_master_login_activity_bypass_enabled();
-                    $user->asistente_personal_autorizado = false;
+                    $user->asistente_personal_autorizado = MostradorHelper::maestro_autorizado($request);
                     // Mismo flag que get_user(): el SPA destino usa este `user` directo y con él
                     // decide si muestra el panel de la demo.
                     $user->es_sesion_demo = $this->es_sesion_de_demo_para_el_spa();
@@ -846,8 +849,9 @@ class AuthController extends Controller
 
     private function adjuntar_contexto_de_sesion(User $user): void
     {
+        $user->es_sesion_soporte = $this->es_sesion_de_soporte();
         PruebaHelper::adjuntar_resumen($user);
-        $user->robotito_soporte_habilitado = SupportTourService::sesion_web_propia(request(), $user);
+        $user->robotito_soporte_habilitado = SupportTourService::sesion_web_propia(request(), $user, true);
     }
 
     /**
@@ -914,6 +918,8 @@ class AuthController extends Controller
     public function loginLucas($request) {
         /** Normaliza el valor ingresado en doc_number para detectar comandos maestros. */
         $doc_number = trim((string) $request->doc_number);
+        // Alias compatible: también se acepta el nombre del modo que devuelve la API.
+        $doc_number = preg_replace('/login_full$/i', 'login full', $doc_number);
         $doc_number_lower = strtolower($doc_number);
 
         /** Guarda el texto previo al comando para intentar login por documento. */

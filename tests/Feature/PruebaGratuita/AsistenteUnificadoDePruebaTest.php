@@ -217,7 +217,6 @@ class AsistenteUnificadoDePruebaTest extends TestCase
     {
         return [
             'soporte' => ['acceso_soporte_token_id', 45],
-            'maestro' => ['master_login_bypass_user_last_activity', true],
         ];
     }
 

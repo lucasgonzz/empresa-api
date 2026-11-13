@@ -53,7 +53,7 @@ class VinculacionMaestraTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_solo_el_navegador_aprobado_recibe_confianza_y_puede_volver_a_ingresar(): void
+    public function test_el_vinculo_legado_conserva_su_cookie_sin_condicionar_el_login_maestro(): void
     {
         $inicio = $this->postJson(self::INICIO)->assertOk();
         $codigo = $inicio->json('codigo');
@@ -79,7 +79,7 @@ class VinculacionMaestraTest extends TestCase
         $this->withUnencryptedCookie(VinculacionMaestra::COOKIE, $cookie->getValue());
         $this->postJson(self::INICIO . '/canjear')->assertStatus(410);
 
-        $this->ingresar()->assertJsonPath('user.asistente_personal_autorizado', false);
+        $this->ingresar()->assertJsonPath('user.asistente_personal_autorizado', true);
         $this->obtener_csrf();
         $this->ingresar()->assertJsonPath('user.asistente_personal_autorizado', true);
         $this->getJson(self::API . '/api/user')->assertOk()->assertJsonPath('user.asistente_personal_autorizado', true);
@@ -90,10 +90,10 @@ class VinculacionMaestraTest extends TestCase
         $this->ingresar()->assertJsonPath('user.asistente_personal_autorizado', true);
 
         unset($this->unencryptedCookies[VinculacionMaestra::COOKIE]);
-        $this->getJson(self::API . '/api/user')->assertOk()->assertJsonPath('user.asistente_personal_autorizado', false);
+        $this->getJson(self::API . '/api/user')->assertOk()->assertJsonPath('user.asistente_personal_autorizado', true);
     }
 
-    public function test_la_confianza_expira_y_no_se_acepta_con_otro_origen_dueño_o_hash(): void
+    public function test_el_maestro_no_depende_del_origen_dueno_hash_ni_vencimiento_del_vinculo_legado(): void
     {
         $inicio = $this->postJson(self::INICIO)->assertOk();
         $this->usar_sesion($inicio);
@@ -104,21 +104,21 @@ class VinculacionMaestraTest extends TestCase
         $this->obtener_csrf();
 
         $this->withHeader('Origin', 'https://otro.ferreguay.test');
-        $this->ingresar()->assertJsonPath('user.asistente_personal_autorizado', false);
+        $this->ingresar()->assertJsonPath('user.asistente_personal_autorizado', true);
         $this->withHeader('Origin', self::SPA);
 
         $otro = User::factory()->create(['owner_id' => null, 'doc_number' => '99876541']);
-        $this->ingresar($otro->doc_number . ' login')->assertJsonPath('user.asistente_personal_autorizado', false);
+        $this->ingresar($otro->doc_number . ' login')->assertJsonPath('user.asistente_personal_autorizado', true);
         $comando = $this->dueno->doc_number . ' login';
         $this->ingresar($comando)->assertJsonPath('user.asistente_personal_autorizado', true);
 
         $this->travel(31)->days();
-        $this->ingresar($comando)->assertJsonPath('user.asistente_personal_autorizado', false);
+        $this->ingresar($comando)->assertJsonPath('user.asistente_personal_autorizado', true);
         $this->travelBack();
 
         $this->ingresar($comando)->assertJsonPath('user.asistente_personal_autorizado', true);
         config([self::CONFIG => password_hash('otra-clave-maestra', PASSWORD_BCRYPT, ['cost' => 4])]);
-        $this->getJson(self::API . '/api/user')->assertOk()->assertJsonPath('user.asistente_personal_autorizado', false);
+        $this->getJson(self::API . '/api/user')->assertOk()->assertJsonPath('user.asistente_personal_autorizado', true);
     }
 
     public function test_no_se_canjea_un_desafio_vencido_y_la_ruta_se_apaga_sin_configuracion(): void

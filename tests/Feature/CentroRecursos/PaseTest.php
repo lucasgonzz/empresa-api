@@ -29,10 +29,7 @@ use Tests\EmpresaTestCase;
  *  - Que con la página caída NO se cree ningún pase y el SPA reciba `disponible: false`: es lo que
  *    deja salir este sistema con el botón antes de que la página exista.
  *  - Los tiempos del cache del chequeo (10 minutos si anda, 2 si no).
- *  - El login maestro (misión centro-recursos-soporte-y-tema, 14/10/2026): entra a la página como el
- *    dueño pero en SOLO LECTURA. Si la página declara `soporte: true` en su archivo de estado, recibe
- *    un pase marcado `soporte` (URL con `pase` y `api`); si la página es vieja y no lo declara, abre
- *    como invitado, exactamente como antes. Un usuario común no cambia en ningún caso.
+ *  - El login maestro recibe el pase operativo del dueño sin depender de la declaración de soporte.
  *
  * Nada sale a internet: el chequeo de la página siempre está falseado con `Http::fake()`.
  *
@@ -382,14 +379,8 @@ class PaseTest extends EmpresaTestCase
         Http::assertSentCount(2);
     }
 
-    /**
-     * 🔴 CAMBIO PEDIDO POR LUCAS (14/10/2026), no una aserción ajustada para que pase: hasta el
-     * 13/10 este test afirmaba que un login maestro abría la página SIN pase (invitado). Lucas decidió
-     * que el maestro entre como el dueño pero en SOLO LECTURA, así que ahora, con una página que
-     * declara `soporte: true`, la URL lleva `pase` y `api` como la de cualquiera y la fila del pase
-     * queda marcada `soporte`. El "sin pase" sigue vigente para la página vieja (test siguiente).
-     */
-    public function test_con_login_maestro_y_la_pagina_con_soporte_lleva_pase_de_soporte()
+    /** El maestro recibe acceso operativo, política solicitada por Lucas el 12/11/2026. */
+    public function test_el_maestro_recibe_pase_operativo_aunque_la_pagina_admita_soporte()
     {
         $this->la_pagina_anda_con_soporte();
 
@@ -411,7 +402,7 @@ class PaseTest extends EmpresaTestCase
 
         $this->assertNotNull($fila);
         $this->assertSame((int) $this->dueno->id, (int) $fila->user_id, 'El pase es del usuario logueado: el maestro entra como el dueño.');
-        $this->assertTrue($fila->soporte, 'El pase del maestro va marcado soporte.');
+        $this->assertFalse($fila->soporte, 'El maestro recibe el pase operativo del dueño.');
         $this->assertNull($fila->usado_at);
 
         // Con video, la URL lleva también `v` y el pase lo recuerda.
@@ -424,7 +415,7 @@ class PaseTest extends EmpresaTestCase
 
         $fila = CentroRecursosPase::where('token_hash', hash('sha256', $parametros['pase']))->first();
 
-        $this->assertTrue($fila->soporte);
+        $this->assertFalse($fila->soporte);
         $this->assertSame('T1.29', $fila->video);
 
         // Una sola consulta a la página para los dos pedidos: `disponible` y `soporte` salen de la misma.
@@ -505,71 +496,42 @@ class PaseTest extends EmpresaTestCase
 
         $fila = CentroRecursosPase::where('token_hash', hash('sha256', $parametros['pase']))->first();
 
-        $this->assertFalse($fila->soporte, 'Solo el login maestro lleva la marca de soporte.');
+        $this->assertFalse($fila->soporte, 'El ingreso propio conserva su pase operativo.');
 
         Http::assertSentCount(1);
     }
 
-    /**
-     * 🔴 Login maestro + página VIEJA (su estado no trae `soporte`): se queda como estaba antes de la
-     * misión de soporte. La página abre como invitado: la URL no trae `pase` ni `api`, no se crea
-     * ninguna fila y `disponible` es true. Con pase común, lo que soporte hiciera en el centro
-     * quedaría guardado como avance y preguntas del cliente; y una página que no sabe de solo lectura
-     * no puede garantizar que no guarde. (Esta es la aserción original del 13/10, intacta.)
-     */
-    public function test_con_login_maestro_y_una_pagina_sin_soporte_abre_la_pagina_sin_pase_y_no_crea_fila()
+    /** Una página sin modo soporte también acepta el pase operativo del maestro. */
+    public function test_el_maestro_canjea_pase_operativo_sin_exigir_modo_soporte_en_la_pagina()
     {
         $this->la_pagina_anda();
-
-        // La misma marca que pone AuthController::login() en un login maestro.
         $this->como_login_maestro();
-
-        $antes = CentroRecursosPase::count();
-
-        $this->pedir_pase()
-             ->assertStatus(200)
-             ->assertExactJson([
-                 'url'        => 'https://recursos.comerciocity.com/',
-                 'disponible' => true,
-             ]);
-
-        $url = $this->pedir_pase(['video' => 'T1.29'])->assertStatus(200)->assertJson(['disponible' => true])->json('url');
-
-        $this->assertSame('https://recursos.comerciocity.com/?v=T1.29', $url);
-        $this->assertSame(['v' => 'T1.29'], $this->parametros_de($url), 'Sin pase y sin api: solo el video.');
-
-        $this->assertSame($antes, CentroRecursosPase::count(), 'Con una página sin soporte, un login maestro no crea pases.');
+        $parametros = $this->parametros_de($this->pedir_pase(['video' => 'T1.29'])->assertOk()->json('url'));
+        $this->assertSame(['pase', 'api', 'v'], array_keys($parametros));
+        config(['app.USER_ID' => $this->dueno->id]);
+        $resultado = CentroRecursosPaseHelper::canjear($parametros['pase']);
+        $this->assertNotNull($resultado);
+        $this->assertSame((int) $this->dueno->id, (int) $resultado['user']->id);
+        $this->assertFalse($resultado['soporte']);
+        $this->assertSame('T1.29', $resultado['video']);
     }
 
-    /**
-     * `soporte` que no es el booleano `true` (false, el texto "true", un 1) no es soporte: el maestro
-     * sigue sin pase. Solo la declaración estricta activa el modo de solo lectura.
-     */
-    public function test_con_login_maestro_un_soporte_que_no_es_true_estricto_no_cuenta()
+    /** La capacidad de lectura delegada de la página no condiciona la auditoría maestra. */
+    public function test_el_pase_maestro_no_depende_de_la_declaracion_de_soporte_de_la_pagina()
     {
         $this->como_login_maestro();
-
-        $cuerpo = ['ok' => true, 'soporte' => false];
-
-        // Un solo fake con callback (y no uno por vuelta): el primer fake que coincide gana.
-        Http::fake(function (PedidoHttp $pedido) use (&$cuerpo) {
-            return Http::response($cuerpo, 200);
-        });
-
+        $cuerpo = ['ok' => true];
+        Http::fake(function (PedidoHttp $pedido) use (&$cuerpo) { return Http::response($cuerpo, 200); });
         $antes = CentroRecursosPase::count();
-
         foreach ([false, 'true', 1, null] as $soporte) {
             Cache::flush();
-
             $cuerpo = ['ok' => true, 'soporte' => $soporte];
-
-            $this->pedir_pase()
-                 ->assertStatus(200)
-                 ->assertExactJson(['url' => 'https://recursos.comerciocity.com/', 'disponible' => true]);
+            $parametros = $this->parametros_de($this->pedir_pase()->assertOk()->json('url'));
+            $this->assertArrayHasKey('pase', $parametros);
+            $fila = CentroRecursosPase::where('token_hash', hash('sha256', $parametros['pase']))->firstOrFail();
+            $this->assertFalse($fila->soporte);
         }
-
-        $this->assertSame($antes, CentroRecursosPase::count(), 'Ningún valor distinto de true crea un pase.');
-
+        $this->assertSame($antes + 4, CentroRecursosPase::count());
         Http::assertSentCount(4);
     }
 

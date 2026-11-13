@@ -130,6 +130,15 @@ class Canal_privado_Test extends TestCase
         $this->autorizar_canal('private-chat.user.' . $this->comercio->id)->assertForbidden();
     }
 
+    public function test_el_maestro_autoriza_los_canales_del_dueno_y_no_los_de_otro_usuario()
+    {
+        $this->actingAs($this->comercio, 'web')->withSession(['master_login_bypass_user_last_activity' => true]);
+        foreach (['private-chat.user.', 'private-agentes.support.user.', 'private-support-tour.user.'] as $prefijo) {
+            $this->autorizar_canal($prefijo . $this->comercio->id)->assertOk();
+            $this->autorizar_canal($prefijo . $this->empleado->id)->assertForbidden();
+        }
+    }
+
     public function test_agentes_autoriza_el_canal_de_soporte_solo_a_la_persona()
     {
         $this->actingAs($this->comercio, 'web');
