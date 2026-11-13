@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TiendaDelNegocioIaHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\Address;
 use App\Models\Article;
@@ -10,6 +11,7 @@ use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\Provider;
 use App\Models\Sale;
+use App\Models\User;
 use App\Services\Mostrador\RecolectorBase;
 use App\Services\ActividadDeClientes\ActividadDeClientesService;
 use Illuminate\Support\Facades\DB;
@@ -86,7 +88,8 @@ class ConsultasSistemaIaHelper
                 'nombre'       => (string) $articulo->name,
                 'codigo'       => (string) ($articulo->bar_code ?? $articulo->provider_code ?? ''),
                 'precio'       => $articulo->final_price !== null ? (float) $articulo->final_price : (float) $articulo->price,
-                'stock'        => $articulo->stock !== null ? (float) $articulo->stock : 0,
+                // B3 (13/11/2026): NULL no es 0. Ver stock_y_tienda().
+                'stock'        => $articulo->stock !== null ? (float) $articulo->stock : null,
                 'tiene_imagen' => isset($con_imagen[(int) $articulo->id]),
             ];
 
@@ -96,7 +99,9 @@ class ConsultasSistemaIaHelper
                 $fila['estado'] = $estado;
             }
 
-            return [$fila];
+            $extras = self::stock_y_tienda($owner_id, [$articulo]);
+
+            return [array_merge($fila, $extras[(int) $articulo->id])];
         }
 
         $busqueda = trim($busqueda);
@@ -118,27 +123,98 @@ class ConsultasSistemaIaHelper
         $articles = $articles_query
             ->orderBy('name')
             ->limit(self::MAX_RESULTS)
-            ->get(['id', 'name', 'bar_code', 'provider_code', 'price', 'final_price', 'stock']);
+            ->get(['id', 'name', 'bar_code', 'provider_code', 'price', 'final_price', 'stock', 'online', 'slug']);
 
         // Misión asistente-omnisciente (21/9/2026): si el artículo tiene foto, en UNA consulta para
         // todo el lote. Es lo que le permite al modelo ofrecer mostrarla (mostrar_imagenes_de_articulos)
         // o decir que no hay, sin adivinar.
         $con_imagen = self::articulos_con_imagen($articles->pluck('id')->all());
 
+        $extras = self::stock_y_tienda($owner_id, $articles->all());
+
         // Aplanamos a un array simple y legible para Claude.
         $result = [];
         foreach ($articles as $article) {
-            $result[] = [
+            $result[] = array_merge([
                 'id'            => (int) $article->id,
                 'nombre'        => (string) $article->name,
                 'codigo'        => (string) ($article->bar_code ?? $article->provider_code ?? ''),
                 'precio'        => $article->final_price !== null ? (float) $article->final_price : (float) $article->price,
-                'stock'         => $article->stock !== null ? (float) $article->stock : 0,
+                // B3 (13/11/2026): NULL no es 0. Ver stock_y_tienda().
+                'stock'         => $article->stock !== null ? (float) $article->stock : null,
                 'tiene_imagen'  => isset($con_imagen[(int) $article->id]),
-            ];
+            ], $extras[(int) $article->id]);
         }
 
         return $result;
+    }
+
+    /**
+     * Las cuatro claves que stock_de_articulos() suma AL FINAL de cada fila (misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026). Al final a propósito: el canal "sistema:" de
+     * admin-api lee por nombre y una clave más no le cambia nada.
+     *
+     *  - `stock_sin_cargar` (B3): true si `articles.stock` es NULL. El Aceite Coratina de Truvari no
+     *    tenía stock cargado y la consulta lo devolvía como 0: el asistente le dijo al dueño "está
+     *    publicado y con stock 0". NULL no es 0: es que nunca se le cargó (o que el stock vive solo en
+     *    el reparto por depósito), y `stock` viaja en null.
+     *  - `stock_en_depositos` (B3): la suma del reparto por depósito (`address_article`, solo de las
+     *    sucursales del dueño: una fila de un domicilio de comprador o de una sucursal borrada no
+     *    cuenta), o null si el artículo no reparte.
+     *  - `publicado_en_tienda` y `link_tienda` (B4): si figura publicado (`online`) y el link de su
+     *    ficha, armado por TiendaDelNegocioIaHelper::link_del_articulo() —el mismo de la promoción por
+     *    WhatsApp—; null si no está publicado, no tiene slug o el negocio no tiene la dirección de la
+     *    tienda guardada. El modelo lo pasa tal cual.
+     *
+     * Dos consultas para todo el lote: el dueño (para la dirección de la tienda) y el reparto.
+     *
+     * @param  int  $owner_id
+     * @param  array  $articulos  Articles con id, stock, online y slug.
+     * @return array<int, array<string, mixed>>  id => las cuatro claves.
+     */
+    protected static function stock_y_tienda(int $owner_id, array $articulos): array
+    {
+        $ids = [];
+
+        foreach ($articulos as $articulo) {
+            $ids[] = (int) $articulo->id;
+        }
+
+        $reparto = [];
+
+        if (count($ids)) {
+            $filas = DB::table('address_article')
+                ->join('addresses', 'addresses.id', '=', 'address_article.address_id')
+                ->where('addresses.user_id', $owner_id)
+                ->whereNull('addresses.buyer_id')
+                ->whereIn('address_article.article_id', $ids)
+                ->groupBy('address_article.article_id')
+                ->get([
+                    'address_article.article_id',
+                    DB::raw('SUM(address_article.amount) as total'),
+                ]);
+
+            foreach ($filas as $fila) {
+                $reparto[(int) $fila->article_id] = round((float) $fila->total, 2);
+            }
+        }
+
+        $tienda = count($ids) ? TiendaDelNegocioIaHelper::url(User::find($owner_id)) : null;
+
+        $extras = [];
+
+        foreach ($articulos as $articulo) {
+            $id = (int) $articulo->id;
+
+            $extras[$id] = [
+                'stock_sin_cargar'    => is_null($articulo->stock),
+                'stock_en_depositos'  => isset($reparto[$id]) ? $reparto[$id] : null,
+                'publicado_en_tienda' => (bool) (int) $articulo->online,
+                'link_tienda'         => TiendaDelNegocioIaHelper::link_del_articulo($tienda, $articulo, $owner_id),
+            ];
+        }
+
+        return $extras;
     }
 
     /**
@@ -1592,7 +1668,7 @@ class ConsultasSistemaIaHelper
         return Article::withTrashed()
             ->where('user_id', $owner_id)
             ->where('id', $articulo_id)
-            ->first(['id', 'name', 'bar_code', 'provider_code', 'stock', 'price', 'final_price', 'status', 'deleted_at']);
+            ->first(['id', 'name', 'bar_code', 'provider_code', 'stock', 'price', 'final_price', 'status', 'deleted_at', 'online', 'slug']);
     }
 
     /**
