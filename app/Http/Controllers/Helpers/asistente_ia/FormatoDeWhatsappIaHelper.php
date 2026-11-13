@@ -41,11 +41,13 @@ class FormatoDeWhatsappIaHelper
         }, $texto);
 
         /* Doble asterisco y doble guion bajo → los de WhatsApp. */
-        $texto = (string) preg_replace('/\*\*(?=\S)(.+?)(?<=\S)\*\*/u', '*$1*', $texto);
-        $texto = (string) preg_replace('/(?<![\w])__(?=\S)(.+?)(?<=\S)__(?![\w])/u', '_$1_', $texto);
-
-        /* Un ** que quedó suelto (sin pareja) no se ve como nada: se saca. */
-        $texto = str_replace('**', '', $texto);
+        /*
+         * Revisión independiente (13/11/2026): solo un par limpio, en un mismo renglón y sin otro asterisco o
+         * guion bajo adentro: «Código **AB*12**», «precio 10 ** 2» o «__init__» quedan como estaban. Ante la
+         * duda, el texto del modelo no se toca (antes un ** suelto se borraba).
+         */
+        $texto = (string) preg_replace('/\*\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*\*/u', '*$1*', $texto);
+        $texto = (string) preg_replace('/(?<![\w])__(?=[^\s_])([^_\n]+?)(?<=[^\s_])__(?![\w])/u', '_$1_', $texto);
 
         /* Sacar una cerca del final deja el salto de línea de antes colgando. */
         return rtrim($texto);

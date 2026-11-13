@@ -229,7 +229,8 @@ class Veracidad_del_turno_Test extends TestCase
     /**
      * 🔴 Mensajes 162-164: «¿Lo cargo?» sin propuesta, el dueño dice «Si» y el modelo inventa «Quedó en 9
      * unidades». Antes, por WhatsApp, la guarda solo miraba los pagos. Ahora reintenta con la nota de la
-     * confirmación por texto y, si el modelo insiste, la mentira no llega: va lo hecho (nada) y el «seguí».
+     * confirmación por texto y, si el modelo insiste, la mentira no llega: se cambia esa oración por el aviso
+     * (revisión independiente, D1: fuera de los pagos no se reemplaza toda la respuesta).
      *
      * @test
      */
@@ -237,7 +238,7 @@ class Veracidad_del_turno_Test extends TestCase
     {
         $this->el_modelo_contesta([
             $this->end_turn(self::QUEDO_EN_9),
-            $this->end_turn(self::QUEDO_EN_9),
+            $this->end_turn("En la tienda figuran 3.\n" . self::QUEDO_EN_9),
         ]);
 
         list($conversation, $assistant) = $this->conversacion([
@@ -246,8 +247,7 @@ class Veracidad_del_turno_Test extends TestCase
 
         $texto = (new AsistenteIaService())->responder($conversation, $assistant);
 
-        $this->assertStringNotContainsString('Quedó en 9', $texto);
-        $this->assertStringContainsString('No llegué a terminar', $texto);
+        $this->assertSame("En la tienda figuran 3.\n\n" . TarjetaPrometidaIaHelper::AVISO_POR_TEXTO, $texto, 'Solo la oración que miente se cambia; lo demás queda.');
 
         $bodies = $this->bodies_enviados();
 
@@ -285,6 +285,63 @@ class Veracidad_del_turno_Test extends TestCase
     }
 
     /**
+     * 🔴 D1 de la revisión independiente: un «Si» a una OFERTA de datos no es la confirmación de una carga.
+     * Las consultas que contestan con números («quedaron en $3.200.000», «quedó en 0 después de la venta»)
+     * llegan tal cual, sin reintento; y aunque la respuesta anterior sí hubiera pedido confirmar, la oración
+     * de reporte no se toma por una carga.
+     *
+     * @test
+     */
+    public function por_whatsapp_un_si_a_una_oferta_de_datos_no_dispara_con_las_consultas()
+    {
+        $consultas = [
+            ['¿Te paso las ventas de octubre?', 'Las ventas de octubre quedaron en $3.200.000, un 12% más que septiembre.'],
+            ['¿Querés que te diga el total del presupuesto?', 'El total quedó en $45.000.'],
+            ['¿Te cuento cómo quedó el stock?', 'El stock del Malbec quedó en 0 después de la venta de hoy.'],
+            ['¿Te digo cuántas quedan?', 'Ya está en 6 unidades.'],
+            /* Con la respuesta anterior pidiendo confirmar una carga, una oración de reporte tampoco cuenta. */
+            ['Dejo el Malbec en 9 unidades. ¿Lo cargo?', 'Las ventas de octubre quedaron en $3.200.000, un 12% más que septiembre.'],
+        ];
+
+        $respuestas = [];
+
+        foreach ($consultas as $par) {
+            $respuestas[] = $this->end_turn($par[1]);
+        }
+
+        $this->el_modelo_contesta($respuestas);
+
+        foreach ($consultas as $par) {
+
+            list($conversation, $assistant) = $this->conversacion([['Contame', $par[0]]], 'Si');
+
+            $this->assertSame($par[1], (new AsistenteIaService())->responder($conversation, $assistant), 'Llega tal cual: ' . $par[1]);
+        }
+
+        $this->assertCount(count($consultas), $this->bodies_enviados(), 'Ningún reintento.');
+    }
+
+    /**
+     * Un pago dado por hecho por texto sigue como desde 9ea73bbc (lo cubre también 63): lo hecho, sin el modelo.
+     *
+     * @test
+     */
+    public function por_whatsapp_un_pago_dado_por_hecho_sigue_contestando_con_lo_hecho()
+    {
+        $this->el_modelo_contesta([
+            $this->end_turn('Quedó registrado el pago al proveedor por $50.000 en efectivo.'),
+            $this->end_turn('Quedó registrado el pago al proveedor por $50.000 en efectivo.'),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], 'Sí');
+
+        $texto = (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $this->assertStringNotContainsString('Quedó registrado', $texto);
+        $this->assertStringContainsString('No llegué a terminar', $texto);
+    }
+
+    /**
      * Lo que no es un sí no prende la guarda de la confirmación por texto: «Si la presentación es 6» es un
      * condicional. Y en el panel la guarda de siempre (la del sistema) sigue igual.
      *
@@ -317,7 +374,8 @@ class Veracidad_del_turno_Test extends TestCase
             'Corregí el presupuesto 25 con 1 unidad en cada renglón, salvo Ricardo Santos Malbec con 2. Los precios bajan y el total queda en $331.000. ¿Lo registro?',
             'El aceite de oliva Familia Zuccardi Coratina 500 ml pasa a 6 unidades de stock.',
             'Listo, lo corregí.',
-            'Ya está en 6 el aceite Coratina.',
+            /* «Ya está en 6…» dejó de contar (D1 de la revisión: ante la duda, no dispara); el precio sí. */
+            'El precio del Malbec quedó en $13.200.',
             'Le puse el stock en 6.',
             'Puse el precio en $17.000.',
         ];
@@ -338,6 +396,18 @@ class Veracidad_del_turno_Test extends TestCase
             '¿Querés que lo deje en 9?',
             'Ayer quedó en 9 unidades.',
             'Te dejé el detalle abajo.',
+            /* D1 de la revisión independiente: reportes y cálculos con números no son cargas. */
+            'El Malbec quedó en $12.000 después del aumento de ayer.',
+            'El stock del Malbec quedó en 0 después de la venta de hoy.',
+            'Pasa a $13.200.',
+            'Con un 10% de aumento, el Malbec pasa a $13.200.',
+            'Si le subís 10%, pasa a $13.200.',
+            'Ya está en 6 unidades.',
+            'La venta quedó en $45.000 con el descuento del 10%.',
+            'Te dejé el resumen en 2 partes.',
+            'El total quedó en $45.000.',
+            'Hoy el dólar está en 1500.',
+            'Las ventas de octubre quedaron en $3.200.000, un 12% más que septiembre.',
         ];
 
         foreach ($no_afirman as $texto) {
@@ -486,11 +556,26 @@ class Veracidad_del_turno_Test extends TestCase
             /* Sin ningún dato de la carga es ofrecerla, no confirmarla (AsistenteWhatsapp/13). */
             'Es un aceite. ¿Lo cargo?',
             '¿Querés que lo registre así?',
+            /* D5 de la revisión independiente: ofertas de información o de un trabajo, y preguntas por un dato. */
+            'Hoy vendiste $45.000 en 12 ventas. ¿Te paso el detalle?',
+            'El Malbec tiene 3 unidades a $12.000. ¿Te armo un presupuesto?',
+            'Para el alta del cliente con CUIT 20-1234. ¿Me confirmás el nombre?',
+            'Tenés 3 vencimientos esta semana. ¿Te hago un resumen?',
+            'Encontré 4 artículos. ¿Te bajo el Excel?',
+            'Son 2 cajas. ¿Lo cargo en efectivo o con tarjeta?',
+            'Tenés 2 presupuestos abiertos. ¿Cambio algo?',
+            /* El dato tiene que estar en la pregunta o en la oración de antes, no en cualquier parte. */
+            "Hoy vendiste $45.000.\nEl Malbec es de Aguma.\n¿Lo cargo?",
         ];
 
         foreach ($no_piden as $texto) {
             $this->assertFalse(CargaSinPropuestaIaHelper::pide_confirmar_una_carga($texto), 'No tendría que pedir confirmar: ' . $texto);
         }
+
+        /* La respuesta anterior que pidió confirmar (D1), con o sin datos. */
+        $this->assertTrue(CargaSinPropuestaIaHelper::termina_pidiendo_confirmar('¿La registro?'));
+        $this->assertTrue(CargaSinPropuestaIaHelper::termina_pidiendo_confirmar(self::LO_CARGO));
+        $this->assertFalse(CargaSinPropuestaIaHelper::termina_pidiendo_confirmar('¿Te paso las ventas de octubre?'));
     }
 
     // ---------------------------------------------------------------------
@@ -547,6 +632,31 @@ class Veracidad_del_turno_Test extends TestCase
     }
 
     /**
+     * D2 de la revisión independiente: si el turno dejó algo que sí corre después (una tarea con su
+     * recordatorio), «Dale, te aviso en un rato» no es una promesa vacía: sin reintento y tal cual. Sin la
+     * tarea, la misma frase sí reintenta.
+     *
+     * @test
+     */
+    public function te_aviso_en_un_rato_con_una_tarea_del_turno_no_es_una_promesa_vacia()
+    {
+        $this->el_modelo_contesta([
+            $this->tool_use('proponer_tarea', ['detalle' => 'ZZP107 revisar los pedidos de la tienda', 'fecha' => now()->addDay()->format('Y-m-d')]),
+            $this->end_turn('Dale, te aviso en un rato.'),
+            $this->end_turn('Dale, te aviso en un rato.'),
+            $this->end_turn('Desde acá no te puedo escribir después: contestame cuando quieras y lo reviso en el momento.'),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion([], 'Avisame cuando entren pedidos', AiMessage::CANAL_WHATSAPP, true);
+        $this->assertSame('Dale, te aviso en un rato.', (new AsistenteIaService())->responder($conversation, $assistant));
+        $this->assertCount(2, $this->bodies_enviados(), 'Con la tarea del turno, sin reintento.');
+
+        list($conversation, $assistant) = $this->conversacion([], 'Avisame cuando entren pedidos', AiMessage::CANAL_WHATSAPP, false);
+        $this->assertSame('Desde acá no te puedo escribir después: contestame cuando quieras y lo reviso en el momento.', (new AsistenteIaService())->responder($conversation, $assistant));
+        $this->assertCount(4, $this->bodies_enviados(), 'Sin la tarea, el reintento.');
+    }
+
+    /**
      * La regla fija del prompt, en todos los canales: no existe un después.
      *
      * @test
@@ -598,6 +708,15 @@ class Veracidad_del_turno_Test extends TestCase
             'No puedo revisar eso desde acá.',
             'Subí el Excel y lo reviso.',
             PromesaDeAccionFuturaIaHelper::TEXTO_HONESTO,
+            /* D2 de la revisión independiente: lo que entrega no promete, y con datos nunca se borra. */
+            'Busco el link y te lo paso: https://truvaribebidas.com.ar/articulos/nieto-senetiner-brut-nature/1000',
+            "Reviso el stock y te paso lo que hay:\nMalbec: 3\nCabernet: 5",
+            'Consulto el stock y te digo: tenés 12 unidades.',
+            'Miro el historial: vendiste 3 el lunes.',
+            'Chequeo rápido: tenés 5 unidades del Malbec.',
+            'Listo, te aviso más tarde a las 18 por acá.',
+            'Hoy vendiste $45.000. Cualquier cosa, me fijo.',
+            'La imagen se está generando, dame un momento.',
         ];
 
         foreach ($no_prometen as $texto) {
@@ -739,7 +858,11 @@ class Veracidad_del_turno_Test extends TestCase
             "### Resumen\nTodo ok."                   => "*Resumen*\nTodo ok.",
             '__nota__ al pie'                         => '_nota_ al pie',
             "```\ncodigo\n```"                        => 'codigo',
-            'Precio: $5.000 ** sin pareja'            => 'Precio: $5.000  sin pareja',
+            /* Revisión independiente: ante la duda el texto no se toca (antes un ** suelto se borraba). */
+            'Precio: $5.000 ** sin pareja'            => 'Precio: $5.000 ** sin pareja',
+            'precio 10 ** 2'                          => 'precio 10 ** 2',
+            'Código **AB*12**'                        => 'Código **AB*12**',
+            'Total: **$45.000**'                      => 'Total: *$45.000*',
             'snake_case_de_un_campo queda'            => 'snake_case_de_un_campo queda',
         ];
 

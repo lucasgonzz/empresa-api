@@ -51,7 +51,7 @@ class PromesaDeAccionFuturaIaHelper
     const ESPERA = '/\b(?:dame un (?:momento|segundo|minuto|ratito|rato)|dame unos (?:minutos|segundos)|ya vuelvo|ahora vuelvo|enseguida vuelvo|aguardame|esperame un|(?:te|le|les) (?:(?:lo|la|los|las) )?(?:confirmo|aviso|paso|mando|cuento|escribo|respondo|contesto|digo) (?:en un (?:momento|rato|ratito|segundo|minuto)|enseguida|en breve|mas tarde|despues|apenas (?:lo|la|los|las) tenga|cuando (?:lo|la|los|las) tenga|en cuanto (?:lo|la|los|las) tenga))\b|^(?:un|un segundo|un momento|un minuto)$/';
 
     /** Lo que desarma la promesa si va antes en la oración: un condicional, un pedido a la persona, una oferta, una negación. */
-    const DESARMA = '/(?:^|\s)(?:si|cuando|apenas|en cuanto|una vez que|queres que|puedo|podria|podes|preferis|decime|pasame|mandame|confirmame|avisame|indicame|contame|escribime|pedimelo|pedime|no|nunca|sin)\s/';
+    const DESARMA = '/(?:^|\s)(?:si|cuando|apenas|en cuanto|una vez que|queres que|puedo|podria|podes|preferis|decime|pasame|mandame|confirmame|avisame|indicame|contame|escribime|pedimelo|pedime|no|nunca|sin|cualquier cosa|si necesitas)\s/';
 
     /** Un pedido a la persona en voseo («Subí el Excel», «Mandame la foto»), con tildes: la promesa espera su respuesta. */
     const IMPERATIVO_DE_VOSEO = '/(?<!\p{L})(?:mandá|mandame|mandámelo|pasá|pasame|pasámelo|subí|subilo|subila|cargá|escribí|escribime|abrí|elegí|decí|decime|pedí|pedime|pedímelo|poné|hacé|fijate|mirá|revisá|buscá|enviá|enviame|reenviá|reenviame|sacá|tocá|entrá|andá|probá|confirmá|confirmame|avisá|avisame|contestá|respondé|copiá|pegá|compartí|adjuntá)(?!\p{L})/u';
@@ -121,6 +121,20 @@ class PromesaDeAccionFuturaIaHelper
 
         /* «Subí el Excel y lo reviso», «Mandame la foto y la busco»: espera algo de la persona. */
         if (preg_match(self::IMPERATIVO_DE_VOSEO, mb_strtolower((string) $oracion, 'UTF-8'))) {
+            return false;
+        }
+
+        /*
+         * 🔴 D2 de la revisión independiente (13/11/2026): lo que ENTREGA no promete, y una oración con datos
+         * nunca se borra. «Busco el link y te lo paso: https://…», «Consulto el stock y te digo: tenés 12
+         * unidades», «Reviso el stock y te paso lo que hay:» + la lista, «Miro el historial: vendiste 3…»,
+         * «Chequeo rápido: …»: con dos puntos (con algo detrás, o al final de un renglón al que le sigue otro),
+         * con un link o con una cifra, la oración está contando lo que hizo. Tampoco la imagen que se genera
+         * sola en segundo plano en la app («La imagen se está generando, dame un momento»).
+         */
+        if (mb_strpos((string) $oracion, ':') !== false
+            || preg_match('/\d|https?:|www\./u', (string) $oracion)
+            || preg_match('/\b(?:imagen|imagenes|generando|segundo plano)\b/', $n)) {
             return false;
         }
 

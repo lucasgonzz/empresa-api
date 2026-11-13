@@ -280,10 +280,23 @@ class Pedido_a_soporte_dado_por_hecho_Test extends EmpresaTestCase
             'Lo anterior quedó pedido a soporte hace un rato.',
             PedidoDeAyudaASoporteIaHelper::AVISO_TOPE,
             PedidoDeAyudaASoporteIaHelper::AVISO_SIN_PEDIDO,
+            /* D3 de la revisión independiente: el imperativo del voseo y los repasos con día, fecha o «todavía». */
+            'Eso no lo puedo hacer desde acá. Escribí a soporte por el chat de Ayuda.',
+            'Pedí a soporte que te lo habiliten.',
+            'Le pedí a soporte el martes y todavía no contestaron.',
+            'Le escribí a soporte el 12/11 y está pendiente.',
         ];
 
         foreach ($no_afirman as $texto) {
             $this->assertFalse(PedidoDeAyudaASoporteIaHelper::afirma_un_pedido($texto), 'No tendría que afirmar: ' . $texto);
         }
+
+        /* Y por el turno entero: el consejo de escribirle a soporte llega tal cual, sin reintento. */
+        $this->el_modelo_contesta($this->end_turn('Eso no lo puedo hacer desde acá. Escribí a soporte por el chat de Ayuda.'));
+
+        list($conversation, $assistant) = $this->vuelta('¿Podés habilitar el link de la tienda?');
+
+        $this->assertSame('Eso no lo puedo hacer desde acá. Escribí a soporte por el chat de Ayuda.', (new AsistenteIaService())->responder($conversation, $assistant));
+        $this->assertCount(1, $this->bodies_al_modelo());
     }
 }

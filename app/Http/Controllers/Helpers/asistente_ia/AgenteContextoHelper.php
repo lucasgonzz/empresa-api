@@ -1073,6 +1073,12 @@ REGLAS;
 
                 $archivo = $archivos[$ruta];
                 $contenido = self::lo_ultimo(rtrim((string) $archivo->contenido), $queda);
+
+                /* D6 de la revisión: si no entra ni el encabezado con la marca, el archivo no va. */
+                if ($contenido === '') {
+                    continue;
+                }
+
                 $queda -= mb_strlen($contenido);
 
                 $partes[] = '=== ' . $ruta . ' (versión ' . (int) $archivo->version . ') ===' . "\n"
@@ -1122,6 +1128,17 @@ REGLAS;
 
         $marca = '(…lo más viejo de este archivo no entra acá: abrilo con leer_contexto si lo necesitás)';
         $disponible = $tope - mb_strlen(implode("\n", $cabecera)) - mb_strlen($marca) - 2;
+
+        /*
+         * 🔴 D6 de la revisión independiente (13/11/2026): sin lugar para nada después del encabezado y la
+         * marca, '' (el archivo no va). Antes caía en mb_substr($texto, -0), que devuelve el texto ENTERO: con
+         * tope 250 entraban 15.396 caracteres.
+         */
+        if ($disponible <= 0) {
+
+            return '';
+        }
+
         $final = [];
 
         while (count($renglones)) {
@@ -1138,7 +1155,7 @@ REGLAS;
         if (! count($final)) {
 
             /* Un solo renglón larguísimo: su final, cortado. */
-            $final = [mb_substr($texto, -max(0, $disponible))];
+            $final = [mb_substr($texto, -$disponible)];
         }
 
         return trim(implode("\n", $cabecera) . "\n" . $marca . "\n" . implode("\n", $final));

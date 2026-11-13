@@ -210,6 +210,90 @@ class Anotar_solo_con_la_herramienta_Test extends MemoriaTestCase
     }
 
     /**
+     * D4 de la revisión independiente: «anoto» también es cargar. Las cargas y las cuentas no son una
+     * anotación de la memoria; las de Truvari siguen siéndolo.
+     *
+     * @test
+     */
+    public function el_detector_no_toma_una_carga_por_una_anotacion()
+    {
+        $no_anotan = [
+            "Te anoto el gasto de $5000 en Varios.\n¿Confirmás?",
+            'Listo, queda anotado el pago de $10.000.',
+            'Lo tengo en cuenta para el total: $45.000.',
+            'Anoto la venta: 2 cajas de Malbec a $24.000. ¿Lo registro?',
+            'Anoto la tarea para mañana a las 9.',
+            'Si querés, me lo anoto.',
+            '¿Querés que me lo anote?',
+        ];
+
+        foreach ($no_anotan as $texto) {
+            $this->assertFalse(AnotacionPrometidaIaHelper::dice_que_lo_anota($texto), 'No es una anotación de la memoria: ' . $texto);
+        }
+
+        $anotan = [
+            'Me lo anoto: la cepa va solo en los vinos.',
+            'Anoto la corrección: responder más rápido, sin vueltas.',
+            'Me lo anoto para no volver a preguntarlo en cada presupuesto.',
+            "Entendido: una sola sucursal y un solo depósito real.\nMe lo anoto, y ahora cargo las 6 unidades del aceite Coratina. ¿Confirmás?",
+            'Me lo anoto: en Truvari los vinos se venden por caja cerrada y en el presupuesto una caja es una unidad.',
+            'Lo tengo en cuenta para la próxima.',
+        ];
+
+        foreach ($anotan as $texto) {
+            $this->assertTrue(AnotacionPrometidaIaHelper::dice_que_lo_anota($texto), 'Es una anotación de la memoria: ' . $texto);
+        }
+    }
+
+    /**
+     * D4: con una carga armada en el turno, «Me lo anoto.» no reintenta (la guarda no mira ese turno).
+     *
+     * @test
+     */
+    public function con_una_carga_armada_en_el_turno_no_hay_reintento()
+    {
+        $this->el_modelo_contesta([
+            $this->tool_use('proponer_tarea', ['detalle' => 'ZZP5M revisar los pedidos', 'fecha' => now()->addDay()->format('Y-m-d')]),
+            $this->end_turn('Me lo anoto.'),
+        ]);
+
+        list($conversation, $assistant) = $this->conversacion_con_pendiente('whatsapp', 'Agendame revisar los pedidos mañana', null, true);
+
+        $this->assertSame('Me lo anoto.', (new AsistenteIaService())->responder($conversation, $assistant));
+        $this->assertCount(2, Http::recorded());
+    }
+
+    /**
+     * 🔴 D6 de la revisión independiente: sin lugar para nada más que el encabezado y la marca, el archivo
+     * no va. Antes mb_substr($texto, -0) devolvía el archivo entero (15.396 caracteres con tope 250).
+     *
+     * @test
+     */
+    public function sin_lugar_el_archivo_no_va_y_nunca_pasa_el_tope()
+    {
+        $lo_ultimo = new \ReflectionMethod(AgenteContextoHelper::class, 'lo_ultimo');
+        $lo_ultimo->setAccessible(true);
+
+        $cabecera = "# Correcciones que te hizo el dueño\n\n> Para qué: lo que el dueño te corrigió para no repetirlo. Se agrega al final con la fecha, una corrección por renglón, y cada una dice qué estaba mal y qué es lo correcto.\n";
+        $cuerpo = '';
+
+        for ($i = 0; $i < 200; $i++) {
+            $cuerpo .= '- 12/11: corrección número ' . $i . ", una caja es una unidad y no seis botellas.\n";
+        }
+
+        foreach ([3000, 400] as $tope) {
+            $this->assertLessThanOrEqual($tope, mb_strlen($lo_ultimo->invoke(null, $cabecera . $cuerpo, $tope)), 'Tope ' . $tope);
+        }
+
+        foreach ([250, 201] as $tope) {
+            $this->assertSame('', $lo_ultimo->invoke(null, $cabecera . $cuerpo, $tope), 'Tope ' . $tope . ': sin lugar, nada.');
+        }
+
+        /* Un solo renglón larguísimo: su final, dentro del tope. */
+        $this->assertLessThanOrEqual(400, mb_strlen($lo_ultimo->invoke(null, str_repeat('x', 5000), 400)));
+    }
+
+    /**
      * El texto del bloque de la memoria (el que va después del cacheado).
      *
      * @param  array  $system

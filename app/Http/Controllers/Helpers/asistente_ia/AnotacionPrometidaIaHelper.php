@@ -23,7 +23,16 @@ class AnotacionPrometidaIaHelper
     const AVISO = 'Ojo: esto no me quedó guardado en la memoria, así que en otra conversación no lo voy a saber.';
 
     /** Lo que afirma que lo guarda, normalizado. */
-    const AFIRMA = '/\b(?:me (?:lo|la|los|las) anoto|me anoto|(?:te |ya )?(?:lo|la|los|las) anoto|anoto (?:la|el|lo|los|las|esto|eso|que|como|tu|tus|esta|este)\b|(?:lo|la|los|las) dejo anotad[oa]s?|queda anotad[oa]|(?:lo|la) tengo anotad[oa]|(?:lo|la|los|las) guardo en (?:mi|la) memoria|me (?:lo|la) guardo|(?:lo|la|los|las) voy a recordar|(?:lo|la) recuerdo para|(?:lo|la|los|las) (?:tengo|tendre|voy a tener) en cuenta (?:para|de ahora|desde ahora|en adelante|la proxima|las proximas)|(?:lo|la|los|las) voy a tener en cuenta)\b/';
+    const AFIRMA = '/\b(?:me (?:lo|la|los|las) anoto|me anoto|(?:te |ya )?(?:lo|la|los|las) anoto|anoto (?:la|el|lo|los|las|esto|eso|que|como|tu|tus|esta|este)\b|(?:lo|la|los|las) dejo anotad[oa]s?|queda anotad[oa]|(?:lo|la) tengo anotad[oa]|(?:lo|la|los|las) guardo en (?:mi|la) memoria|me (?:lo|la) guardo|(?:lo|la|los|las) voy a recordar|(?:lo|la) recuerdo para (?:la proxima|las proximas|adelante)|(?:lo|la|los|las) (?:tengo|tendre|voy a tener) en cuenta(?: para la proxima| para las proximas| para adelante| de ahora en mas| desde ahora| en adelante)?)\b/';
+
+    /*
+     * 🔴 D4 de la revisión independiente (13/11/2026): «anoto» también es cargar. «Te anoto el gasto de $5000
+     * en Varios. ¿Confirmás?», «Listo, queda anotado el pago de $10.000», «Anoto la tarea para mañana», «Lo
+     * tengo en cuenta para el total: $45.000» hablan de una carga o de una cuenta, no de la memoria. Si en
+     * las palabras de después aparece una de éstas, o la oración trae plata, no es una anotación de la
+     * memoria (y el servicio no mira la guarda si el turno armó o ejecutó alguna carga).
+     */
+    const OBJETO_DE_CARGA = '/^(?:\S+\s+){0,3}?(?:gastos?|pagos?|ventas?|tareas?|pedidos?|presupuestos?|cobros?|compras?|recordatorios?|turnos?|cheques?|stock|precios?|total|totales|monto|importe|clientes?|proveedores?|articulos?|productos?|cajas?|unidades|deudas?|saldos?|facturas?|movimientos?)\b/';
 
     /** Lo que, antes en la oración, desarma la afirmación: un condicional, una oferta, una negación. */
     const DESARMA = '/(?:^|\s)(?:si|cuando|queres que|puedo|podria|no|nunca|ni)\s/';
@@ -120,6 +129,12 @@ class AnotacionPrometidaIaHelper
         $n = VeracidadDelTurnoIaHelper::normalizar($oracion);
 
         if (! preg_match(self::AFIRMA, $n, $coincidencia, PREG_OFFSET_CAPTURE)) {
+            return false;
+        }
+
+        /* D4 de la revisión: una carga o una cuenta, no la memoria. */
+        if (strpos((string) $oracion, '$') !== false
+            || preg_match(self::OBJETO_DE_CARGA, ltrim(substr($n, $coincidencia[0][1] + strlen($coincidencia[0][0]))))) {
             return false;
         }
 
