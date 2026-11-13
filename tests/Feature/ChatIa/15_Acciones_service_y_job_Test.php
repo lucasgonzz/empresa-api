@@ -87,6 +87,8 @@ class Acciones_service_y_job_Test extends TestCase
         'consultar_articulos_sin_rotacion',
         // Fichas verificadas de artículos existentes (12/11/2026): capacidad nueva intencional, al final.
         'buscar_ficha_de_articulo',
+        // Alta optativa de bebidas (e175e3ee, ticket 117): la búsqueda de la foto de una bebida, al final.
+        'buscar_imagen_de_bebida',
     ];
 
     /**
