@@ -79,6 +79,14 @@ class FichaArticuloIaHelper
             // sería el mismo número dos veces.
             'depositos'         => $tiene_depositos ? self::depositos($article, $persona) : [],
             'listas_de_precios' => self::listas_de_precios($article),
+            /*
+             * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B3), al final: el stock NULL
+             * (nunca cargado) no es 0. `stock_total` sigue NUMÉRICO a propósito: lo pinta la tarjeta
+             * de hover de la SPA (FichaArticuloPopover.vue, `numero_es(ficha.stock_total)` y la clase
+             * por `> 0`), y una SPA que no conoce la marca tiene que seguir mostrando un número. La
+             * marca es la que distingue "sin cargar" de "en cero".
+             */
+            'stock_sin_cargar'  => is_null($article->stock),
         ];
     }
 
