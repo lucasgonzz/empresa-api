@@ -564,6 +564,8 @@ class Veracidad_del_turno_Test extends TestCase
             'Encontré 4 artículos. ¿Te bajo el Excel?',
             'Son 2 cajas. ¿Lo cargo en efectivo o con tarjeta?',
             'Tenés 2 presupuestos abiertos. ¿Cambio algo?',
+            'El total es $45.000. ¿Te lo armo en un presupuesto?',
+            'Son 4 artículos por $120.000. ¿Te los paso en un Excel?',
             /* El dato tiene que estar en la pregunta o en la oración de antes, no en cualquier parte. */
             "Hoy vendiste $45.000.\nEl Malbec es de Aguma.\n¿Lo cargo?",
         ];

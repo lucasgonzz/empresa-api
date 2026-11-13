@@ -196,6 +196,15 @@ class CargaSinPropuestaIaHelper
             return false;
         }
 
+        /*
+         * Convertir lo que se mostró en otra cosa («¿Te lo armo en un presupuesto?», «¿Te lo paso en un
+         * Excel?») es ofrecer un trabajo nuevo, no confirmar una carga: con el dueño en modo directo, el
+         * reintento podía terminar armando algo que nadie pidió (revisión independiente, 13/11/2026).
+         */
+        if (preg_match('/\b(?:en|como)\s+(?:(?:un|una|el|la)\s+)?(?:presupuesto|excel|pdf|planilla|lista|tabla|resumen|archivo|imagen|mensaje)\b/', $n)) {
+            return false;
+        }
+
         $apertura = '^(?:(?:y|entonces|listo|dale|ok|bueno|bien)\s+)?(?:(?:te|se|le|les)\s+)?';
 
         /* «¿Lo cargo?», «¿Cargo las 6 unidades?», «¿Los elimino?», «¿Lo registro así?». */
