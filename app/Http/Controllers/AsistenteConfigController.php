@@ -71,6 +71,7 @@ class AsistenteConfigController extends Controller
             'confianza'   => 'required|in:' . implode(',', self::CONFIANZAS),
             'pensamiento' => 'required|in:' . implode(',', self::PENSAMIENTOS),
             'proveedor'   => 'nullable|in:' . implode(',', ProveedorIaHelper::PROVEEDORES),
+            'alta_bebidas' => 'sometimes|boolean',
         ]);
 
         $owner = UserHelper::user(true);
@@ -81,6 +82,12 @@ class AsistenteConfigController extends Controller
         }
 
         // Los clientes anteriores todavía pueden enviar proveedor y el modo Equilibrado.
+        if ($request->has('alta_bebidas')) {
+            if ($request->boolean('alta_bebidas') && !\App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::disponible($owner)) {
+                return response()->json(['message' => 'El alta completa de bebidas requiere Vinoteca.'], 422);
+            }
+            $owner->agente_alta_bebidas = $request->boolean('alta_bebidas');
+        }
         $pensamiento = (string) $request->input('pensamiento');
         $owner->agente_confianza = (string) $request->input('confianza');
         $owner->agente_pensamiento = $pensamiento === 'equilibrado'
@@ -178,6 +185,8 @@ class AsistenteConfigController extends Controller
         $modelo = ProveedorIaHelper::modelo_del_asistente($owner);
 
         return [
+            'alta_bebidas' => \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::activa($owner),
+            'alta_bebidas_disponible' => \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::disponible($owner),
             'confianza'                  => $this->confianza_de($owner),
             'pensamiento'                => $this->pensamiento_de($owner),
             'proveedor'                  => ProveedorIaHelper::proveedor_elegido($owner),

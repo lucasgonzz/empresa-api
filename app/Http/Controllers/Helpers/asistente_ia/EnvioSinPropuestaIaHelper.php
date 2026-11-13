@@ -255,7 +255,7 @@ class EnvioSinPropuestaIaHelper
         }
 
         /* «¿Le mando el presupuesto a Marcos o a la SA?»: elige un destinatario o un alcance, tampoco es una confirmación. */
-        if ($es_pregunta && preg_match('/o\s+(?:a|al|a la|a los|a las|solo|solamente|nada mas)/', $normalizada) === 1) {
+        if ($es_pregunta && preg_match('/\bo\s+(?:a|al|a la|a los|a las|solo|solamente|nada mas)\b/', $normalizada) === 1) {
 
             return false;
         }

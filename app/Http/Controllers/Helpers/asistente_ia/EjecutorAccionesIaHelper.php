@@ -646,6 +646,10 @@ class EjecutorAccionesIaHelper {
             case AiMessageAction::TIPO_DESCRIPCION_VERIFICADA:
                 return FichaWebArticuloIaHelper::ejecutar($contexto, $accion);
 
+            // Misión asistente-truvari-pedidos-fallidos (C2, 13/11/2026): los avisos del dueño por WhatsApp.
+            case AiMessageAction::TIPO_AVISOS_DEL_DUENO:
+                return PropuestaAvisosDelDuenoIaHelper::ejecutar($contexto, $accion);
+
             case AiMessageAction::TIPO_UNIFICAR_BANCOS:
                 return PropuestaBancosChequesIaHelper::ejecutar($contexto, $accion);
 

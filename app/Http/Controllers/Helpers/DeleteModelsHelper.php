@@ -75,6 +75,11 @@ class DeleteModelsHelper
         'tienda_nube_order',
         'meli_order',
         'brand',
+        // Presupuesto confirmado o de otro dueño (misión asistente-truvari-pedidos-fallidos,
+        // 13/11/2026): BudgetController::destroy() responde 422 (confirmado: primero se anula) o 404
+        // y no borra nada. Sin esto el `PUT api/delete/budget` de la selección del listado lo contaba
+        // como eliminado y la SPA lo sacaba de pantalla aunque seguía vivo.
+        'budget',
     ];
 
     /**

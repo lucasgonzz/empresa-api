@@ -24,7 +24,7 @@ class SupportAgentesSync
         $persona = $request->user();
 
         return $persona instanceof User && (int) $persona->id === (int) UserHelper::userId(false)
-            && SupportTourService::sesion_web_propia($request, $persona)
+            && SupportTourService::sesion_web_propia($request, $persona, true)
             ? $persona
             : null;
     }

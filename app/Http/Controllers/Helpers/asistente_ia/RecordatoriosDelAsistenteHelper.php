@@ -38,7 +38,9 @@ use Illuminate\Support\Facades\DB;
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/recordatorios-pendientes?plantilla=1|0
  *        → 200 {recordatorios:[{id, tarea_id, fecha, hora, detalle, texto, ai_conversation_id, ruta}]}
- *        (`id` = "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}:{HHMM}")
+ *        (`id` = "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}:{HHMM}"; desde el 13/11/2026 también
+ *        los avisos que pidió el dueño —pedidos nuevos de la tienda y stock cero—, con `tarea_id` null y
+ *        su propio prefijo: ver AvisosDelDuenoIaHelper)
  *   POST admin-sync/asistente/recordatorios/avisado {id, whatsapp_message_id?} → 200 {ok:true} · 404
  *
  * PHP 7.4: sin match, sin nullsafe, sin str_contains.
@@ -242,7 +244,17 @@ class RecordatoriosDelAsistenteHelper
 
         $vencidos = array_slice($vencidos, 0, self::TOPE_RECORDATORIOS);
 
-        if (!count($vencidos)) {
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (C2, 13/11/2026): los avisos que el dueño pidió (pedidos
+         * nuevos de la tienda, stock cero) viajan por acá, con la misma forma y su propio id
+         * (AvisosDelDuenoIaHelper). Apagados por defecto: sin preferencias no hay ninguno y esta consulta
+         * devuelve exactamente lo de antes.
+         */
+        $del_dueno = AvisosDelDuenoIaHelper::hay_columnas() ? AvisosDelDuenoIaHelper::preferencias($dueno) : null;
+        $con_avisos_del_dueno = !is_null($del_dueno)
+            && ($del_dueno['pedidos'] !== AvisosDelDuenoIaHelper::PEDIDOS_APAGADO || $del_dueno['stock_cero']);
+
+        if (!count($vencidos) && !$con_avisos_del_dueno) {
 
             return [];
         }
@@ -250,11 +262,14 @@ class RecordatoriosDelAsistenteHelper
         $conversacion = AsistenteCanalHelper::conversacion_vigente($dueno);
 
         $recordatorios = [];
+        $momentos = [];
 
         foreach ($vencidos as $vencido) {
 
             $tarea = $vencido['tarea'];
             $dia = $vencido['dia'];
+
+            $momentos[] = $vencido['momento'];
 
             $recordatorios[] = [
                 /*
@@ -274,7 +289,37 @@ class RecordatoriosDelAsistenteHelper
             ];
         }
 
-        return $recordatorios;
+        if (!$con_avisos_del_dueno) {
+
+            return $recordatorios;
+        }
+
+        foreach (AvisosDelDuenoIaHelper::pendientes($dueno, $conversacion) as $aviso) {
+
+            $recordatorios[] = $aviso['item'];
+            $momentos[] = $aviso['momento'];
+        }
+
+        /* Todo junto, por momento (a igual momento, primero las tareas) y con el mismo tope. */
+        $posiciones = array_keys($recordatorios);
+
+        usort($posiciones, function ($a, $b) use ($momentos) {
+
+            if ($momentos[$a]->eq($momentos[$b])) {
+
+                return $a - $b;
+            }
+
+            return $momentos[$a]->lt($momentos[$b]) ? -1 : 1;
+        });
+
+        $ordenados = [];
+
+        foreach (array_slice($posiciones, 0, self::TOPE_RECORDATORIOS) as $posicion) {
+            $ordenados[] = $recordatorios[$posicion];
+        }
+
+        return $ordenados;
     }
 
     /**
@@ -300,6 +345,12 @@ class RecordatoriosDelAsistenteHelper
      */
     public static function marcar_avisado(User $dueno, $id, $whatsapp_message_id = null): bool
     {
+        /* C2 (13/11/2026): los avisos que pidió el dueño tienen su propio id y su propio sello. */
+        if (AvisosDelDuenoIaHelper::es_id_propio($id)) {
+
+            return AvisosDelDuenoIaHelper::marcar($dueno, $id, $whatsapp_message_id);
+        }
+
         $partes = self::partes_del_id($id);
 
         if (is_null($partes)) {

@@ -44,7 +44,7 @@ Broadcast::channel('implementacion.user.{id}', function ($user, $id) {
 });
 
 Broadcast::channel('support-tour.user.{id}', function ($user, $id) {
-    return (string) $user->id === $id && SupportTourService::sesion_web_propia(request(), $user);
+    return (string) $user->id === $id && SupportTourService::sesion_web_propia(request(), $user, true);
 });
 
 /**
@@ -78,10 +78,10 @@ Broadcast::channel('tienda-mensajes.{owner_id}', function ($user, $owner_id) {
  */
 Broadcast::channel('chat.user.{auth_user_id}', function ($user, $auth_user_id) {
     return (int) $user->id === (int) $auth_user_id
-        && !MostradorHelper::sesion_de_comerciocity(request());
+        && !MostradorHelper::sesion_restringida_para_asistente(request());
 });
 
 Broadcast::channel('agentes.support.user.{user_id}', function ($user, $user_id) {
     return (int) $user->id === (int) $user_id
-        && !MostradorHelper::sesion_de_comerciocity(request());
+        && !MostradorHelper::sesion_restringida_para_asistente(request());
 });

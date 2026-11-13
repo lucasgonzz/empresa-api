@@ -263,6 +263,69 @@ class ArticleHelper {
      *        la lista cuyo desglose se pide (ArticlePriceTypeMonedaHelper::describir_lista_en_moneda()).
      *        Con null, o en una cuenta sin dolares, no cambia nada.
      */
+    /**
+     * true si el precio final del artículo sale del CÁLCULO (costo de lista + IVA, o el modo normal) y
+     * no del precio cargado a mano (`price`). Es la condición de la rama de setFinalPrice_sin_historial(),
+     * extraída tal cual (misión asistente-truvari-pedidos-fallidos, 13/11/2026) para que
+     * presentacion_multiplica_el_precio() no la duplique.
+     *
+     * Misión prueba-listas-siempre (3/11/2026): con listas, el precio manual del artículo se ignoraba (el
+     * precio de cada lista vive en su pivote). La cuenta con lista «Precio final» es la excepción: esa
+     * lista ES el precio del artículo, y un precio cargado a mano tiene que seguir mandando, como mandaba
+     * sin listas (decisión D2 del plan). Para una cuenta con listas propias y sin «Precio final» no
+     * cambia nada.
+     *
+     * @param  \App\Models\Article  $article
+     * @param  \App\Models\User|null  $user
+     * @return bool
+     */
+    static function precio_sale_del_calculo($article, $user) {
+        return (
+                is_null($article->price)
+                || $article->price == ''
+            )
+            || (
+                UserHelper::uses_listas_de_precio($user)
+                // && UserHelper::hasExtencion('ventas_en_dolares', $user)
+                && !PriceTypeHelper::tiene_lista_precio_final($user)
+            );
+    }
+
+    /**
+     * true si, dentro del cálculo, el precio sale del costo de lista del proveedor más IVA
+     * (`providers.price_from_cost_mas_iva`) y no del modo normal. Extraída de
+     * setFinalPrice_sin_historial() tal cual (13/11/2026).
+     *
+     * @param  \App\Models\Article  $article
+     * @return bool
+     */
+    static function precio_sale_del_costo_de_lista_mas_iva($article) {
+        return !is_null($article->provider)
+            && (bool) $article->provider->price_from_cost_mas_iva
+            && !is_null($article->cost);
+    }
+
+    /**
+     * true si el precio final guardado del artículo YA está multiplicado por su presentación
+     * (VinotecaPriceHelper::calcular_presentacion): solo en el modo normal del cálculo, con el módulo
+     * Vinoteca y una presentación cargada. Con precio manual o con costo de lista + IVA la
+     * multiplicación no se aplica, y el precio NO es el de la caja.
+     *
+     * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B7): lo usa el asistente para decir
+     * «1 × Malbec (caja de 6)» solo cuando el precio de verdad es el de la caja. Pregunta lo mismo que
+     * setFinalPrice_sin_historial() con los dos métodos de arriba.
+     *
+     * @param  \App\Models\Article  $article
+     * @param  \App\Models\User|null  $user
+     * @return bool
+     */
+    static function presentacion_multiplica_el_precio($article, $user) {
+        return UserHelper::hasExtencion('vinoteca', $user)
+            && (bool) $article->presentacion
+            && Self::precio_sale_del_calculo($article, $user)
+            && !Self::precio_sale_del_costo_de_lista_mas_iva($article);
+    }
+
     static function setFinalPrice($article, $user_id = null, $user = null, $auth_user_id = null, $guardar_cambios = true, $price_types = null, $return_description = false, $price_type_id_para_descripcion = null, $moneda_id_para_descripcion = null) {
         $argumentos = func_get_args();
         // Un llamador legacy puede manejar explícitamente PreciosEnLote y volcar
@@ -449,33 +512,11 @@ class ArticleHelper {
             }
         }
 
-        if (
-            (
-                is_null($article->price)
-                || $article->price == ''
-            )
-            || (
-                UserHelper::uses_listas_de_precio($user)
-                // && UserHelper::hasExtencion('ventas_en_dolares', $user)
+        // Las dos condiciones de rama viven en métodos propios (misión asistente-truvari-pedidos-fallidos,
+        // 13/11/2026) para que presentacion_multiplica_el_precio() pregunte exactamente lo mismo.
+        if (Self::precio_sale_del_calculo($article, $user)) {
 
-                /*
-                 * Misión prueba-listas-siempre (3/11/2026): con listas, el precio manual del artículo
-                 * se ignoraba (el precio de cada lista vive en su pivote). La cuenta con lista «Precio
-                 * final» es la excepción: esa lista ES el precio del artículo, y un precio cargado a
-                 * mano tiene que seguir mandando, como mandaba sin listas (decisión D2 del plan). Para
-                 * una cuenta con listas propias y sin «Precio final» no cambia nada.
-                 */
-                && !PriceTypeHelper::tiene_lista_precio_final($user)
-            )
-        ) {
-
-            $usar_lista_mas_iva = false;
-
-            if (!is_null($article->provider) && (bool)$article->provider->price_from_cost_mas_iva) {
-                $usar_lista_mas_iva = true;
-            }
-
-            if ($usar_lista_mas_iva && !is_null($article->cost)) {
+            if (Self::precio_sale_del_costo_de_lista_mas_iva($article)) {
 
                 // PRECIO DE VENTA = PRECIO LISTA (cost) + IVA
                 $cost = (float) $article->cost;

@@ -421,7 +421,45 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
         (new AsistenteIaService())->responder($conversation, $contestando);
 
         $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($tarjeta_id)->estado_guardado());
-        $this->assertStringNotContainsString('[El sistema', $this->ultimo_user_enviado());
+
+        /*
+         * Cambiado a propósito (misión asistente-truvari-pedidos-fallidos, A1, 13/11/2026). Antes se miraba
+         * el ÚLTIMO pedido al modelo, que era el único: la nota de la confirmación determinista no viaja. Lo
+         * sigue sin viajar —se mira el PRIMER pedido a DeepSeek—, pero ahora la guarda de la carga dada por
+         * hecha también corre por WhatsApp para toda carga (antes solo para los pagos): «Listo, la foto quedó
+         * asignada.» con la tarjeta sin confirmar es una mentira, y el turno la reintenta con su nota.
+         */
+        $this->assertStringNotContainsString('[El sistema', $this->user_enviado_a_deepseek(0));
+        $this->assertStringContainsString('[El sistema revisó tu respuesta: dice que la carga ya quedó hecha', $this->user_enviado_a_deepseek(1));
+    }
+
+    /**
+     * El texto del último mensaje `user` del pedido N (desde 0) a DeepSeek.
+     *
+     * @param  int  $n
+     * @return string
+     */
+    protected function user_enviado_a_deepseek($n)
+    {
+        $i = 0;
+
+        foreach (Http::recorded() as $par) {
+
+            if (strpos($par[0]->url(), 'api.deepseek.com') === false) {
+                continue;
+            }
+
+            if ($i++ !== $n) {
+                continue;
+            }
+
+            $cuerpo = json_decode((string) $par[0]->body(), true);
+            $ultimo = end($cuerpo['messages']);
+
+            return is_array($ultimo['content']) ? json_encode($ultimo['content'], JSON_UNESCAPED_UNICODE) : (string) $ultimo['content'];
+        }
+
+        return '';
     }
 
     /**

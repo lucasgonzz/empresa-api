@@ -260,7 +260,7 @@ class AsistenteDeLaDemoEnPruebaTest extends TestCase
         Http::fake();
 
         $this->actingAs($empleado, 'web')->getJson('/api/prueba/chat')->assertStatus(204);
-        $this->actingAs($this->dueno, 'web')->withSession(['master_login_bypass_user_last_activity' => true])
+        $this->actingAs($this->dueno, 'web')->withSession(['acceso_soporte_token_id' => 9])
             ->getJson('/api/prueba/chat')->assertStatus(204);
         Http::assertNothingSent();
     }
@@ -275,5 +275,19 @@ class AsistenteDeLaDemoEnPruebaTest extends TestCase
         auth()->forgetGuards();
         $this->getJson('/api/prueba/chat')->assertUnauthorized();
         Http::assertNothingSent();
+    }
+
+    public function test_el_maestro_audita_el_chat_de_una_prueba_vencida_sin_extenderla()
+    {
+        $this->activar_prueba();
+        PruebaHelper::fijar_vencimiento($this->dueno->id, now()->subDay());
+        $anterior = (string) $this->dueno->fresh()->expired_at;
+        Http::fake(['*' => Http::response(['disponible' => true, 'messages' => []], 200)]);
+        $this->withSession(['master_login_bypass_user_last_activity' => true]);
+        $this->getJson('/api/user')->assertOk()->assertJsonPath('user.puede_usar_chat_prueba', true)
+            ->assertJsonPath('user.prueba.vencida', true);
+        $this->getJson('/api/prueba/chat')->assertOk();
+        $this->assertSame($anterior, (string) $this->dueno->fresh()->expired_at);
+        $this->assertTrue(PruebaHelper::vencida($this->dueno->id));
     }
 }

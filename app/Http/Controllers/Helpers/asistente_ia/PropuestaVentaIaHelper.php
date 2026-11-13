@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
@@ -1307,10 +1308,55 @@ class PropuestaVentaIaHelper
                 'precio'         => $precio,
                 'precio_dictado' => $precio_dictado,
                 'origen'         => $origen,
+                'caja_de'        => is_null($precio_dictado) && $origen === 'final_price' ? self::caja_de($contexto, $article) : null,
             ];
         }
 
         return array_values($renglones);
+    }
+
+    /**
+     * Cuántas unidades trae la caja en que se vende el artículo, o null (misión
+     * asistente-truvari-pedidos-fallidos, 13/11/2026, B7).
+     *
+     * 🔴 EL CASO REAL. Fernando (Truvari) pidió un presupuesto con «una caja de Perro Callejero
+     * Malbec» y el asistente cargó 6 unidades: las botellas de la caja. Con el módulo Vinoteca el
+     * artículo ES la caja: ArticleHelper multiplica el precio final por `presentacion`
+     * (VinotecaPriceHelper::calcular_presentacion), así que una unidad del artículo cuesta lo que la
+     * caja y «una caja» es cantidad 1 —solo cuando el precio sale del modo normal del cálculo y es el
+     * de la lista del artículo (sin precio dictado ni lista de precios aparte)—. La cantidad no se toca acá (es la que mandó el modelo): esto
+     * solo hace que la tarjeta lo diga («1 × Perro Callejero Malbec (caja de 6)») para que el dueño
+     * vea qué está confirmando, y la descripción de la herramienta le dice al modelo que no
+     * multiplique.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $article
+     * @return float|null
+     */
+    protected static function caja_de(ContextoDeCargaIa $contexto, $article)
+    {
+        if (!is_numeric($article->presentacion) || (float) $article->presentacion <= 1) {
+            return null;
+        }
+
+        if (!UserHelper::hasExtencion('vinoteca', $contexto->owner)) {
+            return null;
+        }
+
+        /*
+         * 🔴 Revisión independiente (13/11/2026): la multiplicación por la presentación se aplica
+         * SOLO en el modo normal del cálculo; con precio manual o con costo de lista + IVA el precio
+         * NO es el de la caja. Se pregunta con la MISMA condición de setFinalPrice
+         * (ArticleHelper::presentacion_multiplica_el_precio()), sobre el artículo con su proveedor:
+         * resolver_articulo() trae columnas acotadas y sin provider_id.
+         */
+        $completo = Article::with('provider')->where('user_id', $contexto->owner_id)->where('id', (int) $article->id)->first();
+
+        if (is_null($completo) || !ArticleHelper::presentacion_multiplica_el_precio($completo, $contexto->owner)) {
+            return null;
+        }
+
+        return (float) $article->presentacion;
     }
 
     /**
@@ -2084,7 +2130,7 @@ class PropuestaVentaIaHelper
     }
 
     /**
-     * "3 × Martillo acero — $ 2.000 = $ 6.000"
+     * "3 × Martillo acero — $ 2.000 = $ 6.000" (o "1 × Malbec (caja de 6) — …" con Vinoteca).
      *
      * @param  array  $renglon
      * @return string
@@ -2093,7 +2139,10 @@ class PropuestaVentaIaHelper
     {
         $subtotal = round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2);
 
-        return self::numero((float) $renglon['cantidad']) . ' × ' . $renglon['article']->name
+        // B7 (13/11/2026): con Vinoteca el artículo ES la caja, y la tarjeta lo dice. Ver caja_de().
+        $caja = !empty($renglon['caja_de']) ? ' (caja de ' . self::numero((float) $renglon['caja_de']) . ')' : '';
+
+        return self::numero((float) $renglon['cantidad']) . ' × ' . $renglon['article']->name . $caja
             . ' — ' . FormatoIaHelper::monto($renglon['precio'])
             . ' = ' . FormatoIaHelper::monto($subtotal);
     }

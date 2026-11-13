@@ -109,10 +109,16 @@ class PedidoDeAyudaASoporteIaHelper
 
         if ($de_hoy >= self::TOPE_POR_DIA) {
 
+            /*
+             * 🔴 A7 de la misión asistente-truvari-pedidos-fallidos (13/11/2026): este texto decía «Decile a la
+             * persona que ya está pedido» y el modelo lo repitió sobre un pedido NUEVO que no salió (Truvari,
+             * 12/11 21:52: «Listo el pedido a soporte…» con el tope usado desde las 20:55). Ahora dice la verdad.
+             */
             return RespuestaDeCargaIa::error_con_codigo(
                 self::CODIGO_TOPE,
-                'Hoy ya le dejaste ' . $de_hoy . ' pedidos a soporte desde el agente, que es el máximo por día. No mandé este. Decile a la '
-                . 'persona que ya está pedido y que, si es otra cosa urgente, lo escriba ella en el chat de soporte del sistema.'
+                'Hoy ya le dejaste ' . $de_hoy . ' pedidos a soporte desde el agente, que es el máximo por día. NO se mandó este pedido: '
+                . 'no digas que quedó pedido ni que lo sumaste a otro. Decile a la persona que hoy desde acá ya no se pueden dejar más pedidos y que, '
+                . 'si lo necesita, lo escriba ella en el chat de Ayuda del sistema.'
             );
         }
 
@@ -295,5 +301,108 @@ class PedidoDeAyudaASoporteIaHelper
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // La guarda del pedido dado por hecho (A7 de la misión asistente-truvari-pedidos-fallidos)
+    // ------------------------------------------------------------------------------------------
+
+    /** El nombre de la herramienta, para el rastro del turno. */
+    const HERRAMIENTA = 'pedir_ayuda_a_soporte';
+
+    /** El aviso que reemplaza lo que el texto afirmaba (sin un motivo de la herramienta). */
+    const AVISO_SIN_PEDIDO = 'Ojo: el pedido a soporte no quedó hecho desde acá. Si lo necesitás, escribilo en el chat de Ayuda del sistema y lo ven ahí.';
+
+    /** El aviso cuando la herramienta contestó que se llegó al tope del día. */
+    const AVISO_TOPE = 'Ojo: hoy ya se usó el máximo de pedidos a soporte desde acá, así que este no se mandó. Si lo necesitás, escribilo en el chat de Ayuda del sistema.';
+
+    /*
+     * Lo que afirma un pedido a soporte hecho, normalizado.
+     *
+     * 🔴 D3 de la revisión independiente (13/11/2026): normalizar() saca las tildes, así que «pedí» y
+     * «escribí» (primera persona) se leen igual que el imperativo del voseo («Pedí a soporte que te lo
+     * habiliten», «Escribí a soporte por el chat de Ayuda»). Esos dos verbos cuentan solo con «le»/«les»
+     * delante («Le pedí a soporte»), que el imperativo no lleva. Y un pedido con día, fecha, «ayer» o
+     * «todavía» es un repaso (REPASO_DEL_PEDIDO): «Le pedí a soporte el martes y todavía no contestaron».
+     */
+    const AFIRMA_UN_PEDIDO = '/\b(?:(?:listo|hecho|ya esta|ya quedo|quedo|queda)\b(?:\s+\S+){0,4}?\s+(?:el\s+)?pedid[oa]s?\b(?:\s+\S+){0,3}?\s+soporte|(?:le|les)\s+(?:pedi|escribi|mande|deje|pase|avise|consulte|hice el pedido)\s+(?:a\s+)?soporte|(?:deje pedid[oa]|deje el pedido|mande el pedido|hice el pedido|pase el pedido)\s+a\s+soporte|deje pedid[oa]\b(?:\s+\S+){0,6}?\s+soporte|dejo pedid[oa]\b(?:\s+\S+){0,6}?\s+soporte|(?:ya\s+)?(?:lo|la|los|las)\s+(?:sume|sumo|agregue|agrego|incluyo|inclui)\s+(?:al|en el|a el)\s+pedido|soporte\s+ya\s+(?:lo|la)\s+(?:tiene|recibio))\b/';
+
+    /** Lo que desarma la afirmación si va antes: un condicional, una oferta, una negación, un repaso. */
+    const DESARMA_EL_PEDIDO = '/(?:^|\s)(?:si|cuando|queres que|puedo|podria|podes|te ofrezco|preferis|no|nunca|ni)\s/';
+
+    /** Un pedido de ANTES de este turno contado como tal. */
+    const REPASO_DEL_PEDIDO = '/\b(?:antes|hace un rato|hace un momento|ayer|anteayer|mas temprano|esta manana|esta tarde|a las \d|el de las|el anterior|el primero|ya estaba|todavia|aun no|lunes|martes|miercoles|jueves|viernes|sabado|domingo|la semana pasada|el otro dia|\d{1,2} \d{1,2})\b/';
+
+    /**
+     * true si el texto da por hecho un pedido a soporte.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function afirma_un_pedido($texto)
+    {
+        return VeracidadDelTurnoIaHelper::alguna_oracion($texto, function ($oracion) {
+            return self::oracion_afirma_un_pedido($oracion);
+        });
+    }
+
+    /**
+     * La nota del reintento.
+     *
+     * @param  string|null  $codigo  El código del error con el que contestó la herramienta en este turno, si la llamó.
+     * @return string
+     */
+    public static function nota_para_reintentar($codigo = null)
+    {
+        $motivo = ((string) $codigo === self::CODIGO_TOPE)
+            ? 'pedir_ayuda_a_soporte te contestó que hoy ya se usó el máximo de pedidos: NO se mandó. '
+            : (is_null($codigo) ? 'No llamaste a pedir_ayuda_a_soporte. ' : 'pedir_ayuda_a_soporte te contestó un error: NO se mandó. ');
+
+        return '[El sistema revisó tu respuesta: decís que el pedido a soporte quedó hecho (o que lo sumaste a uno), pero en este turno NO se creó ningún pedido. '
+            . $motivo
+            . 'Si la persona pidió o aceptó que le pidas algo a soporte y todavía no lo intentaste, llamá AHORA a pedir_ayuda_a_soporte con el detalle; '
+            . 'si te contesta un error, decí ese motivo tal cual y que lo puede escribir ella en el chat de Ayuda del sistema. '
+            . 'Nunca digas que quedó pedido sin el ok de la herramienta en esta respuesta. '
+            . VeracidadDelTurnoIaHelper::FRASE_DE_LA_RESPUESTA_COMPLETA;
+    }
+
+    /**
+     * El texto sin las oraciones que dan el pedido por hecho, con el aviso que corresponde.
+     *
+     * @param  string  $texto
+     * @param  string|null  $codigo
+     * @return string
+     */
+    public static function sin_el_pedido_inventado($texto, $codigo = null)
+    {
+        /* Con el pedido, también lo que cuenta qué va a pasar con él («Te contestan por el chat de Ayuda»). */
+        return VeracidadDelTurnoIaHelper::sin_las_oraciones($texto, function ($oracion) {
+            return self::oracion_afirma_un_pedido($oracion)
+                || (! VeracidadDelTurnoIaHelper::es_pregunta($oracion)
+                    && preg_match('/\b(?:te|le|les) (?:contestan|responden|van a (?:contestar|responder|ver|avisar))\b|\bsoporte (?:lo|la) (?:ve|va a ver)\b|\blo van a ver\b/', VeracidadDelTurnoIaHelper::normalizar($oracion)));
+        }, (string) $codigo === self::CODIGO_TOPE ? self::AVISO_TOPE : self::AVISO_SIN_PEDIDO);
+    }
+
+    /**
+     * @param  string  $oracion
+     * @return bool
+     */
+    protected static function oracion_afirma_un_pedido($oracion)
+    {
+        if (VeracidadDelTurnoIaHelper::es_pregunta($oracion)) {
+            return false;
+        }
+
+        $n = VeracidadDelTurnoIaHelper::normalizar($oracion);
+
+        if (! preg_match(self::AFIRMA_UN_PEDIDO, $n, $coincidencia, PREG_OFFSET_CAPTURE)) {
+            return false;
+        }
+
+        if (preg_match(self::REPASO_DEL_PEDIDO, $n)) {
+            return false;
+        }
+
+        return ! preg_match(self::DESARMA_EL_PEDIDO, ' ' . substr($n, 0, $coincidencia[0][1]));
     }
 }

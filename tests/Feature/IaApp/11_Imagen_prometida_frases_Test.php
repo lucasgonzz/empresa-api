@@ -59,6 +59,9 @@ class Imagen_prometida_frases_Test extends TestCase
             // Imagen y flyer no necesitan contexto.
             'quiero un flyer de la promo',
             'necesito una imagen del chaleco',
+            // 🔴 Truvari (12/11/2026, conv 4): un complemento entre el verbo y lo que se genera.
+            'generá para ese producto una imagen de 6 botellas',
+            'haceme para el estado una imagen de la promo',
         ]);
     }
 
@@ -124,6 +127,9 @@ class Imagen_prometida_frases_Test extends TestCase
             'pasame el precio de la placa por whatsapp',
             'mandame una placa de 9mm',
             'quiero un banner de 2x1 con ojales',
+            // El complemento en el medio no vuelve imagen a un presupuesto (C1, 13/11/2026).
+            'armame para el cliente un presupuesto con la imagen',
+            'generá para Juan un presupuesto con la foto del producto',
         ]);
     }
 
@@ -389,6 +395,27 @@ class Imagen_prometida_frases_Test extends TestCase
 
         $this->assertFalse(ImagenPrometidaIaHelper::hablo_de_otra_cosa([]));
         $this->assertFalse(ImagenPrometidaIaHelper::hablo_de_otra_cosa(['buscar_articulos', 'consultar_resumen_de_ventas']));
+    }
+
+    /**
+     * C1 de asistente-truvari-pedidos-fallidos (13/11/2026): la frase de WhatsApp («te la mando por acá cuando
+     * esté lista») cuenta como la de la app, también como estado de la ya pedida, y la nota del reintento
+     * por WhatsApp no habla de «aparece acá».
+     */
+    public function test_la_frase_de_whatsapp_cuenta_como_la_de_la_app()
+    {
+        foreach (['La pedí; te la mando por acá cuando esté lista.', 'Te la mando por acá cuando esté lista.'] as $texto) {
+            $this->assertFalse(ImagenPrometidaIaHelper::afirma_una_imagen($texto, false), $texto);
+            $this->assertTrue(ImagenPrometidaIaHelper::afirma_una_imagen($texto, true), $texto);
+            $this->assertFalse(ImagenPrometidaIaHelper::afirma_una_imagen($texto, true, true), 'Estado de la ya pedida: ' . $texto);
+        }
+
+        $this->assertFalse(ImagenPrometidaIaHelper::afirma_una_imagen('¿Querés que te la mande por acá cuando esté lista?', true));
+
+        $por_whatsapp = ImagenPrometidaIaHelper::nota_para_reintentar(true);
+        $this->assertStringContainsString('se la mandás por acá cuando esté lista', $por_whatsapp);
+        $this->assertStringNotContainsString('aparece acá', $por_whatsapp);
+        $this->assertStringContainsString('aparece acá cuando esté lista', ImagenPrometidaIaHelper::nota_para_reintentar());
     }
 
     public function test_la_nota_del_reintento_no_ordena_llamar_a_ciegas()

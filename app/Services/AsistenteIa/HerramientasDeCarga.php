@@ -13,6 +13,8 @@ use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FiltroDeArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDelDuenoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaAvisosDelDuenoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCuotasTiendaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
@@ -215,6 +217,11 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA,
         /* El reescaneo de una factura que falló: en "directo" también (está en los de "resuelto"). */
         AiMessageAction::TIPO_REINTENTO_ESCANEO,
+        /*
+         * Los avisos del dueño por WhatsApp (misión asistente-truvari-pedidos-fallidos, C2, 13/11/2026): solo
+         * cambian preferencias del propio dueño y se deshacen con otra igual, como una tarea de la agenda.
+         */
+        AiMessageAction::TIPO_AVISOS_DEL_DUENO,
     ];
 
     /**
@@ -475,7 +482,7 @@ class HerramientasDeCarga
                         ],
                         'hora'            => [
                             'type'        => 'string',
-                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. No prometas un aviso por WhatsApp a esa hora: el resultado de la tarea confirmada (su "aviso") dice si le llega un recordatorio y cómo decírselo.',
+                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. No prometas un aviso por WhatsApp a esa hora: el resultado de la tarea confirmada (su "aviso") dice si le llega un recordatorio y cómo decírselo. Si lo que piden es que les avises cuando entra un pedido de la tienda o cuando algo se queda sin stock, eso no es una tarea: es proponer_avisos_por_whatsapp.',
                         ],
                         'repetir'         => self::esquema_de_repeticion(),
                         'subcategoria_id' => [
@@ -767,7 +774,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_actualizacion_masiva',
-                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE. "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos de precio manual sube ese precio, donde el margen no mueve el precio —listas de precio, proveedor con costo de lista + IVA— sube el costo, y en el resto ajusta el margen) y va solo, en una tarjeta aparte de cualquier otro cambio. precio_manual es solo cuando la persona habla del precio cargado a mano (si ninguno de los alcanzados lo usa, subir o bajar se convierte solo en precio_final). "Poneles stock mínimo 10" es stock_minimo con setear 10 (y stock_maximo, el máximo); si el negocio reparte el stock entre sucursales, mandá también sucursal (el nombre, o "todas"), y si la respuesta pide la sucursal, preguntala. 🔴 NUNCA ofrezcas setear stock en lugar del mínimo: stock es la mercadería que hay y cambiarlo carga un ingreso o un egreso real. Si la persona dice el mínimo con una unidad ("stock mínimo 10 kilos" en artículos que se venden por kilo), aplicá 10 sin preguntar si son unidades o kilos: el mínimo está en la misma unidad en que se lleva el stock del artículo. Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso (si trae opciones y una es evidente —"kilos" es "Kilo"—, usala sin preguntar); si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una actualización masiva de artículos —un cambio sobre TODOS los artículos que cumplen un filtro— para que la persona la confirme: NO aplica nada. Antes llamá a contar_articulos_por_filtro y explicale a la persona en una línea cuántos artículos alcanza y qué va a cambiar. SIEMPRE queda tarjeta, aunque la confianza esté en "resuelto": nunca se aplica sola. Cuando la persona confirma, corre en segundo plano, recalcula el precio final de cada artículo y queda en el historial de actualizaciones masivas (se puede revertir desde ahí): nunca digas que ya se aplicó. Necesita al menos un filtro (no se actualiza el catálogo entero sin filtrar) y alcanza hasta 3000 artículos. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida van por su NOMBRE (con el módulo Vinoteca también bodega y cepa: "vinculá todos los de tal bodega a tal proveedor" es filtro bodega igual <la bodega> y cambio proveedor asignar <el proveedor>). "Subí/bajá el precio X %" es precio_final (mueve el precio que se cobra: en los artículos de precio manual sube ese precio, donde el margen no mueve el precio —listas de precio, proveedor con costo de lista + IVA— sube el costo, y en el resto ajusta el margen) y va solo, en una tarjeta aparte de cualquier otro cambio. precio_manual es solo cuando la persona habla del precio cargado a mano (si ninguno de los alcanzados lo usa, subir o bajar se convierte solo en precio_final). "Poneles stock mínimo 10" es stock_minimo con setear 10 (y stock_maximo, el máximo); si el negocio reparte el stock entre sucursales, mandá también sucursal (el nombre, o "todas"), y si la respuesta pide la sucursal, preguntala. 🔴 NUNCA ofrezcas setear stock en lugar del mínimo: stock es la mercadería que hay y cambiarlo carga un ingreso o un egreso real. Si la persona dice el mínimo con una unidad ("stock mínimo 10 kilos" en artículos que se venden por kilo), aplicá 10 sin preguntar si son unidades o kilos: el mínimo está en la misma unidad en que se lleva el stock del artículo. Si la respuesta trae "avisos", contáselos a la persona. Si la respuesta trae "faltan", preguntá eso (si trae opciones y una es evidente —"kilos" es "Kilo"—, usala sin preguntar); si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -787,12 +794,14 @@ class HerramientasDeCarga
                                             'en_tienda', 'destacado', 'en_oferta', 'precio_pausado', 'es_insumo', 'aplica_margen_del_proveedor', 'aplicar_iva', 'costo_en_dolares', 'disponible_tienda_nube',
                                             // Misión agente-mejoras-uso-real (E2): al final.
                                             'stock_minimo', 'stock_maximo',
+                                            // Misión asistente-truvari-pedidos-fallidos (B1): al final, solo con Vinoteca.
+                                            'bodega', 'cepa',
                                         ],
                                     ],
                                     'operacion' => [
                                         'type'        => 'string',
                                         'enum'        => ['setear', 'subir_porcentaje', 'bajar_porcentaje', 'asignar', 'activar', 'desactivar'],
-                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor. stock_minimo y stock_maximo: solo setear, con un entero.',
+                                        'description' => 'precio_final: solo subir_porcentaje o bajar_porcentaje, con el porcentaje en valor (el precio final se calcula, no se setea). Numéricos (margen_de_ganancia, precio_manual, costo, stock, precio_promocional, margen_de_ganancia_blanco): setear un valor, o subir_porcentaje / bajar_porcentaje con el porcentaje en valor. Proveedor, categoría, subcategoría, marca, IVA y unidad de medida: asignar, con el NOMBRE en valor (el IVA por su porcentaje: "21"). Los de sí/no (en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube): activar o desactivar, sin valor. stock_minimo y stock_maximo: solo setear, con un entero. bodega y cepa (solo con el módulo Vinoteca): asignar, con el NOMBRE en valor.',
                                     ],
                                     'valor'     => [
                                         'type'        => ['number', 'string'],
@@ -1090,7 +1099,7 @@ class HerramientasDeCarga
                                     ],
                                     'cantidad'        => [
                                         'type'        => 'number',
-                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el precio del artículo es el de la caja o presentación (la tarjeta lo muestra como "(caja de N)"), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
                                     ],
                                     'precio_unitario' => [
                                         'type'        => 'number',
@@ -1256,7 +1265,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_stock_en_deposito',
-                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 a Florida" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si el negocio no tiene depósitos ni sucursales, no mandes deposito: la tarjeta deja el stock TOTAL del artículo con el mismo modo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es una carga hecha.',
+                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 en el depósito" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si el negocio no tiene depósitos o tiene una sola sucursal, no mandes deposito ni preguntes a cuál va: la tarjeta deja el stock TOTAL del artículo con el mismo modo. Nunca inventes el nombre de un depósito: van solo los que devuelve consultar_stock_por_deposito. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es una carga hecha.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1270,7 +1279,7 @@ class HerramientasDeCarga
                         ],
                         'deposito'    => [
                             'type'        => 'string',
-                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito. Si el negocio no tiene depósitos, no lo mandes: la tarjeta deja el stock total del artículo.',
+                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito. Si el negocio no tiene depósitos o tiene una sola sucursal, no lo mandes: la tarjeta deja el stock total del artículo.',
                         ],
                         'cantidad'    => [
                             'type'        => 'number',
@@ -1295,7 +1304,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_presupuesto',
-                'description'  => 'Arma la tarjeta de un PRESUPUESTO por el mismo camino que el "guardar como presupuesto" de la pantalla de Vender: NO vende nada y NO descuenta stock. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. 🔴 El cliente es obligatorio: un presupuesto es para alguien, y de ahí sale la lista de precios. Un presupuesto no toca stock, ni caja, ni cuenta corriente: eso pasa recién cuando la persona lo confirma desde la pantalla de Presupuestos, y eso NO lo hacés vos. Después de crearlo podés pasar el link del PDF con consultar_link_de_pdf. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un PRESUPUESTO por el mismo camino que el "guardar como presupuesto" de la pantalla de Vender: NO vende nada y NO descuenta stock. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. 🔴 El cliente es obligatorio: un presupuesto es para alguien, y de ahí sale la lista de precios. Un presupuesto no toca stock, ni caja, ni cuenta corriente: eso pasa recién cuando la persona lo confirma desde la pantalla de Presupuestos, y eso NO lo hacés vos. Después de crearlo podés pasar el link del PDF con consultar_link_de_pdf. 🔴 Un presupuesto ya creado NO se corrige con esta herramienta: llamarla de nuevo crea uno NUEVO con otro número y el anterior sigue existiendo; si la respuesta trae presupuesto_anterior, decíselo así a la persona (nunca "corregí el N° X") y ofrecé borrar el anterior con proponer_borrado_por_pantalla (ruta api/budget/{budget}, parametros {"numero": N}). Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1317,7 +1326,7 @@ class HerramientasDeCarga
                                     ],
                                     'cantidad'        => [
                                         'type'        => 'number',
-                                        'description' => 'Cuántas unidades. Mayor a 0.',
+                                        'description' => 'Cuántas unidades DE VENTA del artículo, como figura en el Listado. Mayor a 0. Si el precio del artículo es el de la caja o presentación (la tarjeta lo muestra como "(caja de N)"), "una caja" es 1: nunca la multipliques por las botellas o unidades que trae adentro.',
                                     ],
                                     'precio_unitario' => [
                                         'type'        => 'number',
@@ -1788,6 +1797,32 @@ class HerramientasDeCarga
             ], 'required' => ['consulta_id']],
         ];
 
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (C2, 13/11/2026): los avisos del dueño por WhatsApp. UNA
+         * propuesta al final, para conservar el prefijo de caché de las de antes.
+         */
+        $definiciones[] = [
+            'name' => 'proponer_avisos_por_whatsapp',
+            'description' => 'Prende o apaga los AVISOS AUTOMÁTICOS que le llegan al dueño por este WhatsApp: (1) pedidos nuevos de la tienda online, «al toque» (un mensaje por pedido, con el número, el comprador y el total) o en HORAS FIJAS (un resumen en cada hora con los pedidos que entraron desde la hora anterior; si no entró ninguno, ese mensaje no sale), y (2) artículos que se quedan sin stock (stock en cero o menos por una venta o un movimiento; uno por artículo y por día). '
+                . 'Usala cuando la persona te pida «avisame cuando entre un pedido», «revisá a las 8, 12, 16 y 22 si hay pedidos y avisame» o «avisame cuando algo llegue a stock cero»: NO armes una tarea de la agenda para eso (una tarea solo recuerda, no revisa nada) ni lo pidas a soporte. '
+                . 'Mandá solo lo que cambia. Los avisos arrancan desde que se confirma: lo anterior no se avisa. '
+                . 'La respuesta trae "aviso" cuando no van a llegar siempre (fuera de las 24 h desde el último mensaje de la persona, o si el canal todavía no está activo): contalo tal cual y no prometas otra cosa. Si trae "faltan", preguntá eso; si trae "error", contá ese motivo.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'pedidos_tienda' => [
+                    'type'        => 'string',
+                    'enum'        => AvisosDelDuenoIaHelper::MODOS_DE_PEDIDOS,
+                    'description' => 'al_toque: un aviso por cada pedido nuevo. horas: un resumen en las horas fijas de `horas`. apagado: sin avisos de pedidos.',
+                ],
+                'horas' => [
+                    'type'        => 'array',
+                    'items'       => ['type' => 'string'],
+                    'description' => 'Con pedidos_tienda = horas: las horas del día en "HH:MM" ("8 de la mañana" es "08:00", "10 de la noche" es "22:00").',
+                ],
+                'stock_cero' => ['type' => 'boolean', 'description' => 'true prende el aviso de artículos sin stock; false lo apaga.'],
+                'reemplaza_a' => ['type' => 'integer'],
+            ]],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2041,6 +2076,15 @@ class HerramientasDeCarga
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
 
         switch ($tool_name) {
+
+            // C2 de asistente-truvari-pedidos-fallidos: como una tarea, en "directo" se hace en el acto.
+            case 'proponer_avisos_por_whatsapp':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaAvisosDelDuenoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_descripcion_verificada':
                 // Publica información de fuentes externas: el texto y las fuentes se revisan antes del sí.
@@ -2747,7 +2791,7 @@ class HerramientasDeCarga
     {
         return [
             'type'        => 'array',
-            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Solo en contar_articulos_por_filtro: margen_en_lista (el margen de cada LISTA DE PRECIO) → igual, mayor, menor con el porcentaje, y precio_fijo_en_lista → igual si o no, los dos con lista = el nombre de la lista o "cualquiera"; con listas de precio, margen_de_ganancia (el del artículo) no arma el precio y se rechaza. Lista vacía = sin filtro.',
+            'description' => 'Los filtros que tienen que cumplir los artículos, TODOS a la vez. Por campo: proveedor, categoria, sub_categoria, marca → igual (valor = el NOMBRE), en_blanco, no_en_blanco. nombre, codigo_de_barras, codigo_de_proveedor, sku, plu, descripcion, titulo_seo → contiene, igual, en_blanco, no_en_blanco. costo, precio_final, precio_manual, margen_de_ganancia, stock, stock_minimo, precio_promocional, margen_de_ganancia_blanco, precio_final_blanco, costo_real, medida, unidades_individuales → igual, mayor, menor, en_blanco, no_en_blanco. precio_actualizado, stock_actualizado, fecha_de_alta, fecha_de_modificacion → desde, hasta (los dos inclusivos), igual, mayor, menor, en_blanco, no_en_blanco, con el valor como AAAA-MM-DD ("el precio no se actualizó desde junio" es precio_actualizado hasta 2026-06-01). en_tienda, destacado, en_oferta, precio_pausado, es_insumo, aplica_margen_del_proveedor, aplicar_iva, costo_en_dolares, disponible_tienda_nube, en_mercado_libre, omitir_en_lista_pdf → igual con valor si o no. imagen → en_blanco (sin imagen) o no_en_blanco (con imagen). Solo en contar_articulos_por_filtro: margen_en_lista (el margen de cada LISTA DE PRECIO) → igual, mayor, menor con el porcentaje, y precio_fijo_en_lista → igual si o no, los dos con lista = el nombre de la lista o "cualquiera"; con listas de precio, margen_de_ganancia (el del artículo) no arma el precio y se rechaza. Solo si el negocio tiene el módulo Vinoteca: bodega y cepa → igual (valor = el NOMBRE), en_blanco, no_en_blanco (los filtros van todos juntos: para dos bodegas, una consulta o una tarjeta por bodega). Lista vacía = sin filtro.',
             'items'       => [
                 'type'       => 'object',
                 'properties' => [

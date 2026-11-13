@@ -142,6 +142,12 @@ class TarjetaPrometidaIaHelper
      * hecho. La de antes sigue con el dato VIEJO: el de verificación no lo decía, y el de la tarjeta de
      * antes la mandaría a confirmar justo lo que la persona acaba de corregir.
      */
+    /**
+     * D1 de la revisión independiente de la misión asistente-truvari-pedidos-fallidos: por texto, fuera de
+     * los pagos, lo que reemplaza la oración que daba por hecha una carga que no se hizo.
+     */
+    const AVISO_POR_TEXTO = 'Ojo: con este mensaje no quedó registrado ningún cambio. Si querés que lo haga, decime «dale» y lo preparo.';
+
     const AVISO_CORRECCION = 'Ojo: la tarjeta de antes todavía tiene el dato anterior: no la confirmes así; pedime que la corrija.';
 
     /**
@@ -283,6 +289,20 @@ class TarjetaPrometidaIaHelper
     const QUE_SE_CARGO = '(?:gasto|pago|cobro|venta|presupuesto|proveedor|cliente|tarea|combo|oferta|articulo|telefono|precio|stock|foto|imagen|permiso|categoria|subcategoria|recordatorio)(?:s|es)?';
 
     /** Los emojis y el markdown con los que el modelo abre o cierra una oración: "✅ Gasto registrado", "**Listo**". */
+    /*
+     * Revisión independiente de la misión asistente-truvari-pedidos-fallidos (D1, 13/11/2026): las formas
+     * con NÚMERO de A3 («quedó en 9 unidades», «dejé … en 6 unidades», «pasa a 6 unidades») solo con una
+     * cantidad de STOCK (unidades, cajas, botellas) o un PRECIO («el precio … quedó en $13.200»), y nunca en
+     * una oración de reporte o de cálculo: «Las ventas de octubre quedaron en $3.200.000», «El total quedó
+     * en $45.000», «El stock del Malbec quedó en 0 después de la venta de hoy», «Con un 10% de aumento, el
+     * Malbec pasa a $13.200». Ante la duda, no dispara.
+     */
+    const CANTIDAD_DE_STOCK = '\d[\d.,]*\s*(?:unidades|unidad|u|cajas|caja|botellas|botella)\b';
+
+    const CANTIDAD_DE_STOCK_O_PRECIO = '(?:\d[\d.,]*\s*(?:unidades|unidad|u|cajas|caja|botellas|botella)\b|\$\s?\d)';
+
+    const REPORTE_O_CALCULO = '/%|\b(?:ventas?|vendiste|vendido|vendida|total|totales|subtotal|saldos?|facturacion|facturado|deudas?|ganancias?|recaudacion|recaudado|promedio|dolar|cotizacion|compras?|gastos?|cobros?|ingresos?|egresos?|resultado|descuento|aumento|recargo|interes|cuotas?|despues|antes de|por la|por el|por las|por los|con el|con la|con un|con una|mas que|menos que|respecto|contra|si le|si lo|si la|si los|si las|si se|si vendes|si subis|si bajas)\b/u';
+
     const SIMBOLOS = '[\s*_~¡!✅✔☑👍👌🙌🎉📝\x{FE0F}]';
 
     /** Lo que puede abrir la oración antes de lo que se cargó: "Listo, agendada.", "✅ Perfecto: gasto registrado". */
@@ -1013,6 +1033,44 @@ class TarjetaPrometidaIaHelper
     }
 
     /**
+     * La nota del reintento de la carga dada por hecha en un canal que confirma POR TEXTO (WhatsApp, MCP),
+     * después de un sí (A1 de la misión asistente-truvari-pedidos-fallidos, 13/11/2026). Acá no hay
+     * tarjeta que nombrar: la carga se propone con la proponer_, queda hecha o esperando el sí, y eso es
+     * lo que el modelo cuenta.
+     *
+     * 🔴 EL CASO REAL (Truvari, 12/11/2026). «¿Lo cargo?» sin haber llamado a ninguna proponer_, el dueño
+     * contestó «Si» y el asistente dijo «Quedó en 9 unidades el Nieto Senetiner Brut Nature» sin nada
+     * hecho. El sí era a una propuesta que no existía: la nota le pide armarla AHORA.
+     *
+     * @param  array<int, string>  $herramientas_de_carga  Las de carga que el modelo pidió en el turno.
+     * @param  bool  $hay_propuesta  true si ESTE mensaje dejó una carga esperando el sí.
+     * @return string
+     */
+    public static function nota_para_reintentar_carga_por_texto(array $herramientas_de_carga, $hay_propuesta)
+    {
+        if ($hay_propuesta) {
+
+            return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero NO se ejecutó: quedó esperando que la persona te diga que sí. '
+                . 'Volvé a contestar con los datos exactos de lo que vas a cargar y preguntá si lo registrás, sin decir que ya está hecho. Sin la palabra tarjeta. '
+                . self::FRASE_DE_LA_RESPUESTA_COMPLETA
+                . 'No le menciones este aviso a la persona.]';
+        }
+
+        $pedidas = count($herramientas_de_carga)
+            ? 'Pediste ' . implode(', ', array_values(array_unique($herramientas_de_carga))) . ' y ninguna terminó en una carga: mirá lo que te contestó. '
+            : 'No llamaste a ninguna herramienta proponer_ ni a confirmar_carga_pendiente. ';
+
+        return '[El sistema revisó tu respuesta: dice que la carga ya quedó hecha, pero con este mensaje no se registró nada. '
+            . $pedidas
+            . 'Si la persona te dijo que sí a algo que le preguntaste antes, esa propuesta no existía: llamá AHORA a la herramienta proponer_ que corresponde con los datos que ya tenés, '
+            . 'y contá lo que te devuelva (si quedó hecha, con su número; si quedó esperando el sí, con los datos exactos y la pregunta de si lo registrás). '
+            . 'Si lo que dijiste ya figuraba registrado ANTES de este mensaje, NO lo cargues de nuevo: decí con qué número y fecha figura. '
+            . 'Si te faltan datos, pedíselos a la persona. '
+            . self::FRASE_DE_LA_RESPUESTA_COMPLETA
+            . 'No le menciones este aviso a la persona.]';
+    }
+
+    /**
      * Las oraciones del texto: se corta después de un punto, un signo de cierre o un salto de línea.
      * "400.000" o "15/10" no se cortan (no hay espacio después del punto).
      *
@@ -1627,6 +1685,16 @@ class TarjetaPrometidaIaHelper
             ['/\bapliqué\s+(?:el|la)\s+(?:descuento|recargo|oferta)/u', null],
             ['/\ble\s+(?:agregué|puse|sumé|saqué)\b/u', null],
             ['/\bbajé\s+(?:el|los)\s+precios?\b/u', null],
+            /*
+             * Misión asistente-truvari-pedidos-fallidos (A3, 13/11/2026). Truvari, por WhatsApp: «Dejé el
+             * stock del Aceite de Oliva Familia Zuccardi Coratina 500 ml en 6 unidades.» y «Corregí el
+             * presupuesto 25 con 1 unidad en cada renglón…», las dos sin ninguna carga hecha. El verbo
+             * con la CANTIDAD detrás (no «Te dejé el detalle abajo») y «corregí» con lo que se corrigió.
+             */
+            ['/\bdejé\b' . $v . '{0,80}?\ben\s+' . self::CANTIDAD_DE_STOCK_O_PRECIO . '/u', null, 'cantidad'],
+            ['/\bcorregí\b/u', '/^' . $adverbio . '(?:' . self::ENTIDAD_DE_CARGA . '|' . self::OBJETO_DE_UN_CAMBIO . '|(?:el|la|los|las) (?:cantidad|cantidades|renglon|renglones|unidades|total|importe)\b)/u'],
+            ['/\b(?:lo|la|los|las)\s+corregí\b/u', null],
+            ['/\bpuse\s+(?:el|la|los|las)\s+(?:stock|precio|costo|margen|cantidad|cantidades)\b/u', null],
         ];
     }
 
@@ -1650,6 +1718,12 @@ class TarjetaPrometidaIaHelper
             ['/^' . self::APERTURA . '(?:(?:el|la|los|las) )?' . self::PARTICIPIO_AL_EMPEZAR . '\b/u', 'b'],
             /* (c) "Gasto N° 3 registrado", "Proveedor Distribuidora Norte creado", "Teléfono actualizado". */
             ['/^' . self::APERTURA . '(?:(?:el|la|los|las) )?' . self::QUE_SE_CARGO . '\b(?P<entre>' . $v . '{0,40}?)\b' . $participio . '\b/u', 'c'],
+            /*
+             * (a) con la CANTIDAD en vez del participio (A3 de la misión asistente-truvari-pedidos-fallidos):
+             * «Quedó en 9 unidades el Nieto Senetiner Brut Nature.», «Quedó el NIETO SENETINER BRUT NATURE
+             * en 9 unidades.», «Ya está en 6». Truvari lo leyó dos veces con el stock sin tocar.
+             */
+            ['/\b(?:quedo|quedaron)\b(?P<entre>' . $v . '{0,60}?)\ben\s+' . self::CANTIDAD_DE_STOCK_O_PRECIO . '/u', 'n'],
         ];
     }
 
@@ -1676,6 +1750,15 @@ class TarjetaPrometidaIaHelper
             '/\b(?:te|le|les)\s+(?:cargo|registro|agendo)\s+(?:el|la|un|una)\s+(?:gasto|pago|cobro|venta|tarea|recordatorio|presupuesto|compra)/u',
             /* "Le cambio el teléfono". */
             '/\ble\s+cambio\s+(?:el|la)\s+(?:tel[eé]fono|precio|fecha|nombre|direcci[oó]n|mail|stock|categor[ií]a)/u',
+            /*
+             * A3 de la misión asistente-truvari-pedidos-fallidos (13/11/2026): «El aceite … pasa a 6 unidades
+             * de stock.», «Dejo el Nieto Senetiner Brut Nature en 9 unidades.», «Corrijo el presupuesto 25…».
+             * Con la pregunta al final («¿Lo cargo?») no prometen nada: lo mira la guarda de la carga sin
+             * propuesta (CargaSinPropuestaIaHelper).
+             */
+            '/\b(?:pasa|pasan)\s+a\s+(?:tener\s+)?' . self::CANTIDAD_DE_STOCK . '/u',
+            '/\bdejo\b(?:[^.!?\n]|(?<=\d)\.(?=\d)){0,80}?\ben\s+' . self::CANTIDAD_DE_STOCK_O_PRECIO . '/u',
+            '/\bcorrijo\s+(?:el|la|los|las)\s+(?:presupuesto|venta|pedido|precio|stock|gasto|pago|cantidad|cantidades|renglón|renglones|compra|tarea)/u',
         ];
     }
 
@@ -1705,6 +1788,11 @@ class TarjetaPrometidaIaHelper
                  * cargué mal el monto, avisame" no.
                  */
                 if (self::lo_de_antes_desarma_la_carga($antes, $antes_con_tildes)) {
+                    continue;
+                }
+
+                /* D1 de la revisión: la forma con número, solo con stock o precio y fuera de un reporte. */
+                if (isset($patron[2]) && $patron[2] === 'cantidad' && ! self::cantidad_de_una_carga($normalizada, $coincidencia[0])) {
                     continue;
                 }
 
@@ -1784,7 +1872,12 @@ class TarjetaPrometidaIaHelper
                     continue;
                 }
 
-                if ($patron[1] === 'a' && (preg_match(self::YA_EXISTIA, $normalizada) || preg_match(self::DEMOSTRATIVO, $antes_con_tildes))) {
+                if (($patron[1] === 'a' || $patron[1] === 'n') && (preg_match(self::YA_EXISTIA, $normalizada) || preg_match(self::DEMOSTRATIVO, $antes_con_tildes))) {
+                    continue;
+                }
+
+                /* D1 de la revisión: la forma con número, solo con stock o precio y fuera de un reporte. */
+                if ($patron[1] === 'n' && ! self::cantidad_de_una_carga($normalizada, $coincidencia[0][0])) {
                     continue;
                 }
 
@@ -1838,6 +1931,11 @@ class TarjetaPrometidaIaHelper
                     continue;
                 }
 
+                /* D1 de la revisión: «pasa a 6 unidades», «dejo … en 9 unidades», solo fuera de un reporte o un cálculo. */
+                if (preg_match('/\d/u', $coincidencia[0]) && ! self::cantidad_de_una_carga($normalizada, $coincidencia[0])) {
+                    continue;
+                }
+
                 if (self::la_coincidencia_afirma('promesa', $normalizada, $antes, $anterior)) {
 
                     return true;
@@ -1876,6 +1974,49 @@ class TarjetaPrometidaIaHelper
             || preg_match(self::NEGACION_PEGADA, $antes)
             || preg_match(self::NEGACION_DE_CANTIDAD, $antes)
             || preg_match(self::RELATIVO, $antes));
+    }
+
+    /**
+     * true si la cantidad de una forma con número de A3 es la de una carga: de stock, o un precio en una
+     * oración que habla del precio; y la oración no es un reporte ni un cálculo (D1 de la revisión
+     * independiente de la misión asistente-truvari-pedidos-fallidos).
+     *
+     * @param  string  $normalizada  La oración normalizada.
+     * @param  string  $coincidencia  Lo que coincidió del patrón.
+     * @return bool
+     */
+    protected static function cantidad_de_una_carga($normalizada, $coincidencia)
+    {
+        if (preg_match(self::REPORTE_O_CALCULO, $normalizada)) {
+
+            return false;
+        }
+
+        if (strpos($coincidencia, '$') !== false) {
+
+            return (bool) preg_match('/\bprecios?\b/u', $normalizada);
+        }
+
+        return true;
+    }
+
+    /**
+     * El texto sin las oraciones que dan por hecha una carga, con el aviso al final (D1 de la revisión
+     * independiente de la misión asistente-truvari-pedidos-fallidos): por texto, fuera de los pagos, se
+     * cambia solo lo que miente y el resto de la respuesta queda.
+     *
+     * @param  string  $texto
+     * @param  string  $aviso
+     * @return string
+     */
+    public static function sin_las_cargas_dadas_por_hechas($texto, $aviso)
+    {
+        return VeracidadDelTurnoIaHelper::reemplazar_oraciones($texto, function ($oracion, $indice, array $todas) {
+
+            $anterior = $indice > 0 ? self::normalizar($todas[$indice - 1]) : '';
+
+            return in_array(self::tipo_de_carga_de_la_oracion($oracion, $anterior), ['hecho', 'quedo', 'promesa', 'cierre'], true) ? '' : null;
+        }, $aviso);
     }
 
     /**

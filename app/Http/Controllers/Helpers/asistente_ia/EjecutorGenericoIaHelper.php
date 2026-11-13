@@ -125,6 +125,8 @@ class EjecutorGenericoIaHelper
 
         $payload = self::payload($declaracion, $operacion, $datos, $id);
 
+        AltaBebidasIaHelper::verificar($contexto, $datos);
+
         /*
          * 🔴 Misión alta-por-agente-margen-y-stock (29/9/2026, demo3 artículo 17320): el margen por
          * lista entra al controller como el `price_types` que manda la ficha, NO como un campo
@@ -170,6 +172,17 @@ class EjecutorGenericoIaHelper
         }
 
         $resultado = self::resultado($contexto, $declaracion, $operacion, $id, $pedidos, $fila);
+        if (isset($datos[AltaBebidasIaHelper::CLAVE])) {
+            $guardado = DB::table('articles')->where('id', $id)->where('user_id', $contexto->owner_id)->first();
+            $resultado['bebida_guardada'] = [
+                'presentacion' => $guardado->presentacion,
+                'botellas_por_caja' => isset($payload['unidades_por_bulto']) ? $guardado->unidades_por_bulto : null,
+                'caja_solo_para_conversion' => !isset($payload['unidades_por_bulto']),
+            ];
+            $resultado['texto'] .= isset($payload['unidades_por_bulto'])
+                ? ' Botellas por caja guardadas: '.$guardado->unidades_por_bulto.'.'
+                : ' La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.';
+        }
 
         /*
          * Misión asistente-fotos-barras-y-compras (24/9/2026): el alta de un artículo puede traer su

@@ -96,13 +96,14 @@ class ImagenPrometidaIaHelper
 
     /**
      * Un pedido de generar: verbo de pedido + artículo INDEFINIDO + lo que se genera («haceme UNA imagen»,
-     * «me armás UN flyer»). Con el definido («¿me hacés el presupuesto con LA imagen?», «mandale LA imagen
+     * «me armás UN flyer»), también con un complemento en el medio («generá para ese producto una imagen de
+     * 6 botellas», Truvari, 12/11/2026). Con el definido («¿me hacés el presupuesto con LA imagen?», «mandale LA imagen
      * del comprobante») es una imagen que ya existe. Y un mensaje que arranca con lo que se genera («un
      * flyer para la promo», «imagen para redes del chaleco»). `{QUE}` es QUE_SE_PIDE o
      * QUE_SE_PIDE_CON_CONTEXTO.
      */
     const PATRONES_DEL_PEDIDO = [
-        '/(*UCP)\b(?:haceme|hacenos|hacele|generame|generanos|generale|creame|creanos|disename|disenanos|armame|armanos|armale|preparame|preparanos|dibujame|dame|danos|mandame|' . self::MARCA_DE_IMPERATIVO . ')\s+(?:(?:una|un|unas|unos|otra|otro)\s+)(?:\S+\s+){0,2}?' . self::QUE . '\b/u',
+        '/(*UCP)\b(?:haceme|hacenos|hacele|generame|generanos|generale|creame|creanos|disename|disenanos|armame|armanos|armale|preparame|preparanos|dibujame|dame|danos|mandame|' . self::MARCA_DE_IMPERATIVO . ')\s+(?:(?:para|de|del|con)\s+(?:\S+\s+){1,3}?)?(?:(?:una|un|unas|unos|otra|otro)\s+)(?:\S+\s+){0,2}?' . self::QUE . '\b/u',
         '/(*UCP)\b(?:me (?:haces|hace|generas|genera|creas|crea|disenas|disena|armas|arma|preparas|prepara|dibujas|podes hacer|podes generar|podes crear|podes armar|podrias hacer|podrias generar|podrias armar)|(?:podes|podrias|podra|puede|podran) (?:hacer|generar|crear|disenar|armar|preparar|dibujar)(?:me|nos)?|se puede (?:hacer|generar|crear|armar)|te pido|les pido|le pido|pido)\s+(?:(?:una|un|unas|unos|otra|otro)\s+)(?:\S+\s+){0,2}?' . self::QUE . '\b/u',
         '/(*UCP)\b(?:quiero|necesito|queria|necesitaria|quisiera)\s+(?:que\s+(?:me\s+)?(?:hagas|generes|crees|disenes|armes|prepares|dibujes)\s+)?(?:una|un|unas|unos|otra|otro)\s+(?:\S+\s+){0,2}?' . self::QUE . '\b/u',
         '/(*UCP)^(?:(?:una|un|otra|otro)\s+)?' . self::QUE . '\s+(?:para|de|del|con)\b/u',
@@ -151,6 +152,7 @@ class ImagenPrometidaIaHelper
     const PATRONES_CON_PEDIDO_DE_IMAGEN = [
         '/(*UCP)(?:^|[\s,;:¡!])(?:ya\s+)?la\s+pedí\b/u',
         '/(*UCP)\baparece (?:acá|aquí|sola)\b(?:[^.!?\n]){0,30}?cuando (?:esté|este) lista\b/u',
+        '/(*UCP)\bte la (?:mando|paso|envío|envio)\b(?:[^.!?\n]){0,30}?cuando (?:esté|este) lista\b/u',
         '/(*UCP)\bla estoy (?:generando|haciendo|armando|creando|preparando|diseñando)\b/u',
         '/(*UCP)\bse está (?:generando|haciendo|armando|creando|preparando|diseñando)\b/u',
         '/(*UCP)\b(?:la )?puse en marcha\b/u',
@@ -161,7 +163,7 @@ class ImagenPrometidaIaHelper
      * «está en camino»). Si la vuelta anterior la pidió de verdad y la persona no pidió otra, una oración
      * así habla de esa imagen y no es una promesa sin pedido. «Te hice la imagen» no es un estado.
      */
-    const ESTADO_DE_LA_YA_PEDIDA = '/(*UCP)(?:^|[\s,;:¡!])(?:ya\s+)?(?:la\s+)?pedí\b|\b(?:quedó pedida|está pedida|ya está pedida|se está (?:generando|haciendo|armando|creando|preparando|diseñando)|la estoy (?:generando|haciendo|armando|creando|preparando|diseñando)|está en camino|va a aparecer|aparece (?:acá|aquí|sola|en este)|en marcha)\b/u';
+    const ESTADO_DE_LA_YA_PEDIDA = '/(*UCP)(?:^|[\s,;:¡!])(?:ya\s+)?(?:la\s+)?pedí\b|\b(?:quedó pedida|está pedida|ya está pedida|se está (?:generando|haciendo|armando|creando|preparando|diseñando)|la estoy (?:generando|haciendo|armando|creando|preparando|diseñando)|está en camino|va a aparecer|aparece (?:acá|aquí|sola|en este)|te la (?:mando|paso|envío|envio) por (?:acá|aquí)|en marcha)\b/u';
 
     /** Lo que dice que es OTRA imagen y no la ya pedida («la imagen vertical», «la nueva placa», «otra versión»). */
     const OTRA_IMAGEN = '/(*UCP)\b(?:otra|otras|otro|otros|nueva|nuevas|nuevo|segunda|versión|distinta|vertical|horizontal|cuadrada)\b/u';
@@ -358,14 +360,20 @@ class ImagenPrometidaIaHelper
      * TextoFinalIaHelper saca ese renglón. No le ordena llamar a la herramienta a ciegas: si le falta un
      * dato, lo correcto es preguntarlo.
      *
+     * @param  bool  $por_whatsapp  true en un turno de WhatsApp: la imagen se manda por el chat (C1).
      * @return string
      */
-    public static function nota_para_reintentar(): string
+    public static function nota_para_reintentar($por_whatsapp = false): string
     {
+        /* C1 de asistente-truvari-pedidos-fallidos (13/11/2026): por WhatsApp la imagen no aparece en el mensaje. */
+        $como_llega = $por_whatsapp
+            ? 'que la pediste y que se la mandás por acá cuando esté lista'
+            : 'que la pediste y que aparece acá cuando esté lista';
+
         return '[El sistema revisó tu respuesta: la persona pidió que se genere una imagen (o tu respuesta dice que la pediste), '
             . 'pero en este turno NO llamaste a pedir_imagen, así que NO se pidió ninguna imagen. '
             . 'Si tenés los datos (qué tiene que mostrar y el tamaño), llamá a pedir_imagen con un prompt detallado; si te falta algo, preguntáselo a la persona. '
-            . 'Si la pedís, decí en una línea que la pediste y que aparece acá cuando esté lista, sin prometer tiempos; si no, no digas que la pediste. '
+            . 'Si la pedís, decí en una línea ' . $como_llega . ', sin prometer tiempos; si no, no digas que la pediste. '
             . 'Pedir una imagen no autoriza a preparar promociones, envíos ni mensajes a clientes: no los armes si la persona no los pidió. '
             . 'No le menciones este aviso a la persona.]';
     }

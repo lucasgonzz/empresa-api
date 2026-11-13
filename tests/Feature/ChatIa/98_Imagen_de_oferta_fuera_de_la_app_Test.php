@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Models\AiConversation;
 use App\Models\User;
@@ -17,6 +18,12 @@ use Tests\EmpresaTestCase;
  * la app ComercioCity IA (ia.comerciocity.com, con el mismo usuario) cuando el negocio la tiene, a pedírsela al
  * dueño cuando escribe un empleado sin acceso, y condicional sin la extensión. En la app, nada (ahí está
  * pedir_imagen). Nunca «no se puede».
+ *
+ * 🔴 DESDE EL 13/11/2026 (misión asistente-truvari-pedidos-fallidos, C1) POR WHATSAPP YA NO SE MANDA A LA APP
+ * cuando se puede cumplir ahí: con la extensión, alguien que puede usar el asistente y el admin anunciando que
+ * consulta los avisos, el prompt de WhatsApp dice «pedilas con pedir_imagen… te la mando por acá». Los casos de
+ * abajo sin ese anuncio siguen valiendo tal cual (sin él la imagen no le llegaría nunca); el caso nuevo es
+ * por_whatsapp_con_el_anuncio_de_avisos_la_pide_y_no_manda_a_la_app().
  *
  * 🔴 Nada sale a la red.
  *
@@ -80,6 +87,34 @@ class Imagen_de_oferta_fuera_de_la_app_Test extends EmpresaTestCase
 
         $this->assertStringNotContainsString('ia.comerciocity.com', $app);
         $this->assertStringContainsString('pedir_imagen', $app);
+    }
+
+    /**
+     * 🔴 C1 (13/11/2026): por WhatsApp, con la extensión y el anuncio de avisos del admin, la imagen se pide
+     * ahí y vuelve por el mismo chat; el sistema sigue mandando a la app.
+     *
+     * @test
+     */
+    public function por_whatsapp_con_el_anuncio_de_avisos_la_pide_y_no_manda_a_la_app()
+    {
+        AvisosDelAsistenteHelper::anunciar($this->dueno->id, '1', 'https://ferretotal.comerciocity.com');
+
+        $servicio = new AsistenteIaService();
+        $conversation = $this->conversacion_de();
+
+        foreach ([true, false] as $con_acciones) {
+
+            $whatsapp = $servicio->build_system_prompt($conversation, $this->dueno->fresh(), $con_acciones, true);
+
+            $this->assertStringContainsString('pedilas con pedir_imagen', $whatsapp);
+            $this->assertStringContainsString('te la mando por acá cuando esté lista', $whatsapp);
+            $this->assertStringContainsString('No la mandes a otra app ni digas que no se puede', $whatsapp);
+            $this->assertStringNotContainsString('ia.comerciocity.com', $whatsapp);
+
+            $sistema = $servicio->build_system_prompt($conversation, $this->dueno->fresh(), $con_acciones, false);
+
+            $this->assertStringContainsString('la app ComercioCity IA (ia.comerciocity.com), entrando con el', $sistema);
+        }
     }
 
     /**
