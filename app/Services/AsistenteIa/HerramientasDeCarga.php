@@ -13,6 +13,8 @@ use App\Http\Controllers\Helpers\asistente_ia\EntradaDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\OpcionesDeCargaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FiltroDeArticulosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaActualizacionMasivaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDelDuenoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaAvisosDelDuenoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCuotasTiendaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
@@ -215,6 +217,11 @@ class HerramientasDeCarga
         AiMessageAction::TIPO_CAMBIO_PROVEEDOR_COMPRA,
         /* El reescaneo de una factura que falló: en "directo" también (está en los de "resuelto"). */
         AiMessageAction::TIPO_REINTENTO_ESCANEO,
+        /*
+         * Los avisos del dueño por WhatsApp (misión asistente-truvari-pedidos-fallidos, C2, 13/11/2026): solo
+         * cambian preferencias del propio dueño y se deshacen con otra igual, como una tarea de la agenda.
+         */
+        AiMessageAction::TIPO_AVISOS_DEL_DUENO,
     ];
 
     /**
@@ -475,7 +482,7 @@ class HerramientasDeCarga
                         ],
                         'hora'            => [
                             'type'        => 'string',
-                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. No prometas un aviso por WhatsApp a esa hora: el resultado de la tarea confirmada (su "aviso") dice si le llega un recordatorio y cómo decírselo.',
+                            'description' => 'HH:MM, solo si la persona dijo una hora ("a las 10" es "10:00"). Queda escrita en la tarea. No prometas un aviso por WhatsApp a esa hora: el resultado de la tarea confirmada (su "aviso") dice si le llega un recordatorio y cómo decírselo. Si lo que piden es que les avises cuando entra un pedido de la tienda o cuando algo se queda sin stock, eso no es una tarea: es proponer_avisos_por_whatsapp.',
                         ],
                         'repetir'         => self::esquema_de_repeticion(),
                         'subcategoria_id' => [
@@ -1790,6 +1797,32 @@ class HerramientasDeCarga
             ], 'required' => ['consulta_id']],
         ];
 
+        /*
+         * Misión asistente-truvari-pedidos-fallidos (C2, 13/11/2026): los avisos del dueño por WhatsApp. UNA
+         * propuesta al final, para conservar el prefijo de caché de las de antes.
+         */
+        $definiciones[] = [
+            'name' => 'proponer_avisos_por_whatsapp',
+            'description' => 'Prende o apaga los AVISOS AUTOMÁTICOS que le llegan al dueño por este WhatsApp: (1) pedidos nuevos de la tienda online, «al toque» (un mensaje por pedido, con el número, el comprador y el total) o en HORAS FIJAS (un resumen en cada hora con los pedidos que entraron desde la hora anterior; si no entró ninguno, ese mensaje no sale), y (2) artículos que se quedan sin stock (stock en cero o menos por una venta o un movimiento; uno por artículo y por día). '
+                . 'Usala cuando la persona te pida «avisame cuando entre un pedido», «revisá a las 8, 12, 16 y 22 si hay pedidos y avisame» o «avisame cuando algo llegue a stock cero»: NO armes una tarea de la agenda para eso (una tarea solo recuerda, no revisa nada) ni lo pidas a soporte. '
+                . 'Mandá solo lo que cambia. Los avisos arrancan desde que se confirma: lo anterior no se avisa. '
+                . 'La respuesta trae "aviso" cuando no van a llegar siempre (fuera de las 24 h desde el último mensaje de la persona, o si el canal todavía no está activo): contalo tal cual y no prometas otra cosa. Si trae "faltan", preguntá eso; si trae "error", contá ese motivo.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'pedidos_tienda' => [
+                    'type'        => 'string',
+                    'enum'        => AvisosDelDuenoIaHelper::MODOS_DE_PEDIDOS,
+                    'description' => 'al_toque: un aviso por cada pedido nuevo. horas: un resumen en las horas fijas de `horas`. apagado: sin avisos de pedidos.',
+                ],
+                'horas' => [
+                    'type'        => 'array',
+                    'items'       => ['type' => 'string'],
+                    'description' => 'Con pedidos_tienda = horas: las horas del día en "HH:MM" ("8 de la mañana" es "08:00", "10 de la noche" es "22:00").',
+                ],
+                'stock_cero' => ['type' => 'boolean', 'description' => 'true prende el aviso de artículos sin stock; false lo apaga.'],
+                'reemplaza_a' => ['type' => 'integer'],
+            ]],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2043,6 +2076,15 @@ class HerramientasDeCarga
         $contexto = ContextoDeCargaIa::de_la_conversacion($conversation);
 
         switch ($tool_name) {
+
+            // C2 de asistente-truvari-pedidos-fallidos: como una tarea, en "directo" se hace en el acto.
+            case 'proponer_avisos_por_whatsapp':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaAvisosDelDuenoIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
 
             case 'proponer_descripcion_verificada':
                 // Publica información de fuentes externas: el texto y las fuentes se revisan antes del sí.

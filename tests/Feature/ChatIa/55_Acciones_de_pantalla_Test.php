@@ -518,16 +518,19 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
          * agente-cuotas-tienda (2/11/2026) agrega proponer_cuotas_tienda al final: -13, -9 y -3.
          * Se conserva y verifica todo el prefijo anterior; solo se incorpora el nuevo nombre al final.
          * Fichas verificadas (12/11/2026) suma proponer_descripcion_verificada: -14, -10 y -4.
+         * Los avisos del dueño (asistente-truvari-pedidos-fallidos, C2, 13/11/2026) suman
+         * proponer_avisos_por_whatsapp al final: -15, -11 y -5 (los nombres esperados no cambiaron).
          */
         $this->assertSame(
             ['que_acciones_de_pantalla_hay', 'consultar_por_pantalla', 'proponer_accion_de_pantalla', 'proponer_borrado_por_pantalla'],
-            array_slice($nombres, -14, 4)
+            array_slice($nombres, -15, 4)
         );
         $this->assertSame(
             ['proponer_envio_de_comprobante', 'proponer_recordatorios_de_cobro', 'proponer_promocion_por_whatsapp'],
-            array_slice($nombres, -10, 3)
+            array_slice($nombres, -11, 3)
         );
-        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -4));
+        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -5, 4));
+        $this->assertSame(['proponer_avisos_por_whatsapp'], array_slice($nombres, -1));
 
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 

@@ -786,7 +786,8 @@ class Acciones_service_y_job_Test extends TestCase
         // El número se toca SOLO cuando se agrega o se saca una herramienta a propósito: si se mueve
         // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
         // Fichas verificadas agrega UNA propuesta al final; se conserva cada prefijo y su despacho.
-        $this->assertCount(46, HerramientasDeCarga::definiciones());
+        // asistente-truvari-pedidos-fallidos (C2, 13/11/2026) agrega proponer_avisos_por_whatsapp al final.
+        $this->assertCount(47, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -874,6 +875,8 @@ class Acciones_service_y_job_Test extends TestCase
                 'armar_texto_de_promocion',
                 'proponer_cuotas_tienda',
                 'proponer_descripcion_verificada',
+                // asistente-truvari-pedidos-fallidos (C2, 13/11/2026), al final de todo.
+                'proponer_avisos_por_whatsapp',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
         );

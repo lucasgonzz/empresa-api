@@ -119,6 +119,13 @@ class AiMessageAction extends Model
     const TIPO_DESCRIPCION_VERIFICADA = 'descripcion_verificada';
 
     /**
+     * Prender o apagar los avisos del dueño por WhatsApp: pedidos nuevos de la tienda y artículos sin stock
+     * (misión asistente-truvari-pedidos-fallidos, C2, 13/11/2026). Solo cambia preferencias del dueño y se
+     * deshace con otra tarjeta igual: en "directo" se hace en el acto, como una tarea de la agenda.
+     */
+    const TIPO_AVISOS_DEL_DUENO = 'avisos_del_dueno';
+
+    /**
      * Colgarle a un ARTÍCULO una foto que el dueño mandó (misión asistente-ventas-y-fotos,
      * 21/9/2026). Es la hermana de TIPO_FOTO_SUCURSAL y la mecánica de la foto es la misma, pero
      * 🔴 NO ENTRA en HerramientasDeCarga::AUTO_CONFIRMABLES, ni siquiera con el dueño en "resuelto"

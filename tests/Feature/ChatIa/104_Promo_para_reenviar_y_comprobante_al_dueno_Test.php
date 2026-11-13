@@ -446,10 +446,11 @@ class Promo_para_reenviar_y_comprobante_al_dueno_Test extends EmpresaTestCase
         $this->assertSame(
             ['armar_texto_de_promocion', 'proponer_cuotas_tienda'],
             // Fichas verificadas se añade detrás de cuotas: el prefijo de promo/cuotas queda intacto.
-            array_slice($nombres, -3, 2),
+            // Los avisos del dueño (C2, 13/11/2026) se suman detrás de las fichas.
+            array_slice($nombres, -4, 2),
             'Las herramientas posteriores se agregan detrás del prefijo de promo y cuotas.'
         );
-        $this->assertSame(['proponer_descripcion_verificada'], array_slice($nombres, -1));
+        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp'], array_slice($nombres, -2));
         $this->assertTrue(HerramientasDeCarga::maneja('armar_texto_de_promocion'));
         $this->assertFalse(HerramientasDeCarga::es_de_carga('armar_texto_de_promocion'), 'No es una carga: no escala al Profundo.');
         $this->assertStringContainsString("case 'armar_texto_de_promocion':", file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php')));
