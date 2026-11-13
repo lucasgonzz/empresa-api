@@ -170,6 +170,34 @@ class Redondeo_por_venta_Test extends EmpresaTestCase
         $this->assertCount(2, $preview['avisos']);
         $this->assertNull($a->fresh()->consolidacion_facturacion_id);
         $this->assertNull($b->fresh()->consolidacion_facturacion_id);
+
+        $contenedoras = Sale::where('is_consolidacion_facturacion', 1)->count();
+        $stock = DB::table('articles')->where('id', $articulo->id)->value('stock');
+        $movimientos_stock = DB::table('stock_movements')->count();
+        $cuentas = CurrentAcount::count();
+        $comprobantes = AfipTicket::count();
+        $numero = $a->num ?? $a->id;
+        $mensaje = 'Los renglones de la venta N° '.$numero.' no llegan a su total con los ajustes disponibles. Revisá esa venta antes de consolidar.';
+        foreach ([true, false] as $agrupar) {
+            $rechazo = null;
+            try {
+                // Punto de venta 0: si se rompiera la guarda individual, la validación
+                // fiscal siguiente rechaza otro mensaje antes de conectarse a ARCA.
+                ConsolidarFacturacionHelper::consolidar([$a->id, $b->id], $this->cliente()->id,
+                    $this->usuario()->id, 0, 1, $agrupar, [], true);
+            } catch (\Exception $e) {
+                $rechazo = $e;
+            }
+            $this->assertNotNull($rechazo, 'La emisión debe rechazar las diferencias individuales aunque se compensen.');
+            $this->assertSame($mensaje, $rechazo->getMessage());
+            $this->assertSame($contenedoras, Sale::where('is_consolidacion_facturacion', 1)->count());
+            $this->assertNull($a->fresh()->consolidacion_facturacion_id);
+            $this->assertNull($b->fresh()->consolidacion_facturacion_id);
+            $this->assertSame($stock, DB::table('articles')->where('id', $articulo->id)->value('stock'));
+            $this->assertSame($movimientos_stock, DB::table('stock_movements')->count());
+            $this->assertSame($cuentas, CurrentAcount::count());
+            $this->assertSame($comprobantes, AfipTicket::count());
+        }
     }
 
     /** @test */
