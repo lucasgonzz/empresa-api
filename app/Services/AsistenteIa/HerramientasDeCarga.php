@@ -1258,7 +1258,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_stock_en_deposito',
-                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 a Florida" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si el negocio no tiene depósitos ni sucursales, no mandes deposito: la tarjeta deja el stock TOTAL del artículo con el mismo modo. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es una carga hecha.',
+                'description'  => 'Arma la tarjeta para dejar el stock de un artículo en UN depósito puntual, por el mismo camino que la edición de stock por sucursal del Listado. 🔴 El `modo` es obligatorio de entender bien: "sumar" le agrega esa cantidad a lo que ya hay, "restar" se la saca, y "fijar" lo deja exactamente en ese número. "Sumale 10 en el depósito" es modo sumar con cantidad 10, NO fijar 10. Es la única forma de ABRIRLE un depósito a un artículo que todavía no tiene stock ahí. Si el negocio no tiene depósitos o tiene una sola sucursal, no mandes deposito ni preguntes a cuál va: la tarjeta deja el stock TOTAL del artículo con el mismo modo. Nunca inventes el nombre de un depósito: van solo los que devuelve consultar_stock_por_deposito. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es una carga hecha.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1272,7 +1272,7 @@ class HerramientasDeCarga
                         ],
                         'deposito'    => [
                             'type'        => 'string',
-                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito. Si el negocio no tiene depósitos, no lo mandes: la tarjeta deja el stock total del artículo.',
+                            'description' => 'Nombre del depósito o sucursal, como los devuelve consultar_stock_por_deposito. Si el negocio no tiene depósitos o tiene una sola sucursal, no lo mandes: la tarjeta deja el stock total del artículo.',
                         ],
                         'cantidad'    => [
                             'type'        => 'number',
