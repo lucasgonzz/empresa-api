@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\Afip\AfipFexHelper;
+use App\Http\Controllers\Helpers\Afip\AfipImportesResolver;
 use App\Http\Controllers\Helpers\Afip\AfipWSAAHelper;
 use App\Http\Controllers\Helpers\Afip\AfipWsfeHelper;
 use App\Http\Controllers\Helpers\Afip\LeyendaIsibCabaHelper;
@@ -22,7 +23,9 @@ class AfipTicketController extends Controller
 
         $afip_helper = new AfipHelper($afip_ticket);
 
-        $importes = $afip_helper->getImportes();
+        $importes = $sale->is_consolidacion_facturacion
+            ? AfipImportesResolver::resolve($afip_ticket, $afip_helper)
+            : $afip_helper->getImportes();
 
         $data = [
             'ver'           => 1,

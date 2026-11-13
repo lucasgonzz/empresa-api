@@ -93,16 +93,16 @@ class AfipHelper extends Controller {
         return $importes_calculator->calculate($this, $tolerar_alicuota_desconocida);
     }
 
-    function get_combo_iva($combo) {
-        return $this->get_item_calculator()->get_combo_iva($combo);
+    function get_combo_iva($combo, $redondear = true) {
+        return $this->get_item_calculator()->get_combo_iva($combo, $redondear);
     }
 
     function get_description_iva($description, $iva) {
         return $this->get_item_calculator()->get_description_iva($description, $iva);
     }
 
-    function getImporteIva($iva = null) {
-        return $this->get_item_calculator()->get_importe_iva($iva);
+    function getImporteIva($iva = null, $redondear = true) {
+        return $this->get_item_calculator()->get_importe_iva($iva, $redondear);
     }
 
 
