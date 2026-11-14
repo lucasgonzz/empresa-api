@@ -9,6 +9,7 @@ use App\Models\DimensionSearchItem;
 use App\Models\DimensionSearchRun;
 use App\Models\User;
 use App\Services\DimensionSearch\DimensionApplier;
+use App\Services\DimensionSearch\DimensionLawnBarnIndex;
 use App\Services\DimensionSearch\DimensionManufacturerSheets;
 use App\Services\DimensionSearch\DimensionValueValidator;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
@@ -388,7 +389,7 @@ class DimensionSearchRunHelper
 
     /**
      * Los artículos de una corrida de FICHAS DEL FABRICANTE (misión medidas-masquito-fichas, 14/11/2026), por id:
-     * del dueño, no borrados, SIN PESO (null o 0), de marca Stihl, Husqvarna u Oregon (por `brands.name`, en
+     * del dueño, activos (como el universo del catálogo) y no borrados, SIN PESO (null o 0), de marca Stihl, Husqvarna u Oregon (por `brands.name`, en
      * mayúsculas y sin espacios de más), que no estén en una corrida en curso y cuyo ÚLTIMO item no sea una decisión
      * del dueño en contra (`rechazada` o `quitada`). Sí entran los que tienen una propuesta «a revisar» o quedaron
      * «sin datos»: las fichas son otra fuente.
@@ -459,7 +460,8 @@ class DimensionSearchRunHelper
     {
         $owner_id = (int) $owner_id;
 
-        $query = Article::where('articles.user_id', $owner_id)
+        // Activos, como el universo del catálogo (activos()).
+        $query = self::activos($owner_id)
             ->where(function ($sin_peso) {
                 $sin_peso->whereNull('articles.peso')->orWhere('articles.peso', '<=', 0);
             })
@@ -1597,8 +1599,9 @@ class DimensionSearchRunHelper
      */
     public static function reanudar(DimensionSearchRun $run)
     {
-        // En una demo sin búsquedas, reanudar solo volvería a cortarse.
-        if (TopeSerperDemo::agotado((int) $run->user_id)) {
+        // En una demo sin búsquedas, reanudar solo volvería a cortarse. Una corrida de fichas del fabricante no usa
+        // Serper: el tope de la demo no la frena.
+        if ((string) $run->proveedor !== DimensionSearchRun::PROVEEDOR_FICHAS && TopeSerperDemo::agotado((int) $run->user_id)) {
             return ['status' => 422, 'message' => TopeSerperDemo::MENSAJE];
         }
 
@@ -1690,6 +1693,9 @@ class DimensionSearchRunHelper
             return false;
         }
 
+        // El índice de Lawn Barn de una corrida de fichas ya no hace falta (si se reanuda, se vuelve a armar).
+        DimensionLawnBarnIndex::borrar((int) $run->id);
+
         $run->refresh();
 
         return true;
@@ -1716,6 +1722,10 @@ class DimensionSearchRunHelper
                 })
                 ->pluck('id')
                 ->all();
+
+            foreach ($ids as $id) {
+                DimensionLawnBarnIndex::borrar((int) $id);
+            }
 
             foreach (array_chunk($ids, 200) as $lote) {
                 DB::table('dimension_search_items')->whereIn('run_id', $lote)->delete();
