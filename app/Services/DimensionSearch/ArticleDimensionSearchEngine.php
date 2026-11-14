@@ -94,7 +94,8 @@ use Illuminate\Support\Str;
  *
  * CORRIDAS «FICHAS DEL FABRICANTE» (`proveedor` = fichas, misión medidas-masquito-fichas, 14/11/2026): no hacen NADA
  * de lo de arriba. Solo leen el peso de la ficha del distribuidor de la marca (DimensionManufacturerSheets), sin Serper
- * ni IA, y cierran el item por el cerrar() de siempre (ver procesar_fichas()).
+ * ni IA, y cierran el item por el cerrar() de siempre (ver procesar_fichas()). En las corridas normales, una asignada
+ * cuyo peso es un valor de plantilla conocido de la tienda baja a «a revisar» (bajar_valor_de_plantilla()).
  *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
  */
@@ -151,6 +152,22 @@ class ArticleDimensionSearchEngine
      * dominio exacto o cualquier subdominio. `pinterest.*` se resuelve en dominio_sin_utilidad().
      */
     const DOMINIOS_SIN_RESPALDO = ['facebook.com', 'instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com', 'twitter.com', 'x.com'];
+
+    /**
+     * Valores de plantilla (misión medidas-masquito-fichas, Fase A): tiendas que publican el MISMO peso en productos
+     * distintos (un valor por defecto de la plataforma, no el dato del producto). Dominio => pesos en kg. Una asignada
+     * con ese peso de ese dominio baja a «a revisar» (ver bajar_valor_de_plantilla()).
+     */
+    const VALORES_DE_PLANTILLA = [
+        'newgardenstore.eu'     => [1.0, 0.1],
+        'echo-pro.de'           => [4.4],
+        'jackssmallengines.com' => [0.0227],   // 0,05 lb
+        'messicks.com'          => [0.0],
+        'carbydoctor.com.au'    => [0.49],
+    ];
+
+    /** Tolerancia para reconocer un valor de plantilla, en kg. */
+    const TOLERANCIA_PLANTILLA_KG = 0.0005;
 
     /** Scrapes como máximo por búsqueda en el plan de NOMBRE (no hay código que pruebe que la página sirve). */
     const MAX_SCRAPES_PLAN_DE_NOMBRE = 1;
@@ -556,7 +573,9 @@ class ArticleDimensionSearchEngine
             return $resultado;
         }
 
-        $this->cerrar($item, array_merge($this->clasificar($mejor, $codigos, $titulos, $articulo), ['diagnostico' => $diagnostico]), $gasto);
+        $clasificado = $this->bajar_valor_de_plantilla($this->clasificar($mejor, $codigos, $titulos, $articulo));
+
+        $this->cerrar($item, array_merge($clasificado, ['diagnostico' => $diagnostico]), $gasto);
 
         return $resultado;
     }
@@ -703,6 +722,41 @@ class ArticleDimensionSearchEngine
         }
 
         return $this->fichas;
+    }
+
+    /**
+     * Una `asignada` cuyo peso sale de una página de un dominio de VALORES_DE_PLANTILLA con ese mismo valor baja a
+     * `a_revisar` / `valor_de_plantilla`: no se escribe sola. Cualquier otro resultado pasa igual.
+     *
+     * @param  array $campos  Lo que devolvió clasificar().
+     * @return array
+     */
+    protected function bajar_valor_de_plantilla(array $campos)
+    {
+        if (!isset($campos['status']) || $campos['status'] !== DimensionSearchItem::STATUS_ASIGNADA || empty($campos['evidencia']['peso'])) {
+            return $campos;
+        }
+
+        $peso    = $campos['evidencia']['peso'];
+        $dominio = $this->dominio(isset($peso['url']) ? (string) $peso['url'] : '');
+
+        foreach (self::VALORES_DE_PLANTILLA as $de_plantilla => $valores) {
+            if ($dominio !== $de_plantilla && substr($dominio, -(strlen($de_plantilla) + 1)) !== '.'.$de_plantilla) {
+                continue;
+            }
+
+            foreach ($valores as $valor) {
+                if (abs((float) $peso['valor'] - $valor) <= self::TOLERANCIA_PLANTILLA_KG) {
+                    return array_merge($campos, [
+                        'status'         => DimensionSearchItem::STATUS_A_REVISAR,
+                        'motivo'         => 'valor_de_plantilla',
+                        'motivo_detalle' => 'El peso ('.$this->numero_para_mostrar($peso['valor']).' kg) sale de '.$de_plantilla.', que publica ese mismo valor en productos distintos: puede ser un valor de plantilla de la tienda. Revisalo antes de aprobarlo.',
+                    ]);
+                }
+            }
+        }
+
+        return $campos;
     }
 
     /* ----------------------------------------------------------------------------------------
@@ -1267,6 +1321,12 @@ class ArticleDimensionSearchEngine
 
             // `por_codigo`: la página salió de una búsqueda por código (barras o proveedor), no por nombre.
             $pagina = ['url' => $url, 'titulo' => $titulo, 'dominio' => $this->dominio($url), 'via_scrape' => false, 'por_codigo' => !is_null($plan['codigo'])];
+
+            // El snippet del resultado de búsqueda, para ver en el diagnóstico qué mostró el buscador (misión
+            // medidas-masquito-fichas: muchas veces el dato ya estaba ahí).
+            if ($snippet !== '') {
+                $pagina['snippet'] = mb_substr($snippet, 0, 300);
+            }
 
             // Una página que ya se le pasó a la IA en otra búsqueda no se manda dos veces.
             if (isset($leidas[$url]) && $leidas[$url]['enviada']) {
