@@ -92,6 +92,10 @@ use Illuminate\Support\Str;
  * (`cita_sin_etiqueta`) ni lo que difiere más de 50 % de lo ya cargado (`difiere_de_lo_cargado`). Van a
  * `a_revisar`.
  *
+ * CORRIDAS «FICHAS DEL FABRICANTE» (`proveedor` = fichas, misión medidas-masquito-fichas, 14/11/2026): no hacen NADA
+ * de lo de arriba. Solo leen el peso de la ficha del distribuidor de la marca (DimensionManufacturerSheets), sin Serper
+ * ni IA, y cierran el item por el cerrar() de siempre (ver procesar_fichas()).
+ *
  * PHP 7.4: sin match, sin str_contains, sin argumentos nombrados, sin operador nullsafe.
  */
 class ArticleDimensionSearchEngine
@@ -185,6 +189,9 @@ class ArticleDimensionSearchEngine
     /** @var \App\Services\DimensionSearch\DimensionPageReader|null Se crea al primer uso. */
     protected $lector = null;
 
+    /** @var \App\Services\DimensionSearch\DimensionManufacturerSheets|null Las fichas del fabricante; se crean al primer uso. */
+    protected $fichas = null;
+
     /**
      * El respaldo por el scrape de Serper del artículo que se está procesando (se reinicia en cada procesar()):
      * usados = scrapes pedidos, creditos = lo que informó Serper, tope_demo = la demo ya no tiene búsquedas,
@@ -245,6 +252,11 @@ class ArticleDimensionSearchEngine
             $this->cerrar($item, $this->sin_datos('ya_tenia_medidas', 'El artículo ya tiene cargados el peso y las medidas: no se buscó nada.'), $this->gasto_en_cero());
 
             return $resultado;
+        }
+
+        // Corrida «fichas del fabricante»: SOLO las fichas, sin Serper ni IA (misión medidas-masquito-fichas).
+        if ($this->es_corrida_de_fichas()) {
+            return $this->procesar_fichas($item, $articulo, $resultado);
         }
 
         $planes = [];
@@ -547,6 +559,150 @@ class ArticleDimensionSearchEngine
         $this->cerrar($item, array_merge($this->clasificar($mejor, $codigos, $titulos, $articulo), ['diagnostico' => $diagnostico]), $gasto);
 
         return $resultado;
+    }
+
+    /* ----------------------------------------------------------------------------------------
+     * Fichas del fabricante (misión medidas-masquito-fichas, 14/11/2026)
+     * -------------------------------------------------------------------------------------- */
+
+    /**
+     * ¿La corrida es de «fichas del fabricante» (`proveedor` = fichas)?
+     *
+     * @return bool
+     */
+    protected function es_corrida_de_fichas()
+    {
+        return (string) $this->run->proveedor === DimensionSearchRun::PROVEEDOR_FICHAS;
+    }
+
+    /**
+     * El paso de las fichas del fabricante, solo: lee el peso de la ficha de la marca del artículo (Stihl, Husqvarna,
+     * Oregon) y cierra el item SIN Serper ni IA (gasto en cero). La asignación pasa por el cerrar() de siempre, o sea
+     * por DimensionApplier, que nunca pisa lo ya cargado.
+     *
+     *   - Peso del producto con la identidad confirmada → `asignada` / `peso_de_ficha` (solo el peso; las medidas
+     *     quedan vacías: la ficha no las publica y no se inventan).
+     *   - Peso con embalaje (Oregon) → `a_revisar` / `peso_de_envio`: lo aprueba una persona.
+     *   - Nada, una marca sin fichas, o el peso ya cargado → `sin_datos` / `sin_ficha`.
+     *
+     * @param  \App\Models\DimensionSearchItem $item
+     * @param  \App\Models\Article             $articulo
+     * @param  array                           $resultado  El resultado de procesar() en cero.
+     * @return array
+     */
+    protected function procesar_fichas(DimensionSearchItem $item, Article $articulo, array $resultado)
+    {
+        $gasto = $this->gasto_en_cero();
+
+        // Las fichas solo dan el peso: si ya está cargado no hay nada que buscar (y no se pisa).
+        if (!DimensionApplier::esta_vacio($articulo->peso)) {
+            $this->cerrar($item, $this->sin_datos('sin_ficha', 'El artículo ya tiene el peso cargado y las fichas del fabricante solo publican el peso: no se buscó nada.'), $gasto);
+
+            return $resultado;
+        }
+
+        $marca_cargada = $this->nombre_de_la_marca($articulo);
+        $marca         = DimensionManufacturerSheets::marca_normalizada($marca_cargada);
+
+        if (!DimensionManufacturerSheets::marca_soportada($marca)) {
+            $this->cerrar($item, $this->sin_datos('sin_ficha', $marca === ''
+                ? 'El artículo no tiene marca: las fichas del fabricante se buscan solo para Stihl, Husqvarna y Oregon.'
+                : 'Las fichas del fabricante se buscan solo para Stihl, Husqvarna y Oregon (la marca del artículo es «'.trim((string) $marca_cargada).'»).'), $gasto);
+
+            return $resultado;
+        }
+
+        $this->lector()->reiniciar_presupuesto();
+
+        $busqueda    = $this->fichas()->buscar($articulo, $marca);
+        $diagnostico = $busqueda['diagnostico'];
+        $dato        = $busqueda['dato'];
+
+        if (is_null($dato)) {
+            $this->cerrar($item, array_merge(
+                $this->sin_datos('sin_ficha', 'No se encontró la ficha de este artículo en '.implode(' ni ', DimensionManufacturerSheets::dominios_de($marca)).'.'),
+                ['diagnostico' => $diagnostico]
+            ), $gasto);
+
+            return $resultado;
+        }
+
+        $por_barras = $dato['identidad'] === DimensionManufacturerSheets::IDENTIDAD_EAN;
+
+        $evidencia = [
+            'peso' => [
+                'valor'           => $dato['valor'],
+                'unidad'          => 'kg',
+                'valor_original'  => $dato['valor_original'],
+                'unidad_original' => $dato['unidad_original'],
+                'convertido'      => $dato['unidad_original'] !== 'kg',
+                'cita'            => $dato['cita'],
+                'url'             => $dato['url'],
+                'alcance'         => $dato['alcance'],
+                'etiquetada'      => true,
+                'ambiguo'         => false,
+                'rango'           => false,
+                'aviso'           => $dato['aviso'],
+            ],
+        ];
+
+        $base = [
+            'peso_kg'        => $dato['valor'],
+            'alto_cm'        => null,
+            'ancho_cm'       => null,
+            'profundidad_cm' => null,
+            'criterio_usado' => $por_barras ? DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS : DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR,
+            'evidencia'      => $evidencia,
+            'fuentes'        => [['url' => $dato['url'], 'titulo' => $dato['titulo'] === '' ? null : $dato['titulo']]],
+            'diagnostico'    => $diagnostico,
+        ];
+
+        if ($dato['alcance'] === DimensionManufacturerSheets::ALCANCE_ENVIO) {
+            $this->cerrar($item, array_merge($base, [
+                'status'         => DimensionSearchItem::STATUS_A_REVISAR,
+                'motivo'         => 'peso_de_envio',
+                'motivo_detalle' => 'Peso con embalaje de la ficha del fabricante ('.$dato['dominio'].'): revisalo antes de aprobarlo.',
+            ]), $gasto);
+
+            return $resultado;
+        }
+
+        $this->cerrar($item, array_merge($base, [
+            'status'         => DimensionSearchItem::STATUS_ASIGNADA,
+            'motivo'         => 'peso_de_ficha',
+            'motivo_detalle' => 'Peso de la ficha de '.$dato['dominio'].', con el '.($por_barras ? 'código de barras' : 'código de proveedor').' del artículo. Las medidas no se publican ahí.',
+        ]), $gasto);
+
+        return $resultado;
+    }
+
+    /**
+     * El nombre de la marca del artículo ('' si no tiene).
+     *
+     * @param  \App\Models\Article $articulo
+     * @return string
+     */
+    protected function nombre_de_la_marca(Article $articulo)
+    {
+        if (empty($articulo->brand_id)) {
+            return '';
+        }
+
+        return (string) DB::table('brands')->where('id', (int) $articulo->brand_id)->value('name');
+    }
+
+    /**
+     * Las fichas del fabricante (una por motor: el índice de Lawn Barn se carga una vez por tramo).
+     *
+     * @return \App\Services\DimensionSearch\DimensionManufacturerSheets
+     */
+    protected function fichas()
+    {
+        if (is_null($this->fichas)) {
+            $this->fichas = new DimensionManufacturerSheets($this->lector(), $this->run);
+        }
+
+        return $this->fichas;
     }
 
     /* ----------------------------------------------------------------------------------------
@@ -2421,6 +2577,11 @@ class ArticleDimensionSearchEngine
     protected function diagnostico_en_orden(array $diagnostico)
     {
         $orden = [
+            // Las fichas del fabricante (solo en las corridas `fichas`), en el orden en que se prueban.
+            DimensionManufacturerSheets::CRITERIO_MAXPARTS,
+            DimensionManufacturerSheets::CRITERIO_LAWNBARN,
+            DimensionManufacturerSheets::CRITERIO_KALOHAZ,
+            DimensionManufacturerSheets::CRITERIO_OREGON,
             DimensionSearchItem::CRITERIO_SITIOS_DE_REFERENCIA,
             DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS,
             DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS_GLOBAL,
