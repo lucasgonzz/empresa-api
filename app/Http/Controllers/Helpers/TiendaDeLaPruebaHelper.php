@@ -41,8 +41,9 @@ use Throwable;
  *     todavía lleva el de la marca de ejemplo) no cambia la identidad.
  *  3. Catálogo y contacto (ronda 4, E4, 14/11/2026), con o sin nombre propio: `show_articles_without_images`
  *     = 1 (se ven los artículos sin foto), Instagram y Facebook vacíos si son los de ComercioCity o un
- *     marcador sin perfil, y `users.phone` guardado en E.164 sin «+» para que todos los enlaces de WhatsApp
- *     de la tienda lleven el 549. Van dentro de `pedidos` en el resultado (la forma del resultado no cambia).
+ *     marcador sin perfil. Van dentro de `pedidos` en el resultado (la forma del resultado no cambia).
+ *     `users.phone` NO se toca: se imprime crudo en tickets, facturas, presupuestos y el catálogo. Los
+ *     enlaces de WhatsApp de la tienda que salen sin 549 son de tienda-spa (pega `commerce.phone` crudo).
  *
  * `users.image_url` NO se toca: lo usan también los PDF del sistema (FPDF), que no leen SVG.
  *
@@ -99,7 +100,6 @@ class TiendaDeLaPruebaHelper
             self::abrir_pedidos_de_prueba($configuracion);
             self::mostrar_todo_el_catalogo($configuracion);
             self::sacar_redes_de_comerciocity($configuracion);
-            self::formar_el_whatsapp_del_negocio($owner);
             $resultado['pedidos'] = true;
 
             $nombre = trim((string) $owner->company_name);
@@ -200,35 +200,6 @@ class TiendaDeLaPruebaHelper
 
         // La red pelada: esquema (aunque esté mal escrito), «www.» opcional, el dominio y nada más.
         return (bool) preg_match('#^([a-z]+:)?(//)?(www\.)?(instagram|facebook)\.com/?$#i', $url);
-    }
-
-    /**
-     * El teléfono del negocio, guardado como lo pide WhatsApp (misión prueba-e2e-campana-imperio, ronda 4, E4).
-     *
-     * La tienda arma sus enlaces de WhatsApp con `users.phone` (lo devuelve tienda-api como `commerce.phone`).
-     * Dos de sus componentes lo normalizan antes (`BtnWhatsApp.vue` y `Thanks.vue`, con el mixin
-     * `whatsapp.js`: `3444622139` → `5493444622139`), pero el pie, Contacto, la tarjeta de contacto, el
-     * precio y la ficha del artículo lo pegan crudo en `api.whatsapp.com/send?phone=`: con `3444622139`
-     * (como lo deja `DemoSetupHelper::create_demo_user`) esos enlaces salen sin el 549. Eso es de tienda-spa y
-     * no se toca desde acá; guardando el número ya en E.164 sin «+» los dos caminos dan lo mismo (el mixin
-     * deja `5493444622139` igual).
-     *
-     * Si el número no se puede formar con certeza (`TelefonoArgentinoHelper::a_e164` devuelve null: corto,
-     * de otro país, vacío), queda como está: no se adivina un código de área.
-     *
-     * @param \App\Models\User $owner
-     * @return void
-     */
-    private static function formar_el_whatsapp_del_negocio(User $owner)
-    {
-        $formado = TelefonoArgentinoHelper::a_e164($owner->phone);
-        if (is_null($formado) || $formado === (string) $owner->phone) {
-            return;
-        }
-
-        // Por consulta y no con save(): solo cambia el teléfono, sin disparar lo que observa al User.
-        User::where('id', $owner->id)->update(['phone' => $formado]);
-        $owner->phone = $formado;
     }
 
     /**

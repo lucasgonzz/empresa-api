@@ -205,7 +205,8 @@ class TiendaDeLaPruebaTest extends EmpresaTestCase
 
     /**
      * Ronda 4, E4 (14/11): la tienda nacía con «Mostrar artículos sin imágenes: No» (se veían 5 de 29), los
-     * botones Instagram y Facebook iban a ComercioCity y tres de cuatro enlaces de WhatsApp salían sin el 549.
+     * botones Instagram y Facebook iban a ComercioCity. `users.phone` (el que dejó el demo setup) no se toca:
+     * se imprime crudo en tickets, facturas y presupuestos.
      */
     private function tienda_como_nace_en_la_ronda_4(): void
     {
@@ -227,11 +228,11 @@ class TiendaDeLaPruebaTest extends EmpresaTestCase
         $this->assertSame(1, (int) $configuracion->show_articles_without_images);
         $this->assertNull($configuracion->instagram);
         $this->assertNull($configuracion->facebook);
-        $this->assertSame('5493444622139', User::find($this->dueno->id)->phone);
+        $this->assertSame('3444622139', User::find($this->dueno->id)->phone, 'El teléfono del negocio queda como lo dejó el demo setup.');
 
         // Idempotente: una segunda pasada deja exactamente lo mismo.
         TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
-        $this->assertSame('5493444622139', User::find($this->dueno->id)->phone);
+        $this->assertSame('3444622139', User::find($this->dueno->id)->phone);
         $this->assertSame(1, (int) $this->configuracion()->show_articles_without_images);
     }
 
@@ -248,25 +249,17 @@ class TiendaDeLaPruebaTest extends EmpresaTestCase
         $this->assertNull($this->configuracion()->facebook);
     }
 
-    public function test_las_redes_y_el_telefono_propios_del_dueno_no_se_pisan(): void
+    public function test_las_redes_propias_del_dueno_no_se_pisan(): void
     {
         OnlineConfiguration::where('user_id', $this->dueno->id)->update([
             'instagram' => 'https://www.instagram.com/ferreteria.los.aromos/',
             'facebook' => 'https://www.facebook.com/ferreterialosaromos',
         ]);
-        // Un número corto (sin código de área) no se puede formar sin adivinar: queda como está.
-        User::where('id', $this->dueno->id)->update(['phone' => '15622139']);
 
         TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
 
         $this->assertSame('https://www.instagram.com/ferreteria.los.aromos/', $this->configuracion()->instagram);
         $this->assertSame('https://www.facebook.com/ferreterialosaromos', $this->configuracion()->facebook);
-        $this->assertSame('15622139', User::find($this->dueno->id)->phone);
-
-        // Uno cargado a mano con 0 y 15 sí se forma.
-        User::where('id', $this->dueno->id)->update(['phone' => '03444 15 622139']);
-        TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
-        $this->assertSame('5493444622139', User::find($this->dueno->id)->phone);
     }
 
     public function test_el_pool_sin_nombre_propio_tambien_muestra_el_catalogo_completo(): void
@@ -280,7 +273,7 @@ class TiendaDeLaPruebaTest extends EmpresaTestCase
         $this->assertNull($this->configuracion()->instagram);
     }
 
-    public function test_fuera_de_una_prueba_el_catalogo_las_redes_y_el_telefono_quedan_como_estan(): void
+    public function test_fuera_de_una_prueba_el_catalogo_y_las_redes_quedan_como_estan(): void
     {
         $this->tienda_como_nace_en_la_ronda_4();
         PruebaConfig::where('owner_id', $this->dueno->id)->delete();
