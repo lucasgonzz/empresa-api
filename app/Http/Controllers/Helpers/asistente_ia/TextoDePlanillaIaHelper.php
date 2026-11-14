@@ -424,7 +424,89 @@ class TextoDePlanillaIaHelper
             $lineas[] = (string) $resultado['sin_facturar'];
         }
 
+        $texto = implode("\n", $lineas);
+
+        /*
+         * Un motivo puede ocupar 500 caracteres por fila: aun una propuesta que entró puede terminar en una
+         * respuesta demasiado larga. No se corta el texto por atrás, porque ocultaría los fallos y parecería
+         * que se cargó todo. Se conserva el resultado íntegro en la tarjeta y se resumen TODAS sus categorías.
+         */
+        return self::cabe_en_un_mensaje($texto) ? $texto : self::resultado_compacto($resultado);
+    }
+
+    /**
+     * Resumen para un único mensaje: sin nombres ni motivos de largo variable, con los renglones de cada estado.
+     * Una tarjeta tiene a lo sumo 60 filas (25 en WhatsApp), así que estas listas numéricas quedan bajo el tope.
+     * No guarda ni corrige nada: los motivos completos siguen en la acción y en las filas de la planilla.
+     */
+    protected static function resultado_compacto(array $resultado): string
+    {
+        $ventas = isset($resultado['ventas']) && is_array($resultado['ventas']) ? $resultado['ventas'] : [];
+        $ya = isset($resultado['ya_registradas']) && is_array($resultado['ya_registradas']) ? $resultado['ya_registradas'] : [];
+        $fallidas = isset($resultado['no_cargadas']) && is_array($resultado['no_cargadas']) ? $resultado['no_cargadas'] : [];
+        $sin_intentar = isset($resultado['sin_intentar']) ? (int) $resultado['sin_intentar'] : 0;
+        $negativos = isset($resultado['en_negativo']) && is_array($resultado['en_negativo']) ? count($resultado['en_negativo']) : 0;
+
+        $lineas = ['Resultado de la planilla N° ' . (int) ($resultado['planilla_id'] ?? 0) . '.'];
+
+        if (!count($ventas)) {
+            $lineas[] = 'No cargué ninguna venta nueva.';
+        }
+
+        $lineas[] = 'Registradas: ' . count($ventas) . '.';
+        $lineas[] = 'Total registrado: ' . FormatoIaHelper::monto((float) ($resultado['total'] ?? 0)) . '.';
+
+        if (count($ventas)) {
+            $lineas[] = 'Renglones registrados: ' . self::numeros_de_renglones($ventas) . '.';
+        }
+
+        $lineas[] = 'Ya registradas: ' . count($ya) . '; no las volví a cargar.';
+
+        if (count($ya)) {
+            $lineas[] = 'Renglones ya registrados: ' . self::numeros_de_renglones($ya) . '.';
+        }
+
+        $lineas[] = 'No se pudieron cargar: ' . count($fallidas) . '.';
+
+        if (count($fallidas)) {
+            $lineas[] = 'Renglones no cargados: ' . self::numeros_de_renglones($fallidas) . '.';
+        }
+
+        $lineas[] = 'Sin intentar: ' . $sin_intentar . ' renglones.';
+
+        if ($sin_intentar > 0) {
+            $lineas[] = 'Pedime seguir solo con los renglones pendientes.';
+        }
+
+        $lineas[] = 'Clientes nuevos creados: ' . (int) ($resultado['clientes_creados'] ?? 0) . '.';
+        $lineas[] = 'Stock negativo: ' . $negativos . ' artículo' . ($negativos === 1 ? '' : 's') . '.';
+
+        if ($negativos > 0) {
+            $lineas[] = 'Revisá esos artículos en Listado.';
+        }
+
+        if (!empty($resultado['sin_facturar'])) {
+            /* El productor arma un aviso breve por tipo de factura; un dato antiguo más largo no rompe el resumen. */
+            $facturacion = (string) $resultado['sin_facturar'];
+            $lineas[] = mb_strlen($facturacion) <= 300 ? $facturacion : 'Quedan sin facturar: se facturan desde Ventas.';
+        }
+
+        $lineas[] = 'No repitas los renglones registrados ni los ya registrados.';
+
+        if (count($fallidas)) {
+            /* consultar_planilla devuelve motivo por fila mientras quedan ventas pendientes: no hay un visor nuevo. */
+            $lineas[] = 'Si la planilla sigue en curso, para revisar los motivos de los renglones no cargados pedime que consulte la planilla.';
+        }
+
         return implode("\n", $lineas);
+    }
+
+    /** Los números originales, sin nombres de largo variable ni cambios de categoría. */
+    protected static function numeros_de_renglones(array $filas): string
+    {
+        return implode(', ', array_map(function ($fila) {
+            return (int) $fila['renglon'];
+        }, $filas));
     }
 
     /**
