@@ -76,6 +76,18 @@ class DimensionManufacturerSheets
     const IDENTIDAD_EAN    = 'ean';
     const IDENTIDAD_CODIGO = 'codigo';
 
+    /** De qué código del artículo salió el número con el que se confirmó la ficha (va a `criterio_usado`). */
+    const ORIGEN_BARRAS    = 'bar_code';
+    const ORIGEN_PROVEEDOR = 'provider_code';
+
+    /** Lo que dicen los EAN / GTIN de la ficha del código de barras del artículo (ver eans_de_la_ficha()). */
+    const EAN_COINCIDE   = 'coincide';
+    const EAN_CONTRADICE = 'contradice';
+    const EAN_SIN_DATO   = 'sin_dato';
+
+    /** Fallos del lector que pueden ser pasajeros: si TODAS las fichas probadas fallan así, no es «no hay ficha». */
+    const FALLOS_PASAJEROS = [DimensionPageReader::FALLO_BLOQUEADA, DimensionPageReader::FALLO_SIN_RESPUESTA, DimensionPageReader::FALLO_SIN_TIEMPO];
+
     /** Unidad de la ficha => kg. */
     const A_KG = [
         'kg' => 1.0,
@@ -104,7 +116,7 @@ class DimensionManufacturerSheets
      * @param \App\Models\DimensionSearchRun|null               $run
      * @param \App\Services\DimensionSearch\DimensionLawnBarnIndex|null $indice_lawnbarn  null = uno nuevo al primer uso.
      */
-    public function __construct(DimensionPageReader $lector, DimensionSearchRun $run = null, DimensionLawnBarnIndex $indice_lawnbarn = null)
+    public function __construct(DimensionPageReader $lector, ?DimensionSearchRun $run = null, ?DimensionLawnBarnIndex $indice_lawnbarn = null)
     {
         $this->lector          = $lector;
         $this->run             = $run;
@@ -220,19 +232,15 @@ class DimensionManufacturerSheets
         $texto  = self::texto($html);
         $titulo = self::titulo($html);
 
-        // Identidad: el EAN de la ficha es el código de barras del artículo; si no, el código en el título.
+        // Identidad: el EAN de la ficha es el código de barras del artículo. Si la ficha trae EAN y NINGUNO es el del
+        // artículo (con un GTIN válido), es otro producto aunque el título traiga el código. Sin EAN para comparar, vale
+        // el código en el título.
+        $eans      = self::eans_de_la_ficha($texto, $articulo->bar_code);
         $identidad = null;
 
-        if (preg_match_all('/\bEAN\b\s*:?\s*(\d{8,14})(?!\d)/u', $texto, $eans)) {
-            foreach ($eans[1] as $ean) {
-                if (self::mismo_codigo_de_barras($ean, $articulo->bar_code)) {
-                    $identidad = self::IDENTIDAD_EAN;
-                    break;
-                }
-            }
-        }
-
-        if (is_null($identidad) && strpos(strtoupper($titulo), $compacto) !== false) {
+        if ($eans === self::EAN_COINCIDE) {
+            $identidad = self::IDENTIDAD_EAN;
+        } elseif ($eans === self::EAN_SIN_DATO && strpos(strtoupper($titulo), $compacto) !== false) {
             $identidad = self::IDENTIDAD_CODIGO;
         }
 
@@ -248,13 +256,13 @@ class DimensionManufacturerSheets
             $lectura = ['numero' => $m[1], 'unidad' => 'kg', 'cita' => $m[0]];
         }
 
-        $entrada = $this->entrada(self::CRITERIO_MAXPARTS, $url, $titulo, $identidad, $lectura, self::ALCANCE_PRODUCTO, null);
+        $entrada = $this->entrada(self::CRITERIO_MAXPARTS, $url, $titulo, $identidad, $lectura, self::ALCANCE_PRODUCTO, null, self::ORIGEN_PROVEEDOR);
 
         if (!is_null($bruto)) {
             $entrada['bruto_kg'] = $bruto;
         }
 
-        return $entrada;
+        return $this->marcar_ean_distinto($entrada, $eans);
     }
 
     /**
@@ -285,12 +293,31 @@ class DimensionManufacturerSheets
 
         $indice = $this->indice_lawnbarn->cargar($this->run);
 
+        // Bajar el sitemap puede llevar buena parte del presupuesto del artículo: la ficha propia arranca de cero.
+        if (!empty($indice['recien_armado'])) {
+            $this->lector->reiniciar_presupuesto();
+        }
+
         if (!$indice['ok']) {
-            return $this->no_usada(self::CRITERIO_LAWNBARN, 'El índice de Lawn Barn no se pudo armar en esta corrida'.(empty($indice['error']) ? '.' : ': '.rtrim((string) $indice['error'], '. ').'.'));
+            $entrada = $this->no_usada(self::CRITERIO_LAWNBARN, 'El índice de Lawn Barn no se pudo armar en esta corrida'.(empty($indice['error']) ? '.' : ': '.rtrim((string) $indice['error'], '. ').'.'));
+
+            // Un corte o un bloqueo del sitemap no es «no hay ficha»: el motor lo cuenta como un error del proveedor.
+            if (!empty($indice['fallo'])) {
+                $entrada['fallo'] = $indice['fallo'];
+                $entrada['error'] = (string) $indice['error'];
+            }
+
+            return $entrada;
         }
 
         if (!isset($indice['urls'][$compacto])) {
-            return $this->no_usada(self::CRITERIO_LAWNBARN, 'El código no está en el índice de Lawn Barn'.(!empty($indice['incompleto']) ? ' (el índice quedó incompleto)' : '').'.');
+            $entrada = $this->no_usada(self::CRITERIO_LAWNBARN, 'El código no está en el índice de Lawn Barn'.(!empty($indice['incompleto']) ? ' (el índice quedó incompleto: puede estar en una página que no se leyó)' : '').'.');
+
+            // Lawn Barn respondió (su índice no tiene el código): cuenta como una fuente que contestó.
+            $entrada['consultada'] = true;
+            $entrada['incompleto'] = !empty($indice['incompleto']);
+
+            return $entrada;
         }
 
         $url  = (string) $indice['urls'][$compacto];
@@ -316,15 +343,18 @@ class DimensionManufacturerSheets
 
         $lectura = null;
 
-        // El atributo de BigCommerce es el dato exacto; la etiqueta «Weight:» del texto es la cita.
+        // El atributo de BigCommerce es el dato exacto; la etiqueta «Weight:» del texto es la cita. Si la página no trae
+        // esa etiqueta, la cita es el atributo tal como está en el HTML (nunca un texto armado).
         if (preg_match('/data-product-weight[^>]*>\s*(\d+(?:[.,]\d+)?)\s*(LBS|LB|KGS|KG|OZ|G)\b/i', $html, $m)) {
-            $cita = preg_match('/Weight\s*:\s*'.preg_quote($m[1], '/').'\s*'.preg_quote($m[2], '/').'\b/i', $texto, $c) ? $c[0] : 'Weight: '.$m[1].' '.$m[2];
+            $cita = preg_match('/Weight\s*:\s*'.preg_quote($m[1], '/').'\s*'.preg_quote($m[2], '/').'\b/i', $texto, $c)
+                ? $c[0]
+                : trim((string) preg_replace('/\s+/u', ' ', $m[0]));
             $lectura = ['numero' => $m[1], 'unidad' => $m[2], 'cita' => $cita];
         } elseif (preg_match('/Weight\s*:\s*(\d+(?:[.,]\d+)?)\s*(LBS|LB|KGS|KG|OZ|G)\b/i', $texto, $m)) {
             $lectura = ['numero' => $m[1], 'unidad' => $m[2], 'cita' => $m[0]];
         }
 
-        return $this->entrada(self::CRITERIO_LAWNBARN, $url, $titulo, $identidad, $lectura, self::ALCANCE_PRODUCTO, self::AVISO_LAWNBARN);
+        return $this->entrada(self::CRITERIO_LAWNBARN, $url, $titulo, $identidad, $lectura, self::ALCANCE_PRODUCTO, self::AVISO_LAWNBARN, self::ORIGEN_BARRAS);
     }
 
     /**
@@ -335,13 +365,17 @@ class DimensionManufacturerSheets
      */
     protected function kalohaz(Article $articulo)
     {
+        // Primero el código de proveedor y después el de barras; se recuerda de dónde salió el número (es el código del
+        // artículo con el que se confirma la ficha y va a `criterio_usado`).
         $numero = null;
+        $origen = null;
 
-        foreach ([$articulo->bar_code, $articulo->provider_code] as $codigo) {
+        foreach ([self::ORIGEN_PROVEEDOR => $articulo->provider_code, self::ORIGEN_BARRAS => $articulo->bar_code] as $de_donde => $codigo) {
             $compacto = DimensionLawnBarnIndex::compacto($codigo);
 
             if (preg_match('/^5\d{8}$/', $compacto)) {
                 $numero = $compacto;
+                $origen = $de_donde;
                 break;
             }
         }
@@ -360,7 +394,18 @@ class DimensionManufacturerSheets
         $texto  = self::texto($html);
         $titulo = self::titulo($html);
 
-        $identidad = preg_match('/Cikksz[aá]m\s*:?\s*'.$numero.'(?!\d)/iu', $texto) ? self::IDENTIDAD_CODIGO : null;
+        // Identidad: el «Cikkszám» del número. Pero si el artículo tiene un GTIN válido y la ficha trae EAN / GTIN y
+        // ninguno es el del artículo, es otro producto. Sin Cikkszám, alcanza con el EAN igual.
+        $eans      = self::eans_de_la_ficha($texto, $articulo->bar_code);
+        $identidad = null;
+
+        if ($eans !== self::EAN_CONTRADICE) {
+            if (preg_match('/Cikksz[aá]m\s*:?\s*'.$numero.'(?!\d)/iu', $texto)) {
+                $identidad = self::IDENTIDAD_CODIGO;
+            } elseif ($eans === self::EAN_COINCIDE) {
+                $identidad = self::IDENTIDAD_EAN;
+            }
+        }
 
         $lectura = null;
 
@@ -370,7 +415,7 @@ class DimensionManufacturerSheets
             $lectura = ['numero' => $m[1], 'unidad' => $m[2], 'cita' => $m[0]];
         }
 
-        return $this->entrada(self::CRITERIO_KALOHAZ, $url, $titulo, $identidad, $lectura, self::ALCANCE_PRODUCTO, null);
+        return $this->marcar_ean_distinto($this->entrada(self::CRITERIO_KALOHAZ, $url, $titulo, $identidad, $lectura, self::ALCANCE_PRODUCTO, null, $origen), $eans);
     }
 
     /**
@@ -412,7 +457,7 @@ class DimensionManufacturerSheets
             $lectura = ['numero' => $m[1], 'unidad' => $m[2], 'cita' => $m[0]];
         }
 
-        return $this->entrada(self::CRITERIO_OREGON, $url, $titulo, $identidad, $lectura, self::ALCANCE_ENVIO, null);
+        return $this->entrada(self::CRITERIO_OREGON, $url, $titulo, $identidad, $lectura, self::ALCANCE_ENVIO, null, self::ORIGEN_PROVEEDOR);
     }
 
     /* ----------------------------------------------------------------------------------------
@@ -565,9 +610,10 @@ class DimensionManufacturerSheets
      * @param  array|null  $lectura    numero, unidad, cita (null si la ficha no trae el peso).
      * @param  string      $alcance
      * @param  string|null $aviso
+     * @param  string|null $origen     De qué código del artículo salió el número de la URL (ORIGEN_*).
      * @return array
      */
-    protected function entrada($criterio, $url, $titulo, $identidad, $lectura, $alcance, $aviso)
+    protected function entrada($criterio, $url, $titulo, $identidad, $lectura, $alcance, $aviso, $origen = self::ORIGEN_PROVEEDOR)
     {
         $dominio = self::DOMINIOS[$criterio];
 
@@ -626,6 +672,9 @@ class DimensionManufacturerSheets
             'dominio'         => $dominio,
             'alcance'         => $alcance,
             'identidad'       => $identidad,
+            // El código del artículo que confirmó la ficha: el de barras si fue por EAN / UPC o si el número salió de
+            // ahí; si no, el de proveedor.
+            'por_barras'      => $identidad === self::IDENTIDAD_EAN || $origen === self::ORIGEN_BARRAS,
             'aviso'           => $aviso,
             'criterio'        => $criterio,
         ];
@@ -663,11 +712,13 @@ class DimensionManufacturerSheets
             $motivo = 'El sitio bloquea la descarga ('.(int) $this->lector->ultimo_estado().')';
         } elseif ($fallo === DimensionPageReader::FALLO_SIN_RESPUESTA) {
             $motivo = 'El sitio no respondió a tiempo.';
+        } elseif ($fallo === DimensionPageReader::FALLO_SIN_TIEMPO) {
+            $motivo = 'Se acabó el tiempo para leer las fichas de este artículo.';
         } else {
             $motivo = 'No se pudo descargar la página.';
         }
 
-        return [
+        $entrada = [
             'criterio'   => $criterio,
             'usado'      => true,
             'busquedas'  => 0,
@@ -682,5 +733,114 @@ class DimensionManufacturerSheets
             'resumen'    => $fallo === DimensionPageReader::FALLO_NO_EXISTE ? 'No hay ficha de este artículo en '.$dominio.'.' : 'La ficha de '.$dominio.' no se pudo leer.',
             'paginas'    => [['url' => $url, 'titulo' => '', 'dominio' => $dominio, 'leida' => false, 'motivo' => $motivo, 'fallo' => $fallo]],
         ];
+
+        // Un bloqueo o un timeout es un error del proveedor (lo lee el corte del job por errores seguidos).
+        if (in_array($fallo, self::FALLOS_PASAJEROS, true)) {
+            $entrada['error'] = $dominio.': '.rtrim($motivo, '. ').'.';
+        }
+
+        return $entrada;
+    }
+
+    /**
+     * ¿Todas las fichas que se intentaron fallaron por algo que puede ser pasajero (bloqueo, timeout, sin tiempo)? Una
+     * fuente que no se pudo probar (sin código para armar la URL, el índice no tiene el código) no cuenta; una que
+     * respondió, aunque sea con un 404, dice que no hay ficha.
+     *
+     * @param  array $diagnostico  Las entradas de buscar().
+     * @return bool  false si no se intentó ninguna.
+     */
+    public static function todas_fallaron_de_paso(array $diagnostico)
+    {
+        $intentadas = 0;
+
+        foreach ($diagnostico as $entrada) {
+            $fallo = isset($entrada['fallo']) ? $entrada['fallo'] : null;
+
+            if (empty($entrada['usado']) && is_null($fallo) && empty($entrada['consultada'])) {
+                continue;
+            }
+
+            $intentadas++;
+
+            if (!in_array($fallo, self::FALLOS_PASAJEROS, true)) {
+                return false;
+            }
+        }
+
+        return $intentadas > 0;
+    }
+
+    /**
+     * Cuántas fuentes se intentaron (las que se bajaron o fallaron al bajar).
+     *
+     * @param  array $diagnostico
+     * @return int
+     */
+    public static function fuentes_intentadas(array $diagnostico)
+    {
+        $intentadas = 0;
+
+        foreach ($diagnostico as $entrada) {
+            if (!empty($entrada['usado']) || !empty($entrada['fallo']) || !empty($entrada['consultada'])) {
+                $intentadas++;
+            }
+        }
+
+        return $intentadas;
+    }
+
+    /**
+     * Qué dicen los EAN / GTIN de la ficha del código de barras del artículo: `coincide` (alguno es el suyo),
+     * `contradice` (el artículo tiene un GTIN válido, la ficha trae uno o más y NINGUNO es el suyo) o `sin_dato` (la
+     * ficha no trae EAN, o el artículo no tiene un GTIN válido con qué comparar: ahí vale la identidad por código).
+     *
+     * @param  string      $texto  El texto de la ficha (texto()).
+     * @param  string|null $bar_code
+     * @return string  Una de las constantes EAN_*.
+     */
+    public static function eans_de_la_ficha($texto, $bar_code)
+    {
+        if (is_null(Gtin::canonical(trim((string) $bar_code)))) {
+            return self::EAN_SIN_DATO;
+        }
+
+        // «EAN 886661008414» (maxparts), «EAN / GTIN 7391883143445» (kalohaz), «GTIN: …».
+        if (!preg_match_all('/\b(?:EAN|GTIN)(?:\s*\/\s*(?:EAN|GTIN))?\s*:?\s*(\d{8,14})(?!\d)/iu', (string) $texto, $m)) {
+            return self::EAN_SIN_DATO;
+        }
+
+        foreach ($m[1] as $ean) {
+            if (self::mismo_codigo_de_barras($ean, $bar_code)) {
+                return self::EAN_COINCIDE;
+            }
+        }
+
+        return self::EAN_CONTRADICE;
+    }
+
+    /**
+     * Deja dicho en la entrada que la ficha trae otro EAN que el del artículo (si es el caso).
+     *
+     * @param  array  $entrada
+     * @param  string $eans  Lo de eans_de_la_ficha().
+     * @return array
+     */
+    protected function marcar_ean_distinto(array $entrada, $eans)
+    {
+        if ($eans !== self::EAN_CONTRADICE || !empty($entrada['_dato']) || empty($entrada['encontrada'])) {
+            return $entrada;
+        }
+
+        $dominio = self::DOMINIOS[$entrada['criterio']];
+
+        $entrada['ean_distinto'] = true;
+        $entrada['resumen']      = 'La ficha de '.$dominio.' trae otro EAN que el código de barras del artículo: es de otro producto y no se usó.';
+
+        if (!empty($entrada['paginas'][0])) {
+            $entrada['paginas'][0]['motivo'] = 'Trae otro EAN que el artículo';
+        }
+
+        return $entrada;
     }
 }

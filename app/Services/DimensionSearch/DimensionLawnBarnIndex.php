@@ -20,10 +20,14 @@ use Illuminate\Support\Str;
  * arma el código compacto de la cola («4147-740-2500» → «41477402500»).
  *
  * 🔴 Se guarda SOLO lo que coincide con los códigos de los artículos de la corrida (no el sitemap entero), en
- * `storage/app/medidas/lawnbarn-<run_id>.json`. Se arma una vez por corrida: si el archivo existe, se usa (los
- * tramos siguientes y una reanudación no lo vuelven a bajar). Si la primera página no baja, el índice queda
- * apagado para la corrida (y eso también se guarda: no se reintenta en cada tramo); no rompe nada, el adaptador
- * de Lawn Barn simplemente no se usa.
+ * `storage/app/medidas/lawnbarn-<run_id>.json` (se borra al terminar la corrida). Se arma una vez por corrida: si el
+ * archivo existe, se usa (los tramos siguientes y una reanudación no lo vuelven a bajar). Fin del sitemap = una
+ * página que responde 404 o que no trae ningún `<loc>`. Si la primera página no baja, o baja sin `<loc>`, el índice
+ * queda apagado y no rompe nada: el adaptador de Lawn Barn simplemente no se usa.
+ *
+ * Lo que puede ser pasajero NO se guarda como definitivo: si la primera página no bajó por un corte, un timeout, un
+ * 5xx o un bloqueo, o si una página posterior falló así (índice `incompleto`), el archivo queda marcado y el tramo
+ * siguiente lo vuelve a armar UNA vez (MAXIMO_ARMADOS por corrida): un sitio caído no se convierte en 150 s por tramo.
  *
  * El sitemap es XML y DimensionPageReader solo lee HTML: por eso va con su propio cliente HTTP, con timeout corto y
  * siempre al mismo host fijo (no hay URL que venga de afuera). Las URLs del índice se filtran por host: solo quedan
@@ -51,6 +55,9 @@ class DimensionLawnBarnIndex
     /** Hosts aceptados en las URLs del índice. */
     const HOSTS = ['lawnbarn.com', 'www.lawnbarn.com'];
 
+    /** Veces como mucho que se arma el índice en una corrida (la primera y un reintento si quedó a medias). */
+    const MAXIMO_ARMADOS = 2;
+
     /** @var array|null El índice ya cargado (en memoria, para los artículos siguientes del tramo). */
     protected $cargado = null;
 
@@ -58,36 +65,87 @@ class DimensionLawnBarnIndex
      * El índice de la corrida: lo lee del archivo, o lo arma bajando el sitemap y lo guarda.
      *
      * @param  \App\Models\DimensionSearchRun $run
-     * @return array  ['ok' => bool, 'urls' => compacto => url, 'error' => string|null, 'incompleto' => bool]
+     * @return array  ['ok' => bool, 'urls' => compacto => url, 'error' => string|null, 'incompleto' => bool,
+     *                'fallo' => DimensionPageReader::FALLO_BLOQUEADA | FALLO_SIN_RESPUESTA | null (por qué no está, si
+     *                puede ser pasajero), 'armados' => int, 'recien_armado' => bool (se bajó el sitemap en esta llamada)]
      */
     public function cargar(DimensionSearchRun $run)
     {
         if (!is_null($this->cargado)) {
-            return $this->cargado;
+            return array_merge($this->cargado, ['recien_armado' => false]);
         }
 
-        $ruta = self::ruta((int) $run->id);
+        $ruta     = self::ruta((int) $run->id);
+        $guardado = $this->leer_guardado($ruta);
+        $armados  = is_null($guardado) ? 0 : (int) $guardado['armados'];
 
-        if (is_file($ruta)) {
-            $guardado = json_decode((string) @file_get_contents($ruta), true);
+        // Un índice guardado y definitivo (completo, o apagado por algo que no es pasajero) se usa tal cual; uno que
+        // quedó a medias se vuelve a armar, una sola vez por corrida.
+        if (!is_null($guardado) && (!$this->se_puede_reintentar($guardado) || $armados >= self::MAXIMO_ARMADOS)) {
+            $this->cargado = $guardado;
 
-            if (is_array($guardado) && array_key_exists('ok', $guardado)) {
-                $this->cargado = [
-                    'ok'         => (bool) $guardado['ok'],
-                    'urls'       => isset($guardado['urls']) && is_array($guardado['urls']) ? $guardado['urls'] : [],
-                    'error'      => isset($guardado['error']) ? $guardado['error'] : null,
-                    'incompleto' => !empty($guardado['incompleto']),
-                ];
-
-                return $this->cargado;
-            }
+            return array_merge($this->cargado, ['recien_armado' => false]);
         }
 
-        $this->cargado = $this->armar(self::codigos_de_la_corrida((int) $run->id));
+        $this->cargado = array_merge($this->armar(self::codigos_de_la_corrida((int) $run->id)), ['armados' => $armados + 1]);
 
         $this->guardar($ruta, $this->cargado);
 
-        return $this->cargado;
+        return array_merge($this->cargado, ['recien_armado' => true]);
+    }
+
+    /**
+     * Borra el índice guardado de una corrida (al terminarla o al purgarla). Nunca lanza.
+     *
+     * @param  int $run_id
+     * @return void
+     */
+    public static function borrar($run_id)
+    {
+        $ruta = self::ruta((int) $run_id);
+
+        if (is_file($ruta)) {
+            @unlink($ruta);
+        }
+    }
+
+    /**
+     * El índice guardado en el archivo, o null si no hay (o no se entiende).
+     *
+     * @param  string $ruta
+     * @return array|null
+     */
+    protected function leer_guardado($ruta)
+    {
+        if (!is_file($ruta)) {
+            return null;
+        }
+
+        $guardado = json_decode((string) @file_get_contents($ruta), true);
+
+        if (!is_array($guardado) || !array_key_exists('ok', $guardado)) {
+            return null;
+        }
+
+        return [
+            'ok'         => (bool) $guardado['ok'],
+            'urls'       => isset($guardado['urls']) && is_array($guardado['urls']) ? $guardado['urls'] : [],
+            'error'      => isset($guardado['error']) ? $guardado['error'] : null,
+            'incompleto' => !empty($guardado['incompleto']),
+            'fallo'      => isset($guardado['fallo']) ? $guardado['fallo'] : null,
+            'armados'    => isset($guardado['armados']) ? (int) $guardado['armados'] : 1,
+        ];
+    }
+
+    /**
+     * ¿El índice quedó a medias por algo que puede ser pasajero (y vale la pena volver a armarlo)?
+     *
+     * @param  array $indice
+     * @return bool
+     */
+    protected function se_puede_reintentar(array $indice)
+    {
+        return !empty($indice['incompleto']) || (!$indice['ok'] && !is_null($indice['fallo']));
     }
 
     /**
@@ -186,7 +244,7 @@ class DimensionLawnBarnIndex
      */
     protected function armar(array $codigos)
     {
-        $indice = ['ok' => true, 'urls' => [], 'error' => null, 'incompleto' => false];
+        $indice = ['ok' => true, 'urls' => [], 'error' => null, 'incompleto' => false, 'fallo' => null];
 
         if (empty($codigos)) {
             return $indice;
@@ -200,23 +258,35 @@ class DimensionLawnBarnIndex
                 break;
             }
 
-            $locs = $this->leer_pagina($pagina);
+            $leida = $this->leer_pagina($pagina);
 
-            if (is_string($locs)) {
-                // La primera página no bajó: el índice queda apagado para la corrida. Una página posterior que falla es
-                // el fin del sitemap (o un corte): se usa lo que se leyó hasta ahí.
-                if ($pagina === 1) {
-                    return ['ok' => false, 'urls' => [], 'error' => $locs, 'incompleto' => false];
-                }
+            // Fin del sitemap: una página que no existe (404 / 410) o que no trae ningún <loc>.
+            $fin = $leida['ok'] ? empty($leida['locs']) : in_array($leida['estado'], [404, 410], true);
 
+            if ($pagina === 1 && ($fin || !$leida['ok'])) {
+                // La primera página no bajó, o no trae productos: el índice queda apagado. `fallo` dice si puede ser
+                // pasajero (un corte, un timeout, un 5xx, un bloqueo): entonces se reintenta en el tramo siguiente.
+                return [
+                    'ok'         => false,
+                    'urls'       => [],
+                    'error'      => $leida['ok'] ? 'El índice de Lawn Barn no trae productos.' : $leida['error'],
+                    'incompleto' => false,
+                    'fallo'      => $fin ? null : $leida['fallo'],
+                ];
+            }
+
+            if ($fin) {
                 break;
             }
 
-            if (empty($locs)) {
+            // Cualquier otro error después de la primera página: lo leído se usa, pero el índice queda a medias.
+            if (!$leida['ok']) {
+                $indice['incompleto'] = true;
+                $indice['error']      = $leida['error'];
                 break;
             }
 
-            foreach ($locs as $loc) {
+            foreach ($leida['locs'] as $loc) {
                 if (!$this->es_de_lawnbarn($loc)) {
                     continue;
                 }
@@ -237,10 +307,11 @@ class DimensionLawnBarnIndex
     }
 
     /**
-     * Las URLs (`<loc>`) de una página del sitemap, o un string con el error si no bajó.
+     * Una página del sitemap: sus URLs (`<loc>`) o por qué no bajó.
      *
      * @param  int $pagina
-     * @return array|string
+     * @return array  ['ok' => bool, 'locs' => array, 'estado' => int|null, 'error' => string|null,
+     *                'fallo' => DimensionPageReader::FALLO_BLOQUEADA | FALLO_SIN_RESPUESTA | null]
      */
     protected function leer_pagina($pagina)
     {
@@ -252,11 +323,19 @@ class DimensionLawnBarnIndex
         } catch (\Throwable $e) {
             Log::info('[MedidasMasivas] No se pudo bajar el sitemap de Lawn Barn.', ['pagina' => $pagina, 'error' => Str::limit($e->getMessage(), 200, '…')]);
 
-            return 'El índice de Lawn Barn no respondió.';
+            return ['ok' => false, 'locs' => [], 'estado' => null, 'error' => 'El índice de Lawn Barn no respondió.', 'fallo' => DimensionPageReader::FALLO_SIN_RESPUESTA];
         }
 
         if (!$respuesta->successful()) {
-            return 'El índice de Lawn Barn respondió con error (HTTP '.(int) $respuesta->status().').';
+            $estado = (int) $respuesta->status();
+
+            return [
+                'ok'     => false,
+                'locs'   => [],
+                'estado' => $estado,
+                'error'  => 'El índice de Lawn Barn respondió con error (HTTP '.$estado.').',
+                'fallo'  => in_array($estado, [404, 410], true) ? null : DimensionPageReader::FALLO_BLOQUEADA,
+            ];
         }
 
         preg_match_all('#<loc>\s*([^<\s]+)\s*</loc>#i', (string) $respuesta->body(), $coincidencias);
@@ -267,7 +346,7 @@ class DimensionLawnBarnIndex
             $locs[] = html_entity_decode(trim($loc), ENT_QUOTES | ENT_XML1, 'UTF-8');
         }
 
-        return $locs;
+        return ['ok' => true, 'locs' => $locs, 'estado' => (int) $respuesta->status(), 'error' => null, 'fallo' => null];
     }
 
     /**
