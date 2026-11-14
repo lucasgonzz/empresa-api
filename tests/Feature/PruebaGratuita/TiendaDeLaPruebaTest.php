@@ -203,6 +203,96 @@ class TiendaDeLaPruebaTest extends EmpresaTestCase
         $this->assertSame([], Storage::disk('public')->allFiles(TiendaDeLaPruebaHelper::CARPETA));
     }
 
+    /**
+     * Ronda 4, E4 (14/11): la tienda nacía con «Mostrar artículos sin imágenes: No» (se veían 5 de 29), los
+     * botones Instagram y Facebook iban a ComercioCity y tres de cuatro enlaces de WhatsApp salían sin el 549.
+     */
+    private function tienda_como_nace_en_la_ronda_4(): void
+    {
+        OnlineConfiguration::where('user_id', $this->dueno->id)->update([
+            'show_articles_without_images' => 0,
+            'instagram' => 'https://www.instagram.com/comerciocity_com/',
+            'facebook' => 'https://www.facebook.com/p/ComercioCity-61550702650795/',
+        ]);
+        User::where('id', $this->dueno->id)->update(['phone' => '3444622139']);
+    }
+
+    public function test_la_tienda_de_la_prueba_muestra_los_articulos_sin_foto_y_no_apunta_a_comerciocity(): void
+    {
+        $this->tienda_como_nace_en_la_ronda_4();
+
+        $this->assertSame(['pedidos' => true, 'identidad' => true], TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id));
+
+        $configuracion = $this->configuracion();
+        $this->assertSame(1, (int) $configuracion->show_articles_without_images);
+        $this->assertNull($configuracion->instagram);
+        $this->assertNull($configuracion->facebook);
+        $this->assertSame('5493444622139', User::find($this->dueno->id)->phone);
+
+        // Idempotente: una segunda pasada deja exactamente lo mismo.
+        TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
+        $this->assertSame('5493444622139', User::find($this->dueno->id)->phone);
+        $this->assertSame(1, (int) $this->configuracion()->show_articles_without_images);
+    }
+
+    public function test_los_marcadores_de_redes_sin_perfil_tambien_se_vacian(): void
+    {
+        OnlineConfiguration::where('user_id', $this->dueno->id)->update([
+            'instagram' => 'htts://instagram.com',
+            'facebook' => 'https://facebook.com/',
+        ]);
+
+        TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
+
+        $this->assertNull($this->configuracion()->instagram);
+        $this->assertNull($this->configuracion()->facebook);
+    }
+
+    public function test_las_redes_y_el_telefono_propios_del_dueno_no_se_pisan(): void
+    {
+        OnlineConfiguration::where('user_id', $this->dueno->id)->update([
+            'instagram' => 'https://www.instagram.com/ferreteria.los.aromos/',
+            'facebook' => 'https://www.facebook.com/ferreterialosaromos',
+        ]);
+        // Un número corto (sin código de área) no se puede formar sin adivinar: queda como está.
+        User::where('id', $this->dueno->id)->update(['phone' => '15622139']);
+
+        TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
+
+        $this->assertSame('https://www.instagram.com/ferreteria.los.aromos/', $this->configuracion()->instagram);
+        $this->assertSame('https://www.facebook.com/ferreterialosaromos', $this->configuracion()->facebook);
+        $this->assertSame('15622139', User::find($this->dueno->id)->phone);
+
+        // Uno cargado a mano con 0 y 15 sí se forma.
+        User::where('id', $this->dueno->id)->update(['phone' => '03444 15 622139']);
+        TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
+        $this->assertSame('5493444622139', User::find($this->dueno->id)->phone);
+    }
+
+    public function test_el_pool_sin_nombre_propio_tambien_muestra_el_catalogo_completo(): void
+    {
+        $this->assertTrue(DemoIndustriaService::preparar($this->dueno, 'ferreteria'));
+        $this->tienda_como_nace_en_la_ronda_4();
+
+        $this->assertSame(['pedidos' => true, 'identidad' => false], TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id));
+
+        $this->assertSame(1, (int) $this->configuracion()->show_articles_without_images);
+        $this->assertNull($this->configuracion()->instagram);
+    }
+
+    public function test_fuera_de_una_prueba_el_catalogo_las_redes_y_el_telefono_quedan_como_estan(): void
+    {
+        $this->tienda_como_nace_en_la_ronda_4();
+        PruebaConfig::where('owner_id', $this->dueno->id)->delete();
+        PruebaHelper::olvidar_cache();
+
+        TiendaDeLaPruebaHelper::dejar_tienda_del_negocio($this->dueno->id);
+
+        $this->assertSame(0, (int) $this->configuracion()->show_articles_without_images);
+        $this->assertSame('https://www.instagram.com/comerciocity_com/', $this->configuracion()->instagram);
+        $this->assertSame('3444622139', User::find($this->dueno->id)->phone);
+    }
+
     public function test_el_comando_de_las_pruebas_ya_armadas_tambien_deja_la_tienda(): void
     {
         $this->artisan('prueba:lista-para-vender')

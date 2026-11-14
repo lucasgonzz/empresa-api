@@ -39,6 +39,10 @@ use Throwable;
  *     marca de ejemplo (o lo que generó este mismo helper): si el dueño ya subió su logo o escribió su
  *     presentación, eso no se toca. Sin nombre propio (el pool de pruebas armado antes de tener lead, que
  *     todavía lleva el de la marca de ejemplo) no cambia la identidad.
+ *  3. Catálogo y contacto (ronda 4, E4, 14/11/2026), con o sin nombre propio: `show_articles_without_images`
+ *     = 1 (se ven los artículos sin foto), Instagram y Facebook vacíos si son los de ComercioCity o un
+ *     marcador sin perfil, y `users.phone` guardado en E.164 sin «+» para que todos los enlaces de WhatsApp
+ *     de la tienda lleven el 549. Van dentro de `pedidos` en el resultado (la forma del resultado no cambia).
  *
  * `users.image_url` NO se toca: lo usan también los PDF del sistema (FPDF), que no leen SVG.
  *
@@ -93,6 +97,9 @@ class TiendaDeLaPruebaHelper
             }
 
             self::abrir_pedidos_de_prueba($configuracion);
+            self::mostrar_todo_el_catalogo($configuracion);
+            self::sacar_redes_de_comerciocity($configuracion);
+            self::formar_el_whatsapp_del_negocio($owner);
             $resultado['pedidos'] = true;
 
             $nombre = trim((string) $owner->company_name);
@@ -125,6 +132,103 @@ class TiendaDeLaPruebaHelper
         if (Schema::hasColumn('online_configurations', 'ignorar_stock')) {
             $configuracion->ignorar_stock = 1;
         }
+    }
+
+    /**
+     * La tienda muestra también los artículos sin foto (misión prueba-e2e-campana-imperio, ronda 4, E4).
+     *
+     * En la ronda 4 (14/11) la tienda de la prueba mostraba 5 de 29 artículos: los únicos con imagen. La
+     * opción es «MOSTRAR ARTICULOS SIN IMAGENES EN LA TIENDA» (Configuración Online → Catálogo y stock), la
+     * columna `show_articles_without_images`, y `DemoSetupHelper::tienda()` la crea en 0 a pedido de Lucas
+     * para la demo (26/8/2026). En tienda-api, `Article::scopeCheckOnline` agrega `whereHas('images')` cuando
+     * está apagada, y por ese scope pasan la portada, el buscador, las categorías, las ofertas y el SEO; la
+     * consulta de stock por el agente (`ConsultaStockHelper`) la mira igual. Un dueño que recién carga su
+     * lista casi nunca tiene fotos: con la opción apagada su tienda queda vacía y nada le avisa por qué.
+     *
+     * Es una opción visible: si el dueño la vuelve a apagar después, la próxima pasada de este helper (solo
+     * `prueba:lista-para-vender`, a mano) la prendería otra vez. Se acepta porque el comando se corre al
+     * armar la prueba, no en un cron.
+     *
+     * @param \App\Models\OnlineConfiguration $configuracion
+     * @return void
+     */
+    private static function mostrar_todo_el_catalogo(OnlineConfiguration $configuracion)
+    {
+        $configuracion->show_articles_without_images = 1;
+    }
+
+    /**
+     * Vacía las redes sociales que no son del negocio (misión prueba-e2e-campana-imperio, ronda 4, E4).
+     *
+     * `DemoSetupHelper::tienda()` deja en una demo las cuentas de ComercioCity
+     * (instagram.com/comerciocity_com y facebook.com/p/ComercioCity-…) y, fuera de una demo, los marcadores
+     * `htts://instagram.com` / `htts://facebook.com` (sic). En la prueba los botones Instagram y Facebook de
+     * la tienda llevaban a ComercioCity. La tienda (pie, Contacto y la tarjeta de contacto) solo dibuja cada
+     * botón si el campo tiene algo (`v-if`): vacío, el botón no aparece.
+     *
+     * Solo se vacía lo que es de ComercioCity o un marcador sin perfil (la red pelada, sin ruta): si el
+     * dueño cargó su propia cuenta, queda.
+     *
+     * @param \App\Models\OnlineConfiguration $configuracion
+     * @return void
+     */
+    private static function sacar_redes_de_comerciocity(OnlineConfiguration $configuracion)
+    {
+        foreach (['instagram', 'facebook'] as $red) {
+            if (self::es_red_ajena($configuracion->{$red})) {
+                $configuracion->{$red} = null;
+            }
+        }
+    }
+
+    /**
+     * ¿La URL es una cuenta de ComercioCity o una red sin perfil (`htts://instagram.com`)?
+     *
+     * @param string|null $url
+     * @return bool
+     */
+    private static function es_red_ajena($url)
+    {
+        $url = trim((string) $url);
+        if ($url === '') {
+            return false;
+        }
+
+        if (stripos($url, 'comerciocity') !== false) {
+            return true;
+        }
+
+        // La red pelada: esquema (aunque esté mal escrito), «www.» opcional, el dominio y nada más.
+        return (bool) preg_match('#^([a-z]+:)?(//)?(www\.)?(instagram|facebook)\.com/?$#i', $url);
+    }
+
+    /**
+     * El teléfono del negocio, guardado como lo pide WhatsApp (misión prueba-e2e-campana-imperio, ronda 4, E4).
+     *
+     * La tienda arma sus enlaces de WhatsApp con `users.phone` (lo devuelve tienda-api como `commerce.phone`).
+     * Dos de sus componentes lo normalizan antes (`BtnWhatsApp.vue` y `Thanks.vue`, con el mixin
+     * `whatsapp.js`: `3444622139` → `5493444622139`), pero el pie, Contacto, la tarjeta de contacto, el
+     * precio y la ficha del artículo lo pegan crudo en `api.whatsapp.com/send?phone=`: con `3444622139`
+     * (como lo deja `DemoSetupHelper::create_demo_user`) esos enlaces salen sin el 549. Eso es de tienda-spa y
+     * no se toca desde acá; guardando el número ya en E.164 sin «+» los dos caminos dan lo mismo (el mixin
+     * deja `5493444622139` igual).
+     *
+     * Si el número no se puede formar con certeza (`TelefonoArgentinoHelper::a_e164` devuelve null: corto,
+     * de otro país, vacío), queda como está: no se adivina un código de área.
+     *
+     * @param \App\Models\User $owner
+     * @return void
+     */
+    private static function formar_el_whatsapp_del_negocio(User $owner)
+    {
+        $formado = TelefonoArgentinoHelper::a_e164($owner->phone);
+        if (is_null($formado) || $formado === (string) $owner->phone) {
+            return;
+        }
+
+        // Por consulta y no con save(): solo cambia el teléfono, sin disparar lo que observa al User.
+        User::where('id', $owner->id)->update(['phone' => $formado]);
+        $owner->phone = $formado;
     }
 
     /**
