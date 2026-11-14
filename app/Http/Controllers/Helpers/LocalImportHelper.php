@@ -1035,11 +1035,27 @@ class LocalImportHelper {
 		return $iva_condition->id;
 	}
 
+	/**
+	 * El porcentaje de IVA de una celda, como se guarda en la tabla de IVAs: sin «%», sin espacios alrededor y con
+	 * punto decimal. «10,5», «10,5%» y « 10,5 % » son «10.5»; «21%» es «21»; «Exento» queda «Exento». La usan los
+	 * dos motores de artículos (ProcessRow::get_iva_id() y getIvaId(), el de ArticleImport) para que ninguno cree
+	 * un IVA nuevo «10,5» que no es ninguno de los de AFIP (misión prueba-e2e-campana-imperio, ronda 6, E8.1).
+	 *
+	 * @param  mixed  $iva
+	 * @return string  '' si la celda no trae nada
+	 */
+	static function normalizar_porcentaje_de_iva($iva) {
+		$texto = trim(str_replace('%', '', (string) $iva));
+
+		return preg_replace('/^(\d+),(\d+)$/', '$1.$2', $texto);
+	}
+
 	static function getIvaId($iva, $article = null) {
 		if (!is_null($iva)) {
 
-			$iva = str_replace('%', '', $iva);
-			if ($iva != '' || $iva == '0' || $iva == 0) {
+			$iva = self::normalizar_porcentaje_de_iva($iva);
+			// Vacío (una celda con solo «%» o espacios): el de siempre. Antes `'' == 0` creaba un IVA en blanco.
+			if ($iva !== '') {
 				$_iva = Iva::where('percentage', $iva)
 							->first();
 				if (is_null($_iva)) {

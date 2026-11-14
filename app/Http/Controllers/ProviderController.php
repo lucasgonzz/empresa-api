@@ -206,7 +206,7 @@ class ProviderController extends Controller
         // Prueba gratuita (misión prueba-experiencia-empresa, 3/11/2026): el primer import se lleva lo de ejemplo.
         PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), 'excel');
         Excel::import(
-            new ProviderImport(
+            (new ProviderImport(
                 $columns,
                 $request->create_and_edit,
                 $request->start_row,
@@ -214,7 +214,9 @@ class ProviderController extends Controller
                 $request->provider_id,
                 $request->input('hoja', 0),
                 $request->input('hoja_nombre')
-            ),
+            ))
+                // En la prueba, el total o un título de la planilla no se carga como proveedor (E8.1), como en el modal.
+                ->descartando_filas_que_no_son_contactos(PruebaHelper::tiene_periodo_de_prueba($this->userId())),
             $request->file('models')
         );
         PruebaHelper::importacion_terminada($this->userId(), 'provider');

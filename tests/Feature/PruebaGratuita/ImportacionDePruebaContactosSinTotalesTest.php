@@ -8,6 +8,9 @@ use App\Imports\ClientImport;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\Provider;
+use App\Notifications\GlobalNotification;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Notification;
 use Maatwebsite\Excel\Facades\Excel;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -152,10 +155,87 @@ class ImportacionDePruebaContactosSinTotalesTest extends EmpresaTestCase
         $this->importar_por_el_modal('deudores.xlsx', 'client', self::COLUMNAS_DEUDORES, 4);
         $this->assertSame(array_merge(self::CLIENTES, ['TOTAL']),
             Client::where('user_id', $this->dueno->id)->where('id', '>', $antes)->orderBy('id')->pluck('name')->all());
+    }
 
-        // Y la regla sola tampoco se activa si nadie la pide (AdminSync construye ClientImport sin el setter).
+    public function test_sin_el_setter_entra_todo_aunque_el_negocio_este_en_la_prueba(): void
+    {
+        // Así construye ClientImport AdminSync: la regla se activa solo si alguien la pide.
+        $this->assertTrue(PruebaHelper::tiene_periodo_de_prueba($this->dueno->id));
+        $antes = (int) Client::withTrashed()->max('id');
         $import = new ClientImport(self::COLUMNAS_DEUDORES, true, 4, null);
+        Excel::import($import, self::FIXTURES . 'deudores.xlsx');
+
         $this->assertSame([], $import->filas_que_no_son_contactos());
-        $this->assertNotNull(LocalImportHelper::fila_que_no_es_un_contacto(['TOTAL', null, null, 555700.5], self::COLUMNAS_DEUDORES));
+        $this->assertSame(array_merge(self::CLIENTES, ['TOTAL']),
+            Client::where('user_id', $this->dueno->id)->where('id', '>', $antes)->orderBy('id')->pluck('name')->all());
+        $this->assertNotContains('Filas que no son clientes', array_column($import->getInfoToShow(), 'title'));
+        // La regla en sí reconoce la fila: lo que la deja pasar es que nadie la pidió.
+        $this->assertSame('TOTAL', LocalImportHelper::fila_que_no_es_un_contacto(['TOTAL', null, null, 555700.5], self::COLUMNAS_DEUDORES));
+    }
+
+    /** Las columnas de «deudores.xlsx» como las manda el modal clásico (`prop_<clave>`, 1-based). */
+    const PROPS_DEUDORES = ['prop_nombre' => 1, 'prop_cuit' => 2, 'prop_telefono' => 3, 'prop_saldo_actual' => 4];
+
+    /** La importación clásica de la lista de clientes o proveedores (`api/{client|provider}/excel/import`). */
+    private function importar_por_el_clasico($fuente, string $modelo, array $props, int $desde): void
+    {
+        $copia = storage_path('app/imported_files/zz_prueba_clasico_' . uniqid() . '.xlsx');
+        if (is_string($fuente)) {
+            copy(self::FIXTURES . $fuente, $copia);
+        } else {
+            $libro = new Spreadsheet();
+            $libro->getActiveSheet()->fromArray($fuente, null, 'A1', true);
+            (new Xlsx($libro))->save($copia);
+            $libro->disconnectWorksheets();
+        }
+        $this->archivos[] = $copia;
+
+        $this->post('api/' . ($modelo === 'client' ? 'client' : 'provider') . '/excel/import', $props + [
+            'models' => new UploadedFile($copia, 'lista.xlsx', null, null, true),
+            'create_and_edit' => 1, 'start_row' => $desde, 'finish_row' => '',
+        ])->assertStatus(200);
+    }
+
+    public function test_por_la_importacion_clasica_los_deudores_tampoco_crean_el_cliente_total_y_el_aviso_lo_nombra(): void
+    {
+        Notification::fake();
+        $antes = (int) Client::withTrashed()->max('id');
+        $this->importar_por_el_clasico('deudores.xlsx', 'client', self::PROPS_DEUDORES, 4);
+
+        $this->assertSame(self::CLIENTES, Client::where('user_id', $this->dueno->id)->where('id', '>', $antes)->orderBy('id')->pluck('name')->all());
+        Notification::assertSentTo($this->dueno, GlobalNotification::class, function ($aviso) {
+            $bloque = collect((array) $aviso->info_to_show)->firstWhere('title', 'Filas que no son clientes');
+
+            return !is_null($bloque) && $bloque['parrafos'][0] === 'Fila 11: "TOTAL"';
+        });
+    }
+
+    public function test_por_la_importacion_clasica_la_fila_de_total_de_proveedores_tampoco_se_carga(): void
+    {
+        $antes = (int) Provider::withTrashed()->max('id');
+        $this->importar_por_el_clasico([
+            ['Proveedor', 'Le debo'], ['Distribuidora del Litoral', 1000], ['--- MAYORISTAS ---', null], ['Corralón Sur', 500], ['TOTAL GENERAL', 1500],
+        ], 'provider', ['prop_nombre' => 1, 'prop_saldo_actual' => 2], 2);
+
+        $this->assertSame(['Distribuidora del Litoral', 'Corralón Sur'],
+            Provider::where('user_id', $this->dueno->id)->where('id', '>', $antes)->orderBy('id')->pluck('name')->all());
+    }
+
+    public function test_por_la_importacion_clasica_un_negocio_que_paga_sigue_cargando_todas_las_filas(): void
+    {
+        PruebaHelper::fijar_vencimiento($this->dueno->id, null);
+        PruebaHelper::olvidar_cache();
+        $this->assertFalse(PruebaHelper::tiene_periodo_de_prueba($this->dueno->id));
+
+        $antes = (int) Client::withTrashed()->max('id');
+        $this->importar_por_el_clasico('deudores.xlsx', 'client', self::PROPS_DEUDORES, 4);
+        $this->assertSame(array_merge(self::CLIENTES, ['TOTAL']),
+            Client::where('user_id', $this->dueno->id)->where('id', '>', $antes)->orderBy('id')->pluck('name')->all());
+
+        $antes = (int) Provider::withTrashed()->max('id');
+        $this->importar_por_el_clasico([['Proveedor', 'Le debo'], ['Distribuidora del Litoral', 1000], ['TOTAL GENERAL', 1000]],
+            'provider', ['prop_nombre' => 1, 'prop_saldo_actual' => 2], 2);
+        $this->assertSame(['Distribuidora del Litoral', 'TOTAL GENERAL'],
+            Provider::where('user_id', $this->dueno->id)->where('id', '>', $antes)->orderBy('id')->pluck('name')->all());
     }
 }
