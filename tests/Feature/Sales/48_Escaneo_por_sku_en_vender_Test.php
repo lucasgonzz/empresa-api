@@ -4,9 +4,11 @@ namespace Tests\Feature\Sales;
 
 use App\Models\Article;
 use App\Models\ArticleVariant;
+use App\Models\Balanza;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Tests\TestCase;
 
@@ -268,5 +270,85 @@ class Escaneo_por_sku_en_vender_Test extends TestCase
         $this->articulo($user, 'Serrucho', ['sku' => '104']);
 
         $this->assertNull($this->escanear('104')['article']);
+    }
+
+    // ── Revisión de E9b (14/11/2026) ──────────────────────────────────────────────
+
+    /**
+     * Con «número interno» el campo busca `num`: tampoco se le agrega el SKU.
+     *
+     * @group sales
+     * @group vender-scan-sku
+     * @test
+     */
+    public function con_numero_interno_no_busca_por_sku()
+    {
+        $user = $this->usuario_de_test('s10');
+        $this->dar_extension($user, 'codigos_de_barra_basados_en_numero_interno');
+        $this->actingAs($user, 'web');
+
+        $this->articulo($user, 'Serrucho', ['sku' => '777']);
+        $this->articulo($user, 'Con letras', ['sku' => 'F-101']);
+
+        $this->assertNull($this->escanear('777')['article']);
+        $this->assertNull($this->escanear('F-101')['article']);
+    }
+
+    /**
+     * Un empleado busca entre los artículos de SU DUEÑO (UserHelper::userId con owner_id), no entre
+     * los suyos.
+     *
+     * @group sales
+     * @group vender-scan-sku
+     * @test
+     */
+    public function un_empleado_encuentra_el_sku_de_los_articulos_de_su_duenio()
+    {
+        $duenio = $this->usuario_de_test('s11');
+        $empleado = User::create([
+            'name'     => 'Empleado escaneo sku',
+            'email'    => 'escaneo-sku-empleado-' . uniqid() . '@test.local',
+            'password' => Hash::make('secret'),
+            'owner_id' => $duenio->id,
+        ]);
+        $this->actingAs($empleado, 'web');
+
+        $del_duenio = $this->articulo($duenio, 'Del dueño', ['sku' => '501']);
+        // Un artículo cargado a nombre del empleado no es del comercio: no se encuentra.
+        $this->articulo($empleado, 'A nombre del empleado', ['sku' => '502']);
+
+        $this->assertEquals($del_duenio->id, $this->escanear('501')['article']['id']);
+        $this->assertNull($this->escanear('502')['article']);
+    }
+
+    /**
+     * Un ticket de balanza le gana al SKU: si el código es un ticket, se lee como ticket aunque un
+     * artículo tenga ese mismo código propio.
+     *
+     * @group sales
+     * @group vender-scan-sku
+     * @test
+     */
+    public function un_ticket_de_balanza_le_gana_al_sku()
+    {
+        $user = $this->usuario_de_test('s12');
+        DB::table('users')->where('id', $user->id)->update(['tickets_de_balanza' => 'balanzas']);
+        $this->actingAs($user, 'web');
+
+        $carniceria = $this->articulo($user, 'Carnicería');
+        Balanza::create([
+            'user_id'    => $user->id,
+            'nombre'     => null,
+            'prefijo'    => '22',
+            'article_id' => $carniceria->id,
+            'tipo_dato'  => 'importe',
+            'digitos'    => null,
+        ]);
+        $this->articulo($user, 'Con el código del ticket como SKU', ['sku' => '2201000027143']);
+
+        $body = $this->escanear('2201000027143');
+
+        $this->assertTrue(isset($body['from_balanza']) && $body['from_balanza'], 'Tenía que leerse como ticket. Respuesta: ' . json_encode($body));
+        $this->assertEquals($carniceria->id, $body['article']['id']);
     }
 }
