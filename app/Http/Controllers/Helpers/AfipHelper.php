@@ -23,6 +23,10 @@ class AfipHelper extends Controller {
 
     function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null, $descriptions = [], $nota_credito_model = null) {
 
+        if ($afip_ticket->relationLoaded('dueno_fiscal_confirmado')) {
+            $user = $afip_ticket->getRelation('dueno_fiscal_confirmado');
+        }
+
         if (is_null($user)) {
            $this->user = $this->user();
         } else {
@@ -59,8 +63,9 @@ class AfipHelper extends Controller {
     }
 
     function set_afip_selected_payment_methods() {
-        $models = AfipSelectedPaymentMethod::where('user_id', $this->user->id)
-                                            ->get();
+        $models = $this->afip_ticket->relationLoaded('metodos_fiscales_confirmados')
+            ? $this->afip_ticket->getRelation('metodos_fiscales_confirmados')
+            : AfipSelectedPaymentMethod::where('user_id', $this->user->id)->get();
         if (count($models) >= 1) {
             
             $this->factura_solo_algunos_metodos_de_pago = true;

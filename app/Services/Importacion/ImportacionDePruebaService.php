@@ -422,7 +422,11 @@ class ImportacionDePruebaService
                 $campos += $hoja['mapeo'] ?? [];
             }
             // Lo demás que traía la lista, dicho en palabras (el nombre, el costo y el precio ya los nombra el resumen).
-            $otros = PlanillaDePrueba::campos_en_palabras(array_values(array_diff(array_keys($campos), ['nombre', 'costo', 'precio', PlanillaDePrueba::CLAVE_MARGEN])));
+            // La columna de stock de una sucursal se dice con su nombre: «stock en Santa Fe» (ronda 4, E5).
+            $otros = PlanillaDePrueba::campos_en_palabras(
+                array_values(array_diff(array_keys($campos), ['nombre', 'costo', 'precio', PlanillaDePrueba::CLAVE_MARGEN])),
+                (new PlanillaDePrueba($run))->etiquetas_del_resumen()
+            );
             if ($otros !== '') {
                 $texto .= ' También tomé de tu lista: ' . mb_substr($otros, 0, 500) . '.';
             }

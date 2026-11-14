@@ -8,10 +8,13 @@ use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\Afip\WSFEX;
 use App\Models\Sale;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\DB;
 
 class AfipFexHelper
 {
+    public $exigir_identidad_de_intento = false;
 
     public function __construct($afip_ticket) {
         $this->afip_ticket = $afip_ticket;
@@ -83,7 +86,8 @@ class AfipFexHelper
 
         $data = [
             'Id'                    => $id,
-            'Fecha_cbte'            => date('Ymd'),
+            // La fecha que la persona confirmó es también la que sale en el pedido fiscal.
+            'Fecha_cbte'            => Carbon::parse($this->afip_ticket->afip_fecha_emision ?: date('Y-m-d'))->format('Ymd'),
             'Cbte_Tipo'             => $this->afip_ticket->cbte_tipo,
             'Punto_vta'             => $this->afip_ticket->afip_information->punto_venta,
             'Cbte_nro'              => $this->numero_comprobante,
@@ -211,19 +215,24 @@ class AfipFexHelper
             isset($result_afip->FEXAuthorizeResult)
             && isset($result_afip->FEXAuthorizeResult->FEXResultAuth)
         ) {
+            $autorizacion = $result_afip->FEXAuthorizeResult->FEXResultAuth;
+            $autorizada = ($autorizacion->Resultado ?? null) === 'A' && !empty($autorizacion->Cae);
 
             $this->afip_ticket->update([
-                'cbte_letra'        => AfipWsHelper::getTipoLetra($result_afip->FEXAuthorizeResult->FEXResultAuth->Cbte_tipo),
-                'cae'               => $result_afip->FEXAuthorizeResult->FEXResultAuth->Cae,
-                'cae_expired_at'    => $result_afip->FEXAuthorizeResult->FEXResultAuth->Fch_venc_Cae,
-                'resultado'         => $result_afip->FEXAuthorizeResult->FEXResultAuth->Resultado,
+                'cbte_letra'        => AfipWsHelper::getTipoLetra($autorizacion->Cbte_tipo ?? 19),
+                'cae'               => $autorizada ? $autorizacion->Cae : null,
+                'cae_expired_at'    => $autorizada ? ($autorizacion->Fch_venc_Cae ?? null) : null,
+                'resultado'         => $autorizacion->Resultado ?? null,
                 'importe_total'     => (float)$this->sale->total,
                 'importe_iva'       => 0,
                 'moneda'            => $moneda,
                 'moneda_cotizacion' => $moneda_cotiz,
             ]);
 
-            AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $this->sale->total);
+            // Un rechazo o una respuesta incompleta no consumen saldo facturable.
+            if ($autorizada) {
+                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $this->sale->total);
+            }
 
             /**
              * Mision facturas-reintentadas-salen-de-alertas (9/10/2026): con la Factura E
@@ -572,6 +581,14 @@ class AfipFexHelper
 
                     $data = $result_afip->FEXGetCMPResult->FEXResultGet;
 
+                    if ($this->exigir_identidad_de_intento && !$this->es_el_comprobante_del_intento($data)) {
+                        AfipError::create([
+                            'message' => 'El comprobante consultado no coincide inequívocamente con el intento de exportación. Revisalo antes de volver a emitir.',
+                            'code' => null, 'sale_id' => $this->sale->id, 'afip_ticket_id' => $this->afip_ticket->id,
+                        ]);
+                        return false;
+                    }
+
                     if ($data->Id != 0) {
 
 
@@ -583,7 +600,7 @@ class AfipFexHelper
                         // exportacion no tiene IVA, y este camino tambien escribe `resultado`. Es,
                         // ademas, el que repara los comprobantes viejos que quedaron con la columna
                         // en NULL, sin tocar nada mas que el ticket que se esta consultando.
-                        $this->afip_ticket->update([
+                        $campos_consultados = [
                             'consultado'      => 1,
                             'importe_total'   => $data->Imp_total,
                             'resultado'       => $data->Resultado,
@@ -594,7 +611,24 @@ class AfipFexHelper
 
                             // 'request'         => $this->wsfex->getLastRequest(),
                             // 'response'        => $this->wsfex->getLastResponse(),
-                        ]);
+                        ];
+                        if ($this->exigir_identidad_de_intento) {
+                            if (IntentosDeFacturaFallidosHelper::tiene_cae($this->afip_ticket)) {
+                                // Después de una NC la venta puede tener otros importes/moneda;
+                                // consultar la factura histórica nunca la reexpresa con esos datos.
+                                $moneda_original = $this->afip_ticket->moneda_id ?: $this->afip_ticket->moneda;
+                                if (in_array($moneda_original, ['PES', 'DOL'], true)) {
+                                    $campos_consultados['moneda'] = $moneda_original;
+                                }
+                            } else {
+                                $campos_consultados['moneda'] = (int) $this->sale->moneda_id === 2 ? 'DOL' : 'PES';
+                            }
+                        }
+                        $es_factura_de_venta = $this->afip_ticket->sale_id
+                            && !$this->afip_ticket->nota_credito_id && !$this->afip_ticket->sale_nota_credito_id;
+                        $this->guardar_respuesta_de_consulta(
+                            $campos_consultados, $this->exigir_identidad_de_intento && $es_factura_de_venta, (float) $data->Imp_total
+                        );
 
                         Log::info("Comprobante consultado exitosamente en WSFEX");
 
@@ -605,8 +639,8 @@ class AfipFexHelper
                          * factura supera. Con una NC E (tambien pasa por aca) descartar_superados()
                          * no hace nada. Ninguno de los dos tira.
                          *
-                         * ⚠️ Este camino NO suma `total_facturado` (update_afip_ticket() si). Es
-                         * anterior a esta mision y no se toca aca.
+                         * La consulta manual legada conserva su comportamiento. La conciliación
+                         * del intento nuevo con identidad verificada sí suma el importe una vez.
                          */
                         if (!empty($this->afip_ticket->cae)) {
                             IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
@@ -632,6 +666,71 @@ class AfipFexHelper
         }
 
         return false;
+    }
+
+    /** La consulta nueva suma sólo la transición sin CAE a CAE; repetirla conserva el backfill. */
+    private function guardar_respuesta_de_consulta(array $campos, bool $sumar_saldo, $importe): void
+    {
+        $venta_id = $this->afip_ticket->sale_id ?: $this->afip_ticket->sale_nota_credito_id;
+        CandadoDeFacturaHelper::ventas($venta_id ? [$venta_id] : [], function () use ($campos, $sumar_saldo, $importe, $venta_id) {
+            // Transacción corta después de SOAP: un rollback nunca borra evidencia de una emisión nueva.
+            DB::transaction(function () use ($campos, $sumar_saldo, $importe, $venta_id) {
+                $venta = $venta_id ? Sale::where('id', $venta_id)->lockForUpdate()->first() : null;
+                $actual = AfipTicket::withTrashed()->where('id', $this->afip_ticket->id)->lockForUpdate()->first();
+                if (!$actual || (int) $actual->sale_id !== (int) $this->afip_ticket->sale_id
+                    || (int) $actual->sale_nota_credito_id !== (int) $this->afip_ticket->sale_nota_credito_id) {
+                    throw new \RuntimeException('El vínculo del comprobante cambió durante la consulta. Volvé a revisarlo.');
+                }
+                $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($actual);
+                // Una respuesta nueva no puede borrar ni reemplazar la autorización ya asentada.
+                if ($ya_tenia_cae && (trim((string) $actual->cae) !== trim((string) ($campos['cae'] ?? ''))
+                    || ($campos['resultado'] ?? null) !== 'A')) {
+                    FacturaDeVentaHelper::rechazar('El comprobante consultado no coincide con el CAE ya registrado. No se cambió su autorización ni el saldo de la venta.');
+                }
+                $actual->update($campos);
+                if ($sumar_saldo && $venta) {
+                    $actual->setRelation('sale', $venta);
+                    if (!$ya_tenia_cae && IntentosDeFacturaFallidosHelper::tiene_cae($actual)) {
+                        AfipWsHelper::update_sale_total_facturado($actual, $importe);
+                    }
+                }
+                $this->afip_ticket = $actual;
+                if ($venta) {
+                    $this->sale = $venta;
+                }
+            });
+        });
+    }
+
+    private function es_el_comprobante_del_intento($data): bool
+    {
+        foreach (['Id', 'Cbte_tipo', 'Punto_vta', 'Cbte_nro', 'Imp_total'] as $campo) {
+            if (!isset($data->{$campo})) {
+                return false;
+            }
+        }
+        $importe_esperado = IntentosDeFacturaFallidosHelper::tiene_cae($this->afip_ticket)
+            ? ($this->afip_ticket->importe_total ?? $this->afip_ticket->imp_total_enviado)
+            : $this->sale->total;
+        if (!is_numeric($importe_esperado) || (float) $importe_esperado <= 0) {
+            return false;
+        }
+        if ((string) $data->Id !== (string) $this->afip_ticket->afip_id
+            || (int) $data->Cbte_tipo !== (int) $this->afip_ticket->cbte_tipo
+            || (int) $data->Punto_vta !== (int) $this->afip_ticket->punto_venta
+            || (int) $data->Cbte_nro !== (int) $this->afip_ticket->cbte_numero
+            || abs((float) $data->Imp_total - (float) $importe_esperado) > 0.01) {
+            return false;
+        }
+        return !AfipTicket::withTrashed()->where('id', '!=', $this->afip_ticket->id)->where(function ($q) use ($data) {
+            $q->where(function ($numero) use ($data) {
+                $numero->where('cuit_negocio', $this->afip_ticket->cuit_negocio)
+                    ->where('punto_venta', $data->Punto_vta)->where('cbte_tipo', $data->Cbte_tipo)->where('cbte_numero', $data->Cbte_nro);
+            });
+            if (!empty($data->Cae)) {
+                $q->orWhere('cae', $data->Cae);
+            }
+        })->exists();
     }
 
     function get_incoterms() {

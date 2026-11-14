@@ -3,8 +3,12 @@
 namespace Tests\Feature\Facturacion;
 
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
+use App\Http\Controllers\Helpers\Afip\AfipWsHelper;
+use App\Http\Controllers\Helpers\Afip\TransporteDeFacturaHelper;
+use App\Http\Controllers\Helpers\AfipHelper;
 use App\Models\AfipInformation;
 use App\Models\AfipTicket;
+use App\Models\AfipTipoComprobante;
 use App\Models\IvaCondition;
 use App\Models\Sale;
 use App\Models\User;
@@ -40,9 +44,8 @@ use Tests\EmpresaTestCase;
  *
  *  Cómo se ejercita SIN red, igual que el archivo 1 de esta carpeta: el 422 se devuelve ANTES
  *  de instanciar `MakeAfipTicket`, y `get_tope_en_pesos()` arma el `AfipTicket` en memoria.
- *  NUNCA se llega a `AfipWsController`, que sale a ARCA de verdad (y cuya firma, si falta el
- *  certificado, termina en un `exit()` que mataría el proceso de PHPUnit: ver el corte
- *  controlado del test 3).
+ *  El test de recargo usa un tipo válido y reemplaza sólo el transporte: calcula los importes
+ *  con el helper real, simula la autorización y verifica el comprobante y su saldo sin SOAP.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados,
  * union types, promoción de constructor, readonly, enum ni #[...].
@@ -190,14 +193,9 @@ class Tope_del_importe_personalizado_con_descuento_Test extends EmpresaTestCase
      * `getImportes()` da $1.000: con la validación activa, facturar los $1.100 que muestra la
      * propia pantalla devolvía 422. El salteo para negativos evita esa contradicción.
      *
-     * 🔴 CÓMO SE CORTA EL FLUJO SIN RED: si el salteo aplica, el request sigue hacia
-     * `MakeAfipTicket::make_afip_ticket()`, y de ahí a `AfipWsController` → WSAA, cuya firma
-     * sin certificado termina en un `exit()` que MATA el proceso de PHPUnit. Por eso el POST
-     * lleva un `afip_tipo_comprobante_id` INEXISTENTE: `make_afip_ticket()` hace
-     * `AfipTipoComprobante::find(...)` y accede `->id` sobre el null ANTES de crear nada y de
-     * tocar la red — explota en un 500 determinista. Lo que este test mide NO es ese 500: es
-     * (1) que la respuesta NO sea el 422 del tope y (2) que el `Log::warning` distintivo del
-     * salteo se haya emitido, que es la prueba de que el camino nuevo corrió.
+     * El tipo B es válido para el emisor RI y el receptor de mostrador. El transporte simulado
+     * usa el calculador real del pedido, sin instanciar SOAP: se exige autorización por $1.100,
+     * un único comprobante y el mismo saldo facturado. El warning sigue identificando el salteo.
      *
      * @group facturacion
      * @test
@@ -211,6 +209,9 @@ class Tope_del_importe_personalizado_con_descuento_Test extends EmpresaTestCase
         ]));
 
         $afip_information = $this->crear_afip_information('Responsable inscripto');
+        $tipo = AfipTipoComprobante::where('codigo', 6)->firstOrFail();
+        $transporte = new TransporteDeRecargoSinRed();
+        $this->app->instance(TransporteDeFacturaHelper::class, $transporte);
 
         Log::spy();
 
@@ -219,17 +220,14 @@ class Tope_del_importe_personalizado_con_descuento_Test extends EmpresaTestCase
             $response = $this->postJson('api/afip-ticket', [
                 'sale_id'                    => $sale->id,
                 'ventas_afip_information_id' => $afip_information->id,
-                // Inexistente A PROPÓSITO: corte controlado antes de ARCA (ver docblock).
-                'afip_tipo_comprobante_id'   => 999999,
+                'afip_tipo_comprobante_id'   => $tipo->id,
                 // El total real de la venta con el recargo global es 1100: tiene que poder facturarse.
                 'monto_a_facturar'           => 1100,
             ]);
 
-            $this->assertNotEquals(
-                422,
-                $response->getStatusCode(),
-                'facturar el total real de una venta con recargo global (descuento negativo) no puede rebotar en el 422 del tope'
-            );
+            $response->assertStatus(201)->assertJson(['estado' => 'emitida']);
+            $this->assertSame(1, $transporte->emisiones);
+            $this->assertEqualsWithDelta(1100, $transporte->importe, self::DELTA);
 
             // La prueba positiva de que corrió el salteo (y no cualquier otra explosión): su warning distintivo.
             Log::shouldHaveReceived('warning')
@@ -238,11 +236,12 @@ class Tope_del_importe_personalizado_con_descuento_Test extends EmpresaTestCase
                 })
                 ->once();
 
-            $this->assertEquals(
-                0,
-                AfipTicket::where('sale_id', $sale->id)->count(),
-                'el corte controlado explota antes del create: no puede haber quedado ningun afip_ticket'
-            );
+            $this->assertSame(1, AfipTicket::where('sale_id', $sale->id)->count());
+            $ticket = AfipTicket::where('sale_id', $sale->id)->firstOrFail();
+            $this->assertNotEmpty($ticket->cae);
+            $this->assertEqualsWithDelta(1100, (float) $ticket->facturar_importe_personalizado, self::DELTA);
+            $this->assertEqualsWithDelta(1100, (float) $ticket->importe_total, self::DELTA);
+            $this->assertEqualsWithDelta(1100, (float) $sale->fresh()->total_facturado, self::DELTA);
 
         } finally {
 
@@ -289,5 +288,31 @@ class Tope_del_importe_personalizado_con_descuento_Test extends EmpresaTestCase
 
             AfipInformation::where('id', $afip_information->id)->delete();
         }
+    }
+}
+
+/** Simula únicamente ARCA: los importes del pedido se calculan por el camino fiscal real. */
+class TransporteDeRecargoSinRed extends TransporteDeFacturaHelper
+{
+    public $emisiones = 0;
+    public $importe;
+
+    public function emitir($ticket): void
+    {
+        $this->emisiones++;
+        $importes = (new AfipHelper($ticket))->getImportes();
+        $this->importe = (float) $importes['total'];
+        $ticket->update([
+            'cbte_numero' => 1, 'cbte_tipo' => $ticket->afip_tipo_comprobante->codigo,
+            'imp_total_enviado' => $this->importe, 'importe_total' => $this->importe,
+            'importe_iva' => $importes['iva'], 'moneda_id' => 'PES',
+            'cae' => '70123456789012', 'resultado' => 'A',
+        ]);
+        AfipWsHelper::update_sale_total_facturado($ticket, $this->importe);
+    }
+
+    public function conciliar($ticket): void
+    {
+        throw new \LogicException('Este escenario no debe intentar una conciliación.');
     }
 }

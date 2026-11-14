@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
+use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\Sale;
@@ -200,11 +202,13 @@ class ConsolidarFacturacionHelper extends Controller
             }
 
             /** No se consolidan ventas que ya tienen un comprobante AFIP autorizado (con CAE). */
-            $tiene_cae = $sale->afip_tickets->first(function ($t) {
-                return !empty($t->cae);
-            });
+            $tiene_cae = FacturaDeVentaHelper::facturas_autorizadas($sale->id)->exists();
             if ($tiene_cae) {
                 throw new Exception("La venta #{$etiqueta} ya tiene un comprobante AFIP autorizado.");
+            }
+            $pendiente = FacturaDeVentaHelper::intento_incierto($sale->id);
+            if ($pendiente) {
+                throw new Exception("La venta #{$etiqueta} tiene una emisión pendiente de verificar en ARCA. Consultá ese comprobante antes de consolidarla.");
             }
         }
     }
@@ -262,6 +266,23 @@ class ConsolidarFacturacionHelper extends Controller
      * @throws Exception Si la validación falla o la transacción no puede completarse.
      */
     public static function consolidar(
+        array $sale_ids,
+        int   $client_id,
+        int   $user_id,
+        int   $afip_information_id,
+        int   $afip_tipo_comprobante_id,
+        bool  $agrupar_items  = false,
+        array $afip_data      = [],
+        bool  $emitir_afip    = true
+    ): Sale {
+        $argumentos = func_get_args();
+        // Compartido con la emisión suelta: la cuenta corriente sola no protege una venta de mostrador.
+        return CandadoDeFacturaHelper::ventas($sale_ids, function () use ($argumentos) {
+            return self::consolidar_con_candados(...$argumentos);
+        });
+    }
+
+    private static function consolidar_con_candados(
         array $sale_ids,
         int   $client_id,
         int   $user_id,
@@ -390,6 +411,9 @@ class ConsolidarFacturacionHelper extends Controller
             self::copiar_services($venta_consolidada, $ventas_originales, $factores);
 
             if ($emitir_afip) {
+                FacturaDeVentaHelper::preparar(self::build_afip_ticket_data(
+                    $afip_data, $venta_consolidada->id, $afip_information_id, $afip_tipo_comprobante_id
+                ), $user_id);
                 MakeAfipTicket::validar_total_consolidado($venta_consolidada, $afip_information_id, $afip_tipo_comprobante_id);
             }
 

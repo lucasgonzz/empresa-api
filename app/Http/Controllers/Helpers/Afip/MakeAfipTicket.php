@@ -6,24 +6,85 @@ use App\Http\Controllers\AfipWsController;
 use App\Http\Controllers\Helpers\AfipHelper;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\AfipInformation;
+use App\Models\AfipError;
 use App\Models\AfipTicket;
 use App\Models\AfipTipoComprobante;
 use App\Models\Sale;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Validation\ValidationException;
 
 class MakeAfipTicket {
 	
 	function make_afip_ticket($data) {
+        $venta_id = $data['sale_id'] ?? null;
+        if (!FacturaDeVentaHelper::es_id($venta_id)) {
+            FacturaDeVentaHelper::rechazar('Elegí una venta válida para facturar.');
+        }
+        return CandadoDeFacturaHelper::ventas([$venta_id], function () use ($data) {
+            // Lectura actual: espera una baja/edición transaccional anterior aunque su caller ya
+            // haya soltado el candado asesor del helper común, antes del commit real.
+            $venta = Sale::where('id', $data['sale_id'])->lockForUpdate()->first();
+            if (!$venta) {
+                FacturaDeVentaHelper::rechazar('La venta no existe o ya fue eliminada.');
+            }
+            $preparada = FacturaDeVentaHelper::preparar($data, $venta->user_id);
+            if (array_key_exists('firma_fiscal_ia', $data)) {
+                FacturaDeVentaHelper::verificar_firma($preparada, $data['firma_fiscal_ia']);
+            }
+            return CandadoDeFacturaHelper::emisor($preparada['emisor'], function () use ($preparada) {
+                return $this->emitir_con_candados($preparada);
+            });
+        });
+    }
 
-        $sale 								= Sale::find($data['sale_id']);
+    private function emitir_con_candados(array $preparada): array
+    {
+        $data = $preparada['data'];
+        $sale = $preparada['venta'];
+        $afip_information = $preparada['emisor'];
+        $afip_tipo_comprobante = $preparada['tipo'];
+        $afip_fecha_emision = $data['afip_fecha_emision'];
+        $facturar_importe_personalizado = $data['facturar_importe_personalizado'];
+        $forma_de_pago = $data['forma_de_pago'];
+        $permiso_existente = $data['permiso_existente'] ?: 'N';
 
-        $afip_information 					= AfipInformation::find($data['afip_information_id']);
-        $afip_tipo_comprobante 				= AfipTipoComprobante::find($data['afip_tipo_comprobante_id']);
-        $afip_fecha_emision 				= isset($data['afip_fecha_emision']) && $data['afip_fecha_emision'] != '' && !is_null($data['afip_fecha_emision']) ? $data['afip_fecha_emision'] : date('Y-m-d');
-        $facturar_importe_personalizado     = isset($data['facturar_importe_personalizado']) && $data['facturar_importe_personalizado'] > 0 ? $data['facturar_importe_personalizado'] : null;
-        $forma_de_pago                      = isset($data['forma_de_pago']) && $data['forma_de_pago'] != '' ? $data['forma_de_pago'] : null;
-        $permiso_existente 	                = isset($data['permiso_existente']) && $data['permiso_existente'] != '' ? $data['permiso_existente'] : 'N';
+        // El número se persiste ANTES de pedir CAE. Sin R ni CAE puede haber salido allá aunque
+        // se perdiera la respuesta: reintentar consulta ESA fila, jamás crea otra factura.
+        $pendiente = FacturaDeVentaHelper::intento_incierto($sale->id);
+        if ($pendiente) {
+            if (!$pendiente->firma_datos_fiscales) {
+                FacturaDeVentaHelper::rechazar('El intento anterior necesita una consulta y revisión de su comprobante antes de volver a emitir. No hay evidencia fiscal suficiente para conciliarlo automáticamente.');
+            }
+            if (!hash_equals((string) $pendiente->firma_datos_fiscales, $preparada['firma_contenido'])) {
+                FacturaDeVentaHelper::rechazar('Los datos fiscales cambiaron desde el intento pendiente. Revisá ese comprobante antes de volver a emitir.');
+            }
+            if (preg_replace('/\D/', '', (string) $pendiente->cuit_negocio) !== preg_replace('/\D/', '', (string) $afip_information->cuit)
+                || (int) $pendiente->punto_venta !== (int) $afip_information->punto_venta) {
+                FacturaDeVentaHelper::rechazar('La configuración del emisor cambió desde el intento pendiente. Revisá ese comprobante antes de consultar o emitir otro.');
+            }
+            if ((int) $pendiente->afip_information_id !== (int) $afip_information->id) {
+                FacturaDeVentaHelper::rechazar('La venta tiene una emisión pendiente de verificar con otro emisor. Consultá ese comprobante antes de emitir otro.');
+            }
+            foreach (['afip_tipo_comprobante_id', 'afip_fecha_emision', 'facturar_importe_personalizado', 'forma_de_pago'] as $campo) {
+                $coincide = (string) $pendiente->{$campo} === (string) $data[$campo];
+                if ($campo === 'facturar_importe_personalizado' && is_numeric($pendiente->{$campo}) && is_numeric($data[$campo])) {
+                    $coincide = abs((float) $pendiente->{$campo} - (float) $data[$campo]) < 0.01;
+                }
+                if (!$coincide) {
+                    FacturaDeVentaHelper::rechazar('La venta tiene un intento pendiente con otros datos fiscales. Consultá el comprobante anterior antes de cambiar el tipo, la fecha o el importe.');
+                }
+            }
+            if ($pendiente->imp_total_enviado !== null && abs((float) $pendiente->imp_total_enviado - $preparada['importe']) > 0.01) {
+                FacturaDeVentaHelper::rechazar('El importe de la venta cambió y hay un intento pendiente en ARCA. Consultá el comprobante anterior antes de volver a facturar.');
+            }
+            $documento = AfipSolicitarCaeHelper::get_doc_client($sale);
+            if ((string) $pendiente->cuit_cliente !== (string) $documento['doc_client'] || $pendiente->iva_negocio !== $afip_information->iva_condition->name) {
+                FacturaDeVentaHelper::rechazar('Los datos fiscales cambiaron desde el intento pendiente. Revisá ese comprobante antes de volver a emitir.');
+            }
+            $this->fijar_contexto_fiscal($pendiente, $preparada);
+            return $this->contactar_arca($pendiente, $sale, true);
+        }
 
         if ($sale->is_consolidacion_facturacion) {
             if ($facturar_importe_personalizado !== null) {
@@ -32,12 +93,13 @@ class MakeAfipTicket {
             self::validar_total_consolidado($sale, (int) $data['afip_information_id'], (int) $data['afip_tipo_comprobante_id']);
         }
 
-		$afip_ticket = AfipTicket::create([
+		$campos_ticket = [
             'cuit_negocio'      				=> $afip_information->cuit,
             'iva_negocio'       				=> $afip_information->iva_condition->name,
             'punto_venta'       				=> $afip_information->punto_venta,
 
             'iva_cliente'       				=> !is_null($sale->client) && !is_null($sale->client->iva_condition) ? $sale->client->iva_condition->name : '',
+            'cuit_cliente'                  => AfipSolicitarCaeHelper::get_doc_client($sale)['doc_client'],
             'sale_id'           				=> $sale->id,
             'afip_information_id'       		=> $afip_information->id,
             'afip_tipo_comprobante_id'  		=> $afip_tipo_comprobante->id,
@@ -46,7 +108,14 @@ class MakeAfipTicket {
             'importe_personalizado_ivas_json'   => $this->normalizar_importe_personalizado_ivas($data, $facturar_importe_personalizado),
             'forma_de_pago'                     => $forma_de_pago,
             'permiso_existente'                 => $permiso_existente,
-        ]);
+        ];
+        // Nullable y compatible con una API que arranque antes de migrar: sin columna no se intenta
+        // conciliar automáticamente un timeout; nunca se reutiliza request/response para otro propósito.
+        if (Schema::hasColumn('afip_tickets', 'firma_datos_fiscales')) {
+            $campos_ticket['firma_datos_fiscales'] = $preparada['firma_contenido'];
+        }
+        $afip_ticket = AfipTicket::create($campos_ticket);
+        $this->fijar_contexto_fiscal($afip_ticket, $preparada);
 
         Log::info('Incoterms: '.$data['incoterms']);
         if ($data['incoterms']) {
@@ -57,11 +126,51 @@ class MakeAfipTicket {
         }
 
             
-        $ct = new AfipWsController($afip_ticket);
-        $result = $ct->init();
 
-        $this->recalcular_ganancia_facturada($sale);
+        return $this->contactar_arca($afip_ticket, $sale, false);
 	}
+
+    private function fijar_contexto_fiscal($ticket, array $preparada): void
+    {
+        // Vale para emitir y conciliar: jamás recargar emisor/receptor después de comprobar su firma.
+        FacturaDeVentaHelper::fijar_contexto($ticket, $preparada);
+    }
+
+    private function contactar_arca($ticket, $sale, bool $conciliar): array
+    {
+        try {
+            $transporte = app(TransporteDeFacturaHelper::class);
+            if ($conciliar) {
+                $transporte->conciliar($ticket);
+            } else {
+                $transporte->emitir($ticket);
+            }
+        } catch (\Throwable $e) {
+            // No se revierte ni se borra evidencia de un pedido que pudo llegar a ARCA.
+            Log::error('No se pudo confirmar la respuesta fiscal del ticket '.$ticket->id.': '.$e->getMessage());
+        }
+        $ticket = $ticket->fresh();
+        $this->recalcular_ganancia_facturada($sale);
+        if (IntentosDeFacturaFallidosHelper::tiene_cae($ticket)) {
+            return ['estado' => 'emitida', 'message' => 'Factura emitida y autorizada por ARCA.', 'afip_ticket_id' => $ticket->id];
+        }
+        if ($ticket->resultado === 'R') {
+            if (!$ticket->afip_errors()->exists()) {
+                AfipError::create([
+                    'sale_id' => $sale->id, 'afip_ticket_id' => $ticket->id, 'code' => 0,
+                    'message' => 'ARCA rechazó el comprobante. Revisá los datos de la factura antes de volver a emitir.',
+                ]);
+            }
+            return ['estado' => 'rechazada', 'message' => 'ARCA rechazó el comprobante. Revisá los errores de facturación de la venta; no se confirmó una factura emitida.', 'afip_ticket_id' => $ticket->id];
+        }
+        if (!$ticket->afip_errors()->exists()) {
+            AfipError::create([
+                'sale_id' => $sale->id, 'afip_ticket_id' => $ticket->id, 'code' => 0,
+                'message' => 'La respuesta de ARCA no quedó confirmada. Consultá el intento guardado antes de emitir otro comprobante.',
+            ]);
+        }
+        return ['estado' => 'pendiente_verificacion', 'message' => 'No se pudo confirmar la emisión ante ARCA. El intento quedó guardado para consultar su resultado antes de emitir otro comprobante.', 'afip_ticket_id' => $ticket->id];
+    }
 
     /**
      * Recalcula `sales.ganancia` después de emitir el comprobante (misión saneo-ganancia-ventas,
@@ -314,7 +423,7 @@ class MakeAfipTicket {
         throw $error;
     }
 
-    public static function get_tope_en_pesos($sale, $afip_information_id, $afip_tipo_comprobante_id)
+    public static function get_tope_en_pesos($sale, $afip_information_id, $afip_tipo_comprobante_id, $metodos_fiscales = null)
     {
         if (is_null(AfipInformation::find($afip_information_id))) {
             Log::warning(
@@ -330,8 +439,11 @@ class MakeAfipTicket {
         $afip_ticket->afip_tipo_comprobante_id = $afip_tipo_comprobante_id;
         $afip_ticket->facturar_importe_personalizado = null;
         $afip_ticket->sale = $sale;
+        if ($metodos_fiscales !== null) {
+            $afip_ticket->setRelation('metodos_fiscales_confirmados', $metodos_fiscales);
+        }
 
-        $afip_helper = new AfipHelper($afip_ticket);
+        $afip_helper = new AfipHelper($afip_ticket, null, null, $sale->user);
         $importes = $afip_helper->getImportes();
 
         return (float) $importes['total'];

@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\SearchController;
 use App\Http\Controllers\Helpers\ArticleHelper;
@@ -413,6 +414,17 @@ class MasiveUpdateHelper
      */
     public static function process_update(MasiveUpdate $masive_update)
     {
+        // Una masiva de ventas conserva su capacidad; se excluye con la factura del mismo registro.
+        $ventas_fiscales = [];
+        if (strtolower(GeneralHelper::getModelName($masive_update->model_name)) === strtolower(\App\Models\Sale::class)) {
+            $resueltos_fiscales = self::resolve_models_from_criteria($masive_update);
+            foreach ($resueltos_fiscales['models'] as $venta_fiscal) {
+                if ($venta_fiscal) {
+                    $ventas_fiscales[] = (int) $venta_fiscal->id;
+                }
+            }
+        }
+        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($masive_update, $ventas_fiscales) {
         $masive_update->status = 'processing';
         $masive_update->save();
 
@@ -425,6 +437,13 @@ class MasiveUpdateHelper
         $resolved = self::resolve_models_from_criteria($masive_update);
         $models = $resolved['models'];
         $used_filters = $resolved['used_filters'];
+        if (strtolower(GeneralHelper::getModelName($masive_update->model_name)) === strtolower(\App\Models\Sale::class)) {
+            foreach ($models as $modelo_fiscal) {
+                if ($modelo_fiscal && !in_array((int) $modelo_fiscal->id, $ventas_fiscales, true)) {
+                    \App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::rechazar('La selección de ventas de la actualización cambió. Volvé a prepararla antes de modificarla.');
+                }
+            }
+        }
 
         $model_name = $masive_update->model_name;
 
@@ -652,6 +671,7 @@ class MasiveUpdateHelper
             'affected_count' => $affected_count,
             'changes_count' => $changes_count,
         ]);
+        });
     }
 
     /**
@@ -663,6 +683,17 @@ class MasiveUpdateHelper
      */
     public static function process_revert(MasiveUpdate $revert_masive_update, MasiveUpdate $parent_masive_update)
     {
+        // Revertir es otra escritura: tampoco puede intercalarse con la emisión en curso.
+        $ventas_fiscales = [];
+        if (strtolower(GeneralHelper::getModelName($parent_masive_update->model_name)) === strtolower(\App\Models\Sale::class)) {
+            $items_fiscales = json_decode($parent_masive_update->non_article_items_json, true);
+            foreach (is_array($items_fiscales) ? $items_fiscales : [] as $item_fiscal) {
+                if (isset($item_fiscal['model_id'])) {
+                    $ventas_fiscales[] = (int) $item_fiscal['model_id'];
+                }
+            }
+        }
+        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($revert_masive_update, $parent_masive_update) {
         $revert_masive_update->status = 'processing';
         $revert_masive_update->save();
 
@@ -702,6 +733,7 @@ class MasiveUpdateHelper
             'afectados' => (int) $revert_masive_update->affected_count,
             'cambios'   => (int) $revert_masive_update->changes_count,
         ]);
+        });
     }
 
     /**

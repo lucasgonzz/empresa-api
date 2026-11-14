@@ -869,6 +869,7 @@ class SaleController extends Controller
     }
 
     function update(Request $request, $id) {
+        return \App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper::ventas([$id], function () use ($request, $id) {
 
         $sale_a_actualizar = Sale::find($id);
 
@@ -1548,9 +1549,11 @@ class SaleController extends Controller
             report($e);
             return response()->json(['error' => true], 500);
         }
+        });
     }
 
     public function destroy(Request $request, $id) {
+        return \App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper::ventas([$id], function () use ($request, $id) {
         // Obtiene la venta por ID
         $model = Sale::find($id);
 
@@ -1621,11 +1624,14 @@ class SaleController extends Controller
         );
 
         return response(null);
+        });
     }
 
     function makeAfipTicket(Request $request) {
 
-        $sale = Sale::find($request->sale_id);
+        $sale = \App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::venta(
+            $request->sale_id, $this->userId(), $request->user()
+        );
 
         if (!is_null($sale)) {
 
@@ -1641,6 +1647,10 @@ class SaleController extends Controller
 
                 return response()->json(['message' => $motivo_consolidada], 422);
             }
+            // El calculador no puede resolver ni usar un emisor ajeno para producir un mensaje fiscal.
+            \App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper::configuracion(
+                $request->ventas_afip_information_id, $request->afip_tipo_comprobante_id, $this->userId()
+            );
 
             /** @var mixed $monto Importe personalizado que pidio el usuario, en pesos. */
             $monto = $request->monto_a_facturar;
@@ -1752,7 +1762,7 @@ class SaleController extends Controller
 
             $afip = new MakeAfipTicket();
 
-            $afip->make_afip_ticket([
+            $datos_fiscales = [
                 'sale_id'                           => $request->sale_id,
                 'afip_information_id'               => $request->ventas_afip_information_id,
                 'afip_tipo_comprobante_id'          => $request->afip_tipo_comprobante_id,
@@ -1762,15 +1772,22 @@ class SaleController extends Controller
                 'forma_de_pago'                     => $request->forma_de_pago,
                 'permiso_existente'                 => $request->permiso_existente,
                 'incoterms'                         => $request->incoterms,
-            ]);
+            ];
+            if ($request->has('_firma_fiscal_ia')) {
+                $datos_fiscales['firma_fiscal_ia'] = $request->input('_firma_fiscal_ia');
+            }
+            $resultado_fiscal = $afip->make_afip_ticket($datos_fiscales);
 
 
-            return response()->json(['sale' => $this->fullModel('Sale', $request->sale_id)], 201);
+            return response()->json(array_merge(
+                ['sale' => $this->fullModel('Sale', $request->sale_id)], $resultado_fiscal
+            ), 201);
         }
         return response(null, 200);
     }
 
     function updatePrices(Request $request, $id) {
+        return \App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper::ventas([$id], function () use ($request, $id) {
         $model = Sale::find($id);
 
         if (is_null($model)) {
@@ -1869,6 +1886,7 @@ class SaleController extends Controller
 
         // $this->sendAddModelNotification('Sale', $id);
         return response()->json(['model' => $this->fullModel('Sale', $id)], 200);
+        });
     }
 
     /**

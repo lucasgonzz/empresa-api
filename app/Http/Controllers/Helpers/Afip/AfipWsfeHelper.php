@@ -240,11 +240,10 @@ class AfipWsfeHelper extends Controller
                                 $campos['importe_iva'] = $importe_iva;
                             }
 
-                            $this->afip_ticket->update($campos);
+                            $this->guardar_respuesta_de_consulta($campos, $from_sale, $total_a_facturar);
                             Log::info('se actualizo la info del comprobante');
 
                             if ($from_sale) {
-                                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $total_a_facturar);
 
                                 /**
                                  * La ganancia depende del IVA declarado, que recien acaba de quedar
@@ -402,6 +401,39 @@ class AfipWsfeHelper extends Controller
             'afip_ticket_id'    => $this->afip_ticket->id,
             'sale_id'           => $sale_id,
         ]);
+    }
+
+    /**
+     * Consultar dos veces debe reparar IVA/ganancia, pero no sumar dos veces el mismo CAE.
+     * La lectura fresca y las dos escrituras son atómicas; la llamada SOAP ya terminó afuera.
+     */
+    private function guardar_respuesta_de_consulta(array $campos, bool $desde_venta, $importe): void
+    {
+        $venta_id = $this->afip_ticket->sale_id ?: $this->afip_ticket->sale_nota_credito_id;
+        CandadoDeFacturaHelper::ventas($venta_id ? [$venta_id] : [], function () use ($campos, $desde_venta, $importe, $venta_id) {
+            DB::transaction(function () use ($campos, $desde_venta, $importe, $venta_id) {
+                $venta = $venta_id ? Sale::where('id', $venta_id)->lockForUpdate()->first() : null;
+                $actual = AfipTicket::withTrashed()->where('id', $this->afip_ticket->id)->lockForUpdate()->first();
+                if (!$actual || (int) $actual->sale_id !== (int) $this->afip_ticket->sale_id
+                    || (int) $actual->sale_nota_credito_id !== (int) $this->afip_ticket->sale_nota_credito_id) {
+                    throw new \RuntimeException('El vínculo del comprobante cambió durante la consulta. Volvé a revisarlo.');
+                }
+                $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($actual);
+                // Una respuesta nueva no puede borrar ni reemplazar la autorización ya asentada.
+                if ($ya_tenia_cae && (trim((string) $actual->cae) !== trim((string) ($campos['cae'] ?? ''))
+                    || ($campos['resultado'] ?? null) !== 'A')) {
+                    FacturaDeVentaHelper::rechazar('El comprobante consultado no coincide con el CAE ya registrado. No se cambió su autorización ni el saldo de la venta.');
+                }
+                $actual->update($campos);
+                if ($desde_venta && $venta) {
+                    $actual->setRelation('sale', $venta);
+                    if (!$ya_tenia_cae && IntentosDeFacturaFallidosHelper::tiene_cae($actual)) {
+                        AfipWsHelper::update_sale_total_facturado($actual, $importe);
+                    }
+                }
+                $this->afip_ticket = $actual;
+            });
+        });
     }
 
     /**

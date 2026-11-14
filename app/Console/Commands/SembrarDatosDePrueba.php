@@ -3018,6 +3018,16 @@ class SembrarDatosDePrueba extends Command
     {
         $user_id = $this->user_id;
 
+        // Este reset elimina evidencia FICTICIA, no habilita una excepción al borrado fiscal real.
+        // Se comprueba acá también: limpiar_para_test() no pasa por la guarda de handle().
+        $es_testing = config('app.env') === 'testing' && app()->runningUnitTests()
+            && strpos((string) DB::connection()->getDatabaseName(), 'testing') !== false;
+        $entorno_permitido = config('app.env') === 'local'
+            || in_array(config('app.FOR_USER'), ['demo', 'prueba'], true) || $es_testing;
+        if (!$entorno_permitido || (int) $user_id <= 0 || (int) $user_id !== (int) config('semilla.user_id')) {
+            throw new \LogicException('El reset de la semilla sólo puede limpiar su usuario en local, demo, prueba o una base de tests verificada.');
+        }
+
         // Se borra TODO lo del dueño, sembrado o no: las marcas de la semilla dejan de tener sentido.
         SemillaRegistroHelper::olvidar($user_id);
 
@@ -3028,18 +3038,20 @@ class SembrarDatosDePrueba extends Command
             /*
                 🔴 Los comprobantes de las ventas van ANTES que las ventas (misión
                 venta-facturada-no-se-borra, 5/10/2026). SaleController@destroy rechaza con 422 la
-                venta con un AfipTicket vivo (factura o nota de crédito) y este lazo tira la
+                venta con un AfipTicket fiscal (incluso borrado lógicamente) y este lazo tira la
                 respuesta: la demo quedaba con sus ventas facturadas después del reseteo. Hasta acá
                 este borrado iba más abajo, con las ventas ya borradas, y su whereHas('sale') no
                 encontraba nada.
             */
-            AfipTicket::where(function ($q) use ($user_id) {
+            // Sólo este comando, bajo la guarda de entorno anterior, purga los comprobantes de
+            // ejemplo. Un soft delete ya no alcanza: no debe ocultar evidencia fiscal a las guardas.
+            AfipTicket::withTrashed()->where(function ($q) use ($user_id) {
                 $q->whereHas('sale', function ($q) use ($user_id) {
                     $q->where('user_id', $user_id);
                 })->orWhereHas('sale_nota_credito', function ($q) use ($user_id) {
                     $q->where('user_id', $user_id);
                 });
-            })->delete();
+            })->forceDelete();
 
             $sale_controller = new SaleController();
             $sale_ids = Sale::where('user_id', $user_id)->pluck('id')->toArray();
