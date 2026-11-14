@@ -65,10 +65,13 @@ class TranscripcionDeFotosIaHelper
      *         bloque → la fila de la foto; es lo que AsistenteIaService fue anotando al armar el payload.
      * @param  \App\Models\AiConversation  $conversation
      * @param  int  $timeout_segundos  Margen disponible para las fotos que todavía no tienen caché.
+     * @param  bool  $sin_margen  Salida: true sólo si faltó tiempo para fotos sin caché, no si falló su lectura.
      * @return array<int, array{role: string, content: string|array}>|null
      */
-    public static function reemplazar_fotos(array $messages, array $fotos_por_hash, $conversation, $timeout_segundos = self::TIMEOUT_SEGUNDOS)
+    public static function reemplazar_fotos(array $messages, array $fotos_por_hash, $conversation, $timeout_segundos = self::TIMEOUT_SEGUNDOS, &$sin_margen = false)
     {
+        $sin_margen = false;
+
         try {
             $fotos = self::fotos_del_payload($messages, $fotos_por_hash);
 
@@ -91,6 +94,13 @@ class TranscripcionDeFotosIaHelper
             }
 
             if (count($faltan)) {
+                // Se distingue el presupuesto agotado de una falla real, después de revisar el caché.
+                if (min(self::TIMEOUT_SEGUNDOS, max(0, (int) $timeout_segundos)) < 5) {
+                    $sin_margen = true;
+
+                    return null;
+                }
+
                 $nuevos = self::transcribir($faltan, $conversation, self::pedido_de_la_persona($messages), $timeout_segundos);
 
                 if (is_null($nuevos)) {

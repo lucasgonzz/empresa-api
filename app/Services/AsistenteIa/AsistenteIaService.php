@@ -833,7 +833,17 @@ class AsistenteIaService
         if ($lleva_imagenes) {
             // El respaldo comparte el presupuesto de las lecturas anteriores, incluido el tiempo en cola.
             $margen_de_las_fotos = max(0, LecturaDePlanillaIaHelper::SEGUNDOS_POR_TURNO - $this->segundos_del_turno($inicio_del_turno, $assistant_message));
-            $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation, $margen_de_las_fotos);
+            $sin_margen = false;
+            $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation, $margen_de_las_fotos, $sin_margen);
+
+            if ($sin_margen) {
+                // La foto sigue guardada para «seguí»: no se marca leída ni se manda sin leer a DeepSeek.
+                // El cierre existente conserva también las cargas ya confirmadas en este turno.
+                return $this->respuesta_sin_terminar(
+                    $conversation, $assistant_message, $confirmacion_determinista,
+                    'no quedó tiempo para transcribir las fotos del turno', false
+                );
+            }
 
             if (is_null($transcriptos) || $this->lleva_imagenes($transcriptos)) {
                 throw AsistenteIaException::falla_tecnica('No se pudieron leer todas las imágenes del turno con Haiku.');

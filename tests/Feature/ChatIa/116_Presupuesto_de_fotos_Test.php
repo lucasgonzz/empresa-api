@@ -25,6 +25,8 @@ class Presupuesto_de_fotos_Test extends PlanillaTestCase
 
     protected $pedidos_a_deepseek = [];
 
+    protected $falla_haiku = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -41,6 +43,10 @@ class Presupuesto_de_fotos_Test extends PlanillaTestCase
 
             if ($modelo === ProveedorIaHelper::MODELO_HAIKU_IMAGENES) {
                 $this->pedidos_a_haiku[] = ['modelo' => $modelo, 'timeout' => (int) $options['timeout']];
+
+                if ($this->falla_haiku) {
+                    return Http::response(['type' => 'error', 'error' => ['type' => 'overloaded_error', 'message' => 'sin disponibilidad']], 529);
+                }
 
                 $textos = [];
 
@@ -151,17 +157,33 @@ class Presupuesto_de_fotos_Test extends PlanillaTestCase
     {
         list($conversation, $assistant) = $this->turno_con_foto();
 
+        $texto = $this->servicio_con_tiempo_transcurrido(96)->responder($conversation, $assistant);
+
+        $this->assertStringContainsString('Me llegó la foto y quedó guardada.', $texto);
+        $this->assertStringContainsString('Escribime «seguí»', $texto);
+        $this->assertNull($conversation->messages()->where('rol', 'user')->first()->imagenes()->first()->gestionada_at);
+        $this->assertCount(0, $this->pedidos_a_haiku);
+        $this->assertCount(0, $this->pedidos_a_deepseek);
+        Http::assertNothingSent();
+    }
+
+    /** @test */
+    public function una_falla_autentica_de_haiku_conserva_el_error_tecnico_y_no_manda_fotos_a_deepseek()
+    {
+        $this->falla_haiku = true;
+        list($conversation, $assistant) = $this->turno_con_foto();
+
         try {
-            $this->servicio_con_tiempo_transcurrido(96)->responder($conversation, $assistant);
-            $this->fail('Sin margen para leer la foto el turno tiene que informar la falla técnica.');
+            $this->servicio_con_tiempo_transcurrido(92)->responder($conversation, $assistant);
+            $this->fail('El rechazo real de Haiku tiene que conservar la falla técnica.');
         } catch (AsistenteIaException $e) {
             $this->assertSame(AsistenteIaException::MOTIVO_FALLA_TECNICA, $e->motivo());
             $this->assertNull($e->mensaje_para_la_persona());
         }
 
-        $this->assertCount(0, $this->pedidos_a_haiku);
+        $this->assertCount(1, $this->pedidos_a_haiku);
+        $this->assertSame(8, $this->pedidos_a_haiku[0]['timeout']);
         $this->assertCount(0, $this->pedidos_a_deepseek);
-        Http::assertNothingSent();
     }
 
     /** @test */
