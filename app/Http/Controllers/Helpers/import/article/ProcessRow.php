@@ -4271,6 +4271,12 @@ class ProcessRow {
         }
 
         $iva = trim(str_replace('%', '', (string)$iva_excel));
+        /*
+         * «10,5» o «10,5%» (coma decimal, como lo escribe un comerciante) es el 10.5 de la tabla de IVAs. Sin
+         * esto cada importación creaba un Iva nuevo «10,5» que no es ninguno de los de AFIP (misión
+         * prueba-e2e-campana-imperio, ronda 6, «stock corralon noviembre», E8.1).
+         */
+        $iva = preg_replace('/^(\d+),(\d+)$/', '$1.$2', $iva);
 
         if ($iva === '' && $iva !== '0') {
             return 2;
