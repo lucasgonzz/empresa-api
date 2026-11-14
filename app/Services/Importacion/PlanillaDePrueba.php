@@ -15,6 +15,7 @@ use App\Models\Article;
 use App\Models\ImportacionDePrueba;
 use App\Models\PriceType;
 use App\Models\Provider;
+use App\Models\User;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
@@ -121,6 +122,10 @@ class PlanillaDePrueba
     private $sin_ganancia = [];
     // Filas a las que `filas()` les puso el margen que contestó el dueño porque no lo traían: [índice => cantidad].
     private $margen_agregado = [];
+    // Propiedad del importador de la columna de stock de cada sucursal => [id, nombre] (ver `stock_junto_a_la_sucursal`).
+    private $stock_por_sucursal = [];
+    // Solo en la prueba: la sucursal donde va el stock «junto» (una sola cantidad), o null. Ver `sucursal_del_stock_junto`.
+    private $sucursal_del_stock_junto = null;
 
     public function __construct(ImportacionDePrueba $run)
     {
@@ -145,6 +150,10 @@ class PlanillaDePrueba
                 $this->etiquetas[$campo] = 'Depósito ' . $deposito->street
                     . ['amount' => ': stock', 'min' => ': stock mínimo', 'max' => ': stock máximo'][$subtipo];
             }
+            $this->stock_por_sucursal[self::propiedad_normalizada($clave)] = ['id' => (int) $deposito->id, 'nombre' => (string) $deposito->street];
+        }
+        if (!$run->modo_soporte) {
+            $this->sucursal_del_stock_junto = $this->sucursal_del_stock_junto();
         }
 
         foreach (PriceType::where('user_id', $run->user_id)->get(['id', 'name', 'catalogo_restringido_en_tienda']) as $lista) {
@@ -754,7 +763,7 @@ class PlanillaDePrueba
      * @param  string[] $campos  Claves del mapeo
      * @return string
      */
-    public static function campos_en_palabras(array $campos): string
+    public static function campos_en_palabras(array $campos, array $etiquetas = []): string
     {
         // Siempre en el mismo orden (el de ETIQUETAS): la columna JSON donde vive el mapeo no conserva el suyo.
         $orden = array_flip(array_keys(self::ETIQUETAS));
@@ -763,7 +772,7 @@ class PlanillaDePrueba
         });
         $palabras = [];
         foreach ($campos as $campo) {
-            $palabras[] = self::ETIQUETAS_DEL_RESUMEN[$campo] ?? self::ETIQUETAS[$campo] ?? trim(str_replace(['$_final_', '%_', '_'], ['precio final de la lista ', 'margen de la lista ', ' '], (string) $campo));
+            $palabras[] = $etiquetas[$campo] ?? self::ETIQUETAS_DEL_RESUMEN[$campo] ?? self::ETIQUETAS[$campo] ?? trim(str_replace(['$_final_', '%_', '_'], ['precio final de la lista ', 'margen de la lista ', ' '], (string) $campo));
         }
         $palabras = array_values(array_unique($palabras));
         if (count($palabras) < 2) {
@@ -987,6 +996,7 @@ class PlanillaDePrueba
             // Solo en la prueba: el código del dueño no se pierde en `numero` (ver el método).
             if (!$this->run->modo_soporte) {
                 $hoja['mapeo'] = $this->codigo_del_dueno_como_sku($hoja);
+                $hoja['mapeo'] = $this->stock_junto_a_la_sucursal($hoja['mapeo']);
             }
             $hoja['descuentos_por_proveedor'] = $this->resolver_descuentos($hoja);
         }
@@ -1045,6 +1055,107 @@ class PlanillaDePrueba
         }
 
         return $mapeo;
+    }
+
+    /**
+     * En la importación de la PRUEBA, el stock «junto» (una sola columna de cantidad) va a la sucursal del
+     * dueño cuando el negocio tiene sucursales (misión prueba-e2e-campana-imperio, ronda 4, E5).
+     *
+     * Por qué: con sucursales el stock vive en `address_article` (una fila por sucursal) y `articles.stock` es
+     * su suma. Una columna «Cant» mapeada a `stock_actual` hace que `ProcessRow::obtener_stock` arme un
+     * `stock_global` (no vino ninguna columna de sucursal) y el artículo queda con `articles.stock` y SIN filas
+     * por sucursal: el «estado mixto» que `MigrarASucursalPrincipal` existe para eliminar. En la ronda 4 (14/11)
+     * el Listado mostraba las columnas de las sucursales vacías y el stock solo en «Stock». Pasando la columna a
+     * la de la sucursal (la misma propiedad que usa un mapeo `address_{id}_amount`), el motor la carga por el
+     * camino de siempre de las columnas de sucursal.
+     *
+     * No cambia nada si la hoja ya trae alguna columna de sucursal (stock, mínimo o máximo: el dueño o soporte
+     * ya dijeron dónde va), si no trae `stock_actual`, o si el negocio no tiene sucursales. Fuera de la prueba
+     * (modo soporte) no se llama.
+     *
+     * @param  array $mapeo  Propiedad del importador => posición
+     * @return array         El mapeo, con `stock_actual` pasado a la columna de la sucursal si corresponde
+     */
+    private function stock_junto_a_la_sucursal(array $mapeo): array
+    {
+        if (is_null($this->sucursal_del_stock_junto) || !isset($mapeo['stock_actual']) || $this->trae_columnas_de_sucursal($mapeo)) {
+            return $mapeo;
+        }
+
+        $propiedad = self::propiedad_normalizada(str_replace(' ', '_', strtolower($this->sucursal_del_stock_junto->street)));
+
+        // Se renombra en su lugar: el orden del mapeo es el de las columnas de la planilla preparada.
+        $renombrado = [];
+        foreach ($mapeo as $clave => $posicion) {
+            $renombrado[$clave === 'stock_actual' ? $propiedad : $clave] = $posicion;
+        }
+
+        return $renombrado;
+    }
+
+    /**
+     * ¿El mapeo trae alguna columna de sucursal (su stock, su mínimo o su máximo)?
+     *
+     * @param  array $mapeo
+     * @return bool
+     */
+    private function trae_columnas_de_sucursal(array $mapeo): bool
+    {
+        foreach (array_keys($this->stock_por_sucursal) as $propiedad) {
+            if (isset($mapeo[$propiedad]) || isset($mapeo['min_' . $propiedad]) || isset($mapeo['max_' . $propiedad])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La sucursal donde va el stock «junto» de la prueba: la del dueño (`users.address_id`, la que fija
+     * `PrimeraVentaDeLaPruebaHelper` y con la que vende, así una venta descuenta de esa misma fila) si sigue
+     * existiendo; si no, la principal (`Address::principal_de`). Null si el negocio no tiene sucursales.
+     *
+     * @return \App\Models\Address|null
+     */
+    private function sucursal_del_stock_junto(): ?Address
+    {
+        $owner_id = (int) $this->run->user_id;
+        $address_id = User::whereKey($owner_id)->value('address_id');
+        if ($address_id) {
+            $del_dueno = Address::sucursales_de($owner_id)->where('id', (int) $address_id)->first();
+            if (!is_null($del_dueno)) {
+                return $del_dueno;
+            }
+        }
+
+        return Address::principal_de($owner_id);
+    }
+
+    /**
+     * La propiedad del importador como queda después de `ArticleImportColumnsNormalizer::normalize`.
+     *
+     * @param  string $propiedad
+     * @return string
+     */
+    private static function propiedad_normalizada(string $propiedad): string
+    {
+        return ArticleImportColumnsNormalizer::normalize_property_key($propiedad) ?? $propiedad;
+    }
+
+    /**
+     * Cómo se nombra en el resumen final la columna de stock de cada sucursal: «stock en Santa Fe»
+     * (ronda 4, E5). Sin esto el resumen decía el nombre de la columna del importador («santa fe»).
+     *
+     * @return array  Propiedad del importador => palabras
+     */
+    public function etiquetas_del_resumen(): array
+    {
+        $etiquetas = [];
+        foreach ($this->stock_por_sucursal as $propiedad => $sucursal) {
+            $etiquetas[$propiedad] = 'stock en ' . $sucursal['nombre'];
+        }
+
+        return $etiquetas;
     }
 
     /**
