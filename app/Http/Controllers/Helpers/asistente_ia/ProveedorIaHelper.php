@@ -313,18 +313,23 @@ class ProveedorIaHelper
      * bloque TLS del proveedor (WAMP/Windows suele requerir ca_bundle o verify_ssl=false). Es la
      * misma lógica que tenían AsistenteIaService::build_http_client() y sus dos copias, movida acá.
      *
+     * Misión agente-venta-por-planilla (02/11/2026): `$betas_de_mas` suma valores al header `anthropic-beta`
+     * separados por coma, que es como los acepta la API (la lectura de planillas con Opus suma el del
+     * fallback del servidor). Sin el argumento el header es exactamente el de siempre.
+     *
      * @param  string  $proveedor
      * @param  int  $timeout_segundos
+     * @param  array<int, string>  $betas_de_mas
      * @return \Illuminate\Http\Client\PendingRequest
      */
-    public static function cliente_http($proveedor, $timeout_segundos)
+    public static function cliente_http($proveedor, $timeout_segundos, array $betas_de_mas = [])
     {
         $proveedor = (string) $proveedor;
 
         $http = Http::withHeaders([
             'x-api-key'         => (string) config('services.' . $proveedor . '.api_key'),
             'anthropic-version' => self::ANTHROPIC_VERSION,
-            'anthropic-beta'    => self::ANTHROPIC_BETA,
+            'anthropic-beta'    => implode(',', array_merge([self::ANTHROPIC_BETA], $betas_de_mas)),
             'content-type'      => 'application/json',
         ])->timeout((int) $timeout_segundos);
 

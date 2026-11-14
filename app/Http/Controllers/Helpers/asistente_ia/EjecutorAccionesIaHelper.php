@@ -110,6 +110,12 @@ class EjecutorAccionesIaHelper {
         AiMessageAction::TIPO_ENVIO_COMPROBANTE,
         AiMessageAction::TIPO_RECORDATORIOS_COBRO,
         AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+        /*
+         * Las ventas de una planilla (misión agente-venta-por-planilla, 02/11/2026), por el mismo motivo que la
+         * venta suelta y más: cada renglón es un SaleController::store() con su candado y sus jobs, y además un
+         * renglón que falla no puede revertir a los que ya salieron bien. Ver EjecucionDePlanillaIaHelper.
+         */
+        AiMessageAction::TIPO_VENTAS_PLANILLA,
     ];
 
     /**
@@ -638,6 +644,10 @@ class EjecutorAccionesIaHelper {
 
             case AiMessageAction::TIPO_VENTA:
                 return PropuestaVentaIaHelper::ejecutar($contexto, $accion);
+
+            // Misión agente-venta-por-planilla (02/11/2026): está en TIPOS_DE_DOS_ETAPAS.
+            case AiMessageAction::TIPO_VENTAS_PLANILLA:
+                return EjecucionDePlanillaIaHelper::ejecutar($contexto, $accion);
 
             // Misión cheques-endoso-y-bancos (21/9/2026).
             case AiMessageAction::TIPO_CUOTAS_TIENDA:

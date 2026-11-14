@@ -225,6 +225,7 @@ class EsquemaDeDatosIaHelper
         'ai_conversations'                   => 'conversaciones del propio asistente: leerlas desde el chat es un bucle sin valor',
         'ai_message_actions'                 => 'tarjetas del asistente (estado interno)',
         'ai_message_imagenes'                => 'rutas de archivo de las fotos que mando la persona (interno)',
+        'ai_planillas'                       => 'planillas de ventas del asistente (interno): se leen con consultar_planilla',
         'ai_token_usages'                    => 'consumo de tokens (interno)',
         'mostrador_accesos'                  => 'tokens de acceso a los informes del mostrador',
         'mostrador_memorias'                 => 'memoria interna del mostrador',

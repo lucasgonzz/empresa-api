@@ -287,9 +287,9 @@ class Pedir_ayuda_a_soporte_Test extends EmpresaTestCase
             ['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda'],
             // Fichas verificadas añade una herramienta detrás, sin modificar este prefijo, y los avisos del
             // dueño (C2, 13/11/2026) otra más.
-            array_slice($nombres, -5, 3)
+            array_slice($nombres, -11, 3)
         );
-        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp'], array_slice($nombres, -2));
+        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp'], array_slice($nombres, -8, 2));
 
         $descripcion = '';
         foreach (HerramientasDeCarga::definiciones() as $definicion) {

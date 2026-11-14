@@ -41,6 +41,8 @@ use App\Http\Controllers\Helpers\asistente_ia\ReintentoDeEscaneoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaAccionDePantallaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ContenidoDeFotosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PlanillaIaHelper;
 use App\Http\Controllers\Helpers\ofertas\ClientOfertaAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -63,7 +65,10 @@ use Illuminate\Support\Facades\Log;
  * que_acciones_de_pantalla_hay, consultar_por_pantalla, proponer_accion_de_pantalla y
  * proponer_borrado_por_pantalla, la herramienta genérica que llama a la misma ruta que llama la
  * pantalla (ver CatalogoDeAccionesDePantallaIaHelper). Van al final porque el orden es parte
- * del caché de prompt (ver build_tools()).
+ * del caché de prompt (ver build_tools()). La misión agente-venta-por-planilla (02/11/2026) sumó las
+ * cinco de la planilla guardada: consultar_planilla, definir_planilla, corregir_renglon_de_planilla,
+ * proponer_ventas_de_planilla y leer_planilla_de_la_foto (ver PlanillaIaHelper), y volver_a_mirar_la_foto, la de
+ * las fotos que ya están en texto (ver ContenidoDeFotosIaHelper).
  *
  * 🔴 LAS DOS PUNTAS DE CADA HERRAMIENTA VIVEN EN ESTE ARCHIVO: la definición (definiciones(), lo que
  * Claude ve) y el despacho (el `case` de ejecutar(), lo que corre al llamarla). Es la misma regla que
@@ -1823,6 +1828,119 @@ class HerramientasDeCarga
             ]],
         ];
 
+        // Se agregan después de las herramientas vigentes: su prefijo de caché conserva el orden.
+        $definiciones = array_merge($definiciones, [
+            /*
+             * Misión agente-venta-por-planilla (02/11/2026): las cinco de la planilla, al FINAL por el caché de
+             * prompt. 🔴 El modelo no lee ni copia la planilla: la tabla la lee el sistema (PlanillaIaHelper), y
+             * esto es lo único que puede hacer con ella.
+             */
+            [
+                'name'         => 'consultar_planilla',
+                'description'  => 'Devuelve la planilla de ventas en curso, tal como la leyó y la guardó el sistema: cada renglón con su estado, cliente, artículo, cantidad y total, y lo que falta para poder cargarla. Usala cuando el mensaje traiga «[Foto: planilla…]» o «[Tabla pegada: planilla…]», o cuando te hablen de esas ventas. Es la única verdad sobre esa planilla: no la transcribas a la persona.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                ],
+            ],
+            [
+                'name'         => 'definir_planilla',
+                'description'  => 'Guarda lo que vale para TODA la planilla en curso, con lo que dijo la persona: si el importe es el total de cada renglón o el precio por unidad, cómo se cobró y, si te lo pide proponer_ventas_de_planilla, la caja, la sucursal o el tipo de venta. El sistema lo contrasta con sus mensajes: si no lo dijo (es el total, por unidad, el método, la caja), se rechaza, y un «sí» no alcanza. Para cambiar lo que ya estaba definido, lo tiene que pedir en su último mensaje. Si te devuelve cambio: false, no cambió nada: no digas «listo». Preguntale de forma natural, sin decirle que hacen falta ciertas palabras. La fecha de la venta es siempre la de hoy: si pide otra, aclaráselo y nunca digas que la anotaste.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'importe_es'     => [
+                            'type'        => 'string',
+                            'enum'        => ['total', 'unidad'],
+                            'description' => 'total: el importe es lo que vale el renglón entero. unidad: es el precio de una unidad.',
+                        ],
+                        'cobro'          => [
+                            'type'        => 'string',
+                            'enum'        => ['contado', 'cuenta_corriente'],
+                            'description' => 'Cómo se cobraron las ventas.',
+                        ],
+                        'metodo_de_pago' => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del método de pago, como en la pantalla de Vender. Decirlo ya deja el cobro en contado.',
+                        ],
+                        'caja'           => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la caja, solo si te lo pidió proponer_ventas_de_planilla.',
+                        ],
+                        'sucursal'       => [
+                            'type'        => 'string',
+                            'description' => 'Nombre de la sucursal, solo si te lo pidió proponer_ventas_de_planilla.',
+                        ],
+                        'tipo_de_venta'  => [
+                            'type'        => 'string',
+                            'description' => 'Nombre del tipo de venta, solo si te lo pidió proponer_ventas_de_planilla.',
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'name'         => 'corregir_renglon_de_planilla',
+                'description'  => 'Corrige UN renglón de la planilla en curso porque la persona lo pidió con sus palabras («el renglón 3 son 2 unidades», «el renglón 5 no lo cargues», «a Ana ponele el 70102», «lo de Ana es otra compra, cargala igual»). El sistema contrasta el cambio con su último mensaje: lo_que_dijo_el_dueno tiene que ser una cita textual, y ahí tienen que estar qué renglón y el valor nuevo, con palabras distintas; una fecha o un número suelto no nombran un renglón. Lo que está en duda se contesta con el valor solo. Un «sí» o un «dale» no cambian nada resuelto; solo contestan una duda que vos acabás de preguntar con ese valor. Si te lo rechaza, pedí lo que dice el rechazo, todo junto. Nunca corrijas por tu cuenta ni por releer una foto.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'renglon' => [
+                            'type'        => ['integer', 'string'],
+                            'description' => 'El número de renglón. "todos" solo con campo descartar, si la persona pidió que no se cargue la planilla o dijo que no eran ventas.',
+                        ],
+                        'campo'   => [
+                            'type'        => 'string',
+                            'enum'        => ['cantidad', 'importe', 'articulo', 'cliente', 'comprobante', 'operacion', 'tipo_documento', 'descartar', 'cargar_igual'],
+                            'description' => 'Qué se corrige. importe: lo que vale el renglón entero. comprobante, operacion y tipo_documento: lo que contesta su duda. descartar: el renglón no se carga. cargar_igual: un renglón marcado como ya registrado es otra compra y se carga igual.',
+                        ],
+                        'valor'   => [
+                            'type'        => ['string', 'number'],
+                            'description' => 'El valor nuevo, como lo dijo la persona. articulo: su código o su id. cliente: su documento, su id o su nombre. Con descartar y cargar_igual no hace falta.',
+                        ],
+                        'lo_que_dijo_el_dueno' => [
+                            'type'        => 'string',
+                            'description' => 'La parte de su ÚLTIMO mensaje donde la persona pide este cambio, copiada tal cual. Si nombra varios renglones, la de este renglón con su valor. Si contestó solo «sí» a una duda que preguntaste, ese «sí».',
+                        ],
+                    ],
+                    'required'   => ['renglon', 'campo', 'lo_que_dijo_el_dueno'],
+                ],
+            ],
+            [
+                'name'         => 'proponer_ventas_de_planilla',
+                'description'  => 'Arma UNA tarjeta con las ventas de todos los renglones de la planilla en curso, desde la tabla: NO vende nada hasta que la persona confirma. El sistema le muestra la lista completa: no la repitas. Si la respuesta trae "faltan", preguntá eso todo junto y tal cual. No pide teléfonos: los clientes nuevos se crean con los datos de la planilla. No armes estas ventas de a una con proponer_venta. La fecha de la venta es siempre la de hoy: si pide otra, aclaráselo y nunca digas que la anotaste.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                ],
+            ],
+            [
+                'name'         => 'leer_planilla_de_la_foto',
+                'description'  => 'Manda la foto más nueva de la persona a la lectura de planillas del sistema y la deja guardada como planilla. Usala si te pide cargar ventas o clientes de una foto con filas que no quedó como planilla (no te llegó «[Foto: planilla…]»), o si la foto dice que es una tabla que no es una planilla de ventas. No la transcribas vos: leer números de una foto es lo que el sistema hace con doble control. Devuelve lo mismo que consultar_planilla.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => new \stdClass(),
+                ],
+            ],
+            [
+                'name'         => 'volver_a_mirar_la_foto',
+                'description'  => 'Le pregunta al modelo que ve por un detalle de una foto que ya está analizada, cuando la persona lo pide y en el texto de la foto no está. Primero usá el texto: esto es solo si ahí no está la respuesta. La respuesta queda guardada con la foto. Hasta 2 veces por mensaje. No sirve para cambiar celdas de una planilla.',
+                'input_schema' => [
+                    'type'       => 'object',
+                    'properties' => [
+                        'pregunta'  => [
+                            'type'        => 'string',
+                            'description' => 'Qué hay que mirar, concreto: «¿qué dice el lote de abajo?».',
+                        ],
+                        'imagen_id' => [
+                            'type'        => 'integer',
+                            'description' => 'El imagen_id de la foto. Sin esto, la más nueva de la conversación.',
+                        ],
+                    ],
+                    'required'   => ['pregunta'],
+                ],
+            ],
+        ]);
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2306,6 +2424,30 @@ class HerramientasDeCarga
                     $assistant_message,
                     PropuestaVentaIaHelper::proponer($contexto, $assistant_message, $input, EntradaDeCargaIa::valor($input, 'reemplaza_a'))
                 ));
+
+            /*
+             * Misión agente-venta-por-planilla (02/11/2026): la planilla guardada. 🔴 La tarjeta NO pasa por
+             * quizas_auto_confirmar(), esté el dueño en el modo que esté: son varias ventas de un saque, y se
+             * confirman con el «sí» determinista después de ver la lista. Por lo mismo su tipo no está en
+             * AUTO_CONFIRMABLES ni en AUTO_CONFIRMABLES_DIRECTO.
+             */
+            case 'consultar_planilla':
+                return self::resultado(PlanillaIaHelper::consultar($contexto));
+
+            case 'definir_planilla':
+                return self::resultado(PlanillaIaHelper::definir($contexto, $assistant_message, $input));
+
+            case 'corregir_renglon_de_planilla':
+                return self::resultado(PlanillaIaHelper::corregir($contexto, $assistant_message, $input));
+
+            case 'proponer_ventas_de_planilla':
+                return self::resultado(PlanillaIaHelper::proponer($contexto, $assistant_message));
+
+            case 'leer_planilla_de_la_foto':
+                return self::resultado(PlanillaIaHelper::leer_la_foto($contexto, $assistant_message));
+
+            case 'volver_a_mirar_la_foto':
+                return self::resultado(ContenidoDeFotosIaHelper::volver_a_mirar($contexto, $assistant_message, $input));
 
             /*
              * Misión asistente-ventas-y-fotos (21/9/2026), revisada el 22/9 por la misión

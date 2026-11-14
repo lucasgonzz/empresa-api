@@ -67,6 +67,10 @@ use Illuminate\Support\Facades\DB;
  * precios por lista, mismo catálogo de descuentos y misma sucursal. Copiar esos resolvedores en el
  * otro archivo sería tener dos criterios de precio para la misma pantalla, que es exactamente la
  * clase de error que el repo ya tiene aprendida.
+ *
+ * Misión agente-venta-por-planilla (02/11/2026): por lo mismo son públicos `resolver_cobro`,
+ * `resolver_metodo_de_pago`, `resolver_caja`, `resolver_tipo_de_venta` y `numero`, que usan las ventas
+ * de una planilla (PlanillaIaHelper, EjecucionDePlanillaIaHelper): cada renglón es una venta de Vender.
  */
 class PropuestaVentaIaHelper
 {
@@ -174,7 +178,10 @@ class PropuestaVentaIaHelper
 
         if (RespuestaDeCargaIa::es_negativa($cliente)) {
 
-            return $cliente;
+            /* El cliente nuevo de un renglón todavía no existe: lo que corresponde no es «cargalo desde Clientes». */
+            $del_renglon = PlanillaIaHelper::cliente_nuevo_de_un_renglon($contexto, EntradaDeCargaIa::valor($input, 'cliente'));
+
+            return is_null($del_renglon) ? $cliente : $del_renglon;
         }
 
         // ------------------------------------------------------------------ cobro
@@ -235,6 +242,20 @@ class PropuestaVentaIaHelper
         if (RespuestaDeCargaIa::es_negativa($renglones)) {
 
             return $renglones;
+        }
+
+        /*
+         * 🔴 Misión agente-venta-por-planilla (02/11/2026): con una planilla en curso, una venta suelta al cliente o del
+         * artículo de un renglón pendiente se rechaza y se manda a la herramienta de la planilla. Sin esto el modelo
+         * saltea la tabla y vuelve a cruzar artículos, que es lo que pasó en el caso real. 🔴 `es_otra_venta` NO LA ABRE:
+         * lo manda el modelo, y es el modelo el que hay que frenar. La abre lo que dijo el dueño. Va acá porque hace falta
+         * saber qué cliente y qué artículos son de verdad.
+         */
+        $frenada = PlanillaIaHelper::venta_suelta_frenada($contexto, $mensaje, $cliente, $renglones);
+
+        if (!is_null($frenada)) {
+
+            return $frenada;
         }
 
         // ------------------------------------------------------------------ descuento de venta
@@ -790,7 +811,7 @@ class PropuestaVentaIaHelper
      * @param  string  $texto
      * @return string|array
      */
-    protected static function resolver_cobro(ContextoDeCargaIa $contexto, $cliente, $texto)
+    public static function resolver_cobro(ContextoDeCargaIa $contexto, $cliente, $texto)
     {
         $normalizado = strtr(ConsultasSistemaIaHelper::normalize_text($texto), [' ' => '_', '-' => '_']);
 
@@ -858,7 +879,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return \App\Models\CurrentAcountPaymentMethod|null|array
      */
-    protected static function resolver_metodo_de_pago($nombre, array &$faltan, array &$opciones)
+    public static function resolver_metodo_de_pago($nombre, array &$faltan, array &$opciones)
     {
         $metodos = OpcionesDeCargaIaHelper::metodos_de_pago();
 
@@ -932,7 +953,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return \App\Models\Caja|null|array
      */
-    protected static function resolver_caja(ContextoDeCargaIa $contexto, $metodo, $nombre, array &$faltan, array &$opciones)
+    public static function resolver_caja(ContextoDeCargaIa $contexto, $metodo, $nombre, array &$faltan, array &$opciones)
     {
         $nombre = trim((string) $nombre);
 
@@ -1724,7 +1745,7 @@ class PropuestaVentaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return \App\Models\SaleType|null|array
      */
-    protected static function resolver_tipo_de_venta(ContextoDeCargaIa $contexto, $nombre, array &$faltan, array &$opciones)
+    public static function resolver_tipo_de_venta(ContextoDeCargaIa $contexto, $nombre, array &$faltan, array &$opciones)
     {
         $tipos = SaleType::where('user_id', $contexto->owner_id)->orderBy('id')->get();
 
@@ -2306,7 +2327,7 @@ class PropuestaVentaIaHelper
      * @param  float  $numero
      * @return string
      */
-    protected static function numero($numero): string
+    public static function numero($numero): string
     {
         $numero = round((float) $numero, 2);
 

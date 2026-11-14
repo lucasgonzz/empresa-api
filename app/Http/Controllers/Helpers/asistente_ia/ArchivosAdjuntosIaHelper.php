@@ -847,11 +847,20 @@ class ArchivosAdjuntosIaHelper
      * @param  bool  $completo
      * @return string
      */
-    public static function texto_para_el_modelo(AiMessage $mensaje, $completo = true)
+    public static function texto_para_el_modelo(AiMessage $mensaje, $completo = true, array $en_vez_de = [])
     {
         $bloques = [];
 
         foreach (self::datos($mensaje) as $entrada) {
+
+            /*
+             * Misión agente-venta-por-planilla: el Excel que ya se leyó como planilla no le llega al modelo, igual que una tabla
+             * pegada: solo su marca. Si lo viera, lo copiaría de memoria. `$en_vez_de` es [orden => marca].
+             */
+            if (isset($en_vez_de[(int) ($entrada['orden'] ?? 0)])) {
+                $bloques[] = (string) $en_vez_de[(int) ($entrada['orden'] ?? 0)];
+                continue;
+            }
 
             $nombre = (string) ($entrada['nombre'] ?? 'archivo');
             $estado = (string) ($entrada['estado'] ?? '');

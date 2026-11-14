@@ -332,6 +332,42 @@ return [
      * datos del comprobante. Reutiliza ANTHROPIC_API_KEY / ca_bundle / verify_ssl del bloque
      * 'anthropic' de arriba; estas claves son propias de este flujo.
      */
+    /*
+     * Misión agente-venta-por-planilla (02/11/2026): la lectura de las planillas de ventas que el dueño
+     * manda como foto. 🔴 Se lee con Claude aunque el asistente converse con otro proveedor: medido con
+     * las planillas reales de un cliente, DeepSeek Flash leyó bien 0 de 10 y Claude, con la imagen
+     * agrandada ×3 y en tramos, 30 de 30. Si falta la clave de Anthropic NO se cae a otro modelo: se le
+     * pide el texto a la persona (LecturaDePlanillaIaHelper).
+     *
+     * ⚠️ Los ids van SIN sufijo de fecha: los vigentes de Anthropic son completos así.
+     */
+    /*
+     * Misión agente-venta-por-planilla, parte 2 (02/11/2026): toda foto de un turno de DeepSeek se analiza una sola vez con
+     * Claude y queda en texto (ContenidoDeFotosIaHelper). Haiku 5.5, medido: lee igual o mejor que Sonnet 5.5, en la mitad del
+     * tiempo y por una vigésima parte del costo.
+     */
+    'fotos_del_asistente' => [
+        // Interruptor. phpunit.xml lo apaga: los tests viejos no tienen que ver estas llamadas.
+        'activa' => filter_var(env('FOTOS_ASISTENTE_ACTIVA', true), FILTER_VALIDATE_BOOLEAN),
+        'modelo' => env('FOTOS_ASISTENTE_MODELO', 'claude-haiku-5-5'),
+    ],
+
+    'lectura_planilla' => [
+        // Interruptor. phpunit.xml lo apaga: los tests que no son de planillas no tienen que ver estas llamadas.
+        'activa'              => filter_var(env('LECTURA_PLANILLA_ACTIVA', true), FILTER_VALIDATE_BOOLEAN),
+        // ¿Es una planilla? Llamada corta con la foto tal cual.
+        'modelo_clasificador' => env('LECTURA_PLANILLA_MODELO_CLASIFICADOR', 'claude-haiku-5-5'),
+        // Las dos lecturas independientes.
+        'modelo_a'            => env('LECTURA_PLANILLA_MODELO_A', 'claude-sonnet-5-5'),
+        'modelo_b'            => env('LECTURA_PLANILLA_MODELO_B', 'claude-haiku-5-5'),
+        // El desempate, solo si las dos primeras no coinciden.
+        'modelo_desempate'    => env('LECTURA_PLANILLA_MODELO_DESEMPATE', 'claude-opus-5-5'),
+        // Timeout de cada llamada, en segundos. Medido: entre 6 y 11 s por lectura.
+        'timeout'             => (int) env('LECTURA_PLANILLA_TIMEOUT', 60),
+        // Techo de salida de una lectura, con el razonamiento adaptativo adentro.
+        'max_tokens'          => (int) env('LECTURA_PLANILLA_MAX_TOKENS', 12000),
+    ],
+
     'escaneo_factura_compra' => [
         /*
          * Modelo de la PRIMERA lectura (misión escaneo-factura-haiku, 2/11/2026). Es el económico

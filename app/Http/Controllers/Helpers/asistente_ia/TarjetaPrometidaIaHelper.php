@@ -336,13 +336,22 @@ class TarjetaPrometidaIaHelper
     const CIERRE = '/^' . self::SIMBOLOS . '*(?:(?:listo|hecho|ya esta|ya quedo|todo listo|ya lo hice)[\W_]*)+$/u';
 
     /**
+     * Las formas de pedirle un dato a la persona, normalizadas: «Decime la caja y te armo la tarjeta», «Contestame eso (…) y armo la
+     * tarjeta». 🔴 CON ESTO ANTES, EL VERBO QUE SIGUE ES LO QUE SE VA A HACER DESPUÉS, no una tarjeta que ya exista. Faltaba «contestame»:
+     * en una prueba real (02/11/2026) el modelo preguntó si el importe era el total o por unidad, «… y armo la tarjeta con las 11
+     * ventas», y la guarda le cambió la pregunta por «No pude armar la tarjeta para esto. ¿Lo intento de nuevo?»: el dueño se quedaba sin
+     * saber qué le faltaba contestar. No vale para un pasado («Contestame eso. Dejé la tarjeta»): eso sí la afirma.
+     */
+    const PEDIDO_DE_UN_DATO = 'decime|pasame|mandame|confirmame|avisame|contame|indicame|contestame|contesta|respondeme|responde|aclarame|escribime|necesito que|necesito saber|me digas|me contestes|me respondas|me aclares|me confirmes|me indiques|me pases|me mandes';
+
+    /**
      * Lo que, en otra oración del mismo texto, hace que un cierre ("Listo.") sea sólo el comienzo de un
      * pedido de datos: "Listo. ¿De qué caja sale?", "Listo. Decime el monto". Ahí no afirma una carga.
      *
      * Sexta vuelta (10/10/2026): también lo que pide que la persona mande algo o avise, como en la regla
      * de cortesía ("Mañana te mando la factura de Coca" → "Listo. Avisame cuando la tengas.").
      */
-    const PIDE_UN_DATO = '/\b(?:decime|pasame|necesito|me falta|me faltan|falta|faltan|indicame|confirmame|avisame|avisa|mandame|esperame|espero)\b/u';
+    const PIDE_UN_DATO = '/\b(?:decime|pasame|necesito|me falta|me faltan|falta|faltan|indicame|confirmame|avisame|avisa|mandame|esperame|espero|contestame|respondeme|aclarame|escribime)\b/u';
 
     /**
      * Lo que, DESPUÉS del verbo de una promesa y en la misma oración, la vuelve condición: "Lo cargo
@@ -1184,8 +1193,8 @@ class TarjetaPrometidaIaHelper
 
         if ($tipo === 'promesa') {
 
-            /* Una pregunta (con o sin "¿"), o justo después de una: está pidiendo un dato. */
-            if (substr(rtrim($oracion), -1) === '?' || substr(rtrim($anterior), -1) === '?') {
+            /* Una pregunta (con o sin "¿"), o justo después de una, o de un pedido que la deja atada a la respuesta: está pidiendo un dato. */
+            if (substr(rtrim($oracion), -1) === '?' || substr(rtrim($anterior), -1) === '?' || self::la_promesa_depende_del_pedido($anterior, $antes, substr($oracion, strlen($antes)))) {
 
                 return false;
             }
@@ -1195,7 +1204,7 @@ class TarjetaPrometidaIaHelper
              * El "si" va seguido de una palabra: sin tildes, "Sí, te dejo la tarjeta" (con la coma) es
              * un sí, y afirma.
              */
-            return ! preg_match('/(?:\bsi\s+\w|\b(?:queres que|puedo|podria|podemos|cuando|apenas|en cuanto|una vez que|con eso|con ese dato|con esos datos|decime|pasame|mandame|confirmame|avisame|contame|indicame)\b)/u', $antes);
+            return ! preg_match('/(?:\bsi\s+\w|\b(?:queres que|puedo|podria|podemos|cuando|apenas|en cuanto|una vez que|con eso|con ese dato|con esos datos|' . self::PEDIDO_DE_UN_DATO . ')\b)/u', $antes);
         }
 
         if ($tipo === 'boton') {
@@ -1235,10 +1244,36 @@ class TarjetaPrometidaIaHelper
         if ($tipo === 'estado'
             && preg_match('/\b' . self::PRESENTE . '\s+(?:(?:te|le|les|lo|la)\s+)*(?:\S+\s+){0,2}?(?:' . self::DETERMINANTE . '\s+)?$/u', $antes, $verbo, PREG_OFFSET_CAPTURE)) {
 
-            return self::la_cola_de_una_promesa_afirma(substr($antes, 0, $verbo[0][1]), $oracion_con_tildes);
+            $antes_del_verbo = substr($antes, 0, $verbo[0][1]);
+
+            return !self::la_promesa_depende_del_pedido($anterior, $antes_del_verbo, substr($oracion, strlen($antes_del_verbo)))
+                && self::la_cola_de_una_promesa_afirma($antes_del_verbo, $oracion_con_tildes);
         }
 
         return true;
+    }
+
+    /**
+     * true si el pedido de la oración anterior deja esta promesa atada a la respuesta: «Contestame eso. Después armo la tarjeta.», «Decime
+     * la caja. Armo la tarjeta con eso.». Ahí el verbo dice lo que se va a hacer con la respuesta, y borrarlo le borra la pregunta al dueño.
+     *
+     * 🔴 UN «TE DEJO LA TARJETA» EN PRESENTE NO: «Avisame si falta algo. Te dejo la tarjeta con las ventas.» afirma una tarjeta que no existe,
+     * y es el caso por el que existe la guarda. Salvo que diga que es para después («Contestame eso. Luego te dejo la tarjeta.»). Y
+     * «después de revisar» no es después de la respuesta: «Después de revisar, te dejo la tarjeta para que la confirmes.» también afirma.
+     *
+     * @param  string  $anterior  La oración de antes, normalizada.
+     * @param  string  $antes_del_verbo  Lo que hay antes del verbo en esta oración.
+     * @param  string  $desde_el_verbo  Esta oración, desde el verbo.
+     * @return bool
+     */
+    protected static function la_promesa_depende_del_pedido($anterior, $antes_del_verbo, $desde_el_verbo)
+    {
+        if (!preg_match('/\b(?:' . self::PEDIDO_DE_UN_DATO . ')\b/u', $anterior)) {
+
+            return false;
+        }
+
+        return !preg_match('/^dejo\b/u', ltrim($desde_el_verbo)) || (bool) preg_match('/\b(?:despues|luego|recien)\b(?! de\b)/u', $antes_del_verbo);
     }
 
     /**
@@ -1278,7 +1313,7 @@ class TarjetaPrometidaIaHelper
             return false;
         }
 
-        return ! preg_match('/\b(?:queres que|decime|pasame|mandame|confirmame|avisame|contame|indicame)\b/u', $antes_del_verbo);
+        return ! preg_match('/\b(?:queres que|' . self::PEDIDO_DE_UN_DATO . ')\b/u', $antes_del_verbo);
     }
 
     // -------------------------------------------------------------------------------------------

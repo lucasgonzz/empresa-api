@@ -150,6 +150,9 @@ class Confirmacion_determinista_y_fotos_Test extends AsistenteWhatsappTestCase
      */
     protected function proveedor_que_solo_escribe()
     {
+        // Este fixture falsea también a Haiku: habilita su clave ficticia para atravesar el guard del lector.
+        config(['services.anthropic.api_key' => 'clave-haiku-de-prueba']);
+
         /*
          * Desde el 3/11/2026 el asistente corre en DeepSeek y las fotos las lee Haiku (Anthropic), que las pasa
          * a texto ANTES del loop: un turno con fotos hace una llamada a api.anthropic.com y recién después la de

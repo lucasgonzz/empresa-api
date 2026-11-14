@@ -25,6 +25,7 @@ use App\Http\Controllers\Helpers\asistente_ia\EnvioSinPropuestaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ImagenPrometidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ImagenPorWhatsappIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\EscaneoDeFacturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ContenidoDeFotosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeBusquedaDeProductoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\DestinatariosIaHelper;
@@ -35,6 +36,9 @@ use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PlanillaDeTextoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\LecturaDePlanillaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PlanillaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
@@ -364,6 +368,26 @@ class AsistenteIaService
     protected $fotos_del_payload = [];
 
     /**
+     * Misión agente-venta-por-planilla (02/11/2026): lo que ya se leyó como planilla, para que el modelo no lo
+     * vuelva a ver: [imagen_id => marca de texto] y [ai_message_id => marca de texto]. Lo arma
+     * build_messages_payload() desde la tabla (PlanillaIaHelper::lo_leido_de()).
+     *
+     * @var array{fotos: array, mensajes: array}
+     */
+    protected $leido_como_planilla = ['fotos' => [], 'mensajes' => [], 'archivos' => []];
+
+    /**
+     * true si en este turno una foto con contenido viaja como texto y no como imagen: el proveedor efectivo es DeepSeek (misión
+     * agente-venta-por-planilla, parte 2: ver ContenidoDeFotosIaHelper). Lo decide responder_con_el_modelo().
+     *
+     * @var bool
+     */
+    protected $fotos_como_texto = false;
+
+    /** true si el último payload llevó alguna foto como texto: va con su nota. */
+    protected $hubo_fotos_como_texto = false;
+
+    /**
      * Los bloques (gráficos, tablas, imágenes generadas) que dejaron las herramientas de la app en la
      * respuesta que se está generando (misión app-ia-y-memoria, §4 E1.6). Mismo patrón que $adjuntos: se
      * juntan en execute_tool_calls() y el job los guarda con el mensaje.
@@ -584,6 +608,19 @@ class AsistenteIaService
         }
 
         /*
+         * 🔴 MISIÓN agente-venta-por-planilla (02/11/2026): EL «SÍ» A LAS VENTAS DE UNA PLANILLA LO CUENTA EL CÓDIGO,
+         * SIN EL MODELO. Lo que lee el dueño después de confirmar sale de lo que devolvió la ejecución, renglón por
+         * renglón; en el caso real, el modelo era quien reescribía la lista. Con otra tarjeta sigue todo igual.
+         */
+        if (! is_null($confirmacion_determinista)) {
+            $de_la_planilla = PlanillaIaHelper::texto_de_la_confirmacion($confirmacion_determinista);
+
+            if (! is_null($de_la_planilla)) {
+                return $de_la_planilla;
+            }
+        }
+
+        /*
          * 🔴 SI LA CARGA YA SE HIZO, UNA FALLA DEL MODELO NO PUEDE LLEGARLE AL DUEÑO COMO ERROR
          * (correcciones del 24/9/2026). Con la confirmación determinista la carga queda registrada
          * ANTES de llamar al modelo; si después el proveedor de IA tira un 529 o el loop se queda sin
@@ -628,6 +665,44 @@ class AsistenteIaService
      */
     protected function responder_con_el_modelo(AiConversation $conversation, AiMessage $assistant_message, $owner, $con_acciones, $es_whatsapp, $confirmacion_determinista, $es_app = false): string
     {
+        /*
+         * 🔴 MISIÓN agente-venta-por-planilla (02/11/2026): UNA PLANILLA SE LEE ACÁ, UNA VEZ, ANTES DE ARMAR EL PAYLOAD.
+         * Lo que era una planilla, en foto o pegada como texto, queda guardado en `ai_planillas` y el historial lo
+         * cambia por una marca: el modelo que conversa no lee los números. Medido con las planillas reales: Flash
+         * leyó bien 0 de 10, y releer la misma foto en cada turno es lo que le cambió lo ya confirmado al dueño.
+         * Con cualquier proveedor, en todos los canales con herramientas de carga, y nunca lanza.
+         *
+         * El reloj del presupuesto arranca antes de esto: son llamadas HTTP del turno, como la transcripción
+         * de abajo, y tienen que quedar adentro de PRESUPUESTO_SEGUNDOS (ver $inicio_del_loop).
+         */
+        $inicio_del_turno = $this->ahora();
+
+        /*
+         * 🔴 Las lecturas de fotos del turno, las del arranque y las de las herramientas (leer_planilla_de_la_foto, volver_a_mirar_la_foto),
+         * comparten estos 100 s. Por WhatsApp se cuentan desde el alta del mensaje, como el presupuesto (segundos_del_turno()), porque el reloj
+         * del admin arranca ahí: con cola, más de 20 s + 100 s de lectura + 60 s de la vuelta pasaba de los 180 s. No toca la cadena de techos
+         * de PRESUPUESTO_SEGUNDOS: el loop sigue midiendo con $inicio_del_turno.
+         *
+         * El peor caso por WhatsApp: ninguna lectura de la herramienta pasa del segundo 100 (SEGUNDOS_POR_TURNO). Después, a lo sumo una
+         * vuelta normal arrancada antes de los 105 (PRESUPUESTO_SEGUNDOS_WHATSAPP), que no pasa de 165 porque ahí se corta la llamada de
+         * cierre (TECHO_DEL_REINTENTO_EN_WHATSAPP): por debajo de los 180 s del admin. Con otro reloj, una lectura arrancada en el segundo
+         * 104 terminaba en el 204, y el dueño recibía la disculpa. Si no alcanza, la herramienta dice que no pudo y la foto queda para el
+         * próximo mensaje.
+         */
+        $inicio_de_las_fotos = time() - $this->segundos_del_turno($inicio_del_turno, $assistant_message);
+
+        LecturaDePlanillaIaHelper::marcar_inicio_del_turno($assistant_message, $inicio_de_las_fotos);
+
+        $notas_de_planilla = $con_acciones ? PlanillaIaHelper::al_arrancar_el_turno($conversation, $assistant_message, $inicio_de_las_fotos) : [];
+
+        /*
+         * Misión agente-venta-por-planilla, parte 2 (pedido de Lucas, 02/11/2026): con DeepSeek, cada foto nueva se analiza UNA vez
+         * con Claude y queda en texto; desde ahí DeepSeek trabaja con ese texto, también con las fotos viejas del historial, y no
+         * vuelve a ver la imagen. Lo que no se pudo analizar sigue el camino de abajo, el de siempre.
+         */
+        ContenidoDeFotosIaHelper::analizar_las_nuevas($conversation, $assistant_message, $owner, $inicio_de_las_fotos);
+
+        $this->fotos_como_texto = ContenidoDeFotosIaHelper::corresponde($owner, $assistant_message);
         $this->manual_de_prueba = $assistant_message->canal === AiMessage::CANAL_SISTEMA
             && (int) $conversation->user_id === (int) $conversation->auth_user_id
             && PruebaHelper::en_periodo_vigente((int) $conversation->user_id)
@@ -642,6 +717,21 @@ class AsistenteIaService
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
         $messages = $this->build_messages_payload($conversation);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app, $conversation);
+
+        foreach ($notas_de_planilla as $nota_de_planilla) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, $nota_de_planilla);
+        }
+
+        if ($this->hubo_fotos_como_texto) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, ContenidoDeFotosIaHelper::nota_del_turno($con_acciones));
+        }
+
+        /* En cada turno en que viaja una foto que no se pudo revisar: si no, la lee el modelo que conversa. */
+        $nota_de_fotos_sin_revisar = PlanillaIaHelper::nota_de_las_fotos_sin_revisar(array_values($this->fotos_del_payload));
+
+        if (! is_null($nota_de_fotos_sin_revisar)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, $nota_de_fotos_sin_revisar);
+        }
 
         /*
          * La nota con el resultado REAL de la confirmación viaja pegada al "sí" de la persona: el
@@ -733,15 +823,17 @@ class AsistenteIaService
         }
 
         /*
-         * El reloj del presupuesto arranca ACÁ y no en el while: la transcripción de abajo es una
-         * llamada HTTP más del turno, y tiene que quedar adentro de PRESUPUESTO_SEGUNDOS para que la
-         * cadena de techos (ver su docblock) siga cerrando con el $timeout del job. Con ahora() y no con
-         * time() para que los tests puedan correr el reloj (ver ahora()).
+         * El reloj del presupuesto arranca ANTES del while: la transcripción de abajo (y la lectura de una
+         * planilla, arriba de todo) son llamadas HTTP del turno, y tienen que quedar adentro de
+         * PRESUPUESTO_SEGUNDOS para que la cadena de techos (ver su docblock) siga cerrando con el $timeout del
+         * job. Con ahora() y no con time() para que los tests puedan correr el reloj (ver ahora()).
          */
-        $inicio_del_loop = $this->ahora();
+        $inicio_del_loop = $inicio_del_turno;
 
         if ($lleva_imagenes) {
-            $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation);
+            // El respaldo comparte el presupuesto de las lecturas anteriores, incluido el tiempo en cola.
+            $margen_de_las_fotos = max(0, LecturaDePlanillaIaHelper::SEGUNDOS_POR_TURNO - $this->segundos_del_turno($inicio_del_turno, $assistant_message));
+            $transcriptos = TranscripcionDeFotosIaHelper::reemplazar_fotos($messages, $this->fotos_del_payload, $conversation, $margen_de_las_fotos);
 
             if (is_null($transcriptos) || $this->lleva_imagenes($transcriptos)) {
                 throw AsistenteIaException::falla_tecnica('No se pudieron leer todas las imágenes del turno con Haiku.');
@@ -1931,6 +2023,13 @@ class AsistenteIaService
         }
 
         /*
+         * 🔴 Misión agente-venta-por-planilla (02/11/2026): si este turno armó o confirmó la tarjeta de una planilla, el
+         * texto es el que armó el código desde la tabla, no el del modelo: lo que se confirma tiene que ser
+         * exactamente lo que se mostró. Va después de las guardas, que miran lo que escribió el modelo.
+         */
+        $final_text = PlanillaIaHelper::texto_final_del_turno($final_text, $conversation, $assistant_message, $herramientas_pedidas);
+
+        /*
          * Misión asistente-envios-a-clientes (corrección 1 del chequeo, 16/10/2026): en los canales sin
          * botones, el bloque de cada envío a clientes que este turno dejó esperando el sí va al final
          * del mensaje, armado por el sistema. Va DESPUÉS de las guardas de arriba (que miran lo que
@@ -2810,6 +2909,10 @@ AUTO_RESUELTO;
          * puede controlar. Va acá, en el bloque 1 del system (caché por negocio y por día porque lleva
          * el nombre del negocio y la fecha), y no en las herramientas: no toca el caché compartido de
          * las tools.
+         *
+         * Misión agente-venta-por-planilla (02/11/2026): antes de esa regla va la de la PLANILLA YA LEÍDA, que manda
+         * cuando el sistema tiene la tabla guardada. La de arriba sigue para las ventas dictadas: sus frases las fija
+         * el test 103, y acotada a «cuando NO hay planilla leída» ya no se contradicen.
          */
         return <<<CARGA
 {$titulo_de_carga}
@@ -2913,6 +3016,19 @@ AUTO_RESUELTO;
   y trae opciones: ese es para vos, no para la persona — elegí de las opciones y volvé a llamar
   en el mismo mensaje. Si devuelve "confirmada_parecida", avisá que hace un momento
   se confirmó una carga parecida y que confirme esta solo si es otra carga.
+- 🔴 PLANILLA YA LEÍDA: si un mensaje dice «[Foto: planilla N°X…]», «[Tabla pegada: planilla N°X…]» o «[Planilla N°X en
+  curso…]», el sistema ya la leyó con doble control y la tiene guardada. Usá consultar_planilla para verla y
+  proponer_ventas_de_planilla para armar UNA tarjeta con todas las ventas. Si devuelve "faltan", preguntá eso, todo junto y
+  tal cual. No armes esas ventas de a una con proponer_venta, no transcribas la tabla, no pidas teléfonos ni datos que la
+  planilla ya trae, y no adivines una duda. Un renglón cambia solo con corregir_renglon_de_planilla, cuando la persona lo
+  pide con sus palabras: un «sí» no cambia nada. Para cambiar algo resuelto tiene que decir qué renglón y el valor; si falta
+  algo, pedilo todo junto, en un solo mensaje, y no en dos preguntas. Si te dice que un renglón ya registrado es otra compra, es
+  corregir_renglon_de_planilla con cargar_igual; si dice que esa tabla no era para cargar, con renglon todos y campo
+  descartar. Si te pide cargar ventas o clientes de una foto con filas que no quedó como planilla, usá
+  leer_planilla_de_la_foto y no la transcribas vos. No hay planilla nueva sin una foto o una tabla nueva. Si una foto figura como
+  «[Foto que mandó el dueño, ya analizada: …]», ese texto es lo que hay en ella: primero usalo; volver_a_mirar_la_foto es solo
+  para un detalle que te piden y que ahí no está, y no sirve para cambiar celdas de una planilla. Lo que sigue es
+  para cuando NO hay planilla leída (por ejemplo, ventas dictadas):
 - 🔴 Varias ventas desde una planilla: armá una lista renglón → cliente → artículo → cantidad →
   importe y cambiala solo con lo que diga la persona; sacá los renglones ya registrados (decí con
   qué N°); antes del sí mostrá la lista final con cantidades y total; nunca digas que llegó una
@@ -3627,6 +3743,11 @@ CONFIRMACION;
     {
         $this->fotos_del_payload = [];
 
+        $this->hubo_fotos_como_texto = false;
+
+        /* Misión agente-venta-por-planilla: lo que ya se leyó como planilla no vuelve a viajar. */
+        $this->leido_como_planilla = PlanillaIaHelper::lo_leido_de($conversation);
+
         /*
          * Los últimos N en orden inverso: el recorte por caracteres protege lo más nuevo.
          *
@@ -3699,6 +3820,9 @@ CONFIRMACION;
         }
 
         $turns = [];
+
+        /* Lo de arriba solo midió: la nota va si la foto como texto entra de verdad en el payload. */
+        $this->hubo_fotos_como_texto = false;
 
         foreach ($seleccionados as $message) {
             $body = trim($this->contenido_para_el_historial($message, (int) $message->id === $id_ultimo_user));
@@ -3803,6 +3927,16 @@ CONFIRMACION;
         $bloques = [];
 
         foreach (array_slice($tanda, -self::MAX_FOTOS_DE_LA_TANDA) as $imagen) {
+            /* Una foto leída como planilla no vuelve (misión agente-venta-por-planilla): la cortan su sello y esto. */
+            if (isset($this->leido_como_planilla['fotos'][(int) $imagen->id])) {
+                continue;
+            }
+
+            /* Ni la que ya está en texto, que va en el mensaje con el que llegó: sin imágenes, tampoco hace falta la nota. */
+            if ($this->fotos_como_texto && ContenidoDeFotosIaHelper::tiene_contenido($imagen)) {
+                continue;
+            }
+
             $bloque = $this->bloque_de_una_imagen($imagen);
 
             if (! is_null($bloque)) {
@@ -4992,7 +5126,21 @@ CONFIRMACION;
 
         $bloques = [];
 
-        foreach ($message->imagenes->take(AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) as $imagen) {
+        foreach ($message->imagenes as $imagen) {
+            /* Misión agente-venta-por-planilla: en vez de la foto viaja su marca (marca_de_las_fotos_del_mensaje()). */
+            if (isset($this->leido_como_planilla['fotos'][(int) $imagen->id])) {
+                continue;
+            }
+
+            /* Y en un turno de DeepSeek, en vez de una foto ya analizada viaja su texto: nunca como imagen. */
+            if ($this->fotos_como_texto && ContenidoDeFotosIaHelper::tiene_contenido($imagen)) {
+                continue;
+            }
+
+            if (count($bloques) >= AsistenteImagenHelper::MAX_FOTOS_AL_MODELO) {
+                break;
+            }
+
             $bloque = $this->bloque_de_una_imagen($imagen);
 
             if (! is_null($bloque)) {
@@ -5068,12 +5216,24 @@ CONFIRMACION;
 
         if ($message->rol === 'user') {
             /*
+             * Misión agente-venta-por-planilla (02/11/2026): la tabla que se pegó y ya se leyó no le llega al modelo:
+             * solo la marca, con lo que la persona haya escrito alrededor. Si la viera, la copiaría de memoria.
+             */
+            if (isset($this->leido_como_planilla['mensajes'][(int) $message->id])) {
+                $contenido = PlanillaDeTextoIaHelper::contenido_sin_la_tabla($contenido, $this->leido_como_planilla['mensajes'][(int) $message->id]);
+            }
+
+            /*
              * Misión app-ia-y-memoria: los PDF / Excel / CSV que mandó desde la app entran como texto
              * («Archivo adjunto: nombre — contenido: …»). Completos en el último mensaje del dueño (el
              * mismo flag que manda las fotos en base64) y con un extracto en los anteriores, para que el
              * historial no se coma el techo de caracteres. Sin archivos no cambia nada.
              */
-            $de_los_archivos = ArchivosAdjuntosIaHelper::texto_para_el_modelo($message, (bool) $manda_las_imagenes);
+            $de_los_archivos = ArchivosAdjuntosIaHelper::texto_para_el_modelo(
+                $message,
+                (bool) $manda_las_imagenes,
+                isset($this->leido_como_planilla['archivos'][(int) $message->id]) ? $this->leido_como_planilla['archivos'][(int) $message->id] : []
+            );
 
             if ($de_los_archivos !== '') {
                 $contenido = trim($contenido) === '' ? $de_los_archivos : rtrim($contenido) . "\n\n" . $de_los_archivos;
@@ -5451,10 +5611,48 @@ CONFIRMACION;
     {
         $ids = [];
 
+        /* Misión agente-venta-por-planilla (02/11/2026): la foto convertida en planilla se nombra por su planilla. */
+        $de_planilla = [];
+
         foreach ($message->imagenes as $imagen) {
+            if (isset($this->leido_como_planilla['fotos'][(int) $imagen->id])) {
+                $de_planilla[] = $this->leido_como_planilla['fotos'][(int) $imagen->id];
+
+                continue;
+            }
+
+            /*
+             * Parte 2 de esa misión: una foto ya analizada va como texto ACÁ, en el mensaje con el que llegó y en su lugar
+             * cronológico, también si es vieja. No es un agregado al último mensaje: eso evita que el modelo le conteste a una foto
+             * de hace horas. Y pesa contra MAX_CARACTERES_HISTORIAL, porque build_messages_payload() mide con esto.
+             */
+            if ($this->fotos_como_texto && ContenidoDeFotosIaHelper::tiene_contenido($imagen)) {
+                $de_planilla[] = ContenidoDeFotosIaHelper::para_el_historial($imagen);
+
+                $this->hubo_fotos_como_texto = true;
+
+                continue;
+            }
+
             $ids[] = (int) $imagen->id;
         }
 
+        $marcas_de_planilla = implode(' ', array_values(array_unique($de_planilla)));
+
+        $marca = $this->marca_de_las_demas_fotos($ids, $manda_las_imagenes);
+
+        return trim($marcas_de_planilla . ' ' . $marca);
+    }
+
+    /**
+     * La marca de las fotos que no son una planilla: ver marca_de_las_fotos_del_mensaje().
+     *
+     * @param  array<int, int>  $ids
+     * @param  bool  $manda_las_imagenes
+     * @return string
+     */
+    protected function marca_de_las_demas_fotos(array $ids, $manda_las_imagenes): string
+    {
         $cuantas = count($ids);
 
         if ($cuantas === 0) {

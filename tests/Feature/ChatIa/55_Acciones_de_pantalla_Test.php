@@ -520,17 +520,18 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
          * Fichas verificadas (12/11/2026) suma proponer_descripcion_verificada: -14, -10 y -4.
          * Los avisos del dueño (asistente-truvari-pedidos-fallidos, C2, 13/11/2026) suman
          * proponer_avisos_por_whatsapp al final: -15, -11 y -5 (los nombres esperados no cambiaron).
+         * Planillas y fotos agrega seis detrás de ese prefijo: -21, -17 y -11.
          */
         $this->assertSame(
             ['que_acciones_de_pantalla_hay', 'consultar_por_pantalla', 'proponer_accion_de_pantalla', 'proponer_borrado_por_pantalla'],
-            array_slice($nombres, -15, 4)
+            array_slice($nombres, -21, 4)
         );
         $this->assertSame(
             ['proponer_envio_de_comprobante', 'proponer_recordatorios_de_cobro', 'proponer_promocion_por_whatsapp'],
-            array_slice($nombres, -11, 3)
+            array_slice($nombres, -17, 3)
         );
-        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -5, 4));
-        $this->assertSame(['proponer_avisos_por_whatsapp'], array_slice($nombres, -1));
+        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -11, 4));
+        $this->assertSame(['proponer_avisos_por_whatsapp'], array_slice($nombres, -7, 1));
 
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 
@@ -541,7 +542,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         }
 
         // Las cuatro de pantalla y el primer envío que el chequeo anterior también cubría.
-        foreach (array_slice($nombres, -14, 5) as $nombre) {
+        foreach (array_slice($nombres, -20, 5) as $nombre) {
             $this->assertStringContainsString("case '" . $nombre . "':", $contenido, $nombre);
             $this->assertTrue(HerramientasDeCarga::maneja($nombre), $nombre);
             $this->assertContains($nombre, HerramientasDeCarga::nombres(true), $nombre . ' tiene que estar también en el canal de WhatsApp');

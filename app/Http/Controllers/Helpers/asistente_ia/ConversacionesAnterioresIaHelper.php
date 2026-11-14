@@ -997,6 +997,21 @@ class ConversacionesAnterioresIaHelper
 
         $fotos = $es_persona ? self::marca_de_fotos($mensaje, (bool) $es_la_actual) : '';
 
+        /*
+         * Misión agente-venta-por-planilla, parte 2: lo que hay en la foto, si ya se analizó, con el mismo tope que en el historial.
+         * Una planilla no se vuelca. Pesa contra el techo de la lectura: largo_de() mide `fotos`.
+         */
+        if ($es_persona && ContenidoDeFotosIaHelper::activa()) {
+
+            foreach ($mensaje->imagenes as $imagen) {
+
+                if (ContenidoDeFotosIaHelper::tiene_contenido($imagen) && !ContenidoDeFotosIaHelper::es_una_planilla($imagen)) {
+
+                    $fotos .= ' ' . ContenidoDeFotosIaHelper::para_el_historial($imagen, false);
+                }
+            }
+        }
+
         $cargas = [];
 
         foreach ($mensaje->acciones as $accion) {

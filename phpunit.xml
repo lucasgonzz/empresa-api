@@ -56,6 +56,13 @@
         -->
         <!-- <server name="DB_CONNECTION" value="mysql"/> -->
         <!-- <server name="DB_DATABASE" value="empresa_test"/> -->
+        <!--
+            Misión agente-venta-por-planilla (02/11/2026): la lectura de planillas llama a Anthropic al
+            arrancar cada turno con foto, y los tests que no son de planillas cuentan los requests que
+            salen y arman secuencias de respuestas. Apagada acá; los 107_* la prenden con config().
+        -->
+        <server name="LECTURA_PLANILLA_ACTIVA" value="false"/>
+        <server name="FOTOS_ASISTENTE_ACTIVA" value="false"/>
         <server name="DB_ENGINE" value="InnoDB"/>
         <server name="MAIL_MAILER" value="array"/>
         <server name="QUEUE_CONNECTION" value="sync"/>

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Models\AiMessage;
 use App\Models\AiMessageAction;
+use App\Models\AiPlanilla;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Support\Facades\DB;
@@ -79,6 +80,20 @@ class AccionesIaHelper {
             ]);
 
             $reemplaza_a = (int) $reemplaza_a;
+
+            /*
+             * 🔴 Misión agente-venta-por-planilla (02/11/2026): la tarjeta de una planilla solo la reemplaza otra de planilla. El modelo podía
+             * armar una venta suelta con `reemplaza_a` apuntando a esa tarjeta y dejar sin efecto las ventas que el dueño estaba por confirmar.
+             *
+             * 🔴 NO ES «MISMO TIPO» PARA TODAS: el cruce de tipos existe. «No, es para el viernes» convierte un gasto o un pago en una
+             * `tarea_nueva` (PropuestaGastoIaHelper, PropuestaPagoIaHelper), y si la tarea no reemplaza a la tarjeta vieja quedan las dos vivas
+             * y se puede registrar dos veces.
+             */
+            if ($reemplaza_a > 0 && $tipo !== AiMessageAction::TIPO_VENTAS_PLANILLA
+                && AiMessageAction::where('id', $reemplaza_a)->where('tipo', AiMessageAction::TIPO_VENTAS_PLANILLA)->exists()) {
+
+                $reemplaza_a = 0;
+            }
 
             $anteriores = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
                                         ->where('id', '!=', $accion->id)
@@ -334,6 +349,16 @@ class AccionesIaHelper {
     static function borrar_de_conversacion($ai_conversation_id) {
 
         AiMessageAction::where('ai_conversation_id', $ai_conversation_id)->delete();
+
+        /*
+         * Y sus planillas (misión agente-venta-por-planilla, 02/11/2026), que traen documentos y nombres
+         * de los clientes del negocio: no quedan huérfanas cuando la persona borra la charla. Las ventas
+         * y los clientes ya cargados no se tocan. Protegido por si la migración todavía no corrió.
+         */
+        if (PlanillaIaHelper::hay_tabla()) {
+
+            AiPlanilla::where('ai_conversation_id', $ai_conversation_id)->delete();
+        }
     }
 
     /**

@@ -102,7 +102,7 @@ class TextoFinalIaHelper
      */
     public static function limpiar($texto, array $nombres_de_herramientas)
     {
-        $texto = (string) $texto;
+        $texto = self::sin_marcas_de_fotos((string) $texto);
 
         if (trim($texto) === '') {
 
@@ -150,6 +150,30 @@ class TextoFinalIaHelper
 
         /* Los huecos que dejó un renglón sacado se colapsan a UNA línea en blanco, como un párrafo. */
         return trim(preg_replace('/\n{3,}/', "\n\n", implode("\n", $quedan)));
+    }
+
+    /**
+     * El texto sin las marcas que el sistema le pone a las fotos en el historial (misión agente-venta-por-planilla): el modelo las lee
+     * y puede repetirlas, y el dueño no las tiene que leer. Una foto se nombra con palabras. Si no había ninguna, vuelve tal cual.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    protected static function sin_marcas_de_fotos($texto)
+    {
+        $limpio = preg_replace([
+            '/[ \t]*\[imagen_id [\d,\s]+\]/u',
+            '/\[Foto que mand[oó] el due[nñ]o, ya analizada:.*?\](?=\s|$)/su',
+            '/\[Foto: una tabla que no es una planilla de ventas.*?\](?=\s|$)/su',
+            '/\[(Foto|Tabla pegada|Archivo adjunto): planilla N°[^\]]*\]/u',
+        ], '', $texto);
+
+        if (!is_string($limpio) || $limpio === $texto) {
+
+            return $texto;
+        }
+
+        return trim((string) preg_replace('/\n{3,}/', "\n\n", $limpio));
     }
 
     /**

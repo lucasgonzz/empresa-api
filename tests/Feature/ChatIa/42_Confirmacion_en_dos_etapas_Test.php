@@ -478,6 +478,11 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
                 AiMessageAction::TIPO_ENVIO_COMPROBANTE,
                 AiMessageAction::TIPO_RECORDATORIOS_COBRO,
                 AiMessageAction::TIPO_PROMOCION_WHATSAPP,
+                /*
+                 * Misión agente-venta-por-planilla (02/11/2026): cada renglón es un SaleController::store(), y un
+                 * renglón que falla no puede revertir a los que ya salieron bien.
+                 */
+                AiMessageAction::TIPO_VENTAS_PLANILLA,
             ],
             EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS
         );

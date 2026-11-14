@@ -248,6 +248,16 @@ class AiMessageAction extends Model
      */
     const TIPO_REINTENTO_ESCANEO = 'reintento_escaneo';
 
+    /**
+     * Las ventas de una planilla (misión agente-venta-por-planilla, 02/11/2026): UNA tarjeta con todos
+     * los renglones de `ai_planillas`, que al confirmarse crea los clientes nuevos y una venta por
+     * renglón. Se ejecuta en dos etapas (EjecutorAccionesIaHelper::TIPOS_DE_DOS_ETAPAS, como la venta
+     * suelta) y es idempotente por renglón: EjecucionDePlanillaIaHelper. Se confirma con el «sí»
+     * determinista y NO entra en la autoconfirmación de ningún nivel de confianza: su `case` en
+     * HerramientasDeCarga no pasa por quizas_auto_confirmar().
+     */
+    const TIPO_VENTAS_PLANILLA = 'ventas_planilla';
+
     protected $guarded = [];
 
     /**

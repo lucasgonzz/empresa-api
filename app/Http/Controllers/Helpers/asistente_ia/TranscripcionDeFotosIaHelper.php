@@ -11,6 +11,11 @@ use Illuminate\Support\Facades\Log;
  * Haiku transcribe las fotos y DeepSeek recibe el texto para responder.
  * El caché por foto evita volver a pagar por las imágenes reenviadas.
  * El consumo se registra aparte y se suma al costo mensual del asistente.
+ *
+ * Las fotos ya analizadas por ContenidoDeFotosIaHelper se recuperan del contenido persistido.
+ * Esta clase atiende las restantes con Haiku; nunca entrega una imagen a DeepSeek ni guarda
+ * una lectura incompleta como contenido persistente. Si falla, el turno informa el problema.
+ * Conservamos este camino para instalaciones que aún no tienen la columna de contenido.
  */
 class TranscripcionDeFotosIaHelper
 {
@@ -24,9 +29,9 @@ class TranscripcionDeFotosIaHelper
     const PREFIJO_DE_CACHE = 'asistente_ia:transcripcion_foto_haiku:';
 
     /**
-     * Timeout de la llamada de transcripción, en segundos. Medido: 1,8 s para una foto. Corre ANTES
-     * del loop y adentro de su presupuesto (AsistenteIaService::PRESUPUESTO_SEGUNDOS arranca antes
-     * de transcribir), así que la cadena de techos del service sigue valiendo.
+     * Techo de la llamada de transcripción, en segundos. Medido: 1,8 s para una foto. El service
+     * pasa el margen de los 100 s compartidos por las lecturas del turno; los llamadores anteriores
+     * conservan estos 30 s. Sin al menos 5 s no se inicia otra lectura; el caché completo sí sirve.
      */
     const TIMEOUT_SEGUNDOS = 30;
 
@@ -59,9 +64,10 @@ class TranscripcionDeFotosIaHelper
      * @param  array<string, \App\Models\AiMessageImagen>  $fotos_por_hash  sha1 del `data` base64 del
      *         bloque → la fila de la foto; es lo que AsistenteIaService fue anotando al armar el payload.
      * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $timeout_segundos  Margen disponible para las fotos que todavía no tienen caché.
      * @return array<int, array{role: string, content: string|array}>|null
      */
-    public static function reemplazar_fotos(array $messages, array $fotos_por_hash, $conversation)
+    public static function reemplazar_fotos(array $messages, array $fotos_por_hash, $conversation, $timeout_segundos = self::TIMEOUT_SEGUNDOS)
     {
         try {
             $fotos = self::fotos_del_payload($messages, $fotos_por_hash);
@@ -85,7 +91,7 @@ class TranscripcionDeFotosIaHelper
             }
 
             if (count($faltan)) {
-                $nuevos = self::transcribir($faltan, $conversation, self::pedido_de_la_persona($messages));
+                $nuevos = self::transcribir($faltan, $conversation, self::pedido_de_la_persona($messages), $timeout_segundos);
 
                 if (is_null($nuevos)) {
 
@@ -185,32 +191,28 @@ class TranscripcionDeFotosIaHelper
      *
      * @param  array<int, array>  $fotos
      * @param  \App\Models\AiConversation  $conversation
+     * @param  int  $timeout_segundos
      * @return array<int, string>|null
      */
-    protected static function transcribir(array $fotos, $conversation, $pedido = '')
+    protected static function transcribir(array $fotos, $conversation, $pedido = '', $timeout_segundos = self::TIMEOUT_SEGUNDOS)
     {
+        $timeout_segundos = min(self::TIMEOUT_SEGUNDOS, max(0, (int) $timeout_segundos));
+
+        // Se llega acá solamente por fotos sin caché: una lectura agotada no habilita otros 30 s.
+        if ($timeout_segundos < 5) {
+            return null;
+        }
+
         $proveedor = ProveedorIaHelper::ANTHROPIC;
         $modelo    = ProveedorIaHelper::MODELO_HAIKU_IMAGENES;
 
-        $content = [];
-
-        foreach ($fotos as $foto) {
-            $content[] = ['type' => 'text', 'text' => 'FOTO ' . $foto['numero']];
-            $content[] = $foto['bloque'];
+        // Sin clave no hay lector de imágenes. No se manda una petición inválida ni se deriva
+        // la foto al modelo de conversación; las transcripciones ya cacheadas siguen sirviendo.
+        if (trim((string) config('services.anthropic.api_key')) === '') {
+            return null;
         }
 
-        /*
-         * Lo que pidió la persona (chequeo adversarial, 24/9/2026): quien transcribe no veía la
-         * pregunta ("¿cuántas cajas hay?", "leé el lote de abajo"), y lo que no anota, para Pro no
-         * existe. Con el pedido a la vista, lo que se pregunta queda transcripto con prioridad.
-         */
-        $pedido = trim((string) $pedido);
-
-        if ($pedido !== '') {
-            $content[] = ['type' => 'text', 'text' => 'Lo que pidió la persona junto con las fotos (prestá especial atención a lo que pregunta o nombra): ' . mb_substr($pedido, 0, 1500)];
-        }
-
-        $content[] = ['type' => 'text', 'text' => 'Transcribí ' . (count($fotos) === 1 ? 'la foto' : 'las ' . count($fotos) . ' fotos') . ' con el formato indicado.'];
+        $content = self::contenido_para_transcribir($fotos, $pedido);
 
         $payload = [
             'model'      => $modelo,
@@ -219,7 +221,7 @@ class TranscripcionDeFotosIaHelper
             'messages'   => [['role' => 'user', 'content' => $content]],
         ];
 
-        $response = ProveedorIaHelper::cliente_http($proveedor, self::TIMEOUT_SEGUNDOS)
+        $response = ProveedorIaHelper::cliente_http($proveedor, $timeout_segundos)
             ->post(ProveedorIaHelper::url_messages($proveedor), $payload);
 
         if (! $response->successful()) {
@@ -287,6 +289,39 @@ class TranscripcionDeFotosIaHelper
     }
 
     /**
+     * Lo que se le manda a quien transcribe: cada foto con su número, el pedido de la persona y la orden. También lo usa el
+     * análisis con Claude (ContenidoDeFotosIaHelper), que es el mismo pedido con otro modelo.
+     *
+     * @param  array<int, array>  $fotos  Cada una con `numero` y `bloque`.
+     * @param  string  $pedido
+     * @return array
+     */
+    public static function contenido_para_transcribir(array $fotos, $pedido = ''): array
+    {
+        $content = [];
+
+        foreach ($fotos as $foto) {
+            $content[] = ['type' => 'text', 'text' => 'FOTO ' . $foto['numero']];
+            $content[] = $foto['bloque'];
+        }
+
+        /*
+         * Lo que pidió la persona (chequeo adversarial, 24/9/2026): quien transcribe no veía la
+         * pregunta ("¿cuántas cajas hay?", "leé el lote de abajo"), y lo que no anota, para Pro no
+         * existe. Con el pedido a la vista, lo que se pregunta queda transcripto con prioridad.
+         */
+        $pedido = trim((string) $pedido);
+
+        if ($pedido !== '') {
+            $content[] = ['type' => 'text', 'text' => 'Lo que pidió la persona junto con las fotos (prestá especial atención a lo que pregunta o nombra): ' . mb_substr($pedido, 0, 1500)];
+        }
+
+        $content[] = ['type' => 'text', 'text' => 'Transcribí ' . (count($fotos) === 1 ? 'la foto' : 'las ' . count($fotos) . ' fotos') . ' con el formato indicado.'];
+
+        return $content;
+    }
+
+    /**
      * Parte la respuesta en secciones "FOTO k:". Con una sola foto pedida, una respuesta sin rótulo
      * se toma entera. Si alguna foto pedida queda sin texto, null (ver el 🔴 del docblock: una
      * transcripción a medias no se usa).
@@ -295,7 +330,7 @@ class TranscripcionDeFotosIaHelper
      * @param  array<int, array>  $fotos
      * @return array<int, string>|null
      */
-    protected static function separar_por_foto($texto, array $fotos)
+    public static function separar_por_foto($texto, array $fotos)
     {
         $texto = trim((string) $texto);
 
@@ -417,7 +452,7 @@ class TranscripcionDeFotosIaHelper
      *
      * @return string
      */
-    protected static function aviso(): string
+    public static function aviso(): string
     {
         /*
          * Chequeo adversarial (24/9/2026): la versión anterior sólo decía "no digas que no podés ver

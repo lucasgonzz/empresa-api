@@ -141,8 +141,9 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
          * al final de las comunes. El censo crece una; el foreach sigue verificando TODOS los dispatch.
          * Los avisos del dueño (asistente-truvari-pedidos-fallidos, C2, 13/11/2026) agregan
          * proponer_avisos_por_whatsapp al final de las comunes: el censo crece una más.
+         * Planillas y fotos suma seis después de ese prefijo vigente (13/11/2026).
          */
-        $this->assertCount(50, $nombres, 'Cuarenta y siete comunes más las tres del canal de WhatsApp.');
+        $this->assertCount(56, $nombres, 'Cincuenta y tres comunes más las tres del canal de WhatsApp.');
         $this->assertContains('proponer_avisos_por_whatsapp', $nombres);
         $this->assertContains('proponer_cuotas_tienda', $nombres);
         $this->assertContains('proponer_descripcion_verificada', $nombres);

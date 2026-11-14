@@ -68,6 +68,13 @@ class AsistenteImagenHelper
     const FORMATOS_ACEPTADOS = ['jpg', 'jpeg', 'png', 'webp'];
 
     /**
+     * Lo que se le suma a la ruta del webp para guardar el archivo original, cuando es más grande: ver
+     * guardar_original(). No es una extensión de imagen a propósito: el original puede ser un jpg o un
+     * png, y este archivo lo lee solo binario_para_leer().
+     */
+    const SUFIJO_DEL_ORIGINAL = '.original';
+
+    /**
      * Valida el lote antes de tocar nada: cuántas son, que cada una haya subido bien, el peso y que
      * sea de verdad una imagen que Anthropic acepte. Devuelve el motivo del rechazo (texto para el
      * 422) o null si está todo bien.
@@ -194,9 +201,14 @@ class AsistenteImagenHelper
 
         foreach ($imagenes as $imagen) {
 
+            /* El archivo tal cual llegó: si es más grande que el webp, se guarda para leer planillas (ver guardar_original()). */
+            $crudo = null;
+
             try {
 
-                $binario = self::redimensionar_a_webp(file_get_contents($imagen->getRealPath()));
+                $crudo = file_get_contents($imagen->getRealPath());
+
+                $binario = self::redimensionar_a_webp($crudo);
 
             } catch (\Throwable $e) {
 
@@ -226,6 +238,8 @@ class AsistenteImagenHelper
                     'bytes'         => strlen($binario),
                 ]);
 
+                self::guardar_original($path, $crudo);
+
             } catch (\Throwable $e) {
 
                 Log::warning('AsistenteImagenHelper: no se pudo guardar una foto del asistente', [
@@ -240,6 +254,108 @@ class AsistenteImagenHelper
         }
 
         return $orden - 1;
+    }
+
+    /**
+     * Guarda el archivo TAL CUAL LLEGÓ cuando su lado mayor pasa del que se usa para el webp (misión
+     * agente-venta-por-planilla, 02/11/2026). Queda al lado del webp, con la marca SUFIJO_DEL_ORIGINAL.
+     *
+     * 🔴 POR QUÉ. Hasta acá el original se perdía al achicar a 1568 px: en una captura ancha de Excel, con
+     * muchas columnas, los números quedan chicos, y medido con las planillas reales eso es lo que hacía
+     * leer mal (una cantidad 2 como 1, 88.400 como 88.000). Agrandar y cortar en tramos rinde más si se
+     * parte del archivo original (LecturaDePlanillaIaHelper lo pide con binario_para_leer()). El webp de
+     * siempre no cambia, y lo que no pasa del tope no guarda nada de más.
+     *
+     * Nunca lanza: una foto sin su original se lee del webp, que es lo que había.
+     *
+     * @param  string  $path_del_webp
+     * @param  string|null  $crudo
+     * @return void
+     */
+    protected static function guardar_original($path_del_webp, $crudo)
+    {
+        try {
+
+            if (!is_string($crudo) || $crudo === '') {
+
+                return;
+            }
+
+            $info = @getimagesizefromstring($crudo);
+
+            if ($info === false || !isset($info[0], $info[1])) {
+
+                return;
+            }
+
+            $max_side = (int) config('services.escaneo_factura_compra.max_side', 1568);
+
+            if (max((int) $info[0], (int) $info[1]) <= ($max_side > 0 ? $max_side : 1568)) {
+
+                return;
+            }
+
+            Storage::disk('local')->put($path_del_webp . self::SUFIJO_DEL_ORIGINAL, $crudo);
+
+        } catch (\Throwable $e) {
+
+            Log::info('AsistenteImagenHelper: no se pudo guardar el original de una foto -- ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * Borra el original de una foto, si lo tiene: ya se leyó, o no era una planilla (LecturaDePlanillaIaHelper::recordar()).
+     * Solo sobrevive mientras hace falta. Nunca lanza.
+     *
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return void
+     */
+    public static function borrar_original(AiMessageImagen $imagen)
+    {
+        try {
+
+            $ruta = (string) $imagen->path . self::SUFIJO_DEL_ORIGINAL;
+
+            if (Storage::disk('local')->exists($ruta)) {
+
+                Storage::disk('local')->delete($ruta);
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::info('AsistenteImagenHelper: no se pudo borrar el original de una foto -- ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * El binario del que conviene LEER una planilla: el original si se guardó (guardar_original()), o el
+     * webp de siempre. Null si no hay ninguno.
+     *
+     * @param  \App\Models\AiMessageImagen  $imagen
+     * @return string|null
+     */
+    public static function binario_para_leer(AiMessageImagen $imagen)
+    {
+        try {
+
+            $ruta = (string) $imagen->path . self::SUFIJO_DEL_ORIGINAL;
+
+            if (Storage::disk('local')->exists($ruta)) {
+
+                $original = Storage::disk('local')->get($ruta);
+
+                if (is_string($original) && $original !== '') {
+
+                    return $original;
+                }
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::info('AsistenteImagenHelper: no se pudo leer el original de una foto -- ' . $e->getMessage());
+        }
+
+        return self::binario($imagen);
     }
 
     /**

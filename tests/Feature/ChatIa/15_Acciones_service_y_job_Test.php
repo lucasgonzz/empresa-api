@@ -784,12 +784,15 @@ class Acciones_service_y_job_Test extends TestCase
         // agente-mejoras-uso-real (29/10/2026: proponer_compra_sin_articulos,
         // proponer_cambio_de_proveedor_de_compra, proponer_reintento_de_escaneo, pedir_ayuda_a_soporte) + la de
         // agente-mejoras-diario-30-10 (31/10/2026, B2: armar_texto_de_promocion) + proponer_cuotas_tienda
-        // (agente-cuotas-tienda, 2/11/2026): incorporación explícita, al final para conservar el caché.
+        // (agente-cuotas-tienda, 2/11/2026): incorporación explícita, al final para conservar el caché + las seis de
+        // agente-venta-por-planilla (02/11/2026: consultar_planilla, definir_planilla,
+        // corregir_renglon_de_planilla, proponer_ventas_de_planilla, leer_planilla_de_la_foto,
+        // volver_a_mirar_la_foto).
         // El número se toca SOLO cuando se agrega o se saca una herramienta a propósito: si se mueve
         // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
         // Fichas verificadas agrega UNA propuesta al final; se conserva cada prefijo y su despacho.
         // asistente-truvari-pedidos-fallidos (C2, 13/11/2026) agrega proponer_avisos_por_whatsapp al final.
-        $this->assertCount(47, HerramientasDeCarga::definiciones());
+        $this->assertCount(53, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -867,7 +870,7 @@ class Acciones_service_y_job_Test extends TestCase
 
         // ...las compras y el pedido a soporte de agente-mejoras-uso-real (29/10/2026) después de aquéllas...
         // ...el texto de la promo para reenviar de agente-mejoras-diario-30-10 (31/10/2026)...
-        // ...y las cuotas de tienda (2/11/2026) al final de todo. Los nombres previos no cambian.
+        // ...y las cuotas de tienda (2/11/2026) después de aquéllas. Los nombres previos no cambian.
         $this->assertSame(
             [
                 'proponer_compra_sin_articulos',
@@ -880,7 +883,20 @@ class Acciones_service_y_job_Test extends TestCase
                 // asistente-truvari-pedidos-fallidos (C2, 13/11/2026), al final de todo.
                 'proponer_avisos_por_whatsapp',
             ],
-            array_slice(HerramientasDeCarga::nombres(), 39)
+            array_slice(HerramientasDeCarga::nombres(), 39, 8)
+        );
+
+        // ...y las seis de la planilla y las fotos de agente-venta-por-planilla (02/11/2026) al final de todo.
+        $this->assertSame(
+            [
+                'consultar_planilla',
+                'definir_planilla',
+                'corregir_renglon_de_planilla',
+                'proponer_ventas_de_planilla',
+                'leer_planilla_de_la_foto',
+                'volver_a_mirar_la_foto',
+            ],
+            array_slice(HerramientasDeCarga::nombres(), 47)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

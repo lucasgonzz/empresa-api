@@ -47,6 +47,10 @@ class McpHerramientasHelper
      * escribe al chat de soporte de ComercioCity en nombre de la persona, sin tarjeta. Desde el sistema o
      * por WhatsApp lo pide la persona misma; un agente externo no tiene por qué abrirle pedidos a soporte
      * en nombre del dueño.
+     *
+     * Y LAS DE LA PLANILLA Y DE VOLVER A MIRAR UNA FOTO (misión agente-venta-por-planilla, 02/11/2026): una planilla nace de una foto o de
+     * un texto que el dueño manda en un turno del asistente, y por MCP no hay turno: solo podrían contestar «no hay
+     * ninguna planilla en curso».
      */
     const EXCLUIDAS = [
         'proponer_compra_con_factura',
@@ -54,6 +58,12 @@ class McpHerramientasHelper
         'proponer_recordatorios_de_cobro',
         'proponer_promocion_por_whatsapp',
         'pedir_ayuda_a_soporte',
+        'consultar_planilla',
+        'definir_planilla',
+        'corregir_renglon_de_planilla',
+        'proponer_ventas_de_planilla',
+        'leer_planilla_de_la_foto',
+        'volver_a_mirar_la_foto',
     ];
 
     /** Prefijos de las tools que solo leen: van con readOnlyHint = true. */
