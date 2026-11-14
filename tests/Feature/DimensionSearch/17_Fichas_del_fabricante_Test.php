@@ -851,4 +851,432 @@ class Fichas_del_fabricante_Test extends DimensionSearchTestCase
         $this->assertTrue(DimensionManufacturerSheets::mismo_codigo_de_barras('886661008414', '0886661008414'));
         $this->assertFalse(DimensionManufacturerSheets::mismo_codigo_de_barras('886661008414', $this->con_verificador('779123456789')));
     }
+
+    /* ----------------------------------------------------------------------------------------
+     * Correcciones de las revisiones independientes (14/11/2026)
+     * -------------------------------------------------------------------------------------- */
+
+    /**
+     * 1. Un EAN que contradice al artículo frena la asignación aunque el título traiga el código.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function maxparts_con_otro_ean_frena_aunque_el_titulo_traiga_el_codigo()
+    {
+        $articulo = $this->articulo_de('STIHL', $this->con_verificador('779123456789'), '4147-030-0403');
+
+        $this->falsear([], [self::URL_MAXPARTS => $this->recorte('maxparts_41470300403.html')], 'caida');
+
+        list($item, $resultado) = $this->buscar_fichas($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
+        $this->assertSame('sin_ficha', $item->motivo);
+        $this->assertNull($articulo->fresh()->peso);
+        $this->assertFalse($resultado['error_de_proveedor']);
+
+        $maxparts = $this->entrada($item, DimensionManufacturerSheets::CRITERIO_MAXPARTS);
+        $this->assertNull($maxparts['identidad']);
+        $this->assertTrue($maxparts['ean_distinto']);
+        $this->assertSame('ficha_sin_el_codigo', $maxparts['resultado']);
+        $this->assertStringContainsString('otro EAN', $maxparts['resumen']);
+
+        // Se pasó a la fuente siguiente.
+        $this->assertNotNull($this->entrada($item, DimensionManufacturerSheets::CRITERIO_LAWNBARN));
+    }
+
+    /**
+     * 1. En kalohaz igual: con un GTIN válido que no es el «EAN / GTIN» de la ficha, el Cikkszám no alcanza.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function kalohaz_con_otro_ean_no_asigna_aunque_el_cikkszam_coincida()
+    {
+        $articulo = $this->articulo_de('HUSQVARNA', $this->con_verificador('779123456781'), '537271302');
+
+        $this->falsear([], [self::URL_KALOHAZ => $this->recorte('kalohaz_537271302.html')], 'caida');
+
+        list($item) = $this->buscar_fichas($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
+        $this->assertNull($articulo->fresh()->peso);
+        $this->assertTrue($this->entrada($item, DimensionManufacturerSheets::CRITERIO_KALOHAZ)['ean_distinto']);
+    }
+
+    /**
+     * 2. Bloqueo y timeout en todas las fuentes: es un error del proveedor, no «no hay ficha».
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function maxparts_bloqueado_y_lawnbarn_sin_respuesta_queda_sin_procesar_como_error_de_busqueda()
+    {
+        $articulo = $this->articulo_de('STIHL', '795711696924', '4147-740-2500');
+
+        $this->falsear([], array_merge($this->sitemap(), [
+            self::URL_MAXPARTS_HIP_PAD => ['status' => 429],
+            self::URL_LAWNBARN         => ['excepcion' => true],
+        ]), 'caida');
+
+        list($item, $resultado) = $this->buscar_fichas($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_PROCESAR, $item->status);
+        $this->assertSame('error_de_busqueda', $item->motivo);
+        $this->assertStringContainsString('Se puede volver a intentar', $item->motivo_detalle);
+        $this->assertTrue($resultado['error_de_proveedor']);
+        $this->assertSame(2, $resultado['fichas_intentadas']);
+        $this->assertSame(0, $resultado['busquedas_intentadas'], 'No es una búsqueda de Serper.');
+        $this->assertNull($articulo->fresh()->peso);
+
+        $this->assertSame('bloqueada', $this->entrada($item, DimensionManufacturerSheets::CRITERIO_MAXPARTS)['fallo']);
+        $this->assertSame('sin_respuesta', $this->entrada($item, DimensionManufacturerSheets::CRITERIO_LAWNBARN)['fallo']);
+        $this->sin_serper_ni_ia();
+    }
+
+    /**
+     * 2. Con una fuente que respondió (un 404, un índice sin el código), es «sin ficha» como siempre.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function maxparts_404_y_lawnbarn_sin_el_codigo_es_sin_ficha()
+    {
+        $articulo = $this->articulo_de('STIHL', '0886661008414', '4147-030-0403');
+
+        $this->falsear([], $this->sitemap(), 'caida');
+
+        list($item, $resultado) = $this->buscar_fichas($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_SIN_DATOS, $item->status);
+        $this->assertSame('sin_ficha', $item->motivo);
+        $this->assertFalse($resultado['error_de_proveedor']);
+        $this->assertSame('no_existe', $this->entrada($item, DimensionManufacturerSheets::CRITERIO_MAXPARTS)['fallo']);
+        $this->assertTrue($this->entrada($item, DimensionManufacturerSheets::CRITERIO_LAWNBARN)['consultada']);
+    }
+
+    /**
+     * 2. Varios artículos seguidos con las fichas bloqueadas: la corrida se corta con el mecanismo de siempre y
+     * reanudar() los vuelve a la fila.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function varios_bloqueados_seguidos_cortan_la_corrida_y_reanudar_los_reintenta()
+    {
+        $articulos = [];
+        $paginas   = [];
+
+        for ($i = 0; $i < 6; $i++) {
+            $codigo      = '4147-030-04'.str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+            $articulos[] = $this->articulo_de('STIHL', null, $codigo);
+            $paginas['https://maxparts.hu/spd/HU10_'.DimensionLawnBarnIndex::compacto($codigo).'/'] = ['status' => 429];
+        }
+
+        $run = $this->corrida_de_fichas($articulos);
+
+        $this->falsear([], $paginas, 'caida');
+
+        (new ProcessDimensionSearchRunJob($run->id))->handle();
+
+        $run->refresh();
+
+        $this->assertSame(DimensionSearchRun::STATUS_FALLIDA, $run->status);
+        $this->assertStringContainsString('falló en '.ProcessDimensionSearchRunJob::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR.' artículos seguidos', $run->motivo_estado);
+        $this->assertStringContainsString('maxparts.hu', $run->motivo_estado);
+        $this->assertSame(5, DimensionSearchItem::where('run_id', $run->id)->where('status', DimensionSearchItem::STATUS_SIN_PROCESAR)->where('motivo', 'error_de_busqueda')->count());
+        $this->assertSame(1, DimensionSearchItem::where('run_id', $run->id)->where('status', DimensionSearchItem::STATUS_PENDIENTE)->count());
+
+        $this->assertSame(200, DimensionSearchRunHelper::reanudar($run)['status']);
+        $this->assertSame(6, DimensionSearchItem::where('run_id', $run->id)->where('status', DimensionSearchItem::STATUS_PENDIENTE)->count());
+    }
+
+    /**
+     * 3. Una página posterior a la 1 que falla (no un 404) deja el índice incompleto; el tramo siguiente lo reintenta
+     * una sola vez.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_indice_truncado_queda_incompleto_y_se_reintenta_una_sola_vez()
+    {
+        $articulos = [];
+
+        for ($i = 0; $i < 3; $i++) {
+            $articulos[] = $this->articulo_de('STIHL', '0886661008414', '4147-030-04'.$i.'3');
+        }
+
+        $run = $this->corrida_de_fichas($articulos);
+
+        $this->falsear([], [
+            DimensionLawnBarnIndex::URL_SITEMAP.'1' => ['html' => $this->recorte('lawnbarn_sitemap_p1.xml'), 'tipo' => 'application/xml'],
+            DimensionLawnBarnIndex::URL_SITEMAP.'2' => ['status' => 503],
+        ], 'caida');
+
+        list($primero) = $this->procesar($run, $articulos[0]);
+
+        $this->assertSame(2, $this->requests_a('xmlsitemap.php'));
+
+        $indice = json_decode(file_get_contents(DimensionLawnBarnIndex::ruta($run->id)), true);
+        $this->assertTrue($indice['ok']);
+        $this->assertTrue($indice['incompleto']);
+        $this->assertSame(1, $indice['armados']);
+        $this->assertStringContainsString('el índice quedó incompleto', $this->entrada($primero, DimensionManufacturerSheets::CRITERIO_LAWNBARN)['motivo']);
+
+        // Otro tramo (otro motor): lo vuelve a armar una vez.
+        $this->procesar($run, $articulos[1]);
+        $this->assertSame(4, $this->requests_a('xmlsitemap.php'));
+        $this->assertSame(2, json_decode(file_get_contents(DimensionLawnBarnIndex::ruta($run->id)), true)['armados']);
+
+        // Y no más.
+        $this->procesar($run, $articulos[2]);
+        $this->assertSame(4, $this->requests_a('xmlsitemap.php'));
+    }
+
+    /**
+     * 3. Página 1 con 200 pero sin ningún <loc>: el índice queda apagado, con el error, y no se reintenta.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function la_primera_pagina_sin_loc_apaga_el_indice_sin_reintentar()
+    {
+        $primero = $this->articulo_de('STIHL', '795711696924', '4147-740-2500');
+        $segundo = $this->articulo_de('STIHL', '795711696924', '4147-740-2500');
+
+        $run = $this->corrida_de_fichas([$primero, $segundo]);
+
+        $this->falsear([], [
+            DimensionLawnBarnIndex::URL_SITEMAP.'1' => ['html' => '<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>', 'tipo' => 'application/xml'],
+        ], 'caida');
+
+        list($item) = $this->procesar($run, $primero);
+
+        $indice = json_decode(file_get_contents(DimensionLawnBarnIndex::ruta($run->id)), true);
+        $this->assertFalse($indice['ok']);
+        $this->assertSame('El índice de Lawn Barn no trae productos.', $indice['error']);
+        $this->assertNull($indice['fallo']);
+        $this->assertStringContainsString('no trae productos', $this->entrada($item, DimensionManufacturerSheets::CRITERIO_LAWNBARN)['motivo']);
+
+        $this->procesar($run, $segundo);
+        $this->assertSame(1, $this->requests_a('xmlsitemap.php'));
+    }
+
+    /**
+     * 4. Después de armar el índice, el lector arranca su presupuesto de cero antes de bajar la ficha de Lawn Barn.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function despues_de_armar_el_indice_el_lector_reinicia_el_presupuesto_antes_de_la_ficha()
+    {
+        LectorQueAnota::$eventos = [];
+        app()->bind(\App\Services\DimensionSearch\DimensionPageReader::class, LectorQueAnota::class);
+
+        $articulo = $this->articulo_de('STIHL', '795711696924', '4147-740-2500');
+
+        $this->falsear([], array_merge($this->sitemap(), [self::URL_LAWNBARN => $this->recorte('lawnbarn_hip-pad.html')]), 'caida');
+
+        list($item) = $this->buscar_fichas($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+
+        $eventos = LectorQueAnota::$eventos;
+        $maxparts = array_search('leer '.self::URL_MAXPARTS_HIP_PAD, $eventos, true);
+        $lawnbarn = array_search('leer '.self::URL_LAWNBARN, $eventos, true);
+
+        $this->assertNotFalse($maxparts);
+        $this->assertNotFalse($lawnbarn);
+        $this->assertSame('reinicio', $eventos[$lawnbarn - 1], 'El presupuesto se reinicia justo antes de leer la ficha de Lawn Barn.');
+        $this->assertGreaterThan($maxparts, $lawnbarn - 1);
+    }
+
+    /**
+     * 5. La selección de fichas, como el catálogo, solo toma artículos activos.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function ids_para_fichas_deja_afuera_los_inactivos()
+    {
+        $activo   = $this->articulo_de('STIHL', null, '4147-030-0403');
+        $this->articulo_de('STIHL', null, '4147-740-2500', ['status' => 'inactive']);
+
+        $this->assertSame([$activo->id], DimensionSearchRunHelper::ids_para_fichas($this->owner->id));
+    }
+
+    /**
+     * 6. Con el peso ya cargado, el valor de plantilla no baja la asignada (ese peso no se iba a escribir).
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_valor_de_plantilla_no_frena_si_el_articulo_ya_tiene_peso()
+    {
+        $gtin     = $this->con_verificador('779123456783');
+        $articulo = $this->nuevo_articulo('CUCHILLA ROTARY 20" AC 21MM', $gtin, ['peso' => 1]);
+        $url      = 'https://www.newgardenstore.eu/cuchilla-rotary';
+
+        $this->falsear(
+            ['"'.$gtin.'"' => [$this->resultado($url, 'Cuchilla')]],
+            [$url => $this->pagina('Cuchilla', $gtin.' Peso: 1 kg. Ancho: 70 mm. Alto: 11 mm. Largo: 100 mm.')],
+            $this->ficha('exacto', [
+                'peso'  => $this->dato(1, 'kg', 'Peso: 1 kg', $url),
+                'ancho' => $this->dato(70, 'mm', 'Ancho: 70 mm', $url),
+                'alto'  => $this->dato(11, 'mm', 'Alto: 11 mm', $url),
+                'largo' => $this->dato(100, 'mm', 'Largo: 100 mm', $url),
+            ])
+        );
+
+        list($item) = $this->buscar($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame('codigo_exacto', $item->motivo);
+
+        $articulo = $articulo->fresh();
+        $this->assertEquals(1, (float) $articulo->peso);
+        $this->assertEquals(7, (float) $articulo->ancho);
+    }
+
+    /**
+     * 7. kalohaz: el número sale primero del código de proveedor; si sale del de barras, el criterio es el de barras.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function kalohaz_dice_de_que_codigo_salio_el_numero()
+    {
+        $por_barras = $this->articulo_de('HUSQVARNA', '537271302', null);
+
+        $this->falsear([], [self::URL_KALOHAZ => $this->recorte('kalohaz_537271302.html')], 'caida');
+
+        list($item) = $this->buscar_fichas($por_barras);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_DE_BARRAS, $item->criterio_usado);
+        $this->assertSame('Peso de la ficha de kalohaz.hu, con el código de barras del artículo. Las medidas no se publican ahí.', $item->motivo_detalle);
+
+        // Con los dos: manda el de proveedor (la URL es la suya, no la del de barras).
+        $los_dos = $this->articulo_de('HUSQVARNA', '537271399', '537271302');
+
+        list($item) = $this->buscar_fichas($los_dos);
+
+        $this->assertSame(self::URL_KALOHAZ, $this->entrada($item, DimensionManufacturerSheets::CRITERIO_KALOHAZ)['url']);
+        $this->assertSame(DimensionSearchItem::CRITERIO_CODIGO_PROVEEDOR, $item->criterio_usado);
+        $this->assertStringContainsString('con el código de proveedor del artículo', $item->motivo_detalle);
+    }
+
+    /**
+     * 8. En una demo sin búsquedas, una corrida de fichas se puede reanudar (no usa Serper); una normal no.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function reanudar_una_corrida_de_fichas_no_mira_el_tope_de_la_demo()
+    {
+        $anterior = [config('app.FOR_USER'), config('app.USER_ID')];
+        config(['app.FOR_USER' => 'demo', 'app.USER_ID' => $this->owner->id]);
+
+        try {
+            $fichas  = $this->corrida_de_fichas([$this->articulo_de('STIHL', null, '4147-030-0403')]);
+            $normal  = $this->corrida([$this->nuevo_articulo('CUCHILLA ROTARY 20"')]);
+
+            DimensionSearchRunHelper::terminar($fichas, DimensionSearchRun::STATUS_DETENIDA);
+            DimensionSearchRunHelper::terminar($normal, DimensionSearchRun::STATUS_DETENIDA);
+
+            $ahora = now();
+            $filas = [];
+
+            for ($i = 0; $i < 25; $i++) {
+                $filas[] = [
+                    'event_uuid' => (string) \Illuminate\Support\Str::uuid(), 'user_id' => $this->owner->id, 'process' => 'imagenes_seleccion',
+                    'endpoint' => 'images', 'query' => 'previa '.$i, 'ok' => true, 'occurred_at' => $ahora, 'created_at' => $ahora, 'updated_at' => $ahora,
+                ];
+            }
+
+            \App\Models\SerperUsageEvent::insert($filas);
+
+            $this->assertSame(422, DimensionSearchRunHelper::reanudar($normal->fresh())['status'], 'Control: la normal sí la frena el tope.');
+            $this->assertSame(200, DimensionSearchRunHelper::reanudar($fichas->fresh())['status']);
+            $this->assertSame(DimensionSearchRun::STATUS_PENDIENTE, $fichas->fresh()->status);
+        } finally {
+            config(['app.FOR_USER' => $anterior[0], 'app.USER_ID' => $anterior[1]]);
+        }
+    }
+
+    /**
+     * 9. El índice de Lawn Barn se borra al terminar la corrida y al purgarla.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function el_indice_se_borra_al_terminar_y_al_purgar_la_corrida()
+    {
+        $articulo = $this->articulo_de('STIHL', '795711696924', '4147-740-2500');
+        $run      = $this->corrida_de_fichas([$articulo]);
+
+        $this->falsear([], array_merge($this->sitemap(), [self::URL_LAWNBARN => $this->recorte('lawnbarn_hip-pad.html')]), 'caida');
+
+        (new ProcessDimensionSearchRunJob($run->id))->handle();
+
+        $this->assertSame(DimensionSearchRun::STATUS_TERMINADA, $run->fresh()->status);
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, DimensionSearchItem::where('run_id', $run->id)->value('status'));
+        $this->assertFileDoesNotExist(DimensionLawnBarnIndex::ruta($run->id));
+
+        // Una corrida vieja con un índice que quedó (de antes de esta regla): la purga se lo lleva.
+        $vieja = $this->corrida_de_fichas([$this->articulo_de('STIHL', null, '4147-030-0403')]);
+        DimensionSearchRunHelper::terminar($vieja, DimensionSearchRun::STATUS_TERMINADA);
+        DB::table('dimension_search_runs')->where('id', $vieja->id)->update(['finished_at' => now()->subDays(DimensionSearchRunHelper::DIAS_PARA_PURGAR + 1)]);
+
+        @mkdir(dirname(DimensionLawnBarnIndex::ruta($vieja->id)), 0775, true);
+        file_put_contents(DimensionLawnBarnIndex::ruta($vieja->id), '{"ok":true,"urls":{}}');
+
+        $this->assertGreaterThanOrEqual(1, DimensionSearchRunHelper::purgar_viejas($this->owner->id));
+        $this->assertFileDoesNotExist(DimensionLawnBarnIndex::ruta($vieja->id));
+        $this->assertNull(DimensionSearchRun::find($vieja->id));
+    }
+
+    /**
+     * 10. Sin la etiqueta «Weight:», la cita de Lawn Barn es el atributo literal del HTML.
+     *
+     * @group dimension-search
+     * @test
+     */
+    public function lawnbarn_sin_la_etiqueta_cita_el_atributo_literal()
+    {
+        $articulo = $this->articulo_de('STIHL', '795711696924', '4147-740-2500');
+
+        $html = str_replace('<dt class="productView-info-name">Weight:</dt>', '', $this->recorte('lawnbarn_hip-pad.html'));
+
+        $this->falsear([], array_merge($this->sitemap(), [self::URL_LAWNBARN => $html]), 'caida');
+
+        list($item) = $this->buscar_fichas($articulo);
+
+        $this->assertSame(DimensionSearchItem::STATUS_ASIGNADA, $item->status);
+        $this->assertSame('data-product-weight>0.60 LBS', $item->evidencia['peso']['cita']);
+        $this->assertStringContainsString($item->evidencia['peso']['cita'], $html, 'La cita está tal cual en la página.');
+    }
+}
+
+/**
+ * El lector de los tests (DNS de prueba) que anota en orden cuándo reinicia el presupuesto y qué lee.
+ */
+class LectorQueAnota extends \Tests\Feature\DimensionSearch\Dobles\PaginasConDnsDePrueba
+{
+    /** @var array */
+    public static $eventos = [];
+
+    public function reiniciar_presupuesto($segundos = null)
+    {
+        self::$eventos[] = 'reinicio';
+
+        return parent::reiniciar_presupuesto($segundos);
+    }
+
+    public function leer($url)
+    {
+        self::$eventos[] = 'leer '.$url;
+
+        return parent::leer($url);
+    }
 }
