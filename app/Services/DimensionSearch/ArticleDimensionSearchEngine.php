@@ -162,7 +162,7 @@ class ArticleDimensionSearchEngine
         'newgardenstore.eu'     => [1.0, 0.1],
         'echo-pro.de'           => [4.4],
         'jackssmallengines.com' => [0.0227],   // 0,05 lb
-        'messicks.com'          => [0.0],
+        // messicks.com publica «0.00 lbs», pero el validador ya rechaza un peso de cero: no hace falta en la lista.
         'carbydoctor.com.au'    => [0.49],
     ];
 
@@ -240,7 +240,8 @@ class ArticleDimensionSearchEngine
      *
      * @param  \App\Models\DimensionSearchItem $item
      * @return array  Lo que necesita el job para decidir si sigue: cupo_agotado, tope_demo,
-     *                error_de_proveedor, busquedas_intentadas, ia_sin_respuesta, ia_respondio, ia_error.
+     *                error_de_proveedor, busquedas_intentadas, ia_sin_respuesta, ia_respondio, ia_error
+     *                (y fichas_intentadas en una corrida de fichas).
      */
     public function procesar(DimensionSearchItem $item)
     {
@@ -573,7 +574,7 @@ class ArticleDimensionSearchEngine
             return $resultado;
         }
 
-        $clasificado = $this->bajar_valor_de_plantilla($this->clasificar($mejor, $codigos, $titulos, $articulo));
+        $clasificado = $this->bajar_valor_de_plantilla($this->clasificar($mejor, $codigos, $titulos, $articulo), $articulo);
 
         $this->cerrar($item, array_merge($clasificado, ['diagnostico' => $diagnostico]), $gasto);
 
@@ -637,6 +638,26 @@ class ArticleDimensionSearchEngine
         $diagnostico = $busqueda['diagnostico'];
         $dato        = $busqueda['dato'];
 
+        // Para el corte del job por errores seguidos: cuántas fichas se intentaron (0 = no se pidió nada). No son
+        // búsquedas de Serper: `busquedas_intentadas` sigue en cero.
+        $resultado['fichas_intentadas'] = DimensionManufacturerSheets::fuentes_intentadas($diagnostico);
+
+        // Si TODAS las fichas que se intentaron fallaron por un bloqueo, un timeout o falta de tiempo, no es «no hay
+        // ficha»: se cierra como un error del buscador en la corrida normal (sin procesar, se reintenta al reanudar) y
+        // cuenta para el corte del job.
+        if (is_null($dato) && DimensionManufacturerSheets::todas_fallaron_de_paso($diagnostico)) {
+            $resultado['error_de_proveedor'] = true;
+
+            $this->cerrar($item, [
+                'status'         => DimensionSearchItem::STATUS_SIN_PROCESAR,
+                'motivo'         => 'error_de_busqueda',
+                'motivo_detalle' => 'No se pudieron leer las fichas del fabricante de este artículo: '.$this->ultimo_error($diagnostico).' Se puede volver a intentar.',
+                'diagnostico'    => $diagnostico,
+            ], $gasto);
+
+            return $resultado;
+        }
+
         if (is_null($dato)) {
             $this->cerrar($item, array_merge(
                 $this->sin_datos('sin_ficha', 'No se encontró la ficha de este artículo en '.implode(' ni ', DimensionManufacturerSheets::dominios_de($marca)).'.'),
@@ -646,7 +667,8 @@ class ArticleDimensionSearchEngine
             return $resultado;
         }
 
-        $por_barras = $dato['identidad'] === DimensionManufacturerSheets::IDENTIDAD_EAN;
+        // El código del artículo que confirmó la ficha: el de barras (EAN / UPC, o el número salió de ahí) o el de proveedor.
+        $por_barras = !empty($dato['por_barras']);
 
         $evidencia = [
             'peso' => [
@@ -726,14 +748,21 @@ class ArticleDimensionSearchEngine
 
     /**
      * Una `asignada` cuyo peso sale de una página de un dominio de VALORES_DE_PLANTILLA con ese mismo valor baja a
-     * `a_revisar` / `valor_de_plantilla`: no se escribe sola. Cualquier otro resultado pasa igual.
+     * `a_revisar` / `valor_de_plantilla`: no se escribe sola. Solo si el artículo NO tiene el peso cargado: si lo tiene,
+     * ese peso no se iba a escribir (DimensionApplier no pisa) y no hay por qué frenar las medidas. Cualquier otro
+     * resultado pasa igual.
      *
-     * @param  array $campos  Lo que devolvió clasificar().
+     * @param  array               $campos    Lo que devolvió clasificar().
+     * @param  \App\Models\Article $articulo
      * @return array
      */
-    protected function bajar_valor_de_plantilla(array $campos)
+    protected function bajar_valor_de_plantilla(array $campos, Article $articulo)
     {
         if (!isset($campos['status']) || $campos['status'] !== DimensionSearchItem::STATUS_ASIGNADA || empty($campos['evidencia']['peso'])) {
+            return $campos;
+        }
+
+        if (!DimensionApplier::esta_vacio($articulo->peso)) {
             return $campos;
         }
 

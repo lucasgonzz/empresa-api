@@ -314,8 +314,9 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                 return;
             }
 
-            // Un artículo que no intentó ninguna búsqueda (borrado, ya tenía medidas) no dice nada del proveedor.
-            if ((int) $resultado['busquedas_intentadas'] > 0
+            // Un artículo que no intentó ninguna búsqueda (borrado, ya tenía medidas) no dice nada del proveedor. En una
+            // corrida de fichas cuentan las fichas que se intentaron bajar (`fichas_intentadas`).
+            if (((int) $resultado['busquedas_intentadas'] > 0 || (isset($resultado['fichas_intentadas']) && (int) $resultado['fichas_intentadas'] > 0))
                 && $this->contar_error_de_proveedor($run, (bool) $resultado['error_de_proveedor']) >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
                 $ultimo_error = $this->ultimo_error_del_diagnostico($item->fresh());
 
