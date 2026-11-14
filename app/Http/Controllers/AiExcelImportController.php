@@ -990,7 +990,9 @@ class AiExcelImportController extends Controller
             PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), PruebaHelper::origen_del_analisis($this->userId(), (string) $request->input('excel_path')));
             Excel::import(
                 (new ClientImport($columns, $create_and_edit, $start_row, $finish_row, $hoja, $hoja_nombre, $vaciar_valores_en_blanco))
-                    ->con_equivalencias($equivalencias),
+                    ->con_equivalencias($equivalencias)
+                    // En la prueba, el total o un título de la planilla no se carga como cliente (E8.1).
+                    ->descartando_filas_que_no_son_contactos(PruebaHelper::tiene_periodo_de_prueba($this->userId())),
                 $excel_full_path
             );
             PruebaHelper::importacion_terminada($this->userId(), 'client');
@@ -1071,7 +1073,9 @@ class AiExcelImportController extends Controller
             PruebaHelper::borrar_semilla_antes_de_importar($this->userId(), PruebaHelper::origen_del_analisis($this->userId(), (string) $request->input('excel_path')));
             Excel::import(
                 (new ProviderImport($columns, $create_and_edit, $start_row, $finish_row, null, $hoja, $hoja_nombre, $vaciar_valores_en_blanco))
-                    ->con_equivalencias($equivalencias),
+                    ->con_equivalencias($equivalencias)
+                    // En la prueba, el total o un título de la planilla no se carga como proveedor (E8.1).
+                    ->descartando_filas_que_no_son_contactos(PruebaHelper::tiene_periodo_de_prueba($this->userId())),
                 $excel_full_path
             );
             PruebaHelper::importacion_terminada($this->userId(), 'provider');

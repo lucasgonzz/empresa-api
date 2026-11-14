@@ -159,6 +159,97 @@ class LocalImportHelper {
 	}
 
 	/**
+	 * Columnas de una lista de clientes o proveedores que dicen QUIÉN es el contacto: si una de estas trae
+	 * dato, la fila es un contacto, se llame como se llame.
+	 */
+	const COLUMNAS_QUE_IDENTIFICAN_UN_CONTACTO = ['numero', 'telefono', 'direccion', 'email', 'razon_social', 'cuit', 'cuil', 'dni', 'localidad', 'provincia'];
+
+	/**
+	 * ¿La fila de una lista de clientes o proveedores no es un contacto sino el total, un subtotal o un título
+	 * decorado de la planilla? Devuelve el texto de la fila para el aviso, o null si es un contacto (misión
+	 * prueba-e2e-campana-imperio, ronda 6, E8.1: «deudores.xlsx» de la prueba creaba un cliente «TOTAL» con
+	 * $ 555.700,50 de saldo, la suma de la columna «Debe»).
+	 *
+	 * Es la misma clase de fila que la carga asistida de artículos de la prueba deja afuera
+	 * (PlanillaDePrueba::motivo_para_saltear()), con el mismo criterio para el nombre:
+	 *  - el nombre empieza con la PALABRA COMPLETA total, totales, subtotal o suma(s), sin números y con dos
+	 *    palabras más como mucho (PlanillaDePrueba::empieza_como_total(): «TOTAL», «Total general:», «Subtotal
+	 *    zona norte»; NO «Totalgas SRL» ni «Total 2000 SA»), o es un título decorado («--- MAYORISTAS ---»); y
+	 *  - ninguna columna que identifica a un contacto trae dato (número, teléfono, dirección, email, razón
+	 *    social, CUIT, CUIL, DNI, localidad, provincia), y las demás columnas mapeadas traen solo números (el
+	 *    saldo sumado) o nada.
+	 * Un cliente real que se llame «Total Gas» y venga sin ningún dato más que el saldo se dejaría afuera: por eso
+	 * la fila sale NOMBRADA en el aviso de la importación y el dueño puede cargarlo a mano.
+	 *
+	 * Solo lo llaman ClientImport y ProviderImport cuando el negocio está en la prueba gratuita (ver
+	 * descartando_filas_que_no_son_contactos()); a un negocio que paga le sigue entrando todo como siempre.
+	 *
+	 * @param  array|\ArrayAccess $row
+	 * @param  array              $columns  Clave de columna => índice
+	 * @return string|null
+	 */
+	static function fila_que_no_es_un_contacto($row, $columns) {
+		$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+		if (is_null($nombre) || $nombre === '') {
+			return null;
+		}
+		if (!\App\Services\Importacion\PlanillaDePrueba::empieza_como_total($nombre)
+			&& !\App\Services\Importacion\PlanillaDePrueba::es_titulo_decorado($nombre)) {
+			return null;
+		}
+		foreach ($columns as $clave => $indice) {
+			if ($clave === 'nombre') {
+				continue;
+			}
+			$valor = ImportHelper::getColumnValue($row, $clave, $columns);
+			if (is_null($valor) || $valor === '') {
+				continue;
+			}
+			if (in_array($clave, self::COLUMNAS_QUE_IDENTIFICAN_UN_CONTACTO, true)) {
+				return null;
+			}
+			try {
+				if (is_null(ImportHelper::parseNumericValue($valor))) {
+					return null;
+				}
+			} catch (\InvalidArgumentException $e) {
+				return null;
+			}
+		}
+
+		return $nombre;
+	}
+
+	/**
+	 * El bloque del aviso de la importación con las filas que no se cargaron por no ser contactos (ver
+	 * fila_que_no_es_un_contacto()), o null si no hubo.
+	 *
+	 * @param  array  $filas   [['fila' => int, 'nombre' => string], ...]
+	 * @param  string $modelo  'clientes' o 'proveedores'
+	 * @return array|null
+	 */
+	static function bloque_de_filas_que_no_son_contactos(array $filas, $modelo) {
+		if (count($filas) == 0) {
+			return null;
+		}
+		$parrafos = [];
+		foreach (array_slice($filas, 0, self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES) as $fila) {
+			$parrafos[] = 'Fila ' . $fila['fila'] . ': "' . self::recortar_para_el_aviso($fila['nombre'], self::LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO) . '"';
+		}
+		$restantes = count($filas) - self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES;
+		if ($restantes > 0) {
+			$parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' fila más' : ' filas más');
+		}
+		$parrafos[] = 'No las cargué como ' . $modelo . ': son el total, un subtotal o un título de la planilla. '
+			. 'Si alguna era uno de tus ' . $modelo . ', cargalo a mano o avisanos.';
+
+		return [
+			'title'    => 'Filas que no son ' . $modelo,
+			'parrafos' => $parrafos,
+		];
+	}
+
+	/**
 	 * Arma el bloque "Saldos del Excel que no se pudieron leer" de la notificación de fin de
 	 * importación (formato `title` + `parrafos`, el que el SPA ya renderiza). Lo usan ClientImport y
 	 * ProviderImport, cada uno con las filas que juntó.
