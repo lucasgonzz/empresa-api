@@ -173,6 +173,11 @@ class PlanDeContactosDeSoporte
         // tanda ve solo 50 filas y la regla necesita la lista completa). La fila descartada no entra a lo previsto
         // ni a las filas crudas: ninguna tanda la ve y el control no espera su alta. Todas salen nombradas.
         $modo_prueba = (bool) $corrida->modo_prueba;
+        // Quinta pasada (B2): en la prueba, el saldo escrito como lo escribe un comerciante («$13500.-», «1250 pesos») se
+        // lee como su número, antes de todo: el plan y las tandas ven el mismo valor. Un activo, como siempre.
+        if ($modo_prueba && isset($columnas['saldo_actual'])) {
+            $lector->filas = self::saldos_de_comerciante($lector->filas, (int) $columnas['saldo_actual'], $columnas, (int) $corrida->fila_inicio);
+        }
         $descartes = $modo_prueba ? LocalImportHelper::filas_que_no_son_contactos_de($lector->filas, $columnas,
             (int) $corrida->fila_inicio, count($lector->filas), self::formato_del_nombre($corrida, $ruta, $lector->filas, $columnas)) : [];
         $descartadas = [];
@@ -296,6 +301,7 @@ class PlanDeContactosDeSoporte
         $de_la_lista = [];
         $existentes_con_cambios = 0;
         $existentes_iguales = 0;
+        $solo_con_el_nombre = [];
         foreach ($filas as $fila) {
             $modelo = $fila['modelo'];
             $nuevo = is_null($modelo);
@@ -333,6 +339,10 @@ class PlanDeContactosDeSoporte
                 $crear++;
                 if (count($ejemplos_crear) < self::MAXIMO_DE_EJEMPLOS) {
                     $ejemplos_crear[] = (string) $fila['nombre'];
+                }
+                // Quinta pasada (A5): los nuevos que traen SOLO el nombre (ni teléfono, ni dirección, ni CUIT, ni saldo).
+                if ($modo_prueba && self::solo_el_nombre($fila['row'], $columnas)) {
+                    $solo_con_el_nombre[] = (string) $fila['nombre'];
                 }
             } elseif ($seguro || $posible) {
                 $actualizar++;
@@ -382,6 +392,8 @@ class PlanDeContactosDeSoporte
                     return $saldo['accion'] === 'no_se_carga' ? (float) $saldo['saldo_actual'] : 0.0;
                 }, $saldos)), 2),
                 'existentes_iguales' => $existentes_iguales,
+                'solo_con_el_nombre' => array_slice($solo_con_el_nombre, 0, self::MAXIMO_DE_EJEMPLOS),
+                'solo_con_el_nombre_total' => count($solo_con_el_nombre),
                 'saldos_ilegibles_total' => count($ilegibles),
                 'filas_descartadas' => array_slice($descartadas, 0, self::MAXIMO_DE_SALDOS),
                 'filas_descartadas_total' => count($descartadas),
@@ -625,6 +637,52 @@ class PlanDeContactosDeSoporte
         } catch (\Throwable $error) {
             return [];
         }
+    }
+
+    /** ¿La fila trae solo el nombre, ninguna otra columna mapeada con dato? (quinta pasada, A5) */
+    private static function solo_el_nombre($row, array $columnas): bool
+    {
+        foreach ($columnas as $clave => $indice) {
+            if ($clave === 'nombre') {
+                continue;
+            }
+            $valor = ImportHelper::getColumnValue($row, $clave, $columnas);
+            if (!is_null($valor) && trim((string) $valor) !== '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Las filas con el saldo leído como lo escribe un comerciante (PlanillaDePrueba::importe_de_comerciante, solo en
+     * pesos): si el lector de siempre no lo lee y el de comerciante sí, la celda pasa a ser el número.
+     *
+     * @param  \Illuminate\Support\Collection $filas
+     * @param  int   $posicion
+     * @param  array $columnas
+     * @param  int   $desde
+     * @return \Illuminate\Support\Collection
+     */
+    private static function saldos_de_comerciante($filas, int $posicion, array $columnas, int $desde)
+    {
+        $numero = 0;
+
+        return $filas->map(function ($fila) use ($posicion, $columnas, $desde, &$numero) {
+            $numero++;
+            if ($numero < $desde || LocalImportHelper::leerSaldoDeLaFila($fila, $columnas)['estado'] !== 'ilegible') {
+                return $fila;
+            }
+            $celdas = is_object($fila) && method_exists($fila, 'toArray') ? $fila->toArray() : (array) $fila;
+            $leido = PlanillaDePrueba::importe_de_comerciante($celdas[$posicion] ?? null, true);
+            if (is_null($leido)) {
+                return $fila;
+            }
+            $celdas[$posicion] = $leido;
+
+            return is_object($fila) ? collect($celdas) : $celdas;
+        });
     }
 
     private static function fila_con_datos($row): bool

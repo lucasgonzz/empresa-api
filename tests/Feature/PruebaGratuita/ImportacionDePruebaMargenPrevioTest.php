@@ -240,8 +240,9 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $this->assertEqualsWithDelta(660.42, (float) $llave->cost, 0.001);
         $this->assertEqualsWithDelta(799.11, (float) $llave->final_price, 0.001, 'Al costo más IVA 21 %, sin ganancia.');
 
-        $this->assertSame('Cargué 3 artículos con su costo y su precio de venta. 1 artículo no traía precio de venta: por ahora'
-            . ' quedó al costo más IVA ($ 799,11). Cuando me digas a cuánto lo vendés te muestro dónde ponerlo.', $this->resumen($run, 3));
+        // Quinta pasada (B2 y B4): «con su precio de venta» dice cuántos lo traían, y el que no lo traía va con su nombre.
+        $this->assertSame('Cargué 3 artículos con su costo; 2 traían también su precio de venta. «Llave francesa MPD» no traía precio de'
+            . ' venta: por ahora quedó al costo más IVA ($ 799,11). Cuando me digas a cuánto lo vendés te muestro dónde ponerlo.', $this->resumen($run, 3));
         $this->assertStringNotContainsString('lo actualizo', $this->resumen($run, 3));
     }
 
@@ -287,7 +288,8 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
             ->value('final_price'), 0.001, 'El que traía su precio no cambia.');
 
         // B3 (ronda 8): dice cuál.
-        $this->assertSame('Cargué 3 artículos con su costo y su precio de venta. Al que no traía precio («Llave francesa MPP») le puse'
+        // Quinta pasada (B2 y B4): «con su precio de venta» dice cuántos lo traían, y el que no lo traía va con su nombre.
+        $this->assertSame('Cargué 3 artículos con su costo; 2 traían también su precio de venta. Al que no traía precio («Llave francesa MPP») le puse'
             . ' $ 1.300,00 como precio de venta.', $this->resumen($run, 3));
     }
 
@@ -367,20 +369,21 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         };
         $this->assertSame(
             // Cuarta pasada, B2: sin «si corresponde»; sin artículos cargados para leer, sin ejemplo.
-            'Cargué 5 artículos con su costo y su precio de venta. 3 artículos no traían precio de venta: por ahora quedaron sin'
+            // Quinta pasada (B2 y B4): «con su precio de venta» dice cuántos lo traían, y el que no lo traía va con su nombre.
+            'Cargué 5 artículos con su costo; 2 traían también su precio de venta. 3 artículos no traían precio de venta: por ahora quedaron sin'
             . ' ganancia, al costo. Cuando me digas a cuánto los vendés te muestro dónde ponerlo.',
             $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2, 'precio' => 3], ['filas_sin_ganancia' => 3]), 5, 0, 0, 0)
         );
         // Uno solo que no se encuentra en la base: sin monto.
         $this->assertSame(
-            'Cargué 5 artículos con su costo y su precio de venta. 1 artículo no traía precio de venta: por ahora quedó sin'
+            'Cargué 5 artículos con su costo; 4 traían también su precio de venta. «No existe MPZ» no traía precio de venta: por ahora quedó sin'
             . ' ganancia, al costo. Cuando me digas a cuánto lo vendés te muestro dónde ponerlo.',
             $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2, 'precio' => 3], ['filas_sin_ganancia' => 1,
                 'sin_ganancia_ejemplo' => ['nombre' => 'No existe MPZ', 'sku' => null]]), 5, 0, 0, 0)
         );
         // Al costo, sin IVA: «quedó al costo».
         Article::create(['user_id' => $this->dueno->id, 'name' => 'Sin IVA MPZ', 'status' => 'active', 'cost' => 100, 'final_price' => 100]);
-        $this->assertStringContainsString(' 1 artículo no traía precio de venta: por ahora quedó al costo ($ 100,00).',
+        $this->assertStringContainsString(' «Sin IVA MPZ» no traía precio de venta: por ahora quedó al costo ($ 100,00).',
             $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2, 'precio' => 3], ['filas_sin_ganancia' => 1,
                 'sin_ganancia_ejemplo' => ['nombre' => 'Sin IVA MPZ', 'sku' => null]]), 5, 0, 0, 0));
         // Todo al costo con «después».
@@ -564,7 +567,7 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $run = $this->importar_sin_preguntas($uuid);
         $final = (float) Article::where('user_id', $this->dueno->id)->where('provider_code', 'MPI-2')->value('final_price');
         $this->assertGreaterThan(799.11, $final);
-        $this->assertStringContainsString(' 1 artículo no traía precio de venta: por ahora quedó al costo con impuestos ($ '
+        $this->assertStringContainsString(' «Llave francesa MPI» no traía precio de venta: por ahora quedó al costo con impuestos ($ '
             . number_format($final, 2, ',', '.') . ').', $this->resumen($run, 3));
 
         // Un artículo que ya existía con su ganancia: no se dice «al costo».
@@ -691,7 +694,8 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
             return PlanillaDePrueba::motivos_de_la_hoja($todas, $sin);
         };
         $this->assertSame([10 => PlanillaDePrueba::FILA_TOTAL], $con(['Total valorizado de la mercadería', round($valorizado, 2), null, null]));
-        $this->assertSame([10 => PlanillaDePrueba::FILA_TOTAL], $con(['TOTAL UNIDADES EN EL DEPOSITO', null, null, $stock]));
+        // Quinta pasada (B3; cambió a propósito): la suma del stock sola ya no alcanza como evidencia.
+        $this->assertSame([], $con(['TOTAL UNIDADES EN EL DEPOSITO', null, null, $stock]));
         $this->assertSame([], $con(['Total valorizado de la mercadería', 12345, null, null]), 'Sin la suma, en una hoja sin códigos, entra.');
         $this->assertSame([], $con(['Total Gas 10 kg', 5000, 7000, 3]));
     }
@@ -737,6 +741,118 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $this->responder($run, [$clave => PlanillaDePrueba::CAMPO_IGNORAR])->assertStatus(202);
         $run = $this->importar_sin_preguntas($uuid);
         $this->assertStringEndsWith(' No cargué la columna «Comentario del vendedor», como me dijiste.', $this->resumen($run, 3));
+    }
+    // -----------------------------------------------------------------------------------------------------
+    // Quinta pasada: importes de comerciante, subtotales cortos, la suma endurecida
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_b2_el_lector_de_importes_de_comerciante(): void
+    {
+        $casos = [
+            '$13500.-' => 13500.0, '$ 1.250.-' => 1250.0, '1250,-' => 1250.0, '$1.250,00.-' => 1250.0, '13500.—' => 13500.0,
+            '$ 13.500 .-' => 13500.0, '1.250,50 $' => 1250.5, 'ARS 1250' => 1250.0, '1250 pesos' => 1250.0, '$1250 c/u' => 1250.0,
+            '1.250' => 1250.0, '1250.5' => 1250.5, '15600.5' => 15600.5, '1.250,50' => 1250.5, '1,250.50' => 1250.5, '-1200' => -1200.0,
+            '$ 37.468,24' => 37468.24,
+        ];
+        foreach ($casos as $texto => $esperado) {
+            $this->assertEqualsWithDelta($esperado, PlanillaDePrueba::importe_de_comerciante((string) $texto), 0.001, (string) $texto);
+        }
+        // Los números de la celda, tal cual.
+        $this->assertSame(1300.0, PlanillaDePrueba::importe_de_comerciante(1300));
+        $this->assertSame(1250.75, PlanillaDePrueba::importe_de_comerciante(1250.75));
+        foreach (['a convenir', 'consultar', '$', '', '1.5,3', '12 cuotas de 300'] as $texto) {
+            $this->assertNull(PlanillaDePrueba::importe_de_comerciante($texto), $texto);
+        }
+        // En pesos solamente (un saldo), la moneda extranjera no se lee.
+        $this->assertNull(PlanillaDePrueba::importe_de_comerciante('USD 1.500', true));
+        $this->assertNull(PlanillaDePrueba::importe_de_comerciante('1500 U$S', true));
+    }
+
+    public function test_b2_los_precios_con_adornos_se_cargan_y_el_que_no_se_puede_leer_se_dice(): void
+    {
+        SaleTax::where('user_id', $this->dueno->id)->update(['activo' => 0]);
+        ArticlePricesHelper::$sale_taxes_cache = [];
+        $this->analizador($this->mapeo_con_precio());
+        $uuid = $this->subir($this->planilla([
+            ['Código', 'Descripción', 'Costo', 'Precio de venta'],
+            ['MPR-1', 'Pinza MPR', 9000, '$13500.-'], ['MPR-2', 'Tenaza MPR', 800, '$ 1.250.-'], ['MPR-3', 'Llave MPR', 900, '1.250,50 $'],
+            ['MPR-4', 'Martillo MPR', 1000, 'a convenir'],
+        ]), 340)->assertStatus(202)->json('analysis_uuid');
+        $run = $this->importar_sin_preguntas($uuid);
+        foreach (['MPR-1' => 13500, 'MPR-2' => 1250, 'MPR-3' => 1250.5] as $codigo => $precio) {
+            $this->assertEqualsWithDelta($precio, (float) Article::where('user_id', $this->dueno->id)->where('provider_code', $codigo)
+                ->value('final_price'), 0.001, $codigo);
+        }
+        $this->assertSame(1, $run->hojas[0]['importes_ilegibles']['total_precio']);
+        $texto = $this->resumen($run, 4);
+        $this->assertStringStartsWith('Cargué 4 artículos con su costo; 3 traían también su precio de venta.', $texto);
+        $this->assertStringContainsString(' En 1 artículo no pude leer el precio de venta de la planilla («Martillo MPR»: «a convenir»): quedaron'
+            . ' al costo más IVA; decime a cuánto los vendés y te muestro dónde ponerlo.', $texto);
+        $this->assertStringNotContainsString('no traía precio de venta', $texto, 'Sí lo traía: no se pudo leer.');
+    }
+
+    public function test_b1_quinta_pasada_subtotales_de_grupo_con_el_numero_en_cualquier_columna(): void
+    {
+        $mapeo = ['codigo_de_proveedor' => 0, 'nombre' => 1, 'costo' => 2, 'precio' => 3, 'stock_actual' => 4];
+        $con_codigos = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $con_codigos[$i + 1] = ['S-' . $i, 'Artículo ' . $i, 100 * $i, 150 * $i, $i];
+        }
+        foreach (['Subtotal', 'Subtotal ferretería', 'Subtotal bulones y tuercas', 'Subtotal grupo de la pinturería', 'Sub total de la sección eléctrica nueva']
+            as $rotulo) {
+            foreach ([2, 3, 4] as $columna) {
+                $filas = $con_codigos;
+                $fila = [null, $rotulo, null, null, null];
+                $fila[$columna] = 7800;
+                $filas[8] = $fila; // en el medio
+                ksort($filas);
+                $filas[20] = [null, 'TOTAL GENERAL', 9999, null, null];
+                $motivos = PlanillaDePrueba::motivos_de_la_hoja($filas, $mapeo);
+                $this->assertArrayHasKey(8, $motivos, $rotulo . ' en la columna ' . $columna);
+                $this->assertContains($motivos[8], [PlanillaDePrueba::FILA_SUBTOTAL, PlanillaDePrueba::FILA_TOTAL], $rotulo);
+                $this->assertSame(PlanillaDePrueba::FILA_TOTAL, $motivos[20]);
+            }
+        }
+    }
+
+    public function test_b3_la_suma_de_arriba_no_saca_un_articulo_que_se_llama_como_un_total(): void
+    {
+        $sin = ['nombre' => 0, 'costo' => 1, 'precio' => 2, 'stock_actual' => 3];
+        // «Total Quartz 10W40» con su stock (la suma de los de arriba) y su precio: entra.
+        $filas = [2 => ['Aceite A', 1000, 1500, 5], 3 => ['Aceite B', 1100, 1600, 7], 4 => ['Aceite C', 1200, 1700, 3],
+            5 => ['Total Quartz 10W40', 5000, 7000, 15], 6 => ['Totalgaz garrafa', 900, 1300, 2], 7 => ['Suma dental x 12', 10, 15, 4]];
+        $this->assertSame([], PlanillaDePrueba::motivos_de_la_hoja($filas, $sin));
+        // La suma del stock sola no alcanza; con dos filas tampoco; seguida de artículos (no está en posición de total), tampoco.
+        $this->assertSame([], PlanillaDePrueba::motivos_de_la_hoja([2 => ['Aceite A', 1000, null, 5], 3 => ['Aceite B', 1100, null, 7],
+            4 => ['Aceite C', 1000, null, 3], 5 => ['Total del stock en el depósito', null, null, 15]], $sin));
+        $this->assertSame([], PlanillaDePrueba::motivos_de_la_hoja([2 => ['Aceite A', 1000, null, 5], 3 => ['Aceite B', 1100, null, 7],
+            4 => ['Total valorizado de los aceites', 1000 * 5 + 1100 * 7, null, null]], $sin));
+        $medio = [2 => ['Aceite A', 1000, null, 5], 3 => ['Aceite B', 1100, null, 7], 4 => ['Aceite C', 1000, null, 3],
+            5 => ['Total valorizado de los aceites', 1000 * 5 + 1100 * 7 + 1000 * 3, null, null], 6 => ['Grasa D', 500, null, 2]];
+        $this->assertSame([], PlanillaDePrueba::motivos_de_la_hoja($medio, $sin));
+        // Al pie, con la suma del costo × cantidad y nada propio: afuera; con su propio precio al lado, entra.
+        $pie = $medio;
+        unset($pie[6]);
+        $this->assertSame([5 => PlanillaDePrueba::FILA_TOTAL], PlanillaDePrueba::motivos_de_la_hoja($pie, $sin));
+        $pie[5][2] = 4321;
+        $this->assertSame([], PlanillaDePrueba::motivos_de_la_hoja($pie, $sin));
+        // Al final de un grupo (seguido de una fila vacía): afuera.
+        $grupo = $medio;
+        $grupo[6] = [null, null, null, null];
+        $grupo[7] = ['Grasa D', 500, null, 2];
+        $this->assertSame([5 => PlanillaDePrueba::FILA_TOTAL], PlanillaDePrueba::motivos_de_la_hoja($grupo, $sin));
+    }
+
+    public function test_b4_la_columna_ignorada_por_el_mapeo_previo_se_dice_una_sola_vez(): void
+    {
+        $hojas = [['indice' => 0, 'columnas' => [
+            3 => ['titulo' => 'Obs.', 'campo' => null, 'segura' => true, 'sin_destino' => true, 'previa' => true],
+            4 => ['titulo' => 'Ubic.', 'campo' => null, 'segura' => true, 'sin_destino' => true],
+            5 => ['titulo' => 'Final', 'campo' => null, 'segura' => true, 'previa' => true],
+        ]]];
+        $this->assertSame(' No cargué la columna «Ubic.»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+            PlanillaDePrueba::texto_de_columnas_sin_destino($hojas));
+        $this->assertSame(' No cargué las columnas «Obs.» y «Final», como me dijiste.', PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, []));
     }
 }
 

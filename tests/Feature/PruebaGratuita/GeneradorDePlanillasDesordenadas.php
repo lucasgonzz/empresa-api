@@ -59,11 +59,22 @@ class GeneradorDePlanillasDesordenadas
      * Notas con forma de oración (cuarta pasada, A4): quedan afuera estén donde estén (arriba, en el medio, debajo del
      * total).
      */
+    /* Artículos de verdad que se llaman como un total (quinta pasada, B3). */
+    const ARTICULOS_QUE_SE_LLAMAN_COMO_UN_TOTAL = ['Total Quartz 10W40', 'Total Flex 1L', 'Totalgaz garrafa 10 kg', 'Suma dental x 12'];
+    /* Subtotales de grupo con rótulo corto y largo (quinta pasada, B1). */
+    const SUBTOTALES_DE_GRUPO = ['Subtotal', 'Subtotal ferretería', 'Subtotal bulones y tuercas', 'Subtotal grupo pinturería', 'Sub total de la sección eléctrica'];
     /* Totales del pie con rótulo largo (cuarta pasada, B1): la palabra de total y tres palabras o más. */
     const TOTALES_LARGOS = ['TOTAL MERCADERIA (al costo)', 'Total de la lista de precios', 'TOTAL VALORIZADO DEL STOCK', 'Suma total de unidades en depósito'];
     const NOTAS_CON_FORMA_DE_ORACION = ['Fulana dejó plata de más, descontarle en la próxima compra',
         'ojo: este paga los viernes, no antes', 'Avisar a Marta que pasó el cheque y todavía no lo cobramos',
         'los que siguen se cobran a fin de mes, sin recargo', 'Revisar con el contador antes de mandar los resúmenes del mes'];
+    /* Anotaciones del medio de una lista (quinta pasada, A1): empiezan con una palabra de anotación. */
+    const NOTAS_DE_ANOTACION = ['ojo: este paga los viernes, no antes', 'Avisar a Marta que pasó el cheque y todavía no lo cobramos',
+        'Revisar con el contador antes de mandar los resúmenes del mes', 'Nota: los que siguen se cobran a fin de mes',
+        'llamar a los que deben más de 60 días', '(ver con Hugo los que faltan)'];
+    /* Clientes reales con una seña o un nombre largo en minúscula (quinta pasada, A1): tienen que entrar. */
+    const CLIENTES_CON_SENA = ['Pérez, el de la esquina', 'juan perez, el plomero de la vuelta', 'Don Pepe, sobrino de la vecina',
+        'Taller de chapa y pintura el rulo', 'la casa del tornillo y la herramienta'];
     const CONTACTOS_REALES_DE_SOLO_NOMBRE = ['Gómez', 'Carla', 'Martín', 'juan perez', 'Juan pérez', 'Kiosco', 'Panadería',
         'la esquina', 'Pirulo', 'Del Valle', 'De la Fuente', 'Obras Sanitarias', 'Doña Rosa', 'Rotisería El Gallo', 'Del Río'];
 
@@ -172,6 +183,8 @@ class GeneradorDePlanillasDesordenadas
         $suma_de_stock = 0;
         $suma_valorizada = 0.0;
         $totales_largos = 0;
+        $articulos_como_un_total = 0;
+        $subtotales_con_importe = 0;
         $cada = (int) max(1, floor($cuantos / max(1, $rubros)));
         $codigo = 11;
         $stock_del_rubro = 0;
@@ -183,7 +196,7 @@ class GeneradorDePlanillasDesordenadas
         foreach ($items as $i => $item) {
             if ($rubros > 0 && $i % $cada === 0 && $i / $cada < $rubros) {
                 if ($con_subtotales && $articulos_en_el_rubro > 0) {
-                    self::subtotal($agregar, $rubro_actual, $stock_del_rubro);
+                    self::subtotal($agregar, $rubro_actual, $stock_del_rubro, $con_precio, $subtotales_con_importe);
                 }
                 $rubro_actual = self::al_azar(self::RUBROS);
                 $stock_del_rubro = 0;
@@ -198,6 +211,13 @@ class GeneradorDePlanillasDesordenadas
             }
 
             $fila = [1 => self::al_azar(self::ARTICULOS) . ' ' . ($i + 1)];
+            // Quinta pasada (B3): un artículo real que se llama como un total (una marca de lubricante), con su precio y su
+            // stock, en el medio de la hoja: entra.
+            $como_un_total = $con_precio && $i > 0 && $i < $cuantos - 1 && mt_rand(0, 40) === 0;
+            if ($como_un_total) {
+                $fila[1] = self::al_azar(self::ARTICULOS_QUE_SE_LLAMAN_COMO_UN_TOTAL);
+                $articulos_como_un_total++;
+            }
             $precio = round(500 + mt_rand(0, 90000) / 7, 2);
             $precio = self::moneda() ? $precio : '$ ' . number_format($precio, 2, ',', '.');
             if ($item === 'codigo') {
@@ -252,7 +272,7 @@ class GeneradorDePlanillasDesordenadas
             $articulos_en_el_rubro++;
         }
         if ($con_subtotales && $rubros > 0 && $articulos_en_el_rubro > 0) {
-            self::subtotal($agregar, $rubro_actual, $stock_del_rubro);
+            self::subtotal($agregar, $rubro_actual, $stock_del_rubro, $con_precio, $subtotales_con_importe);
         }
 
         /*
@@ -263,14 +283,17 @@ class GeneradorDePlanillasDesordenadas
         if ($con_total) {
             $rotulo = self::al_azar(['TOTAL', 'TOTALES', 'TOTAL GENERAL', 'Total artículos: ' . $cuantos, 'Son ' . $cuantos . ' artículos']);
             $columna = $con_codigo && mt_rand(0, 3) === 0 ? 0 : 1;
-            if (mt_rand(0, 2) === 0 && ($suma_de_stock !== 0 || $suma_valorizada > 0)) {
+            // Quinta pasada (B3): en una hoja sin códigos solo el valorizado (cantidad × precio) es evidencia; el stock
+            // solo no alcanza, así que ahí el total largo va siempre con el valorizado.
+            $con_valorizado = $con_precio && $suma_valorizada > 0;
+            if (mt_rand(0, 2) === 0 && ($tipo === 'con' ? ($suma_de_stock !== 0 || $suma_valorizada > 0) : $con_valorizado)) {
                 /*
                  * Cuarta pasada, B1: el total del pie con un rótulo largo y la suma REAL de la planilla (el stock, o
                  * cantidad × precio en la columna del precio). En una hoja con códigos alcanza la forma; en las demás,
                  * la suma.
                  */
                 $largo = self::al_azar(self::TOTALES_LARGOS);
-                if ($con_precio && $suma_valorizada > 0 && mt_rand(0, 1) === 0) {
+                if ($con_valorizado && ($tipo !== 'con' || mt_rand(0, 1) === 0)) {
                     $agregar([1 => $largo, 2 => round($suma_valorizada, 2)], false);
                 } else {
                     $agregar([1 => $largo, 3 => $suma_de_stock], false);
@@ -300,6 +323,8 @@ class GeneradorDePlanillasDesordenadas
             'filas' => $filas, 'inicio' => $fila_de_cabecera + 1, 'mapeo' => $mapeo, 'titulos' => $titulos, 'datos' => $datos,
             'no_datos' => $no_datos, 'con_codigos' => $tipo === 'con', 'tipo' => $tipo, 'cabecera' => $fila_de_cabecera, 'caso' => $caso,
             'totales_largos' => $totales_largos,
+            'articulos_como_un_total' => $articulos_como_un_total,
+            'subtotales_con_importe' => $subtotales_con_importe,
         ];
     }
 
@@ -327,8 +352,22 @@ class GeneradorDePlanillasDesordenadas
         }
     }
 
-    private static function subtotal(callable $agregar, string $rubro, int $stock): void
+    private static function subtotal(callable $agregar, string $rubro, int $stock, bool $con_precio = false, int &$con_importe = 0): void
     {
+        // Quinta pasada (B1): el subtotal de grupo con rótulo corto o largo y UN número (el valorizado en la columna del
+        // precio, o el stock): afuera en una hoja con códigos.
+        if (mt_rand(0, 2) === 0) {
+            $fila = [1 => self::al_azar(self::SUBTOTALES_DE_GRUPO)];
+            if ($con_precio && mt_rand(0, 1) === 0) {
+                $fila[2] = round(mt_rand(10000, 9000000) / 7, 2);
+                $con_importe++;
+            } else {
+                $fila[3] = $stock;
+            }
+            $agregar($fila, false);
+
+            return;
+        }
         $palabras = implode(' ', array_slice(explode(' ', ucfirst(mb_strtolower($rubro))), 0, 2));
         $rotulo = self::al_azar(['Subtotal ' . $palabras, 'Subtotal: ' . $palabras, 'Sub Total ' . $palabras, 'SUBTOTAL ' . mb_strtoupper($palabras)]);
         $donde = mt_rand(0, 2); // 0 en Stock, 1 en «Obs» (sin mapear), 2 en las dos
@@ -391,7 +430,13 @@ class GeneradorDePlanillasDesordenadas
          * palabra de sección ni los dos puntos, un nombre solo es indistinguible de un cliente sin datos (la señal
          * débil la fijan los tests de forma, que controlan la proporción).
          */
-        $titulos = $con_datos >= 3 ? mt_rand(0, 4) : 0;
+        /*
+         * Quinta pasada: modos de lista. 'dispersos': clientes de solo nombre en negrita salteados entre los que tienen
+         * datos (el dueño marca así a los que no tienen teléfono): sin estructura de grupos, ENTRAN todos.
+         * 'total_arriba': el total sin nombre arriba de los datos y clientes de solo nombre al final: no abre el pie, entran.
+         */
+        $modo = $caso % 8 === 1 ? 'dispersos' : ($caso % 8 === 5 ? 'total_arriba' : 'normal');
+        $titulos = $con_datos >= 3 && $modo === 'normal' ? mt_rand(0, 4) : 0;
         $cada = (int) max(1, floor($cuantos / max(1, $titulos)));
         $repetir_cabecera_en = mt_rand(0, 3) === 0 ? mt_rand(1, $cuantos - 1) : -1;
         /*
@@ -408,26 +453,48 @@ class GeneradorDePlanillasDesordenadas
         $formato = [];
         $columna_en_negrita = false;
         $libres = range(0, $cuantos - 1);
-        $poner = function (string $que) use (&$sueltas_en, &$libres) {
-            $clave = mt_rand(0, count($libres) - 1);
-            $sueltas_en[$libres[$clave]] = $que;
-            array_splice($libres, $clave, 1);
+        $poner = function (string $que, bool $no_al_principio = false) use (&$sueltas_en, &$libres) {
+            $opciones = $no_al_principio ? array_values(array_filter($libres, function ($i) { return $i > 0; })) : $libres;
+            if ($opciones === []) {
+                return;
+            }
+            $elegida = $opciones[mt_rand(0, count($opciones) - 1)];
+            $sueltas_en[$elegida] = $que;
+            $libres = array_values(array_diff($libres, [$elegida]));
         };
-        if (!in_array('solo_nombre', $tipos, true) && $cuantos >= 5) {
+        $todos_con_datos = !in_array('solo_nombre', $tipos, true) && $cuantos >= 5;
+        if ($modo === 'dispersos' && $cuantos >= 5) {
+            for ($s = mt_rand(2, 8); $s > 0; $s--) {
+                $poner('negrita_dispersa', true);
+            }
+        } elseif ($todos_con_datos && $modo === 'normal') {
             $columna_en_negrita = mt_rand(0, 4) === 0;
             /*
-             * Cuarta pasada: sin tope de grupos (de 0 a 5), mientras los contactos con datos sean clara mayoría: al menos
-             * 2 por cada fila de solo nombre (los títulos con señal, los grupos y los contactos reales de solo nombre).
+             * Sin tope de grupos (de 0 a 5), con los contactos con datos en clara mayoría: al menos 2 por cada fila de
+             * solo nombre (los títulos con señal, los grupos y los contactos reales de solo nombre).
              */
             $cupo = max(0, intdiv($cuantos, LocalImportHelper::CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE) - $titulos);
             $sueltas = mt_rand(0, min(5, $cupo));
             $reales = mt_rand(0, min(2, $cupo - $sueltas));
+            $con_formato = !$columna_en_negrita && $sueltas > 0 && mt_rand(0, 3) > 0;
+            /*
+             * Quinta pasada (A2): los títulos en negrita van con ESTRUCTURA de grupos: si no hay un título de sección
+             * arriba, el primero encabeza la lista; cada uno va justo antes de un contacto con datos.
+             */
+            if ($con_formato && $titulos === 0) {
+                $sueltas_en[0] = 'formato';
+                $libres = array_values(array_diff($libres, [0]));
+                $sueltas--;
+            }
             for ($s = 0; $s < $reales; $s++) {
                 $poner('real');
             }
             for ($s = 0; $s < $sueltas; $s++) {
-                // Con la columna entera en negrita el formato no distingue: ahí solo van las del vocabulario.
-                $poner(!$columna_en_negrita && mt_rand(0, 1) === 0 ? 'formato' : 'suelta');
+                $poner($con_formato && mt_rand(0, 2) > 0 ? 'formato' : 'suelta');
+            }
+            // Clientes con una seña después de la coma o con un nombre largo en minúscula, entre los datos: entran.
+            if (mt_rand(0, 1) === 0 && $cupo - $sueltas - $reales > 0) {
+                $poner('sena', true);
             }
         } elseif ($cuantos >= 5 && mt_rand(0, 2) === 0) {
             $poner('real');
@@ -435,14 +502,14 @@ class GeneradorDePlanillasDesordenadas
         $total = 0;
         $notas_con_forma_de_oracion = 0;
         $totales_sin_nombre = 0;
+        $con_sena = 0;
+        $negritas_dispersas = 0;
+        $reales_al_final = 0;
+        if ($modo === 'total_arriba') {
+            $agregar([2 => 'TOTAL', 3 => mt_rand(10000, 900000)], false);
+            $totales_sin_nombre++;
+        }
         foreach ($tipos as $i => $tipo) {
-            if (isset($sueltas_en[$i]) && $sueltas_en[$i] === 'formato') {
-                $agregar([0 => self::al_azar(self::SUELTAS_CON_FORMATO)], false);
-                $formato[$numero] = true;
-            } elseif (isset($sueltas_en[$i])) {
-                $agregar([0 => $sueltas_en[$i] === 'suelta' ? self::al_azar(self::SUELTAS_SIN_SENAL)
-                    : self::al_azar(self::CONTACTOS_REALES_DE_SOLO_NOMBRE)], $sueltas_en[$i] === 'real');
-            }
             if ($titulos > 0 && $i % $cada === 0 && $i / $cada < $titulos) {
                 $agregar([0 => self::al_azar(self::TITULOS_DE_SECCION)], false);
             }
@@ -452,10 +519,27 @@ class GeneradorDePlanillasDesordenadas
             if (mt_rand(0, 8) === 0) {
                 $agregar([], null);
             }
-            // Una nota con forma de oración en el medio (A4): afuera, esté donde esté.
-            if ($con_datos >= 3 && mt_rand(0, 25) === 0) {
-                $agregar([0 => self::al_azar(self::NOTAS_CON_FORMA_DE_ORACION)], false);
+            // Una anotación en el medio (quinta pasada, A1): afuera por su palabra de anotación, no por su forma.
+            // (No en la primera fila: ahí la lista arranca con su título o con un contacto.)
+            if ($con_datos >= 3 && $i > 0 && mt_rand(0, 25) === 0) {
+                $agregar([0 => self::al_azar(self::NOTAS_DE_ANOTACION)], false);
                 $notas_con_forma_de_oracion++;
+            }
+            // Las sueltas y los contactos de solo nombre, justo antes del contacto (así un título en negrita encabeza su grupo).
+            $que = $sueltas_en[$i] ?? null;
+            if ($que === 'formato') {
+                $agregar([0 => self::al_azar(self::SUELTAS_CON_FORMATO)], false);
+                $formato[$numero] = true;
+            } elseif ($que === 'negrita_dispersa') {
+                $agregar([0 => self::al_azar(self::CONTACTOS_REALES_DE_SOLO_NOMBRE)], true);
+                $formato[$numero] = true;
+                $negritas_dispersas++;
+            } elseif ($que === 'sena') {
+                $agregar([0 => self::al_azar(self::CLIENTES_CON_SENA)], true);
+                $con_sena++;
+            } elseif ($que !== null) {
+                $agregar([0 => $que === 'suelta' ? self::al_azar(self::SUELTAS_SIN_SENAL)
+                    : self::al_azar(self::CONTACTOS_REALES_DE_SOLO_NOMBRE)], $que === 'real');
             }
             /*
              * EXCLUIDO: contactos de solo nombre escritos todo en mayúsculas con más de una palabra («FERRETERIA
@@ -482,7 +566,14 @@ class GeneradorDePlanillasDesordenadas
          * EXCLUIDO: notas al pie sin un total arriba: una fila de solo nombre al final, sin total, es un cliente sin
          * datos tanto como una nota.
          */
-        $con_total = mt_rand(0, 2) > 0;
+        $con_total = mt_rand(0, 2) > 0 && $modo !== 'total_arriba';
+        if ($modo === 'total_arriba') {
+            // Clientes de solo nombre al final, debajo del último con datos: el total de arriba no abre el pie.
+            for ($r = mt_rand(1, 2); $r > 0; $r--) {
+                $agregar([0 => self::al_azar(self::CONTACTOS_REALES_DE_SOLO_NOMBRE)], true);
+                $reales_al_final++;
+            }
+        }
         if ($con_total) {
             $rotulo = self::al_azar(['TOTAL', 'Total', 'Total: ' . $cuantos . ' clientes', 'Son ' . $cuantos . ' clientes', 'TOTAL GENERAL']);
             if (mt_rand(0, 3) === 0) {
@@ -508,6 +599,9 @@ class GeneradorDePlanillasDesordenadas
             'sueltas_con_formato' => count(array_keys($sueltas_en, 'formato', true)),
             'notas_con_forma_de_oracion' => $notas_con_forma_de_oracion,
             'totales_sin_nombre' => $totales_sin_nombre,
+            'con_sena' => $con_sena,
+            'negritas_dispersas' => $negritas_dispersas,
+            'reales_al_final' => $reales_al_final,
             'grupos' => count(array_keys($sueltas_en, 'suelta', true)) + count(array_keys($sueltas_en, 'formato', true)) + $titulos,
             // Fila => la celda del nombre en negrita: las sueltas con formato y, a veces, la columna entera.
             'formato' => $columna_en_negrita ? $formato + array_fill_keys($datos, true) : $formato,

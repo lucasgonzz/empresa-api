@@ -1000,4 +1000,74 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         $this->assertStringContainsString('Dejé afuera 3 filas que no son clientes: «ojo: este paga los viernes, no antes», «TOTAL» y «Fulana'
             . ' dejó plata de más, descontarle en la próxima compra». Si alguna era un cliente, decímelo y la cargo.', $this->avisos(211)->last()->texto);
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Quinta pasada: la red para lo dudoso, los saldos de comerciante y los repetidos
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_a5_los_que_entraron_solo_con_el_nombre_se_dicen(): void
+    {
+        $filas = [['Nombre', 'Telefono', 'Saldo']];
+        for ($i = 1; $i <= 6; $i++) {
+            $filas[] = ['Con datos SN ' . $i, '341100' . $i, 100 * $i];
+        }
+        foreach (['Gómez SN', 'Kiosco SN', 'Pirulo SN', 'Doña Rosa SN', 'Martín SN', 'Carla SN', 'Hugo SN'] as $nombre) {
+            $filas[] = [$nombre, null, null];
+        }
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla($filas), 220, 'sn.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+        $this->assertSame(13, $corrida->resultado['creados'], 'Sin señal, entran todos.');
+        $this->assertStringContainsString(' 7 quedaron solo con el nombre («Gómez SN», «Kiosco SN», «Pirulo SN», «Doña Rosa SN», «Martín SN» y'
+            . ' 2 más): si alguno no era un cliente, decímelo.', $this->avisos(220)->last()->texto);
+
+        // Uno solo, y los que traen saldo no cuentan.
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $otra = $this->iniciar_en_la_prueba('client', $this->planilla([['Nombre', 'Telefono', 'Saldo'], ['Con saldo SN', null, 500],
+            ['Sin nada SN', null, null], ['Con tel SN', '1', null]]), 221, 'uno.xlsx')->json('corrida.corrida_id');
+        $this->assertSame('terminada', $this->avanzar($otra)->estado);
+        $this->assertStringContainsString(' 1 quedó solo con el nombre («Sin nada SN»): si no era un cliente, decímelo.', $this->avisos(221)->last()->texto);
+    }
+
+    public function test_b2_los_saldos_escritos_como_los_escribe_un_comerciante_se_leen_en_la_prueba_y_un_activo_queda_igual(): void
+    {
+        $filas = [['Nombre', 'Telefono', 'Saldo'], ['Saldo A', '1', '$13500.-'], ['Saldo B', '2', '1.250,50 $'], ['Saldo C', '3', '1250 pesos'],
+            ['Saldo D', '4', 'USD 1.500']];
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla($filas), 222, 's.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        // La moneda extranjera sigue siendo ilegible: la carga no se hace y se dice cuál.
+        $this->assertSame('saldos_ilegibles', $corrida->motivo);
+        $this->assertSame(['Saldo D'], array_column($corrida->resumen['saldos_ilegibles'], 'nombre'));
+
+        array_pop($filas);
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla($filas), 223, 's2.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+        foreach (['Saldo A' => 13500, 'Saldo B' => 1250.5, 'Saldo C' => 1250] as $nombre => $saldo) {
+            $cliente = Client::where('user_id', $this->dueno->id)->where('name', $nombre)->firstOrFail();
+            $this->assertEqualsWithDelta($saldo, $this->saldo('client', $cliente->id), 0.001, $nombre);
+        }
+
+        // Un activo, como siempre: el lector de siempre (no se toca la regla de los negocios que pagan).
+        $this->apagar_la_prueba();
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $activo = $this->iniciar('client', $this->planilla([['Nombre', 'Telefono', 'Saldo'], ['Activo Saldo A', '1', '$13500.-']]), 224)
+            ->json('corrida.corrida_id');
+        $corrida = $this->avanzar($activo);
+        $this->assertSame('confirmacion', $corrida->estado);
+        $this->assertSame(['$13500.-'], array_column($corrida->resumen['saldos_ilegibles'], 'texto'));
+    }
+
+    public function test_b4_los_textos_repetidos_de_las_filas_afuera_se_agrupan(): void
+    {
+        $texto = new \ReflectionMethod(ImportacionDeSoporteService::class, 'texto_de_descartadas');
+        $texto->setAccessible(true);
+        $filas = [['fila' => 5, 'texto' => 'Subtotal', 'motivo' => 'total'], ['fila' => 9, 'texto' => 'Subtotal', 'motivo' => 'total'],
+            ['fila' => 14, 'texto' => 'Subtotal', 'motivo' => 'total'], ['fila' => 15, 'texto' => 'TOTAL GENERAL', 'motivo' => 'total']];
+        $this->assertSame(' Dejé afuera 4 filas que no son clientes: «Subtotal» (3 veces) y «TOTAL GENERAL».',
+            $texto->invoke(new ImportacionDeSoporteService(), ['filas_descartadas' => $filas, 'filas_descartadas_total' => 4], 'cliente', 'clientes'));
+    }
 }

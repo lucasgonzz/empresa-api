@@ -103,7 +103,9 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
         // Cuatro grupos con señal (vocabulario, preposición, negrita exclusiva y mayúsculas) y contactos reales de solo
         // nombre mezclados, en una lista de 12 con datos.
         $filas = array_merge([self::sola('clientes del centro')], self::con_datos(4), [self::sola('Gómez'), self::sola('Del barrio')],
-            self::con_datos(4, 'Medio'), [self::sola('Fiado'), self::sola('Kiosco'), self::sola('DEUDORES VARIOS')], self::con_datos(4, 'Fin'));
+            // Quinta pasada (A2): el título en negrita encabeza su grupo (seguido de un contacto con datos).
+            self::con_datos(4, 'Medio'), [self::sola('Kiosco'), self::sola('Fiado')], self::con_datos(2, 'Fiado'), [self::sola('DEUDORES VARIOS')],
+            self::con_datos(4, 'Fin'));
         $formato = [];
         foreach ($filas as $i => $fila) {
             if ($fila[0] === 'Fiado') {
@@ -260,5 +262,90 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
         $cortas = array_slice($filas, 0, 5);
         $cortas[1] = self::sola('Fiado');
         $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($cortas, self::COLUMNAS, 2, count($cortas), [2 => true]));
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Quinta pasada: ante la duda, entra
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_quinta_pasada_a1_los_clientes_con_sena_en_el_medio_entran_y_las_anotaciones_no(): void
+    {
+        foreach (['Pérez, el de la esquina', 'juan perez, el plomero de la vuelta', 'Don Pepe, sobrino de la vecina',
+            'Taller de chapa y pintura el rulo', 'la casa del tornillo y la herramienta'] as $nombre) {
+            $this->assertSame([], self::afuera(array_merge(self::con_datos(4), [self::sola($nombre)], self::con_datos(5, 'Otro'))), $nombre);
+        }
+        foreach (['ojo: este paga los viernes, no antes', 'Avisar a Marta que pasó el cheque', 'Precios sujetos a cambio',
+            'Nota: cobrar a fin de mes', '(ver con Hugo)', '* revisar saldos', 'Pendiente: llamar'] as $nota) {
+            $this->assertSame([$nota => 'nota'], self::afuera(array_merge(self::con_datos(4), [self::sola($nota)], self::con_datos(5, 'Otro'))), $nota);
+        }
+        // «Ver Pérez» o «Falta Gómez» con mayúscula después son nombres.
+        foreach (['Ver Pérez', 'Falta Gómez'] as $nombre) {
+            $this->assertSame([], self::afuera(array_merge(self::con_datos(4), [self::sola($nombre)], self::con_datos(5, 'Otro'))), $nombre);
+        }
+        // En la cabecera (arriba del primer contacto con datos) y en el pie, la forma de oración sí vale.
+        $nota = 'Fulana dejó plata de más, descontarle en la próxima compra';
+        $this->assertSame([$nota => 'nota'], self::afuera(array_merge([self::sola($nota)], self::con_datos(9))));
+        $this->assertSame([$nota => 'nota'], self::afuera(array_merge(self::con_datos(9), [self::sola($nota)])));
+    }
+
+    public function test_quinta_pasada_a2_la_negrita_sin_estructura_de_grupos_no_es_senal(): void
+    {
+        // 20 con datos y 8 de solo nombre en negrita, dispersos (el dueño marca así a los que no tienen teléfono).
+        $filas = [self::CABECERA];
+        $formato = [];
+        $datos = self::con_datos(20);
+        foreach ($datos as $i => $fila) {
+            $filas[] = $fila;
+            if ($i % 2 === 1 && $i < 17) {
+                $filas[] = self::sola('Cliente sin teléfono ' . chr(65 + $i));
+                $formato[count($filas)] = LocalImportHelper::FORMATO_NEGRITA;
+            }
+        }
+        $this->assertCount(8, $formato);
+        $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas), $formato));
+        // Ni seguidos, aunque arranque con uno: dos en negrita juntos rompen la estructura.
+        $filas = array_merge([self::CABECERA, self::sola('Fiado'), self::sola('Gómez')], self::con_datos(9));
+        $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas),
+            [2 => LocalImportHelper::FORMATO_NEGRITA, 3 => LocalImportHelper::FORMATO_NEGRITA]));
+        // Con estructura (cada título encabeza su grupo): afuera, aunque el texto no esté en el vocabulario.
+        $filas = array_merge([self::CABECERA, self::sola('Fiado')], self::con_datos(4), [self::sola('Constructoras')], self::con_datos(4, 'B'),
+            [self::sola('Los de siempre')], self::con_datos(4, 'C'));
+        $this->assertSame([2 => ['suelta', 'Fiado'], 7 => ['suelta', 'Constructoras'], 12 => ['suelta', 'Los de siempre']],
+            LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas),
+                [2 => LocalImportHelper::FORMATO_NEGRITA, 7 => LocalImportHelper::FORMATO_NEGRITA, 12 => LocalImportHelper::FORMATO_NEGRITA]));
+        // Más de MAXIMO_DE_GRUPOS_CON_FORMATO grupos: no es una lista con grupos, entran todos.
+        $filas = [self::CABECERA];
+        $formato = [];
+        for ($g = 1; $g <= LocalImportHelper::MAXIMO_DE_GRUPOS_CON_FORMATO + 1; $g++) {
+            $filas[] = self::sola('Grupito ' . chr(64 + $g));
+            $formato[count($filas)] = LocalImportHelper::FORMATO_NEGRITA;
+            foreach (self::con_datos(2, 'G' . $g) as $fila) {
+                $filas[] = $fila;
+            }
+        }
+        $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas), $formato));
+    }
+
+    public function test_quinta_pasada_a3_un_total_arriba_no_abre_el_pie(): void
+    {
+        foreach ([[null, null, 'TOTAL', 2100], ['TOTAL', null, null, 2100]] as $total) {
+            $filas = array_merge([self::CABECERA, $total], self::con_datos(9), [self::sola('Gómez'), self::sola('Kiosco')]);
+            $descartes = LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas));
+            $this->assertSame([2 => ['total', 'TOTAL']], $descartes, json_encode($total));
+        }
+        // Un subtotal en el medio tampoco: los de solo nombre de abajo entran.
+        $filas = array_merge([self::CABECERA], self::con_datos(4), [['Subtotal', null, null, 1000]], self::con_datos(5, 'B'), [self::sola('Gómez')]);
+        $this->assertSame([6 => ['total', 'Subtotal']], LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas)));
+        // Con el 80 % de los contactos arriba sí abre el pie.
+        $filas = array_merge([self::CABECERA], self::con_datos(9), [['TOTAL', null, null, 1000], self::sola('Pedro')]);
+        $this->assertSame([11 => ['total', 'TOTAL'], 12 => ['nota', 'Pedro']],
+            LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas)));
+    }
+
+    public function test_quinta_pasada_a4_sin_senal_varias_filas_de_solo_nombre_entran_todas(): void
+    {
+        $filas = array_merge([self::sola('Gómez')], self::con_datos(3), [self::sola('Kiosco'), self::sola('la esquina')], self::con_datos(3, 'B'),
+            [self::sola('Pirulo'), self::sola('Doña Rosa'), self::sola('Martín')], self::con_datos(3, 'C'));
+        $this->assertSame([], self::afuera($filas));
     }
 }

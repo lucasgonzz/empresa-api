@@ -205,6 +205,37 @@ class LocalImportHelper {
 	 */
 	const CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS = 5;
 
+	/*
+	 * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+	 * TABLA DE DECISIÓN — filas de una lista de clientes o proveedores de la PRUEBA (ronda 8, quinta pasada)
+	 * CRITERIO: una fila queda afuera solo con una señal de ALTA precisión. Ante la duda ENTRA, y el aviso lo dice
+	 * («N quedaron solo con el nombre…»). Todo lo que queda afuera sale nombrado. Fuera de la prueba no corre nada.
+	 * ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+	 *  Señal                         | Condición                                              | Afuera          | Entra
+	 * ───────────────────────────────┼────────────────────────────────────────────────────────┼─────────────────┼──────────────────
+	 *  Total / subtotal              | rótulo de total (es_rotulo_de_total) con el resto solo  | «TOTAL»,        | «Total Gas SRL»
+	 *                                | números, o sin nombre con el rótulo en otra columna     | «| | TOTAL | 900»| con su teléfono
+	 *  Título decorado               | «--- X ---», «*** X ***»                                | «--- MAYORISTAS ---»|
+	 *  Cabecera repetida             | dos o más celdas iguales a los títulos                  | «Cliente | CUIT» |
+	 *  Pie                           | debajo del total que tiene arriba el 80 % de los        | la nota de abajo| clientes debajo de
+	 *                                | contactos con datos (un total arriba no abre nada)      | del TOTAL final | un TOTAL de arriba
+	 *  Nota con forma de oración     | SOLO arriba del primer contacto con datos o debajo del  | «Fulana dejó    | «Pérez, el de la
+	 *                                | último (tiene_forma_de_oracion)                         | plata…» al pie  | esquina» en el medio
+	 *  Anotación (en cualquier lado) | PALABRAS_DE_ANOTACION + «:» o minúscula, o marcas       | «ojo: …»,       | «Ver Pérez»,
+	 *                                | («(…)», «*», «//», «->»)                                | «(ver con Hugo)»| «Falta Gómez»
+	 *  Señal fuerte (de siempre)     | termina en «:» o palabra de sección (≤3 palabras)       | «Zona norte:»   | «Zona Sur Materiales»
+	 *  Señal débil (de siempre)      | todo en mayúsculas en una lista que no escribe así      | «DEUDORES»      | «YPF»
+	 *  Grupo (solo nombre)           | ≥5 contactos con datos, 2 por cada fila de solo nombre, | «Mayoristas»,   | «Gómez», «Kiosco»,
+	 *   · vocabulario                | PALABRAS_DE_GRUPO + lo que sigue en minúscula (en lista | «Del barrio»,   | «Del Valle»,
+	 *   · preposición                | en minúscula: solo una palabra sola)                    | «Clientes del   | «de la torre» en
+	 *   · formato                    | negrita exclusiva o combinada de 3+ columnas, CON        | taller», «Fiado»| lista minúscula;
+	 *                                | estructura de grupos (formato_con_estructura)           | en negrita      | 8 en negrita
+	 *                                |                                                         | encabezando     | dispersos
+	 *  Sin ninguna de esas señales   | —                                                       | —               | entra, y si trae
+	 *                                |                                                         |                 | solo el nombre, se
+	 *                                |                                                         |                 | dice en el aviso
+	 * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+	 */
 	/**
 	 * Las filas de una lista de clientes o proveedores que no son contactos: número de fila => [motivo, texto]
 	 * (misión prueba-e2e-campana-imperio, E8.1 a E8.3). Es lo que usan ClientImport y ProviderImport en la prueba
@@ -224,13 +255,14 @@ class LocalImportHelper {
 		// combinada). Lo arma quien puede leer el archivo con estilos; vacío (ClientImport, CSV) = sin señal, como hasta hoy.
 		$contexto = self::contexto_de_contactos($rows, $columns, $start_row, $finish_row, $formato);
 		$descartes = [];
-		$despues_del_total = false;
 		$numero = 0;
 		foreach ($rows as $row) {
 			$numero++;
 			if ($numero < (int) $start_row || $numero > (int) $finish_row) {
 				continue;
 			}
+			// Quinta pasada (A3): el pie lo abre solo el total que tiene arriba la mayoría de los contactos con datos.
+			$despues_del_total = !is_null($contexto['pie']) && $numero > (int) $contexto['pie'];
 			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, $contexto, $numero, $despues_del_total);
 			// El total sin nombre (el rótulo en otra columna): se nombra entre las que quedan afuera y abre el pie (A4, A5).
 			if (is_null($motivo) && isset($contexto['con_datos'])) {
@@ -238,7 +270,6 @@ class LocalImportHelper {
 				$motivo = is_null($rotulo) ? null : ['total', $rotulo];
 			}
 			if (!is_null($motivo)) {
-				$despues_del_total = $despues_del_total || $motivo[0] === 'total';
 				$descartes[$numero] = $motivo;
 			}
 		}
@@ -247,22 +278,24 @@ class LocalImportHelper {
 	}
 
 	/**
-	 * Lo que hay que saber de la lista ENTERA antes de juzgar fila por fila (E8.2, rehecho en E8.3).
+	 * Lo que hay que saber de la lista ENTERA antes de juzgar fila por fila (E8.2, rehecho en E8.3 y en la ronda 8).
 	 *
 	 *  - `con_datos`: cuántos contactos traen algún dato además del nombre (teléfono, CUIT, dirección, saldo…).
-	 *  - `sin_senal`: cuántas filas traen SOLO el nombre y no tienen ninguna señal de título. Del denominador salen
-	 *    todos los candidatos a no-dato: los totales, la cabecera repetida, las notas al pie y las filas de solo
-	 *    nombre con señal de título (E8.3: en E8.2 contaban, y con dos títulos y una nota la proporción no daba y
-	 *    los títulos entraban como clientes; el mismo error que E8.1 corrigió en las hojas de artículos).
-	 *  - `nombres_en_mayusculas`: más de 1 de cada 4 contactos con datos se escribe todo en mayúsculas (ahí las
-	 *    mayúsculas no distinguen un título).
+	 *  - `sin_senal`: cuántas filas traen SOLO el nombre y no tienen ninguna señal de título (para la señal débil).
+	 *  - `solo_nombre`: las filas de solo nombre antes del pie (para la clara mayoría de los grupos).
+	 *  - `nombres_en_mayusculas` / `nombres_en_minuscula`: cómo escribe la lista los nombres de sus contactos.
 	 *  - `cabecera`: los títulos de la fila anterior a la de inicio, por columna mapeada, ya comparables.
 	 *  - `ultima_con_datos`: la última fila con algún dato además del nombre (el total incluido).
+	 *  - `primer_contacto_con_datos` / `ultimo_contacto_con_datos`: dónde empiezan y terminan los contactos con datos.
+	 *  - `pie`: la fila del total que abre el pie, o null. Quinta pasada (A3): un total abre el pie solo si tiene arriba
+	 *    al menos el 80 % de los contactos con datos; un total arriba o un subtotal en el medio no abren nada.
+	 *  - `formato`: el formato de la celda del nombre, o [] si no es señal (quinta pasada, A2: ver formato_con_estructura()).
 	 *
 	 * @param  \Illuminate\Support\Collection|array $rows
 	 * @param  array                                $columns
 	 * @param  int                                  $start_row
 	 * @param  int                                  $finish_row
+	 * @param  array                                $formato
 	 * @return array
 	 */
 	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row, array $formato = []) {
@@ -273,8 +306,11 @@ class LocalImportHelper {
 		$con_datos = 0;
 		$mayusculas = 0;
 		$ultima_con_datos = 0;
-		$primer_total = null;
+		$totales = [];
+		$filas_con_datos = [];
 		$sin_senal = [];
+		// La secuencia de la zona de datos, para la estructura de los grupos con formato: [número, tipo, nombre].
+		$secuencia = [];
 		$numero = 0;
 		foreach ($rows as $row) {
 			$numero++;
@@ -295,49 +331,182 @@ class LocalImportHelper {
 			}
 			$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
 			if (is_null($nombre) || $nombre === '') {
-				if (is_null($primer_total) && !is_null(self::total_sin_nombre($row, $columns))) {
-					$primer_total = $numero;
+				if (!is_null(self::total_sin_nombre($row, $columns))) {
+					$totales[] = $numero;
+					$secuencia[] = [$numero, 'otro', null];
+				} else {
+					$secuencia[] = [$numero, $otros ? 'otro' : 'vacia', null];
 				}
 				continue;
 			}
 			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, ['cabecera' => $cabecera]);
 			if (!is_null($motivo)) {
-				$primer_total = is_null($primer_total) && $motivo[0] === 'total' ? $numero : $primer_total;
+				if ($motivo[0] === 'total') {
+					$totales[] = $numero;
+				}
+				$secuencia[] = [$numero, 'titulo', $nombre];
 				continue;
 			}
 			if ($otros) {
 				$con_datos++;
+				$filas_con_datos[] = $numero;
 				$con_datos_en_negrita += ((int) ($formato[$numero] ?? 0) & self::FORMATO_NEGRITA) !== 0 ? 1 : 0;
 				$con_datos_en_minuscula += preg_match('/^\p{Lu}/u', trim($nombre)) === 1 ? 0 : 1;
 				$mayusculas += self::en_mayusculas($nombre) ? 1 : 0;
-			} elseif (!self::tiene_forma_de_oracion($nombre)) {
-				// Las notas con forma de oración no cuentan: quedan afuera por su forma.
-				$solo_nombre[] = $numero;
-				if (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
-					$sin_senal[] = $numero;
+				$secuencia[] = [$numero, 'dato', $nombre];
+			} else {
+				$secuencia[] = [$numero, 'solo_nombre', $nombre];
+				// Las notas (forma de oración o anotación) no cuentan para la mayoría: quedan afuera por lo que son.
+				if (!self::tiene_forma_de_oracion($nombre) && !self::es_anotacion($nombre)) {
+					$solo_nombre[] = $numero;
+					if (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
+						$sin_senal[] = $numero;
+					}
 				}
 			}
 		}
-		// Las notas al pie (solo nombre, después del total y debajo de la última fila con datos) tampoco cuentan.
-		$antes_del_pie = function ($fila) use ($primer_total, $ultima_con_datos) {
-			return is_null($primer_total) || $fila < $primer_total || $fila <= $ultima_con_datos;
+		// El total que abre el pie: el primero con el 80 % de los contactos con datos arriba (en una lista sin contactos
+		// con datos, el 80 % de las filas con nombre).
+		$pie = null;
+		if ($con_datos > 0) {
+			foreach ($totales as $total) {
+				$arriba = count(array_filter($filas_con_datos, function ($fila) use ($total) {
+					return $fila < $total;
+				}));
+				if ($arriba * 5 >= $con_datos * 4) {
+					$pie = $total;
+					break;
+				}
+			}
+		} elseif ($totales !== []) {
+			// Sin contactos con datos no hay con qué medir: el último total abre el pie si tiene más filas con nombre
+			// arriba que abajo (las de abajo pueden ser notas).
+			$ultimo = (int) end($totales);
+			$arriba = count(array_filter($solo_nombre, function ($fila) use ($ultimo) { return $fila < $ultimo; }));
+			$abajo = count($solo_nombre) - $arriba;
+			$pie = $arriba > $abajo ? $ultimo : null;
+		}
+		$ultimo_contacto = $filas_con_datos === [] ? 0 : (int) end($filas_con_datos);
+		// Las notas al pie (solo nombre, después del total del pie y debajo del último contacto con datos) no cuentan.
+		$antes_del_pie = function ($fila) use ($pie, $ultima_con_datos) {
+			return is_null($pie) || $fila < $pie || $fila <= $ultima_con_datos;
 		};
 		$sin_senal = array_filter($sin_senal, $antes_del_pie);
 		$solo_nombre = array_filter($solo_nombre, $antes_del_pie);
+		$nombres_en_minuscula = $con_datos > 0 && $con_datos_en_minuscula * 2 > $con_datos;
 
 		return [
-			'con_datos'             => $con_datos,
-			'sin_senal'             => count($sin_senal),
-			'nombres_en_mayusculas' => $mayusculas * 4 > $con_datos,
-			'cabecera'              => $cabecera,
-			'ultima_con_datos'      => $ultima_con_datos,
-			// Cuarta pasada: las filas de solo nombre antes del pie (para la clara mayoría), si algún contacto con datos está
-			// en negrita (entonces la negrita no distingue) y si la lista escribe sus nombres en minúscula.
-			'solo_nombre'           => count($solo_nombre),
-			'formato'               => $formato,
-			'con_datos_en_negrita'  => $con_datos_en_negrita,
-			'nombres_en_minuscula'  => $con_datos > 0 && $con_datos_en_minuscula * 2 > $con_datos,
+			'con_datos'                 => $con_datos,
+			'sin_senal'                 => count($sin_senal),
+			'nombres_en_mayusculas'     => $mayusculas * 4 > $con_datos,
+			'cabecera'                  => $cabecera,
+			'ultima_con_datos'          => $ultima_con_datos,
+			'primer_contacto_con_datos' => $filas_con_datos === [] ? 0 : (int) $filas_con_datos[0],
+			'ultimo_contacto_con_datos' => $ultimo_contacto,
+			'pie'                       => $pie,
+			'solo_nombre'               => count($solo_nombre),
+			'formato'                   => self::formato_con_estructura($formato, $secuencia, $con_datos, $con_datos_en_negrita, $nombres_en_minuscula),
+			'con_datos_en_negrita'      => $con_datos_en_negrita,
+			'nombres_en_minuscula'      => $nombres_en_minuscula,
 		];
+	}
+
+	/** Grupos con formato como mucho, y contactos con datos por grupo como mínimo (quinta pasada, A2). */
+	const MAXIMO_DE_GRUPOS_CON_FORMATO = 8;
+	const CONTACTOS_CON_DATOS_POR_GRUPO_CON_FORMATO = 2;
+
+	/**
+	 * El formato es señal de un título de grupo solo si la lista tiene ESTRUCTURA de grupos (quinta pasada, A2): el
+	 * dueño que pone en negrita a los clientes sin teléfono, dispersos, no está armando grupos.
+	 *  (a) la lista arranca con un título: la primera fila de la zona de datos es una de solo nombre con formato o con
+	 *      otra señal de título;
+	 *  (b) cada fila de solo nombre con formato está seguida (salteando las vacías) por un contacto con datos, así que
+	 *      no hay dos seguidas;
+	 *  (c) son pocas: MAXIMO_DE_GRUPOS_CON_FORMATO como mucho, con CONTACTOS_CON_DATOS_POR_GRUPO_CON_FORMATO contactos con
+	 *      datos por cada una, en promedio.
+	 * La negrita cuenta solo si ningún contacto con datos está en negrita; la combinada ancha, siempre. Sin estructura,
+	 * devuelve [] y ninguna fila sale por su formato.
+	 *
+	 * @return array  número de fila => bits de formato que valen como señal
+	 */
+	private static function formato_con_estructura(array $formato, array $secuencia, $con_datos, $con_datos_en_negrita, $nombres_en_minuscula) {
+		$senal = function ($numero) use ($formato, $con_datos_en_negrita) {
+			$bits = (int) ($formato[$numero] ?? 0);
+
+			return ($bits & self::FORMATO_COMBINADA_ANCHA) !== 0 || (($bits & self::FORMATO_NEGRITA) !== 0 && $con_datos_en_negrita === 0);
+		};
+		$con_formato = [];
+		foreach ($secuencia as $posicion => $item) {
+			if ($item[1] === 'solo_nombre' && $senal($item[0])) {
+				$con_formato[$posicion] = $item[0];
+			}
+		}
+		if ($con_formato === [] || count($con_formato) > self::MAXIMO_DE_GRUPOS_CON_FORMATO
+			|| $con_datos < count($con_formato) * self::CONTACTOS_CON_DATOS_POR_GRUPO_CON_FORMATO) {
+			return [];
+		}
+		// (a) La primera fila con algo de la zona de datos es un título.
+		$primera = null;
+		foreach ($secuencia as $posicion => $item) {
+			if ($item[1] !== 'vacia') {
+				$primera = $posicion;
+				break;
+			}
+		}
+		$es_titulo = !is_null($primera) && (isset($con_formato[$primera]) || $secuencia[$primera][1] === 'titulo'
+			|| ($secuencia[$primera][1] === 'solo_nombre' && !self::nunca_es_titulo($secuencia[$primera][2])
+				&& (self::senal_fuerte_de_titulo($secuencia[$primera][2])
+					|| (!self::parece_un_nombre_propio($secuencia[$primera][2]) && self::senal_de_grupo($secuencia[$primera][2], $nombres_en_minuscula)))));
+		if (!$es_titulo) {
+			return [];
+		}
+		// (b) Cada una seguida por un contacto con datos.
+		foreach (array_keys($con_formato) as $posicion) {
+			$siguiente = null;
+			for ($i = $posicion + 1; $i < count($secuencia); $i++) {
+				if ($secuencia[$i][1] !== 'vacia') {
+					$siguiente = $secuencia[$i][1];
+					break;
+				}
+			}
+			if ($siguiente !== 'dato') {
+				return [];
+			}
+		}
+
+		return array_intersect_key($formato, array_flip(array_values($con_formato)));
+	}
+
+	/** Palabras con las que empieza una anotación en el medio de una lista (quinta pasada, A1). */
+	const PALABRAS_DE_ANOTACION = ['ojo', 'nota', 'notas', 'obs', 'observacion', 'observaciones', 'atencion', 'importante',
+		'recordar', 'ver', 'llamar', 'falta', 'faltan', 'actualizado', 'actualizada', 'precios', 'pendiente', 'pendientes',
+		'revisar', 'avisar', 'consultar', 'aclaracion'];
+
+	/**
+	 * ¿La fila de solo nombre es una anotación? (quinta pasada, A1: la que vale en el MEDIO de la lista)
+	 *  - empieza con una de PALABRAS_DE_ANOTACION seguida de «:» o de más texto que empieza en minúscula («ojo: este
+	 *    paga los viernes», «Avisar a Marta que…», «Precios sujetos a cambio»); o
+	 *  - tiene marcas claras de anotación: va toda entre paréntesis, o empieza con «*», «//», «->», «>>» o «NB».
+	 * «Ver Pérez» o «Falta Gómez» (con mayúscula después) son nombres.
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	static function es_anotacion($nombre) {
+		$texto = trim((string) $nombre);
+		if (preg_match('/^\(.*\)$/u', $texto) === 1 || preg_match('/^(?:\*|\/\/|->|>>|nb\b)/iu', $texto) === 1) {
+			return true;
+		}
+		$palabras = preg_split('/\s+/u', $texto);
+		$primera = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable(rtrim($palabras[0], ':'));
+		if (!in_array($primera, self::PALABRAS_DE_ANOTACION, true)) {
+			return false;
+		}
+		if (substr($palabras[0], -1) === ':' || preg_match('/^\S+\s*:/u', $texto) === 1) {
+			return true;
+		}
+
+		return count($palabras) >= 2 && preg_match('/^\p{Ll}/u', $palabras[1]) === 1;
 	}
 
 	/**
@@ -403,9 +572,15 @@ class LocalImportHelper {
 		if ($despues_del_total && (int) $numero > (int) $contexto['ultima_con_datos']) {
 			return ['nota', $nombre];
 		}
-		// Una nota con forma de oración, esté donde esté (cuarta pasada, A4).
-		if ($contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL && self::tiene_forma_de_oracion($nombre)) {
-			return ['nota', $nombre];
+		// Quinta pasada (A1): la forma de oración vale solo en la cabecera (arriba del primer contacto con datos) y en el pie
+		// (debajo del último); en el medio, solo una anotación clara («ojo: …», «Avisar a…»). «Pérez, el de la esquina»
+		// entre clientes es un cliente.
+		if ($contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL) {
+			$afuera_de_los_datos = (int) $numero < (int) $contexto['primer_contacto_con_datos']
+				|| (int) $numero > (int) $contexto['ultimo_contacto_con_datos'];
+			if (($afuera_de_los_datos && self::tiene_forma_de_oracion($nombre)) || self::es_anotacion($nombre)) {
+				return ['nota', $nombre];
+			}
 		}
 		if (count(preg_split('/\s+/u', trim($nombre))) > 5) {
 			return null;

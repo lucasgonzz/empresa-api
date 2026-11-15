@@ -144,6 +144,8 @@ class PlanillaDePrueba
     private $precio_agregado_ejemplo = [];
     // Filas sin el código del dueño en una hoja que lo trae como SKU (B1): [índice => ['cantidad' => n, 'nombres' => [...]]].
     private $sin_codigo = [];
+    // Importes que no se pudieron leer (quinta pasada, B2): [índice => ['total' => n, 'ejemplos' => [[nombre, campo, valor]]]].
+    private $importes_ilegibles = [];
     // Propiedad del importador de la columna de stock de cada sucursal => [id, nombre] (ver `stock_junto_a_la_sucursal`).
     private $stock_por_sucursal = [];
     // Solo en la prueba: la sucursal donde va el stock «junto» (una sola cantidad), o null. Ver `sucursal_del_stock_junto`.
@@ -468,7 +470,7 @@ class PlanillaDePrueba
         $titulos = [];
         foreach ($hojas as $hoja) {
             foreach ((array) ($hoja['columnas'] ?? []) as $posicion => $columna) {
-                if (!empty($columna['sin_destino'])) {
+                if (!empty($columna['sin_destino']) && empty($columna['previa'])) {
                     continue;
                 }
                 $por_respuesta = isset($hoja['indice']) && ($decisiones[self::clave_columna($hoja, (int) $posicion)] ?? null) === self::CAMPO_IGNORAR;
@@ -502,7 +504,9 @@ class PlanillaDePrueba
         $sin_lugar = [];
         foreach ($hojas as $hoja) {
             foreach ((array) ($hoja['columnas'] ?? []) as $columna) {
-                if (!empty($columna['sin_destino'])) {
+                // Quinta pasada (B4): la que soporte mandó a no cargar con el mapeo previo se dice en
+                // texto_de_columnas_que_no_se_cargan() («…, como me dijiste»), una sola vez.
+                if (!empty($columna['sin_destino']) && empty($columna['previa'])) {
                     $titulo = '«' . mb_substr(trim((string) ($columna['titulo'] ?? '')), 0, 40) . '»';
                     $es_nota = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios)$/',
                         self::titulo_comparable($columna['titulo'] ?? '')) === 1;
@@ -594,6 +598,48 @@ class PlanillaDePrueba
     {
         return preg_match('/^(?:nombres?|detalles?|descripcion(?:es)?|articulos?|productos?|items?|denominacion(?:es)?|conceptos?|mercaderias?)'
             . '(?: (?:de |del )?(?:articulo|producto|item)s?)?$/', self::titulo_comparable($titulo)) === 1;
+    }
+
+    /**
+     * Un importe escrito como lo escribe un comerciante, o null si no se puede leer (quinta pasada, B2). Saca los
+     * adornos de alrededor y lee el número con el lector de siempre (ImportHelper::parseNumericValue, que decide miles
+     * y decimales: «1.250» = 1250, «1250.5» = 1250,5, «1.250,50» y «1,250.50» = 1250,5):
+     *  - la moneda adelante o atrás: «$», «ARS», «pesos», «peso» («$ 1.250», «1.250,50 $», «ARS 1250», «1250 pesos»);
+     *  - el cierre de un importe redondo: «.-», «,-», «.—», «-», «—» («$13500.-», «1250,-», «13500.—», «$ 13.500 .-»);
+     *  - «c/u» al final («$1250 c/u»).
+     * Con $solo_pesos (un saldo), una moneda extranjera (USD, U$S, US$) no se lee: no se carga en pesos.
+     *
+     * @param  mixed $valor
+     * @param  bool  $solo_pesos
+     * @return float|null
+     */
+    public static function importe_de_comerciante($valor, bool $solo_pesos = false): ?float
+    {
+        if (is_int($valor) || is_float($valor)) {
+            return (float) $valor;
+        }
+        if (!is_string($valor)) {
+            return null;
+        }
+        $texto = trim((string) preg_replace('/[\x{00A0}\x{202F}]/u', ' ', $valor));
+        if ($texto === '' || ($solo_pesos && preg_match('/USD|U\$S|US\$/i', $texto) === 1)) {
+            return null;
+        }
+        $texto = (string) preg_replace('/\s*c\/u\.?$/iu', '', $texto);
+        $texto = (string) preg_replace('/^(?:ars|\$|pesos?)\s*/iu', '', $texto);
+        $texto = (string) preg_replace('/\s*(?:ars|\$|pesos?)$/iu', '', $texto);
+        // El cierre de un importe redondo, con o sin espacio antes («13.500 .-»).
+        $texto = trim((string) preg_replace('/\s*[.,]?\s*[-\x{2014}\x{2013}]+$/u', '', $texto));
+        if ($texto === '' || preg_match('/^[+-]?[\d.,\s]+$/u', $texto) !== 1) {
+            return null;
+        }
+        try {
+            $numero = ImportHelper::parseNumericValue($texto);
+        } catch (InvalidArgumentException $e) {
+            return null;
+        }
+
+        return $numero === null ? null : (float) $numero;
     }
 
     public static function titulo_comparable($titulo): string
@@ -1628,7 +1674,14 @@ class PlanillaDePrueba
         foreach ($hojas as $hoja) {
             ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
             // Si los artículos traen código, dónde empieza el pie: una pasada sobre la hoja entera (ver resumir_la_hoja()).
-            $resumen = $descarta ? self::resumir_la_hoja($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']), $hoja['mapeo']) : [];
+            // El stock de una sucursal también es una cantidad (para la señal aritmética de los totales, B1 y B3).
+            $de_cantidad = [];
+            foreach ($hoja['mapeo'] as $campo => $posicion) {
+                if (isset($this->stock_por_sucursal[$campo])) {
+                    $de_cantidad[] = (int) $posicion;
+                }
+            }
+            $resumen = $descarta ? self::resumir_la_hoja($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']), $hoja['mapeo'], $de_cantidad) : [];
             // Los títulos de la cabecera, por posición: una fila que los repite no es un artículo.
             $titulos = $descarta ? self::titulos_de_la_cabecera($hoja) : [];
             $recorrido = $descarta ? $this->filas_crudas_marcadas($ruta, $hoja['indice'], $hoja['inicio'])
@@ -1657,12 +1710,17 @@ class PlanillaDePrueba
                     $this->anotar_salteada((int) $hoja['indice'], $motivo, $fila, $hoja['mapeo']);
                     continue;
                 }
+                // Quinta pasada, B2: los importes como los escribe un comerciante («$13500.-», «1250 pesos») se leen; el que
+                // de verdad no se puede leer no se carga en silencio: queda vacío y se dice en el resumen con su valor.
+                if ($descarta) {
+                    $datos = $this->importes_legibles((int) $hoja['indice'], $datos);
+                }
                 // La ganancia que contestó el dueño, como si la planilla trajera la columna del margen.
                 if (isset($hoja['margen_respondido'])) {
                     $datos[self::CLAVE_MARGEN] = $hoja['margen_respondido'];
                 }
                 // Una fila con costo y sin ganancia ni precio, en una hoja que sí trae esas columnas.
-                if ($descarta && self::fila_sin_ganancia($datos, $hoja['mapeo'])) {
+                if ($descarta && empty($datos['__importe_ilegible']) && self::fila_sin_ganancia($datos, $hoja['mapeo'])) {
                     if (isset($hoja['precio_para_vacia'])) {
                         // El precio de venta que dijo el dueño para el único artículo que no lo traía (ronda 8, D2).
                         $datos['precio'] = $hoja['precio_para_vacia'];
@@ -1835,6 +1893,7 @@ class PlanillaDePrueba
         $this->margen_agregado_ejemplo = [];
         $this->precio_agregado_ejemplo = [];
         $this->sin_codigo = [];
+        $this->importes_ilegibles = [];
         // Las hojas que traen el código del dueño como SKU (B1): ahí una fila sin código se busca por su nombre.
         $con_sku = [];
         foreach ($hojas as $hoja) {
@@ -1879,7 +1938,47 @@ class PlanillaDePrueba
             'precio_agregado' => $this->precio_agregado, 'sin_ganancia_ejemplo' => $this->sin_ganancia_ejemplo,
             'margen_agregado_ejemplo' => $this->margen_agregado_ejemplo, 'precio_agregado_ejemplo' => $this->precio_agregado_ejemplo,
             'sin_codigo' => $this->sin_codigo,
+            'importes_ilegibles' => $this->importes_ilegibles,
         ];
+    }
+
+    /** Cuántos importes ilegibles se guardan por hoja para nombrarlos en el resumen (quinta pasada, B2). */
+    public const IMPORTES_ILEGIBLES_NOMBRADOS = 5;
+
+    /**
+     * Los importes de la fila (precio, costo y el precio final de cada lista), leídos con importe_de_comerciante():
+     * el que viene con adornos («$13500.-») queda como su número; el que no se puede leer queda vacío y se anota.
+     *
+     * @param  int   $indice
+     * @param  array $datos  campo => valor
+     * @return array
+     */
+    private function importes_legibles(int $indice, array $datos): array
+    {
+        foreach ($datos as $campo => $valor) {
+            if (!in_array($campo, ['precio', 'costo'], true) && strpos((string) $campo, '$_final_') !== 0) {
+                continue;
+            }
+            if (is_null($valor) || trim((string) $valor) === '' || self::importe($valor) !== null) {
+                continue;
+            }
+            $numero = self::importe_de_comerciante($valor);
+            if ($numero !== null) {
+                $datos[$campo] = (string) $numero;
+                continue;
+            }
+            $datos[$campo] = '';
+            $cual = $campo === 'costo' ? 'costo' : 'precio';
+            // El artículo queda sin ese importe y se dice en el resumen; no cuenta como «sin ganancia» (sí lo traía).
+            $datos['__importe_ilegible'] = true;
+            $this->importes_ilegibles[$indice]['total_' . $cual] = ($this->importes_ilegibles[$indice]['total_' . $cual] ?? 0) + 1;
+            if (count($this->importes_ilegibles[$indice]['ejemplos'] ?? []) < self::IMPORTES_ILEGIBLES_NOMBRADOS) {
+                $this->importes_ilegibles[$indice]['ejemplos'][] = ['nombre' => mb_substr(trim((string) ($datos['nombre'] ?? '')), 0, 60),
+                    'campo' => $campo === 'costo' ? 'costo' : 'precio', 'valor' => mb_substr(trim((string) $valor), 0, 30)];
+            }
+        }
+
+        return $datos;
     }
 
     /** Cuántos nombres de artículos sin código se guardan para el resumen (B1). */
@@ -2130,25 +2229,77 @@ class PlanillaDePrueba
      * ¿Algún número de la fila (fuera del rótulo) es la suma de su columna en las filas de arriba, o la de cantidad ×
      * importe? Con tolerancia de centavos por fila sumada (redondeos de la planilla). Hacen falta dos filas o más.
      */
-    private static function cierra_con_una_suma(array $con_dato, int $rotulo, array $sumas, array $productos, int $filas_sumadas): bool
+    /** Tolerancia de la señal aritmética, en pesos (quinta pasada, B3: fija, de centavos). */
+    private const TOLERANCIA_DE_LA_SUMA = 0.02;
+
+    /** Filas sumadas arriba, como mínimo, para creerle a la suma (quinta pasada, B3). */
+    private const FILAS_PARA_LA_SUMA = 3;
+
+    /**
+     * ¿La fila cierra con la suma de lo de arriba? Quinta pasada (B3), endurecida:
+     *  - cada número de la fila se compara SOLO con la suma de SU columna (o, en una columna de importe, con la de
+     *    cantidad × ese importe), con TOLERANCIA_DE_LA_SUMA;
+     *  - hace falta al menos un importe (costo, precio o precio final) que cierre: el stock solo nunca alcanza;
+     *  - todo número de la fila tiene que cerrar: un precio o un stock propios dicen que es un artículo («Total Quartz
+     *    10W40 | 7000 | 12» con «Aceite A | 5» y «Aceite B | 7» arriba entra);
+     *  - al menos FILAS_PARA_LA_SUMA filas sumadas.
+     * La posición la mira después en_posicion_de_total().
+     */
+    private static function cierra_con_una_suma(array $con_dato, int $rotulo, array $de_importe, array $sumas, array $productos, int $filas_sumadas): bool
     {
-        if ($filas_sumadas < 2) {
+        if ($filas_sumadas < self::FILAS_PARA_LA_SUMA) {
             return false;
         }
-        $tolerancia = max(0.01, 0.005 * $filas_sumadas);
+        $algun_importe = false;
         foreach ($con_dato as $posicion => $valor) {
-            $numero = $posicion === $rotulo ? null : self::importe($valor);
-            if ($numero === null || abs($numero) < 0.005) {
+            if ($posicion === $rotulo) {
                 continue;
             }
-            foreach (array_merge(array_values($sumas), array_values($productos)) as $suma) {
-                if (abs($numero - $suma) <= $tolerancia) {
-                    return true;
+            $numero = self::importe($valor);
+            if ($numero === null) {
+                return false;
+            }
+            $cierra = (isset($sumas[$posicion]) && abs($numero - $sumas[$posicion]) <= self::TOLERANCIA_DE_LA_SUMA)
+                || (isset($de_importe[$posicion], $productos[$posicion]) && abs($numero - $productos[$posicion]) <= self::TOLERANCIA_DE_LA_SUMA);
+            if (!$cierra) {
+                return false;
+            }
+            $algun_importe = $algun_importe || isset($de_importe[$posicion]);
+        }
+
+        return $algun_importe;
+    }
+
+    /**
+     * Los totales por suma que están en posición de total (quinta pasada, B3): al pie de la hoja o al final de un grupo,
+     * es decir seguidos de una fila vacía, de una fila que no es un artículo (un título, una nota, otro total) o de
+     * ningún artículo más.
+     *
+     * @param  array $candidatos  número de fila => true
+     * @param  array $secuencia   [[número, 'dato'|'otro'|'vacia'], ...]
+     * @return array
+     */
+    private static function en_posicion_de_total(array $candidatos, array $secuencia): array
+    {
+        $validos = [];
+        foreach ($secuencia as $posicion => $item) {
+            if (!isset($candidatos[$item[0]])) {
+                continue;
+            }
+            $siguiente = $secuencia[$posicion + 1][1] ?? null;
+            $hay_datos_despues = false;
+            for ($i = $posicion + 1; $i < count($secuencia); $i++) {
+                if ($secuencia[$i][1] === 'dato') {
+                    $hay_datos_despues = true;
+                    break;
                 }
+            }
+            if ($siguiente === null || $siguiente !== 'dato' || !$hay_datos_despues) {
+                $validos[$item[0]] = true;
             }
         }
 
-        return false;
+        return $validos;
     }
 
     public static function es_rotulo_de_total(string $texto): bool
@@ -2197,7 +2348,7 @@ class PlanillaDePrueba
      * @param  array    $mapeo
      * @return array{con_codigos: bool, ultima_con_codigo: int|null, pie_por_total: int|null, ultimo_total: int|null}
      */
-    public static function resumir_la_hoja(iterable $filas, array $mapeo): array
+    public static function resumir_la_hoja(iterable $filas, array $mapeo, ?array $columnas_de_cantidad = null): array
     {
         $de_codigo = self::columnas_de_codigo($mapeo);
         $de_importe = self::columnas_de_importe($mapeo);
@@ -2219,8 +2370,12 @@ class PlanillaDePrueba
         // Cuarta pasada, B1 (ii): la señal aritmética. Sumas de cada columna numérica y de cantidad × importe en las filas
         // de arriba; un rótulo que empieza con palabra de total y trae una de esas sumas es un total, diga lo que diga.
         $de_cantidad = [];
+        foreach ((array) $columnas_de_cantidad as $posicion) {
+            $de_cantidad[(int) $posicion] = true;
+        }
         foreach ($mapeo as $campo => $posicion) {
-            if ($campo === 'stock_actual') {
+            // El stock, también el de una sucursal (en la prueba el stock «junto» pasa a la sucursal: address_N_amount).
+            if ($campo === 'stock_actual' || preg_match('/^address_\d+_amount$/', (string) $campo) === 1) {
                 $de_cantidad[(int) $posicion] = true;
             }
         }
@@ -2228,22 +2383,33 @@ class PlanillaDePrueba
         $productos = [];
         $filas_sumadas = 0;
         $totales_por_suma = [];
+        // La secuencia de la hoja (quinta pasada, B3): un total por suma tiene que estar en posición de total.
+        $secuencia = [];
         foreach ($filas as $numero => $fila) {
             $con_dato = self::celdas_con_dato($fila);
             if ($con_dato === []) {
+                $secuencia[] = [(int) $numero, 'vacia'];
                 continue;
             }
             $rotulo = self::posicion_del_rotulo($con_dato, $del_nombre, $de_codigo);
             $con_palabra_de_total = $rotulo !== null && self::empieza_con_palabra_de_total($con_dato[$rotulo]);
             if ($con_palabra_de_total && !self::trae_un_codigo($con_dato, $de_codigo)
-                && self::cierra_con_una_suma($con_dato, $rotulo, $sumas, $productos, $filas_sumadas)) {
+                && self::cierra_con_una_suma($con_dato, $rotulo, $de_importe, $sumas, $productos, $filas_sumadas)) {
                 $totales_por_suma[(int) $numero] = true;
             }
-            if (!$con_palabra_de_total) {
+            // A la suma va todo lo que no es un total: un artículo que se llama «Total Quartz 10W40», con su precio y su
+            // stock, también; un rótulo de total o una fila con la palabra de total y un solo número, no.
+            $parece_un_total = ($rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo])) || isset($totales_por_suma[(int) $numero])
+                || ($con_palabra_de_total && count($con_dato) <= 2);
+            if (!$parece_un_total) {
                 self::sumar_la_fila($con_dato, $de_importe, $de_cantidad, $sumas, $productos);
                 $filas_sumadas++;
             }
-            $es_total = ($rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo])) || isset($totales_por_suma[(int) $numero]);
+            $es_un_dato = !$parece_un_total && (self::trae_un_codigo($con_dato, $de_codigo)
+                || ($del_nombre !== null && isset($con_dato[$del_nombre]) && array_intersect_key($con_dato, $otras_mapeadas) !== []));
+            $secuencia[] = [(int) $numero, $es_un_dato ? 'dato' : 'otro'];
+            // Una fila con la palabra de total y un solo número tampoco es un artículo para contar la hoja (B1).
+            $es_total = $parece_un_total;
             if ($es_total) {
                 $ultimo_total = (int) $numero;
             } elseif ($del_nombre !== null && isset($con_dato[$del_nombre]) && array_intersect_key($con_dato, $otras_mapeadas) !== []) {
@@ -2273,7 +2439,7 @@ class PlanillaDePrueba
             'ultima_con_codigo' => $ultima_con_codigo,
             'pie_por_total' => $primer_total_de_la_tanda,
             'ultimo_total' => $ultimo_total,
-            'totales_por_suma' => $totales_por_suma,
+            'totales_por_suma' => self::en_posicion_de_total($totales_por_suma, $secuencia),
             // Lo armó resumir_la_hoja() sobre la hoja entera (no un test de una fila suelta: ver motivo_para_saltear()).
             'hoja_entera' => true,
         ];
@@ -2548,6 +2714,25 @@ class PlanillaDePrueba
         return self::motivo_de_la_fila($fila, $mapeo, $resumen, 1, $titulos);
     }
 
+    /*
+     * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+     * TABLA DE DECISIÓN — totales de una hoja de artículos de la PRUEBA (ronda 8, quinta pasada)
+     * CRITERIO: afuera solo con señal de alta precisión; ante la duda, el artículo entra.
+     * ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+     *  Señal                          | Condición                                             | Afuera                  | Entra
+     * ────────────────────────────────┼───────────────────────────────────────────────────────┼─────────────────────────┼──────────────
+     *  Rótulo de total (de siempre)    | es_rotulo_de_total y la regla de su lugar (pie,        | «TOTAL», «Subtotal       | «Total Flex»
+     *                                  | subtotal del medio sin importe)                        | plomería | | 39»         | con precio
+     *  Total sin código en hoja con    | sin código; empieza con total/totales/subtotal/«sub    | «Subtotal ferretería |   | «Total Gas 10 kg»
+     *  códigos (B1 i)                  | total»/«suma de|total»; sin números en el rótulo; UN    | 7800» (costo, precio o  | con código; «Suma
+     *                                  | solo número al lado, en cualquier columna               | stock), «TOTAL MERCADERIA| dental x 12»
+     *                                  |                                                        | (al costo) | 99»        |
+     *  Suma de lo de arriba (B1 ii,    | palabra de total y sin código; cada número cierra con   | «Total valorizado | 15700»| «Total Quartz 10W40
+     *  cualquier hoja, B3)             | la suma de SU columna o cantidad × ese importe (±0,02); | al pie, o al final de un | | 7000 | 15»;
+     *                                  | al menos un importe; ≥3 filas sumadas; al pie o al      | grupo (fila vacía abajo)| sin la suma; el
+     *                                  | final de un grupo                                       |                         | stock solo
+     * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+     */
     /**
      * La regla de verdad (ver motivo_para_saltear()), con el resumen de la hoja entera (resumir_la_hoja()). La usan
      * filas() y motivos_de_la_hoja().
@@ -2577,13 +2762,18 @@ class PlanillaDePrueba
         // costo)»). «Total Gas 10 kg» con código y «Suma dental x 12» (un producto) entran.
         // Solo lo que las reglas de siempre no reconocen (un rótulo corto sigue con su regla: subtotal, total o artículo).
         $rotulo_largo = self::posicion_del_rotulo($con_dato, $columna_del_nombre, $columnas_de_codigo);
-        $es_total_largo = $rotulo_largo !== null && !self::es_rotulo_de_total($con_dato[$rotulo_largo])
+        // Quinta pasada (B1): también el rótulo corto («Subtotal ferretería») con el número en la columna del costo o del
+        // precio, que es_fila_de_total() rechaza; lo que la regla de siempre ya reconoce sigue por su camino.
+        $ya_reconocido = $rotulo_largo !== null && self::es_rotulo_de_total($con_dato[$rotulo_largo])
+            && self::es_fila_de_total($con_dato, $columna_del_nombre, $columnas_de_codigo, $columnas_de_importe) !== null;
+        $es_total_largo = $rotulo_largo !== null && !$ya_reconocido
             && self::empieza_con_palabra_de_total($con_dato[$rotulo_largo])
             && (isset($resumen['totales_por_suma'][$numero])
                 || ($hoja_con_codigos && !self::trae_un_codigo($con_dato, $columnas_de_codigo)
                     && preg_match('/\d/', $con_dato[$rotulo_largo]) !== 1
                     && preg_match('/^(?:sub ?total(?:es)?|total(?:es)?|sumas? (?:de|total))(?: |$)/', self::titulo_comparable($con_dato[$rotulo_largo])) === 1
-                    && self::al_lado_solo_numeros($con_dato, $rotulo_largo)));
+                    // Un solo número al lado (el valorizado o la suma): con precio y stock es un artículo («Total Flex»).
+                    && count($con_dato) === 2 && self::al_lado_solo_numeros($con_dato, $rotulo_largo)));
         if ($es_total_largo) {
             return preg_match('/^sub ?total/', self::titulo_comparable($con_dato[$rotulo_largo])) === 1
                 && $numero < (int) ($resumen['ultimo_total'] ?? 0) ? self::FILA_SUBTOTAL : self::FILA_TOTAL;

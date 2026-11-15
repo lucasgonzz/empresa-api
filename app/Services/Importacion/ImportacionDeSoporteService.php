@@ -1204,6 +1204,7 @@ class ImportacionDeSoporteService
         }
 
         return $texto . $this->texto_de_totales($resumen, $proveedores) . $this->texto_de_no_cargados($resultado, $resumen)
+            . $this->texto_de_solo_con_el_nombre($resumen, $singular)
             . $this->texto_de_descartadas($resumen, $singular, $plural) . ' Si algo no coincide con tu lista, decímelo y lo deshago.';
     }
 
@@ -1258,6 +1259,25 @@ class ImportacionDeSoporteService
             . ' ya tenían movimientos: en el sistema siguen con ' . $this->plata($resumen['saldo_no_cargado_en_el_sistema'] ?? 0) . '.';
     }
 
+    /**
+     * La red para lo dudoso (quinta pasada, A5): los que se cargaron con SOLO el nombre. « 3 quedaron solo con el nombre
+     * («A», «B», «C»): si alguno no era un cliente, decímelo.» Hasta 5 nombrados, después «y K más».
+     */
+    private function texto_de_solo_con_el_nombre(array $resumen, string $singular): string
+    {
+        $total = (int) ($resumen['solo_con_el_nombre_total'] ?? 0);
+        if ($total === 0) {
+            return '';
+        }
+        $nombres = array_map(function ($nombre) {
+            return '«' . PlanillaDePrueba::recortar_para_el_resumen((string) $nombre) . '»';
+        }, array_slice((array) ($resumen['solo_con_el_nombre'] ?? []), 0, 5));
+        $lista = implode(', ', $nombres) . ($total > count($nombres) ? ' y ' . ($total - count($nombres)) . ' más' : '');
+
+        return $total === 1 ? ' 1 quedó solo con el nombre (' . $lista . '): si no era un ' . $singular . ', decímelo.'
+            : ' ' . $total . ' quedaron solo con el nombre (' . $lista . '): si alguno no era un ' . $singular . ', decímelo.';
+    }
+
     /** Cuántas filas descartadas se nombran en el aviso (B2): hasta este número, todas; con más, «y K más». */
     const DESCARTADAS_NOMBRADAS = 10;
 
@@ -1271,15 +1291,22 @@ class ImportacionDeSoporteService
         if ($total === 0) {
             return '';
         }
-        $filas = array_slice((array) ($resumen['filas_descartadas'] ?? []), 0, self::DESCARTADAS_NOMBRADAS);
-        $nombres = [];
+        // Quinta pasada (B4): el mismo texto repetido («Subtotal» tres veces) se nombra una vez, con cuántas fueron.
+        $agrupadas = [];
         $solo_totales = true;
-        foreach ($filas as $fila) {
-            // Cuarta pasada, B3: entero hasta PlanillaDePrueba::LARGO_DE_UN_TEXTO_DEL_RESUMEN; si no, con «…».
-            $nombres[] = '«' . PlanillaDePrueba::recortar_para_el_resumen((string) ($fila['texto'] ?? '')) . '»';
+        foreach ((array) ($resumen['filas_descartadas'] ?? []) as $fila) {
+            $texto = PlanillaDePrueba::recortar_para_el_resumen((string) ($fila['texto'] ?? ''));
+            $agrupadas[$texto] = ($agrupadas[$texto] ?? 0) + 1;
             $solo_totales = $solo_totales && ($fila['motivo'] ?? '') === 'total';
         }
-        $resto = $total - count($nombres);
+        $nombres = [];
+        $nombradas = 0;
+        foreach (array_slice($agrupadas, 0, self::DESCARTADAS_NOMBRADAS, true) as $texto => $veces) {
+            // Cuarta pasada, B3: entero hasta PlanillaDePrueba::LARGO_DE_UN_TEXTO_DEL_RESUMEN; si no, con «…».
+            $nombres[] = '«' . $texto . '»' . ($veces > 1 ? ' (' . $veces . ' veces)' : '');
+            $nombradas += $veces;
+        }
+        $resto = $total - $nombradas;
         if ($resto > 0) {
             $lista = implode(', ', $nombres) . ' y ' . $resto . ' más';
         } elseif (count($nombres) > 1) {
