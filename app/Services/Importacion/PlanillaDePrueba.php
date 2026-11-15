@@ -146,6 +146,8 @@ class PlanillaDePrueba
     private $sin_codigo = [];
     // Importes que no se pudieron leer (quinta pasada, B2): [índice => ['total' => n, 'ejemplos' => [[nombre, campo, valor]]]].
     private $importes_ilegibles = [];
+    // Filas que empiezan con palabra de total, sin código ni precio, que se cargan como artículo (sexta pasada, 7).
+    private $parecen_totales = [];
     // Propiedad del importador de la columna de stock de cada sucursal => [id, nombre] (ver `stock_junto_a_la_sucursal`).
     private $stock_por_sucursal = [];
     // Solo en la prueba: la sucursal donde va el stock «junto» (una sola cantidad), o null. Ver `sucursal_del_stock_junto`.
@@ -467,30 +469,40 @@ class PlanillaDePrueba
      */
     public static function texto_de_columnas_que_no_se_cargan(array $hojas, array $decisiones): string
     {
-        $titulos = [];
+        /*
+         * Sexta pasada (5): «como me dijiste» SOLO si el dueño contestó una pregunta sobre esa columna. La que mandó a no
+         * cargar el mapeo previo de soporte va neutra (el dueño no dijo nada); si además no tiene destino, la dice
+         * texto_de_columnas_sin_destino().
+         */
+        $por_respuesta = [];
+        $por_previa = [];
         foreach ($hojas as $hoja) {
             foreach ((array) ($hoja['columnas'] ?? []) as $posicion => $columna) {
-                if (!empty($columna['sin_destino']) && empty($columna['previa'])) {
-                    continue;
-                }
-                $por_respuesta = isset($hoja['indice']) && ($decisiones[self::clave_columna($hoja, (int) $posicion)] ?? null) === self::CAMPO_IGNORAR;
-                $por_previa = !empty($columna['previa']) && ($columna['campo'] ?? null) === null;
-                if (!$por_respuesta && !$por_previa) {
-                    continue;
-                }
                 $titulo = trim((string) ($columna['titulo'] ?? ''));
-                $titulos[] = $titulo !== '' ? '«' . mb_substr($titulo, 0, 40) . '»'
+                $titulo = $titulo !== '' ? '«' . mb_substr($titulo, 0, 40) . '»'
                     : 'sin título (la ' . Coordinate::stringFromColumnIndex((int) $posicion + 1) . ')';
+                if (isset($hoja['indice']) && ($decisiones[self::clave_columna($hoja, (int) $posicion)] ?? null) === self::CAMPO_IGNORAR) {
+                    $por_respuesta[] = $titulo;
+                } elseif (!empty($columna['previa']) && ($columna['campo'] ?? null) === null && empty($columna['sin_destino'])) {
+                    $por_previa[] = $titulo;
+                }
             }
         }
-        $titulos = array_values(array_unique($titulos));
-        if ($titulos === []) {
-            return '';
-        }
-        $ultima = array_pop($titulos);
+        $lista = function (array $titulos) {
+            $titulos = array_values(array_unique($titulos));
+            $ultima = array_pop($titulos);
 
-        return ($titulos === [] ? ' No cargué la columna ' . $ultima : ' No cargué las columnas ' . implode(', ', $titulos) . ' y ' . $ultima)
-            . ', como me dijiste.';
+            return ($titulos === [] ? ' No cargué la columna ' . $ultima : ' No cargué las columnas ' . implode(', ', $titulos) . ' y ' . $ultima);
+        };
+        $texto = '';
+        if ($por_respuesta !== []) {
+            $texto .= $lista($por_respuesta) . ', como me dijiste.';
+        }
+        if ($por_previa !== []) {
+            $texto .= $lista($por_previa) . (count(array_unique($por_previa)) === 1 ? '. Si era otra cosa, decímelo.' : '. Si alguna era otra cosa, decímelo.');
+        }
+
+        return $texto;
     }
 
     public static function texto_de_columnas_sin_destino(array $hojas): string
@@ -504,9 +516,8 @@ class PlanillaDePrueba
         $sin_lugar = [];
         foreach ($hojas as $hoja) {
             foreach ((array) ($hoja['columnas'] ?? []) as $columna) {
-                // Quinta pasada (B4): la que soporte mandó a no cargar con el mapeo previo se dice en
-                // texto_de_columnas_que_no_se_cargan() («…, como me dijiste»), una sola vez.
-                if (!empty($columna['sin_destino']) && empty($columna['previa'])) {
+                // Las que no tienen destino, también si las mandó a no cargar el mapeo previo (sexta pasada, 5).
+                if (!empty($columna['sin_destino'])) {
                     $titulo = '«' . mb_substr(trim((string) ($columna['titulo'] ?? '')), 0, 40) . '»';
                     $es_nota = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios)$/',
                         self::titulo_comparable($columna['titulo'] ?? '')) === 1;
@@ -605,7 +616,8 @@ class PlanillaDePrueba
      * adornos de alrededor y lee el número con el lector de siempre (ImportHelper::parseNumericValue, que decide miles
      * y decimales: «1.250» = 1250, «1250.5» = 1250,5, «1.250,50» y «1,250.50» = 1250,5):
      *  - la moneda adelante o atrás: «$», «ARS», «pesos», «peso» («$ 1.250», «1.250,50 $», «ARS 1250», «1250 pesos»);
-     *  - el cierre de un importe redondo: «.-», «,-», «.—», «-», «—» («$13500.-», «1250,-», «13500.—», «$ 13.500 .-»);
+     *  - el cierre de un importe redondo, con el punto o la coma pegados: «.-», «,-», «.—» («$13500.-», «1250,-»,
+     *    «13500.—», «$ 13.500 .-»). Un «-» suelto al final («1500-») NO: es un negativo y no se lee (sexta pasada);
      *  - «c/u» al final («$1250 c/u»).
      * Con $solo_pesos (un saldo), una moneda extranjera (USD, U$S, US$) no se lee: no se carga en pesos.
      *
@@ -628,8 +640,10 @@ class PlanillaDePrueba
         $texto = (string) preg_replace('/\s*c\/u\.?$/iu', '', $texto);
         $texto = (string) preg_replace('/^(?:ars|\$|pesos?)\s*/iu', '', $texto);
         $texto = (string) preg_replace('/\s*(?:ars|\$|pesos?)$/iu', '', $texto);
-        // El cierre de un importe redondo, con o sin espacio antes («13.500 .-»).
-        $texto = trim((string) preg_replace('/\s*[.,]?\s*[-\x{2014}\x{2013}]+$/u', '', $texto));
+        // El cierre de un importe redondo, SOLO con el punto o la coma pegados al guion («13500.-», «1.500,-», «13.500 .-»).
+        // Sexta pasada (plata): un «-» o una raya sueltos al final («1500-», «1.500 -») son el menos de un negativo como lo
+        // exportan muchos sistemas: no se adivina el signo, queda ilegible.
+        $texto = trim((string) preg_replace('/\s*[.,][-\x{2014}\x{2013}]+$/u', '', $texto));
         if ($texto === '' || preg_match('/^[+-]?[\d.,\s]+$/u', $texto) !== 1) {
             return null;
         }
@@ -1894,6 +1908,7 @@ class PlanillaDePrueba
         $this->precio_agregado_ejemplo = [];
         $this->sin_codigo = [];
         $this->importes_ilegibles = [];
+        $this->parecen_totales = [];
         // Las hojas que traen el código del dueño como SKU (B1): ahí una fila sin código se busca por su nombre.
         $con_sku = [];
         foreach ($hojas as $hoja) {
@@ -1915,6 +1930,19 @@ class PlanillaDePrueba
                 }
                 $datos[self::SEPARAR_CODIGO] = isset($coincidencias['separar'][$clave]) ? '1' : '';
                 $indice = (string) strstr((string) $clave, ':', true);
+                // Sexta pasada (7): empieza con palabra de total, sin código y sin precio de venta, y se carga: se dice.
+                if (!$this->run->modo_soporte && self::empieza_con_palabra_de_total((string) ($datos['nombre'] ?? ''))
+                    && trim((string) ($datos['precio'] ?? '')) === ''
+                    && array_filter(['sku', 'codigo_de_proveedor', 'codigo_de_barras', 'numero'], function ($campo) use ($datos) {
+                        return trim((string) ($datos[$campo] ?? '')) !== '';
+                    }) === []) {
+                    $parece = $this->parecen_totales[$indice] ?? ['cantidad' => 0, 'nombres' => []];
+                    $parece['cantidad']++;
+                    if (count($parece['nombres']) < 3) {
+                        $parece['nombres'][] = self::recortar_para_el_resumen((string) $datos['nombre']);
+                    }
+                    $this->parecen_totales[$indice] = $parece;
+                }
                 if (!empty($con_sku[$indice]) && trim((string) ($datos['sku'] ?? '')) === '') {
                     $sin = $this->sin_codigo[$indice] ?? ['cantidad' => 0, 'nombres' => []];
                     $sin['cantidad']++;
@@ -1939,6 +1967,7 @@ class PlanillaDePrueba
             'margen_agregado_ejemplo' => $this->margen_agregado_ejemplo, 'precio_agregado_ejemplo' => $this->precio_agregado_ejemplo,
             'sin_codigo' => $this->sin_codigo,
             'importes_ilegibles' => $this->importes_ilegibles,
+            'parecen_totales' => $this->parecen_totales,
         ];
     }
 
@@ -2383,6 +2412,7 @@ class PlanillaDePrueba
         $productos = [];
         $filas_sumadas = 0;
         $totales_por_suma = [];
+        $titulos_de_los_totales = [];
         // La secuencia de la hoja (quinta pasada, B3): un total por suma tiene que estar en posición de total.
         $secuencia = [];
         foreach ($filas as $numero => $fila) {
@@ -2393,6 +2423,12 @@ class PlanillaDePrueba
             }
             $rotulo = self::posicion_del_rotulo($con_dato, $del_nombre, $de_codigo);
             $con_palabra_de_total = $rotulo !== null && self::empieza_con_palabra_de_total($con_dato[$rotulo]);
+            if ($con_palabra_de_total) {
+                $titulo = \App\Http\Controllers\Helpers\LocalImportHelper::titulo_del_total($con_dato[$rotulo]);
+                if ($titulo !== '') {
+                    $titulos_de_los_totales[$titulo] = true;
+                }
+            }
             if ($con_palabra_de_total && !self::trae_un_codigo($con_dato, $de_codigo)
                 && self::cierra_con_una_suma($con_dato, $rotulo, $de_importe, $sumas, $productos, $filas_sumadas)) {
                 $totales_por_suma[(int) $numero] = true;
@@ -2440,6 +2476,7 @@ class PlanillaDePrueba
             'pie_por_total' => $primer_total_de_la_tanda,
             'ultimo_total' => $ultimo_total,
             'totales_por_suma' => self::en_posicion_de_total($totales_por_suma, $secuencia),
+            'titulos_de_los_totales' => $titulos_de_los_totales,
             // Lo armó resumir_la_hoja() sobre la hoja entera (no un test de una fila suelta: ver motivo_para_saltear()).
             'hoja_entera' => true,
         ];
@@ -2716,8 +2753,9 @@ class PlanillaDePrueba
 
     /*
      * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
-     * TABLA DE DECISIÓN — totales de una hoja de artículos de la PRUEBA (ronda 8, quinta pasada)
-     * CRITERIO: afuera solo con señal de alta precisión; ante la duda, el artículo entra.
+     * TABLA DE DECISIÓN — totales de una hoja de artículos de la PRUEBA (ronda 8, sexta pasada)
+     * CRITERIO: afuera solo con señal de alta precisión; ante la duda, el artículo entra y se dice: la fila que empieza con
+     * palabra de total, sin código ni precio, que se cargó, sale en el resumen («1 fila que parece un total…»).
      * ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
      *  Señal                          | Condición                                             | Afuera                  | Entra
      * ────────────────────────────────┼───────────────────────────────────────────────────────┼─────────────────────────┼──────────────
@@ -2731,6 +2769,10 @@ class PlanillaDePrueba
      *  cualquier hoja, B3)             | la suma de SU columna o cantidad × ese importe (±0,02); | al pie, o al final de un | | 7000 | 15»;
      *                                  | al menos un importe; ≥3 filas sumadas; al pie o al      | grupo (fila vacía abajo)| sin la suma; el
      *                                  | final de un grupo                                       |                         | stock solo
+     *  Total sin nombre al pie (sexta)  | un solo texto de varias palabras con «total» adentro,   | «Valor total del stock   | «TOTAL LISTA» en el
+     *                                  | el resto números, al pie                                | al costo | | 5500»       | medio de la hoja
+     *  Título repetido en su subtotal   | una sola celda en el nombre igual a lo que sigue a la   | «Látex interior» ↔       | «Esmaltes» sin su
+     *  (sexta)                         | palabra de total en otra fila                           | «Subtotal látex interior»| subtotal
      * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
      */
     /**
@@ -2777,6 +2819,27 @@ class PlanillaDePrueba
         if ($es_total_largo) {
             return preg_match('/^sub ?total/', self::titulo_comparable($con_dato[$rotulo_largo])) === 1
                 && $numero < (int) ($resumen['ultimo_total'] ?? 0) ? self::FILA_SUBTOTAL : self::FILA_TOTAL;
+        }
+        // Sexta pasada (6): sin nombre, UN texto que no es un código (varias palabras) con la palabra total adentro y el resto
+        // números: el total con el rótulo en la columna del código («Valor total del stock al costo | | 12.345»). Afuera y nombrado.
+        // Solo al pie (desde el total del pie o debajo del último código): en el medio no es el total.
+        $al_pie = (isset($resumen['pie_por_total']) && $numero >= (int) $resumen['pie_por_total'])
+            || $numero > (int) ($resumen['ultima_con_codigo'] ?? PHP_INT_MAX);
+        if ($al_pie && $columna_del_nombre !== null && !isset($con_dato[$columna_del_nombre])) {
+            $textos = array_filter($con_dato, function ($valor) {
+                return self::importe($valor) === null;
+            });
+            $texto = count($textos) === 1 ? (string) reset($textos) : '';
+            if ($texto !== '' && count(preg_split('/\s+/u', trim($texto))) >= 2
+                && preg_match('/(?:^| )(?:sub ?total(?:es)?|total(?:es)?)(?: |$)/', self::titulo_comparable($texto)) === 1) {
+                return self::FILA_TOTAL;
+            }
+        }
+        // Sexta pasada (4): el título de un grupo que se repite en el rótulo de su subtotal («Látex interior» ↔ «Subtotal
+        // látex interior»): una sola celda de texto en la columna del nombre.
+        if (count($con_dato) === 1 && $columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])
+            && isset($resumen['titulos_de_los_totales'][self::titulo_comparable($con_dato[$columna_del_nombre])])) {
+            return self::FILA_TITULO;
         }
 
         // EL PIE (E8.3, E8.4). Lo que viene desde el total del pie (notas, firmas, fechas) y, en una hoja con códigos,

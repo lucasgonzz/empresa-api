@@ -850,9 +850,67 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
             4 => ['titulo' => 'Ubic.', 'campo' => null, 'segura' => true, 'sin_destino' => true],
             5 => ['titulo' => 'Final', 'campo' => null, 'segura' => true, 'previa' => true],
         ]]];
-        $this->assertSame(' No cargué la columna «Ubic.»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+        // Sexta pasada (5; cambió a propósito): por mapeo previo, neutra; «como me dijiste» solo si el dueño contestó.
+        $this->assertSame(' No cargué la columna «Obs.». No cargué la columna «Ubic.»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
             PlanillaDePrueba::texto_de_columnas_sin_destino($hojas));
-        $this->assertSame(' No cargué las columnas «Obs.» y «Final», como me dijiste.', PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, []));
+        $this->assertSame(' No cargué la columna «Final». Si era otra cosa, decímelo.', PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, []));
+        $this->assertSame(' No cargué la columna «Final», como me dijiste.',
+            PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, ['columna_0_5' => PlanillaDePrueba::CAMPO_IGNORAR]));
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Sexta pasada
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_sexta_pasada_el_menos_atras_no_se_adivina_y_el_cierre_redondo_si_se_lee(): void
+    {
+        foreach (['1500-', '1.500-', '0-', '1500 -', '1500—', '8.500 -'] as $texto) {
+            $this->assertNull(PlanillaDePrueba::importe_de_comerciante($texto), $texto);
+            $this->assertNull(PlanillaDePrueba::importe_de_comerciante($texto, true), $texto . ' (saldo)');
+        }
+        foreach (['1500.-' => 1500.0, '1.500,-' => 1500.0, '-1.500.-' => -1500.0, '$ -8.500' => -8500.0, '8.600.-' => 8600.0,
+            '13.500 .-' => 13500.0] as $texto => $esperado) {
+            $this->assertEqualsWithDelta($esperado, PlanillaDePrueba::importe_de_comerciante($texto), 0.001, $texto);
+            $this->assertEqualsWithDelta($esperado, PlanillaDePrueba::importe_de_comerciante($texto, true), 0.001, $texto . ' (saldo)');
+        }
+    }
+
+    public function test_sexta_pasada_el_total_con_el_rotulo_en_la_columna_del_codigo_se_nombra(): void
+    {
+        $this->analizador($this->mapeo_con_precio());
+        $filas = [['Código', 'Descripción', 'Costo', 'Precio de venta']];
+        for ($i = 1; $i <= 10; $i++) {
+            $filas[] = ['MPK-' . $i, 'Artículo MPK ' . $i, 100 * $i, 150 * $i];
+        }
+        $filas[] = ['Valor total del stock al costo', null, 5500, null];
+        $uuid = $this->subir($this->planilla($filas), 350)->assertStatus(202)->json('analysis_uuid');
+        Bus::fake();
+        $run = $this->avanzar($uuid);
+        $this->assertSame('importando', $run->estado);
+        $this->assertSame(['Valor total del stock al costo'], $run->hojas[0]['filas_salteadas']['textos_total'] ?? null);
+        $this->assertStringContainsString('“Valor total del stock al costo”', PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
+    }
+
+    public function test_sexta_pasada_la_fila_que_parece_un_total_y_se_cargo_se_dice(): void
+    {
+        $this->analizador(['Producto' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97], 'Stock' => ['stock_actual', 0.97]]);
+        $uuid = $this->subir($this->planilla([['Producto', 'Precio de venta', 'Stock'], ['Pala MPU', 1500, 3], ['Rastrillo MPU', 900, 4],
+            ['Azada MPU', 1200, 2], ['TOTAL UNIDADES EN EL DEPOSITO', null, 9]]), 351)->assertStatus(202)->json('analysis_uuid');
+        $run = $this->importar_sin_preguntas($uuid);
+        $this->assertSame(1, $run->hojas[0]['parecen_totales']['cantidad']);
+        $this->assertStringContainsString(' 1 fila que parece un total quedó cargada como artículo («TOTAL UNIDADES EN EL DEPOSITO»): si no era un'
+            . ' producto, decímelo.', $this->resumen($run, 4));
+        // Un artículo con su precio que se llama como un total no se dice.
+        $this->assertSame('', ImportacionDePruebaService::texto_de_los_que_parecen_totales([['indice' => 0]]));
+    }
+
+    public function test_sexta_pasada_el_titulo_que_se_repite_en_su_subtotal_queda_afuera(): void
+    {
+        $sin = ['nombre' => 0, 'precio' => 1, 'stock_actual' => 2];
+        $filas = [2 => ['Látex interior', null, null], 3 => ['Látex blanco 4 L', 15000, 3], 4 => ['Látex blanco 20 L', 60000, 1],
+            5 => ['Subtotal látex interior', null, 4], 6 => ['Esmaltes', null, null], 7 => ['Esmalte rojo 1 L', 9000, 2]];
+        $this->assertSame([2 => PlanillaDePrueba::FILA_TITULO], PlanillaDePrueba::motivos_de_la_hoja($filas, $sin),
+            '«Esmaltes» no tiene subtotal: en una hoja sin códigos entra como siempre (E8).');
     }
 }
 

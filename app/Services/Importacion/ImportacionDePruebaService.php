@@ -177,7 +177,11 @@ class ImportacionDePruebaService
         foreach ($hojas as &$hoja) {
             unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado'],
                 $hoja['filas_con_precio_agregado'], $hoja['sin_ganancia_ejemplo'], $hoja['margen_agregado_ejemplo'],
-                $hoja['precio_agregado_ejemplo'], $hoja['filas_sin_codigo'], $hoja['sin_codigo_ejemplos'], $hoja['importes_ilegibles']);
+                $hoja['precio_agregado_ejemplo'], $hoja['filas_sin_codigo'], $hoja['sin_codigo_ejemplos'], $hoja['importes_ilegibles'],
+                $hoja['parecen_totales']);
+            if (!empty($plan['parecen_totales'][$hoja['indice']])) {
+                $hoja['parecen_totales'] = $plan['parecen_totales'][$hoja['indice']];
+            }
             if (!empty($plan['importes_ilegibles'][$hoja['indice']])) {
                 $hoja['importes_ilegibles'] = $plan['importes_ilegibles'][$hoja['indice']];
             }
@@ -602,7 +606,7 @@ class ImportacionDePruebaService
                 . ($quedo === '' ? '' : ' (por ejemplo, «' . mb_substr(trim((string) $ejemplo['nombre']), 0, 60) . '» quedó en ' . $quedo . ')')
                 . '. Cuando me digas a cuánto los vendés te muestro dónde ponerlo.';
         }
-        $texto .= self::texto_de_importes_ilegibles($hojas);
+        $texto .= self::texto_de_importes_ilegibles($hojas) . self::texto_de_los_que_parecen_totales($hojas);
 
         // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.
         return $texto . PlanillaDePrueba::texto_de_filas_salteadas($hojas)
@@ -777,6 +781,31 @@ class ImportacionDePruebaService
         }
 
         return $texto;
+    }
+
+    /**
+     * Las filas que empiezan con palabra de total, sin código ni precio, que se cargaron como artículo (sexta pasada, 7):
+     * « 1 fila que parece un total quedó cargada como artículo («TOTAL UNIDADES EN EL DEPOSITO»): si no era un producto,
+     * decímelo.» Vacío si no hubo.
+     */
+    public static function texto_de_los_que_parecen_totales(array $hojas): string
+    {
+        $total = 0;
+        $nombres = [];
+        foreach ($hojas as $hoja) {
+            $total += (int) (($hoja['parecen_totales'] ?? [])['cantidad'] ?? 0);
+            foreach ((array) (($hoja['parecen_totales'] ?? [])['nombres'] ?? []) as $nombre) {
+                $nombres[] = '«' . $nombre . '»';
+            }
+        }
+        if ($total === 0) {
+            return '';
+        }
+        $nombres = array_slice($nombres, 0, 3);
+        $lista = implode(', ', $nombres) . ($total > count($nombres) ? ' y ' . ($total - count($nombres)) . ' más' : '');
+
+        return $total === 1 ? ' 1 fila que parece un total quedó cargada como artículo (' . $lista . '): si no era un producto, decímelo.'
+            : ' ' . $total . ' filas que parecen totales quedaron cargadas como artículos (' . $lista . '): si alguna no era un producto, decímelo.';
     }
 
     /** Cómo se dice por qué quedó para revisar una fila, por el tipo de conflicto del motor (quinta pasada, B2). */

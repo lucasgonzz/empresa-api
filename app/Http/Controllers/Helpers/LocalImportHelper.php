@@ -207,22 +207,32 @@ class LocalImportHelper {
 
 	/*
 	 * ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
-	 * TABLA DE DECISIÓN — filas de una lista de clientes o proveedores de la PRUEBA (ronda 8, quinta pasada)
+	 * TABLA DE DECISIÓN — filas de una lista de clientes o proveedores de la PRUEBA (ronda 8, sexta pasada)
 	 * CRITERIO: una fila queda afuera solo con una señal de ALTA precisión. Ante la duda ENTRA, y el aviso lo dice
-	 * («N quedaron solo con el nombre…»). Todo lo que queda afuera sale nombrado. Fuera de la prueba no corre nada.
+	 * («N quedaron solo con el nombre…»). Cuando lo que está en duda es PLATA (un saldo), no se adivina: un saldo que no
+	 * se lee frena la carga, y un total no se carga como cliente. Todo lo que queda afuera sale nombrado. Fuera de la
+	 * prueba no corre nada.
 	 * ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 	 *  Señal                         | Condición                                              | Afuera          | Entra
 	 * ───────────────────────────────┼────────────────────────────────────────────────────────┼─────────────────┼──────────────────
-	 *  Total / subtotal              | rótulo de total (es_rotulo_de_total) con el resto solo  | «TOTAL»,        | «Total Gas SRL»
-	 *                                | números, o sin nombre con el rótulo en otra columna     | «| | TOTAL | 900»| con su teléfono
+	 *  Total / subtotal              | empieza con total/subtotal/sub total/totales/suma/«son | «TOTAL», «Total | «Total Hogar SRL»
+	 *                                | N», CUALQUIER cantidad de palabras, sin datos de        | Villa del Parque»,| con o sin teléfono
+	 *                                | contacto (solo importes); o sin nombre con el rótulo en | «| | TOTAL | 900»| (razón social o
+	 *                                | otra columna. Nunca razón social ni genérico            |                 | genérico)
+	 *  Suma del grupo (sexta)        | sin datos de contacto, saldo = suma de su grupo o de la | «Zona sur | 4200»| «Sandra Ojeda |
+	 *                                | lista (±0,02, ≥2 filas), en posición de total; o, sin   | seguida de otro | 4200» que no es
+	 *                                | posición, si sacándola cierra con el total general      | grupo           | la suma
+	 *  Título repetido en su total   | el texto es lo que sigue a la palabra de total en un    | «Barrio Norte» ↔|
+	 *  (sexta)                       | total de la misma lista                                 | «Total Barrio Norte»|
 	 *  Título decorado               | «--- X ---», «*** X ***»                                | «--- MAYORISTAS ---»|
 	 *  Cabecera repetida             | dos o más celdas iguales a los títulos                  | «Cliente | CUIT» |
 	 *  Pie                           | debajo del total que tiene arriba el 80 % de los        | la nota de abajo| clientes debajo de
 	 *                                | contactos con datos (un total arriba no abre nada)      | del TOTAL final | un TOTAL de arriba
 	 *  Nota con forma de oración     | SOLO arriba del primer contacto con datos o debajo del  | «Fulana dejó    | «Pérez, el de la
 	 *                                | último (tiene_forma_de_oracion)                         | plata…» al pie  | esquina» en el medio
-	 *  Anotación (en cualquier lado) | PALABRAS_DE_ANOTACION + «:» o minúscula, o marcas       | «ojo: …»,       | «Ver Pérez»,
-	 *                                | («(…)», «*», «//», «->»)                                | «(ver con Hugo)»| «Falta Gómez»
+	 *  Anotación (en cualquier lado) | PALABRAS_DE_ANOTACION + «:» o minúscula; una marca      | «ojo: …»,       | «Ver Pérez»,
+	 *                                | («(…)», «*», «//», «->», «NB») solo con anotación u     | «(ver con Hugo)»| «* Carla», «NB Carla»
+	 *                                | oración adentro                                         |                 | «Falta Gómez»
 	 *  Señal fuerte (de siempre)     | termina en «:» o palabra de sección (≤3 palabras)       | «Zona norte:»   | «Zona Sur Materiales»
 	 *  Señal débil (de siempre)      | todo en mayúsculas en una lista que no escribe así      | «DEUDORES»      | «YPF»
 	 *  Grupo (solo nombre)           | ≥5 contactos con datos, 2 por cada fila de solo nombre, | «Mayoristas»,   | «Gómez», «Kiosco»,
@@ -274,7 +284,145 @@ class LocalImportHelper {
 			}
 		}
 
+		return isset($contexto['con_datos']) ? self::subtotales_por_suma($rows, $columns, $start_row, $finish_row, $contexto, $descartes) : $descartes;
+	}
+
+	/** Tolerancia de las sumas de saldos, en pesos (sexta pasada). */
+	const TOLERANCIA_DE_LOS_SALDOS = 0.02;
+
+	/**
+	 * Los subtotales que se delatan por la suma (sexta pasada, 3): cuando lo que está en duda es plata, no se adivina.
+	 *  (a) Una fila con nombre, SIN datos de contacto (teléfono, CUIT, dirección…: solo el saldo), cuyo saldo es igual
+	 *      (±TOLERANCIA_DE_LOS_SALDOS) a la suma de su grupo (desde el título o el total anterior) o de toda la lista de
+	 *      arriba, con dos filas sumadas o más, y en posición de total (seguida de una fila vacía, de algo que no es un
+	 *      contacto con datos o de ningún contacto más).
+	 *  (b) El control de coherencia: si la lista trae un total general (el del pie) y la suma de los saldos que se van a
+	 *      cargar no cierra con él, pero SÍ cerraría sacando las filas sin datos de contacto cuyo saldo es la suma de su
+	 *      grupo, esas filas son subtotales.
+	 * Nunca una razón social ni un genérico.
+	 *
+	 * @return array  los descartes, con los subtotales agregados
+	 */
+	private static function subtotales_por_suma($rows, $columns, $start_row, $finish_row, array $contexto, array $descartes) {
+		if (!isset($columns['saldo_actual'])) {
+			return $descartes;
+		}
+		$lista = is_object($rows) && method_exists($rows, 'values') ? $rows->values()->all() : array_values((array) $rows);
+		$tipos = [];
+		$saldos = [];
+		$solo_saldo = [];
+		foreach ($lista as $indice => $row) {
+			$numero = $indice + 1;
+			if ($numero < (int) $start_row || $numero > (int) $finish_row) {
+				continue;
+			}
+			$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+			$otros = self::otros_datos_del_contacto($row, $columns);
+			if ((is_null($nombre) || $nombre === '') && $otros === []) {
+				$tipos[$numero] = 'vacia';
+				continue;
+			}
+			if (isset($descartes[$numero]) || is_null($nombre) || $nombre === '') {
+				$tipos[$numero] = 'otro';
+				continue;
+			}
+			$lectura = self::leerSaldoDeLaFila($row, $columns);
+			$saldos[$numero] = $lectura['estado'] === 'numero' ? (float) $lectura['valor'] : null;
+			$identifica = array_intersect_key($otros, array_flip(self::COLUMNAS_QUE_IDENTIFICAN_UN_CONTACTO)) !== [];
+			$tipos[$numero] = $otros === [] ? 'solo_nombre' : 'dato';
+			$solo_saldo[$numero] = !$identifica && !is_null($saldos[$numero]) && !self::nunca_es_titulo($nombre)
+				&& array_keys($otros) === ['saldo_actual'];
+		}
+		$candidatos = [];
+		$grupo = 0.0;
+		$en_el_grupo = 0;
+		$todo = 0.0;
+		$en_la_lista = 0;
+		$numeros = array_keys($tipos);
+		foreach ($numeros as $posicion => $numero) {
+			if ($tipos[$numero] !== 'dato' && $tipos[$numero] !== 'solo_nombre') {
+				if ($tipos[$numero] === 'otro') {
+					$grupo = 0.0;
+					$en_el_grupo = 0;
+				}
+				continue;
+			}
+			$saldo = $saldos[$numero];
+			if (!empty($solo_saldo[$numero]) && abs($saldo) > 0.005
+				&& (($en_el_grupo >= 2 && abs($saldo - $grupo) <= self::TOLERANCIA_DE_LOS_SALDOS)
+					|| ($en_la_lista >= 2 && abs($saldo - $todo) <= self::TOLERANCIA_DE_LOS_SALDOS))) {
+				$candidatos[$numero] = true;
+				$grupo = 0.0;
+				$en_el_grupo = 0;
+				continue;
+			}
+			if (!is_null($saldo)) {
+				$grupo += $saldo;
+				$todo += $saldo;
+				$en_el_grupo++;
+				$en_la_lista++;
+			}
+		}
+		// (a) En posición de total.
+		foreach (array_keys($candidatos) as $numero) {
+			$posicion = array_search($numero, $numeros, true);
+			$siguiente = null;
+			$hay_datos_despues = false;
+			for ($i = $posicion + 1; $i < count($numeros); $i++) {
+				$tipo = $tipos[$numeros[$i]];
+				if (is_null($siguiente)) {
+					$siguiente = $tipo;
+				}
+				if ($tipo === 'dato') {
+					$hay_datos_despues = true;
+					break;
+				}
+			}
+			if ($siguiente !== 'dato' || !$hay_datos_despues) {
+				$descartes[$numero] = ['total', (string) ImportHelper::getColumnValue($lista[$numero - 1], 'nombre', $columns)];
+				unset($candidatos[$numero]);
+			}
+		}
+		// (b) El control de coherencia con el total general.
+		$pie = $contexto['pie'] ?? null;
+		if ($candidatos !== [] && !is_null($pie) && isset($lista[$pie - 1])) {
+			$lectura = self::leerSaldoDeLaFila($lista[$pie - 1], $columns);
+			if ($lectura['estado'] === 'numero') {
+				$total = (float) $lectura['valor'];
+				$cargados = 0.0;
+				foreach ($saldos as $numero => $saldo) {
+					if ($numero < $pie && !isset($descartes[$numero]) && !is_null($saldo)) {
+						$cargados += $saldo;
+					}
+				}
+				$sacando = $cargados;
+				foreach (array_keys($candidatos) as $numero) {
+					$sacando -= (float) $saldos[$numero];
+				}
+				if (abs($cargados - $total) > self::TOLERANCIA_DE_LOS_SALDOS && abs($sacando - $total) <= self::TOLERANCIA_DE_LOS_SALDOS) {
+					foreach (array_keys($candidatos) as $numero) {
+						$descartes[$numero] = ['total', (string) ImportHelper::getColumnValue($lista[$numero - 1], 'nombre', $columns)];
+					}
+				}
+			}
+		}
+		ksort($descartes);
+
 		return $descartes;
+	}
+
+	/**
+	 * Lo que sigue a la palabra de total en el rótulo de un total («Total Barrio Norte» → «barrio norte»), ya
+	 * comparable, o '' (sexta pasada, 4).
+	 *
+	 * @param  string $rotulo
+	 * @return string
+	 */
+	static function titulo_del_total($rotulo) {
+		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($rotulo);
+		$resto = trim((string) preg_replace('/^(?:sub ?total(?:es)?|total(?:es)?|sumas?)(?: de(?: la| los| las| el)?)?(?: |$)/', '', $comparable));
+
+		return $resto === $comparable || preg_match('/^\d+(?: |$)/', $resto) === 1 ? '' : $resto;
 	}
 
 	/**
@@ -301,6 +449,7 @@ class LocalImportHelper {
 	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row, array $formato = []) {
 		$con_datos_en_negrita = 0;
 		$con_datos_en_minuscula = 0;
+		$titulos_de_los_totales = [];
 		$solo_nombre = [];
 		$cabecera = [];
 		$con_datos = 0;
@@ -343,6 +492,10 @@ class LocalImportHelper {
 			if (!is_null($motivo)) {
 				if ($motivo[0] === 'total') {
 					$totales[] = $numero;
+					$titulo = self::titulo_del_total($nombre);
+					if ($titulo !== '') {
+						$titulos_de_los_totales[$titulo] = true;
+					}
 				}
 				$secuencia[] = [$numero, 'titulo', $nombre];
 				continue;
@@ -408,6 +561,7 @@ class LocalImportHelper {
 			'formato'                   => self::formato_con_estructura($formato, $secuencia, $con_datos, $con_datos_en_negrita, $nombres_en_minuscula),
 			'con_datos_en_negrita'      => $con_datos_en_negrita,
 			'nombres_en_minuscula'      => $nombres_en_minuscula,
+			'titulos_de_los_totales'    => $titulos_de_los_totales,
 		];
 	}
 
@@ -494,8 +648,14 @@ class LocalImportHelper {
 	 */
 	static function es_anotacion($nombre) {
 		$texto = trim((string) $nombre);
-		if (preg_match('/^\(.*\)$/u', $texto) === 1 || preg_match('/^(?:\*|\/\/|->|>>|nb\b)/iu', $texto) === 1) {
-			return true;
+		// Sexta pasada: una marca («(…)», «*», «//», «->», «>>», «NB») sola no alcanza («* Carla», «NB Carla» son
+		// clientes marcados): lo de adentro tiene que ser además una anotación o tener forma de oración.
+		$sin_marca = trim((string) preg_replace('/^(?:\*+|\/\/|->|>>|nb\b:?)\s*/iu', '', $texto));
+		if (preg_match('/^\((.*)\)$/u', $texto, $partes) === 1) {
+			$sin_marca = trim($partes[1]);
+		}
+		if ($sin_marca !== $texto) {
+			return $sin_marca !== '' && (self::es_anotacion($sin_marca) || self::tiene_forma_de_oracion($sin_marca));
 		}
 		$palabras = preg_split('/\s+/u', $texto);
 		$primera = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable(rtrim($palabras[0], ':'));
@@ -543,7 +703,10 @@ class LocalImportHelper {
 		}
 		$otros = self::otros_datos_del_contacto($row, $columns);
 
-		$es_total = \App\Services\Importacion\PlanillaDePrueba::es_rotulo_de_total($nombre);
+		// Sexta pasada: sin tope de palabras («Total Villa del Parque», «Subtotal talleres y flotas»), salvo una razón
+		// social o un genérico («Total Hogar SRL» entra).
+		$es_total = !self::nunca_es_titulo($nombre) && (\App\Services\Importacion\PlanillaDePrueba::es_rotulo_de_total($nombre)
+			|| \App\Services\Importacion\PlanillaDePrueba::empieza_con_palabra_de_total($nombre));
 		if ($es_total || \App\Services\Importacion\PlanillaDePrueba::es_titulo_decorado($nombre)) {
 			foreach ($otros as $clave => $valor) {
 				if (in_array($clave, self::COLUMNAS_QUE_IDENTIFICAN_UN_CONTACTO, true)) {
@@ -581,6 +744,11 @@ class LocalImportHelper {
 			if (($afuera_de_los_datos && self::tiene_forma_de_oracion($nombre)) || self::es_anotacion($nombre)) {
 				return ['nota', $nombre];
 			}
+		}
+		// Sexta pasada: el título de un grupo que se repite en el rótulo de su total («Barrio Norte» ↔ «Total Barrio Norte»).
+		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
+		if ($comparable !== '' && isset($contexto['titulos_de_los_totales'][$comparable])) {
+			return ['titulo', $nombre];
 		}
 		if (count(preg_split('/\s+/u', trim($nombre))) > 5) {
 			return null;

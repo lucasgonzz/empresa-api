@@ -112,6 +112,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         $con_sena = 0;
         $negritas_dispersas = 0;
         $reales_al_final = 0;
+        $subtotales_de_contactos = 0;
+        $titulos_repetidos = 0;
+        $saldos_con_cierre = 0;
+        $saldos_con_menos_atras = 0;
         for ($caso = 0; $caso < self::PLANILLAS; $caso++) {
             $lista = GeneradorDePlanillasDesordenadas::contactos($caso);
             $listas_con_sueltas += $lista['sueltas'] > 0 ? 1 : 0;
@@ -123,6 +127,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
             $con_sena += $lista['con_sena'];
             $negritas_dispersas += $lista['negritas_dispersas'];
             $reales_al_final += $lista['reales_al_final'];
+            $subtotales_de_contactos += $lista['subtotales_de_contactos'] ?? 0;
+            $titulos_repetidos += $lista['titulos_repetidos'] ?? 0;
+            $saldos_con_cierre += $lista['saldos_con_cierre'] ?? 0;
+            $saldos_con_menos_atras += $lista['saldos_con_menos_atras'] ?? 0;
             $filas = array_values($lista['filas']); // como llega a collection(): 0-based, la fila 1 en el índice 0
             $descartes = LocalImportHelper::filas_que_no_son_contactos_de($filas, $lista['columnas'], $lista['inicio'], count($filas),
                 $lista['formato'] ?? []);
@@ -145,7 +153,9 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
             . $listas_con_formato . ' con sueltas que solo se reconocen por el formato, ' . $listas_con_tres_grupos_o_mas
             . ' con tres grupos o más, ' . $notas_con_forma_de_oracion . ' anotaciones en el medio, '
             . $totales_sin_nombre . ' totales sin nombre, ' . $con_sena . ' clientes con seña, ' . $negritas_dispersas
-            . ' clientes de solo nombre en negrita dispersos, ' . $reales_al_final . ' clientes de solo nombre debajo de un total de arriba.' . PHP_EOL);
+            . ' clientes de solo nombre en negrita dispersos, ' . $reales_al_final . ' clientes de solo nombre debajo de un total de arriba, '
+            . $subtotales_de_contactos . ' subtotales de zona, ' . $titulos_repetidos . ' títulos repetidos en su total, ' . $saldos_con_cierre
+            . ' saldos con «.-», ' . $saldos_con_menos_atras . ' con el menos atrás.' . PHP_EOL);
         // La comparación de fallas va primero: si la regla falla, que se vea cuál.
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . (self::SEMILLA + 1) . ': ' . count($fallas) . ' fallas.');
         // Ronda 8, A1: la clase de las filas sueltas tiene que estar en la muestra, no solo en los tests de forma.
@@ -162,6 +172,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         $this->assertGreaterThan(20, $con_sena, 'La muestra casi no trae clientes con seña.');
         $this->assertGreaterThan(40, $negritas_dispersas, 'La muestra casi no trae clientes en negrita dispersos.');
         $this->assertGreaterThan(20, $reales_al_final, 'La muestra casi no trae clientes debajo de un total de arriba.');
+        // Sexta pasada: subtotales de zona con la suma real, títulos que se repiten en su total y saldos con adornos.
+        $this->assertGreaterThan(40, $subtotales_de_contactos, 'La muestra casi no trae subtotales de zona.');
+        $this->assertGreaterThan(30, $titulos_repetidos, 'La muestra casi no trae títulos repetidos en su total.');
+        $this->assertGreaterThan(10, $saldos_con_cierre + $saldos_con_menos_atras, 'La muestra casi no trae saldos con adornos.');
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . (self::SEMILLA + 1) . ': ' . count($fallas) . ' fallas.');
     }
 

@@ -75,6 +75,9 @@ class GeneradorDePlanillasDesordenadas
     /* Clientes reales con una seña o un nombre largo en minúscula (quinta pasada, A1): tienen que entrar. */
     const CLIENTES_CON_SENA = ['Pérez, el de la esquina', 'juan perez, el plomero de la vuelta', 'Don Pepe, sobrino de la vecina',
         'Taller de chapa y pintura el rulo', 'la casa del tornillo y la herramienta'];
+    /* Zonas o grupos de una lista de clientes, con su título y su total (sexta pasada). */
+    const ZONAS = ['Barrio Norte', 'Centro', 'Villa del Parque', 'Barrio Parque Los Andes', 'Talleres y flotas', 'Distribuidores mayoristas',
+        'Zona oeste industrial', 'Particulares'];
     const CONTACTOS_REALES_DE_SOLO_NOMBRE = ['Gómez', 'Carla', 'Martín', 'juan perez', 'Juan pérez', 'Kiosco', 'Panadería',
         'la esquina', 'Pirulo', 'Del Valle', 'De la Fuente', 'Obras Sanitarias', 'Doña Rosa', 'Rotisería El Gallo', 'Del Río'];
 
@@ -328,6 +331,68 @@ class GeneradorDePlanillasDesordenadas
         ];
     }
 
+    /**
+     * Sexta pasada: una lista por zonas. Cada zona con su título (que se repite en el rótulo de su total, o no tiene
+     * título), sus clientes con datos (saldos escritos de varias formas: «$ 1.500.-», «1500-» —ilegible, no suma—) y su
+     * total o subtotal con rótulo de 1 a 5 palabras y la suma REAL de la zona; al final, el total general.
+     */
+    private static function contactos_por_zonas(int $caso, callable $agregar, array &$filas, array &$datos, array &$no_datos, int $inicio): array
+    {
+        $zonas = self::ZONAS;
+        shuffle($zonas);
+        $zonas = array_slice($zonas, 0, mt_rand(2, 4));
+        $general = 0.0;
+        $subtotales = 0;
+        $titulos_repetidos = 0;
+        $saldos_con_cierre = 0;
+        $saldos_con_menos_atras = 0;
+        $n = 0;
+        foreach ($zonas as $zona) {
+            $con_titulo = mt_rand(0, 3) > 0;
+            if ($con_titulo) {
+                $agregar([0 => $zona], false);
+                $titulos_repetidos++;
+            }
+            $suma = 0.0;
+            for ($c = mt_rand(2, 6); $c > 0; $c--) {
+                $n++;
+                $saldo = mt_rand(1000, 900000) + (mt_rand(0, 1) ? 0.5 : 0);
+                $forma = mt_rand(0, 5);
+                if ($forma === 0) {
+                    $celda = '$ ' . number_format($saldo, 0, ',', '.') . '.-';
+                    $saldo = (float) floor($saldo);
+                    $saldos_con_cierre++;
+                } elseif ($forma === 1) {
+                    // El menos atrás: ilegible (no se adivina el signo), no suma.
+                    $celda = number_format($saldo, 0, ',', '.') . '-';
+                    $saldo = 0.0;
+                    $saldos_con_menos_atras++;
+                } else {
+                    $celda = $saldo;
+                }
+                $agregar([0 => self::al_azar(self::NOMBRES) . ' ' . $n, 2 => '3442 40' . mt_rand(1000, 9999), 3 => $celda], true);
+                $suma += $saldo;
+            }
+            $rotulo = self::al_azar(['Total ', 'Subtotal ', 'SUBTOTAL ', 'Total de ', 'Sub total ']) . ($con_titulo || mt_rand(0, 1) ? $zona : '');
+            $agregar([0 => trim($rotulo), 3 => round($suma, 2)], false);
+            $subtotales++;
+            $general += $suma;
+            if (mt_rand(0, 4) === 0) {
+                $agregar([], null);
+            }
+        }
+        $agregar([0 => 'TOTAL GENERAL', 3 => round($general, 2)], false);
+
+        return [
+            'filas' => $filas, 'inicio' => $inicio, 'columnas' => ['nombre' => 0, 'cuit' => 1, 'telefono' => 2, 'saldo_actual' => 3],
+            'datos' => $datos, 'no_datos' => $no_datos, 'caso' => $caso, 'sueltas' => 0, 'reales_de_solo_nombre' => 0,
+            'sueltas_con_formato' => 0, 'notas_con_forma_de_oracion' => 0, 'totales_sin_nombre' => 0, 'con_sena' => 0,
+            'negritas_dispersas' => 0, 'reales_al_final' => 0, 'grupos' => count($zonas), 'formato' => [],
+            'subtotales_de_contactos' => $subtotales, 'titulos_repetidos' => $titulos_repetidos,
+            'saldos_con_cierre' => $saldos_con_cierre, 'saldos_con_menos_atras' => $saldos_con_menos_atras,
+        ];
+    }
+
     private static function rubro(callable $agregar, string $rubro, string $tipo): void
     {
         $bonito = ucfirst(mb_strtolower($rubro));
@@ -409,6 +474,9 @@ class GeneradorDePlanillasDesordenadas
         $cabecera = ['Cliente', 'CUIT', 'Tel', 'Debe'];
         $agregar($cabecera, null);
         $inicio = $numero + 1;
+        if ($caso % 8 === 6) {
+            return self::contactos_por_zonas($caso, $agregar, $filas, $datos, $no_datos, $inicio);
+        }
 
         $cuantos = mt_rand(5, 40);
         $solo_nombre = mt_rand(0, 60) / 100;   // proporción de contactos con solo el nombre

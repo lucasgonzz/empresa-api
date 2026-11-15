@@ -1070,4 +1070,63 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         $this->assertSame(' Dejé afuera 4 filas que no son clientes: «Subtotal» (3 veces) y «TOTAL GENERAL».',
             $texto->invoke(new ImportacionDeSoporteService(), ['filas_descartadas' => $filas, 'filas_descartadas_total' => 4], 'cliente', 'clientes'));
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Sexta pasada: plata
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_sexta_pasada_zonas_con_su_total_el_aviso_cierra_con_el_total_general(): void
+    {
+        $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo']];
+        $zonas = ['Barrio Norte' => [12000, 8000.5, 4000], 'Centro' => [3000, 2500, 1000], 'Villa del Parque' => [10000, 15000, 6000]];
+        $general = 0.0;
+        $estilos = [];
+        foreach ($zonas as $zona => $saldos) {
+            $filas[] = [$zona, null, null, null];
+            $estilos[count($filas)] = 'rojo';
+            foreach ($saldos as $i => $saldo) {
+                $filas[] = [$zona . ' cliente ' . ($i + 1), null, '34110' . count($filas), $saldo];
+            }
+            $filas[] = ['Total ' . $zona, null, null, array_sum($saldos)];
+            $general += array_sum($saldos);
+        }
+        $filas[] = ['TOTAL GENERAL', null, null, $general];
+        $corrida = $this->cargar_con_formato($filas, $estilos, 230);
+        $this->assertSame(9, $corrida->resultado['creados']);
+        foreach (array_keys($zonas) as $zona) {
+            $this->assertFalse(Client::where('user_id', $this->dueno->id)->whereIn('name', [$zona, 'Total ' . $zona])->exists(), $zona);
+        }
+        // Lo que le deben cierra con el TOTAL GENERAL de su planilla (61.500,50) y ningún total es «el saldo más alto».
+        $texto = $this->avisos(230)->last()->texto;
+        $this->assertStringContainsString('En total te deben $61.500,50; el saldo más alto es el de Villa del Parque cliente 2 ($15.000).', $texto);
+        $this->assertStringNotContainsString('solo con el nombre', $texto);
+    }
+
+    public function test_sexta_pasada_subtotales_de_grupos_en_mayusculas_no_se_cargan_como_clientes(): void
+    {
+        foreach (['Subtotal talleres y flotas', 'Subtotal talleres, flotas y remises', 'Sub total de los talleres de la zona'] as $n => $rotulo) {
+            $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo'], ['PARTICULARES', null, null, null], ['Ana P' . $n, null, '1', 1000], ['Bruno P' . $n, null, '2', 2000],
+                ['Carla P' . $n, null, '3', 3000], ['Subtotal particulares', null, null, 6000], ['TALLERES Y FLOTAS', null, null, null],
+                ['Taller Uno ' . $n, null, '4', 500000], ['Taller Dos ' . $n, null, '5', 488780.5], [$rotulo, null, null, 988780.5],
+                ['TOTAL', null, null, 994780.5]];
+            $corrida = $this->cargar_con_formato($filas, [], 231 + $n);
+            $this->assertSame(5, $corrida->resultado['creados'], $rotulo);
+            $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', $rotulo)->exists(), $rotulo);
+            $this->assertStringContainsString('En total te deben $994.780,50; el saldo más alto es el de Taller Uno ' . $n . ' ($500.000).',
+                $this->avisos(231 + $n)->last()->texto, $rotulo);
+        }
+    }
+
+    public function test_sexta_pasada_el_saldo_con_el_menos_atras_no_se_adivina(): void
+    {
+        foreach (['1500-', '1.500-', '0-', '1500 -'] as $n => $saldo) {
+            $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+            $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Nombre', 'Telefono', 'Saldo'], ['Menos ' . $n, '1', $saldo],
+                ['Otro menos ' . $n, '2', '1.500,-']]), 240 + $n, 'm.xlsx')->json('corrida.corrida_id');
+            $corrida = $this->avanzar($uuid);
+            $this->assertSame('saldos_ilegibles', $corrida->motivo, $saldo);
+            $this->assertSame([$saldo], array_column($corrida->resumen['saldos_ilegibles'], 'texto'), $saldo);
+            $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', 'Menos ' . $n)->exists(), $saldo);
+        }
+    }
 }

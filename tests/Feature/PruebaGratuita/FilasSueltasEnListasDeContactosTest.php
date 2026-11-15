@@ -348,4 +348,76 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
             [self::sola('Pirulo'), self::sola('Doña Rosa'), self::sola('Martín')], self::con_datos(3, 'C'));
         $this->assertSame([], self::afuera($filas));
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Sexta pasada: plata, marcas y totales de grupo
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_sexta_pasada_las_marcas_solas_no_sacan_un_cliente(): void
+    {
+        foreach (['* Carla', 'NB Carla', '** Gómez', '(Pirulo)'] as $nombre) {
+            $this->assertSame([], self::afuera(array_merge(self::con_datos(4), [self::sola($nombre)], self::con_datos(5, 'Otro'))), $nombre);
+        }
+        foreach (['* revisar saldos', 'NB: llamar a los morosos', '(ver con Hugo)', '* Fulana dejó plata de más, descontarle en la próxima'] as $nota) {
+            $this->assertSame([$nota => 'nota'], self::afuera(array_merge(self::con_datos(4), [self::sola($nota)], self::con_datos(5, 'Otro'))), $nota);
+        }
+    }
+
+    /** Una zona: su título (o null), sus clientes con teléfono y saldo, y su total con la suma (o el número dado). */
+    private static function zona(?string $titulo, string $prefijo, array $saldos, ?string $total, $importe = null): array
+    {
+        $filas = $titulo === null ? [] : [self::sola($titulo)];
+        foreach ($saldos as $i => $saldo) {
+            $filas[] = [$prefijo . ' cliente ' . ($i + 1), null, '3442 4' . $i, $saldo];
+        }
+        if ($total !== null) {
+            $filas[] = [$total, null, null, $importe ?? array_sum($saldos)];
+        }
+
+        return $filas;
+    }
+
+    public function test_sexta_pasada_los_totales_de_grupo_con_rotulo_largo_y_sus_titulos_quedan_afuera(): void
+    {
+        foreach (['Barrio Norte', 'Villa del Parque', 'Villa del Parque Alto', 'Barrio Parque Los Andes'] as $zona) {
+            $filas = array_merge(self::zona('Centro', 'C', [1000, 2000, 3000], 'Total Centro'),
+                self::zona($zona, 'Z', [5000, 6000, 20000], 'Total ' . $zona), [['TOTAL GENERAL', null, null, 37000]]);
+            $afuera = self::afuera($filas);
+            $this->assertSame(['Centro' => 'titulo', 'Total Centro' => 'total', $zona => 'titulo', 'Total ' . $zona => 'total',
+                'TOTAL GENERAL' => 'total'], $afuera, $zona);
+            // Con el número que NO cierra con la suma, igual: la palabra de total y ningún dato de contacto alcanzan.
+            $filas = self::zona($zona, 'Z', [5000, 6000, 20000], 'Total ' . $zona, 999);
+            $this->assertSame([$zona => 'titulo', 'Total ' . $zona => 'total'], self::afuera(array_merge($filas, self::con_datos(4, 'Fin'))), $zona);
+        }
+        // Subtotales de grupos en mayúsculas, con 3, 4 y 5 palabras.
+        foreach (['Subtotal talleres y flotas', 'Subtotal talleres, flotas y remises', 'Sub total de la zona sur nueva'] as $rotulo) {
+            $filas = array_merge(self::zona(null, 'P', [100, 200, 300], 'Subtotal particulares'), self::zona(null, 'T', [400000, 588780.5, 0], $rotulo));
+            $this->assertSame(['Subtotal particulares' => 'total', $rotulo => 'total'], self::afuera($filas), $rotulo);
+        }
+        // «Total Hogar SRL» con solo el saldo es un cliente (razón social), y también con teléfono.
+        $this->assertSame([], self::afuera(array_merge(self::con_datos(6), [['Total Hogar SRL', null, null, 4500]], self::con_datos(3, 'B'))));
+        $this->assertSame([], self::afuera(array_merge(self::con_datos(6), [['Total Hogar SRL', null, '3442 1', 4500]], self::con_datos(3, 'B'))));
+    }
+
+    public function test_sexta_pasada_la_suma_del_grupo_delata_un_subtotal_sin_palabra_de_total(): void
+    {
+        // «Zona sur» con solo el saldo, igual a la suma de su grupo y seguida de otro grupo: es su subtotal.
+        $filas = array_merge(self::zona(null, 'A', [1000, 2500.5, 700], null), [['Zona sur', null, null, 4200.5]], [[null, null, null, null]],
+            self::zona(null, 'B', [300, 400], null));
+        $this->assertSame(['Zona sur' => 'total'], self::afuera($filas));
+        // Un cliente de solo saldo que NO es la suma entra; con dos filas sumadas o una sola, tampoco se adivina.
+        $filas = array_merge(self::zona(null, 'A', [1000, 2500.5, 700], null), [['Sandra Ojeda', null, null, 4200]], self::zona(null, 'B', [300], null));
+        $this->assertSame([], self::afuera($filas));
+        $filas = array_merge(self::zona(null, 'A', [1000], null), [['Sandra Ojeda', null, null, 1000]], [[null, null, null, null]], self::con_datos(5, 'B'));
+        $this->assertSame([], self::afuera($filas));
+        // El control de coherencia: «Resumen zona» en el medio (seguida de clientes) no está en posición de total, pero sin ella
+        // la lista cierra con su total general: es un subtotal.
+        $filas = array_merge(self::zona(null, 'A', [1000, 2000, 3000], null), [['Resumen zona', null, null, 6000]], self::zona(null, 'B', [500, 500], null),
+            [['TOTAL', null, null, 7000]]);
+        $this->assertSame(['Resumen zona' => 'total', 'TOTAL' => 'total'], self::afuera($filas));
+        // Si con ella cierra, es un cliente y entra.
+        $filas = array_merge(self::zona(null, 'A', [1000, 2000, 3000], null), [['Resumen zona', null, null, 6000]], self::zona(null, 'B', [500, 500], null),
+            [['TOTAL', null, null, 13000]]);
+        $this->assertSame(['TOTAL' => 'total'], self::afuera($filas));
+    }
 }

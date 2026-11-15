@@ -852,7 +852,7 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
             // a no cargar con el mapeo previo (B4).
             // Quinta pasada (B2): «con su precio de venta» dice cuántos lo traían.
             'Cargué 32 artículos con su costo; 21 traían también su precio de venta. 11 artículos no traían precio de venta: por ahora quedaron sin'
-            . ' ganancia, al costo. Cuando me digas a cuánto los vendés te muestro dónde ponerlo. No cargué la columna «Final», como me dijiste.',
+            . ' ganancia, al costo. Cuando me digas a cuánto los vendés te muestro dónde ponerlo. No cargué la columna «Final». Si era otra cosa, decímelo.',
             $resumen->invoke(app(ImportacionDePruebaService::class), $run, 32, 0, 0, 0)
         );
     }
