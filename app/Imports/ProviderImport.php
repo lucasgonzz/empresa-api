@@ -250,13 +250,22 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
         } 
+        /*
+         * En la prueba, la lista entera se mira antes de juzgar cada fila (E8.2): collection() recibe la hoja
+         * completa (ToCollection sin chunks), así que es una pasada en memoria más. Ver contexto_de_contactos().
+         */
+        $contexto = $this->descartar_filas_que_no_son_contactos
+            ? LocalImportHelper::contexto_de_contactos($rows, $this->columns, $this->start_row, $this->finish_row) : null;
+        $despues_del_total = false;
         foreach ($rows as $row) {
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
-                    // En la prueba, el total o un título de la planilla no es un proveedor (E8.1).
-                    $no_es = $this->descartar_filas_que_no_son_contactos ? LocalImportHelper::fila_que_no_es_un_contacto($row, $this->columns) : null;
+                    // En la prueba, el total, un título o una nota de la planilla no es un proveedor (E8.1, E8.2).
+                    $no_es = !is_null($contexto)
+                        ? LocalImportHelper::motivo_de_fila_que_no_es_un_contacto($row, $this->columns, $contexto, $this->num_row, $despues_del_total) : null;
                     if (!is_null($no_es)) {
-                        $this->filas_que_no_son_contactos[] = ['fila' => $this->num_row, 'nombre' => $no_es];
+                        $despues_del_total = $despues_del_total || $no_es[0] === 'total';
+                        $this->filas_que_no_son_contactos[] = ['fila' => $this->num_row, 'nombre' => $no_es[1]];
                         $this->num_row++;
                         continue;
                     }

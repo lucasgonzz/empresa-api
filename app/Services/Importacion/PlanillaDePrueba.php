@@ -100,6 +100,13 @@ class PlanillaDePrueba
             'tambien' => ['stock_minimo'],
             'titulo' => '/(?:^| )(?:stock|cant|cantidad|cantidades|unid|unidades|bulto|bultos|caja|cajas|pack|existencia|existencias|hay|disponible)(?: |$)/',
         ],
+        // «% UTIL», «Utilidad», «Ganancia %», «Margen», «Recargo» (E8.2): se sugiere el margen. Va última: «Precio con
+        // recargo» es un importe.
+        'margen' => [
+            'campos' => ['margen_de_ganancia'],
+            'tambien' => [],
+            'titulo' => '/(?:^| )(?:util|utilidad|utilidades|ganancia|ganancias|margen|margenes|recargo|recargos|markup|rentabilidad)(?: |$)/',
+        ],
     ];
 
     private const FRASES = [
@@ -327,6 +334,32 @@ class PlanillaDePrueba
 
     private function descripcion_como_nombre(array $titulos, array $mapeo, array $muestras): ?int
     {
+        /*
+         * Solo en la prueba (misión prueba-e2e-campana-imperio, ronda 6, E8.2): una sola columna con título de «texto
+         * del artículo» (detalle, descripción, artículo, producto, ítem, denominación, concepto, mercadería, nombre; con
+         * o sin acentos, punto final o plural, y «… del artículo»), y ninguna OTRA columna mapeada a nombre: esa es el
+         * nombre y no se le pregunta al dueño. AiExcelAnalyzer le baja la confianza a «DETALLE» (la toma por etiqueta
+         * de descripción) y el dueño recibía «¿Qué es la columna DETALLE?». No se rescata si la IA la mapeó a otro dato
+         * (un código, un precio): ahí el título miente. Con dos candidatas («Artículo» y «Descripción») sigue lo de antes.
+         */
+        if (!$this->run->modo_soporte) {
+            $candidatas = [];
+            foreach (array_intersect_key($titulos, $muestras) as $posicion => $titulo) {
+                if (self::es_titulo_de_texto_del_articulo((string) $titulo)) {
+                    $candidatas[] = $posicion;
+                }
+            }
+            if (count($candidatas) === 1 && in_array($mapeo[$candidatas[0]]['system_property'] ?? null, [null, '', 'nombre', 'descripcion'], true)) {
+                $otra_es_el_nombre = false;
+                foreach ($mapeo as $posicion => $columna) {
+                    $otra_es_el_nombre = $otra_es_el_nombre || ($posicion !== $candidatas[0] && ($columna['system_property'] ?? null) === 'nombre');
+                }
+                if (!$otra_es_el_nombre) {
+                    return $candidatas[0];
+                }
+            }
+        }
+
         $descripciones = [];
         foreach (array_intersect_key($titulos, $muestras) as $posicion => $titulo) {
             $titulo = self::titulo_comparable($titulo);
@@ -347,6 +380,19 @@ class PlanillaDePrueba
         }
 
         return $descripciones[0];
+    }
+
+    /**
+     * ¿El título de la columna dice que trae el texto del artículo? «DETALLE», «Descripción», «Artículos», «Ítem.»,
+     * «Denominación», «Concepto», «Mercadería», «Nombre del producto» (ver descripcion_como_nombre()).
+     *
+     * @param  string $titulo
+     * @return bool
+     */
+    private static function es_titulo_de_texto_del_articulo(string $titulo): bool
+    {
+        return preg_match('/^(?:nombres?|detalles?|descripcion(?:es)?|articulos?|productos?|items?|denominacion(?:es)?|conceptos?|mercaderias?)'
+            . '(?: (?:de |del )?(?:articulo|producto|item)s?)?$/', self::titulo_comparable($titulo)) === 1;
     }
 
     public static function titulo_comparable($titulo): string
@@ -1642,6 +1688,51 @@ class PlanillaDePrueba
     }
 
     /**
+     * ¿El rótulo es el pie que CUENTA las filas (misión prueba-e2e-campana-imperio, ronda 6, E8.2)? «Total
+     * artículos: 21», «Total: 21 artículos», «Total de la hoja 1», «TOTAL 21», «Cantidad de artículos: 21»,
+     * «Son 21 artículos». Empieza con la palabra completa total/totales/subtotal o con «cantidad de», o es «son»
+     * seguido de un número; trae algún número, y TODOS sus números son números sueltos (sin letras pegadas);
+     * seis palabras como mucho y ninguna de razón social (sa, srl, sas, sh, hnos).
+     *
+     * Por qué así: «Total Quartz 5W40», «Total 10W40 aceite» o «500g» traen el número pegado a letras, que es
+     * como se escribe un producto, y no entran; «Suma dental x 12» no empieza con una palabra de conteo; «Total
+     * 2000 SA» es una razón social. Igual, quien llama exige además que la fila no tenga código ni precio.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    public static function cuenta_en_el_rotulo(string $texto): bool
+    {
+        $comparable = self::titulo_comparable($texto);
+        if (preg_match('/\d/', $comparable) !== 1) {
+            return false;
+        }
+        $palabras = explode(' ', $comparable);
+        if (count($palabras) > 6) {
+            return false;
+        }
+        foreach ($palabras as $palabra) {
+            if ((preg_match('/\d/', $palabra) === 1 && !ctype_digit($palabra)) || in_array($palabra, ['sa', 'srl', 'sas', 'sh', 'hnos'], true)) {
+                return false;
+            }
+        }
+
+        return preg_match('/^(?:(?:sub ?)?total(?:es)?|cantidad de) /', $comparable) === 1
+            || preg_match('/^son \d+(?: |$)/', $comparable) === 1;
+    }
+
+    /**
+     * ¿El rótulo es de una fila de total? empieza_como_total() o cuenta_en_el_rotulo().
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    public static function es_rotulo_de_total(string $texto): bool
+    {
+        return self::empieza_como_total($texto) || self::cuenta_en_el_rotulo($texto);
+    }
+
+    /**
      * ¿El texto es un título decorado? Abre y cierra con el mismo signo repetido («--- X ---», «*** X ***»,
      * «=== X ===», «## X ##») y adentro no trae números: «-- Martillo 500g --» es un artículo.
      *
@@ -1715,7 +1806,7 @@ class PlanillaDePrueba
             }
             $tiene_codigo = array_intersect_key($con_dato, $de_codigo) !== [];
             // Las filas de total o subtotal sin código no cuentan: son justamente las que se van a juzgar.
-            if (!$tiene_codigo && self::empieza_como_total($con_dato[$del_nombre])) {
+            if (!$tiene_codigo && self::es_rotulo_de_total($con_dato[$del_nombre])) {
                 continue;
             }
             $con_nombre++;
@@ -1847,6 +1938,9 @@ class PlanillaDePrueba
      *        (el total de cierre).
      *  - FILA_TITULO también cuando la fila repite la cabecera: dos celdas o más y TODAS iguales al título
      *    de su columna (ver repite_la_cabecera()); las que detecta EncabezadosRepetidos ya ni llegan acá.
+     *  - E8.2: el rótulo de total también puede CONTAR («Total artículos: 21», «TOTAL 21», «Son 21 artículos»,
+     *    ver cuenta_en_el_rotulo()), con las mismas condiciones (hoja con códigos, sin código, sin precio ni
+     *    costo). Esa fila es FILA_TOTAL esté donde esté: es el pie de la hoja aunque haya notas debajo.
      *
      * @param  array $fila              Celdas crudas de la fila, por posición
      * @param  array $mapeo             Campo del importador => posición de su columna
@@ -1874,8 +1968,10 @@ class PlanillaDePrueba
             return self::FILA_TITULO;
         }
         // Un subtotal o total en cualquier parte de una hoja cuyos artículos traen código (E8.1).
-        if ($hoja_con_codigos && self::es_fila_de_total($con_dato, $columna_del_nombre, $columnas_de_codigo, self::columnas_de_importe($mapeo))) {
-            return $es_el_cierre ? self::FILA_TOTAL : self::FILA_SUBTOTAL;
+        // El pie que cuenta en su rótulo («Total artículos: 21», «Son 21 artículos») es un total esté donde esté (E8.2).
+        $rotulo = $hoja_con_codigos ? self::es_fila_de_total($con_dato, $columna_del_nombre, $columnas_de_codigo, self::columnas_de_importe($mapeo)) : null;
+        if ($rotulo !== null) {
+            return $es_el_cierre || self::cuenta_en_el_rotulo($rotulo) ? self::FILA_TOTAL : self::FILA_SUBTOTAL;
         }
         if (count($con_dato) > 2) {
             return null;
@@ -1976,9 +2072,9 @@ class PlanillaDePrueba
      * @param  int|null $columna_del_nombre
      * @param  array    $columnas_de_codigo  Posición => true
      * @param  array    $columnas_de_importe Posición => true
-     * @return bool
+     * @return string|null                   El rótulo, o null si no es una fila de total
      */
-    private static function es_fila_de_total(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo, array $columnas_de_importe): bool
+    private static function es_fila_de_total(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo, array $columnas_de_importe): ?string
     {
         $rotulo = null;
         if ($columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])) {
@@ -1991,20 +2087,20 @@ class PlanillaDePrueba
                 }
             }
         }
-        if ($rotulo === null || !self::empieza_como_total($con_dato[$rotulo])) {
-            return false;
+        if ($rotulo === null || !self::es_rotulo_de_total($con_dato[$rotulo])) {
+            return null;
         }
         $resto = array_diff_key($con_dato, [$rotulo => true]);
         if (array_intersect_key($resto, $columnas_de_codigo + $columnas_de_importe) !== []) {
-            return false;
+            return null;
         }
         foreach ($resto as $valor) {
             if (self::importe($valor) === null) {
-                return false;
+                return null;
             }
         }
 
-        return true;
+        return $con_dato[$rotulo];
     }
 
     /**

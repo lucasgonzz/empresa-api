@@ -391,6 +391,101 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
         $this->assertSame(12, $filas);
         $this->assertSame([], $salteadas);
     }
+
+    /* ---------- E8.2 (14/11/2026): el pie que cuenta, la columna del nombre y la sugerencia del margen ---------- */
+
+    public function test_el_pie_que_cuenta_en_su_rotulo_se_deja_afuera(): void
+    {
+        $pies = ['Total artículos: 21', 'Total: 21 artículos', 'Total de la hoja 1', 'TOTAL 21', 'Cantidad de artículos: 21', 'Son 21 artículos'];
+        foreach ($pies as $pie) {
+            [$filas, $salteadas] = $this->leer($this->con_codigos(['R-50', 'Pinza', 10, 1, 1], [[null, $pie, null, null, null]]), $this->mapeo_con_codigos(), [], $this->dos_stocks());
+            $this->assertSame(11, $filas, json_encode([$pie, $salteadas], JSON_UNESCAPED_UNICODE));
+            $this->assertSame([rtrim($pie, '. ')], $salteadas[0]['textos_total'], $pie);
+        }
+        // También con la cuenta al lado y en el medio de la hoja: es el pie aunque no sea la última fila.
+        [$filas, $salteadas] = $this->leer($this->con_codigos([null, 'TOTAL 21', null, 56, 66]), $this->mapeo_con_codigos(), [], $this->dos_stocks());
+        $this->assertSame(10, $filas, json_encode($salteadas, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(['TOTAL 21'], $salteadas[0]['textos_total']);
+    }
+
+    public function test_un_producto_con_numero_en_el_nombre_que_empieza_con_total_se_carga(): void
+    {
+        foreach ([['TQ-1', 'Total Quartz 5W40', null, 3, 1], [null, 'Total 10W40 aceite', 5400, 1, 1], [null, 'Total 10W40 aceite', null, 1, 1],
+            [null, 'Total 3 en 1 aceite', 900, 1, 1], ['T-500', 'Total 500', null, 1, 1]] as $fila) {
+            [$filas, $salteadas] = $this->leer($this->con_codigos($fila), $this->mapeo_con_codigos(), [], $this->dos_stocks());
+            $this->assertSame(11, $filas, json_encode([$fila, $salteadas], JSON_UNESCAPED_UNICODE));
+        }
+    }
+
+    /** Analiza la planilla como la prueba y devuelve [hojas, preguntas de columnas]. */
+    private function preguntas($fuente, array $mapeo, array $campos = []): array
+    {
+        $this->analizador($mapeo);
+        $planilla = new PlanillaDePrueba($this->corrida($fuente, $campos));
+        $hojas = $planilla->analizar(app(AiExcelAnalyzer::class));
+
+        return [$hojas, $planilla->preguntas_columnas($hojas)];
+    }
+
+    /** Diez artículos con código, el texto en la columna B (con el título dado) y el precio. */
+    private function con_texto_en(string $titulo, array $otras = []): array
+    {
+        $filas = [array_merge(['Código', $titulo, 'Precio de venta'], array_keys($otras))];
+        for ($i = 1; $i <= 10; $i++) {
+            $filas[] = array_merge(['R-' . $i, 'Martillo carpintero ' . $i, 100 * $i], array_values($otras));
+        }
+
+        return $filas;
+    }
+
+    public function test_la_unica_columna_con_titulo_de_texto_del_articulo_es_el_nombre_y_no_se_pregunta(): void
+    {
+        $sinonimos = ['DETALLE', 'Detalle.', 'Detalles', 'Descripción', 'Descripciones', 'Artículo', 'Artículos', 'Producto', 'Ítem', 'Item',
+            'Denominación', 'Concepto', 'Mercadería', 'Nombre', 'Nombre del producto'];
+        foreach ($sinonimos as $titulo) {
+            // Como lo deja AiExcelAnalyzer con «DETALLE»: nombre, pero con la confianza bajada a 0,78.
+            [$hojas, $preguntas] = $this->preguntas($this->con_texto_en($titulo),
+                ['Código' => ['codigo_de_proveedor', 0.97], $titulo => ['nombre', 0.78], 'Precio de venta' => ['precio', 0.97]]);
+            $this->assertArrayNotHasKey('columna_0_1', $preguntas, $titulo . ': ' . json_encode(array_keys($preguntas)));
+            $this->assertSame('nombre', $hojas[0]['columnas'][1]['campo'], $titulo);
+        }
+
+        // Control: con un título que no dice «texto del artículo», la misma confianza sí se pregunta.
+        [, $preguntas] = $this->preguntas($this->con_texto_en('Texto'),
+            ['Código' => ['codigo_de_proveedor', 0.97], 'Texto' => ['nombre', 0.78], 'Precio de venta' => ['precio', 0.97]]);
+        $this->assertArrayHasKey('columna_0_1', $preguntas);
+    }
+
+    public function test_con_dos_columnas_candidatas_sigue_como_antes(): void
+    {
+        // «Artículo» y «Descripción»: no se elige ninguna sola, como hasta hoy (con «Artículo» no hay rescate).
+        $filas = [['Código', 'Artículo', 'Descripción', 'Precio de venta']];
+        for ($i = 1; $i <= 10; $i++) {
+            $filas[] = ['R-' . $i, 'Martillo ' . $i, 'Martillo carpintero mango de madera ' . $i, 100 * $i];
+        }
+        [, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Artículo' => ['nombre', 0.78],
+            'Descripción' => ['descripcion', 0.78], 'Precio de venta' => ['precio', 0.97]]);
+        $this->assertArrayHasKey('columna_0_1', $preguntas);
+
+        // Si la IA ya puso el nombre en otra columna, el título no manda.
+        [$hojas, $preguntas] = $this->preguntas($this->con_texto_en('Detalle', ['Nombre corto' => 'Martillo']),
+            ['Código' => ['codigo_de_proveedor', 0.97], 'Detalle' => ['descripcion', 0.78], 'Nombre corto' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        $this->assertNotSame('nombre', $hojas[0]['columnas'][1]['campo']);
+    }
+
+    public function test_una_columna_de_utilidad_sugiere_el_margen_de_ganancia(): void
+    {
+        foreach (['% UTIL', 'Utilidad', 'Ganancia %', 'Margen', 'Recargo'] as $titulo) {
+            $filas = [['Código', 'Descripción', 'Costo', $titulo, 'Precio de venta']];
+            for ($i = 1; $i <= 10; $i++) {
+                $filas[] = ['R-' . $i, 'Martillo ' . $i, 100 * $i, 40, 140 * $i];
+            }
+            [, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97],
+                'Costo' => ['costo', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+            $this->assertArrayHasKey('columna_0_3', $preguntas, $titulo . ': ' . json_encode(array_keys($preguntas)));
+            $this->assertSame(['margen_de_ganancia', 'ignorar'], $preguntas['columna_0_3']['sugeridas'], $titulo);
+        }
+    }
 }
 
 /**
