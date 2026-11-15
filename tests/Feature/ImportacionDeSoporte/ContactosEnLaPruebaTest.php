@@ -1129,4 +1129,52 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
             $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', 'Menos ' . $n)->exists(), $saldo);
         }
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Séptima pasada: un cliente real con su saldo no se pierde, y lo dudoso se dice a los dos lados
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_septima_pasada_el_cliente_que_empieza_con_total_entra_con_su_saldo_y_se_dice(): void
+    {
+        foreach (['Total Gas', 'Suma Construcciones', 'Totales y Parciales', 'Total Pinturas'] as $n => $nombre) {
+            $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo'], ['Ana Gómez ' . $n, null, null, 100], ['Beto Paz ' . $n, null, null, 200],
+                ['Carla Ruiz ' . $n, null, null, 300], [$nombre, null, null, 5000], ['Diego Sosa ' . $n, null, null, 1500],
+                ['Elena Vera ' . $n, null, null, 2500], ['Fabián Luna ' . $n, null, null, 700], ['Gisela Mora ' . $n, null, null, 1200],
+                ['TOTAL', null, null, 11500]];
+            $corrida = $this->cargar_con_formato($filas, [], 250 + $n);
+            $this->assertSame(8, $corrida->resultado['creados'], $nombre);
+            $this->assertTrue(Client::where('user_id', $this->dueno->id)->where('name', $nombre)->exists(), $nombre);
+            $this->assertTrue(Client::where('user_id', $this->dueno->id)->where('name', 'Carla Ruiz ' . $n)->exists(), $nombre);
+            $texto = $this->avisos(250 + $n)->last()->texto;
+            // Cierra con el TOTAL de su planilla, con los $5.000 adentro.
+            $this->assertStringContainsString('En total te deben $11.500;', $texto, $nombre);
+            $this->assertStringContainsString(' Cargué como cliente a «' . $nombre . '» ($5.000): si era un total de tu planilla, decímelo y lo saco.',
+                $texto, $nombre);
+            // Solo el TOTAL quedó afuera: es un rótulo corto, no se ofrece cargarlo.
+            $this->assertStringContainsString(' Dejé afuera 1 fila que no es un cliente: «TOTAL».', $texto, $nombre);
+            $this->assertStringNotContainsString('decímelo y la cargo', $texto, $nombre);
+        }
+    }
+
+    public function test_septima_pasada_un_total_con_rotulo_largo_que_queda_afuera_se_ofrece_cargar(): void
+    {
+        // «Total Villa del Parque»: la suma de su grupo y repite el título. Afuera, y como no es un rótulo corto, se ofrece.
+        $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo'], ['Villa del Parque', null, null, null], ['Vecino Uno', null, '1', 1000],
+            ['Vecino Dos', null, '2', 2000], ['Vecino Tres', null, '3', 3000], ['Total Villa del Parque', null, null, 6000],
+            ['Centro Uno', null, '4', 500], ['Centro Dos', null, '5', 700], ['Subtotal centro', null, null, 1200], ['TOTAL', null, null, 7200]];
+        $corrida = $this->cargar_con_formato($filas, [], 260);
+        $this->assertSame(5, $corrida->resultado['creados']);
+        $texto = $this->avisos(260)->last()->texto;
+        $this->assertStringContainsString('En total te deben $7.200;', $texto);
+        $this->assertStringContainsString('«Total Villa del Parque»', $texto);
+        $this->assertStringContainsString(' Si alguna era un cliente, decímelo y la cargo.', $texto);
+        $this->assertStringNotContainsString('Cargué como cliente a', $texto);
+        // Con la suma MAL y sin título, «Total Villa del Parque» entra con su saldo y se dice.
+        $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo'], ['Vecina Uno', null, '11', 1000], ['Vecina Dos', null, '12', 2000],
+            ['Vecina Tres', null, '13', 3000], ['Total Villa del Parque', null, null, 999], ['Centro Tres', null, '14', 500], ['Centro Cuatro', null, '15', 700]];
+        $corrida = $this->cargar_con_formato($filas, [], 261);
+        $this->assertSame(6, $corrida->resultado['creados']);
+        $this->assertStringContainsString(' Cargué como cliente a «Total Villa del Parque» ($999): si era un total de tu planilla, decímelo y lo saco.',
+            $this->avisos(261)->last()->texto);
+    }
 }

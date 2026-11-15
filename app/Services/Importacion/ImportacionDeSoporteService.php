@@ -3,6 +3,7 @@
 namespace App\Services\Importacion;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\LocalImportHelper;
 use App\Http\Controllers\Helpers\NotaCreditoHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
@@ -1204,7 +1205,7 @@ class ImportacionDeSoporteService
         }
 
         return $texto . $this->texto_de_totales($resumen, $proveedores) . $this->texto_de_no_cargados($resultado, $resumen)
-            . $this->texto_de_solo_con_el_nombre($resumen, $singular)
+            . $this->texto_de_solo_con_el_nombre($resumen, $singular) . $this->texto_de_los_que_parecen_totales($resumen, $singular, $plural)
             . $this->texto_de_descartadas($resumen, $singular, $plural) . ' Si algo no coincide con tu lista, decímelo y lo deshago.';
     }
 
@@ -1278,6 +1279,32 @@ class ImportacionDeSoporteService
             : ' ' . $total . ' quedaron solo con el nombre (' . $lista . '): si alguno no era un ' . $singular . ', decímelo.';
     }
 
+    /**
+     * Lo dudoso que entró (séptima pasada, 1): los que se cargaron y empiezan con una palabra de total. « Cargué como
+     * cliente a «Total Gas» ($5.000): si era un total de tu planilla, decímelo y lo saco.» Hasta 5 nombrados.
+     */
+    private function texto_de_los_que_parecen_totales(array $resumen, string $singular, string $plural): string
+    {
+        $total = (int) ($resumen['parecen_totales_total'] ?? 0);
+        if ($total === 0) {
+            return '';
+        }
+        $nombres = array_map(function ($fila) {
+            return '«' . PlanillaDePrueba::recortar_para_el_resumen((string) ($fila['nombre'] ?? '')) . '»'
+                . (isset($fila['saldo']) ? ' (' . $this->plata($fila['saldo']) . ')' : '');
+        }, array_slice((array) ($resumen['parecen_totales'] ?? []), 0, 5));
+        if ($total > count($nombres)) {
+            $lista = implode(', ', $nombres) . ' y ' . ($total - count($nombres)) . ' más';
+        } elseif (count($nombres) > 1) {
+            $lista = implode(', ', array_slice($nombres, 0, -1)) . ' y ' . end($nombres);
+        } else {
+            $lista = implode('', $nombres);
+        }
+
+        return $total === 1 ? ' Cargué como ' . $singular . ' a ' . $lista . ': si era un total de tu planilla, decímelo y lo saco.'
+            : ' Cargué como ' . $plural . ' a ' . $lista . ': si alguno era un total de tu planilla, decímelo y lo saco.';
+    }
+
     /** Cuántas filas descartadas se nombran en el aviso (B2): hasta este número, todas; con más, «y K más». */
     const DESCARTADAS_NOMBRADAS = 10;
 
@@ -1297,7 +1324,10 @@ class ImportacionDeSoporteService
         foreach ((array) ($resumen['filas_descartadas'] ?? []) as $fila) {
             $texto = PlanillaDePrueba::recortar_para_el_resumen((string) ($fila['texto'] ?? ''));
             $agrupadas[$texto] = ($agrupadas[$texto] ?? 0) + 1;
-            $solo_totales = $solo_totales && ($fila['motivo'] ?? '') === 'total';
+            // Séptima pasada (1): un total con rótulo que no es corto («Total Villa del Parque», «Zona sur») pudo ser un
+            // contacto: se ofrece cargarlo.
+            $solo_totales = $solo_totales && ($fila['motivo'] ?? '') === 'total'
+                && LocalImportHelper::es_total_corto_de_contactos((string) ($fila['texto'] ?? ''));
         }
         $nombres = [];
         $nombradas = 0;

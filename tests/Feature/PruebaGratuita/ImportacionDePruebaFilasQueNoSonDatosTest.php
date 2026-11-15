@@ -630,10 +630,10 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
                 'Precio de venta' => ['precio', 0.97]]);
             $this->assertArrayNotHasKey('columna_0_3', $preguntas, $titulo);
             $this->assertTrue($hojas[0]['columnas'][3]['sin_destino'] ?? false, $titulo);
-            // E8.7: las de notas no dicen que el sistema no tiene dónde guardarlas (tendrían la descripción).
-            $de_notas = in_array($titulo, ['Obs.', 'Observaciones', 'Notas', 'Comentarios'], true);
-            $this->assertSame($de_notas ? ' No cargué la columna «' . $titulo . '».'
-                : ' No cargué la columna «' . $titulo . '»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+            // Séptima pasada (3; cambió a propósito): UNA sola forma, neutra, sin afirmar que el sistema no tiene dónde
+            // guardarla (los artículos tienen ubicaciones). Antes: las de notas «.» a secas y las demás «: el sistema no tiene
+            // dónde guardarla. Si era otra cosa, decímelo.».
+            $this->assertSame(' No cargué la columna «' . $titulo . '». Si la necesitás, decímelo.',
                 PlanillaDePrueba::texto_de_columnas_sin_destino($hojas), $titulo);
         }
 
@@ -646,7 +646,8 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
         ]);
         [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97]]);
         $this->assertSame([], array_keys($preguntas));
-        $this->assertSame(' No cargué la columna «Obs.». No cargué la columna «Ubic.»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+        // Séptima pasada (3; cambió a propósito): las dos en una sola frase.
+        $this->assertSame(' No cargué las columnas «Obs.» y «Ubic.». Si necesitás alguna, decímelo.',
             PlanillaDePrueba::texto_de_columnas_sin_destino($hojas));
     }
 

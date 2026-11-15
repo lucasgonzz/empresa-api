@@ -420,4 +420,95 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
             [['TOTAL', null, null, 13000]]);
         $this->assertSame(['TOTAL' => 'total'], self::afuera($filas));
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Séptima pasada: un cliente real con su saldo no se pierde
+    // -----------------------------------------------------------------------------------------------------
+
+    /** Una lista «nombre | saldo» sin teléfonos: 8 clientes, uno con el nombre dado, y el TOTAL que los incluye. */
+    private static function lista_con(string $nombre, $saldo = 5000, bool $con_total = true): array
+    {
+        $filas = [['Ana Gómez', null, null, 100], ['Beto Paz', null, null, 200], ['Carla Ruiz', null, null, 300], [$nombre, null, null, $saldo],
+            ['Diego Sosa', null, null, 1500], ['Elena Vera', null, null, 2500], ['Fabián Luna', null, null, 700], ['Gisela Mora', null, null, 1200]];
+        if ($con_total) {
+            $filas[] = ['TOTAL', null, null, array_sum(array_column($filas, 3))];
+        }
+
+        return $filas;
+    }
+
+    public function test_septima_pasada_un_cliente_que_empieza_con_palabra_de_total_entra_con_su_saldo(): void
+    {
+        foreach (['Total Gas', 'Suma Construcciones', 'Totales y Parciales', 'Total Pinturas', 'Total Hogar SRL', 'Son Dos Hermanos', 'Sumar Materiales'] as $nombre) {
+            $this->assertSame(['TOTAL' => 'total'], self::afuera(self::lista_con($nombre)), $nombre);
+            $this->assertSame([], self::afuera(self::lista_con($nombre, 5000, false)), $nombre . ' (sin total general)');
+            $this->assertFalse(LocalImportHelper::es_total_corto_de_contactos($nombre), $nombre);
+        }
+        // Los rótulos cortos siguen siendo totales sin evidencia.
+        foreach (['TOTAL', 'Total general', 'Total a cobrar', 'TOTAL DEUDA CLIENTES', 'Suma total', 'Subtotal', 'Subtotal talleres y flotas',
+            'Sub total de la zona sur nueva', 'Total: 21 clientes', 'Son 21 clientes'] as $rotulo) {
+            $this->assertTrue(LocalImportHelper::es_total_corto_de_contactos($rotulo), $rotulo);
+        }
+        $this->assertFalse(LocalImportHelper::es_total_corto_de_contactos('Total Pinturas 5'));
+    }
+
+    public function test_septima_pasada_un_cliente_con_solo_el_saldo_al_lado_de_una_descartada_no_es_un_subtotal(): void
+    {
+        // «Carla Ruiz» ($300) = Ana ($100) + Beto ($200), seguida de «Total Gas»: el TOTAL general la incluye, entra.
+        $this->assertSame(['TOTAL' => 'total'], self::afuera(self::lista_con('Total Gas')));
+        // Seguida de una nota (descartada) y de más clientes, sin total general: no está en posición de total, entra.
+        $filas = self::lista_con('Total Gas', 5000, false);
+        array_splice($filas, 3, 0, [['ojo: revisar saldos', null, null, null]]);
+        $this->assertSame(['ojo: revisar saldos' => 'nota'], self::afuera($filas));
+        // Seguida de una fila vacía, sin total general: tiene forma de nombre de persona, entra.
+        $filas = [['Ana Gómez', null, null, 100], ['Beto Paz', null, null, 200], ['Carla Ruiz', null, null, 300], [null, null, null, null],
+            ['Diego Sosa', null, null, 1500], ['Elena Vera', null, null, 2500]];
+        $this->assertSame([], self::afuera($filas));
+        // En la misma posición, «Zona sur» sí: se escribe como un grupo.
+        $filas[2] = ['Zona sur', null, null, 300];
+        $this->assertSame(['Zona sur' => 'total'], self::afuera($filas));
+    }
+
+    public function test_septima_pasada_el_control_de_coherencia_con_y_sin_total_general(): void
+    {
+        $grupo = [['Ana Gómez', null, null, 1000], ['Beto Paz', null, null, 2000], ['Carla Ruiz', null, null, 3000]];
+        $otro = [['Diego Sosa', null, null, 500], ['Elena Vera', null, null, 700]];
+        foreach (['Resumen zona', 'Total Pinturería', 'Carla Ruiz bis'] as $candidato) {
+            // Con total general que cierra SIN él: es un subtotal.
+            $filas = array_merge($grupo, [[$candidato, null, null, 6000]], $otro, [['TOTAL', null, null, 7200]]);
+            $this->assertSame([$candidato => 'total', 'TOTAL' => 'total'], self::afuera($filas), $candidato);
+            // Con total general que cierra CON él: es un cliente.
+            $filas = array_merge($grupo, [[$candidato, null, null, 6000]], $otro, [['TOTAL', null, null, 13200]]);
+            $this->assertSame(['TOTAL' => 'total'], self::afuera($filas), $candidato);
+        }
+        // Sin total general: en posición de total (fila vacía después) sale el que tiene forma de rótulo, entra el nombre.
+        foreach (['Total Pinturería' => 'total', 'Zona centro' => 'total', 'Carla Ruiz bis' => null] as $candidato => $esperado) {
+            $filas = array_merge($grupo, [[$candidato, null, null, 6000]], [[null, null, null, null]], $otro);
+            $this->assertSame(is_null($esperado) ? [] : [$candidato => $esperado], self::afuera($filas), $candidato);
+        }
+    }
+
+    public function test_septima_pasada_los_totales_de_zona_de_2_a_5_palabras_con_la_suma_bien_y_mal(): void
+    {
+        foreach (['Centro', 'Villa Crespo', 'Villa del Parque', 'Barrio Parque Los Andes'] as $zona) {
+            $rotulo = 'Total ' . $zona;
+            $this->assertFalse(LocalImportHelper::es_total_corto_de_contactos($rotulo), $rotulo);
+            // Con la suma bien, sin título: afuera por la cuenta, con y sin total general.
+            $filas = array_merge(self::zona(null, 'A', [5000, 6000, 20000], $rotulo), self::zona(null, 'B', [100, 200], 'Total'), [['TOTAL GENERAL', null, null, 31300]]);
+            $this->assertSame([$rotulo => 'total', 'Total' => 'total', 'TOTAL GENERAL' => 'total'], self::afuera($filas), $rotulo);
+            $filas = array_merge(self::zona(null, 'A', [5000, 6000, 20000], $rotulo), [[null, null, null, null]], self::con_datos(4, 'Fin'));
+            $this->assertSame([$rotulo => 'total'], self::afuera($filas), $rotulo . ' (sin total general)');
+            // Con la suma MAL y el título repetido: afuera (el título lo delata).
+            $filas = array_merge(self::zona($zona, 'A', [5000, 6000, 20000], $rotulo, 999), self::con_datos(4, 'Fin'));
+            $this->assertSame([$zona => 'titulo', $rotulo => 'total'], self::afuera($filas), $rotulo . ' (suma mal, con título)');
+            // Con la suma MAL y sin título: entra (y el aviso lo dice).
+            $filas = array_merge(self::zona(null, 'A', [5000, 6000, 20000], $rotulo, 999), self::con_datos(4, 'Fin'));
+            $this->assertSame([], self::afuera($filas), $rotulo . ' (suma mal, sin título)');
+            // «Subtotal <grupo>»: siempre afuera, con la suma bien o mal.
+            foreach ([null, 999] as $importe) {
+                $filas = array_merge(self::zona(null, 'A', [5000, 6000, 20000], 'Subtotal ' . $zona, $importe), self::con_datos(4, 'Fin'));
+                $this->assertSame(['Subtotal ' . $zona => 'total'], self::afuera($filas), 'Subtotal ' . $zona);
+            }
+        }
+    }
 }

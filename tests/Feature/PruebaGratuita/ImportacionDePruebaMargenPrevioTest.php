@@ -850,12 +850,15 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
             4 => ['titulo' => 'Ubic.', 'campo' => null, 'segura' => true, 'sin_destino' => true],
             5 => ['titulo' => 'Final', 'campo' => null, 'segura' => true, 'previa' => true],
         ]]];
-        // Sexta pasada (5; cambió a propósito): por mapeo previo, neutra; «como me dijiste» solo si el dueño contestó.
-        $this->assertSame(' No cargué la columna «Obs.». No cargué la columna «Ubic.»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+        // Sexta pasada (5) y séptima (3; cambió a propósito): lo que no viene de una respuesta del dueño va en UNA sola frase
+        // neutra; «como me dijiste» solo si el dueño contestó.
+        $this->assertSame(' No cargué las columnas «Obs.», «Ubic.» y «Final». Si necesitás alguna, decímelo.',
             PlanillaDePrueba::texto_de_columnas_sin_destino($hojas));
-        $this->assertSame(' No cargué la columna «Final». Si era otra cosa, decímelo.', PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, []));
-        $this->assertSame(' No cargué la columna «Final», como me dijiste.',
-            PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, ['columna_0_5' => PlanillaDePrueba::CAMPO_IGNORAR]));
+        $this->assertSame('', PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, []));
+        $decisiones = ['columna_0_5' => PlanillaDePrueba::CAMPO_IGNORAR];
+        $this->assertSame(' No cargué la columna «Final», como me dijiste.', PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, $decisiones));
+        $this->assertSame(' No cargué las columnas «Obs.» y «Ubic.». Si necesitás alguna, decímelo.',
+            PlanillaDePrueba::texto_de_columnas_sin_destino($hojas, $decisiones));
     }
 
     // -----------------------------------------------------------------------------------------------------

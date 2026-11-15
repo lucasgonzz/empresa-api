@@ -459,9 +459,8 @@ class PlanillaDePrueba
     }
 
     /**
-     * Las columnas que se mandaron a NO cargar, por respuesta del dueño a una pregunta o por el mapeo previo de soporte
-     * (cuarta pasada, B4): « No cargué la columna «Obs. vendedor», como me dijiste.» Las que no tienen destino ya las
-     * dice texto_de_columnas_sin_destino().
+     * Las columnas que se mandaron a NO cargar por RESPUESTA del dueño a una pregunta (cuarta pasada, B4; séptima, 3):
+     * « No cargué la columna «Obs. vendedor», como me dijiste.» Las demás las dice texto_de_columnas_sin_destino().
      *
      * @param  array $hojas
      * @param  array $decisiones
@@ -469,83 +468,66 @@ class PlanillaDePrueba
      */
     public static function texto_de_columnas_que_no_se_cargan(array $hojas, array $decisiones): string
     {
-        /*
-         * Sexta pasada (5): «como me dijiste» SOLO si el dueño contestó una pregunta sobre esa columna. La que mandó a no
-         * cargar el mapeo previo de soporte va neutra (el dueño no dijo nada); si además no tiene destino, la dice
-         * texto_de_columnas_sin_destino().
-         */
-        $por_respuesta = [];
-        $por_previa = [];
+        $por_respuesta = self::columnas_que_no_se_cargan($hojas, $decisiones)['respuesta'];
+        if ($por_respuesta === []) {
+            return '';
+        }
+
+        return (count($por_respuesta) === 1 ? ' No cargué la columna ' : ' No cargué las columnas ') . self::lista_de_titulos($por_respuesta)
+            . ', como me dijiste.';
+    }
+
+    /**
+     * Las columnas que no se cargan y el dueño NO las mandó a no cargar (séptima pasada, 3): las que no tienen destino y
+     * las que mandó a no cargar el mapeo previo de soporte. UNA sola forma, neutra, sin afirmar nada del sistema: « No
+     * cargué la columna «Ubicación». Si la necesitás, decímelo.» / « No cargué las columnas «Obs.» y «Ubic.». Si
+     * necesitás alguna, decímelo.»
+     *
+     * @param  array $hojas
+     * @param  array $decisiones
+     * @return string
+     */
+    public static function texto_de_columnas_sin_destino(array $hojas, array $decisiones = []): string
+    {
+        $neutras = self::columnas_que_no_se_cargan($hojas, $decisiones)['neutras'];
+        if ($neutras === []) {
+            return '';
+        }
+
+        return count($neutras) === 1 ? ' No cargué la columna ' . self::lista_de_titulos($neutras) . '. Si la necesitás, decímelo.'
+            : ' No cargué las columnas ' . self::lista_de_titulos($neutras) . '. Si necesitás alguna, decímelo.';
+    }
+
+    /**
+     * ['respuesta' => [títulos], 'neutras' => [títulos]], sin repetidos: por respuesta del dueño (decisión «ignorar»), o
+     * sin destino / por el mapeo previo sin campo.
+     */
+    private static function columnas_que_no_se_cargan(array $hojas, array $decisiones): array
+    {
+        $respuesta = [];
+        $neutras = [];
         foreach ($hojas as $hoja) {
             foreach ((array) ($hoja['columnas'] ?? []) as $posicion => $columna) {
                 $titulo = trim((string) ($columna['titulo'] ?? ''));
                 $titulo = $titulo !== '' ? '«' . mb_substr($titulo, 0, 40) . '»'
                     : 'sin título (la ' . Coordinate::stringFromColumnIndex((int) $posicion + 1) . ')';
                 if (isset($hoja['indice']) && ($decisiones[self::clave_columna($hoja, (int) $posicion)] ?? null) === self::CAMPO_IGNORAR) {
-                    $por_respuesta[] = $titulo;
-                } elseif (!empty($columna['previa']) && ($columna['campo'] ?? null) === null && empty($columna['sin_destino'])) {
-                    $por_previa[] = $titulo;
+                    $respuesta[$titulo] = true;
+                } elseif (!empty($columna['sin_destino']) || (!empty($columna['previa']) && ($columna['campo'] ?? null) === null)) {
+                    $neutras[$titulo] = true;
                 }
             }
         }
-        $lista = function (array $titulos) {
-            $titulos = array_values(array_unique($titulos));
-            $ultima = array_pop($titulos);
 
-            return ($titulos === [] ? ' No cargué la columna ' . $ultima : ' No cargué las columnas ' . implode(', ', $titulos) . ' y ' . $ultima);
-        };
-        $texto = '';
-        if ($por_respuesta !== []) {
-            $texto .= $lista($por_respuesta) . ', como me dijiste.';
-        }
-        if ($por_previa !== []) {
-            $texto .= $lista($por_previa) . (count(array_unique($por_previa)) === 1 ? '. Si era otra cosa, decímelo.' : '. Si alguna era otra cosa, decímelo.');
-        }
-
-        return $texto;
+        return ['respuesta' => array_keys($respuesta), 'neutras' => array_keys(array_diff_key($neutras, $respuesta))];
     }
 
-    public static function texto_de_columnas_sin_destino(array $hojas): string
+    /** «A», «B» y «C». */
+    private static function lista_de_titulos(array $titulos): string
     {
-        /*
-         * E8.7: «Obs.», «Notas», «Comentarios» sí tendrían dónde ir (la descripción), así que para esas no se dice que
-         * el sistema no tiene dónde guardarlas. Tampoco se le ofrece cargarlas como descripción: con la carga ya
-         * terminada no queda una pregunta abierta por donde contestarlo.
-         */
-        $de_notas = [];
-        $sin_lugar = [];
-        foreach ($hojas as $hoja) {
-            foreach ((array) ($hoja['columnas'] ?? []) as $columna) {
-                // Las que no tienen destino, también si las mandó a no cargar el mapeo previo (sexta pasada, 5).
-                if (!empty($columna['sin_destino'])) {
-                    $titulo = '«' . mb_substr(trim((string) ($columna['titulo'] ?? '')), 0, 40) . '»';
-                    $es_nota = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios)$/',
-                        self::titulo_comparable($columna['titulo'] ?? '')) === 1;
-                    if ($es_nota) {
-                        $de_notas[] = $titulo;
-                    } else {
-                        $sin_lugar[] = $titulo;
-                    }
-                }
-            }
-        }
-        $lista = function (array $titulos) {
-            $titulos = array_values(array_unique($titulos));
-            $ultima = array_pop($titulos);
+        $ultima = array_pop($titulos);
 
-            return ($titulos === [] ? '' : implode(', ', $titulos) . ' y ') . $ultima;
-        };
-        $texto = '';
-        if ($de_notas !== []) {
-            $texto .= (count(array_unique($de_notas)) === 1 ? ' No cargué la columna ' : ' No cargué las columnas ') . $lista($de_notas) . '.';
-        }
-        if ($sin_lugar !== []) {
-            $texto .= count(array_unique($sin_lugar)) === 1
-                ? ' No cargué la columna ' . $lista($sin_lugar) . ': el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.'
-                : ' No cargué las columnas ' . $lista($sin_lugar) . ': el sistema no tiene dónde guardarlas. Si alguna era otra cosa, decímelo.';
-        }
-
-        return $texto;
+        return ($titulos === [] ? '' : implode(', ', $titulos) . ' y ') . $ultima;
     }
 
     private function descripcion_como_nombre(array $titulos, array $mapeo, array $muestras): ?int

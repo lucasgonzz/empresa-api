@@ -611,7 +611,7 @@ class ImportacionDePruebaService
         // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.
         return $texto . PlanillaDePrueba::texto_de_filas_salteadas($hojas)
             // Las columnas que el sistema no tiene dónde guardar («Obs.», «Ubic.»), solo en la prueba (E8.6).
-            . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas)
+            . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas, $run->decisiones ?? [])
             // Cuarta pasada, B4: las que se mandaron a no cargar por respuesta o por el mapeo previo.
             . PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, $run->decisiones ?? []);
     }

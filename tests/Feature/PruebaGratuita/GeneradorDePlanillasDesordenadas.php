@@ -76,6 +76,9 @@ class GeneradorDePlanillasDesordenadas
     const CLIENTES_CON_SENA = ['Pérez, el de la esquina', 'juan perez, el plomero de la vuelta', 'Don Pepe, sobrino de la vecina',
         'Taller de chapa y pintura el rulo', 'la casa del tornillo y la herramienta'];
     /* Zonas o grupos de una lista de clientes, con su título y su total (sexta pasada). */
+    /* Clientes reales que empiezan con una palabra de total, con solo el saldo (séptima pasada, 1): entran. */
+    const CLIENTES_QUE_EMPIEZAN_CON_TOTAL = ['Total Gas', 'Suma Construcciones', 'Totales y Parciales', 'Total Pinturas', 'Total Energía Sur',
+        'Sumar Materiales', 'Total Hogar SRL', 'Son Dos Hermanos'];
     const ZONAS = ['Barrio Norte', 'Centro', 'Villa del Parque', 'Barrio Parque Los Andes', 'Talleres y flotas', 'Distribuidores mayoristas',
         'Zona oeste industrial', 'Particulares'];
     const CONTACTOS_REALES_DE_SOLO_NOMBRE = ['Gómez', 'Carla', 'Martín', 'juan perez', 'Juan pérez', 'Kiosco', 'Panadería',
@@ -346,6 +349,7 @@ class GeneradorDePlanillasDesordenadas
         $titulos_repetidos = 0;
         $saldos_con_cierre = 0;
         $saldos_con_menos_atras = 0;
+        $clientes_con_palabra_de_total = 0;
         $n = 0;
         foreach ($zonas as $zona) {
             $con_titulo = mt_rand(0, 3) > 0;
@@ -354,13 +358,25 @@ class GeneradorDePlanillasDesordenadas
                 $titulos_repetidos++;
             }
             $suma = 0.0;
-            for ($c = mt_rand(2, 6); $c > 0; $c--) {
+            $legibles = 0;
+            $cuantos = mt_rand(2, 6);
+            // Séptima pasada: a veces un cliente real que empieza con palabra de total, con SOLO el saldo, en el medio.
+            $con_palabra = mt_rand(0, 2) === 0 ? mt_rand(0, $cuantos - 1) : -1;
+            for ($c = 0; $c < $cuantos; $c++) {
                 $n++;
                 $saldo = mt_rand(1000, 900000) + (mt_rand(0, 1) ? 0.5 : 0);
-                $forma = mt_rand(0, 5);
+                if ($c === $con_palabra) {
+                    $agregar([0 => self::al_azar(self::CLIENTES_QUE_EMPIEZAN_CON_TOTAL) . ' ' . $n, 3 => $saldo], true);
+                    $suma += $saldo;
+                    $legibles++;
+                    $clientes_con_palabra_de_total++;
+                    continue;
+                }
+                // Con dos saldos legibles por zona como mínimo, para que la suma del grupo sea evidencia.
+                $forma = $legibles < 2 ? mt_rand(2, 5) : mt_rand(0, 5);
                 if ($forma === 0) {
-                    $celda = '$ ' . number_format($saldo, 0, ',', '.') . '.-';
                     $saldo = (float) floor($saldo);
+                    $celda = '$ ' . number_format($saldo, 0, ',', '.') . '.-';
                     $saldos_con_cierre++;
                 } elseif ($forma === 1) {
                     // El menos atrás: ilegible (no se adivina el signo), no suma.
@@ -372,6 +388,7 @@ class GeneradorDePlanillasDesordenadas
                 }
                 $agregar([0 => self::al_azar(self::NOMBRES) . ' ' . $n, 2 => '3442 40' . mt_rand(1000, 9999), 3 => $celda], true);
                 $suma += $saldo;
+                $legibles += $forma === 1 ? 0 : 1;
             }
             $rotulo = self::al_azar(['Total ', 'Subtotal ', 'SUBTOTAL ', 'Total de ', 'Sub total ']) . ($con_titulo || mt_rand(0, 1) ? $zona : '');
             $agregar([0 => trim($rotulo), 3 => round($suma, 2)], false);
@@ -390,6 +407,7 @@ class GeneradorDePlanillasDesordenadas
             'negritas_dispersas' => 0, 'reales_al_final' => 0, 'grupos' => count($zonas), 'formato' => [],
             'subtotales_de_contactos' => $subtotales, 'titulos_repetidos' => $titulos_repetidos,
             'saldos_con_cierre' => $saldos_con_cierre, 'saldos_con_menos_atras' => $saldos_con_menos_atras,
+            'clientes_con_palabra_de_total' => $clientes_con_palabra_de_total,
         ];
     }
 

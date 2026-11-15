@@ -302,7 +302,14 @@ class PlanDeContactosDeSoporte
         $existentes_con_cambios = 0;
         $existentes_iguales = 0;
         $solo_con_el_nombre = [];
+        // Séptima pasada (1): los que entraron y empiezan con palabra de total («Total Gas»), con su saldo, para decirlos.
+        $parecen_totales = [];
         foreach ($filas as $fila) {
+            if ($modo_prueba && LocalImportHelper::empieza_con_palabra_de_total_de_contactos((string) $fila['nombre'])) {
+                $lectura = isset($columnas['saldo_actual']) ? LocalImportHelper::leerSaldoDeLaFila($fila['row'], $columnas) : ['estado' => 'vacio'];
+                $parecen_totales[] = ['nombre' => (string) $fila['nombre'],
+                    'saldo' => $lectura['estado'] === 'numero' ? round((float) $lectura['valor'], 2) : null];
+            }
             $modelo = $fila['modelo'];
             $nuevo = is_null($modelo);
             $seguro = false;
@@ -394,6 +401,8 @@ class PlanDeContactosDeSoporte
                 'existentes_iguales' => $existentes_iguales,
                 'solo_con_el_nombre' => array_slice($solo_con_el_nombre, 0, self::MAXIMO_DE_EJEMPLOS),
                 'solo_con_el_nombre_total' => count($solo_con_el_nombre),
+                'parecen_totales' => array_slice($parecen_totales, 0, self::MAXIMO_DE_EJEMPLOS),
+                'parecen_totales_total' => count($parecen_totales),
                 'saldos_ilegibles_total' => count($ilegibles),
                 'filas_descartadas' => array_slice($descartadas, 0, self::MAXIMO_DE_SALDOS),
                 'filas_descartadas_total' => count($descartadas),
