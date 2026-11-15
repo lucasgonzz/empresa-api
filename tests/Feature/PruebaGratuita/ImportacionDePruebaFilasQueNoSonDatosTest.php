@@ -513,7 +513,7 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
             $cabeceras[] = $planilla['cabecera'];
             $titulos = array_filter($planilla['filas'][$planilla['cabecera']], function ($titulo) { return $titulo !== null; });
             $campos = ['Código' => 'codigo_de_proveedor', 'Descripción' => 'nombre', 'Producto' => 'nombre', 'Precio de venta' => 'precio',
-                'Stock' => 'stock_actual', 'Rubro' => 'categoria'];
+                'Stock' => 'stock_actual', 'Rubro' => 'categoria', 'Marca' => 'marca'];
             $mapeo = [];
             foreach ($titulos as $titulo) {
                 if (isset($campos[$titulo])) {

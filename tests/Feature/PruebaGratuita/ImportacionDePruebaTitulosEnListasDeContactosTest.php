@@ -169,6 +169,32 @@ class ImportacionDePruebaTitulosEnListasDeContactosTest extends EmpresaTestCase
         $this->assertContains('Hugo Benítez', $creados);
     }
 
+    public function test_los_contactos_que_parecen_titulos_entran_y_los_titulos_no(): void
+    {
+        // E8.4: razones sociales, clientes genéricos, negocios que empiezan con una palabra de sección y siglas.
+        $entran = ['Zona Sur Materiales', 'Lista Blanca SRL', 'Clientes Varios', 'Sucursal Centro', 'Grupo Lopez', 'Cuentas Claras SA',
+            'Rubro Hogar', 'YPF', 'ACA', 'Consumidor final', 'Mostrador', 'Público en general', 'Pérez Hnos', 'Gómez y Cía', 'López e Hijos'];
+        $no_entran = ['Zona centro', 'Zona norte:', 'Morosos', 'Clientes del interior', 'AL DÍA:', 'DEUDORES'];
+        $filas = [self::CABECERA];
+        foreach ($this->con_datos('E', 8) as $i => $fila) {
+            $filas[] = $fila;
+            if (isset($entran[$i * 2])) {
+                $filas[] = [$entran[$i * 2], null, null, null];
+            }
+            if (isset($entran[$i * 2 + 1])) {
+                $filas[] = [$entran[$i * 2 + 1], null, null, null];
+            }
+            if (isset($no_entran[$i])) {
+                $filas[] = [$no_entran[$i], null, null, null];
+            }
+        }
+        [$creados, $afuera] = $this->importar($filas);
+        $this->assertSame($no_entran, $afuera);
+        foreach ($entran as $nombre) {
+            $this->assertContains($nombre, $creados);
+        }
+    }
+
     public function test_la_lista_de_proveedores_tambien(): void
     {
         $datos = $this->con_datos('V');

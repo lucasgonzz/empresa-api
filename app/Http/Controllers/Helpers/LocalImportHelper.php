@@ -295,7 +295,7 @@ class LocalImportHelper {
 			if ($otros) {
 				$con_datos++;
 				$mayusculas += self::en_mayusculas($nombre) ? 1 : 0;
-			} elseif (!self::senal_fuerte_de_titulo($nombre) && !self::en_mayusculas($nombre)) {
+			} elseif (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
 				$sin_senal[] = $numero;
 			}
 		}
@@ -324,13 +324,13 @@ class LocalImportHelper {
 	 *  - Con SOLO el nombre (ninguna otra columna mapeada con dato: ni teléfono, CUIT, saldo, nada; el saldo SÍ es
 	 *    un dato: «Sandra Ojeda | | | 1500» es un cliente):
 	 *      · 'nota': ya pasó el total y no hay filas con datos debajo (las notas al pie).
-	 *      · 'titulo' con señal FUERTE (senal_fuerte_de_titulo(): termina en «:» o empieza con clientes,
-	 *        proveedores, deudores, morosos, zona, listado, lista, rubro, sección, grupo, categoría, sucursal, al
-	 *        día, cuentas) y cinco palabras como mucho, si la lista tiene al menos
-	 *        CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL contactos con datos. Sin proporción: la señal ya alcanza.
-	 *      · 'titulo' con señal DÉBIL (todo en mayúsculas en una lista que no escribe así sus nombres), solo si
-	 *        hay al menos CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS contactos con datos y son 3 de cada 4 de
-	 *        los contactos que se juzgan (con datos + de solo nombre sin señal).
+	 *      · 'titulo' con señal FUERTE (senal_fuerte_de_titulo()) y cinco palabras como mucho, si la lista tiene
+	 *        al menos CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL contactos con datos. Sin proporción: la señal ya
+	 *        alcanza.
+	 *      · 'titulo' con señal DÉBIL (senal_debil_de_titulo(): todo en mayúsculas en una lista que no escribe así
+	 *        sus nombres), solo si hay al menos CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS contactos con datos y
+	 *        son 3 de cada 4 de los contactos que se juzgan (con datos + de solo nombre sin señal).
+	 *      · NUNCA es título una razón social ni un cliente genérico de mostrador (nunca_es_titulo()).
 	 *    🔴 Sin señal, un nombre solo es un contacto sin datos y entra. Todo lo descartado sale nombrado en el aviso.
 	 *
 	 * @param  array|\ArrayAccess $row
@@ -384,7 +384,7 @@ class LocalImportHelper {
 		}
 		$proporcion = $contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS
 			&& $contexto['con_datos'] * 4 >= ($contexto['con_datos'] + $contexto['sin_senal']) * 3;
-		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::en_mayusculas($nombre)) {
+		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::senal_debil_de_titulo($nombre)) {
 			return ['titulo', $nombre];
 		}
 
@@ -392,17 +392,84 @@ class LocalImportHelper {
 	}
 
 	/**
-	 * ¿El nombre se presenta como título de sección? Termina en «:» («Zona norte:») o empieza con una palabra de
-	 * sección («Zona centro», «Morosos», «Clientes del interior», «Al día»).
+	 * ¿El nombre se presenta como título de sección (señal FUERTE)? (E8.2, ajustado en E8.4)
+	 *  - termina en «:» («Zona norte:», «Proveedores de obra:»); o
+	 *  - empieza con una palabra de sección (clientes, proveedores, deudores, morosos, zona, listado, lista, rubro,
+	 *    sección, grupo, categoría, sucursal, al día, cuentas), tiene a lo sumo tres palabras y NO tiene forma de
+	 *    nombre propio: «Zona centro», «Morosos», «Clientes del interior» sí; «Zona Sur Materiales», «Grupo Lopez»,
+	 *    «Sucursal Centro», «Rubro Hogar» (cada palabra con mayúscula inicial, como se escribe un negocio) no.
+	 * Nunca una razón social ni un cliente genérico (nunca_es_titulo()).
 	 *
 	 * @param  string $nombre
 	 * @return bool
 	 */
 	private static function senal_fuerte_de_titulo($nombre) {
+		if (self::nunca_es_titulo($nombre)) {
+			return false;
+		}
+		if (substr(rtrim($nombre), -1) === ':') {
+			return true;
+		}
 		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
 
-		return substr(rtrim($nombre), -1) === ':'
-			|| preg_match('/^(?:clientes|proveedores|deudores|morosos|zona|zonas|listado|lista|rubro|rubros|seccion|grupo|categoria|sucursal|al dia|cuentas)(?: |$)/', $comparable) === 1;
+		return preg_match('/^(?:clientes|proveedores|deudores|morosos|zona|zonas|listado|lista|rubro|rubros|seccion|grupo|categoria|sucursal|al dia|cuentas)(?: |$)/', $comparable) === 1
+			&& count(explode(' ', $comparable)) <= 3
+			&& !self::parece_un_nombre_propio($nombre);
+	}
+
+	/**
+	 * ¿El nombre está todo en mayúsculas (señal DÉBIL de título)? No cuenta una sigla de una sola palabra corta
+	 * (cinco letras o menos: «YPF», «ACA») ni una razón social o un cliente genérico (nunca_es_titulo()).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function senal_debil_de_titulo($nombre) {
+		$palabras = preg_split('/\s+/u', trim($nombre));
+		if (count($palabras) === 1 && mb_strlen(preg_replace('/[^\pL]/u', '', $nombre)) <= 5) {
+			return false;
+		}
+
+		return !self::nunca_es_titulo($nombre) && self::en_mayusculas($nombre);
+	}
+
+	/**
+	 * ¿El nombre NUNCA puede ser un título? Tiene forma de razón social (SA, SRL, SAS, SH, SCS, Hnos, «y Cía», «e
+	 * Hijos», como palabra) o es un cliente genérico de mostrador («Clientes varios», «Consumidor final», «Varios»,
+	 * «Mostrador», «Público en general», «Cliente mostrador»).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function nunca_es_titulo($nombre) {
+		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
+
+		return preg_match('/(?:^| )(?:sa|srl|sas|sh|scs|hnos|hermanos)(?: |$)|(?:^| )y cia(?: |$)|(?:^| )e hijos(?: |$)/', $comparable) === 1
+			|| in_array($comparable, ['clientes varios', 'cliente varios', 'consumidor final', 'varios', 'mostrador', 'publico en general',
+				'cliente mostrador', 'clientes mostrador', 'cliente generico', 'consumidor final mostrador'], true);
+	}
+
+	/**
+	 * ¿Se escribe como el nombre de un negocio o una persona? Dos palabras o más (sin contar de, del, la, las, los,
+	 * el, y, e) y todas con mayúscula inicial y alguna minúscula: «Zona Sur Materiales», «Grupo Lopez».
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function parece_un_nombre_propio($nombre) {
+		$palabras = array_values(array_filter(preg_split('/\s+/u', trim($nombre)), function ($palabra) {
+			return !in_array(mb_strtolower($palabra, 'UTF-8'), ['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e'], true);
+		}));
+		if (count($palabras) < 2) {
+			return false;
+		}
+		foreach ($palabras as $palabra) {
+			if (preg_match('/^\p{Lu}.*\p{Ll}/u', $palabra) !== 1) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	/**

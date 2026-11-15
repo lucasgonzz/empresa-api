@@ -92,6 +92,87 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . (self::SEMILLA + 1) . ': ' . count($fallas) . ' fallas.');
     }
 
+    /* ---------- E8.4: los casos de la revisión, sin azar ---------- */
+
+    /** Una hoja: $con artículos con código (y precio, si la hoja lo trae) y después $sin filas sin código. */
+    private static function hoja(int $con, array $sin, bool $con_precio = true, array $arriba = []): array
+    {
+        $filas = [];
+        $n = 1;
+        foreach ($arriba as $fila) {
+            $filas[++$n] = $fila;
+        }
+        for ($i = 1; $i <= $con; $i++) {
+            $filas[++$n] = ['C-' . $i, 'Artículo con código ' . $i, $con_precio ? 100 * $i : null, $i];
+        }
+        foreach ($sin as $fila) {
+            $filas[++$n] = $fila;
+        }
+
+        return $filas;
+    }
+
+    private static function afuera(array $filas, bool $con_precio = true): array
+    {
+        $mapeo = ['codigo_de_proveedor' => 0, 'nombre' => 1, 'stock_actual' => 3] + ($con_precio ? ['precio' => 2] : []);
+
+        return PlanillaDePrueba::motivos_de_la_hoja($filas, $mapeo);
+    }
+
+    public function test_los_articulos_sin_codigo_con_otro_dato_entran_esten_donde_esten(): void
+    {
+        $sin_codigo = function (int $cuantos, bool $con_precio = false) {
+            $filas = [];
+            for ($i = 1; $i <= $cuantos; $i++) {
+                $filas[] = [null, 'Artículo nuevo ' . $i, $con_precio ? 50 * $i : null, $i];
+            }
+
+            return $filas;
+        };
+        // 20 con código + 30 sin código ni precio pero con stock.
+        $this->assertSame([], self::afuera(self::hoja(20, $sin_codigo(30))));
+        // Hoja de stock SIN columna de precio: 20 con código + 30 sin.
+        $this->assertSame([], self::afuera(self::hoja(20, $sin_codigo(30), false), false));
+        // 40 con código + 30 nuevos sin codificar ni precio.
+        $this->assertSame([], self::afuera(self::hoja(40, $sin_codigo(30))));
+        // 10 con código arriba + 200 sin código ni precio: la hoja está a medio codificar, no es «con códigos».
+        $this->assertSame([], self::afuera(self::hoja(10, $sin_codigo(200))));
+    }
+
+    public function test_un_nombre_suelto_debajo_del_ultimo_codigo_queda_afuera_nombrado(): void
+    {
+        /*
+         * «20 con código y 5 al final con solo el nombre»: en una hoja con códigos un nombre sin NINGÚN otro dato no se
+         * distingue de un rubro o de una nota (parece_un_rubro() ya los trataba así en el medio). Debajo del último
+         * código es pie: los 5 quedan afuera y salen nombrados en el resumen («Si alguna era un producto, decímelo»).
+         */
+        $nombres = [];
+        for ($i = 1; $i <= 5; $i++) {
+            $nombres[] = [null, 'Tornillo suelto ' . $i, null, null];
+        }
+        $afuera = self::afuera(self::hoja(20, $nombres));
+        $this->assertSame([22, 23, 24, 25, 26], array_keys($afuera));
+        $this->assertSame([PlanillaDePrueba::FILA_TITULO], array_values(array_unique($afuera)));
+
+        // Con un dato más (el stock), los mismos entran.
+        $con_stock = array_map(function ($fila) { $fila[3] = 4; return $fila; }, $nombres);
+        $this->assertSame([], self::afuera(self::hoja(20, $con_stock)));
+    }
+
+    public function test_el_pie_que_cuenta_y_la_nota_de_abajo_siguen_afuera(): void
+    {
+        $afuera = self::afuera(self::hoja(20, [[null, 'Total artículos: 20', null, null], [null, 'Actualizó: Mirta 12/11', null, null], ['Firma: Carlos', null, null, null]]));
+        $this->assertSame([22 => PlanillaDePrueba::FILA_TOTAL, 23 => PlanillaDePrueba::FILA_TITULO, 24 => PlanillaDePrueba::FILA_TITULO], $afuera);
+    }
+
+    public function test_los_dos_puntos_al_final_con_numeros_son_un_articulo(): void
+    {
+        // Hoja SIN códigos: «Cable 2x1,5:» es un artículo; «Pinturería:» y «Rubro: Construcción» son títulos.
+        $mapeo = ['nombre' => 0, 'precio' => 1];
+        $filas = [2 => ['Rubro: Construcción', null], 3 => ['Pinturería:', null], 4 => ['Cable 2x1,5:', null], 5 => ['Martillo', 1000], 6 => ['Tenaza', 900]];
+        $this->assertSame([2 => PlanillaDePrueba::FILA_TITULO, 3 => PlanillaDePrueba::FILA_TITULO], PlanillaDePrueba::motivos_de_la_hoja($filas, $mapeo));
+    }
+
     /** Lo mismo que filas() saltea sin contar: ninguna columna mapeada con dato. */
     private static function sin_datos_mapeados(array $fila, array $mapeo): bool
     {

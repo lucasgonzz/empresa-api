@@ -27,6 +27,14 @@ class GeneradorDePlanillasDesordenadas
         'Marta Giménez', 'Electricidad Gutiérrez', 'Pinturería Colón', 'Hugo Benítez', 'Distribuidora Paraná'];
     const TITULOS_DE_SECCION = ['Zona norte:', 'Zona centro', 'Morosos', 'Clientes del interior', 'AL DÍA:', 'Deudores', 'Lista mayoristas',
         'Proveedores de obra:', 'Cuentas viejas'];
+    /*
+     * Contactos de verdad que se parecen a un título (E8.4): razones sociales, clientes genéricos de mostrador,
+     * negocios cuyo nombre empieza con una palabra de sección y siglas cortas. Van con solo el nombre y tienen que
+     * entrar.
+     */
+    const CONTACTOS_QUE_PARECEN_TITULOS = ['Zona Sur Materiales', 'Lista Blanca SRL', 'Clientes Varios', 'Sucursal Centro', 'Grupo Lopez',
+        'Cuentas Claras SA', 'Rubro Hogar', 'YPF', 'ACA', 'Consumidor final', 'Mostrador', 'Pérez Hnos', 'Gómez y Cía', 'López e Hijos',
+        'Público en general'];
     const NOTAS_DE_CONTACTOS = ['Actualizado el 14/11', 'Pedir a Marta los que faltan', 'Revisar con el contador'];
 
     private static function al_azar(array $opciones)
@@ -40,29 +48,39 @@ class GeneradorDePlanillasDesordenadas
     }
 
     /**
-     * Una planilla de artículos. Columnas: A código (o nada), B nombre, C precio, D stock, E «Obs» sin mapear y,
-     * a veces, F rubro como columna (categoría).
+     * Una planilla de artículos. Columnas: A código (o nada), B nombre, C precio (o nada: hoja de stock), D stock,
+     * E «Obs» sin mapear y, a veces, F rubro (categoría) o marca.
+     *
+     * Tres tipos de hoja (E8.4):
+     *  - 'con': los artículos traen código (3 de cada 4 o más, contando la hoja entera), con algunos artículos SIN
+     *    código intercalados, en la segunda mitad o al final (con precio, o sin precio pero con stock o marca);
+     *  - 'medio': a medio codificar (10 a 60 % con código): NO es una hoja con códigos;
+     *  - 'sin': sin columna de código.
      *
      * @return array{filas: array, inicio: int, mapeo: array, titulos: array, datos: int[], no_datos: int[], con_codigos: bool, cabecera: int}
      */
     public static function articulos(int $caso): array
     {
-        $con_codigos = mt_rand(0, 3) > 0;
-        $con_rubro_en_columna = mt_rand(0, 4) === 0;
-        $forma_del_codigo = mt_rand(0, 3); // 0 «A-0012», 1 «0034», 2 número, 3 mezclados
-        $cabecera = $con_codigos ? ['Código', 'Descripción', 'Precio de venta', 'Stock', 'Obs'] : [null, 'Producto', 'Precio de venta', 'Stock', 'Obs'];
-        if ($con_rubro_en_columna) {
-            $cabecera[] = 'Rubro';
-        }
-        $mapeo = ['nombre' => 1, 'precio' => 2, 'stock_actual' => 3];
-        if ($con_codigos) {
+        $tipo = self::al_azar(['con', 'con', 'con', 'medio', 'sin']);
+        $con_codigo = $tipo !== 'sin';
+        $con_precio = mt_rand(0, 3) > 0;
+        $quinta = mt_rand(0, 2); // 0 nada, 1 rubro como columna, 2 marca
+        $cabecera = [$con_codigo ? 'Código' : null, $con_codigo ? 'Descripción' : 'Producto', $con_precio ? 'Precio de venta' : null, 'Stock', 'Obs'];
+        $mapeo = ['nombre' => 1, 'stock_actual' => 3];
+        if ($con_codigo) {
             $mapeo['codigo_de_proveedor'] = 0;
         }
-        if ($con_rubro_en_columna) {
-            $mapeo['categoria'] = 5;
+        if ($con_precio) {
+            $mapeo['precio'] = 2;
         }
-        $ancho = count($cabecera);
-        $vacia = array_fill(0, $ancho, null);
+        if ($quinta === 1) {
+            $cabecera[] = 'Rubro';
+            $mapeo['categoria'] = 5;
+        } elseif ($quinta === 2) {
+            $cabecera[] = 'Marca';
+            $mapeo['marca'] = 5;
+        }
+        $vacia = array_fill(0, count($cabecera), null);
 
         $filas = [];
         $datos = [];
@@ -86,31 +104,52 @@ class GeneradorDePlanillasDesordenadas
         $agregar($cabecera, null);
         $fila_de_cabecera = $numero;
 
-        /*
-         * EXCLUIDO: en una hoja con códigos, menos de 12 artículos. Con menos de 10 la hoja no cuenta como «con
-         * códigos» (ver PlanillaDePrueba::resumir_la_hoja()) y un rubro en mayúsculas en la columna del nombre no se
-         * distingue de un artículo sin precio. 12 deja margen para 4 rubros en la columna del nombre (3 de cada 4).
-         */
-        $cuantos = $con_codigos ? mt_rand(12, 30) : mt_rand(6, 30);
         $rubros = mt_rand(0, 4);
+        $notas = mt_rand(0, 3);
+        if ($tipo === 'con') {
+            /*
+             * EXCLUIDO: una hoja «con códigos» que no llegue a 3 de cada 4 con código contando la hoja entera (rubros
+             * en la columna del nombre, notas y artículos sin código incluidos), o con menos de 12 con código. Ahí la
+             * hoja no es «con códigos» y un rubro en mayúsculas sin decorar o un subtotal del medio no se distinguen
+             * de un artículo: esas hojas son las de tipo 'medio', que no llevan esas formas.
+             */
+            $sin_codigo = mt_rand(0, 4);
+            $con_codigo_n = max(12, 3 * ($sin_codigo + $rubros + $notas)) + mt_rand(0, 8);
+            $items = array_fill(0, $con_codigo_n, 'codigo');
+            foreach (range(1, $sin_codigo) as $k) {
+                if ($sin_codigo === 0) {
+                    break;
+                }
+                $donde = mt_rand(0, 2); // 0 intercalado, 1 en la segunda mitad, 2 al final
+                $posicion = $donde === 0 ? mt_rand(0, count($items)) : ($donde === 1 ? mt_rand((int) (count($items) / 2), count($items)) : count($items));
+                array_splice($items, $posicion, 0, ['sin_codigo']);
+            }
+        } elseif ($tipo === 'medio') {
+            $total_n = mt_rand(10, 30);
+            $con_codigo_n = (int) round($total_n * mt_rand(10, 60) / 100);
+            $items = array_merge(array_fill(0, $con_codigo_n, 'codigo'), array_fill(0, $total_n - $con_codigo_n, 'sin_codigo'));
+            shuffle($items);
+        } else {
+            $items = array_fill(0, mt_rand(6, 30), 'sin_codigo');
+        }
+        $cuantos = count($items);
         $cada = (int) max(1, floor($cuantos / max(1, $rubros)));
         $codigo = 11;
         $stock_del_rubro = 0;
         $rubro_actual = self::al_azar(self::RUBROS);
         $repetir_cabecera_en = mt_rand(0, 3) === 0 ? mt_rand(2, $cuantos - 1) : -1;
-        $con_subtotales = $con_codigos && mt_rand(0, 1) === 1;
+        $con_subtotales = $tipo === 'con' && mt_rand(0, 1) === 1;
         $articulos_en_el_rubro = 0;
 
-        for ($i = 0; $i < $cuantos; $i++) {
+        foreach ($items as $i => $item) {
             if ($rubros > 0 && $i % $cada === 0 && $i / $cada < $rubros) {
-                // Subtotal del rubro anterior, si corresponde.
                 if ($con_subtotales && $articulos_en_el_rubro > 0) {
                     self::subtotal($agregar, $rubro_actual, $stock_del_rubro);
                 }
                 $rubro_actual = self::al_azar(self::RUBROS);
                 $stock_del_rubro = 0;
                 $articulos_en_el_rubro = 0;
-                self::rubro($agregar, $rubro_actual, $con_codigos);
+                self::rubro($agregar, $rubro_actual, $tipo);
             }
             if ($i === $repetir_cabecera_en) {
                 $agregar($cabecera, false);
@@ -119,25 +158,50 @@ class GeneradorDePlanillasDesordenadas
                 $agregar([], null);
             }
 
-            $forma = $forma_del_codigo === 3 ? mt_rand(0, 2) : $forma_del_codigo;
-            $codigo += mt_rand(1, 3);
-            $valor_codigo = $forma === 0 ? 'A-' . str_pad((string) $codigo, 4, '0', STR_PAD_LEFT)
-                : ($forma === 1 ? str_pad((string) $codigo, 4, '0', STR_PAD_LEFT) : 1000 + $codigo);
+            $fila = [1 => self::al_azar(self::ARTICULOS) . ' ' . ($i + 1)];
             $precio = round(500 + mt_rand(0, 90000) / 7, 2);
-            $stock_tipo = mt_rand(0, 5);
-            $stock = $stock_tipo === 0 ? null : ($stock_tipo === 1 ? '-' : mt_rand(-2, 120));
-            $stock_del_rubro += is_int($stock) ? $stock : 0;
-            $fila = [
-                1 => self::al_azar(self::ARTICULOS) . ' ' . ($i + 1),
-                2 => self::moneda() ? $precio : '$ ' . number_format($precio, 2, ',', '.'),
-                3 => $stock,
-            ];
-            if ($con_codigos) {
-                $fila[0] = $valor_codigo;
+            $precio = self::moneda() ? $precio : '$ ' . number_format($precio, 2, ',', '.');
+            if ($item === 'codigo') {
+                $codigo += mt_rand(1, 3);
+                $forma = mt_rand(0, 2);
+                $fila[0] = $forma === 0 ? 'A-' . str_pad((string) $codigo, 4, '0', STR_PAD_LEFT)
+                    : ($forma === 1 ? str_pad((string) $codigo, 4, '0', STR_PAD_LEFT) : 1000 + $codigo);
+                if ($con_precio) {
+                    $fila[2] = $precio;
+                }
+                $stock_tipo = mt_rand(0, 5);
+                $fila[3] = $stock_tipo === 0 ? null : ($stock_tipo === 1 ? '-' : mt_rand(-2, 120));
+            } else {
+                /*
+                 * Un artículo sin código: el nombre y AL MENOS otro dato (precio, stock o marca). EXCLUIDO en las hojas
+                 * 'con': el nombre suelto sin ningún otro dato, que ahí no se distingue de un rubro o una nota y se deja
+                 * afuera (nombrado). En 'medio' y 'sin' un nombre suelto antes del total es un artículo y va.
+                 */
+                $opciones = [];
+                if ($con_precio) {
+                    $opciones[] = 'precio';
+                }
+                $opciones[] = 'stock';
+                if ($quinta === 2) {
+                    $opciones[] = 'marca';
+                }
+                if ($tipo !== 'con') {
+                    $opciones[] = 'solo_nombre';
+                }
+                $otro = self::al_azar($opciones);
+                if ($otro === 'precio') {
+                    $fila[2] = $precio;
+                    $fila[3] = mt_rand(0, 1) ? mt_rand(0, 60) : null;
+                } elseif ($otro === 'stock') {
+                    $fila[3] = mt_rand(-2, 120);
+                } elseif ($otro === 'marca') {
+                    $fila[5] = self::al_azar(['Tigre', 'Acindar', 'Alba', 'Fischer', 'Loma Negra']);
+                }
             }
-            if ($con_rubro_en_columna) {
-                $fila[5] = ucfirst(strtolower($rubro_actual));
+            if ($quinta === 1) {
+                $fila[5] = ucfirst(mb_strtolower($rubro_actual));
             }
+            $stock_del_rubro += isset($fila[3]) && is_int($fila[3]) ? $fila[3] : 0;
             $agregar($fila, true);
             $articulos_en_el_rubro++;
         }
@@ -146,23 +210,21 @@ class GeneradorDePlanillasDesordenadas
         }
 
         /*
-         * EXCLUIDO: en una hoja SIN códigos, notas al pie sin un total arriba. Sin códigos, una fila con un solo texto
-         * al final («Consultar stock») no se distingue de un artículo sin precio: solo el total abre el pie. Tampoco
-         * hay rubros en mayúsculas sin decorar ni subtotales en el medio de una hoja sin códigos: ahí la falta de
-         * código no dice nada (decisión de E8, fijada en ImportacionDePruebaFilasQueNoSonDatosTest).
+         * EXCLUIDO: en una hoja que no es «con códigos» ('medio' y 'sin'), notas al pie sin un total arriba: ahí una
+         * fila con un solo texto al final no se distingue de un artículo sin precio; solo el total abre el pie.
          */
-        $con_total = $con_codigos ? mt_rand(0, 3) > 0 : mt_rand(0, 3) > 0;
+        $con_total = mt_rand(0, 3) > 0;
         if ($con_total) {
             $rotulo = self::al_azar(['TOTAL', 'TOTALES', 'TOTAL GENERAL', 'Total artículos: ' . $cuantos, 'Son ' . $cuantos . ' artículos']);
-            $columna = $con_codigos && mt_rand(0, 3) === 0 ? 0 : 1;
+            $columna = $con_codigo && mt_rand(0, 3) === 0 ? 0 : 1;
             $agregar([$columna => $rotulo, 3 => mt_rand(0, 1) === 1 ? mt_rand(100, 900) : null], false);
         }
-        $notas = ($con_codigos || $con_total) ? mt_rand(0, 3) : 0;
+        $notas = ($tipo === 'con' || $con_total) ? $notas : 0;
         for ($i = 0; $i < $notas; $i++) {
             if (mt_rand(0, 2) === 0) {
                 $agregar([], null);
             }
-            $columna = $con_codigos && mt_rand(0, 1) === 1 ? 0 : 1;
+            $columna = $con_codigo && mt_rand(0, 1) === 1 ? 0 : 1;
             $agregar([$columna => self::al_azar(self::NOTAS)], false);
         }
 
@@ -175,20 +237,23 @@ class GeneradorDePlanillasDesordenadas
 
         return [
             'filas' => $filas, 'inicio' => $fila_de_cabecera + 1, 'mapeo' => $mapeo, 'titulos' => $titulos, 'datos' => $datos,
-            'no_datos' => $no_datos, 'con_codigos' => $con_codigos, 'cabecera' => $fila_de_cabecera, 'caso' => $caso,
+            'no_datos' => $no_datos, 'con_codigos' => $tipo === 'con', 'tipo' => $tipo, 'cabecera' => $fila_de_cabecera, 'caso' => $caso,
         ];
     }
 
-    private static function rubro(callable $agregar, string $rubro, bool $con_codigos): void
+    private static function rubro(callable $agregar, string $rubro, string $tipo): void
     {
         $bonito = ucfirst(mb_strtolower($rubro));
         /*
-         * EXCLUIDO sin códigos: el rubro en mayúsculas sin decorar (forma 2 y 3) — ver arriba. Sin códigos solo van
-         * el decorado y «Rubro: X», que se reconocen por cómo están escritos.
+         * EXCLUIDO fuera de las hojas 'con': el rubro en mayúsculas sin decorar en la columna del NOMBRE (forma 2): no
+         * se distingue de un artículo sin precio. En la columna del código (forma 3) sí se reconoce (un texto con
+         * espacios o sin números no es un código), así que va en 'medio'.
          */
-        $forma = $con_codigos ? mt_rand(0, 4) : self::al_azar([0, 1, 4]);
+        $formas = $tipo === 'con' ? [0, 1, 2, 3, 4] : ($tipo === 'medio' ? [0, 1, 3, 4] : [0, 1, 4]);
+        $forma = self::al_azar($formas);
+        $en_el_codigo = $tipo !== 'sin' && mt_rand(0, 1) === 1;
         if ($forma === 0) {
-            $agregar([($con_codigos && mt_rand(0, 1) === 1 ? 0 : 1) => '--- ' . $rubro . ' ---'], false);
+            $agregar([$en_el_codigo ? 0 : 1 => '--- ' . $rubro . ' ---'], false);
         } elseif ($forma === 1) {
             $agregar([1 => '*** ' . $bonito . ' ***'], false);
         } elseif ($forma === 2) {
@@ -196,7 +261,7 @@ class GeneradorDePlanillasDesordenadas
         } elseif ($forma === 3) {
             $agregar([0 => $rubro], false);
         } else {
-            $agregar([($con_codigos && mt_rand(0, 1) === 1 ? 0 : 1) => 'Rubro: ' . $bonito], false);
+            $agregar([$en_el_codigo ? 0 : 1 => 'Rubro: ' . $bonito], false);
         }
     }
 
@@ -277,10 +342,13 @@ class GeneradorDePlanillasDesordenadas
                 $agregar([], null);
             }
             /*
-             * EXCLUIDO: contactos de solo nombre escritos todo en mayúsculas o que empiezan con una palabra de sección:
-             * son justo la forma de un título (señal débil o fuerte) y no se pueden distinguir por la fila.
+             * EXCLUIDO: contactos de solo nombre escritos todo en mayúsculas con más de una palabra («FERRETERIA
+             * GOMEZ»), o que empiezan con una palabra de sección en minúscula y con hasta tres palabras («Zona centro»):
+             * son justo la forma de un título (señal débil o fuerte) y no se pueden distinguir por la fila. Los que
+             * se parecen pero se pueden distinguir (CONTACTOS_QUE_PARECEN_TITULOS) sí van.
              */
-            $nombre = self::al_azar(self::NOMBRES) . ' ' . ($i + 1);
+            $nombre = $tipo === 'solo_nombre' && mt_rand(0, 2) === 0
+                ? self::al_azar(self::CONTACTOS_QUE_PARECEN_TITULOS) : self::al_azar(self::NOMBRES) . ' ' . ($i + 1);
             $saldo = mt_rand(0, 4) === 0 ? 0 : (mt_rand(0, 5) === 0 ? -mt_rand(100, 5000) : mt_rand(1000, 400000) + 0.5);
             if ($tipo === 'solo_nombre') {
                 $agregar([0 => $nombre], true);

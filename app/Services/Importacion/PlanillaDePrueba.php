@@ -1745,10 +1745,12 @@ class PlanillaDePrueba
      * Lo que hay que saber de la hoja ENTERA antes de juzgar fila por fila (misión prueba-e2e-campana-imperio, E8,
      * E8.1 y E8.3). Una sola pasada sobre las filas crudas, sin guardarlas:
      *
-     *  - `con_codigos`: ¿los artículos de la hoja traen código? La hoja tiene columna de código y, de las filas con
-     *    nombre, al menos 10 y 3 de cada 4 traen código. Las filas de total sin código no cuentan (son las que se
-     *    van a juzgar); los nombres sueltos («PLOMERIA») sí: si se los sacara, una lista con 10 artículos con
-     *    código y 30 sin código ni precio pasaría a descartar esos 30.
+     *  - `con_codigos`: ¿los artículos de la hoja traen código? La hoja tiene columna de código y, de TODAS las filas
+     *    con nombre de la hoja, al menos 10 y 3 de cada 4 traen código. Del denominador salen solo las filas que su
+     *    RÓTULO dice que son un total (es_rotulo_de_total() sin código); los nombres sueltos («PLOMERIA») y las
+     *    filas de abajo sí cuentan. Una hoja a medio codificar NO es «con códigos» (E8.4: en E8.3 se contaba solo
+     *    hasta la última fila con código y una hoja con 10 códigos arriba y 200 artículos sin código abajo perdía
+     *    los 200).
      *  - `ultima_con_codigo`: el número de la última fila que trae código.
      *  - `pie_por_total`: dónde empieza el pie que abre un total. Al final de la hoja hay una tanda de filas que
      *    son notas (un solo texto) o totales (es_fila_de_total_al_pie()); el pie empieza en el PRIMER total de esa
@@ -1770,8 +1772,6 @@ class PlanillaDePrueba
 
         $con_nombre = 0;
         $con_codigo = 0;
-        // Lo contado hasta la última fila con código: lo de abajo es el pie y no cuenta (E8.3).
-        $con_nombre_hasta_el_ultimo_codigo = 0;
         $ultima_con_codigo = null;
         $primer_total_de_la_tanda = null;
         $ultimo_total = null;
@@ -1792,7 +1792,6 @@ class PlanillaDePrueba
             }
             if (self::tiene_codigo_de_articulo($con_dato, $de_codigo)) {
                 $ultima_con_codigo = (int) $numero;
-                $con_nombre_hasta_el_ultimo_codigo = $con_nombre;
             }
 
             // La tanda del pie: notas y totales seguidos, hasta el final. Cualquier otra fila la corta.
@@ -1805,7 +1804,7 @@ class PlanillaDePrueba
 
         return [
             'con_codigos' => $de_codigo !== [] && $del_nombre !== null && $con_codigo >= 10
-                && $con_codigo * 4 >= $con_nombre_hasta_el_ultimo_codigo * 3,
+                && $con_codigo * 4 >= $con_nombre * 3,
             'ultima_con_codigo' => $ultima_con_codigo,
             'pie_por_total' => $primer_total_de_la_tanda,
             'ultimo_total' => $ultimo_total,
@@ -2045,9 +2044,12 @@ class PlanillaDePrueba
      *  - EL PIE (FILA_TOTAL si su rótulo es de total; FILA_TITULO si es una nota, una firma, una fecha):
      *      · en cualquier hoja, desde el primer total de la tanda final de notas y totales (ver
      *        resumir_la_hoja(), `pie_por_total`);
-     *      · en una hoja cuyos artículos traen código (`con_codigos`), además, todo lo que está DEBAJO de la
-     *        última fila con código y no trae código, precio ni costo («Actualizó: Mirta 12/11» después de
-     *        «Total artículos: 20»). En una hoja así un artículo sin código ni precio al final no existe.
+     *      · en una hoja cuyos artículos traen código (`con_codigos`, contado sobre la hoja entera), además,
+     *        DEBAJO de la última fila con código: una sola celda de texto (solo el nombre, o solo un texto en la
+     *        columna del código: «Actualizó: Mirta 12/11» después de «Total artículos: 20») o un rótulo de total.
+     *        Una fila con el nombre y algún otro dato (stock, marca, precio) es un ARTÍCULO y entra (E8.4). Un
+     *        nombre suelto ahí abajo se deja afuera, como ya hacía parece_un_rubro() en el medio: en una hoja con
+     *        códigos un nombre sin ningún otro dato no se distingue de un rubro o una nota (queda nombrado).
      *  - En el medio de la hoja:
      *      · FILA_TITULO: la cabecera repetida entera (repite_la_cabecera()).
      *      · FILA_SUBTOTAL (o FILA_TOTAL si cuenta): solo en una hoja con códigos, rótulo de total en la columna
@@ -2112,12 +2114,14 @@ class PlanillaDePrueba
         $columnas_de_importe = self::columnas_de_importe($mapeo);
         $hoja_con_codigos = !empty($resumen['con_codigos']);
 
-        // EL PIE (E8.3). Lo que viene desde el total del pie (notas, firmas, fechas) y, en una hoja con códigos, todo
-        // lo que está debajo de la última fila con código y no trae código, precio ni costo.
+        // EL PIE (E8.3, E8.4). Lo que viene desde el total del pie (notas, firmas, fechas) y, en una hoja con códigos,
+        // debajo de la última fila con código: una celda sola de texto o un rótulo de total. Una fila con el nombre y
+        // algún otro dato (stock, marca, precio) es un artículo, esté donde esté.
         $en_el_pie = (isset($resumen['pie_por_total']) && $numero >= (int) $resumen['pie_por_total'])
             || ($hoja_con_codigos && isset($resumen['ultima_con_codigo']) && $numero > (int) $resumen['ultima_con_codigo']
                 && !self::tiene_codigo_de_articulo($con_dato, $columnas_de_codigo)
-                && array_intersect_key($con_dato, $columnas_de_importe) === []);
+                && (self::es_texto_solo($con_dato, $columna_del_nombre, $columnas_de_codigo)
+                    || self::es_fila_de_total($con_dato, $columna_del_nombre, $columnas_de_codigo, $columnas_de_importe) !== null));
         if ($en_el_pie) {
             $rotulo = self::posicion_del_rotulo($con_dato, $columna_del_nombre, $columnas_de_codigo);
             $texto = $rotulo !== null ? $con_dato[$rotulo] : (string) reset($con_dato);
@@ -2167,17 +2171,39 @@ class PlanillaDePrueba
     }
 
     /**
+     * ¿La fila es UNA sola celda de texto, en la columna del nombre o en una de código? Sin código, precio, costo,
+     * stock ni ningún otro dato: lo que queda debajo del último código con esa forma es una nota o una firma.
+     *
+     * @param  array    $con_dato
+     * @param  int|null $columna_del_nombre
+     * @param  array    $columnas_de_codigo
+     * @return bool
+     */
+    private static function es_texto_solo(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo): bool
+    {
+        if (count($con_dato) !== 1) {
+            return false;
+        }
+        $posicion = (int) array_key_first($con_dato);
+        $valor = (string) reset($con_dato);
+
+        return ($posicion === $columna_del_nombre || isset($columnas_de_codigo[$posicion]))
+            && self::importe($valor) === null && preg_match('/\pL/u', $valor) === 1;
+    }
+
+    /**
      * ¿El texto se presenta como título? Empieza con «Rubro», «Sección», «Categoría», «Familia» o «Línea» seguido de
-     * dos puntos («Rubro: Construcción», «LINEA: Sanitarios»), o termina en dos puntos («Pinturería:»). Vale en
-     * cualquier hoja: un artículo no se escribe así (E8.3).
+     * dos puntos («Rubro: Construcción», «LINEA: Sanitarios»), o termina en dos puntos y no trae números
+     * («Pinturería:»; «Cable 2x1,5:» es un artículo). Vale en cualquier hoja (E8.3, E8.4).
      *
      * @param  string $texto
      * @return bool
      */
     private static function es_titulo_con_rotulo(string $texto): bool
     {
+        // «Cable 2x1,5:» es un artículo: el «:» final solo cuenta sin números (E8.4).
         return count(preg_split('/\s+/u', trim($texto))) <= 5
-            && (substr(rtrim($texto), -1) === ':'
+            && ((substr(rtrim($texto), -1) === ':' && preg_match('/\d/', $texto) !== 1)
                 || preg_match('/^\s*(?:rubro|secci[oó]n|categor[ií]a|familia|l[ií]nea)s?\s*:/iu', $texto) === 1);
     }
 
