@@ -407,22 +407,37 @@ class LocalImportHelper {
 	const CONTACTOS_CON_DATOS_POR_SUELTA = 4;
 
 	/**
-	 * ¿Una fila de SOLO nombre es una «suelta» (un título de grupo sin dos puntos ni mayúsculas: «Mayoristas»,
-	 * «Gremio de la construcción», «Grupo A») y no un contacto? (misión prueba-e2e-campana-imperio, ronda 8, A1)
+	 * El vocabulario cerrado de agrupación (ronda 8, A1, segunda pasada): la PRIMERA palabra de un título de grupo, ya
+	 * comparable (sin acentos, en minúscula) y en singular. «cuenta» y «cta» valen solo seguidas de «corriente»/«cte».
+	 */
+	const PALABRAS_DE_GRUPO = ['cliente', 'proveedor', 'empresa', 'comercio', 'mayorista', 'minorista', 'particular',
+		'revendedor', 'distribuidor', 'gremio', 'vecino', 'deudor', 'moroso', 'activo', 'inactivo', 'nuevo', 'viejo',
+		'vario', 'otro', 'resto', 'zona', 'barrio', 'obra', 'consumidor', 'contado', 'lista', 'listado', 'cuenta', 'cta'];
+
+	/** Preposiciones y contracciones con las que empieza un título de grupo en minúscula («Del barrio», «Por zona»). */
+	const PREPOSICIONES_DE_GRUPO = ['de', 'del', 'para', 'por', 'con', 'sin', 'a', 'al', 'en', 'desde', 'hasta'];
+
+	/**
+	 * ¿Una fila de SOLO nombre es una «suelta» (un título de grupo sin dos puntos ni mayúsculas: «Mayoristas», «Vecinos
+	 * del barrio», «Del barrio») y no un contacto? (misión prueba-e2e-campana-imperio, ronda 8, A1; segunda pasada)
 	 *
-	 * La regla, toda junta (lo que no la cumple entra como contacto, como siempre):
+	 * 🔴 Una fila de solo nombre ENTRA, como siempre («Gómez», «Kiosco», «la esquina», «Del Valle»), salvo que tenga una
+	 * señal POSITIVA de que nombra un grupo. Hace falta todo esto:
 	 *  1. La lista trae contactos con datos: al menos CONTACTOS_CON_DATOS_PARA_SUELTAS filas con algún dato además
-	 *     del nombre (teléfono, CUIT, saldo…; el saldo cuenta: «Sandra Ojeda | | | 1500» es un contacto con datos).
-	 *     Una lista de SOLO nombres no tiene con qué comparar: ahí todas son contactos.
+	 *     del nombre (teléfono, CUIT, saldo…; el saldo cuenta). Una lista de SOLO nombres: todas son contactos.
 	 *  2. Casi todas las demás traen algún dato: las filas de solo nombre y sin señal de título (`sin_senal` de
-	 *     contexto_de_contactos(), esta incluida) son MAXIMO_DE_SUELTAS como mucho, y hay al menos
-	 *     CONTACTOS_CON_DATOS_POR_SUELTA contactos con datos por cada una. Con más filas de solo nombre la lista
-	 *     también carga contactos así y no se descarta ninguna.
-	 *  3. La forma no es la de un contacto: no es una razón social ni un cliente genérico (nunca_es_titulo()), no se
-	 *     escribe como un nombre propio de dos palabras o más («Juan Pérez», «Zona Sur Materiales»), no es una sigla
-	 *     corta («YPF»), no tiene números («Taller Ruta 14») y no está toda en mayúsculas (eso lo juzga la señal débil,
-	 *     y en una lista que escribe así sus nombres no dice nada).
-	 * Queda afuera NOMBRADA en el aviso: si era un contacto, el dueño lo dice y se carga.
+	 *     contexto_de_contactos(), esta incluida) son MAXIMO_DE_SUELTAS como mucho, con al menos
+	 *     CONTACTOS_CON_DATOS_POR_SUELTA contactos con datos por cada una. Con más, la lista también carga contactos
+	 *     así y no se descarta ninguna.
+	 *  3. No es razón social ni cliente genérico (nunca_es_titulo(): «Empresas Reunidas SA», «Varios»), no se escribe
+	 *     como nombre propio («Obras Sanitarias», «Clientes Unidos»), no tiene números y no está toda en mayúsculas.
+	 *  4. Y una señal positiva (senal_de_grupo()):
+	 *      · la primera palabra, en singular, es de PALABRAS_DE_GRUPO y todo lo que sigue va en minúscula
+	 *        («Clientes del taller», «Mayoristas y distribuidores», «Gremio de la construcción»); o
+	 *      · empieza con una de PREPOSICIONES_DE_GRUPO y todo lo que sigue (al menos una palabra) va en minúscula
+	 *        («Del barrio», «De la zona norte», «Para cobrar»). Con una palabra capitalizada después es un apellido y
+	 *        entra («Del Valle», «De la Fuente», «Del Río»).
+	 * Queda afuera NOMBRADA en el aviso.
 	 *
 	 * @param  string $nombre
 	 * @param  array  $contexto  El de contexto_de_contactos()
@@ -439,14 +454,44 @@ class LocalImportHelper {
 			|| preg_match('/\d/u', $nombre) === 1) {
 			return false;
 		}
-		$letras = preg_replace('/[^\pL]/u', '', $nombre);
-		if (mb_strlen($letras) <= 5 && mb_strtoupper($letras, 'UTF-8') === $letras) {
+
+		return self::senal_de_grupo($nombre);
+	}
+
+	/**
+	 * La señal positiva de un título de grupo (ver es_fila_suelta(), punto 4).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function senal_de_grupo($nombre) {
+		$originales = preg_split('/\s+/u', trim($nombre));
+		$palabras = explode(' ', \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre));
+		if ($palabras === [] || $palabras[0] === '' || count($originales) !== count($palabras)) {
 			return false;
+		}
+		// Lo que sigue a la primera palabra va todo en minúscula: si no, es un nombre o un apellido.
+		foreach (array_slice($originales, 1) as $palabra) {
+			if (preg_match('/\p{Lu}/u', $palabra) === 1) {
+				return false;
+			}
+		}
+		$primera = $palabras[0];
+		if (in_array($primera, self::PREPOSICIONES_DE_GRUPO, true)) {
+			return count($palabras) >= 2;
+		}
+		$singular = in_array($primera, self::PALABRAS_DE_GRUPO, true) ? $primera
+			: (in_array(preg_replace('/es$/', '', $primera), self::PALABRAS_DE_GRUPO, true) ? preg_replace('/es$/', '', $primera)
+				: preg_replace('/s$/', '', $primera));
+		if (!in_array($singular, self::PALABRAS_DE_GRUPO, true)) {
+			return false;
+		}
+		if ($singular === 'cuenta' || $singular === 'cta') {
+			return isset($palabras[1]) && in_array($palabras[1], ['corriente', 'corrientes', 'cte', 'ctes'], true);
 		}
 
 		return true;
 	}
-
 	/**
 	 * ¿El nombre se presenta como título de sección (señal FUERTE)? (E8.2, ajustado en E8.4)
 	 *  - termina en «:» («Zona norte:», «Proveedores de obra:»); o

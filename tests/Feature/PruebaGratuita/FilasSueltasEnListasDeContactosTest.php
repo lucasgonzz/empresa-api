@@ -115,4 +115,39 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
         // Sin contexto (solo totales y decorados), una fila de solo nombre siempre es un contacto.
         $this->assertNull(LocalImportHelper::motivo_de_fila_que_no_es_un_contacto(self::sola('Mayoristas'), self::COLUMNAS));
     }
+
+    /**
+     * Segunda pasada de A1: una fila de solo nombre ENTRA salvo una señal positiva de grupo. Cada caso, solo, en una
+     * lista de 9 contactos con datos (teléfono y saldo), arriba y en el medio.
+     */
+    public function test_segunda_pasada_entran_los_contactos_y_quedan_afuera_solo_los_grupos(): void
+    {
+        $entran = ['Gómez', 'Carla', 'Martín', 'juan perez', 'Juan pérez', 'Kiosco', 'Panadería', 'la esquina', 'Pirulo', 'Del Valle',
+            'De la Fuente', 'Obras Sanitarias', 'Empresas Reunidas SA', 'Doña Rosa', 'Rotisería El Gallo', 'YPF', 'Taller Ruta 14'];
+        $afuera = ['Del barrio', 'Clientes del taller', 'Empresas', 'Mayoristas', 'Minoristas', 'Particulares', 'Otros',
+            'Vecinos del barrio', 'Gremio de la construcción', 'Mayoristas y distribuidores', 'Revendedores'];
+        $datos = [];
+        for ($i = 1; $i <= 9; $i++) {
+            $datos[] = ['Contacto con datos ' . $i, null, '3442 40' . str_pad((string) $i, 4, '0', STR_PAD_LEFT), 1000 * $i];
+        }
+        foreach ($entran as $nombre) {
+            $this->assertSame([], self::afuera(array_merge([self::sola($nombre)], $datos)), 'arriba, entra: ' . $nombre);
+            $this->assertSame([], self::afuera(array_merge(array_slice($datos, 0, 5), [self::sola($nombre)], array_slice($datos, 5))),
+                'en el medio, entra: ' . $nombre);
+        }
+        foreach ($afuera as $nombre) {
+            $this->assertSame([$nombre], array_keys(self::afuera(array_merge([self::sola($nombre)], $datos))), 'arriba, afuera: ' . $nombre);
+            $this->assertSame([$nombre], array_keys(self::afuera(array_merge(array_slice($datos, 0, 5), [self::sola($nombre)],
+                array_slice($datos, 5)))), 'en el medio, afuera: ' . $nombre);
+        }
+        // Más casos de la señal: preposición con minúscula afuera; con apellido, adentro; «cuenta» solo con «corriente».
+        foreach (['De la zona norte', 'Para cobrar', 'Por zona', 'Cuenta corriente', 'Cta cte', 'Al día'] as $nombre) {
+            $this->assertSame([$nombre], array_keys(self::afuera(array_merge([self::sola($nombre)], $datos))), 'afuera: ' . $nombre);
+        }
+        foreach (['Del Río', 'Cuenta', 'Varios', 'Clientes Unidos SRL', 'De'] as $nombre) {
+            $this->assertSame([], self::afuera(array_merge([self::sola($nombre)], $datos)), 'entra: ' . $nombre);
+        }
+        // Un contacto real de solo nombre y un grupo en la misma lista: el contacto entra y el grupo queda afuera.
+        $this->assertSame(['Mayoristas'], array_keys(self::afuera(array_merge([self::sola('Mayoristas')], $datos, [self::sola('Gómez')]))));
+    }
 }

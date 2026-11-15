@@ -534,6 +534,8 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         $this->assertFalse(Client::where('user_id', $this->dueno->id)->whereIn('name', ['Mayoristas', 'Minoristas:', 'TOTAL'])->exists());
         $this->assertSame(['Mayoristas', 'Minoristas:', 'TOTAL'], array_column($corrida->resumen['filas_descartadas'], 'texto'));
         $this->assertSame(['suelta', 'titulo', 'total'], array_column($corrida->resumen['filas_descartadas'], 'motivo'));
+        // En el orden de la planilla.
+        $this->assertSame([2, 7, 13], array_column($corrida->resumen['filas_descartadas'], 'fila'));
         $this->assertSame('Cargué 9 clientes de «clientes nov.xlsx». Entre todos te deben $77.600,50 y 1 tiene saldo a favor ($500):'
             . ' el neto es $77.100,50. El saldo más alto es el de Electricidad Suelta Cuatro ($42.000). Dejé afuera 3 filas que no'
             . ' son clientes: «Mayoristas», «Minoristas:» y «TOTAL». Si alguna era un cliente, decímelo y la cargo. Si algo no'
@@ -796,5 +798,23 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         // Solo el total: no se ofrece cargarlo.
         $this->assertSame(' Dejé afuera 1 fila que no es un proveedor: «TOTAL».', $texto->invoke(new ImportacionDeSoporteService(),
             ['filas_descartadas' => [['fila' => 9, 'texto' => 'TOTAL', 'motivo' => 'total']], 'filas_descartadas_total' => 1], 'proveedor', 'proveedores'));
+    }
+
+    public function test_segunda_pasada_los_saldos_que_no_se_cargan_se_dicen_con_su_monto(): void
+    {
+        $viejo = Provider::create(['user_id' => $this->dueno->id, 'name' => 'Proveedor Viejo NSC', 'num' => 9601, 'phone' => '1']);
+        \App\Http\Controllers\Helpers\CreditAccountHelper::crear_credit_accounts('provider', $viejo->id, $this->dueno->id);
+        \App\Http\Controllers\Helpers\LocalImportHelper::crearSaldoInicialPorImportacion(500,
+            \App\Http\Controllers\Helpers\LocalImportHelper::get_credit_account_pesos('provider', $viejo->id), 'provider', $viejo);
+        $this->analizador(AiProviderAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('provider', $this->planilla([
+            ['Proveedor', 'Telefono', 'Saldo'], ['Proveedor Viejo NSC', '1', 800], ['Proveedor Nuevo NSC', '2', 300],
+        ]), 170, 'p.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+        $this->assertEqualsWithDelta(500, $this->saldo('provider', $viejo->id), 0.001);
+        $this->assertSame('Cargué 1 proveedor nuevo de «p.xlsx»; los demás ya estaban igual. En total les debés $300. A 1 no le cargué'
+            . ' el saldo de tu planilla ($800) porque su cuenta ya tenía movimientos: en el sistema sigue con $500. Si algo no coincide'
+            . ' con tu lista, decímelo y lo deshago.', $this->avisos(170)->last()->texto);
     }
 }

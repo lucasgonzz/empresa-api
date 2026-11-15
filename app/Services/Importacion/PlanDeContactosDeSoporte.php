@@ -369,6 +369,13 @@ class PlanDeContactosDeSoporte
             // filas con saldo legible, se muevan o no; sin las que no se cargan) para que cierre con la planilla.
             $resumen += self::totales_de_saldos($de_la_lista) + [
                 'existentes_con_cambios' => $existentes_con_cambios,
+                // Los saldos de la planilla que no se cargan (cuenta con movimientos): para decirlos con su monto.
+                'saldo_no_cargado_total' => round(array_sum(array_map(function ($saldo) {
+                    return $saldo['accion'] === 'no_se_carga' ? (float) $saldo['saldo_excel'] : 0.0;
+                }, $saldos)), 2),
+                'saldo_no_cargado_en_el_sistema' => round(array_sum(array_map(function ($saldo) {
+                    return $saldo['accion'] === 'no_se_carga' ? (float) $saldo['saldo_actual'] : 0.0;
+                }, $saldos)), 2),
                 'existentes_iguales' => $existentes_iguales,
                 'saldos_ilegibles_total' => count($ilegibles),
                 'filas_descartadas' => array_slice($descartadas, 0, self::MAXIMO_DE_SALDOS),

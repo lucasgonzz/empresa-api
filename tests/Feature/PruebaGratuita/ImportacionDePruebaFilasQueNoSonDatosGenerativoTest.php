@@ -91,9 +91,11 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         $fallas = [];
         $filas_juzgadas = 0;
         $listas_con_sueltas = 0;
+        $listas_con_reales = 0;
         for ($caso = 0; $caso < self::PLANILLAS; $caso++) {
             $lista = GeneradorDePlanillasDesordenadas::contactos($caso);
             $listas_con_sueltas += $lista['sueltas'] > 0 ? 1 : 0;
+            $listas_con_reales += $lista['reales_de_solo_nombre'] > 0 ? 1 : 0;
             $filas = array_values($lista['filas']); // como llega a collection(): 0-based, la fila 1 en el índice 0
             $descartes = LocalImportHelper::filas_que_no_son_contactos_de($filas, $lista['columnas'], $lista['inicio'], count($filas));
             foreach ($lista['datos'] as $numero) {
@@ -111,9 +113,11 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
             }
         }
         fwrite(STDERR, PHP_EOL . 'Contactos: ' . self::PLANILLAS . ' listas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas, '
-            . $listas_con_sueltas . ' listas con filas sueltas.' . PHP_EOL);
+            . $listas_con_sueltas . ' listas con filas sueltas, ' . $listas_con_reales . ' con contactos reales de solo nombre.' . PHP_EOL);
         // Ronda 8, A1: la clase de las filas sueltas tiene que estar en la muestra, no solo en los tests de forma.
         $this->assertGreaterThan(40, $listas_con_sueltas, 'La muestra casi no trae listas con filas sueltas.');
+        // Segunda pasada de A1: los dos lados, también los contactos de solo nombre que tienen que entrar.
+        $this->assertGreaterThan(40, $listas_con_reales, 'La muestra casi no trae contactos reales de solo nombre.');
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . (self::SEMILLA + 1) . ': ' . count($fallas) . ' fallas.');
     }
 

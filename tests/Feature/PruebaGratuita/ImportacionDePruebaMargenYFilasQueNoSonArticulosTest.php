@@ -304,9 +304,9 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
         // Sin cupo de imágenes: el cierre de la importación no sale a buscar fotos (no es lo que se mide acá).
         \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
-        // B2 (ronda 8): todas nombradas (eran 4 y un «…» mudo) y la cabecera repetida, dicha.
+        // B2 (ronda 8): todas nombradas (eran 4 y un «…» mudo), en el orden de la planilla, y la cabecera repetida, dicha.
         $frase = ' Dejé afuera 8 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
-            . ' “--- ELECTRICIDAD ---”, “--- SANITARIOS ---”, “Consulte por descuentos por cantidad”, “TOTAL LISTA” y la cabecera'
+            . ' “--- ELECTRICIDAD ---”, “--- SANITARIOS ---”, “TOTAL LISTA”, “Consulte por descuentos por cantidad” y la cabecera'
             . ' repetida. Si alguna era un producto, decímelo y la cargo.';
         $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
         $run = $this->avanzar($run);
@@ -775,7 +775,8 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
         $this->assertSame(['Consulte por descuentos por cantidad'], $salteadas['textos_titulo']);
         $frase = PlanillaDePrueba::texto_de_filas_salteadas($run->hojas);
-        $this->assertSame(' Dejé afuera 2 filas que no son artículos: “Consulte por descuentos por cantidad”, “TOTAL LISTA”.'
+        // Ronda 8, segunda pasada: en el orden de la planilla (el total está arriba de la nota).
+        $this->assertSame(' Dejé afuera 2 filas que no son artículos: “TOTAL LISTA”, “Consulte por descuentos por cantidad”.'
             . ' Si alguna era un producto, decímelo y la cargo.', $frase);
         $this->assertStringNotContainsString('.”.', $frase);
     }
@@ -1160,7 +1161,8 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $this->assertSame(2, $salteadas['titulo']);
         $this->assertSame(1, $salteadas['total']);
         $this->assertSame(
-            ' Dejé afuera 3 filas que no son artículos: “--- HERRAMIENTAS DE MANO ---”, “Precios sujetos a cambio”, “TOTAL”.'
+            // Ronda 8, segunda pasada: en el orden de la planilla.
+            ' Dejé afuera 3 filas que no son artículos: “--- HERRAMIENTAS DE MANO ---”, “TOTAL”, “Precios sujetos a cambio”.'
             . ' Si alguna era un producto, decímelo y la cargo.',
             PlanillaDePrueba::texto_de_filas_salteadas($run->hojas)
         );

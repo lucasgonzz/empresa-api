@@ -1203,7 +1203,7 @@ class ImportacionDeSoporteService
             $texto = 'No cargué ningún ' . $singular . ' nuevo de «' . $archivo . '»: ya estaban todos igual.';
         }
 
-        return $texto . $this->texto_de_totales($resumen, $proveedores) . $this->texto_de_no_cargados($resultado)
+        return $texto . $this->texto_de_totales($resumen, $proveedores) . $this->texto_de_no_cargados($resultado, $resumen)
             . $this->texto_de_descartadas($resumen, $singular, $plural) . ' Si algo no coincide con tu lista, decímelo y lo deshago.';
     }
 
@@ -1234,12 +1234,28 @@ class ImportacionDeSoporteService
         return $a_favor > 0 ? ' ' . $a_favor . $tiene_a_favor . '.' : '';
     }
 
-    private function texto_de_no_cargados(array $resultado): string
+    /**
+     * Los saldos de la planilla que no se cargaron porque la cuenta ya tenía movimientos, con su monto (no entran en
+     * los totales, así que el aviso dice cuánto falta para cerrar con la planilla).
+     */
+    private function texto_de_no_cargados(array $resultado, array $resumen = []): string
     {
         $no_cargados = (int) ($resultado['saldos_no_cargados'] ?? 0);
+        if ($no_cargados === 0) {
+            return '';
+        }
+        if (!isset($resumen['saldo_no_cargado_total'])) {
+            return ' A ' . $no_cargados . ($no_cargados === 1 ? ' no le cargué' : ' no les cargué')
+                . ' el saldo porque su cuenta ya tenía movimientos.';
+        }
+        $planilla = $this->plata($resumen['saldo_no_cargado_total']);
+        if ($no_cargados === 1) {
+            return ' A 1 no le cargué el saldo de tu planilla (' . $planilla . ') porque su cuenta ya tenía movimientos: en el'
+                . ' sistema sigue con ' . $this->plata($resumen['saldo_no_cargado_en_el_sistema'] ?? 0) . '.';
+        }
 
-        return $no_cargados > 0 ? ' A ' . $no_cargados . ($no_cargados === 1 ? ' no le cargué' : ' no les cargué')
-            . ' el saldo porque su cuenta ya tenía movimientos.' : '';
+        return ' A ' . $no_cargados . ' no les cargué el saldo de tu planilla (' . $planilla . ' entre todos) porque sus cuentas'
+            . ' ya tenían movimientos: en el sistema siguen con ' . $this->plata($resumen['saldo_no_cargado_en_el_sistema'] ?? 0) . '.';
     }
 
     /** Cuántas filas descartadas se nombran en el aviso (B2): hasta este número, todas; con más, «y K más». */

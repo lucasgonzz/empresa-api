@@ -458,6 +458,10 @@ class ImportacionDePruebaService
                 array_values(array_diff(array_keys($campos), ['nombre', 'costo', 'precio', PlanillaDePrueba::CLAVE_MARGEN])),
                 (new PlanillaDePrueba($run))->etiquetas_del_resumen()
             );
+            // Si alguno no traía el código del dueño, no es «de cada artículo» (segunda pasada de B1).
+            if ((int) array_sum(array_column($run->hojas ?? [], 'filas_sin_codigo')) > 0) {
+                $otros = str_replace(PlanillaDePrueba::ETIQUETA_DEL_CODIGO_DEL_DUENO, 'tu código de los que lo traen', $otros);
+            }
             if ($otros !== '') {
                 $texto .= ' También tomé de tu lista: ' . mb_substr($otros, 0, 500) . '.';
             }

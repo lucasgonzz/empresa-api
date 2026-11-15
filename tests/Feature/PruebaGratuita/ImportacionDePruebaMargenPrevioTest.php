@@ -465,6 +465,9 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $this->assertStringContainsString(' Los que traían tu código los encontrás por ese código en el Listado y en Vender; 1 quedó'
             . ' sin código («Martillo sin código MPB») y se busca por su nombre.', $texto);
         $this->assertStringNotContainsString('Cada artículo lo encontrás por tu código', $texto);
+        // Segunda pasada: si alguno no traía código, no es «tu código de cada artículo».
+        $this->assertStringContainsString('También tomé de tu lista: tu código de los que lo traen.', $texto);
+        $this->assertStringNotContainsString('de cada artículo', $texto);
         $this->assertNotNull(Article::where('user_id', $this->dueno->id)->where('name', 'Martillo sin código MPB')->first(),
             'El que no traía código se cargó igual.');
         $this->assertSame(1, ImportacionDePrueba::where('uuid', $uuid)->firstOrFail()->hojas[0]['filas_sin_codigo']);
@@ -573,6 +576,36 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
             'sin_ganancia_ejemplo' => ['nombre' => 'Con margen MPZ', 'sku' => null]]]]);
         $this->assertStringContainsString(' por ahora quedó con la ganancia que ya tenía ($ 181,50).',
             $resumen->invoke(app(ImportacionDePruebaService::class), $corrida, 1, 0, 0, 0));
+    }
+    public function test_segunda_pasada_las_filas_afuera_van_en_el_orden_de_la_planilla(): void
+    {
+        $orden = [['titulo', 'RUBRO A'], ['subtotal', 'Subtotal A'], ['titulo', 'RUBRO B'], ['total', 'TOTAL'], ['titulo', 'Nota al pie']];
+        $this->assertSame(' Dejé afuera 5 filas que no son artículos: “RUBRO A”, “Subtotal A”, “RUBRO B”, “TOTAL”, “Nota al pie”.'
+            . ' Si alguna era un producto, decímelo y la cargo.', PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => [
+                'titulo' => 3, 'subtotal' => 1, 'total' => 1, 'textos_titulo' => ['RUBRO A', 'RUBRO B', 'Nota al pie'],
+                'textos_subtotal' => ['Subtotal A'], 'textos_total' => ['TOTAL'], 'orden' => $orden]]]));
+        // Con más de 10: las primeras en su orden y el total igual a la vista, en su lugar.
+        $orden = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $orden[] = ['titulo', 'R' . $i];
+        }
+        $orden[] = ['total', 'TOTAL'];
+        $this->assertSame(' Dejé afuera 13 filas que no son artículos: “R1”, “R2”, “R3”, “R4”, “R5”, “R6”, “R7”, “R8”, “R9”, “TOTAL” y 3'
+            . ' más. Si alguna era un producto, decímelo y la cargo.', PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => [
+                'titulo' => 12, 'total' => 1, 'textos_titulo' => ['R1'], 'textos_total' => ['TOTAL'], 'orden' => $orden]]]));
+
+        // De punta a punta: un total parcial en el medio y una nota al pie, en una hoja con códigos.
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        $uuid = $this->subir($this->planilla([
+            ['Código', 'Descripción', 'Precio de venta'], ['--- PLOMERIA ---', null, null], ['MPO-1', 'Caño MPO', 100],
+            ['MPO-2', 'Codo MPO', 50], ['--- PINTURERIA ---', null, null], ['MPO-3', 'Látex MPO', 900], ['TOTAL', null, 1050],
+            ['Precios con IVA', null, null],
+        ]), 325)->assertStatus(202)->json('analysis_uuid');
+        Bus::fake();
+        $run = $this->avanzar($uuid);
+        $this->assertSame('importando', $run->estado);
+        $this->assertSame(' Dejé afuera 4 filas que no son artículos: “--- PLOMERIA ---”, “--- PINTURERIA ---”, “TOTAL”, “Precios con IVA”.'
+            . ' Si alguna era un producto, decímelo y la cargo.', PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
     }
 }
 

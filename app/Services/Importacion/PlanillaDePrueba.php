@@ -76,8 +76,11 @@ class PlanillaDePrueba
      * alcanza la etiqueta de las opciones (misión prueba-e2e-campana-imperio, ronda 3, E1). «Número de
      * artículo» o «código propio (SKU)» no le dicen nada a un comerciante: lo que se guardó es SU código.
      */
+    // Cómo se nombra el código del dueño en el resumen; si alguno no lo traía, se cambia por otra (ronda 8, B1).
+    public const ETIQUETA_DEL_CODIGO_DEL_DUENO = 'tu código de cada artículo';
+
     private const ETIQUETAS_DEL_RESUMEN = [
-        'sku' => 'tu código de cada artículo',
+        'sku' => self::ETIQUETA_DEL_CODIGO_DEL_DUENO,
         'numero' => 'el número de los artículos que ya tenías cargados',
     ];
 
@@ -2302,7 +2305,14 @@ class PlanillaDePrueba
         if (count($this->salteadas[$indice][$clave] ?? []) < self::EJEMPLOS_DE_SALTEADAS) {
             $this->salteadas[$indice][$clave][] = mb_substr($texto, 0, 60);
         }
+        // En el orden de la planilla (ronda 8, segunda pasada): una lista, que la columna JSON no reordena.
+        if (count($this->salteadas[$indice]['orden'] ?? []) < self::SALTEADAS_EN_ORDEN) {
+            $this->salteadas[$indice]['orden'][] = [$motivo, mb_substr($texto, 0, 60)];
+        }
     }
+
+    /** Cuántas filas salteadas se guardan en su orden (alcanza para elegir las que se nombran y los totales). */
+    private const SALTEADAS_EN_ORDEN = 50;
 
     /**
      * Por qué una fila de la planilla no es un artículo, o null si hay que importarla (misión
@@ -2662,14 +2672,50 @@ class PlanillaDePrueba
         foreach ($hojas as $hoja) {
             $cabeceras += (int) (($hoja['filas_salteadas'] ?? [])['cabeceras'] ?? 0);
         }
-        $totales = array_slice($totales, 0, 2);
-        $lugar = self::EJEMPLOS_DE_SALTEADAS - count($totales);
-        $titulos = array_slice($titulos, 0, max(0, $lugar - min(1, count($subtotales))));
-        $subtotales = array_slice($subtotales, 0, $lugar - count($titulos));
         $entre_comillas = function ($texto) {
             return '“' . $texto . '”';
         };
-        $partes = array_map($entre_comillas, array_merge($titulos, $subtotales, $totales));
+        // Segunda pasada: en el orden en que aparecen en la planilla, si la corrida lo guardó (las viejas, como antes).
+        $en_orden = [];
+        $con_orden = true;
+        foreach ($hojas as $hoja) {
+            $salteadas = $hoja['filas_salteadas'] ?? [];
+            $con_textos = !empty($salteadas['textos_' . self::FILA_TITULO]) || !empty($salteadas['textos_' . self::FILA_SUBTOTAL])
+                || !empty($salteadas['textos_' . self::FILA_TOTAL]);
+            if ($con_textos && !isset($salteadas['orden'])) {
+                $con_orden = false;
+            }
+            foreach ((array) ($salteadas['orden'] ?? []) as $item) {
+                $en_orden[] = $item;
+            }
+        }
+        if ($con_orden && $en_orden !== []) {
+            if (count($en_orden) > self::EJEMPLOS_DE_SALTEADAS) {
+                // No entran todas: el total (hasta dos) igual a la vista, y el resto del lugar para las primeras.
+                $elegidas = [];
+                foreach ($en_orden as $posicion => $item) {
+                    if ($item[0] === self::FILA_TOTAL && count($elegidas) < 2) {
+                        $elegidas[$posicion] = $item;
+                    }
+                }
+                foreach ($en_orden as $posicion => $item) {
+                    if ($item[0] !== self::FILA_TOTAL && count($elegidas) < self::EJEMPLOS_DE_SALTEADAS) {
+                        $elegidas[$posicion] = $item;
+                    }
+                }
+                ksort($elegidas);
+                $en_orden = array_values($elegidas);
+            }
+            $partes = array_map(function ($item) use ($entre_comillas) {
+                return $entre_comillas($item[1]);
+            }, $en_orden);
+        } else {
+            $totales = array_slice($totales, 0, 2);
+            $lugar = self::EJEMPLOS_DE_SALTEADAS - count($totales);
+            $titulos = array_slice($titulos, 0, max(0, $lugar - min(1, count($subtotales))));
+            $subtotales = array_slice($subtotales, 0, $lugar - count($titulos));
+            $partes = array_map($entre_comillas, array_merge($titulos, $subtotales, $totales));
+        }
         $resto = $filas - count($partes);
         $lista = implode(', ', $partes);
         if ($partes !== [] && $resto > 0) {

@@ -295,9 +295,9 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
         $this->assertEquals(0, (float) $articulo('A-0033')->stock);
         $this->assertEquals(40, (float) $cemento->stock);
 
-        // B2 (ronda 8): las 9 nombradas (antes: cinco y un «…» mudo).
-        $frase = ' Dejé afuera 9 filas que no son artículos: “--- CONSTRUCCION ---”, “PLOMERIA”, “--- PINTURERIA ---”, “BULONERIA”,'
-            . ' “Subtotal construccion”, “Subtotal plomeria”, “Subtotal pintureria”, “Subtotal buloneria”, “TOTAL GENERAL”.'
+        // B2 (ronda 8): las 9 nombradas (antes: cinco y un «…» mudo), en el orden de la planilla (segunda pasada).
+        $frase = ' Dejé afuera 9 filas que no son artículos: “--- CONSTRUCCION ---”, “Subtotal construccion”, “PLOMERIA”,'
+            . ' “Subtotal plomeria”, “--- PINTURERIA ---”, “Subtotal pintureria”, “BULONERIA”, “Subtotal buloneria”, “TOTAL GENERAL”.'
             . ' Si alguna era un producto, decímelo y la cargo.';
         $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
 
