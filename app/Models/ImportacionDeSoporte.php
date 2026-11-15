@@ -24,6 +24,7 @@ class ImportacionDeSoporte extends Model
         'resultado' => 'array',
         'previsto' => 'array',
         'avisar_por_whatsapp' => 'boolean',
+        'modo_prueba' => 'boolean',
         'confirmada_at' => 'datetime',
         'terminada_at' => 'datetime',
         'revertida_at' => 'datetime',
@@ -90,7 +91,9 @@ class ImportacionDeSoporte extends Model
             'tipo' => AiAvisoDelAsistente::TIPO_IMPORTACION_LISTA,
         ], [
             'support_ticket_id' => $this->support_ticket_id,
-            'modo_soporte' => true,
+            // Una corrida de la prueba (ronda 8, D1) va por el barrido de la prueba, como los avisos de artículos de la
+            // prueba: el barrido de activos filtra `modo_soporte = true` y no la toma.
+            'modo_soporte' => !$this->modo_prueba,
             'texto' => $texto,
         ]);
     }

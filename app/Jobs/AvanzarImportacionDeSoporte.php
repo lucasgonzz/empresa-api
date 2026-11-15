@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Models\ImportacionDeSoporte;
 use App\Services\Importacion\ImportacionDeSoporteService;
 use Illuminate\Bus\Queueable;
@@ -46,6 +47,9 @@ class AvanzarImportacionDeSoporte implements ShouldQueue, ShouldBeUnique
 
     public function handle(ImportacionDeSoporteService $servicio): void
     {
+        // El worker atiende varios jobs seguidos: la configuración de la prueba se vuelve a leer (como en
+        // AvanzarImportacionDePrueba, BorrarSemillaDePruebaJob y RegistrarHitoDePruebaJob).
+        PruebaHelper::olvidar_cache();
         Cache::lock('importacion-de-soporte:' . $this->importacion_id, $this->timeout + 60)->get(function () use ($servicio) {
             $corrida = ImportacionDeSoporte::find($this->importacion_id);
             if ($corrida !== null && in_array($corrida->estado, ImportacionDeSoporte::EN_CURSO, true)) {

@@ -17,6 +17,7 @@ use App\Models\EmbeddingRun;
 use App\Models\ImageAssignmentRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\SaleTax;
 use App\Models\TableColumnPreference;
 use App\Models\User;
 use App\Services\CupoEmbeddingsDePrueba;
@@ -136,7 +137,19 @@ class ImportacionDePruebaService
          */
         if (!$run->modo_soporte) {
             // Filas sueltas con costo y sin ganancia en una hoja que sí trae esa columna: se pregunta solo por ellas.
-            $margen = PlanillaDePrueba::pregunta_del_margen($hojas, $planilla->contar_sin_ganancia($hojas));
+            $sin_ganancia = $planilla->contar_sin_ganancia($hojas);
+            /*
+             * `precio:N` (ronda 8, D2: lo pasó soporte al lanzar o lo contestó el dueño) vale solo si hay EXACTAMENTE
+             * un artículo con costo y sin ganancia ni precio: ninguna hoja entera sin columna de venta y una sola fila
+             * así. Si no, la decisión se borra y se pregunta como siempre.
+             */
+            if (PlanillaDePrueba::precio_de_decision($decisiones[PlanillaDePrueba::CLAVE_MARGEN] ?? null) !== null
+                && !(array_filter($hojas, [PlanillaDePrueba::class, 'hoja_necesita_margen']) === [] && $sin_ganancia === 1)) {
+                unset($decisiones[PlanillaDePrueba::CLAVE_MARGEN]);
+                $run->decisiones = $decisiones;
+                $run->save();
+            }
+            $margen = PlanillaDePrueba::pregunta_del_margen($hojas, $sin_ganancia, $planilla->nombre_del_primero_sin_ganancia());
             if ($margen !== [] && !isset($decisiones[PlanillaDePrueba::CLAVE_MARGEN])) {
                 DB::transaction(function () use ($run, $margen) {
                     $this->consultar($run, 'columnas', $margen);
@@ -162,15 +175,40 @@ class ImportacionDePruebaService
         }
         // Títulos de rubro y totales que no se importan: quedan en la corrida para contarlo en el resumen.
         foreach ($hojas as &$hoja) {
-            unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado']);
+            unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado'],
+                $hoja['filas_con_precio_agregado'], $hoja['sin_ganancia_ejemplo'], $hoja['margen_agregado_ejemplo'],
+                $hoja['precio_agregado_ejemplo'], $hoja['filas_sin_codigo'], $hoja['sin_codigo_ejemplos'], $hoja['importes_ilegibles'],
+                $hoja['parecen_totales']);
+            if (!empty($plan['parecen_totales'][$hoja['indice']])) {
+                $hoja['parecen_totales'] = $plan['parecen_totales'][$hoja['indice']];
+            }
+            if (!empty($plan['importes_ilegibles'][$hoja['indice']])) {
+                $hoja['importes_ilegibles'] = $plan['importes_ilegibles'][$hoja['indice']];
+            }
             if (!empty($plan['salteadas'][$hoja['indice']])) {
                 $hoja['filas_salteadas'] = $plan['salteadas'][$hoja['indice']];
             }
             if (!empty($plan['sin_ganancia'][$hoja['indice']])) {
                 $hoja['filas_sin_ganancia'] = $plan['sin_ganancia'][$hoja['indice']];
             }
+            if (!empty($plan['precio_agregado'][$hoja['indice']])) {
+                $hoja['filas_con_precio_agregado'] = $plan['precio_agregado'][$hoja['indice']];
+            }
+            if (!empty($plan['sin_ganancia_ejemplo'][$hoja['indice']])) {
+                $hoja['sin_ganancia_ejemplo'] = $plan['sin_ganancia_ejemplo'][$hoja['indice']];
+            }
             if (!empty($plan['margen_agregado'][$hoja['indice']])) {
                 $hoja['filas_con_margen_agregado'] = $plan['margen_agregado'][$hoja['indice']];
+            }
+            // B1 y B3 (ronda 8): cuál quedó con el margen o el precio del dueño, y los que quedaron sin código.
+            foreach (['margen_agregado_ejemplo', 'precio_agregado_ejemplo'] as $clave) {
+                if (!empty($plan[$clave][$hoja['indice']])) {
+                    $hoja[$clave] = $plan[$clave][$hoja['indice']];
+                }
+            }
+            if (!empty($plan['sin_codigo'][$hoja['indice']]['cantidad'])) {
+                $hoja['filas_sin_codigo'] = (int) $plan['sin_codigo'][$hoja['indice']]['cantidad'];
+                $hoja['sin_codigo_ejemplos'] = $plan['sin_codigo'][$hoja['indice']]['nombres'];
             }
         }
         unset($hoja);
@@ -397,7 +435,8 @@ class ImportacionDePruebaService
             }
 
             // En la prueba el resumen va en palabras del dueño: qué se cargó y con qué precio.
-            $detalle = $this->resumen_en_palabras($run, $creados, $actualizados, $omitidas, (int) $problemas['para_revisar']);
+            $detalle = $this->resumen_en_palabras($run, $creados, $actualizados, $omitidas, (int) $problemas['para_revisar'],
+                (int) $problemas['para_revisar'] > 0 ? self::cuales_para_revisar((int) $historial->id) : '');
             $texto = $detalle;
 
             $lote = $this->iniciar_imagenes($run, $historial);
@@ -427,13 +466,17 @@ class ImportacionDePruebaService
                 array_values(array_diff(array_keys($campos), ['nombre', 'costo', 'precio', PlanillaDePrueba::CLAVE_MARGEN])),
                 (new PlanillaDePrueba($run))->etiquetas_del_resumen()
             );
+            // Si alguno no traía el código del dueño, no es «de cada artículo» (segunda pasada de B1).
+            if ((int) array_sum(array_column($run->hojas ?? [], 'filas_sin_codigo')) > 0) {
+                $otros = str_replace(PlanillaDePrueba::ETIQUETA_DEL_CODIGO_DEL_DUENO, 'tu código de los que lo traen', $otros);
+            }
             if ($otros !== '') {
                 $texto .= ' También tomé de tu lista: ' . mb_substr($otros, 0, 500) . '.';
             }
             // El código del dueño quedó como SKU (ver `PlanillaDePrueba::codigo_del_dueno_como_sku`): se busca por él.
             if (isset($campos['sku'])) {
                 self::buscar_tambien_por_sku((int) $run->user_id);
-                $texto .= ' Cada artículo lo encontrás por tu código en el Listado y en Vender.';
+                $texto .= self::texto_de_la_busqueda_por_codigo($run->hojas ?? []);
             }
             $semilla_borrada_at = optional(PruebaHelper::config((int) $run->user_id))->semilla_borrada_at;
             if ($semilla_borrada_at !== null && $semilla_borrada_at->gte($historial->created_at)) {
@@ -466,7 +509,8 @@ class ImportacionDePruebaService
      * @param  int $para_revisar   Filas cargadas con algún dato a revisar
      * @return string
      */
-    private function resumen_en_palabras(ImportacionDePrueba $run, int $creados, int $actualizados, int $omitidas, int $para_revisar): string
+    private function resumen_en_palabras(ImportacionDePrueba $run, int $creados, int $actualizados, int $omitidas, int $para_revisar,
+        string $cuales_para_revisar = ''): string
     {
         $hojas = $run->hojas ?? [];
         $campos = [];
@@ -488,12 +532,25 @@ class ImportacionDePruebaService
         } elseif ($trae_precio) {
             $con = ' con su precio de venta (sin costo)';
         } elseif (isset($campos['costo'])) {
-            $con = ' con su costo (el precio de venta lo cargás vos después)';
+            // D3 (ronda 8): «después» no deja los artículos sin precio; se venden al costo (con IVA si corresponde).
+            $con = ' con su costo y sin ganancia: por ahora se venden al costo (con IVA si corresponde); el precio de venta lo cargás vos después';
         } else {
             $con = '';
         }
 
         $total = $creados + $actualizados;
+        /*
+         * Quinta pasada (B2): «con su costo y su precio de venta» tiene que ser cierto. Si algunos no traían el precio (o
+         * se les puso el margen o el precio del dueño), se dice cuántos lo traían.
+         */
+        $sin_precio_propio = (int) array_sum(array_column($hojas, 'filas_sin_ganancia'))
+            + (int) array_sum(array_column($hojas, 'filas_con_margen_agregado')) + (int) array_sum(array_column($hojas, 'filas_con_precio_agregado'))
+            + (int) array_sum(array_map(function ($hoja) { return (int) (($hoja['importes_ilegibles'] ?? [])['total_precio'] ?? 0); }, $hojas));
+        if ($con === ' con su costo y su precio de venta' && $sin_precio_propio > 0 && $total > 1) {
+            $con_precio = max(0, $total - $sin_precio_propio);
+            $con = ' con su costo; ' . ($con_precio === 0 ? 'ninguno traía su precio de venta'
+                : ($con_precio === 1 ? '1 traía también su precio de venta' : $con_precio . ' traían también su precio de venta'));
+        }
         $texto = 'Cargué ' . $total . ($total === 1 ? ' artículo' : ' artículos') . $con . '.';
         if ($creados > 0 && $actualizados > 0) {
             $texto .= ' ' . $creados . ($creados === 1 ? ' es nuevo' : ' son nuevos') . ' y '
@@ -505,26 +562,298 @@ class ImportacionDePruebaService
             $texto .= $omitidas === 1 ? ' 1 fila quedó sin cargar.' : ' ' . $omitidas . ' filas quedaron sin cargar.';
         }
         if ($para_revisar > 0) {
-            $texto .= $para_revisar === 1 ? ' 1 fila quedó para revisar.' : ' ' . $para_revisar . ' filas quedaron para revisar.';
+            // Quinta pasada (B2): nunca «N filas para revisar» sin decir cuáles y por qué, si se sabe.
+            $texto .= ($para_revisar === 1 ? ' 1 fila quedó para revisar' : ' ' . $para_revisar . ' filas quedaron para revisar')
+                . ($cuales_para_revisar === '' ? '' : ': ' . $cuales_para_revisar) . '.';
         }
 
-        // Los que traían costo y ninguna ganancia: o se les sumó la que contestó el dueño, o quedaron al costo.
+        // Los que traían costo y no el precio de venta: se les sumó la ganancia que dijo el dueño. B3 (ronda 8): cuál
+        // (o cuántos), el porcentaje y en cuánto quedó el precio final de uno de ellos, leído del artículo cargado.
         $agregado = (int) array_sum(array_column($hojas, 'filas_con_margen_agregado'));
         if ($agregado > 0 && $margen !== null) {
-            $texto .= $agregado === 1 ? ' Al que no traía ganancia le sumé un ' . $margen . ' %.'
-                : ' A los ' . $agregado . ' que no traían ganancia les sumé un ' . $margen . ' %.';
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_con_margen_agregado', 'margen_agregado_ejemplo');
+            $nombre = is_null($ejemplo) ? '' : mb_substr(trim((string) $ejemplo['nombre']), 0, 60);
+            $quedo = $this->en_cuanto_quedo($run, $ejemplo, (float) $margen);
+            if ($agregado === 1) {
+                $texto .= ' ' . ($nombre !== '' ? '«' . $nombre . '»' : '1 artículo') . ' no traía precio de venta: le sumé un '
+                    . $margen . ' % de ganancia' . ($quedo === '' ? '' : ' y quedó en ' . $quedo) . '.';
+            } else {
+                $texto .= ' ' . $agregado . ' artículos no traían precio de venta: les sumé un ' . $margen . ' % de ganancia'
+                    . ($quedo === '' || $nombre === '' ? '' : ' (por ejemplo, «' . $nombre . '» quedó en ' . $quedo . ')') . '.';
+            }
         }
+        // El precio que dijo el dueño para el único que no lo traía (ronda 8, D2), con su nombre (B3).
+        $precio = PlanillaDePrueba::precio_de_decision(($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null);
+        if ($precio !== null && (int) array_sum(array_column($hojas, 'filas_con_precio_agregado')) > 0) {
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_con_precio_agregado', 'precio_agregado_ejemplo');
+            $nombre = is_null($ejemplo) ? '' : mb_substr(trim((string) $ejemplo['nombre']), 0, 60);
+            $texto .= ' Al que no traía precio' . ($nombre !== '' ? ' («' . $nombre . '»)' : '') . ' le puse '
+                . self::pesos((float) $precio) . ' como precio de venta.';
+        }
+        // D3 (ronda 8): lo que quedó sin ganancia, dicho como quedó de verdad. Nunca «lo actualizo»: Martín no tiene con qué.
         $sin_ganancia = (int) array_sum(array_column($hojas, 'filas_sin_ganancia'));
-        if ($sin_ganancia > 0) {
-            $texto .= $sin_ganancia === 1
-                ? ' 1 artículo quedó con costo y sin ganancia: decime qué ganancia le pongo y lo actualizo.'
-                : ' ' . $sin_ganancia . ' artículos quedaron con costo y sin ganancia: decime qué ganancia les pongo y los actualizo.';
+        if ($sin_ganancia === 1) {
+            // Quinta pasada (B4): con su nombre, como en el caso del porcentaje.
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_sin_ganancia', 'sin_ganancia_ejemplo');
+            $nombre = is_null($ejemplo) ? '' : mb_substr(trim((string) $ejemplo['nombre']), 0, 60);
+            $texto .= ' ' . ($nombre !== '' ? '«' . $nombre . '»' : '1 artículo') . ' no traía precio de venta: por ahora '
+                . $this->como_quedo_el_sin_ganancia($run, $hojas) . '. Cuando me digas a cuánto lo vendés te muestro dónde ponerlo.';
+        } elseif ($sin_ganancia > 1) {
+            // Cuarta pasada, B2: con un ejemplo real leído del artículo, como en el caso del porcentaje.
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_sin_ganancia', 'sin_ganancia_ejemplo');
+            $quedo = $this->en_cuanto_quedo($run, $ejemplo, 0.0);
+            $texto .= ' ' . $sin_ganancia . ' artículos no traían precio de venta: por ahora quedaron sin ganancia, al costo'
+                . ($quedo === '' ? '' : ' (por ejemplo, «' . mb_substr(trim((string) $ejemplo['nombre']), 0, 60) . '» quedó en ' . $quedo . ')')
+                . '. Cuando me digas a cuánto los vendés te muestro dónde ponerlo.';
         }
+        $texto .= self::texto_de_importes_ilegibles($hojas) . self::texto_de_los_que_parecen_totales($hojas);
 
         // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.
         return $texto . PlanillaDePrueba::texto_de_filas_salteadas($hojas)
             // Las columnas que el sistema no tiene dónde guardar («Obs.», «Ubic.»), solo en la prueba (E8.6).
-            . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas);
+            . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas, $run->decisiones ?? [])
+            // Cuarta pasada, B4: las que se mandaron a no cargar por respuesta o por el mapeo previo.
+            . PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, $run->decisiones ?? []);
+    }
+
+    /**
+     * Cómo quedó el único artículo que no traía precio de venta, leído del artículo cargado (el último actualizado del
+     * dueño con ese nombre, y ese SKU si lo había). B4 (ronda 8): el rótulo dice la verdad del número:
+     *  - ya tenía su ganancia (un artículo que existía con margen): «quedó con la ganancia que ya tenía ($ X)»;
+     *  - el precio final es mayor que el costo: «quedó al costo más IVA ($ X)», o «quedó al costo con impuestos ($ X)»
+     *    si el negocio tiene impuestos sobre ventas prendidos (Ingresos Brutos), que también van en X;
+     *  - igual al costo: «quedó al costo ($ X)»; si no se encuentra: «quedó sin ganancia, al costo».
+     *
+     * @param  ImportacionDePrueba $run
+     * @param  array $hojas
+     * @return string
+     */
+    private function como_quedo_el_sin_ganancia(ImportacionDePrueba $run, array $hojas): string
+    {
+        $articulo = $this->articulo_del_ejemplo($run, self::ejemplo_de_las_hojas($hojas, 'filas_sin_ganancia', 'sin_ganancia_ejemplo'));
+        if ($articulo === null || $articulo->final_price === null) {
+            return 'quedó sin ganancia, al costo';
+        }
+        $final = (float) $articulo->final_price;
+        if ((float) $articulo->percentage_gain > 0.004) {
+            return 'quedó con la ganancia que ya tenía (' . self::pesos($final) . ')';
+        }
+        if ($final > (float) $articulo->cost + 0.005) {
+            return self::con_impuestos_sobre_ventas((int) $run->user_id)
+                ? 'quedó al costo con impuestos (' . self::pesos($final) . ')' : 'quedó al costo más IVA (' . self::pesos($final) . ')';
+        }
+
+        return 'quedó al costo (' . self::pesos($final) . ')';
+    }
+
+    /**
+     * En cuánto quedó el precio final de un artículo al que se le sumó el margen del dueño (B3): «$ 1.118,75 con IVA»
+     * (o «con impuestos» si el negocio tiene impuestos sobre ventas prendidos, B4), «$ 1.400,00» si no lleva nada
+     * encima, o '' si no se encuentra.
+     *
+     * @param  ImportacionDePrueba $run
+     * @param  array|null $ejemplo
+     * @param  float $margen
+     * @return string
+     */
+    private function en_cuanto_quedo(ImportacionDePrueba $run, ?array $ejemplo, float $margen): string
+    {
+        $articulo = $this->articulo_del_ejemplo($run, $ejemplo);
+        if ($articulo === null || $articulo->final_price === null) {
+            return '';
+        }
+        $final = (float) $articulo->final_price;
+        $sin_nada_encima = round((float) $articulo->cost * (1 + $margen / 100), 2);
+        if ($final <= $sin_nada_encima + 0.005) {
+            return self::pesos($final);
+        }
+
+        return self::pesos($final) . (self::con_impuestos_sobre_ventas((int) $run->user_id) ? ' con impuestos' : ' con IVA');
+    }
+
+    /**
+     * El primer ejemplo guardado de las hojas que tienen filas de esa clase.
+     *
+     * @param  array  $hojas
+     * @param  string $cuenta   Clave de la cantidad en la hoja (filas_sin_ganancia, filas_con_margen_agregado…)
+     * @param  string $ejemplo  Clave del ejemplo en la hoja
+     * @return array|null       ['nombre' => ..., 'sku' => ...]
+     */
+    private static function ejemplo_de_las_hojas(array $hojas, string $cuenta, string $ejemplo): ?array
+    {
+        foreach ($hojas as $hoja) {
+            if (!empty($hoja[$cuenta]) && !empty($hoja[$ejemplo]['nombre'])) {
+                return $hoja[$ejemplo];
+            }
+        }
+
+        return null;
+    }
+
+    /** El artículo cargado de un ejemplo: el último actualizado del dueño con ese nombre (y ese SKU si lo había). */
+    private function articulo_del_ejemplo(ImportacionDePrueba $run, ?array $ejemplo): ?Article
+    {
+        if ($ejemplo === null || trim((string) ($ejemplo['nombre'] ?? '')) === '') {
+            return null;
+        }
+
+        return Article::where('user_id', (int) $run->user_id)->where('name', trim((string) $ejemplo['nombre']))
+            ->when(!empty($ejemplo['sku']), function ($consulta) use ($ejemplo) {
+                $consulta->where('sku', trim((string) $ejemplo['sku']));
+            })->orderByDesc('updated_at')->orderByDesc('id')->first(['id', 'cost', 'final_price', 'percentage_gain']);
+    }
+
+    /** ¿El negocio tiene impuestos sobre ventas prendidos (Ingresos Brutos…), que van en el precio final? (B4) */
+    private static function con_impuestos_sobre_ventas(int $owner_id): bool
+    {
+        try {
+            return SaleTax::where('user_id', $owner_id)->where('activo', 1)->exists();
+        } catch (Throwable $error) {
+            return false;
+        }
+    }
+
+    /**
+     * Cómo se encuentran los artículos por el código del dueño (B1, ronda 8). Si todos lo traían: « Cada artículo lo
+     * encontrás por tu código en el Listado y en Vender.» (como hasta hoy). Si alguno no: lo dice, con los nombres si
+     * son pocos (NOMBRES_SIN_CODIGO), porque esos se buscan por nombre.
+     *
+     * @param  array $hojas
+     * @return string
+     */
+    public static function texto_de_la_busqueda_por_codigo(array $hojas): string
+    {
+        $sin_codigo = (int) array_sum(array_column($hojas, 'filas_sin_codigo'));
+        if ($sin_codigo === 0) {
+            return ' Cada artículo lo encontrás por tu código en el Listado y en Vender.';
+        }
+        $nombres = [];
+        foreach ($hojas as $hoja) {
+            foreach ((array) ($hoja['sin_codigo_ejemplos'] ?? []) as $nombre) {
+                $nombres[] = '«' . $nombre . '»';
+            }
+        }
+        $nombres = array_slice($nombres, 0, PlanillaDePrueba::NOMBRES_SIN_CODIGO);
+        if ($nombres === []) {
+            $cuales = '';
+        } elseif (count($nombres) < $sin_codigo) {
+            $cuales = ' (por ejemplo ' . implode(', ', $nombres) . ')';
+        } else {
+            $cuales = ' (' . (count($nombres) > 1 ? implode(', ', array_slice($nombres, 0, -1)) . ' y ' . end($nombres) : $nombres[0]) . ')';
+        }
+
+        return ' Los que traían tu código los encontrás por ese código en el Listado y en Vender; '
+            . ($sin_codigo === 1 ? '1 quedó sin código' . $cuales . ' y se busca por su nombre.'
+                : $sin_codigo . ' quedaron sin código' . $cuales . ' y se buscan por su nombre.');
+    }
+
+    /**
+     * Los importes que la planilla traía y no se pudieron leer (quinta pasada, B2): « En 2 artículos no pude leer el
+     * precio de venta de la planilla («Pinza»: «$13.5.00», «Tenaza»: «a convenir»): quedaron al costo más IVA; decime el
+     * precio y te muestro dónde ponerlo.» Y lo mismo con el costo. Vacío si no hubo.
+     *
+     * @param  array $hojas
+     * @return string
+     */
+    public static function texto_de_importes_ilegibles(array $hojas): string
+    {
+        $texto = '';
+        foreach (['precio', 'costo'] as $campo) {
+            $total = 0;
+            $ejemplos = [];
+            foreach ($hojas as $hoja) {
+                $ilegibles = (array) ($hoja['importes_ilegibles'] ?? []);
+                $total += (int) ($ilegibles['total_' . $campo] ?? 0);
+                foreach ((array) ($ilegibles['ejemplos'] ?? []) as $ejemplo) {
+                    if (($ejemplo['campo'] ?? '') === $campo) {
+                        $ejemplos[] = '«' . $ejemplo['nombre'] . '»: «' . $ejemplo['valor'] . '»';
+                    }
+                }
+            }
+            if ($total === 0) {
+                continue;
+            }
+            $ejemplos = array_slice($ejemplos, 0, PlanillaDePrueba::IMPORTES_ILEGIBLES_NOMBRADOS);
+            $texto .= ' En ' . $total . ($total === 1 ? ' artículo' : ' artículos') . ' no pude leer ' . ($campo === 'costo' ? 'el costo' : 'el precio de venta')
+                . ' de la planilla (' . implode(', ', $ejemplos) . ($total > count($ejemplos) ? ' y ' . ($total - count($ejemplos)) . ' más' : '') . ')'
+                . ($campo === 'costo' ? ': quedaron sin costo; decime cuánto te cuestan y te muestro dónde ponerlo.'
+                    : ': quedaron al costo más IVA; decime a cuánto los vendés y te muestro dónde ponerlo.');
+        }
+
+        return $texto;
+    }
+
+    /**
+     * Las filas que empiezan con palabra de total, sin código ni precio, que se cargaron como artículo (sexta pasada, 7):
+     * « 1 fila que parece un total quedó cargada como artículo («TOTAL UNIDADES EN EL DEPOSITO»): si no era un producto,
+     * decímelo.» Vacío si no hubo.
+     */
+    public static function texto_de_los_que_parecen_totales(array $hojas): string
+    {
+        $total = 0;
+        $nombres = [];
+        foreach ($hojas as $hoja) {
+            $total += (int) (($hoja['parecen_totales'] ?? [])['cantidad'] ?? 0);
+            foreach ((array) (($hoja['parecen_totales'] ?? [])['nombres'] ?? []) as $nombre) {
+                $nombres[] = '«' . $nombre . '»';
+            }
+        }
+        if ($total === 0) {
+            return '';
+        }
+        $nombres = array_slice($nombres, 0, 3);
+        $lista = implode(', ', $nombres) . ($total > count($nombres) ? ' y ' . ($total - count($nombres)) . ' más' : '');
+
+        return $total === 1 ? ' 1 fila que parece un total quedó cargada como artículo (' . $lista . '): si no era un producto, decímelo.'
+            : ' ' . $total . ' filas que parecen totales quedaron cargadas como artículos (' . $lista . '): si alguna no era un producto, decímelo.';
+    }
+
+    /** Cómo se dice por qué quedó para revisar una fila, por el tipo de conflicto del motor (quinta pasada, B2). */
+    private const MOTIVOS_PARA_REVISAR = [
+        'numero_invalido' => 'no pude leer %s',
+        'numero_fuera_de_rango' => '%s no es un número posible',
+        'placeholder_descartado' => '%s traía un dato de relleno',
+        'identificador_sin_asignar' => 'no trae un código que lo identifique',
+        'desempate_por_nombre_sin_resolver' => 'el código coincide con varios artículos',
+    ];
+
+    /**
+     * Cuáles filas quedaron para revisar y por qué (quinta pasada, B2): «“Pinza” (no pude leer el precio: «$13,5,0»),
+     * … y 3 más», leído de los conflictos del motor. Vacío si no hay detalle.
+     *
+     * @param  int $import_history_id
+     * @return string
+     */
+    private static function cuales_para_revisar(int $import_history_id): string
+    {
+        try {
+            $conflictos = \App\Models\ImportConflict::where('import_history_id', $import_history_id)->whereNotNull('fila')
+                ->whereNotIn('tipo', array_merge(\App\Models\ImportConflict::TIPOS_QUE_SALTEAN_LA_FILA, \App\Models\ImportConflict::TIPOS_QUE_NO_CUENTAN,
+                    ['sin_identificador']))->orderBy('fila')->get(['fila', 'tipo', 'campo', 'valor', 'nombre_excel']);
+        } catch (Throwable $error) {
+            return '';
+        }
+        $por_fila = [];
+        foreach ($conflictos as $conflicto) {
+            if (isset($por_fila[(int) $conflicto->fila])) {
+                continue;
+            }
+            $campo = ['precio' => 'el precio', 'costo' => 'el costo', 'stock_actual' => 'el stock'][(string) $conflicto->campo]
+                ?? 'el dato «' . str_replace('_', ' ', (string) $conflicto->campo) . '»';
+            $motivo = sprintf(self::MOTIVOS_PARA_REVISAR[(string) $conflicto->tipo] ?? 'revisá %s', $campo);
+            $valor = trim((string) $conflicto->valor);
+            $por_fila[(int) $conflicto->fila] = '«' . PlanillaDePrueba::recortar_para_el_resumen(trim((string) $conflicto->nombre_excel)) . '» ('
+                . $motivo . ($valor !== '' ? ': «' . mb_substr($valor, 0, 30) . '»' : '') . ')';
+        }
+        $nombradas = array_slice(array_values($por_fila), 0, 5);
+
+        return implode(', ', $nombradas) . (count($por_fila) > 5 ? ' y ' . (count($por_fila) - 5) . ' más' : '');
+    }
+
+    /** «$ 1.300,00»: el formato de los montos del resumen de artículos (ronda 8, D3). */
+    private static function pesos(float $monto): string
+    {
+        return '$ ' . number_format($monto, 2, ',', '.');
     }
 
     private function iniciar_imagenes(ImportacionDePrueba $run, ImportHistory $historial): ?ImageAssignmentRun
