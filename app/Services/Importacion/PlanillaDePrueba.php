@@ -1745,12 +1745,17 @@ class PlanillaDePrueba
      * Lo que hay que saber de la hoja ENTERA antes de juzgar fila por fila (misión prueba-e2e-campana-imperio, E8,
      * E8.1 y E8.3). Una sola pasada sobre las filas crudas, sin guardarlas:
      *
-     *  - `con_codigos`: ¿los artículos de la hoja traen código? La hoja tiene columna de código y, de TODAS las filas
-     *    con nombre de la hoja, al menos 10 y 3 de cada 4 traen código. Del denominador salen solo las filas que su
-     *    RÓTULO dice que son un total (es_rotulo_de_total() sin código); los nombres sueltos («PLOMERIA») y las
-     *    filas de abajo sí cuentan. Una hoja a medio codificar NO es «con códigos» (E8.4: en E8.3 se contaba solo
-     *    hasta la última fila con código y una hoja con 10 códigos arriba y 200 artículos sin código abajo perdía
-     *    los 200).
+     *  - `con_codigos` (E8.5): ¿los artículos de la hoja traen código? Sobre la hoja entera:
+     *      · D = filas CON DATOS: el nombre y al menos otro dato mapeado (código, precio, costo, stock, marca,
+     *        categoría, proveedor…), sin rótulo de total;
+     *      · C = las de D que traen código;
+     *      · S = filas SUELTAS: una sola celda de texto (solo el nombre, o solo un texto en la columna del código),
+     *        sin rótulo de total (es_texto_solo());
+     *      · con_codigos = C ≥ 10 y 4·C ≥ 3·D y 2·S ≤ D.
+     *    Ni las sueltas ni los totales están en el denominador: son justo las filas que se juzgan (E8.1, E8.2 y
+     *    E8.4 fallaron por contarlas). La tercera condición: si las sueltas son más de la mitad de las filas con
+     *    datos («10 con código + 200 nombres pelados») no son títulos, son artículos, y la hoja no es «con
+     *    códigos». Una hoja a medio codificar tampoco (E8.4: «10 con código + 200 con stock» perdía los 200).
      *  - `ultima_con_codigo`: el número de la última fila que trae código.
      *  - `pie_por_total`: dónde empieza el pie que abre un total. Al final de la hoja hay una tanda de filas que
      *    son notas (un solo texto) o totales (es_fila_de_total_al_pie()); el pie empieza en el PRIMER total de esa
@@ -1770,8 +1775,16 @@ class PlanillaDePrueba
         $de_importe = self::columnas_de_importe($mapeo);
         $del_nombre = isset($mapeo['nombre']) ? (int) $mapeo['nombre'] : null;
 
-        $con_nombre = 0;
-        $con_codigo = 0;
+        // Las columnas mapeadas que no son el nombre: código, precio, costo, stock, marca, categoría, proveedor…
+        $otras_mapeadas = [];
+        foreach ($mapeo as $campo => $posicion) {
+            if ($campo !== 'nombre') {
+                $otras_mapeadas[(int) $posicion] = true;
+            }
+        }
+        $con_datos = 0;   // D
+        $con_codigo = 0;  // C
+        $sueltas = 0;     // S
         $ultima_con_codigo = null;
         $primer_total_de_la_tanda = null;
         $ultimo_total = null;
@@ -1781,14 +1794,14 @@ class PlanillaDePrueba
                 continue;
             }
             $rotulo = self::posicion_del_rotulo($con_dato, $del_nombre, $de_codigo);
-            if ($rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo])) {
+            $es_total = $rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo]);
+            if ($es_total) {
                 $ultimo_total = (int) $numero;
-            }
-            $tiene_codigo = array_intersect_key($con_dato, $de_codigo) !== [];
-            if ($del_nombre !== null && isset($con_dato[$del_nombre])
-                && ($tiene_codigo || !self::es_rotulo_de_total($con_dato[$del_nombre]))) {
-                $con_nombre++;
-                $con_codigo += $tiene_codigo ? 1 : 0;
+            } elseif ($del_nombre !== null && isset($con_dato[$del_nombre]) && array_intersect_key($con_dato, $otras_mapeadas) !== []) {
+                $con_datos++;
+                $con_codigo += array_intersect_key($con_dato, $de_codigo) !== [] ? 1 : 0;
+            } elseif (self::es_texto_solo($con_dato, $del_nombre, $de_codigo)) {
+                $sueltas++;
             }
             if (self::tiene_codigo_de_articulo($con_dato, $de_codigo)) {
                 $ultima_con_codigo = (int) $numero;
@@ -1804,7 +1817,7 @@ class PlanillaDePrueba
 
         return [
             'con_codigos' => $de_codigo !== [] && $del_nombre !== null && $con_codigo >= 10
-                && $con_codigo * 4 >= $con_nombre * 3,
+                && $con_codigo * 4 >= $con_datos * 3 && $sueltas * 2 <= $con_datos,
             'ultima_con_codigo' => $ultima_con_codigo,
             'pie_por_total' => $primer_total_de_la_tanda,
             'ultimo_total' => $ultimo_total,

@@ -159,6 +159,57 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         $this->assertSame([], self::afuera(self::hoja(20, $con_stock)));
     }
 
+    public function test_las_cuentas_de_la_definicion_de_hoja_con_codigos(): void
+    {
+        /*
+         * E8.5. D = filas con datos (nombre + otro dato mapeado, sin rótulo de total), C = las de D con código,
+         * S = filas sueltas (una sola celda de texto). con_codigos = C ≥ 10, 4·C ≥ 3·D y 2·S ≤ D.
+         *
+         * (i) La medición a ciegas: 17 con código, 1 sin código con precio y stock, 4 rubros sueltos, 3 subtotales en
+         * el medio con la suma en el stock, y al pie un subtotal, «Son 18 artículos» y 2 notas. D=18, C=17, S=6:
+         * 68 ≥ 54 y 12 ≤ 18 → con códigos. Entran los 18 y quedan afuera los 4 rubros, los 4 subtotales, el pie y
+         * las 2 notas. En c6efa1f0 los rubros y las notas estaban en el denominador (17·4 = 68 < 23·3 = 69) y
+         * entraban 23.
+         */
+        $filas = [];
+        $n = 1;
+        $datos = [];
+        $rubros = ['--- CONSTRUCCION ---', 'PLOMERIA', '*** Pinturería ***', 'Rubro: Bulonería'];
+        $codigo = 0;
+        foreach ($rubros as $r => $rubro) {
+            if ($r > 0) {
+                $filas[++$n] = [null, ['Subtotal construccion', 'Subtotal plomeria', 'Subtotal pintureria'][$r - 1], null, 10 * $r];
+            }
+            $filas[++$n] = $r === 0 ? [$rubro, null, null, null] : [null, $rubro, null, null];
+            $cuantos = $r === 3 ? 5 : 4;
+            for ($i = 0; $i < $cuantos; $i++) {
+                $filas[++$n] = ['C-' . (++$codigo), 'Artículo ' . $codigo, 100 + $codigo, $codigo];
+                $datos[] = $n;
+            }
+        }
+        $filas[++$n] = [null, 'Cable sin código', 1500, 7];
+        $datos[] = $n;
+        $filas[++$n] = [null, 'Subtotal bulonería', null, 64];
+        $filas[++$n] = [null, 'Son 18 artículos', null, null];
+        $filas[++$n] = [null, 'Actualizó: Mirta 12/11', null, null];
+        $filas[++$n] = ['Firma: Carlos', null, null, null];
+        $this->assertSame(17, $codigo);
+
+        $resumen = PlanillaDePrueba::resumir_la_hoja($filas, ['codigo_de_proveedor' => 0, 'nombre' => 1, 'precio' => 2, 'stock_actual' => 3]);
+        $this->assertTrue($resumen['con_codigos']);
+        $afuera = self::afuera($filas);
+        $this->assertSame([], array_values(array_intersect($datos, array_keys($afuera))), 'Ningún artículo afuera.');
+        $this->assertSame(count($filas) - 18, count($afuera), 'Todo lo demás afuera: ' . json_encode($afuera));
+
+        // (vi) 10 con código + 200 nombres pelados: S=200 > D/2=5 → NO es «con códigos» y los 200 entran.
+        $pelados = [];
+        for ($i = 1; $i <= 200; $i++) {
+            $pelados[] = [null, 'Nombre pelado ' . $i, null, null];
+        }
+        $this->assertFalse(PlanillaDePrueba::resumir_la_hoja(self::hoja(10, $pelados), ['codigo_de_proveedor' => 0, 'nombre' => 1, 'precio' => 2, 'stock_actual' => 3])['con_codigos']);
+        $this->assertSame([], self::afuera(self::hoja(10, $pelados)));
+    }
+
     public function test_el_pie_que_cuenta_y_la_nota_de_abajo_siguen_afuera(): void
     {
         $afuera = self::afuera(self::hoja(20, [[null, 'Total artículos: 20', null, null], [null, 'Actualizó: Mirta 12/11', null, null], ['Firma: Carlos', null, null, null]]));

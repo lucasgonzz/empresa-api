@@ -108,13 +108,19 @@ class GeneradorDePlanillasDesordenadas
         $notas = mt_rand(0, 3);
         if ($tipo === 'con') {
             /*
-             * EXCLUIDO: una hoja «con códigos» que no llegue a 3 de cada 4 con código contando la hoja entera (rubros
-             * en la columna del nombre, notas y artículos sin código incluidos), o con menos de 12 con código. Ahí la
-             * hoja no es «con códigos» y un rubro en mayúsculas sin decorar o un subtotal del medio no se distinguen
-             * de un artículo: esas hojas son las de tipo 'medio', que no llevan esas formas.
+             * Densidad variable (E8.5): de 12 a 60 artículos con código, 0 a 3 artículos con datos sin código, un rubro
+             * cada 3 a 8 artículos y 0 a 3 notas. EXCLUIDO: la combinación que, por la definición de
+             * PlanillaDePrueba::resumir_la_hoja(), no es una hoja «con códigos» (C ≥ 10, 4·C ≥ 3·D, 2·S ≤ D, con D las
+             * filas con datos, C las que traen código y S las sueltas: rubros y notas). Ahí un rubro en mayúsculas sin
+             * decorar o un subtotal del medio no se distinguen de un artículo: esas hojas son las de tipo 'medio'.
              */
-            $sin_codigo = mt_rand(0, 4);
-            $con_codigo_n = max(12, 3 * ($sin_codigo + $rubros + $notas)) + mt_rand(0, 8);
+            do {
+                $con_codigo_n = mt_rand(12, 60);
+                $sin_codigo = mt_rand(0, 3);
+                $notas = mt_rand(0, 3);
+                $rubros = (int) floor(($con_codigo_n + $sin_codigo) / mt_rand(3, 8));
+                $d = $con_codigo_n + $sin_codigo;
+            } while (4 * $con_codigo_n < 3 * $d || 2 * ($rubros + $notas) > $d);
             $items = array_fill(0, $con_codigo_n, 'codigo');
             foreach (range(1, $sin_codigo) as $k) {
                 if ($sin_codigo === 0) {
@@ -185,7 +191,9 @@ class GeneradorDePlanillasDesordenadas
                 if ($quinta === 2) {
                     $opciones[] = 'marca';
                 }
-                if ($tipo !== 'con') {
+                // EXCLUIDO en 'medio': con nombres pelados la hoja puede pasar a ser «con códigos» (no están en D) y ahí
+                // un nombre suelto es indecidible. Van solo en 'sin'.
+                if ($tipo === 'sin') {
                     $opciones[] = 'solo_nombre';
                 }
                 $otro = self::al_azar($opciones);
