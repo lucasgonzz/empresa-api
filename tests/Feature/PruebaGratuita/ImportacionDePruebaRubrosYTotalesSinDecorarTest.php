@@ -334,10 +334,20 @@ class ImportacionDePruebaRubrosYTotalesSinDecorarTest extends EmpresaTestCase
             $this->assertSame(10, $filas, $rubro);
             $this->assertSame([$rubro], $salteadas[0]['textos_titulo'], $rubro);
         }
-        // Con un número, un signo o algún otro dato al lado, es un artículo.
-        foreach ([[null, 'Martillo 500g', null, null, null], [null, '**Martillo carpintero', null, null, null], [null, 'Martillo carpintero', null, 3, null], [null, 'Martillo carpintero', 'consultar', null, null]] as $fila) {
+        // Con algún otro dato al lado, es un artículo.
+        foreach ([[null, 'Martillo carpintero', null, 3, null], [null, 'Martillo carpintero', 'consultar', null, null]] as $fila) {
             [$filas, $salteadas] = $this->leer($this->con_codigos($fila), $this->mapeo_con_codigos(), [], $this->dos_stocks());
             $this->assertSame(11, $filas, json_encode($fila, JSON_UNESCAPED_UNICODE));
+        }
+        /*
+         * E8.6 (14/11/2026): en una hoja con códigos TODA fila suelta (una sola celda) queda afuera, traiga números o
+         * signos: un artículo ahí trae al menos otro dato además del nombre. Hasta E8.5 «Martillo 500g» y «**Martillo
+         * carpintero» sueltos entraban (11); ahora quedan afuera y nombrados en el resumen (10).
+         */
+        foreach ([[null, 'Martillo 500g', null, null, null], [null, '**Martillo carpintero', null, null, null]] as $fila) {
+            [$filas, $salteadas] = $this->leer($this->con_codigos($fila), $this->mapeo_con_codigos(), [], $this->dos_stocks());
+            $this->assertSame(10, $filas, json_encode($fila, JSON_UNESCAPED_UNICODE));
+            $this->assertSame([$fila[1]], $salteadas[0]['textos_titulo'], json_encode($fila, JSON_UNESCAPED_UNICODE));
         }
     }
 

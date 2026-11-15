@@ -292,15 +292,16 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
 
         // 5. El resumen dice cuántas filas dejó afuera y con qué ganancia calculó el precio.
         $run = $run->fresh();
-        // 5 títulos de rubro y la nota del pie; y el total. (La columna JSON no conserva el orden de las claves.)
+        // 5 títulos de rubro, la cabecera repetida («COD | DESCRIPCION») y la nota del pie; y el total. (La columna
+        // JSON no conserva el orden de las claves.) E8.6: la cabecera repetida también se cuenta (antes: 6 títulos).
         $salteadas = $run->hojas[0]['filas_salteadas'];
-        $this->assertSame(6, $salteadas['titulo']);
+        $this->assertSame(7, $salteadas['titulo']);
         $this->assertSame(1, $salteadas['total']);
         $this->assertSame(self::TITULOS, $salteadas['textos_titulo'], 'Se guardan los primeros cinco textos, en su orden.');
         $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
         // Sin cupo de imágenes: el cierre de la importación no sale a buscar fotos (no es lo que se mide acá).
         \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
-        $frase = ' Dejé afuera 7 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
+        $frase = ' Dejé afuera 8 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
             . ' “--- ELECTRICIDAD ---”, …, “TOTAL LISTA”. Si alguna era un producto, decímelo y la cargo.';
         $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
         $run = $this->avanzar($run);

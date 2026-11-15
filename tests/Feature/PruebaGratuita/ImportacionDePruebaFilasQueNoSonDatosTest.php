@@ -527,6 +527,137 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
         fwrite(STDERR, PHP_EOL . 'Cabeceras en las filas: ' . implode(', ', $cabeceras) . PHP_EOL);
     }
 
+    /* ---------- E8.6 (14/11/2026): ninguna fila desaparece y menos preguntas de más ---------- */
+
+    public function test_la_nota_con_numeros_y_la_fecha_debajo_del_pie_quedan_afuera_y_contadas(): void
+    {
+        // La medición a ciegas: 15 con código y 2 sin código con precio, rubros con asteriscos, «TOTAL DE ARTÍCULOS: 17»,
+        // una nota con un importe, una fila vacía y la fecha sola en la columna del código.
+        $filas = [['Código', 'Descripción', 'Precio de venta', 'Local', 'Galpon']];
+        $n = 0;
+        foreach (['*** Herramientas ***', '*** Pinturería ***', '*** Electricidad ***'] as $r => $rubro) {
+            $filas[] = [null, $rubro, null, null, null];
+            for ($i = 0; $i < 5; $i++) {
+                $n++;
+                $filas[] = ['R-' . $n, 'Artículo ' . $n, 100 * $n, $n, 1];
+            }
+        }
+        $filas[] = [null, 'Cable sin código', 1500, 2, 1];
+        $filas[] = [null, 'Tarugo sin código', 300, 9, 1];
+        $filas[] = [null, 'TOTAL DE ARTÍCULOS: 17', null, null, null];
+        $filas[] = [null, 'Stock valorizado al costo: $ 1.234.567', null, null, null];
+        $filas[] = [null, null, null, null, null];
+        $filas[] = ['14/11/2026', null, null, null, null];
+        [$cargadas, $salteadas] = $this->leer($filas, $this->mapeo_con_codigos(), [], $this->dos_stocks());
+
+        $this->assertSame(17, $cargadas, json_encode($salteadas, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(['TOTAL DE ARTÍCULOS: 17'], $salteadas[0]['textos_total']);
+        $this->assertSame(['*** Herramientas ***', '*** Pinturería ***', '*** Electricidad ***', 'Stock valorizado al costo: $ 1.234.567', '14/11/2026'],
+            $salteadas[0]['textos_titulo'], 'La fecha también se cuenta.');
+        // Filas leídas (sin la vacía) = las que entran + las salteadas.
+        $this->assertSame(count($filas) - 2, $cargadas + $salteadas[0]['titulo'] + $salteadas[0]['total']);
+    }
+
+    /** Diez artículos con las columnas dadas: [título => [campo de la IA, valor de la fila i]]. */
+    private function con_columnas(array $columnas): array
+    {
+        $filas = [array_keys($columnas)];
+        for ($i = 1; $i <= 10; $i++) {
+            $filas[] = array_map(function ($columna) use ($i) { return $columna[1]($i); }, array_values($columnas));
+        }
+
+        return $filas;
+    }
+
+    public function test_las_abreviaturas_de_precio_y_costo_no_se_preguntan(): void
+    {
+        $ventas = ['P. Venta', 'P.Vta', 'Pr. Venta', 'Pcio. venta', 'PVP', 'P. Público', 'Precio al público', '$ Venta', 'Vta.'];
+        $costos = ['P. Costo', 'Pr. Costo', '$ Costo', 'Cto.'];
+        foreach ($ventas as $k => $venta) {
+            $costo = $costos[$k % count($costos)];
+            $filas = $this->con_columnas([
+                'Código' => ['codigo_de_proveedor', function ($i) { return 'R-' . $i; }],
+                'Descripción' => ['nombre', function ($i) { return 'Martillo ' . $i; }],
+                $costo => ['costo', function ($i) { return 100 * $i; }],
+                $venta => ['precio', function ($i) { return 150 * $i; }],
+            ]);
+            [, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97],
+                $costo => ['costo', 0.97], $venta => ['precio', 0.97]]);
+            $this->assertSame([], array_keys($preguntas), $costo . ' / ' . $venta);
+        }
+    }
+
+    public function test_con_dos_candidatas_a_precio_de_venta_se_sigue_preguntando(): void
+    {
+        foreach ([['P. Lista', 'P. Contado'], ['P. Venta', 'P. Contado']] as $par) {
+            $filas = $this->con_columnas([
+                'Código' => ['codigo_de_proveedor', function ($i) { return 'R-' . $i; }],
+                'Descripción' => ['nombre', function ($i) { return 'Martillo ' . $i; }],
+                $par[0] => ['precio', function ($i) { return 150 * $i; }],
+                $par[1] => ['precio', function ($i) { return 140 * $i; }],
+            ]);
+            [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97],
+                $par[0] => ['precio', 0.97], $par[1] => ['precio', 0.97]]);
+            $this->assertNotSame([], $preguntas, implode(' / ', $par));
+            $this->assertFalse($hojas[0]['columnas'][2]['segura'], implode(' / ', $par));
+            $this->assertFalse($hojas[0]['columnas'][3]['segura'], implode(' / ', $par));
+        }
+    }
+
+    public function test_las_columnas_sin_destino_no_se_preguntan_y_el_resumen_lo_dice(): void
+    {
+        $titulos = ['Obs.', 'Observaciones', 'Notas', 'Comentarios', 'Ubic.', 'Ubicación', 'Estante', 'Valorizado', 'Importe total', 'Subtotal'];
+        foreach ($titulos as $titulo) {
+            $filas = $this->con_columnas([
+                'Código' => ['codigo_de_proveedor', function ($i) { return 'R-' . $i; }],
+                'Descripción' => ['nombre', function ($i) { return 'Martillo ' . $i; }],
+                'Precio de venta' => ['precio', function ($i) { return 150 * $i; }],
+                $titulo => [null, function ($i) { return $i % 2 ? 'pasillo ' . $i : 1500 * $i; }],
+            ]);
+            [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97],
+                'Precio de venta' => ['precio', 0.97]]);
+            $this->assertArrayNotHasKey('columna_0_3', $preguntas, $titulo);
+            $this->assertTrue($hojas[0]['columnas'][3]['sin_destino'] ?? false, $titulo);
+            $this->assertSame(' No cargué la columna «' . $titulo . '»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+                PlanillaDePrueba::texto_de_columnas_sin_destino($hojas), $titulo);
+        }
+
+        // Dos a la vez.
+        $filas = $this->con_columnas([
+            'Código' => ['codigo_de_proveedor', function ($i) { return 'R-' . $i; }],
+            'Descripción' => ['nombre', function ($i) { return 'Martillo ' . $i; }],
+            'Obs.' => [null, function ($i) { return 'ver ' . $i; }],
+            'Ubic.' => [null, function ($i) { return 'E' . $i; }],
+        ]);
+        [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97]]);
+        $this->assertSame([], array_keys($preguntas));
+        $this->assertSame(' No cargué las columnas «Obs.» y «Ubic.»: el sistema no tiene dónde guardarlas. Si alguna era otra cosa, decímelo.',
+            PlanillaDePrueba::texto_de_columnas_sin_destino($hojas));
+    }
+
+    public function test_un_contador_no_se_pregunta_y_un_numero_que_no_es_contador_si(): void
+    {
+        foreach (['Nº', '#', 'Ítem'] as $titulo) {
+            $filas = $this->con_columnas([
+                $titulo => [null, function ($i) { return $i; }],
+                'Código' => ['codigo_de_proveedor', function ($i) { return 'R-' . $i; }],
+                'Descripción' => ['nombre', function ($i) { return 'Martillo ' . $i; }],
+            ]);
+            [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97]]);
+            $this->assertArrayNotHasKey('columna_0_0', $preguntas, $titulo);
+            $this->assertTrue($hojas[0]['columnas'][0]['sin_destino'] ?? false, $titulo);
+
+            // Con números que no son consecutivos, la columna puede ser un dato: se pregunta.
+            $filas = $this->con_columnas([
+                $titulo => [null, function ($i) { return 100 + $i * 7; }],
+                'Código' => ['codigo_de_proveedor', function ($i) { return 'R-' . $i; }],
+                'Descripción' => ['nombre', function ($i) { return 'Martillo ' . $i; }],
+            ]);
+            [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97]]);
+            $this->assertArrayHasKey('columna_0_0', $preguntas, $titulo);
+        }
+    }
+
     public function test_una_columna_de_utilidad_sugiere_el_margen_de_ganancia(): void
     {
         foreach (['% UTIL', 'Utilidad', 'Ganancia %', 'Margen', 'Recargo'] as $titulo) {

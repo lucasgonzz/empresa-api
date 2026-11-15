@@ -55,10 +55,22 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
             }
             foreach ($planilla['no_datos'] as $numero) {
                 $filas_juzgadas++;
-                if (!isset($motivos[$numero]) && !self::sin_datos_mapeados($filas[$numero], $planilla['mapeo'])) {
-                    $fallas[] = 'caso ' . $caso . ' fila ' . $numero . ': un NO-DATO entró como artículo '
+                if (!isset($motivos[$numero])) {
+                    $fallas[] = 'caso ' . $caso . ' fila ' . $numero . ': un NO-DATO entró como artículo o desapareció sin contarse '
                         . json_encode($filas[$numero], JSON_UNESCAPED_UNICODE) . ($planilla['con_codigos'] ? ' (con códigos)' : ' (sin códigos)');
                 }
+            }
+            /*
+             * E8.6: ninguna fila desaparece en silencio. Filas leídas = filas que entran + filas salteadas contadas,
+             * salvo las vacías (la cabecera repetida también se cuenta).
+             */
+            $no_vacias = array_filter($filas, function ($fila) {
+                return array_filter($fila, function ($celda) { return trim((string) $celda) !== ''; }) !== [];
+            });
+            $entran = array_diff(array_keys($no_vacias), array_keys($motivos));
+            if (count($no_vacias) !== count($entran) + count($motivos) || array_values($entran) !== $planilla['datos']) {
+                $fallas[] = 'caso ' . $caso . ': leídas ' . count($no_vacias) . ', entran ' . count($entran) . ', salteadas ' . count($motivos)
+                    . ', datos esperados ' . count($planilla['datos']);
             }
         }
         fwrite(STDERR, PHP_EOL . 'Artículos: ' . self::PLANILLAS . ' planillas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas.' . PHP_EOL);

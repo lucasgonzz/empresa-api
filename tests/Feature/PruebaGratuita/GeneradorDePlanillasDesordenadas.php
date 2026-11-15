@@ -20,8 +20,10 @@ class GeneradorDePlanillasDesordenadas
     const ARTICULOS = ['Martillo carpintero', 'Pinza universal', 'Cemento portland 50kg', 'Caño PVC 110 x 4m', 'Látex exterior 20L',
         'Tornillo T1 punta aguja x100', 'Llave de paso 1/2', 'Cable unipolar 2.5mm', 'Codo PVC 110 a 90', 'Arena fina x bolsa',
         'Rodillo lana 22cm', 'Tarugo nylon 8mm x50', 'Disyuntor 2x40A', 'Lija al agua grano 180', 'Clavo punta parís 2" x kg'];
+    // Notas de una celda: texto, y desde E8.6 también con números, importes y fechas solas.
     const NOTAS = ['Actualizó: Mirta 12/11', 'Precios sujetos a cambio sin previo aviso', 'Consultar stock antes de vender',
-        'Lista vigente al 14/11/2026', 'Firma: Carlos'];
+        'Lista vigente al 14/11/2026', 'Firma: Carlos', 'Stock valorizado al costo: $ 1.234.567', '14/11/2026', '$ 1.234.567',
+        '1.234.567,50', '12-11-26', 'Revisado 12/11 por Hugo'];
     const NOMBRES = ['Constructora Del Litoral SRL', 'Gómez, Jorge (albañil)', 'Plomería El Caño', 'Municipalidad - Obras',
         'Rosa Fernández', 'Taller Mecánico Ruta 14', 'Sandra Ojeda', 'Ferretería López', 'Juan Pérez', 'Corralón Sur',
         'Marta Giménez', 'Electricidad Gutiérrez', 'Pinturería Colón', 'Hugo Benítez', 'Distribuidora Paraná'];
