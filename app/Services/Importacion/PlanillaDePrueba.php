@@ -131,6 +131,10 @@ class PlanillaDePrueba
     private $sin_ganancia = [];
     // Filas a las que `filas()` les puso el margen que contestó el dueño porque no lo traían: [índice => cantidad].
     private $margen_agregado = [];
+    // Filas a las que `filas()` les puso el precio que dijo el dueño (`precio:N`, ronda 8, D2): [índice => cantidad].
+    private $precio_agregado = [];
+    // La primera fila con costo y sin ganancia de cada hoja: [índice => ['nombre' => ..., 'sku' => ...]].
+    private $sin_ganancia_ejemplo = [];
     // Propiedad del importador de la columna de stock de cada sucursal => [id, nombre] (ver `stock_junto_a_la_sucursal`).
     private $stock_por_sucursal = [];
     // Solo en la prueba: la sucursal donde va el stock «junto» (una sola cantidad), o null. Ver `sucursal_del_stock_junto`.
@@ -1587,11 +1591,21 @@ class PlanillaDePrueba
                 }
                 // Una fila con costo y sin ganancia ni precio, en una hoja que sí trae esas columnas.
                 if ($descarta && self::fila_sin_ganancia($datos, $hoja['mapeo'])) {
-                    if (isset($hoja['margen_para_vacias'])) {
+                    if (isset($hoja['precio_para_vacia'])) {
+                        // El precio de venta que dijo el dueño para el único artículo que no lo traía (ronda 8, D2).
+                        $datos['precio'] = $hoja['precio_para_vacia'];
+                        $this->precio_agregado[$hoja['indice']] = ($this->precio_agregado[$hoja['indice']] ?? 0) + 1;
+                    } elseif (isset($hoja['margen_para_vacias'])) {
                         $datos[self::CLAVE_MARGEN] = $hoja['margen_para_vacias'];
                         $this->margen_agregado[$hoja['indice']] = ($this->margen_agregado[$hoja['indice']] ?? 0) + 1;
                     } else {
                         $this->sin_ganancia[$hoja['indice']] = ($this->sin_ganancia[$hoja['indice']] ?? 0) + 1;
+                        if (!isset($this->sin_ganancia_ejemplo[$hoja['indice']])) {
+                            $this->sin_ganancia_ejemplo[$hoja['indice']] = [
+                                'nombre' => isset($datos['nombre']) ? (string) $datos['nombre'] : null,
+                                'sku' => isset($datos['sku']) && trim((string) $datos['sku']) !== '' ? (string) $datos['sku'] : null,
+                            ];
+                        }
                     }
                 }
                 if (empty($datos['proveedor']) && $hoja['proveedor'] !== null) {
@@ -1733,11 +1747,16 @@ class PlanillaDePrueba
             if (isset($hoja['margen_respondido']) || isset($hoja['margen_para_vacias'])) {
                 $campos[self::CLAVE_MARGEN] = true;
             }
+            if (isset($hoja['precio_para_vacia'])) {
+                $campos['precio'] = true;
+            }
         }
         // `filas()` ya corrió para buscar repetidos: la cuenta de las salteadas es la de ESTA pasada.
         $this->salteadas = [];
         $this->sin_ganancia = [];
         $this->margen_agregado = [];
+        $this->precio_agregado = [];
+        $this->sin_ganancia_ejemplo = [];
         $columnas = array_keys($campos);
         $ruta = storage_path('app/imported_files/prueba_' . $this->run->uuid . '.preparado');
         $csv = fopen($ruta, 'wb');
@@ -1764,6 +1783,7 @@ class PlanillaDePrueba
         return [
             'ruta' => $ruta, 'filas' => $filas, 'columnas' => array_flip($columnas), 'salteadas' => $this->salteadas,
             'sin_ganancia' => $this->sin_ganancia, 'margen_agregado' => $this->margen_agregado,
+            'precio_agregado' => $this->precio_agregado, 'sin_ganancia_ejemplo' => $this->sin_ganancia_ejemplo,
         ];
     }
 
@@ -1824,16 +1844,35 @@ class PlanillaDePrueba
             return 0;
         }
         foreach ($candidatas as &$hoja) {
-            unset($hoja['margen_para_vacias']);
+            unset($hoja['margen_para_vacias'], $hoja['precio_para_vacia']);
         }
         unset($hoja);
 
         $this->sin_ganancia = [];
+        $this->sin_ganancia_ejemplo = [];
         foreach ($this->filas($candidatas) as $fila) {
             // Solo se cuenta: `filas()` va sumando en $this->sin_ganancia.
         }
 
         return (int) array_sum($this->sin_ganancia);
+    }
+
+    /**
+     * El nombre del primer artículo con costo y sin ganancia que vio la última pasada de `filas()` (la de
+     * contar_sin_ganancia(), por ejemplo), o null.
+     *
+     * @return string|null
+     */
+    public function nombre_del_primero_sin_ganancia(): ?string
+    {
+        foreach ($this->sin_ganancia_ejemplo as $ejemplo) {
+            $nombre = trim((string) ($ejemplo['nombre'] ?? ''));
+            if ($nombre !== '') {
+                return $nombre;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -2619,7 +2658,7 @@ class PlanillaDePrueba
      * @param  array $hojas  Hojas con `mapeo`
      * @return array         [] o [self::CLAVE_MARGEN => pregunta]
      */
-    public static function pregunta_del_margen(array $hojas, int $sin_ganancia = 0): array
+    public static function pregunta_del_margen(array $hojas, int $sin_ganancia = 0, ?string $nombre_del_articulo = null): array
     {
         $para_todos = array_filter($hojas, [self::class, 'hoja_necesita_margen']) !== [];
         if (!$para_todos && $sin_ganancia < 1) {
@@ -2634,18 +2673,33 @@ class PlanillaDePrueba
         }
         $opciones[] = ['valor' => self::MARGEN_DESPUES, 'etiqueta' => 'Lo cargo yo después'];
 
+        // Un solo artículo (ronda 8, D2): se le pregunta a cuánto lo vende, y vale también un precio (`acepta_precio`).
+        if (!$para_todos && $sin_ganancia === 1) {
+            $nombre = trim((string) $nombre_del_articulo);
+
+            return [self::CLAVE_MARGEN => [
+                'clave' => self::CLAVE_MARGEN,
+                'texto' => 'En tu lista hay 1 artículo' . ($nombre !== '' ? ' («' . mb_substr($nombre, 0, 80) . '»)' : '')
+                    . ' que trae el costo pero no la ganancia ni el precio de venta. ¿A cuánto lo vendés, o qué ganancia le sumamos?'
+                    . ' Puede ser ' . implode(' %, ', self::MARGENES_SUGERIDOS) . ' % u otro porcentaje, o el precio que me digas.'
+                    . ' Si preferís cargarlo vos después, decímelo y por ahora queda sin ganancia (al costo con IVA).',
+                'opciones' => $opciones,
+                'acepta_porcentaje' => true,
+                'acepta_precio' => true,
+            ]];
+        }
+
         $pregunta = [
             'clave' => self::CLAVE_MARGEN,
             // Con columna de ganancia o de precio y filas que la dejan vacía, la pregunta es solo por esas filas.
             'texto' => ($para_todos
                     ? 'Tu lista trae el costo pero no dice a cuánto vendés. ¿Qué ganancia le sumamos a todos para calcular el precio de venta?'
-                    : ($sin_ganancia === 1
-                        ? 'En tu lista hay 1 artículo que trae el costo pero no la ganancia ni el precio de venta. ¿Qué ganancia le sumamos a ese, que no la trae?'
-                        : 'En tu lista hay ' . $sin_ganancia . ' artículos que traen el costo pero no la ganancia ni el precio de venta.'
-                            . ' ¿Qué ganancia les sumamos a esos, que no la traen?'))
+                    : 'En tu lista hay ' . $sin_ganancia . ' artículos que traen el costo pero no la ganancia ni el precio de venta.'
+                        . ' ¿Qué ganancia les sumamos a esos, que no la traen?')
                 . ' Puede ser ' . implode(' %, ', self::MARGENES_SUGERIDOS) . ' % u otro porcentaje que me digas.'
-                . ($para_todos ? ' Si preferís cargar los precios vos después, decímelo y dejo solo el costo.'
-                    : ' Si preferís cargarlo vos después, decímelo y los dejo solo con el costo.'),
+                // D3 (ronda 8): «después» no deja los artículos sin precio, quedan al costo con IVA.
+                . ($para_todos ? ' Si preferís cargar los precios vos después, decímelo y por ahora quedan sin ganancia (al costo con IVA).'
+                    : ' Si preferís cargarlo vos después, decímelo y por ahora quedan sin ganancia (al costo con IVA).'),
             'opciones' => $opciones,
             'acepta_porcentaje' => true,
         ];
@@ -2686,8 +2740,17 @@ class PlanillaDePrueba
     public static function aplicar_margen(array $hojas, array $decisiones): array
     {
         $margen = self::margen_de_respuesta($decisiones[self::CLAVE_MARGEN] ?? null);
+        // `precio:N` (ronda 8, D2): el precio de venta del único artículo con costo y sin ganancia ni precio. Solo llega
+        // acá si es exactamente uno (ImportacionDePruebaService::preparar descarta la decisión si no).
+        $precio = self::precio_de_decision($decisiones[self::CLAVE_MARGEN] ?? null);
         foreach ($hojas as &$hoja) {
-            unset($hoja['margen_respondido'], $hoja['margen_para_vacias']);
+            unset($hoja['margen_respondido'], $hoja['margen_para_vacias'], $hoja['precio_para_vacia']);
+            if ($precio !== null) {
+                if (self::campos_de_venta($hoja['mapeo'] ?? []) !== []) {
+                    $hoja['precio_para_vacia'] = $precio;
+                }
+                continue;
+            }
             if ($margen !== null && self::hoja_necesita_margen($hoja)) {
                 $hoja['margen_respondido'] = $margen;
             } elseif ($margen !== null && self::campos_de_venta($hoja['mapeo'] ?? []) !== []) {
@@ -2698,6 +2761,54 @@ class PlanillaDePrueba
         unset($hoja);
 
         return $hojas;
+    }
+
+    /**
+     * La decisión del margen que soporte pasa al lanzar la importación (`margen_de_ganancia`, ronda 8, D2), validada:
+     * un porcentaje (`40`, `35.5`: mayor a 0 y hasta MARGEN_MAXIMO), `despues` o `precio:N` (N mayor a 0). El admin ya
+     * la manda normalizada con la misma regex de los tres repos; se devuelve tal cual (sin espacios ni mayúsculas) para
+     * que `margen_previo` sea igual a lo enviado. null si no vale.
+     *
+     * @param  mixed $valor
+     * @return string|null
+     */
+    public static function decision_previa_de_margen($valor): ?string
+    {
+        if (!is_scalar($valor)) {
+            return null;
+        }
+        $valor = strtolower(trim((string) $valor));
+        if (!preg_match('/^(despues|\d{1,4}(\.\d{1,2})?|precio:\d{1,9}(\.\d{1,2})?)$/', $valor)) {
+            return null;
+        }
+        if ($valor === self::MARGEN_DESPUES) {
+            return $valor;
+        }
+        if (strpos($valor, 'precio:') === 0) {
+            return self::precio_de_decision($valor) === null ? null : $valor;
+        }
+
+        return self::margen_de_respuesta($valor) === null ? null : $valor;
+    }
+
+    /**
+     * El precio de una decisión `precio:N` como texto para la planilla preparada («1300», «1300.5»), o null si la
+     * decisión no es un precio o N no es mayor a 0.
+     *
+     * @param  mixed $decision
+     * @return string|null
+     */
+    public static function precio_de_decision($decision): ?string
+    {
+        if (!is_string($decision) || !preg_match('/^precio:(\d{1,9}(?:\.\d{1,2})?)$/', trim($decision), $partes)) {
+            return null;
+        }
+        $precio = (float) $partes[1];
+        if ($precio <= 0) {
+            return null;
+        }
+
+        return rtrim(rtrim(number_format($precio, 2, '.', ''), '0'), '.');
     }
 
     private static function escribir_fila($csv, array $fila): void

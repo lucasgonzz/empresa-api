@@ -41,10 +41,25 @@ class ImportacionDePruebaController extends Controller
             'alcance' => 'sometimes|required|in:stock_existente',
             // Mapeo de columnas que soporte ya confirmó con el cliente: string JSON (viaja en multipart).
             'columnas_previas' => 'sometimes|nullable|string|max:24000',
+            // La ganancia (o el precio de un artículo) que el dueño ya le dijo a soporte (ronda 8, D2): `40`, `35.5`,
+            // `despues` o `precio:1300`. Solo en la prueba y en la importación general.
+            'margen_de_ganancia' => 'sometimes|nullable|string|max:40',
         ]);
 
         $alcance = $datos['alcance'] ?? null;
         abort_if($alcance !== null && !$modo_soporte, 422, 'El alcance de stock es exclusivo de soporte.');
+        $trajo_margen = array_key_exists('margen_de_ganancia', $datos);
+        $margen_previo = null;
+        if (($datos['margen_de_ganancia'] ?? null) !== null) {
+            if ($modo_soporte || $alcance !== null) {
+                self::rechazar_margen('La ganancia al lanzar es solo para la importación de artículos de la prueba.');
+            }
+            $margen_previo = PlanillaDePrueba::decision_previa_de_margen($datos['margen_de_ganancia']);
+            if ($margen_previo === null) {
+                self::rechazar_margen('La ganancia tiene que ser un porcentaje mayor a 0 y hasta ' . PlanillaDePrueba::MARGEN_MAXIMO
+                    . ', «despues» o «precio:N» con N mayor a 0.');
+            }
+        }
         $proveedor = $datos['provider_id'] ?? null;
         if ($proveedor !== null && !Provider::where('user_id', $user_id)->whereKey($proveedor)->exists()) {
             abort(422, 'El proveedor no pertenece al negocio.');
@@ -62,7 +77,7 @@ class ImportacionDePruebaController extends Controller
         // Una base sin la migración sigue como hoy, sin mapeo previo, en lugar de caerse al guardar.
         $guarda_previas = $trajo_previas && self::soporta_columnas_previas();
 
-        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte, $alcance, $previas, $guarda_previas) {
+        $run = DB::transaction(function () use ($request, $datos, $user_id, $proveedor, $modo_soporte, $alcance, $previas, $guarda_previas, $margen_previo) {
             // Serializa reenvíos simultáneos del mismo adjunto, antes de escribir otro archivo.
             User::whereKey($user_id)->lockForUpdate()->firstOrFail();
             $origen = [
@@ -94,7 +109,9 @@ class ImportacionDePruebaController extends Controller
                 'estado' => $alcance === null ? 'analizar' : 'stock_analizar',
                 'modo_soporte' => $modo_soporte,
             ] + ($alcance === null ? [] : ['alcance' => $alcance])
-              + ($previas !== null && $guarda_previas ? ['columnas_previas' => $previas] : []));
+              + ($previas !== null && $guarda_previas ? ['columnas_previas' => $previas] : [])
+              // La corrida nace con la respuesta a la pregunta del margen: preparar() no la hace.
+              + ($margen_previo !== null ? ['decisiones' => [PlanillaDePrueba::CLAVE_MARGEN => $margen_previo]] : []));
         });
 
         if ($run->wasRecentlyCreated) {
@@ -111,7 +128,38 @@ class ImportacionDePruebaController extends Controller
             'analysis_uuid' => $run->uuid,
             'estado' => $run->estado_publico(),
             ($modo_soporte ? 'automatizar_soporte' : 'automatizar_prueba') => true,
-        ] + ($alcance === null ? [] : ['alcance' => $run->alcance]) + $extra_previas, 202);
+        ] + ($alcance === null ? [] : ['alcance' => $run->alcance]) + $extra_previas
+          // Solo si el pedido trajo el campo: lo que quedó guardado (en una corrida que ya existía, lo suyo), o null.
+          + ($trajo_margen ? ['margen_previo' => self::margen_guardado($run)] : []), 202);
+    }
+
+    /**
+     * La decisión del margen guardada en la corrida, si es una de las que se pasan al lanzar, o null.
+     *
+     * @param  \App\Models\ImportacionDePrueba $run
+     * @return string|null
+     */
+    private static function margen_guardado(ImportacionDePrueba $run): ?string
+    {
+        $valor = ($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null;
+
+        return is_string($valor) ? PlanillaDePrueba::decision_previa_de_margen($valor) : null;
+    }
+
+    /**
+     * Corta el pedido con un 422 sobre `margen_de_ganancia`, con el formato de una validación.
+     *
+     * @param  string $mensaje
+     * @return void
+     *
+     * @throws HttpResponseException
+     */
+    private static function rechazar_margen(string $mensaje): void
+    {
+        throw new HttpResponseException(response()->json([
+            'message' => $mensaje,
+            'errors' => ['margen_de_ganancia' => [$mensaje]],
+        ], 422));
     }
 
     /**
@@ -313,7 +361,11 @@ class ImportacionDePruebaController extends Controller
         // Clientes y proveedores desde soporte (misión importaciones-de-martin, 11/11/2026): una corrida que analiza,
         // espera el código o importa también deja el ticket «en proceso», para que no se cierre a mitad de camino.
         // Van en una clave aparte (no en `pendientes`, que se resuelven por prueba-resolver).
-        $contactos = $modo_soporte ? self::contactos_abiertos((int) $datos['user_id'], (int) $datos['support_ticket_id']) : [];
+        // En la prueba (ronda 8, D1) también: las corridas de clientes y proveedores de la prueba se cargan solas y
+        // dejan el ticket en proceso hasta terminar.
+        $contactos_en_la_prueba = !$modo_soporte && self::soporta_contactos_en_la_prueba();
+        $contactos = $modo_soporte || $contactos_en_la_prueba
+            ? self::contactos_abiertos((int) $datos['user_id'], (int) $datos['support_ticket_id'], !$modo_soporte) : [];
         $en_proceso = $en_proceso || $contactos !== [];
 
         return response()->json(['en_proceso' => $en_proceso, 'pendientes' => $corridas->map(function (ImportacionDePrueba $run) {
@@ -337,33 +389,56 @@ class ImportacionDePruebaController extends Controller
             'automatizar_soporte' => true,
             'importaciones_de_contactos' => $contactos,
             'alcances_soporte' => self::soporta_stock_existente() ? ['stock_existente'] : [],
-        ] : []));
+        ] : [
+            // Lo que este empresa sabe hacer en la prueba: así se entera el admin, sin mirar el número de versión.
+            'capacidades_prueba' => array_merge(['margen_previo'], self::soporta_contactos_en_la_prueba() ? ['contactos'] : []),
+        ] + ($contactos_en_la_prueba ? ['importaciones_de_contactos' => $contactos] : [])));
+    }
+
+    /**
+     * Indica si la base ya puede cargar clientes y proveedores de la prueba por el motor de soporte.
+     *
+     * @return bool
+     */
+    public static function soporta_contactos_en_la_prueba(): bool
+    {
+        return Schema::hasTable('importaciones_de_soporte') && Schema::hasColumn('importaciones_de_soporte', 'modo_prueba');
     }
 
     /**
      * Las corridas de clientes o proveedores del ticket que todavía no terminaron (analizan, esperan el código del
      * dueño o importan), con la forma corta del contrato. Vacío si la base todavía no tiene la tabla.
      *
-     * @param  int $user_id
-     * @param  int $support_ticket_id
-     * @return array [{corrida_id, modelo, estado, revision, codigo_requerido}]
+     * Las del modo soporte son las de activos (`modo_prueba = false`); las de la prueba llevan además `modo_prueba`.
+     *
+     * @param  int  $user_id
+     * @param  int  $support_ticket_id
+     * @param  bool $modo_prueba
+     * @return array [{corrida_id, modelo, estado, revision, codigo_requerido[, modo_prueba]}]
      */
-    private static function contactos_abiertos(int $user_id, int $support_ticket_id): array
+    private static function contactos_abiertos(int $user_id, int $support_ticket_id, bool $modo_prueba = false): array
     {
         if (!Schema::hasTable('importaciones_de_soporte')) {
             return [];
         }
+        $con_columna = Schema::hasColumn('importaciones_de_soporte', 'modo_prueba');
+        if ($modo_prueba && !$con_columna) {
+            return [];
+        }
 
         return ImportacionDeSoporte::where('user_id', $user_id)->where('support_ticket_id', $support_ticket_id)
-            ->whereIn('estado', ImportacionDeSoporte::ABIERTAS)->orderBy('id')->get()
-            ->map(function (ImportacionDeSoporte $corrida) {
+            ->whereIn('estado', ImportacionDeSoporte::ABIERTAS)
+            ->when($con_columna, function ($consulta) use ($modo_prueba) {
+                $consulta->where('modo_prueba', $modo_prueba);
+            })->orderBy('id')->get()
+            ->map(function (ImportacionDeSoporte $corrida) use ($modo_prueba) {
                 return [
                     'corrida_id' => (string) $corrida->uuid,
                     'modelo' => (string) $corrida->modelo,
                     'estado' => (string) $corrida->estado,
                     'revision' => (int) $corrida->revision,
                     'codigo_requerido' => $corrida->estado === 'confirmacion',
-                ];
+                ] + ($modo_prueba ? ['modo_prueba' => true] : []);
             })->all();
     }
 
@@ -399,7 +474,8 @@ class ImportacionDePruebaController extends Controller
                 $pregunta = $preguntas[$clave] ?? null;
                 if ($pregunta === null || (!in_array($respuesta, array_column($pregunta['opciones'], 'valor'), true)
                     && !self::codigo_de_stock_valido($run, $pregunta, $respuesta)
-                    && !self::porcentaje_valido($pregunta, $respuesta))) {
+                    && !self::porcentaje_valido($pregunta, $respuesta)
+                    && !self::precio_valido($pregunta, $respuesta))) {
                     abort(422, 'La respuesta no coincide con las opciones de la consulta.');
                 }
                 if (isset($guardadas[$clave]) && $guardadas[$clave] !== $respuesta) {
@@ -460,6 +536,21 @@ class ImportacionDePruebaController extends Controller
     {
         return ($pregunta['acepta_porcentaje'] ?? false) === true
             && PlanillaDePrueba::margen_de_respuesta($respuesta) !== null;
+    }
+
+    /**
+     * Una pregunta marcada con `acepta_precio` (la del margen cuando es UN artículo, ronda 8, D2) admite además el
+     * precio de venta de ese artículo: `precio:1300` o `precio:1300.5`, mayor a 0.
+     *
+     * @param  array  $pregunta
+     * @param  string $respuesta
+     * @return bool
+     */
+    private static function precio_valido(array $pregunta, string $respuesta): bool
+    {
+        return ($pregunta['acepta_precio'] ?? false) === true
+            && preg_match('/^precio:\d{1,9}(\.\d{1,2})?$/', $respuesta) === 1
+            && PlanillaDePrueba::precio_de_decision($respuesta) !== null;
     }
 
     private static function comprobar_dueno(int $user_id, bool $modo_soporte): void

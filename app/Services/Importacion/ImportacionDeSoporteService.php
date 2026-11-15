@@ -4,6 +4,7 @@ namespace App\Services\Importacion;
 
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
 use App\Http\Controllers\Helpers\NotaCreditoHelper;
+use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
 use App\Imports\ClientImport;
@@ -70,6 +71,25 @@ class ImportacionDeSoporteService
             'observations', 'iva_condition_id'],
     ];
 
+    /**
+     * ¿El dueño puede usar esta importación? (ronda 8 de la prueba, D1)
+     *  - Sin `modo_prueba` (un negocio activo): el dueño activo de siempre, sin cambios.
+     *  - Con `modo_prueba`: el dueño de la prueba con la prueba vigente. Para deshacer (y para consultar el estado)
+     *    alcanza también con que ya sea un dueño activo: contrató y quiere deshacer lo que cargó en la prueba.
+     */
+    public static function habilitado(int $user_id, bool $modo_prueba, bool $para_deshacer = false): bool
+    {
+        if (!$modo_prueba) {
+            return ImportacionDePruebaService::dueno_activo($user_id);
+        }
+        $dueno = PruebaHelper::dueno();
+        if (!is_null($dueno) && (int) $dueno->id === $user_id && PruebaHelper::en_periodo_vigente($user_id)) {
+            return true;
+        }
+
+        return $para_deshacer && ImportacionDePruebaService::dueno_activo($user_id);
+    }
+
     /* ------------------------------------------------------------------------------------------------------
      * Avance (lo llama el job)
      * ---------------------------------------------------------------------------------------------------- */
@@ -83,13 +103,23 @@ class ImportacionDeSoporteService
             $this->revertir_tandas($corrida);
             return;
         }
-        if (!ImportacionDePruebaService::dueno_activo((int) $corrida->user_id)) {
-            $this->fallar($corrida, 'El negocio dejó de estar habilitado para importar desde soporte.');
+        $modo_prueba = (bool) $corrida->modo_prueba;
+        if (!self::habilitado((int) $corrida->user_id, $modo_prueba)) {
+            $this->fallar($corrida, $modo_prueba ? 'La prueba terminó antes de cargar «' . $this->archivo($corrida) . '».'
+                : 'El negocio dejó de estar habilitado para importar desde soporte.');
             return;
         }
         if ($corrida->estado === 'analizar') {
             $this->analizar($corrida);
-            return;
+            if (!$modo_prueba) {
+                return;
+            }
+            // En la prueba no hay código: si el análisis no pidió corregir nada, la carga sigue en esta misma
+            // ejecución. No se puede despachar otro job: este es ShouldBeUnique y todavía tiene el candado.
+            $corrida->refresh();
+            if ($corrida->estado !== 'importar') {
+                return;
+            }
         }
 
         $this->importar($corrida);
@@ -198,6 +228,34 @@ class ImportacionDeSoporteService
             $corrida->save();
             return;
         }
+        if ($corrida->modo_prueba) {
+            // La prueba no pide código (ronda 8, D1). Un saldo que no se puede leer no se adivina ni se saltea: sin
+            // nadie que confirme, cargar el resto dejaría a ese contacto con la cuenta en cero sin que nadie lo vea.
+            if ($this->hay_saldos_ilegibles($plan)) {
+                $corrida->fill([
+                    'estado' => 'requiere_correccion',
+                    'motivo' => 'saldos_ilegibles',
+                    'codigo' => null,
+                    'huella' => $plan['huella'],
+                    'resumen' => $plan['resumen'],
+                    'error' => $this->texto_de_ilegibles($corrida, $plan['resumen']),
+                ]);
+                $corrida->save();
+                return;
+            }
+            // Sin nada para corregir se importa: la misma ejecución sigue con importar() (ver avanzar()). Sin aviso.
+            $corrida->fill([
+                'estado' => 'importar',
+                'motivo' => null,
+                'revision' => (int) $corrida->revision + 1,
+                'codigo' => null,
+                'confirmada_at' => Carbon::now(),
+                'huella' => $plan['huella'],
+                'resumen' => $plan['resumen'],
+            ]);
+            $corrida->save();
+            return;
+        }
 
         $revision = (int) $corrida->revision + 1;
         $codigo = strtoupper(substr(hash('sha256', $corrida->uuid . ':' . $revision), 0, 8));
@@ -221,8 +279,16 @@ class ImportacionDeSoporteService
     {
         $owner = User::findOrFail((int) $corrida->user_id);
 
-        if ((int) $corrida->tandas_total === 0 && !$this->preparar_tandas($corrida)) {
-            return;
+        if ((int) $corrida->tandas_total === 0) {
+            // En la prueba, lo de ejemplo se va antes de importar (como en el modal y en los artículos): sus clientes y
+            // proveedores, con sus cuentas, ensuciarían los totales del resumen. Idempotente: si ya se borró, no hace
+            // nada. Nunca en `analizar`: un archivo que termina pidiendo corrección no borra nada.
+            if ($corrida->modo_prueba) {
+                PruebaHelper::borrar_semilla_antes_de_importar((int) $corrida->user_id, 'martin');
+            }
+            if (!$this->preparar_tandas($corrida)) {
+                return;
+            }
         }
 
         $corrida->refresh();
@@ -274,7 +340,12 @@ class ImportacionDeSoporteService
         if ($terminada) {
             $this->borrar_tandas($corrida);
             $corrida->refresh();
-            $corrida->aviso('resultado', $this->texto_del_resultado($corrida));
+            if ($corrida->modo_prueba) {
+                $corrida->aviso('resultado', $this->texto_del_resultado_de_prueba($corrida));
+                PruebaHelper::importacion_terminada((int) $corrida->user_id, (string) $corrida->modelo);
+            } else {
+                $corrida->aviso('resultado', $this->texto_del_resultado($corrida));
+            }
         }
     }
 
@@ -296,9 +367,17 @@ class ImportacionDeSoporteService
             if ($corrida->estado !== 'importar' || (int) $corrida->tandas_total > 0) {
                 return (int) $corrida->tandas_total > 0;
             }
-            if ($plan['huella'] !== $corrida->huella || $plan['ambiguas'] !== [] || $plan['demasiado_grande']) {
+            $correccion = $plan['ambiguas'] !== [] || $plan['demasiado_grande']
+                || ($corrida->modo_prueba && $this->hay_saldos_ilegibles($plan));
+            if ($correccion || ($plan['huella'] !== $corrida->huella && !$corrida->modo_prueba)) {
                 $this->preguntar($corrida, $plan);
                 return false;
+            }
+            // En la prueba nadie confirmó la huella anterior (no hay código): si el plan cambió (por ejemplo, porque se
+            // borró la semilla), se guardan la huella y el resumen nuevos y se sigue.
+            if ($plan['huella'] !== $corrida->huella) {
+                $corrida->huella = $plan['huella'];
+                $corrida->resumen = $plan['resumen'];
             }
             $filas = max(1, (int) $plan['ultima_fila'] - (int) $corrida->fila_inicio + 1);
             $total = (int) ceil($filas / ImportacionDeSoporte::FILAS_POR_TANDA);
@@ -957,6 +1036,7 @@ class ImportacionDeSoporteService
             'estado' => (string) $corrida->estado,
             'motivo' => $corrida->motivo,
             'archivo' => (string) $corrida->nombre,
+            'modo_prueba' => (bool) $corrida->modo_prueba,
             'support_ticket_id' => (int) $corrida->support_ticket_id,
             'revision' => (int) $corrida->revision,
             'resumen' => $corrida->resumen,
@@ -1068,6 +1148,101 @@ class ImportacionDeSoporteService
         }
 
         return $texto . ' Si querés deshacerla, avisame por acá.';
+    }
+
+    /**
+     * El resumen de una carga de la prueba (ronda 8, D1): no hubo código previo, así que dice qué cargó con los
+     * totales de las cuentas, para que el dueño lo compare con su lista. Los montos, con plata().
+     */
+    public function texto_del_resultado_de_prueba(ImportacionDeSoporte $corrida): string
+    {
+        $resultado = (array) $corrida->resultado;
+        $resumen = (array) $corrida->resumen;
+        $proveedores = $corrida->modelo === 'provider';
+        $singular = $proveedores ? 'proveedor' : 'cliente';
+        $plural = $corrida->etiqueta_plural();
+        $archivo = $this->archivo($corrida);
+        $creados = (int) ($resultado['creados'] ?? 0);
+        $actualizados = (int) ($resultado['actualizados'] ?? 0);
+        $hubo_saldos = array_sum(array_map('intval', (array) ($resultado['movimientos'] ?? []))) > 0;
+        $deshacer = ' Si algo no coincide con tu lista, decímelo y lo deshago.';
+
+        if ($creados === 0 && $actualizados === 0 && !$hubo_saldos) {
+            return 'No cargué ningún ' . $singular . ' nuevo de «' . $archivo . '»: ya estaban todos igual.'
+                . $this->texto_de_descartadas($resumen, $singular, $plural) . $deshacer;
+        }
+
+        if ($creados > 0) {
+            $texto = 'Cargué ' . $creados . ' ' . ($creados === 1 ? $singular : $plural) . ' de «' . $archivo . '»'
+                . ($actualizados > 0 ? ' y actualicé ' . $actualizados . ' que ya tenías' : '') . '.';
+        } elseif ($actualizados > 0) {
+            $texto = 'Actualicé ' . $actualizados . ' ' . ($actualizados === 1 ? $singular : $plural) . ' de «' . $archivo . '» que ya tenías.';
+        } else {
+            $texto = 'No cargué ' . $plural . ' nuevos de «' . $archivo . '».';
+        }
+
+        $deudores = (int) ($resumen['saldos_deudores'] ?? 0);
+        if ($deudores > 0) {
+            $texto .= ' En total ' . ($proveedores ? 'les debés ' : 'te deben ') . $this->plata($resumen['saldo_total_deudor'] ?? 0);
+            $mayor = isset($resumen['saldo_mayor']) && is_array($resumen['saldo_mayor']) ? $resumen['saldo_mayor'] : null;
+            if ($deudores >= 2 && !is_null($mayor)) {
+                $texto .= '; el saldo más alto es el de ' . mb_substr((string) ($mayor['nombre'] ?? ''), 0, 60)
+                    . ' (' . $this->plata($mayor['monto'] ?? 0) . ')';
+            }
+            $texto .= '.';
+        }
+        $a_favor = (int) ($resumen['saldos_a_favor'] ?? 0);
+        if ($a_favor > 0) {
+            $texto .= ' ' . $a_favor . ($a_favor === 1 ? ' quedó' : ' quedaron') . ' con saldo a ' . ($proveedores ? 'tu ' : '')
+                . 'favor (' . $this->plata($resumen['saldo_total_a_favor'] ?? 0) . ').';
+        }
+        $no_cargados = (int) ($resultado['saldos_no_cargados'] ?? 0);
+        if ($no_cargados > 0) {
+            $texto .= ' A ' . $no_cargados . ($no_cargados === 1 ? ' no le cargué' : ' no les cargué')
+                . ' el saldo porque su cuenta ya tenía movimientos.';
+        }
+
+        return $texto . $this->texto_de_descartadas($resumen, $singular, $plural) . $deshacer;
+    }
+
+    /** « Dejé afuera N filas que no son clientes: «A», «B», «C» y K más.» (como mucho 3 nombres), o vacío. */
+    private function texto_de_descartadas(array $resumen, string $singular, string $plural): string
+    {
+        $total = (int) ($resumen['filas_descartadas_total'] ?? 0);
+        if ($total === 0) {
+            return '';
+        }
+        $nombres = [];
+        foreach (array_slice((array) ($resumen['filas_descartadas'] ?? []), 0, 3) as $fila) {
+            $nombres[] = '«' . mb_substr((string) ($fila['texto'] ?? ''), 0, 60) . '»';
+        }
+        $resto = $total - count($nombres);
+
+        return ' Dejé afuera ' . $total . ($total === 1 ? ' fila que no es un ' . $singular : ' filas que no son ' . $plural)
+            . ($nombres === [] ? '' : ': ' . implode(', ', $nombres)) . ($resto > 0 ? ' y ' . $resto . ' más' : '') . '.';
+    }
+
+    /** ¿El plan trae saldos que no se pueden leer? (en la prueba frenan la carga entera). */
+    private function hay_saldos_ilegibles(array $plan): bool
+    {
+        return !empty($plan['resumen']['saldos_ilegibles']);
+    }
+
+    /** Lo que Martín le explica al dueño de la prueba cuando hay saldos que no se pueden leer (va a `corrida.error`). */
+    private function texto_de_ilegibles(ImportacionDeSoporte $corrida, array $resumen): string
+    {
+        $ilegibles = (array) ($resumen['saldos_ilegibles'] ?? []);
+        $total = max(count($ilegibles), (int) ($resumen['saldos_ilegibles_total'] ?? 0));
+        $lineas = [];
+        foreach (array_slice($ilegibles, 0, 10) as $fila) {
+            $lineas[] = 'fila ' . (int) $fila['fila'] . ' (' . mb_substr((string) $fila['nombre'], 0, 60) . '): "'
+                . mb_substr((string) $fila['texto'], 0, 30) . '"';
+        }
+
+        return 'No importé «' . $this->archivo($corrida) . '» porque ' . $total
+            . ($total === 1 ? ' saldo no se puede leer: ' : ' saldos no se pueden leer: ') . implode('; ', $lineas)
+            . ($total > 10 ? '; y ' . ($total - 10) . ' más' : '')
+            . '. Poné un número en pesos (o dejalo vacío si no debe nada) y mandámelo de nuevo.';
     }
 
     private function texto_de_la_reversion(ImportacionDeSoporte $corrida): string

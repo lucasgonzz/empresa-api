@@ -698,7 +698,9 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
             $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2, 'precio' => 3]), 1, 0, 0, 1)
         );
         $this->assertSame(
-            'Cargué 12 artículos con su costo (el precio de venta lo cargás vos después). 10 son nuevos y 2 ya los tenías: los actualicé.'
+            // D3 (ronda 8): «después» no deja los artículos sin precio; se venden al costo con IVA.
+            'Cargué 12 artículos con su costo y sin ganancia: por ahora se venden al costo (con IVA si corresponde); el precio de'
+            . ' venta lo cargás vos después. 10 son nuevos y 2 ya los tenías: los actualicé.'
             . ' 3 filas quedaron sin cargar. 2 filas quedaron para revisar.',
             $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2], [], ['margen_de_ganancia' => 'despues']), 10, 2, 3, 2)
         );
@@ -839,7 +841,9 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $resumen = new \ReflectionMethod(ImportacionDePruebaService::class, 'resumen_en_palabras');
         $resumen->setAccessible(true);
         $this->assertSame(
-            'Cargué 32 artículos con su costo y su precio de venta. 11 artículos quedaron con costo y sin ganancia: decime qué ganancia les pongo y los actualizo.',
+            // D3 (ronda 8): sin «los actualizo» (Martín no tiene con qué) y diciendo cómo quedaron.
+            'Cargué 32 artículos con su costo y su precio de venta. 11 artículos no traían precio de venta: por ahora quedaron sin'
+            . ' ganancia, al costo (con IVA si corresponde). Cuando me digas a cuánto los vendés te muestro dónde ponerlo.',
             $resumen->invoke(app(ImportacionDePruebaService::class), $run, 32, 0, 0, 0)
         );
     }

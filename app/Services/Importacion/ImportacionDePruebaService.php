@@ -136,7 +136,19 @@ class ImportacionDePruebaService
          */
         if (!$run->modo_soporte) {
             // Filas sueltas con costo y sin ganancia en una hoja que sí trae esa columna: se pregunta solo por ellas.
-            $margen = PlanillaDePrueba::pregunta_del_margen($hojas, $planilla->contar_sin_ganancia($hojas));
+            $sin_ganancia = $planilla->contar_sin_ganancia($hojas);
+            /*
+             * `precio:N` (ronda 8, D2: lo pasó soporte al lanzar o lo contestó el dueño) vale solo si hay EXACTAMENTE
+             * un artículo con costo y sin ganancia ni precio: ninguna hoja entera sin columna de venta y una sola fila
+             * así. Si no, la decisión se borra y se pregunta como siempre.
+             */
+            if (PlanillaDePrueba::precio_de_decision($decisiones[PlanillaDePrueba::CLAVE_MARGEN] ?? null) !== null
+                && !(array_filter($hojas, [PlanillaDePrueba::class, 'hoja_necesita_margen']) === [] && $sin_ganancia === 1)) {
+                unset($decisiones[PlanillaDePrueba::CLAVE_MARGEN]);
+                $run->decisiones = $decisiones;
+                $run->save();
+            }
+            $margen = PlanillaDePrueba::pregunta_del_margen($hojas, $sin_ganancia, $planilla->nombre_del_primero_sin_ganancia());
             if ($margen !== [] && !isset($decisiones[PlanillaDePrueba::CLAVE_MARGEN])) {
                 DB::transaction(function () use ($run, $margen) {
                     $this->consultar($run, 'columnas', $margen);
@@ -162,12 +174,19 @@ class ImportacionDePruebaService
         }
         // Títulos de rubro y totales que no se importan: quedan en la corrida para contarlo en el resumen.
         foreach ($hojas as &$hoja) {
-            unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado']);
+            unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado'],
+                $hoja['filas_con_precio_agregado'], $hoja['sin_ganancia_ejemplo']);
             if (!empty($plan['salteadas'][$hoja['indice']])) {
                 $hoja['filas_salteadas'] = $plan['salteadas'][$hoja['indice']];
             }
             if (!empty($plan['sin_ganancia'][$hoja['indice']])) {
                 $hoja['filas_sin_ganancia'] = $plan['sin_ganancia'][$hoja['indice']];
+            }
+            if (!empty($plan['precio_agregado'][$hoja['indice']])) {
+                $hoja['filas_con_precio_agregado'] = $plan['precio_agregado'][$hoja['indice']];
+            }
+            if (!empty($plan['sin_ganancia_ejemplo'][$hoja['indice']])) {
+                $hoja['sin_ganancia_ejemplo'] = $plan['sin_ganancia_ejemplo'][$hoja['indice']];
             }
             if (!empty($plan['margen_agregado'][$hoja['indice']])) {
                 $hoja['filas_con_margen_agregado'] = $plan['margen_agregado'][$hoja['indice']];
@@ -488,7 +507,8 @@ class ImportacionDePruebaService
         } elseif ($trae_precio) {
             $con = ' con su precio de venta (sin costo)';
         } elseif (isset($campos['costo'])) {
-            $con = ' con su costo (el precio de venta lo cargás vos después)';
+            // D3 (ronda 8): «después» no deja los artículos sin precio; se venden al costo (con IVA si corresponde).
+            $con = ' con su costo y sin ganancia: por ahora se venden al costo (con IVA si corresponde); el precio de venta lo cargás vos después';
         } else {
             $con = '';
         }
@@ -514,17 +534,65 @@ class ImportacionDePruebaService
             $texto .= $agregado === 1 ? ' Al que no traía ganancia le sumé un ' . $margen . ' %.'
                 : ' A los ' . $agregado . ' que no traían ganancia les sumé un ' . $margen . ' %.';
         }
+        // El precio que dijo el dueño para el único que no lo traía (ronda 8, D2).
+        $precio = PlanillaDePrueba::precio_de_decision(($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null);
+        if ($precio !== null && (int) array_sum(array_column($hojas, 'filas_con_precio_agregado')) > 0) {
+            $texto .= ' Al que no traía precio le puse ' . self::pesos((float) $precio) . ' como precio de venta.';
+        }
+        // D3 (ronda 8): lo que quedó sin ganancia, dicho como quedó de verdad. Nunca «lo actualizo»: Martín no tiene con qué.
         $sin_ganancia = (int) array_sum(array_column($hojas, 'filas_sin_ganancia'));
-        if ($sin_ganancia > 0) {
-            $texto .= $sin_ganancia === 1
-                ? ' 1 artículo quedó con costo y sin ganancia: decime qué ganancia le pongo y lo actualizo.'
-                : ' ' . $sin_ganancia . ' artículos quedaron con costo y sin ganancia: decime qué ganancia les pongo y los actualizo.';
+        if ($sin_ganancia === 1) {
+            $texto .= ' 1 artículo no traía precio de venta: por ahora ' . $this->como_quedo_el_sin_ganancia($run, $hojas)
+                . '. Cuando me digas a cuánto lo vendés te muestro dónde ponerlo.';
+        } elseif ($sin_ganancia > 1) {
+            $texto .= ' ' . $sin_ganancia . ' artículos no traían precio de venta: por ahora quedaron sin ganancia, al costo'
+                . ' (con IVA si corresponde). Cuando me digas a cuánto los vendés te muestro dónde ponerlo.';
         }
 
         // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.
         return $texto . PlanillaDePrueba::texto_de_filas_salteadas($hojas)
             // Las columnas que el sistema no tiene dónde guardar («Obs.», «Ubic.»), solo en la prueba (E8.6).
             . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas);
+    }
+
+    /**
+     * Cómo quedó el único artículo que no traía precio de venta, leído del artículo cargado (el último actualizado del
+     * dueño con ese nombre, y ese SKU si lo había): «quedó al costo más IVA ($ 799,11)», «quedó al costo ($ 660,42)» o,
+     * si no se encuentra, «quedó sin ganancia, al costo».
+     *
+     * @param  ImportacionDePrueba $run
+     * @param  array $hojas
+     * @return string
+     */
+    private function como_quedo_el_sin_ganancia(ImportacionDePrueba $run, array $hojas): string
+    {
+        $ejemplo = null;
+        foreach ($hojas as $hoja) {
+            if (!empty($hoja['filas_sin_ganancia']) && !empty($hoja['sin_ganancia_ejemplo']['nombre'])) {
+                $ejemplo = $hoja['sin_ganancia_ejemplo'];
+                break;
+            }
+        }
+        $articulo = null;
+        if ($ejemplo !== null) {
+            $articulo = Article::where('user_id', (int) $run->user_id)->where('name', trim((string) $ejemplo['nombre']))
+                ->when(!empty($ejemplo['sku']), function ($consulta) use ($ejemplo) {
+                    $consulta->where('sku', trim((string) $ejemplo['sku']));
+                })->orderByDesc('updated_at')->orderByDesc('id')->first(['id', 'cost', 'final_price']);
+        }
+        if ($articulo === null || $articulo->final_price === null) {
+            return 'quedó sin ganancia, al costo';
+        }
+        $costo = (float) $articulo->cost;
+        $final = (float) $articulo->final_price;
+
+        return $final > $costo + 0.005 ? 'quedó al costo más IVA (' . self::pesos($final) . ')' : 'quedó al costo (' . self::pesos($final) . ')';
+    }
+
+    /** «$ 1.300,00»: el formato de los montos del resumen de artículos (ronda 8, D3). */
+    private static function pesos(float $monto): string
+    {
+        return '$ ' . number_format($monto, 2, ',', '.');
     }
 
     private function iniciar_imagenes(ImportacionDePrueba $run, ImportHistory $historial): ?ImageAssignmentRun

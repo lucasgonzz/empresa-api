@@ -163,13 +163,24 @@ class PlanDeContactosDeSoporte
         $clase = $es_cliente ? Client::class : Provider::class;
         $owner_id = (int) $corrida->user_id;
 
+        // 0) Solo en la prueba (ronda 8, D1): las filas que no son contactos (totales, títulos de sección, notas al pie)
+        // con la misma regla E8.x que usan ClientImport y ProviderImport en la prueba, sobre la lista ENTERA (cada
+        // tanda ve solo 50 filas y la regla necesita la lista completa). La fila descartada no entra a lo previsto
+        // ni a las filas crudas: ninguna tanda la ve y el control no espera su alta. Todas salen nombradas.
+        $modo_prueba = (bool) $corrida->modo_prueba;
+        $descartes = $modo_prueba ? LocalImportHelper::filas_que_no_son_contactos_de($lector->filas, $columnas,
+            (int) $corrida->fila_inicio, count($lector->filas)) : [];
+        $descartadas = [];
+
         // 1) Las filas con nombre (las que el importador no saltea), como las recorre él.
         $filas = [];
         $crudas = [];
         $sin_nombre = 0;
         $num_row = 1;
         foreach ($lector->filas as $row) {
-            if ($num_row >= (int) $corrida->fila_inicio) {
+            if (isset($descartes[$num_row])) {
+                $descartadas[] = ['fila' => $num_row, 'texto' => (string) $descartes[$num_row][1], 'motivo' => (string) $descartes[$num_row][0]];
+            } elseif ($num_row >= (int) $corrida->fila_inicio) {
                 $crudas[$num_row] = is_object($row) && method_exists($row, 'toArray') ? $row->toArray() : (array) $row;
                 $nombre = ImportHelper::getColumnValue($row, 'nombre', $columnas);
                 if (!is_null($nombre)) {
@@ -333,11 +344,24 @@ class PlanDeContactosDeSoporte
             'filas_ambiguas' => array_slice(array_values($ambiguas), 0, self::MAXIMO_DE_AMBIGUAS),
             'maximo_de_filas' => self::maximo_de_filas(),
         ];
+        if ($modo_prueba) {
+            // La prueba no muestra nada antes de importar: el resumen del final dice los totales de las cuentas, sobre
+            // la lista completa de saldos (no la recortada), sin contar los que no se cargan.
+            $resumen += self::totales_de_saldos($saldos) + [
+                'saldos_ilegibles_total' => count($ilegibles),
+                'filas_descartadas' => array_slice($descartadas, 0, self::MAXIMO_DE_SALDOS),
+                'filas_descartadas_total' => count($descartadas),
+            ];
+        }
 
-        $huella = hash('sha256', json_encode([
+        $para_la_huella = [
             $modelo_nombre, $columnas, (int) $corrida->hoja, $corrida->hoja_nombre, (int) $corrida->fila_inicio,
             hash_file('sha256', $ruta), $previsto, array_values($ambiguas),
-        ]));
+        ];
+        if ($modo_prueba) {
+            $para_la_huella[] = $descartadas;
+        }
+        $huella = hash('sha256', json_encode($para_la_huella));
 
         return ['resumen' => $resumen, 'previsto' => $previsto, 'ambiguas' => array_values($ambiguas),
             'ultima_fila' => $ultima_fila, 'filas_crudas' => $crudas, 'demasiado_grande' => count($filas) > self::maximo_de_filas(),
@@ -447,6 +471,46 @@ class PlanDeContactosDeSoporte
 
         return ['linea' => $linea + ['accion' => 'no_se_carga', 'saldo_actual' => round($de_la_cuenta, 2),
             'saldo_resultante' => round($de_la_cuenta, 2), 'saldo_excel' => $monto, 'monto' => 0.0], 'movimientos' => []];
+    }
+
+    /**
+     * Los totales de las cuentas para el resumen de la prueba: positivo = debe (le deben al dueño, o el dueño le debe
+     * al proveedor), negativo = saldo a favor. Los que no se cargan (`no_se_carga`) no cuentan.
+     *
+     * @param  array $saldos  Líneas de saldo de armar(), la lista completa
+     * @return array
+     */
+    private static function totales_de_saldos(array $saldos): array
+    {
+        $deudor = 0.0;
+        $deudores = 0;
+        $mayor = null;
+        $a_favor = 0.0;
+        $con_saldo_a_favor = 0;
+        foreach ($saldos as $saldo) {
+            if (($saldo['accion'] ?? '') === 'no_se_carga') {
+                continue;
+            }
+            $monto = round((float) $saldo['saldo_resultante'], 2);
+            if ($monto > 0) {
+                $deudor += $monto;
+                $deudores++;
+                if (is_null($mayor) || $monto > $mayor['monto']) {
+                    $mayor = ['nombre' => (string) $saldo['nombre'], 'monto' => $monto];
+                }
+            } elseif ($monto < 0) {
+                $a_favor += abs($monto);
+                $con_saldo_a_favor++;
+            }
+        }
+
+        return [
+            'saldo_total_deudor' => round($deudor, 2),
+            'saldos_deudores' => $deudores,
+            'saldo_mayor' => $mayor,
+            'saldos_a_favor' => $con_saldo_a_favor,
+            'saldo_total_a_favor' => round($a_favor, 2),
+        ];
     }
 
     private static function fila_con_datos($row): bool
