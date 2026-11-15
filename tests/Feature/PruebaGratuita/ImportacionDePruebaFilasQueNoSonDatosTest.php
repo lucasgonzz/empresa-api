@@ -523,6 +523,16 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
             [$filas, $salteadas] = $this->leer(array_values($planilla['filas']), $mapeo, ['columna_0_4' => 'ignorar']);
             $this->assertSame(count($planilla['datos']), $filas, 'caso ' . $caso . ' (cabecera en la fila ' . $planilla['cabecera'] . '): '
                 . json_encode($salteadas, JSON_UNESCAPED_UNICODE));
+            // E8.7: por filas() de verdad, ninguna fila desaparece sin contarse: leídas (sin las vacías) = entran + salteadas.
+            $leidas = 0;
+            foreach ($planilla['filas'] as $numero => $fila) {
+                $leidas += $numero >= $planilla['inicio'] && array_filter($fila, function ($celda) { return trim((string) $celda) !== ''; }) !== [] ? 1 : 0;
+            }
+            $contadas = 0;
+            foreach ($salteadas[0] ?? [] as $clave => $valor) {
+                $contadas += in_array($clave, [PlanillaDePrueba::FILA_TITULO, PlanillaDePrueba::FILA_TOTAL, PlanillaDePrueba::FILA_SUBTOTAL], true) ? (int) $valor : 0;
+            }
+            $this->assertSame($leidas, $filas + $contadas, 'caso ' . $caso . ': ' . json_encode($salteadas, JSON_UNESCAPED_UNICODE));
         }
         fwrite(STDERR, PHP_EOL . 'Cabeceras en las filas: ' . implode(', ', $cabeceras) . PHP_EOL);
     }
@@ -618,7 +628,10 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
                 'Precio de venta' => ['precio', 0.97]]);
             $this->assertArrayNotHasKey('columna_0_3', $preguntas, $titulo);
             $this->assertTrue($hojas[0]['columnas'][3]['sin_destino'] ?? false, $titulo);
-            $this->assertSame(' No cargué la columna «' . $titulo . '»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
+            // E8.7: las de notas no dicen que el sistema no tiene dónde guardarlas (tendrían la descripción).
+            $de_notas = in_array($titulo, ['Obs.', 'Observaciones', 'Notas', 'Comentarios'], true);
+            $this->assertSame($de_notas ? ' No cargué la columna «' . $titulo . '».'
+                : ' No cargué la columna «' . $titulo . '»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
                 PlanillaDePrueba::texto_de_columnas_sin_destino($hojas), $titulo);
         }
 
@@ -631,7 +644,7 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
         ]);
         [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97]]);
         $this->assertSame([], array_keys($preguntas));
-        $this->assertSame(' No cargué las columnas «Obs.» y «Ubic.»: el sistema no tiene dónde guardarlas. Si alguna era otra cosa, decímelo.',
+        $this->assertSame(' No cargué la columna «Obs.». No cargué la columna «Ubic.»: el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.',
             PlanillaDePrueba::texto_de_columnas_sin_destino($hojas));
     }
 
@@ -656,6 +669,46 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
             [$hojas, $preguntas] = $this->preguntas($filas, ['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97]]);
             $this->assertArrayHasKey('columna_0_0', $preguntas, $titulo);
         }
+    }
+
+    public function test_un_contador_sin_otra_columna_de_codigo_se_pregunta_y_contestado_queda_como_codigo(): void
+    {
+        // E8.7: numerar 1..N es el código propio más común de un negocio chico. Sin otra columna de código no se ignora.
+        $filas = [['#', 'Descripción', 'Precio de venta']];
+        for ($i = 1; $i <= 10; $i++) {
+            $filas[] = [$i, 'Martillo carpintero ' . $i, 100 * $i];
+        }
+        $this->analizador(['Descripción' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        Bus::fake();
+        $run = $this->avanzar($this->corrida($filas));
+        $this->assertSame('columnas', $run->estado);
+        $this->assertSame(['columna_0_0'], array_keys((array) $run->preguntas));
+        $this->assertSame(['sku', 'ignorar'], $run->preguntas['columna_0_0']['sugeridas']);
+        $this->assertArrayNotHasKey('sin_destino', $run->hojas[0]['columnas'][0]);
+
+        $run->decisiones = ['columna_0_0' => 'sku'];
+        $run->retirar_pregunta();
+        $run->estado = $run->estado_para('preparar');
+        $run->save();
+        $run = $this->avanzar($run);
+        $this->assertSame('importando', $run->estado, json_encode($run->preguntas, JSON_UNESCAPED_UNICODE));
+        $primero = Bus::dispatched(ProcessArticleChunk::class)->first();
+        $trabajos = [$primero];
+        foreach ($primero->chained as $serializado) {
+            $siguiente = unserialize($serializado);
+            if ($siguiente instanceof ProcessArticleChunk) {
+                $trabajos[] = $siguiente;
+            }
+        }
+        foreach ($trabajos as $job) {
+            $job->handle();
+        }
+        $historial = ImportHistory::findOrFail($run->import_history_id);
+        (new FinalizeArticleImport($this->dueno->id, $historial->id, $historial->import_status_id))->handle();
+        foreach ([1, 2, 3, 10] as $sku) {
+            $this->assertSame('Martillo carpintero ' . $sku, Article::where('user_id', $this->dueno->id)->where('sku', (string) $sku)->value('name'), 'SKU ' . $sku);
+        }
+        $this->assertSame('', PlanillaDePrueba::texto_de_columnas_sin_destino($run->hojas), 'No se dice que no se cargó.');
     }
 
     public function test_una_columna_de_utilidad_sugiere_el_margen_de_ganancia(): void

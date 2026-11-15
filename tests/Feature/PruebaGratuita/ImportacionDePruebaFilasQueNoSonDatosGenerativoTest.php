@@ -67,8 +67,16 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
             $no_vacias = array_filter($filas, function ($fila) {
                 return array_filter($fila, function ($celda) { return trim((string) $celda) !== ''; }) !== [];
             });
-            $entran = array_diff(array_keys($no_vacias), array_keys($motivos));
-            if (count($no_vacias) !== count($entran) + count($motivos) || array_values($entran) !== $planilla['datos']) {
+            // Las que entran, contadas por su cuenta: filas no vacías cuyo motivo es null.
+            $entran = [];
+            foreach ($no_vacias as $numero => $fila) {
+                if (!array_key_exists($numero, $motivos)) {
+                    $entran[] = $numero;
+                }
+            }
+            // Y las salteadas, solo las que son filas leídas (un motivo de una fila vacía o inexistente sería un fantasma).
+            $salteadas_leidas = count(array_intersect_key($motivos, $no_vacias));
+            if ($entran !== $planilla['datos'] || count($no_vacias) !== count($entran) + $salteadas_leidas || $salteadas_leidas !== count($motivos)) {
                 $fallas[] = 'caso ' . $caso . ': leídas ' . count($no_vacias) . ', entran ' . count($entran) . ', salteadas ' . count($motivos)
                     . ', datos esperados ' . count($planilla['datos']);
             }

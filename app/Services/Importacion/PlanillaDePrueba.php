@@ -337,7 +337,8 @@ class PlanillaDePrueba
     /**
      * Las columnas que no son un dato del artículo en el sistema (misión prueba-e2e-campana-imperio, E8.6, solo en la
      * prueba): «Obs.», «Observaciones», «Notas», «Comentarios», «Ubic.», «Ubicación», «Estante», «Valorizado»,
-     * «Importe total», «Subtotal», y «Nº», «#», «Ítem» cuando traen un contador (enteros consecutivos). Antes se le
+     * «Importe total», «Subtotal», y «Nº», «#», «Ítem» cuando traen un contador (enteros consecutivos) y OTRA columna
+     * ya es el código (E8.7: sin otra, el contador puede ser el código del dueño y se pregunta). Antes se le
      * preguntaba al dueño qué eran y la única sugerencia era «ignorar». El importador de artículos no tiene destino
      * para ninguna (ni observaciones ni ubicación: ver AiExcelAnalyzer::SYSTEM_PROPERTIES), así que se ignoran sin
      * preguntar (`sin_destino`) y el resumen lo dice (texto_de_columnas_sin_destino()). Solo las que el analizador
@@ -351,6 +352,10 @@ class PlanillaDePrueba
      */
     private function sin_destino(array $columnas, string $ruta, int $indice, int $inicio): array
     {
+        // ¿Otra columna ya es el código? (código propio, de barras, de proveedor o número)
+        $hay_otro_codigo = array_filter($columnas, function ($columna) {
+            return in_array($columna['campo'] ?? null, ['numero', 'sku', 'codigo_de_barras', 'codigo_de_proveedor'], true);
+        }) !== [];
         foreach ($columnas as $posicion => $columna) {
             if (($columna['campo'] ?? null) !== null) {
                 continue;
@@ -359,8 +364,17 @@ class PlanillaDePrueba
             $titulo = self::titulo_comparable($crudo);
             $sin_destino = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios|ubic|ubicacion|ubicaciones'
                 . '|estante|estantes|valorizado|valorizacion|importe total|total importe|subtotal|subtotales)$/', $titulo) === 1;
-            if (!$sin_destino && ($crudo === '#' || preg_match('/^(?:n|no|nro|num|numero|item|items|n item)$/', $titulo) === 1)) {
-                $sin_destino = $this->es_un_contador($ruta, $indice, $inicio, (int) $posicion);
+            if (!$sin_destino && ($crudo === '#' || preg_match('/^(?:n|no|nro|num|numero|item|items|n item)$/', $titulo) === 1)
+                && $this->es_un_contador($ruta, $indice, $inicio, (int) $posicion)) {
+                /*
+                 * E8.7: numerar 1..N es el código propio más común de un negocio chico. El contador se ignora solo si
+                 * otra columna ya es el código; si no, se pregunta como cualquier columna dudosa, sugiriendo su código.
+                 */
+                if ($hay_otro_codigo) {
+                    $sin_destino = true;
+                } else {
+                    $columnas[$posicion]['contador'] = true;
+                }
             }
             if ($sin_destino) {
                 $columnas[$posicion]['sin_destino'] = true;
@@ -403,25 +417,44 @@ class PlanillaDePrueba
      */
     public static function texto_de_columnas_sin_destino(array $hojas): string
     {
-        $titulos = [];
+        /*
+         * E8.7: «Obs.», «Notas», «Comentarios» sí tendrían dónde ir (la descripción), así que para esas no se dice que
+         * el sistema no tiene dónde guardarlas. Tampoco se le ofrece cargarlas como descripción: con la carga ya
+         * terminada no queda una pregunta abierta por donde contestarlo.
+         */
+        $de_notas = [];
+        $sin_lugar = [];
         foreach ($hojas as $hoja) {
             foreach ((array) ($hoja['columnas'] ?? []) as $columna) {
                 if (!empty($columna['sin_destino'])) {
-                    $titulos[] = '«' . mb_substr(trim((string) ($columna['titulo'] ?? '')), 0, 40) . '»';
+                    $titulo = '«' . mb_substr(trim((string) ($columna['titulo'] ?? '')), 0, 40) . '»';
+                    $es_nota = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios)$/',
+                        self::titulo_comparable($columna['titulo'] ?? '')) === 1;
+                    if ($es_nota) {
+                        $de_notas[] = $titulo;
+                    } else {
+                        $sin_lugar[] = $titulo;
+                    }
                 }
             }
         }
-        $titulos = array_values(array_unique($titulos));
-        if ($titulos === []) {
-            return '';
-        }
-        if (count($titulos) === 1) {
-            return ' No cargué la columna ' . $titulos[0] . ': el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.';
-        }
-        $ultima = array_pop($titulos);
+        $lista = function (array $titulos) {
+            $titulos = array_values(array_unique($titulos));
+            $ultima = array_pop($titulos);
 
-        return ' No cargué las columnas ' . implode(', ', $titulos) . ' y ' . $ultima
-            . ': el sistema no tiene dónde guardarlas. Si alguna era otra cosa, decímelo.';
+            return ($titulos === [] ? '' : implode(', ', $titulos) . ' y ') . $ultima;
+        };
+        $texto = '';
+        if ($de_notas !== []) {
+            $texto .= (count(array_unique($de_notas)) === 1 ? ' No cargué la columna ' : ' No cargué las columnas ') . $lista($de_notas) . '.';
+        }
+        if ($sin_lugar !== []) {
+            $texto .= count(array_unique($sin_lugar)) === 1
+                ? ' No cargué la columna ' . $lista($sin_lugar) . ': el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.'
+                : ' No cargué las columnas ' . $lista($sin_lugar) . ': el sistema no tiene dónde guardarlas. Si alguna era otra cosa, decímelo.';
+        }
+
+        return $texto;
     }
 
     private function descripcion_como_nombre(array $titulos, array $mapeo, array $muestras): ?int
@@ -740,6 +773,10 @@ class PlanillaDePrueba
      */
     public static function sugeridas_para(array $columna, array $disponibles): array
     {
+        // Un contador 1..N sin otra columna de código: puede ser el código del dueño (E8.7).
+        if (!empty($columna['contador'])) {
+            return isset($disponibles['sku']) ? ['sku'] : [];
+        }
         $campo = $columna['campo'] ?? null;
         $titulo = self::titulo_comparable($columna['titulo'] ?? '');
         $familia = !empty($columna['importe']) ? 'importe' : null;
