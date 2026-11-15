@@ -387,8 +387,64 @@ class LocalImportHelper {
 		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::senal_debil_de_titulo($nombre)) {
 			return ['titulo', $nombre];
 		}
+		if (self::es_fila_suelta($nombre, $contexto)) {
+			return ['suelta', $nombre];
+		}
 
 		return null;
+	}
+
+	/**
+	 * Con cuántos contactos con algún dato además del nombre, como mínimo, una lista se juzga «con datos» para dejar
+	 * afuera una fila suelta (ver es_fila_suelta()).
+	 */
+	const CONTACTOS_CON_DATOS_PARA_SUELTAS = 5;
+
+	/** Cuántas filas de solo nombre (sin señal de título) tolera la lista antes de dudar y no descartar ninguna. */
+	const MAXIMO_DE_SUELTAS = 2;
+
+	/** Por cada fila suelta, cuántos contactos con datos tiene que traer la lista, como mínimo. */
+	const CONTACTOS_CON_DATOS_POR_SUELTA = 4;
+
+	/**
+	 * ¿Una fila de SOLO nombre es una «suelta» (un título de grupo sin dos puntos ni mayúsculas: «Mayoristas»,
+	 * «Gremio de la construcción», «Grupo A») y no un contacto? (misión prueba-e2e-campana-imperio, ronda 8, A1)
+	 *
+	 * La regla, toda junta (lo que no la cumple entra como contacto, como siempre):
+	 *  1. La lista trae contactos con datos: al menos CONTACTOS_CON_DATOS_PARA_SUELTAS filas con algún dato además
+	 *     del nombre (teléfono, CUIT, saldo…; el saldo cuenta: «Sandra Ojeda | | | 1500» es un contacto con datos).
+	 *     Una lista de SOLO nombres no tiene con qué comparar: ahí todas son contactos.
+	 *  2. Casi todas las demás traen algún dato: las filas de solo nombre y sin señal de título (`sin_senal` de
+	 *     contexto_de_contactos(), esta incluida) son MAXIMO_DE_SUELTAS como mucho, y hay al menos
+	 *     CONTACTOS_CON_DATOS_POR_SUELTA contactos con datos por cada una. Con más filas de solo nombre la lista
+	 *     también carga contactos así y no se descarta ninguna.
+	 *  3. La forma no es la de un contacto: no es una razón social ni un cliente genérico (nunca_es_titulo()), no se
+	 *     escribe como un nombre propio de dos palabras o más («Juan Pérez», «Zona Sur Materiales»), no es una sigla
+	 *     corta («YPF»), no tiene números («Taller Ruta 14») y no está toda en mayúsculas (eso lo juzga la señal débil,
+	 *     y en una lista que escribe así sus nombres no dice nada).
+	 * Queda afuera NOMBRADA en el aviso: si era un contacto, el dueño lo dice y se carga.
+	 *
+	 * @param  string $nombre
+	 * @param  array  $contexto  El de contexto_de_contactos()
+	 * @return bool
+	 */
+	private static function es_fila_suelta($nombre, array $contexto) {
+		$con_datos = (int) $contexto['con_datos'];
+		$sueltas = (int) $contexto['sin_senal'];
+		if ($con_datos < self::CONTACTOS_CON_DATOS_PARA_SUELTAS || $sueltas < 1 || $sueltas > self::MAXIMO_DE_SUELTAS
+			|| $con_datos < $sueltas * self::CONTACTOS_CON_DATOS_POR_SUELTA) {
+			return false;
+		}
+		if (self::nunca_es_titulo($nombre) || self::parece_un_nombre_propio($nombre) || self::en_mayusculas($nombre)
+			|| preg_match('/\d/u', $nombre) === 1) {
+			return false;
+		}
+		$letras = preg_replace('/[^\pL]/u', '', $nombre);
+		if (mb_strlen($letras) <= 5 && mb_strtoupper($letras, 'UTF-8') === $letras) {
+			return false;
+		}
+
+		return true;
 	}
 
 	/**

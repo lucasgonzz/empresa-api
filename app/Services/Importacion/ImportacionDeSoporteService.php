@@ -161,7 +161,8 @@ class ImportacionDeSoporteService
         try {
             $analisis = $analizador->analyze($ruta, (string) $corrida->nombre);
         } catch (RuntimeException $error) {
-            $this->fallar($corrida, 'No pude leer «' . $this->archivo($corrida) . '»: ' . rtrim($error->getMessage(), '.') . '.');
+            $this->fallar($corrida, 'No pude leer «' . $this->archivo($corrida) . '»: ' . rtrim($error->getMessage(), '.') . '.'
+                . $this->cierre_de_prueba($corrida, 'fijate que sea el Excel de tus ' . $corrida->etiqueta_plural() . ' y mandámelo de nuevo.'));
             return;
         }
 
@@ -180,13 +181,21 @@ class ImportacionDeSoporteService
             $plan = PlanDeContactosDeSoporte::armar($corrida);
         } catch (RuntimeException $error) {
             $corrida->save();
-            $this->fallar($corrida, 'No pude preparar «' . $this->archivo($corrida) . '»: ' . rtrim($error->getMessage(), '.') . '.');
+            $detalle = rtrim($error->getMessage(), '.');
+            if ($corrida->modo_prueba) {
+                // Al dueño, en minúscula después de los dos puntos (en un activo, como siempre).
+                $detalle = mb_strtolower(mb_substr($detalle, 0, 1)) . mb_substr($detalle, 1);
+            }
+            $this->fallar($corrida, 'No pude preparar «' . $this->archivo($corrida) . '»: ' . $detalle . '.'
+                . $this->cierre_de_prueba($corrida, 'revisá que tu planilla tenga una columna con el nombre de cada '
+                    . ($corrida->modelo === 'provider' ? 'proveedor' : 'cliente') . ' y mandámela de nuevo.'));
             return;
         }
 
         if ($plan['resumen']['filas'] === 0) {
             $corrida->save();
-            $this->fallar($corrida, 'El archivo «' . $this->archivo($corrida) . '» no tiene filas con ' . $corrida->etiqueta_plural() . ' para importar.');
+            $this->fallar($corrida, 'El archivo «' . $this->archivo($corrida) . '» no tiene filas con ' . $corrida->etiqueta_plural() . ' para importar.'
+                . $this->cierre_de_prueba($corrida, 'revisá que sea la planilla de tus ' . $corrida->etiqueta_plural() . ' y mandámela de nuevo.'));
             return;
         }
 
@@ -214,6 +223,7 @@ class ImportacionDeSoporteService
                     . '. Partilo en archivos de hasta ' . PlanDeContactosDeSoporte::maximo_de_filas() . ' filas y mandalos de a uno.',
             ]);
             $corrida->save();
+            $this->avisar_correccion_de_prueba($corrida);
             return;
         }
         if ($plan['ambiguas'] !== []) {
@@ -226,6 +236,7 @@ class ImportacionDeSoporteService
                 'error' => $this->texto_de_ambiguas($corrida, $plan['ambiguas']),
             ]);
             $corrida->save();
+            $this->avisar_correccion_de_prueba($corrida);
             return;
         }
         if ($corrida->modo_prueba) {
@@ -241,6 +252,7 @@ class ImportacionDeSoporteService
                     'error' => $this->texto_de_ilegibles($corrida, $plan['resumen']),
                 ]);
                 $corrida->save();
+                $this->avisar_correccion_de_prueba($corrida);
                 return;
             }
             // Sin nada para corregir se importa: la misma ejecución sigue con importar() (ver avanzar()). Sin aviso.
@@ -285,6 +297,10 @@ class ImportacionDeSoporteService
             // nada. Nunca en `analizar`: un archivo que termina pidiendo corrección no borra nada.
             if ($corrida->modo_prueba) {
                 PruebaHelper::borrar_semilla_antes_de_importar((int) $corrida->user_id, 'martin');
+                // El plazo de la carga (reanudar_si_hace_falta) cuenta desde acá: el borrado puede llevar minutos y no
+                // es parte de la importación. En un activo, `confirmada_at` sigue siendo el momento del código.
+                ImportacionDeSoporte::whereKey($corrida->id)->where('estado', 'importar')->update(['confirmada_at' => Carbon::now()]);
+                $corrida->refresh();
             }
             if (!$this->preparar_tandas($corrida)) {
                 return;
@@ -1107,6 +1123,10 @@ class ImportacionDeSoporteService
             'ya_existe_con_otro_numero' => 'ya hay uno cargado con ese nombre y otro número',
             'busca_un_nombre_que_otra_fila_cambia' => 'otra fila le cambia el nombre',
         ];
+        if ($corrida->modo_prueba) {
+            // En la prueba el texto le llega al dueño: ningún motivo con su clave interna (A4). Activos, como siempre.
+            $motivos['numero_automatico_choca'] = 'el número choca con el que le tocaría a un ' . ($corrida->modelo === 'provider' ? 'proveedor' : 'cliente') . ' nuevo';
+        }
         $lineas = [];
         foreach (array_slice($ambiguas, 0, 10) as $fila) {
             $lineas[] = 'fila ' . $fila['fila'] . ' (' . mb_substr($fila['nombre'], 0, 60) . '): '
@@ -1115,7 +1135,9 @@ class ImportacionDeSoporteService
 
         return 'No importé «' . $this->archivo($corrida) . '» porque ' . count($ambiguas)
             . (count($ambiguas) === 1 ? ' fila no se puede importar' : ' filas no se pueden importar') . ' sin adivinar: '
-            . implode('; ', $lineas) . (count($ambiguas) > 10 ? '; y ' . (count($ambiguas) - 10) . ' más' : '') . '.';
+            . implode('; ', $lineas) . (count($ambiguas) > 10 ? '; y ' . (count($ambiguas) - 10) . ' más' : '') . '.'
+            . $this->cierre_de_prueba($corrida, count($ambiguas) === 1 ? 'corregí esa fila en tu planilla y mandámela de nuevo.'
+                : 'corregí esas filas en tu planilla y mandámela de nuevo.');
     }
 
     private function linea_de_saldo(array $saldo): string
@@ -1151,8 +1173,9 @@ class ImportacionDeSoporteService
     }
 
     /**
-     * El resumen de una carga de la prueba (ronda 8, D1): no hubo código previo, así que dice qué cargó con los
-     * totales de las cuentas, para que el dueño lo compare con su lista. Los montos, con plata().
+     * El resumen de una carga de la prueba (ronda 8, D1; A2 y A3 de la revisión): no hubo código previo, así que dice
+     * qué cargó, qué cambió de lo que ya tenía y los totales de la LISTA (todas las filas con saldo, se hayan movido o
+     * no), con el neto cuando hay saldos a favor, para que cierre con el total de la planilla. Montos con plata().
      */
     public function texto_del_resultado_de_prueba(ImportacionDeSoporte $corrida): string
     {
@@ -1163,63 +1186,155 @@ class ImportacionDeSoporteService
         $plural = $corrida->etiqueta_plural();
         $archivo = $this->archivo($corrida);
         $creados = (int) ($resultado['creados'] ?? 0);
-        $actualizados = (int) ($resultado['actualizados'] ?? 0);
-        $hubo_saldos = array_sum(array_map('intval', (array) ($resultado['movimientos'] ?? []))) > 0;
-        $deshacer = ' Si algo no coincide con tu lista, decímelo y lo deshago.';
-
-        if ($creados === 0 && $actualizados === 0 && !$hubo_saldos) {
-            return 'No cargué ningún ' . $singular . ' nuevo de «' . $archivo . '»: ya estaban todos igual.'
-                . $this->texto_de_descartadas($resumen, $singular, $plural) . $deshacer;
-        }
+        // Lo que cambió de lo que ya tenía (datos o saldo) y lo que ya estaba igual, según el plan que se controló
+        // tanda por tanda. Una corrida guardada sin esas claves usa lo que contó la importación.
+        $con_cambios = isset($resumen['existentes_con_cambios']) ? (int) $resumen['existentes_con_cambios'] : (int) ($resultado['actualizados'] ?? 0);
+        $iguales = isset($resumen['existentes_iguales']) ? (int) $resumen['existentes_iguales'] : 0;
+        $los_demas = $iguales > 0 ? '; los demás ya estaban igual' : '';
 
         if ($creados > 0) {
-            $texto = 'Cargué ' . $creados . ' ' . ($creados === 1 ? $singular : $plural) . ' de «' . $archivo . '»'
-                . ($actualizados > 0 ? ' y actualicé ' . $actualizados . ' que ya tenías' : '') . '.';
-        } elseif ($actualizados > 0) {
-            $texto = 'Actualicé ' . $actualizados . ' ' . ($actualizados === 1 ? $singular : $plural) . ' de «' . $archivo . '» que ya tenías.';
+            $texto = 'Cargué ' . $creados . ' ' . ($creados === 1 ? $singular : $plural)
+                . ($con_cambios > 0 || $iguales > 0 ? ($creados === 1 ? ' nuevo' : ' nuevos') : '') . ' de «' . $archivo . '»'
+                . ($con_cambios > 0 ? ' y actualicé ' . $con_cambios . ' que ya tenías' : '') . $los_demas . '.';
+        } elseif ($con_cambios > 0) {
+            $texto = 'Actualicé ' . $con_cambios . ' ' . ($con_cambios === 1 ? $singular : $plural) . ' de «' . $archivo . '» que ya tenías'
+                . $los_demas . '.';
         } else {
-            $texto = 'No cargué ' . $plural . ' nuevos de «' . $archivo . '».';
+            $texto = 'No cargué ningún ' . $singular . ' nuevo de «' . $archivo . '»: ya estaban todos igual.';
         }
 
-        $deudores = (int) ($resumen['saldos_deudores'] ?? 0);
-        if ($deudores > 0) {
-            $texto .= ' En total ' . ($proveedores ? 'les debés ' : 'te deben ') . $this->plata($resumen['saldo_total_deudor'] ?? 0);
-            $mayor = isset($resumen['saldo_mayor']) && is_array($resumen['saldo_mayor']) ? $resumen['saldo_mayor'] : null;
-            if ($deudores >= 2 && !is_null($mayor)) {
-                $texto .= '; el saldo más alto es el de ' . mb_substr((string) ($mayor['nombre'] ?? ''), 0, 60)
-                    . ' (' . $this->plata($mayor['monto'] ?? 0) . ')';
-            }
-            $texto .= '.';
-        }
-        $a_favor = (int) ($resumen['saldos_a_favor'] ?? 0);
-        if ($a_favor > 0) {
-            $texto .= ' ' . $a_favor . ($a_favor === 1 ? ' quedó' : ' quedaron') . ' con saldo a ' . ($proveedores ? 'tu ' : '')
-                . 'favor (' . $this->plata($resumen['saldo_total_a_favor'] ?? 0) . ').';
-        }
-        $no_cargados = (int) ($resultado['saldos_no_cargados'] ?? 0);
-        if ($no_cargados > 0) {
-            $texto .= ' A ' . $no_cargados . ($no_cargados === 1 ? ' no le cargué' : ' no les cargué')
-                . ' el saldo porque su cuenta ya tenía movimientos.';
-        }
-
-        return $texto . $this->texto_de_descartadas($resumen, $singular, $plural) . $deshacer;
+        return $texto . $this->texto_de_totales($resumen, $proveedores) . $this->texto_de_no_cargados($resultado)
+            . $this->texto_de_descartadas($resumen, $singular, $plural) . ' Si algo no coincide con tu lista, decímelo y lo deshago.';
     }
 
-    /** « Dejé afuera N filas que no son clientes: «A», «B», «C» y K más.» (como mucho 3 nombres), o vacío. */
+    /**
+     * Los totales de la lista: « En total te deben $X; el saldo más alto es el de N ($M).» o, con saldos a favor,
+     * « Entre todos te deben $X y 1 tiene saldo a favor ($Y): el neto es $Z. El saldo más alto es el de N ($M).»
+     */
+    private function texto_de_totales(array $resumen, bool $proveedores): string
+    {
+        $deudores = (int) ($resumen['saldos_deudores'] ?? 0);
+        $a_favor = (int) ($resumen['saldos_a_favor'] ?? 0);
+        $deuda = round((float) ($resumen['saldo_total_deudor'] ?? 0), 2);
+        $favor = round((float) ($resumen['saldo_total_a_favor'] ?? 0), 2);
+        $deben = $proveedores ? 'les debés ' : 'te deben ';
+        $tiene_a_favor = ($a_favor === 1 ? ' tiene' : ' tienen') . ' saldo a ' . ($proveedores ? 'tu ' : '') . 'favor (' . $this->plata($favor) . ')';
+        $mayor = isset($resumen['saldo_mayor']) && is_array($resumen['saldo_mayor']) && $deudores >= 2 ? $resumen['saldo_mayor'] : null;
+        $el_mayor = is_null($mayor) ? '' : 'el saldo más alto es el de ' . mb_substr((string) ($mayor['nombre'] ?? ''), 0, 60)
+            . ' (' . $this->plata($mayor['monto'] ?? 0) . ')';
+
+        if ($deudores > 0 && $a_favor === 0) {
+            return ' En total ' . $deben . $this->plata($deuda) . ($el_mayor === '' ? '' : '; ' . $el_mayor) . '.';
+        }
+        if ($deudores > 0) {
+            return ' Entre todos ' . $deben . $this->plata($deuda) . ' y ' . $a_favor . $tiene_a_favor . ': el neto es '
+                . $this->plata($deuda - $favor) . '.' . ($el_mayor === '' ? '' : ' E' . mb_substr($el_mayor, 1) . '.');
+        }
+
+        return $a_favor > 0 ? ' ' . $a_favor . $tiene_a_favor . '.' : '';
+    }
+
+    private function texto_de_no_cargados(array $resultado): string
+    {
+        $no_cargados = (int) ($resultado['saldos_no_cargados'] ?? 0);
+
+        return $no_cargados > 0 ? ' A ' . $no_cargados . ($no_cargados === 1 ? ' no le cargué' : ' no les cargué')
+            . ' el saldo porque su cuenta ya tenía movimientos.' : '';
+    }
+
+    /** Cuántas filas descartadas se nombran en el aviso (B2): hasta este número, todas; con más, «y K más». */
+    const DESCARTADAS_NOMBRADAS = 10;
+
+    /**
+     * « Dejé afuera N filas que no son clientes: «A», «B» y «C».», todas nombradas hasta DESCARTADAS_NOMBRADAS; con
+     * más, « … y K más» con el número. Si alguna no es un total, ofrece cargarla.
+     */
     private function texto_de_descartadas(array $resumen, string $singular, string $plural): string
     {
         $total = (int) ($resumen['filas_descartadas_total'] ?? 0);
         if ($total === 0) {
             return '';
         }
+        $filas = array_slice((array) ($resumen['filas_descartadas'] ?? []), 0, self::DESCARTADAS_NOMBRADAS);
         $nombres = [];
-        foreach (array_slice((array) ($resumen['filas_descartadas'] ?? []), 0, 3) as $fila) {
+        $solo_totales = true;
+        foreach ($filas as $fila) {
             $nombres[] = '«' . mb_substr((string) ($fila['texto'] ?? ''), 0, 60) . '»';
+            $solo_totales = $solo_totales && ($fila['motivo'] ?? '') === 'total';
         }
         $resto = $total - count($nombres);
+        if ($resto > 0) {
+            $lista = implode(', ', $nombres) . ' y ' . $resto . ' más';
+        } elseif (count($nombres) > 1) {
+            $lista = implode(', ', array_slice($nombres, 0, -1)) . ' y ' . end($nombres);
+        } else {
+            $lista = implode('', $nombres);
+        }
+        $ofrecer = $solo_totales && $resto === 0 ? ''
+            : ($total === 1 ? ' Si era un ' . $singular . ', decímelo y la cargo.' : ' Si alguna era un ' . $singular . ', decímelo y la cargo.');
 
         return ' Dejé afuera ' . $total . ($total === 1 ? ' fila que no es un ' . $singular : ' filas que no son ' . $plural)
-            . ($nombres === [] ? '' : ': ' . implode(', ', $nombres)) . ($resto > 0 ? ' y ' . $resto . ' más' : '') . '.';
+            . ($lista === '' ? '' : ': ' . $lista) . '.' . $ofrecer;
+    }
+
+    /** « No cargué nada: <qué hacer>» en una corrida de la prueba (el dueño recibe el texto, A4); vacío en un activo. */
+    private function cierre_de_prueba(ImportacionDeSoporte $corrida, string $que_hacer): string
+    {
+        return $corrida->modo_prueba ? ' No cargué nada: ' . $que_hacer : '';
+    }
+
+    /**
+     * En la prueba, una corrida que pide corregir el Excel le avisa al dueño por el mismo camino que el resultado
+     * (A4): Martín ya le dijo que lo estaba cargando, y sin esto nunca le llegaría nada. Una sola vez por corrida
+     * (requiere_correccion es final: un reenvío es otra corrida). En un activo no hace nada: lo explica Martín.
+     */
+    private function avisar_correccion_de_prueba(ImportacionDeSoporte $corrida): void
+    {
+        if ($corrida->modo_prueba && !is_null($corrida->error) && $corrida->error !== '') {
+            $corrida->aviso('correccion-' . (string) $corrida->motivo, (string) $corrida->error);
+        }
+    }
+
+    /**
+     * El aviso de deshacer en la prueba (A5): sin nombrar lo que es cero, y diciendo que también se sacaron los
+     * saldos que se habían cargado. Los activos usan texto_de_la_reversion() como siempre.
+     */
+    private function texto_de_la_reversion_de_prueba(ImportacionDeSoporte $corrida): string
+    {
+        $reversion = (array) (((array) $corrida->resultado)['reversion'] ?? []);
+        $singular = $corrida->modelo === 'provider' ? 'proveedor' : 'cliente';
+        $plural = $corrida->etiqueta_plural();
+        $borrados = (int) ($reversion['creados_borrados'] ?? 0);
+        $restaurados = (int) ($reversion['actualizados_restaurados'] ?? 0);
+        $hecho = [];
+        if ($borrados > 0) {
+            $hecho[] = 'borré ' . ($borrados === 1 ? '1 ' . $singular . ' nuevo' : $borrados . ' ' . $plural . ' nuevos');
+        }
+        if ($restaurados > 0) {
+            $hecho[] = 'dejé como ' . ($restaurados === 1 ? 'estaba 1 que se había actualizado' : 'estaban ' . $restaurados . ' que se habían actualizado');
+        }
+        $texto = 'Deshice la carga de «' . $this->archivo($corrida) . '»' . ($hecho === [] ? '' : ': ' . implode(' y ', $hecho)) . '.';
+        if ((int) ($reversion['movimientos_borrados'] ?? 0) > 0) {
+            $texto .= ' También saqué los saldos que había cargado.';
+        }
+        $creados_conservados = (int) ($reversion['creados_conservados'] ?? 0);
+        if ($creados_conservados > 0) {
+            $texto .= ' ' . ($creados_conservados === 1 ? '1 nuevo no lo borré porque ya tenía' : $creados_conservados . ' nuevos no los borré porque ya tenían')
+                . ' movimientos propios' . ((int) ($reversion['saldos_anulados_de_conservados'] ?? 0) > 0
+                    ? ', pero le' . ($creados_conservados === 1 ? '' : 's') . ' anulé el saldo que había cargado' : '') . '.';
+        }
+        $actualizados_conservados = (int) ($reversion['actualizados_conservados'] ?? 0);
+        if ($actualizados_conservados > 0) {
+            $texto .= ' A ' . $actualizados_conservados . ($actualizados_conservados === 1 ? ' no le volví' : ' no les volví')
+                . ' los datos que se cambiaron a mano después.';
+        }
+        $contraasientos = (int) ($reversion['contraasientos'] ?? 0) - (int) ($reversion['saldos_anulados_de_conservados'] ?? 0);
+        if ($contraasientos > 0) {
+            $texto .= ' Anulé ' . ($contraasientos === 1 ? '1 saldo' : $contraasientos . ' saldos')
+                . ' con una nota opuesta porque la cuenta ya tenía movimientos posteriores.';
+        }
+
+        return $texto;
     }
 
     /** ¿El plan trae saldos que no se pueden leer? (en la prueba frenan la carga entera). */
@@ -1247,6 +1362,9 @@ class ImportacionDeSoporteService
 
     private function texto_de_la_reversion(ImportacionDeSoporte $corrida): string
     {
+        if ($corrida->modo_prueba) {
+            return $this->texto_de_la_reversion_de_prueba($corrida);
+        }
         $reversion = (array) (((array) $corrida->resultado)['reversion'] ?? []);
         $plural = $corrida->etiqueta_plural();
         $texto = 'Deshice la importación de «' . $this->archivo($corrida) . '»: borré ' . (int) ($reversion['creados_borrados'] ?? 0)

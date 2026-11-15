@@ -402,8 +402,18 @@ class ImportacionDePruebaController extends Controller
      */
     public static function soporta_contactos_en_la_prueba(): bool
     {
-        return Schema::hasTable('importaciones_de_soporte') && Schema::hasColumn('importaciones_de_soporte', 'modo_prueba');
+        // Memo por proceso (A8): prueba-pendientes se consulta en cada armado del contexto de soporte. La columna no
+        // desaparece una vez migrada; si todavía no está, se vuelve a mirar en el próximo proceso.
+        if (self::$soporta_contactos_en_la_prueba !== true) {
+            self::$soporta_contactos_en_la_prueba = Schema::hasTable('importaciones_de_soporte')
+                && Schema::hasColumn('importaciones_de_soporte', 'modo_prueba');
+        }
+
+        return self::$soporta_contactos_en_la_prueba;
     }
+
+    /** @var bool|null */
+    private static $soporta_contactos_en_la_prueba = null;
 
     /**
      * Las corridas de clientes o proveedores del ticket que todavía no terminaron (analizan, esperan el código del
@@ -418,10 +428,10 @@ class ImportacionDePruebaController extends Controller
      */
     private static function contactos_abiertos(int $user_id, int $support_ticket_id, bool $modo_prueba = false): array
     {
-        if (!Schema::hasTable('importaciones_de_soporte')) {
+        $con_columna = self::soporta_contactos_en_la_prueba();
+        if (!$con_columna && !Schema::hasTable('importaciones_de_soporte')) {
             return [];
         }
-        $con_columna = Schema::hasColumn('importaciones_de_soporte', 'modo_prueba');
         if ($modo_prueba && !$con_columna) {
             return [];
         }

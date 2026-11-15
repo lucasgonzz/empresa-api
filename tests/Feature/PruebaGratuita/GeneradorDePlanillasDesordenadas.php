@@ -38,6 +38,12 @@ class GeneradorDePlanillasDesordenadas
         'Cuentas Claras SA', 'Rubro Hogar', 'YPF', 'ACA', 'Consumidor final', 'Mostrador', 'Pérez Hnos', 'Gómez y Cía', 'López e Hijos',
         'Público en general'];
     const NOTAS_DE_CONTACTOS = ['Actualizado el 14/11', 'Pedir a Marta los que faltan', 'Revisar con el contador'];
+    /*
+     * Títulos de grupo SIN señal (ni dos puntos, ni mayúsculas, ni palabra de sección): «sueltas» (ronda 8, A1). Solo
+     * quedan afuera en una lista donde todos los contactos traen algún dato (LocalImportHelper::es_fila_suelta()).
+     */
+    const SUELTAS_SIN_SENAL = ['Mayoristas', 'Minoristas', 'Particulares', 'Gremio de la construcción', 'Revendedores',
+        'Vecinos del barrio', 'Otros', 'Mayoristas y distribuidores'];
 
     private static function al_azar(array $opciones)
     {
@@ -321,6 +327,8 @@ class GeneradorDePlanillasDesordenadas
 
         $cuantos = mt_rand(5, 40);
         $solo_nombre = mt_rand(0, 60) / 100;   // proporción de contactos con solo el nombre
+        // Una de cada cuatro listas, todos los contactos con algún dato: donde se juzgan las filas sueltas (ronda 8, A1).
+        $solo_nombre = $caso % 4 === 3 ? 0.0 : $solo_nombre;
         $nombre_y_saldo = mt_rand(0, 50) / 100; // del resto, proporción con solo nombre y saldo
         $tipos = [];
         $con_datos = 0;
@@ -340,8 +348,23 @@ class GeneradorDePlanillasDesordenadas
         $titulos = $con_datos >= 3 ? mt_rand(0, 4) : 0;
         $cada = (int) max(1, floor($cuantos / max(1, $titulos)));
         $repetir_cabecera_en = mt_rand(0, 3) === 0 ? mt_rand(1, $cuantos - 1) : -1;
+        /*
+         * Ronda 8, A1: en una lista donde TODOS los contactos traen algún dato, una o dos filas sueltas (un título de
+         * grupo sin señal, en cualquier lugar, también en la primera fila de datos) son no-datos. Con contactos de
+         * solo nombre en la lista no se agregan: ahí la regla duda a propósito y una suelta es un contacto más.
+         */
+        $sueltas_en = [];
+        if (!in_array('solo_nombre', $tipos, true) && $cuantos >= 5) {
+            $sueltas = $cuantos >= 8 ? mt_rand(0, 2) : mt_rand(0, 1);
+            for ($s = 0; $s < $sueltas; $s++) {
+                $sueltas_en[mt_rand(0, $cuantos - 1)] = true;
+            }
+        }
         $total = 0;
         foreach ($tipos as $i => $tipo) {
+            if (isset($sueltas_en[$i])) {
+                $agregar([0 => self::al_azar(self::SUELTAS_SIN_SENAL)], false);
+            }
             if ($titulos > 0 && $i % $cada === 0 && $i / $cada < $titulos) {
                 $agregar([0 => self::al_azar(self::TITULOS_DE_SECCION)], false);
             }
@@ -388,7 +411,7 @@ class GeneradorDePlanillasDesordenadas
 
         return [
             'filas' => $filas, 'inicio' => $inicio, 'columnas' => ['nombre' => 0, 'cuit' => 1, 'telefono' => 2, 'saldo_actual' => 3],
-            'datos' => $datos, 'no_datos' => $no_datos, 'caso' => $caso,
+            'datos' => $datos, 'no_datos' => $no_datos, 'caso' => $caso, 'sueltas' => count($sueltas_en),
         ];
     }
 }

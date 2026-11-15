@@ -286,6 +286,11 @@ class PlanDeContactosDeSoporte
         $sin_cambios = 0;
         $ejemplos_crear = [];
         $ejemplos_actualizar = [];
+        // Solo en la prueba (A3): el saldo de cada fila de la LISTA, se mueva o no, para que el total del aviso cierre
+        // con la planilla del dueño también en una segunda carga; y qué existentes cambian y cuáles ya estaban igual.
+        $de_la_lista = [];
+        $existentes_con_cambios = 0;
+        $existentes_iguales = 0;
         foreach ($filas as $fila) {
             $modelo = $fila['modelo'];
             $nuevo = is_null($modelo);
@@ -302,6 +307,21 @@ class PlanDeContactosDeSoporte
                 } elseif (!is_null($saldo)) {
                     $saldos[] = $saldo['linea'];
                     $movimientos = $saldo['movimientos'];
+                }
+                if ($modo_prueba && !isset($saldo['ilegible'])
+                    && (is_null($saldo) || $saldo['linea']['accion'] !== 'no_se_carga')) {
+                    $lectura = LocalImportHelper::leerSaldoDeLaFila($fila['row'], $columnas);
+                    if ($lectura['estado'] === 'numero') {
+                        $de_la_lista[] = ['nombre' => $nuevo ? (string) $fila['nombre'] : (string) $modelo->name,
+                            'accion' => 'de_la_lista', 'saldo_resultante' => round((float) $lectura['valor'], 2)];
+                    }
+                }
+            }
+            if (!$nuevo) {
+                if ($seguro || $posible || $movimientos !== []) {
+                    $existentes_con_cambios++;
+                } else {
+                    $existentes_iguales++;
                 }
             }
             if ($nuevo) {
@@ -345,9 +365,11 @@ class PlanDeContactosDeSoporte
             'maximo_de_filas' => self::maximo_de_filas(),
         ];
         if ($modo_prueba) {
-            // La prueba no muestra nada antes de importar: el resumen del final dice los totales de las cuentas, sobre
-            // la lista completa de saldos (no la recortada), sin contar los que no se cargan.
-            $resumen += self::totales_de_saldos($saldos) + [
+            // La prueba no muestra nada antes de importar: el resumen del final dice los totales de la LISTA (todas las
+            // filas con saldo legible, se muevan o no; sin las que no se cargan) para que cierre con la planilla.
+            $resumen += self::totales_de_saldos($de_la_lista) + [
+                'existentes_con_cambios' => $existentes_con_cambios,
+                'existentes_iguales' => $existentes_iguales,
                 'saldos_ilegibles_total' => count($ilegibles),
                 'filas_descartadas' => array_slice($descartadas, 0, self::MAXIMO_DE_SALDOS),
                 'filas_descartadas_total' => count($descartadas),

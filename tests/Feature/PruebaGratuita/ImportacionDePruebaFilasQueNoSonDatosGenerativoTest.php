@@ -90,8 +90,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         mt_srand(self::SEMILLA + 1);
         $fallas = [];
         $filas_juzgadas = 0;
+        $listas_con_sueltas = 0;
         for ($caso = 0; $caso < self::PLANILLAS; $caso++) {
             $lista = GeneradorDePlanillasDesordenadas::contactos($caso);
+            $listas_con_sueltas += $lista['sueltas'] > 0 ? 1 : 0;
             $filas = array_values($lista['filas']); // como llega a collection(): 0-based, la fila 1 en el índice 0
             $descartes = LocalImportHelper::filas_que_no_son_contactos_de($filas, $lista['columnas'], $lista['inicio'], count($filas));
             foreach ($lista['datos'] as $numero) {
@@ -108,7 +110,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
                 }
             }
         }
-        fwrite(STDERR, PHP_EOL . 'Contactos: ' . self::PLANILLAS . ' listas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas.' . PHP_EOL);
+        fwrite(STDERR, PHP_EOL . 'Contactos: ' . self::PLANILLAS . ' listas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas, '
+            . $listas_con_sueltas . ' listas con filas sueltas.' . PHP_EOL);
+        // Ronda 8, A1: la clase de las filas sueltas tiene que estar en la muestra, no solo en los tests de forma.
+        $this->assertGreaterThan(40, $listas_con_sueltas, 'La muestra casi no trae listas con filas sueltas.');
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . (self::SEMILLA + 1) . ': ' . count($fallas) . ' fallas.');
     }
 

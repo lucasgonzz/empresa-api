@@ -6,15 +6,19 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\SemillaRegistroHelper;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
+use App\Jobs\AvanzarImportacionDeSoporte;
 use App\Jobs\RegistrarHitoDePruebaJob;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\Client;
 use App\Models\CurrentAcount;
 use App\Models\ImportacionDeSoporte;
 use App\Models\Provider;
+use App\Models\PruebaConfig;
+use App\Http\Controllers\AdminSync\ImportacionDePruebaController;
 use App\Services\Importacion\ImportacionDeSoporteService;
 use Carbon\Carbon;
 use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Queue;
 
 /**
@@ -88,7 +92,7 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
             ['Gabriela Prueba CC', '3411000007', 2500],
             ['Hector Prueba CC', '3411000008', 750],
             ['Irene Prueba CC', '3411000009', 4000],
-            ['TOTAL', null, 47350.5],
+            ['TOTAL', null, 44550.5],
         ]);
     }
 
@@ -156,9 +160,11 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         $this->assertCount(1, $avisos);
         $this->assertFalse((bool) $avisos[0]->modo_soporte);
         $this->assertSame(127, (int) $avisos[0]->support_ticket_id);
-        $this->assertSame('Cargué 9 clientes de «' . self::ARCHIVO . '». En total te deben $45.750,50; el saldo más alto es el de'
-            . ' Bruno Prueba CC ($32.000). 1 quedó con saldo a favor ($1.200). Dejé afuera 2 filas que no son clientes:'
-            . ' «--- MAYORISTAS ---», «TOTAL». Si algo no coincide con tu lista, decímelo y lo deshago.', $avisos[0]->texto);
+        // A2 (revisión): lo que le deben, el saldo a favor y el neto, que es el TOTAL de su planilla (44.550,50).
+        $this->assertSame('Cargué 9 clientes de «' . self::ARCHIVO . '». Entre todos te deben $45.750,50 y 1 tiene saldo a favor'
+            . ' ($1.200): el neto es $44.550,50. El saldo más alto es el de Bruno Prueba CC ($32.000). Dejé afuera 2 filas que no'
+            . ' son clientes: «--- MAYORISTAS ---» y «TOTAL». Si alguna era un cliente, decímelo y la cargo. Si algo no coincide'
+            . ' con tu lista, decímelo y lo deshago.', $avisos[0]->texto);
         $this->assertStringNotContainsString('CONFIRMAR', $avisos[0]->texto);
 
         // El hito de la importación.
@@ -177,7 +183,7 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
     // 2 y 3. Lo que pide corrección no carga nada
     // -----------------------------------------------------------------------------------------------------
 
-    public function test_un_nombre_repetido_pide_correccion_sin_cargar_nada_ni_avisar(): void
+    public function test_un_nombre_repetido_pide_correccion_sin_cargar_nada_y_se_lo_avisa_al_dueno(): void
     {
         $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
         $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([
@@ -193,8 +199,18 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         $this->assertNull($corrida->codigo);
         $this->assertSame(0, (int) $corrida->tandas_total);
         $this->assertFalse(Client::where('user_id', $this->dueno->id)->whereIn('name', ['Repetido Prueba CC', 'Otro Prueba CC'])->exists());
-        $this->assertCount(0, $this->avisos(128));
         $this->assertStringContainsString('el nombre está repetido en el archivo', $corrida->error);
+        // A4 (revisión): en la prueba el dueño recibe por el ticket qué pasó, que no se cargó nada y qué hacer.
+        $this->assertSame('No importé «' . self::ARCHIVO . '» porque 2 filas no se pueden importar sin adivinar: fila 2'
+            . ' (Repetido Prueba CC): el nombre está repetido en el archivo; fila 4 (Repetido Prueba CC): el nombre está repetido en'
+            . ' el archivo. No cargué nada: corregí esas filas en tu planilla y mandámela de nuevo.', $corrida->error);
+        $avisos = $this->avisos(128);
+        $this->assertCount(1, $avisos);
+        $this->assertSame($corrida->error, $avisos[0]->texto);
+        $this->assertFalse((bool) $avisos[0]->modo_soporte);
+        // Una sola vez: la corrida ya no avanza.
+        $this->avanzar($uuid);
+        $this->assertCount(1, $this->avisos(128));
     }
 
     public function test_saldos_ilegibles_frenan_la_prueba_y_un_activo_sigue_con_su_codigo_como_hoy(): void
@@ -217,7 +233,8 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
             $corrida->error);
         $this->assertSame(2, $corrida->resumen['saldos_ilegibles_total']);
         $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', 'like', '% Ilegible CC')->exists());
-        $this->assertCount(0, $this->avisos(129));
+        $this->assertCount(1, $this->avisos(129));
+        $this->assertSame($corrida->error, $this->avisos(129)[0]->texto);
         $this->getJson(self::BASE . $uuid . '?user_id=' . $this->dueno->id . '&support_ticket_id=129', $this->cabeceras())
             ->assertOk()->assertJsonPath('corrida.estado', 'requiere_correccion')->assertJsonPath('corrida.motivo', 'saldos_ilegibles');
 
@@ -325,7 +342,8 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
             ->assertJsonPath('corrida.resultado.reversion.movimientos_borrados', 7);
         $this->assertSame(0, Client::where('user_id', $this->dueno->id)->whereIn('name', self::NOMBRES)->count());
         $this->assertFalse(CurrentAcount::whereIn('client_id', $ids)->exists());
-        $this->assertStringStartsWith('Deshice la importación de «' . self::ARCHIVO . '»: borré 9 clientes nuevos',
+        // A5 (revisión): sin nombrar lo que es cero y diciendo que también se sacaron los saldos.
+        $this->assertSame('Deshice la carga de «' . self::ARCHIVO . '»: borré 9 clientes nuevos. También saqué los saldos que había cargado.',
             $this->avisos(135)->last()->texto);
         $this->assertFalse((bool) $this->avisos(135)->last()->modo_soporte);
 
@@ -419,8 +437,9 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         ]), 141, 'proveedores.xlsx')->json('corrida.corrida_id');
         $corrida = $this->avanzar($otra);
         $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
-        $this->assertSame('Cargué 3 proveedores de «proveedores.xlsx». En total les debés $14.500,50; el saldo más alto es el de'
-            . ' Fabrica Prueba CC ($12.000). 1 quedó con saldo a tu favor ($300). Si algo no coincide con tu lista, decímelo y lo deshago.',
+        $this->assertSame('Cargué 3 proveedores de «proveedores.xlsx». Entre todos les debés $14.500,50 y 1 tiene saldo a tu favor'
+            . ' ($300): el neto es $14.200,50. El saldo más alto es el de Fabrica Prueba CC ($12.000). Si algo no coincide con tu'
+            . ' lista, decímelo y lo deshago.',
             $this->avisos(141)->last()->texto);
     }
 
@@ -482,5 +501,300 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
             . '&support_ticket_id=146', $this->cabeceras())->assertOk()
             ->assertJsonPath('importaciones_de_contactos', [])->assertJsonPath('en_proceso', false)->json();
         $this->assertArrayNotHasKey('capacidades_prueba', $soporte);
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Revisión de la ronda 8: A1 a A8
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_a1_un_titulo_de_grupo_sin_dos_puntos_en_la_primera_fila_no_se_crea_como_cliente(): void
+    {
+        // La planilla de la medición, rearmada: cabecera, un título de grupo en la primera fila de datos (sin «:», sin
+        // mayúsculas, sin palabra de total), clientes (tres con solo nombre y saldo), otro título con «:» y el TOTAL.
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'cuit', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([
+            ['Cliente', 'CUIT', 'Tel.', 'Saldo'],
+            ['Mayoristas', null, null, null],
+            ['Ferretería Suelta Uno', '20-11111111-1', '3411000001', 15000],
+            ['Corralón Suelta Dos', null, '3411000002', 8200.5],
+            ['Rosa Suelta', null, null, 3000],
+            ['Pinturería Suelta Tres', '20-22222222-2', '3411000003', 0],
+            ['Minoristas:', null, null, null],
+            ['Hugo Suelta', null, null, 1200],
+            ['Marta Suelta', null, null, -500],
+            ['Electricidad Suelta Cuatro', null, '3411000004', 42000],
+            ['Taller Suelta Cinco', null, '3411000005', 7300],
+            ['Plomería Suelta Seis', '20-33333333-3', null, 900],
+            ['TOTAL', null, null, 77100.5],
+        ]), 150, 'clientes nov.xlsx')->json('corrida.corrida_id');
+
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+        $this->assertSame(9, $corrida->resultado['creados']);
+        $this->assertFalse(Client::where('user_id', $this->dueno->id)->whereIn('name', ['Mayoristas', 'Minoristas:', 'TOTAL'])->exists());
+        $this->assertSame(['Mayoristas', 'Minoristas:', 'TOTAL'], array_column($corrida->resumen['filas_descartadas'], 'texto'));
+        $this->assertSame(['suelta', 'titulo', 'total'], array_column($corrida->resumen['filas_descartadas'], 'motivo'));
+        $this->assertSame('Cargué 9 clientes de «clientes nov.xlsx». Entre todos te deben $77.600,50 y 1 tiene saldo a favor ($500):'
+            . ' el neto es $77.100,50. El saldo más alto es el de Electricidad Suelta Cuatro ($42.000). Dejé afuera 3 filas que no'
+            . ' son clientes: «Mayoristas», «Minoristas:» y «TOTAL». Si alguna era un cliente, decímelo y la cargo. Si algo no'
+            . ' coincide con tu lista, decímelo y lo deshago.', $this->avisos(150)->last()->texto);
+    }
+
+    public function test_a2_sin_saldos_a_favor_el_total_es_como_antes_y_solo_a_favor_lo_dice(): void
+    {
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([
+            ['Nombre', 'Telefono', 'Saldo'], ['Uno Neto CC', '1', 1000], ['Dos Neto CC', '2', 2500.5],
+        ]), 151, 'deudores.xlsx')->json('corrida.corrida_id');
+        $this->assertSame('terminada', $this->avanzar($uuid)->estado);
+        $this->assertSame('Cargué 2 clientes de «deudores.xlsx». En total te deben $3.500,50; el saldo más alto es el de Dos Neto CC'
+            . ' ($2.500,50). Si algo no coincide con tu lista, decímelo y lo deshago.', $this->avisos(151)->last()->texto);
+
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $otra = $this->iniciar_en_la_prueba('client', $this->planilla([
+            ['Nombre', 'Telefono', 'Saldo'], ['Tres Neto CC', '3', -100], ['Cuatro Neto CC', '4', -250],
+        ]), 152, 'a favor.xlsx')->json('corrida.corrida_id');
+        $this->assertSame('terminada', $this->avanzar($otra)->estado);
+        $this->assertSame('Cargué 2 clientes de «a favor.xlsx». 2 tienen saldo a favor ($350). Si algo no coincide con tu lista,'
+            . ' decímelo y lo deshago.', $this->avisos(152)->last()->texto);
+    }
+
+    public function test_a3_la_segunda_carga_da_el_total_de_la_lista_y_dice_que_cambio(): void
+    {
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $primera = $this->iniciar_en_la_prueba('client', $this->lista_de_clientes(), 153)->json('corrida.corrida_id');
+        $this->assertSame('terminada', $this->avanzar($primera)->estado);
+
+        // El dueño corrige una fila (Bruno debe 30.000 y no 32.000) y la manda de nuevo.
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $segunda = $this->iniciar_en_la_prueba('client', $this->planilla([
+            ['Nombre', 'Telefono', 'Saldo'],
+            ['Ana Prueba CC', '3411000001', 1000],
+            ['Bruno Prueba CC', '3411000002', 30000],
+            ['Carla Prueba CC', '3411000003', -1200],
+            ['Dario Prueba CC', '3411000004', 0],
+            ['Elena Prueba CC', '3411000005', null],
+            ['--- MAYORISTAS ---', null, null],
+            ['Fabian Prueba CC', '3411000006', '$ 5.500,50'],
+            ['Gabriela Prueba CC', '3411000007', 2500],
+            ['Hector Prueba CC', '3411000008', 750],
+            ['Irene Prueba CC', '3411000009', 4000],
+            ['TOTAL', null, 42550.5],
+        ]), 154)->json('corrida.corrida_id');
+        $corrida = $this->avanzar($segunda);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+        $this->assertSame(0, $corrida->resultado['creados']);
+        $this->assertSame(1, $corrida->resumen['existentes_con_cambios']);
+        $this->assertSame(8, $corrida->resumen['existentes_iguales']);
+        $bruno = Client::where('user_id', $this->dueno->id)->where('name', 'Bruno Prueba CC')->firstOrFail();
+        $this->assertEqualsWithDelta(30000, $this->saldo('client', $bruno->id), 0.001);
+        // El total es el de la LISTA (no solo la fila que se movió): cierra con el TOTAL de su planilla.
+        $this->assertSame('Actualicé 1 cliente de «' . self::ARCHIVO . '» que ya tenías; los demás ya estaban igual. Entre todos te'
+            . ' deben $43.750,50 y 1 tiene saldo a favor ($1.200): el neto es $42.550,50. El saldo más alto es el de Bruno Prueba CC'
+            . ' ($30.000). Dejé afuera 2 filas que no son clientes: «--- MAYORISTAS ---» y «TOTAL». Si alguna era un cliente,'
+            . ' decímelo y la cargo. Si algo no coincide con tu lista, decímelo y lo deshago.', $this->avisos(154)->last()->texto);
+
+        // Una tercera igual: no cambió nada, y el total sigue siendo el de la lista.
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $tercera = $this->iniciar_en_la_prueba('client', $this->planilla([
+            ['Nombre', 'Telefono', 'Saldo'], ['Ana Prueba CC', '3411000001', 1000], ['Bruno Prueba CC', '3411000002', 30000],
+        ]), 155, 'dos.xlsx')->json('corrida.corrida_id');
+        $this->assertSame('terminada', $this->avanzar($tercera)->estado);
+        $this->assertSame('No cargué ningún cliente nuevo de «dos.xlsx»: ya estaban todos igual. En total te deben $31.000; el saldo'
+            . ' más alto es el de Bruno Prueba CC ($30.000). Si algo no coincide con tu lista, decímelo y lo deshago.',
+            $this->avisos(155)->last()->texto);
+
+        // Uno nuevo y uno que ya estaba igual.
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono', 'saldo_actual']);
+        $cuarta = $this->iniciar_en_la_prueba('client', $this->planilla([
+            ['Nombre', 'Telefono', 'Saldo'], ['Ana Prueba CC', '3411000001', 1000], ['Nuevo Prueba CC', '3411000010', 200],
+        ]), 156, 'tres.xlsx')->json('corrida.corrida_id');
+        $this->assertSame('terminada', $this->avanzar($cuarta)->estado);
+        $this->assertStringStartsWith('Cargué 1 cliente nuevo de «tres.xlsx»; los demás ya estaban igual. En total te deben $1.200;',
+            $this->avisos(156)->last()->texto);
+    }
+
+    public function test_a4_ninguna_corrida_de_la_prueba_que_no_carga_queda_muda(): void
+    {
+        // Sin la columna del nombre.
+        $this->analizador(AiClientAnalyzer::class, ['telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Tel', 'Saldo'], ['1', 100]]), 157, 'sin nombre.xlsx')
+            ->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('error', $corrida->estado);
+        $esperado = 'No pude preparar «sin nombre.xlsx»: no encontré en el archivo una columna con los nombres. No cargué nada: revisá'
+            . ' que tu planilla tenga una columna con el nombre de cada cliente y mandámela de nuevo.';
+        $this->assertSame($esperado, $corrida->error);
+        $this->assertSame($esperado, $this->avisos(157)->last()->texto);
+        $this->assertFalse((bool) $this->avisos(157)->last()->modo_soporte);
+
+        // Sin filas con clientes.
+        $this->analizador(AiProviderAnalyzer::class, ['nombre', 'telefono']);
+        $uuid = $this->iniciar_en_la_prueba('provider', $this->planilla([['Nombre', 'Telefono']]), 158, 'vacia.xlsx')->json('corrida.corrida_id');
+        $this->assertSame('error', $this->avanzar($uuid)->estado);
+        $this->assertSame('El archivo «vacia.xlsx» no tiene filas con proveedores para importar. No cargué nada: revisá que sea la planilla'
+            . ' de tus proveedores y mandámela de nuevo.', $this->avisos(158)->last()->texto);
+
+        // Más filas que el máximo.
+        config(['importacion_soporte.maximo_de_filas' => 2]);
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Nombre', 'Telefono'], ['G1 CC', '1'], ['G2 CC', '2'], ['G3 CC', '3']]),
+            159, 'grande.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('archivo_demasiado_grande', $corrida->motivo);
+        $this->assertSame('No importé «grande.xlsx» porque tiene 3 clientes y el máximo por archivo es 2. Partilo en archivos de hasta 2'
+            . ' filas y mandalos de a uno.', $this->avisos(159)->last()->texto);
+        $this->assertFalse(Client::where('user_id', $this->dueno->id)->whereIn('name', ['G1 CC', 'G2 CC', 'G3 CC'])->exists());
+        config(['importacion_soporte.maximo_de_filas' => 5000]);
+
+        // Un número que choca con la numeración automática: en palabras del dueño, sin la clave interna.
+        $this->cliente('Existente Num CC', 5, '1');
+        $this->analizador(AiClientAnalyzer::class, ['numero', 'nombre']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Num', 'Nombre'], [999999990, 'Choca Num CC'], [null, 'Sin Num CC']]),
+            160, 'numeros.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('filas_ambiguas', $corrida->motivo);
+        $this->assertStringNotContainsString('numero_automatico_choca', $this->avisos(160)->last()->texto);
+        $this->assertStringContainsString('el número choca con el que le tocaría a un cliente nuevo', $this->avisos(160)->last()->texto);
+
+        // La prueba vencida antes de cargar también avisa (texto del contrato).
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Nombre', 'Telefono'], ['Vencida Aviso CC', '1']]), 161, 'v.xlsx')
+            ->json('corrida.corrida_id');
+        PruebaHelper::fijar_vencimiento($this->dueno->id, Carbon::now()->subMinute());
+        PruebaHelper::olvidar_cache();
+        $this->avanzar($uuid);
+        $this->assertSame('La prueba terminó antes de cargar «v.xlsx».', $this->avisos(161)->last()->texto);
+    }
+
+    public function test_a4_un_activo_que_pide_correccion_sigue_sin_aviso_y_con_el_texto_de_siempre(): void
+    {
+        $this->apagar_la_prueba();
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono']);
+        $uuid = $this->iniciar('client', $this->planilla([['Nombre', 'Telefono'], ['Rep Activo CC', '1'], ['Rep Activo CC', '2']]), 162)
+            ->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('requiere_correccion', $corrida->estado);
+        $this->assertSame('No importé «contactos.xlsx» porque 2 filas no se pueden importar sin adivinar: fila 2 (Rep Activo CC): el'
+            . ' nombre está repetido en el archivo; fila 3 (Rep Activo CC): el nombre está repetido en el archivo.', $corrida->error);
+        $this->assertCount(0, $this->avisos(162));
+
+        $this->analizador(AiClientAnalyzer::class, ['telefono']);
+        $uuid = $this->iniciar('client', $this->planilla([['Tel'], ['1']]), 163)->json('corrida.corrida_id');
+        $this->assertSame('No pude preparar «contactos.xlsx»: No encontré en el archivo una columna con los nombres.',
+            $this->avanzar($uuid)->error);
+    }
+
+    public function test_a5_el_texto_de_deshacer_de_un_activo_queda_identico(): void
+    {
+        $texto = new \ReflectionMethod(ImportacionDeSoporteService::class, 'texto_de_la_reversion');
+        $texto->setAccessible(true);
+        $reversion = ['creados_borrados' => 10, 'actualizados_restaurados' => 0, 'movimientos_borrados' => 7, 'contraasientos' => 0,
+            'creados_conservados' => 0, 'saldos_anulados_de_conservados' => 0, 'actualizados_conservados' => 0];
+        $activo = new ImportacionDeSoporte(['modelo' => 'client', 'nombre' => 'lista.xlsx', 'resultado' => ['reversion' => $reversion]]);
+        $this->assertSame('Deshice la importación de «lista.xlsx»: borré 10 clientes nuevos y dejé como estaban 0 que se habían actualizado.',
+            $texto->invoke(new ImportacionDeSoporteService(), $activo));
+
+        $prueba = new ImportacionDeSoporte(['modelo' => 'client', 'nombre' => 'lista.xlsx', 'modo_prueba' => true,
+            'resultado' => ['reversion' => $reversion]]);
+        $this->assertSame('Deshice la carga de «lista.xlsx»: borré 10 clientes nuevos. También saqué los saldos que había cargado.',
+            $texto->invoke(new ImportacionDeSoporteService(), $prueba));
+        $prueba->resultado = ['reversion' => ['creados_borrados' => 1, 'actualizados_restaurados' => 2, 'movimientos_borrados' => 0,
+            'contraasientos' => 1, 'creados_conservados' => 0, 'saldos_anulados_de_conservados' => 0, 'actualizados_conservados' => 1]];
+        $prueba->modelo = 'provider';
+        $this->assertSame('Deshice la carga de «lista.xlsx»: borré 1 proveedor nuevo y dejé como estaban 2 que se habían actualizado.'
+            . ' A 1 no le volví los datos que se cambiaron a mano después. Anulé 1 saldo con una nota opuesta porque la cuenta ya'
+            . ' tenía movimientos posteriores.', $texto->invoke(new ImportacionDeSoporteService(), $prueba));
+    }
+
+    public function test_a6_el_job_vuelve_a_leer_la_configuracion_de_la_prueba(): void
+    {
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Nombre', 'Telefono'], ['Cache Job CC', '1']]), 164, 'c.xlsx')
+            ->json('corrida.corrida_id');
+        // El proceso tiene en memoria la prueba vigente; mientras tanto la prueba deja de existir.
+        $this->assertTrue(PruebaHelper::en_periodo_vigente($this->dueno->id));
+        PruebaConfig::where('owner_id', $this->dueno->id)->delete();
+
+        (new AvanzarImportacionDeSoporte((int) ImportacionDeSoporte::where('uuid', $uuid)->value('id')))
+            ->handle(app(ImportacionDeSoporteService::class));
+        $corrida = ImportacionDeSoporte::where('uuid', $uuid)->firstOrFail();
+        $this->assertSame('error', $corrida->estado, 'Sin olvidar la memoria, el job cargaba con una prueba que ya no estaba.');
+        $this->assertSame('La prueba terminó antes de cargar «c.xlsx».', $corrida->error);
+        $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', 'Cache Job CC')->exists());
+    }
+
+    public function test_a7_el_plazo_de_la_carga_cuenta_desde_que_termino_de_borrar_la_semilla(): void
+    {
+        SemillaRegistroHelper::abrir_lote($this->dueno->id, 'test');
+        Client::create(['user_id' => $this->dueno->id, 'name' => 'Ejemplo Plazo CC', 'num' => 1, 'phone' => '1']);
+        SemillaRegistroHelper::cerrar_lote();
+        $inicio = Carbon::now()->startOfSecond();
+        Carbon::setTestNow($inicio);
+        // El borrado de la semilla «tarda» 20 minutos: al marcarla borrada, el reloj avanza.
+        $avanzado = false;
+        PruebaConfig::saved(function () use (&$avanzado, $inicio) {
+            if (!$avanzado) {
+                $avanzado = true;
+                Carbon::setTestNow($inicio->copy()->addMinutes(20));
+            }
+        });
+
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'telefono']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla([['Nombre', 'Telefono'], ['Plazo CC', '1']]), 165, 'p.xlsx')
+            ->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertTrue($avanzado);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+        $this->assertTrue($corrida->confirmada_at->eq($inicio->copy()->addMinutes(20)),
+            'confirmada_at es el fin del borrado (' . $corrida->confirmada_at . '), no el fin del análisis.');
+
+        // Con la marca así, una consulta del admin 5 minutos después no la da por cortada (el job duraba 900 s desde el
+        // análisis, y con 20 minutos de borrado ya la habría dado por vencida).
+        $otra = ImportacionDeSoporte::create(['uuid' => (string) \Illuminate\Support\Str::uuid(), 'user_id' => $this->dueno->id,
+            'support_ticket_id' => 166, 'clave' => hash('sha256', 'plazo'), 'modelo' => 'client', 'archivo' => 'x', 'nombre' => 'x',
+            'estado' => 'importar', 'modo_prueba' => true, 'confirmada_at' => $corrida->confirmada_at, 'avisar_por_whatsapp' => false]);
+        DB::table('importaciones_de_soporte')->where('id', $otra->id)->update(['updated_at' => $inicio->copy()->addMinutes(9)]);
+        Carbon::setTestNow($inicio->copy()->addMinutes(25));
+        app(ImportacionDeSoporteService::class)->reanudar_si_hace_falta($otra->fresh());
+        $this->assertSame('importar', $otra->fresh()->estado);
+    }
+
+    public function test_a8_prueba_pendientes_no_vuelve_a_mirar_la_columna_en_cada_consulta(): void
+    {
+        $memo = new \ReflectionProperty(ImportacionDePruebaController::class, 'soporta_contactos_en_la_prueba');
+        $memo->setAccessible(true);
+        $memo->setValue(null, null);
+        $pendientes = '/api/admin-sync/ai-excel-import/prueba-pendientes?user_id=' . $this->dueno->id . '&support_ticket_id=167';
+        $consultas_a_la_tabla = function () {
+            return count(array_filter(DB::getQueryLog(), function ($consulta) {
+                return strpos($consulta['query'], 'information_schema') !== false
+                    && in_array('importaciones_de_soporte', $consulta['bindings'], true);
+            }));
+        };
+
+        DB::enableQueryLog();
+        $this->getJson($pendientes, $this->cabeceras())->assertOk()->assertJsonPath('capacidades_prueba', ['margen_previo', 'contactos']);
+        $this->assertGreaterThan(0, $consultas_a_la_tabla());
+        DB::flushQueryLog();
+        $this->getJson($pendientes, $this->cabeceras())->assertOk()->assertJsonPath('capacidades_prueba', ['margen_previo', 'contactos']);
+        $this->assertSame(0, $consultas_a_la_tabla(), 'La segunda consulta usa lo que ya sabe el proceso.');
+        DB::disableQueryLog();
+    }
+
+    public function test_b2_en_el_aviso_de_contactos_se_nombran_hasta_diez_y_el_resto_con_el_numero(): void
+    {
+        $texto = new \ReflectionMethod(ImportacionDeSoporteService::class, 'texto_de_descartadas');
+        $texto->setAccessible(true);
+        $filas = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $filas[] = ['fila' => $i + 1, 'texto' => 'Grupo ' . $i, 'motivo' => 'titulo'];
+        }
+        $this->assertSame(' Dejé afuera 12 filas que no son clientes: «Grupo 1», «Grupo 2», «Grupo 3», «Grupo 4», «Grupo 5», «Grupo 6»,'
+            . ' «Grupo 7», «Grupo 8», «Grupo 9», «Grupo 10» y 2 más. Si alguna era un cliente, decímelo y la cargo.',
+            $texto->invoke(new ImportacionDeSoporteService(), ['filas_descartadas' => $filas, 'filas_descartadas_total' => 12], 'cliente', 'clientes'));
+        // Solo el total: no se ofrece cargarlo.
+        $this->assertSame(' Dejé afuera 1 fila que no es un proveedor: «TOTAL».', $texto->invoke(new ImportacionDeSoporteService(),
+            ['filas_descartadas' => [['fila' => 9, 'texto' => 'TOTAL', 'motivo' => 'total']], 'filas_descartadas_total' => 1], 'proveedor', 'proveedores'));
     }
 }
