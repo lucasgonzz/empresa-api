@@ -4,11 +4,13 @@ namespace Tests\Feature\PruebaGratuita;
 
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
+use App\Jobs\FinalizeArticleImport;
 use App\Jobs\ProcessArticleChunk;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\Article;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\PriceType;
 use App\Models\SaleTax;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
@@ -249,9 +251,14 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
 
     public function test_precio_de_un_solo_articulo_al_lanzar_queda_como_su_precio_final(): void
     {
-        // Como una prueba: la lista «Precio final». El IIBB de la base de testing queda prendido a propósito: el precio
-        // que dijo el dueño es el final igual.
+        // Como una prueba: la lista «Precio final», propia del test (C1): la base del slot es compartida y otra sesión puede
+        // tener marcada otra lista del dueño 500 como de precio final. Todo adentro de la transacción del test. El IIBB de
+        // la base de testing queda prendido a propósito: el precio que dijo el dueño es el final igual.
+        PriceType::where('user_id', $this->dueno->id)->update(['es_precio_final' => 0]);
+        PriceTypeHelper::olvidar_precio_final();
         $lista = PriceTypeHelper::crear_lista_precio_final($this->dueno->id);
+        $this->assertSame((int) PriceType::where('user_id', $this->dueno->id)->max('position'), (int) $lista->position,
+            'La «Precio final» es la lista por defecto (la de position más alta).');
         $this->analizador($this->mapeo_con_precio());
         $uuid = $this->subir($this->lista_con_uno_sin_precio('MPP'), 304, 'precio:1300')->assertStatus(202)
             ->assertJsonPath('margen_previo', 'precio:1300')->json('analysis_uuid');
@@ -267,16 +274,21 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $llave = Article::where('user_id', $this->dueno->id)->where('provider_code', 'MPP-2')->firstOrFail();
         $this->assertEqualsWithDelta(660.42, (float) $llave->cost, 0.001);
         $this->assertEqualsWithDelta(1300, (float) $llave->final_price, 0.001);
-        // La lista «Precio final» contesta con el final_price del artículo (ArticlePricesHelper::resolver_precio_de_venta),
-        // y no hay un pivote propio que lo pise.
+        // Lo que ve el dueño (Vender y el Listado resuelven el precio con resolver_precio_de_venta): N exacto, por la lista
+        // «Precio final», que contesta con el final_price del artículo. Si la lista tiene pivote, también dice N.
         $this->assertTrue(PriceTypeHelper::es_lista_precio_final($lista));
-        $this->assertNull(DB::table('article_price_type')->where('article_id', $llave->id)->where('price_type_id', $lista->id)
-            ->value('final_price'));
+        $visto = ArticlePricesHelper::resolver_precio_de_venta($llave->fresh()->load('price_types'), $this->dueno);
+        $this->assertEqualsWithDelta(1300, (float) $visto['final_price'], 0.001, json_encode($visto));
+        $pivote = DB::table('article_price_type')->where('article_id', $llave->id)->where('price_type_id', $lista->id)->value('final_price');
+        if ($pivote !== null) {
+            $this->assertEqualsWithDelta(1300, (float) $pivote, 0.001);
+        }
         $this->assertEqualsWithDelta(1500, (float) Article::where('user_id', $this->dueno->id)->where('provider_code', 'MPP-1')
             ->value('final_price'), 0.001, 'El que traía su precio no cambia.');
 
-        $this->assertSame('Cargué 3 artículos con su costo y su precio de venta. Al que no traía precio le puse $ 1.300,00 como'
-            . ' precio de venta.', $this->resumen($run, 3));
+        // B3 (ronda 8): dice cuál.
+        $this->assertSame('Cargué 3 artículos con su costo y su precio de venta. Al que no traía precio («Llave francesa MPP») le puse'
+            . ' $ 1.300,00 como precio de venta.', $this->resumen($run, 3));
     }
 
     // -----------------------------------------------------------------------------------------------------
@@ -421,6 +433,146 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $this->assertNull(PlanillaDePrueba::precio_de_decision('40'));
         // margen_de_respuesta no toma un precio como porcentaje.
         $this->assertNull(PlanillaDePrueba::margen_de_respuesta('precio:40'));
+    }
+    // -----------------------------------------------------------------------------------------------------
+    // Revisión de la ronda 8: B1 a B4
+    // -----------------------------------------------------------------------------------------------------
+
+    /** Corre la importación entera (lotes y cierre) y devuelve el aviso del resultado que le llega al dueño. */
+    private function importar_y_leer_el_aviso(string $uuid): string
+    {
+        Bus::fake();
+        $run = $this->avanzar($uuid);
+        $this->assertSame('importando', $run->estado, json_encode($run->preguntas));
+        $this->correr_la_importacion();
+        $historial = ImportHistory::findOrFail($run->fresh()->import_history_id);
+        (new FinalizeArticleImport($this->dueno->id, $historial->id, $historial->import_status_id))->handle();
+        \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
+        $this->avanzar($uuid);
+
+        return (string) AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', $run->support_ticket_id)
+            ->where('texto', 'like', 'Cargué%')->latest('id')->value('texto');
+    }
+
+    public function test_b1_si_hay_articulos_sin_codigo_el_resumen_no_dice_que_todos_se_encuentran_por_codigo(): void
+    {
+        $this->analizador(['Cod.' => ['numero', 0.97], 'Nombre' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        $uuid = $this->subir($this->planilla([
+            ['Cod.', 'Nombre', 'Precio de venta'],
+            [880001, 'Sierra MPB', 16500], [880002, 'Tornillo MPB', 450], [null, 'Martillo sin código MPB', 9000],
+        ]), 320)->assertStatus(202)->json('analysis_uuid');
+        $texto = $this->importar_y_leer_el_aviso($uuid);
+        $this->assertStringContainsString(' Los que traían tu código los encontrás por ese código en el Listado y en Vender; 1 quedó'
+            . ' sin código («Martillo sin código MPB») y se busca por su nombre.', $texto);
+        $this->assertStringNotContainsString('Cada artículo lo encontrás por tu código', $texto);
+        $this->assertNotNull(Article::where('user_id', $this->dueno->id)->where('name', 'Martillo sin código MPB')->first(),
+            'El que no traía código se cargó igual.');
+        $this->assertSame(1, ImportacionDePrueba::where('uuid', $uuid)->firstOrFail()->hojas[0]['filas_sin_codigo']);
+    }
+
+    public function test_b1_los_textos_de_la_busqueda_por_codigo(): void
+    {
+        $this->assertSame(' Cada artículo lo encontrás por tu código en el Listado y en Vender.',
+            ImportacionDePruebaService::texto_de_la_busqueda_por_codigo([['indice' => 0]]));
+        $this->assertSame(' Los que traían tu código los encontrás por ese código en el Listado y en Vender; 2 quedaron sin código'
+            . ' («A» y «B») y se buscan por su nombre.',
+            ImportacionDePruebaService::texto_de_la_busqueda_por_codigo([['filas_sin_codigo' => 2, 'sin_codigo_ejemplos' => ['A', 'B']]]));
+        $this->assertSame(' Los que traían tu código los encontrás por ese código en el Listado y en Vender; 7 quedaron sin código'
+            . ' (por ejemplo «A», «B», «C») y se buscan por su nombre.', ImportacionDePruebaService::texto_de_la_busqueda_por_codigo([
+                ['filas_sin_codigo' => 5, 'sin_codigo_ejemplos' => ['A', 'B', 'C']], ['filas_sin_codigo' => 2, 'sin_codigo_ejemplos' => ['D']],
+            ]));
+    }
+
+    public function test_b2_las_filas_que_quedaron_afuera_se_nombran_todas_o_con_el_numero_de_las_que_faltan(): void
+    {
+        $titulos = ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'];
+        $this->assertSame(' Dejé afuera 7 filas que no son artículos: “T1”, “T2”, “T3”, “T4”, “T5”, “T6”, “T7”. Si alguna era un'
+            . ' producto, decímelo y la cargo.', PlanillaDePrueba::texto_de_filas_salteadas([
+                ['filas_salteadas' => ['titulo' => 7, 'textos_titulo' => $titulos]],
+            ]));
+        // Más de 10: el total a la vista y «y K más» con el número, nunca un «…».
+        $doce = ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'A8', 'A9', 'A10'];
+        $texto = PlanillaDePrueba::texto_de_filas_salteadas([
+            ['filas_salteadas' => ['titulo' => 12, 'total' => 1, 'textos_titulo' => $doce, 'textos_total' => ['TOTAL']]],
+        ]);
+        $this->assertSame(' Dejé afuera 13 filas que no son artículos: “A1”, “A2”, “A3”, “A4”, “A5”, “A6”, “A7”, “A8”, “A9”, “TOTAL”'
+            . ' y 3 más. Si alguna era un producto, decímelo y la cargo.', $texto);
+        $this->assertStringNotContainsString('…', $texto);
+        // La cabecera repetida se dice, no se esconde.
+        $this->assertSame(' Dejé afuera 3 filas que no son artículos: “T1”, “TOTAL” y la cabecera repetida. Si alguna era un producto,'
+            . ' decímelo y la cargo.', PlanillaDePrueba::texto_de_filas_salteadas([
+                ['filas_salteadas' => ['titulo' => 2, 'cabeceras' => 1, 'total' => 1, 'textos_titulo' => ['T1'], 'textos_total' => ['TOTAL']]],
+            ]));
+        $this->assertStringEndsWith('y la cabecera repetida 2 veces. Si alguna era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => ['titulo' => 3, 'cabeceras' => 2, 'textos_titulo' => ['T1']]]]));
+    }
+
+    public function test_b2_una_hoja_con_doce_titulos_guarda_diez_y_los_dice(): void
+    {
+        $filas = [['Código', 'Descripción', 'Precio de venta']];
+        for ($i = 1; $i <= 12; $i++) {
+            $filas[] = ['--- RUBRO ' . $i . ' ---', null, null];
+            $filas[] = ['MPT-' . $i, 'Artículo MPT ' . $i, 100 * $i];
+        }
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]]);
+        $uuid = $this->subir($this->planilla($filas), 321)->assertStatus(202)->json('analysis_uuid');
+        Bus::fake();
+        $run = $this->avanzar($uuid);
+        $this->assertSame('importando', $run->estado);
+        $this->assertSame(12, $run->hojas[0]['filas_salteadas']['titulo']);
+        $this->assertCount(PlanillaDePrueba::EJEMPLOS_DE_SALTEADAS, $run->hojas[0]['filas_salteadas']['textos_titulo']);
+        $this->assertStringEndsWith('“--- RUBRO 10 ---” y 2 más. Si alguna era un producto, decímelo y la cargo.',
+            PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
+    }
+
+    public function test_b3_con_un_porcentaje_al_lanzar_dice_cual_y_en_cuanto_quedo(): void
+    {
+        SaleTax::where('user_id', $this->dueno->id)->update(['activo' => 0]);
+        ArticlePricesHelper::$sale_taxes_cache = [];
+        $this->analizador($this->mapeo_con_precio());
+        $uuid = $this->subir($this->lista_con_uno_sin_precio('MPM'), 322, '40')->assertStatus(202)->json('analysis_uuid');
+        $run = $this->importar_sin_preguntas($uuid);
+        $this->assertSame(1, $run->hojas[0]['filas_con_margen_agregado']);
+        $llave = Article::where('user_id', $this->dueno->id)->where('provider_code', 'MPM-2')->firstOrFail();
+        // 660,42 + 40 % = 924,59; con IVA 21 % = 1.118,75.
+        $this->assertEqualsWithDelta(1118.75, (float) $llave->final_price, 0.001);
+        $this->assertStringContainsString(' «Llave francesa MPM» no traía precio de venta: le sumé un 40 % de ganancia y quedó en'
+            . ' $ 1.118,75 con IVA.', $this->resumen($run, 3));
+        $this->assertStringNotContainsString('Al que no traía ganancia', $this->resumen($run, 3));
+
+        // Dos: cuántos y un ejemplo.
+        ImportHistory::where('user_id', $this->dueno->id)->whereIn('status', ['en_preparacion', 'en_proceso'])->update(['status' => 'terminado']);
+        $this->analizador($this->mapeo_con_precio());
+        $otra = $this->subir($this->lista_con_uno_sin_precio('MPN', 2), 323, '40')->assertStatus(202)->json('analysis_uuid');
+        $run = $this->importar_sin_preguntas($otra);
+        $this->assertStringContainsString(' 2 artículos no traían precio de venta: les sumé un 40 % de ganancia (por ejemplo, «Llave'
+            . ' francesa MPN» quedó en $ 1.118,75 con IVA).', $this->resumen($run, 3));
+    }
+
+    public function test_b4_con_ingresos_brutos_prendido_dice_con_impuestos_y_si_ya_tenia_ganancia_lo_dice(): void
+    {
+        // La base de testing tiene IIBB 3,5 % activo en el dueño 500: 799,11 / 0,965 = 828,09.
+        SaleTax::where('user_id', $this->dueno->id)->update(['activo' => 1]);
+        $this->assertTrue(SaleTax::where('user_id', $this->dueno->id)->where('activo', 1)->exists(), 'Precondición: IIBB prendido.');
+        ArticlePricesHelper::$sale_taxes_cache = [];
+        $this->analizador($this->mapeo_con_precio());
+        $uuid = $this->subir($this->lista_con_uno_sin_precio('MPI'), 324, 'despues')->assertStatus(202)->json('analysis_uuid');
+        $run = $this->importar_sin_preguntas($uuid);
+        $final = (float) Article::where('user_id', $this->dueno->id)->where('provider_code', 'MPI-2')->value('final_price');
+        $this->assertGreaterThan(799.11, $final);
+        $this->assertStringContainsString(' 1 artículo no traía precio de venta: por ahora quedó al costo con impuestos ($ '
+            . number_format($final, 2, ',', '.') . ').', $this->resumen($run, 3));
+
+        // Un artículo que ya existía con su ganancia: no se dice «al costo».
+        $resumen = new \ReflectionMethod(ImportacionDePruebaService::class, 'resumen_en_palabras');
+        $resumen->setAccessible(true);
+        Article::create(['user_id' => $this->dueno->id, 'name' => 'Con margen MPZ', 'status' => 'active', 'cost' => 100,
+            'percentage_gain' => 50, 'final_price' => 181.5]);
+        $corrida = new ImportacionDePrueba(['user_id' => $this->dueno->id, 'decisiones' => [], 'hojas' => [['indice' => 0,
+            'mapeo' => ['nombre' => 1, 'costo' => 2, 'precio' => 3], 'filas_sin_ganancia' => 1,
+            'sin_ganancia_ejemplo' => ['nombre' => 'Con margen MPZ', 'sku' => null]]]]);
+        $this->assertStringContainsString(' por ahora quedó con la ganancia que ya tenía ($ 181,50).',
+            $resumen->invoke(app(ImportacionDePruebaService::class), $corrida, 1, 0, 0, 0));
     }
 }
 

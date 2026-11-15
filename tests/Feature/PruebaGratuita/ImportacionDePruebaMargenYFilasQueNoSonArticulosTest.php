@@ -297,12 +297,17 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $salteadas = $run->hojas[0]['filas_salteadas'];
         $this->assertSame(7, $salteadas['titulo']);
         $this->assertSame(1, $salteadas['total']);
-        $this->assertSame(self::TITULOS, $salteadas['textos_titulo'], 'Se guardan los primeros cinco textos, en su orden.');
+        // B2 (ronda 8): se guardan hasta 10 textos (antes 5), así que también la nota del pie.
+        $this->assertSame(array_merge(self::TITULOS, ['Consulte por descuentos por cantidad']), $salteadas['textos_titulo'],
+            'Se guardan los textos, en su orden.');
+        $this->assertSame(1, $salteadas['cabeceras']);
         $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
         // Sin cupo de imágenes: el cierre de la importación no sale a buscar fotos (no es lo que se mide acá).
         \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
+        // B2 (ronda 8): todas nombradas (eran 4 y un «…» mudo) y la cabecera repetida, dicha.
         $frase = ' Dejé afuera 8 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
-            . ' “--- ELECTRICIDAD ---”, …, “TOTAL LISTA”. Si alguna era un producto, decímelo y la cargo.';
+            . ' “--- ELECTRICIDAD ---”, “--- SANITARIOS ---”, “Consulte por descuentos por cantidad”, “TOTAL LISTA” y la cabecera'
+            . ' repetida. Si alguna era un producto, decímelo y la cargo.';
         $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
         $run = $this->avanzar($run);
         $resultado = AiAvisoDelAsistente::where('owner_id', $this->dueno->id)->where('support_ticket_id', 31)
@@ -1188,10 +1193,10 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
             ' Dejé afuera 1 fila que no es un artículo: “TOTAL LISTA”. Si era un producto, decímelo y la cargo.',
             PlanillaDePrueba::texto_de_filas_salteadas([['filas_salteadas' => ['total' => 1, 'textos_total' => ['TOTAL LISTA']]]])
         );
-        // Dos hojas, más títulos que cupo: los primeros, puntos suspensivos y el total a la vista al final.
+        // Dos hojas: B2 (ronda 8), hasta 10 se nombran todas, con el total al final (antes: cuatro y un «…» mudo).
         $this->assertSame(
-            ' Dejé afuera 8 filas que no son artículos: “--- A ---”, “--- B ---”, “--- C ---”, “--- D ---”, …, “Total general”.'
-            . ' Si alguna era un producto, decímelo y la cargo.',
+            ' Dejé afuera 8 filas que no son artículos: “--- A ---”, “--- B ---”, “--- C ---”, “--- D ---”, “--- E ---”, “--- F ---”,'
+            . ' “--- G ---”, “Total general”. Si alguna era un producto, decímelo y la cargo.',
             PlanillaDePrueba::texto_de_filas_salteadas([
                 ['filas_salteadas' => ['titulo' => 2, 'textos_titulo' => ['--- A ---', '--- B ---']]],
                 ['filas_salteadas' => ['titulo' => 5, 'total' => 1, 'textos_titulo' => ['--- C ---', '--- D ---', '--- E ---', '--- F ---', '--- G ---'], 'textos_total' => ['Total general']]],

@@ -49,7 +49,8 @@ class PlanillaDePrueba
     // Un total parcial en el medio de la hoja («Subtotal plomería | | 39»), en una hoja cuyos artículos traen código.
     public const FILA_SUBTOTAL = 'subtotal';
     // Cuántos textos de filas salteadas se guardan y se muestran, para que el dueño pueda decir «ese sí era un producto».
-    public const EJEMPLOS_DE_SALTEADAS = 5;
+    // Hasta este número se nombran TODAS; con más, «y K más» con el número (B2, ronda 8; antes 5 y un «…» mudo).
+    public const EJEMPLOS_DE_SALTEADAS = 10;
 
     /*
      * Cómo se le nombra cada campo al dueño en las OPCIONES de una pregunta (misión
@@ -135,6 +136,11 @@ class PlanillaDePrueba
     private $precio_agregado = [];
     // La primera fila con costo y sin ganancia de cada hoja: [índice => ['nombre' => ..., 'sku' => ...]].
     private $sin_ganancia_ejemplo = [];
+    // La primera fila a la que `filas()` le puso el margen o el precio del dueño, por hoja (B3, ronda 8).
+    private $margen_agregado_ejemplo = [];
+    private $precio_agregado_ejemplo = [];
+    // Filas sin el código del dueño en una hoja que lo trae como SKU (B1): [índice => ['cantidad' => n, 'nombres' => [...]]].
+    private $sin_codigo = [];
     // Propiedad del importador de la columna de stock de cada sucursal => [id, nombre] (ver `stock_junto_a_la_sucursal`).
     private $stock_por_sucursal = [];
     // Solo en la prueba: la sucursal donde va el stock «junto» (una sola cantidad), o null. Ver `sucursal_del_stock_junto`.
@@ -1595,16 +1601,19 @@ class PlanillaDePrueba
                         // El precio de venta que dijo el dueño para el único artículo que no lo traía (ronda 8, D2).
                         $datos['precio'] = $hoja['precio_para_vacia'];
                         $this->precio_agregado[$hoja['indice']] = ($this->precio_agregado[$hoja['indice']] ?? 0) + 1;
+                        if (!isset($this->precio_agregado_ejemplo[$hoja['indice']])) {
+                            $this->precio_agregado_ejemplo[$hoja['indice']] = self::ejemplo_de_la_fila($datos);
+                        }
                     } elseif (isset($hoja['margen_para_vacias'])) {
                         $datos[self::CLAVE_MARGEN] = $hoja['margen_para_vacias'];
                         $this->margen_agregado[$hoja['indice']] = ($this->margen_agregado[$hoja['indice']] ?? 0) + 1;
+                        if (!isset($this->margen_agregado_ejemplo[$hoja['indice']])) {
+                            $this->margen_agregado_ejemplo[$hoja['indice']] = self::ejemplo_de_la_fila($datos);
+                        }
                     } else {
                         $this->sin_ganancia[$hoja['indice']] = ($this->sin_ganancia[$hoja['indice']] ?? 0) + 1;
                         if (!isset($this->sin_ganancia_ejemplo[$hoja['indice']])) {
-                            $this->sin_ganancia_ejemplo[$hoja['indice']] = [
-                                'nombre' => isset($datos['nombre']) ? (string) $datos['nombre'] : null,
-                                'sku' => isset($datos['sku']) && trim((string) $datos['sku']) !== '' ? (string) $datos['sku'] : null,
-                            ];
+                            $this->sin_ganancia_ejemplo[$hoja['indice']] = self::ejemplo_de_la_fila($datos);
                         }
                     }
                 }
@@ -1757,6 +1766,14 @@ class PlanillaDePrueba
         $this->margen_agregado = [];
         $this->precio_agregado = [];
         $this->sin_ganancia_ejemplo = [];
+        $this->margen_agregado_ejemplo = [];
+        $this->precio_agregado_ejemplo = [];
+        $this->sin_codigo = [];
+        // Las hojas que traen el código del dueño como SKU (B1): ahí una fila sin código se busca por su nombre.
+        $con_sku = [];
+        foreach ($hojas as $hoja) {
+            $con_sku[(string) $hoja['indice']] = isset($hoja['mapeo']['sku']) && !$this->run->modo_soporte;
+        }
         $columnas = array_keys($campos);
         $ruta = storage_path('app/imported_files/prueba_' . $this->run->uuid . '.preparado');
         $csv = fopen($ruta, 'wb');
@@ -1772,6 +1789,16 @@ class PlanillaDePrueba
                     continue;
                 }
                 $datos[self::SEPARAR_CODIGO] = isset($coincidencias['separar'][$clave]) ? '1' : '';
+                $indice = (string) strstr((string) $clave, ':', true);
+                if (!empty($con_sku[$indice]) && trim((string) ($datos['sku'] ?? '')) === '') {
+                    $sin = $this->sin_codigo[$indice] ?? ['cantidad' => 0, 'nombres' => []];
+                    $sin['cantidad']++;
+                    $nombre = trim((string) ($datos['nombre'] ?? ''));
+                    if ($nombre !== '' && count($sin['nombres']) < self::NOMBRES_SIN_CODIGO) {
+                        $sin['nombres'][] = mb_substr($nombre, 0, 60);
+                    }
+                    $this->sin_codigo[$indice] = $sin;
+                }
                 $ordenada = array_map(function ($campo) use ($datos) { return $datos[$campo] ?? ''; }, $columnas);
                 self::escribir_fila($csv, $ordenada);
                 $filas++;
@@ -1784,6 +1811,25 @@ class PlanillaDePrueba
             'ruta' => $ruta, 'filas' => $filas, 'columnas' => array_flip($columnas), 'salteadas' => $this->salteadas,
             'sin_ganancia' => $this->sin_ganancia, 'margen_agregado' => $this->margen_agregado,
             'precio_agregado' => $this->precio_agregado, 'sin_ganancia_ejemplo' => $this->sin_ganancia_ejemplo,
+            'margen_agregado_ejemplo' => $this->margen_agregado_ejemplo, 'precio_agregado_ejemplo' => $this->precio_agregado_ejemplo,
+            'sin_codigo' => $this->sin_codigo,
+        ];
+    }
+
+    /** Cuántos nombres de artículos sin código se guardan para el resumen (B1). */
+    public const NOMBRES_SIN_CODIGO = 3;
+
+    /**
+     * El nombre y el SKU de una fila, para buscar después el artículo que cargó (B3).
+     *
+     * @param  array $datos
+     * @return array ['nombre' => ?string, 'sku' => ?string]
+     */
+    private static function ejemplo_de_la_fila(array $datos): array
+    {
+        return [
+            'nombre' => isset($datos['nombre']) ? (string) $datos['nombre'] : null,
+            'sku' => isset($datos['sku']) && trim((string) $datos['sku']) !== '' ? (string) $datos['sku'] : null,
         ];
     }
 
@@ -2242,6 +2288,8 @@ class PlanillaDePrueba
     {
         $this->salteadas[$indice][$motivo] = ($this->salteadas[$indice][$motivo] ?? 0) + 1;
         if (!$con_texto) {
+            // La cabecera repetida no se nombra («“COD”» no le dice nada al dueño), pero se cuenta para decirla (B2).
+            $this->salteadas[$indice]['cabeceras'] = ($this->salteadas[$indice]['cabeceras'] ?? 0) + 1;
             return;
         }
 
@@ -2606,25 +2654,32 @@ class PlanillaDePrueba
         }
 
         /*
-         * El total va siempre a la vista, al final; el resto del cupo es para los títulos, en su orden. Con
-         * subtotales (E8.1), uno se nombra antes del «…» para que el dueño vea que esa clase de fila también
-         * quedó afuera; si no hay títulos, los subtotales usan todo el cupo.
+         * B2 (ronda 8): hasta EJEMPLOS_DE_SALTEADAS se nombran TODAS, en su orden (títulos, subtotales y el total al
+         * final); con más, «y K más» con el número, nunca un «…» mudo. La cabecera repetida no se nombra pero se dice.
+         * Si no entran todas, el total va igual a la vista y queda lugar para al menos un subtotal.
          */
+        $cabeceras = 0;
+        foreach ($hojas as $hoja) {
+            $cabeceras += (int) (($hoja['filas_salteadas'] ?? [])['cabeceras'] ?? 0);
+        }
         $totales = array_slice($totales, 0, 2);
         $lugar = self::EJEMPLOS_DE_SALTEADAS - count($totales);
-        $subtotales = array_slice($subtotales, 0, $titulos === [] ? $lugar : min(1, $lugar));
-        $titulos = array_slice($titulos, 0, $lugar - count($subtotales));
+        $titulos = array_slice($titulos, 0, max(0, $lugar - min(1, count($subtotales))));
+        $subtotales = array_slice($subtotales, 0, $lugar - count($titulos));
         $entre_comillas = function ($texto) {
             return '“' . $texto . '”';
         };
-        $partes = array_map($entre_comillas, array_merge($titulos, $subtotales));
-        if ($partes !== [] && $filas > count($titulos) + count($subtotales) + count($totales)) {
-            $partes[] = '…';
+        $partes = array_map($entre_comillas, array_merge($titulos, $subtotales, $totales));
+        $resto = $filas - count($partes);
+        $lista = implode(', ', $partes);
+        if ($partes !== [] && $resto > 0) {
+            $lista .= $resto === $cabeceras
+                ? ($cabeceras === 1 ? ' y la cabecera repetida' : ' y la cabecera repetida ' . $cabeceras . ' veces')
+                : ' y ' . $resto . ' más';
         }
-        $partes = array_merge($partes, array_map($entre_comillas, $totales));
 
         return ' Dejé afuera ' . $filas . ($filas === 1 ? ' fila que no es un artículo' : ' filas que no son artículos')
-            . ($partes === [] ? '' : ': ' . implode(', ', $partes)) . '.'
+            . ($partes === [] ? '' : ': ' . $lista) . '.'
             . ($filas === 1 ? ' Si era un producto, decímelo y la cargo.' : ' Si alguna era un producto, decímelo y la cargo.');
     }
 

@@ -17,6 +17,7 @@ use App\Models\EmbeddingRun;
 use App\Models\ImageAssignmentRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportHistory;
+use App\Models\SaleTax;
 use App\Models\TableColumnPreference;
 use App\Models\User;
 use App\Services\CupoEmbeddingsDePrueba;
@@ -175,7 +176,8 @@ class ImportacionDePruebaService
         // Títulos de rubro y totales que no se importan: quedan en la corrida para contarlo en el resumen.
         foreach ($hojas as &$hoja) {
             unset($hoja['filas_salteadas'], $hoja['filas_sin_ganancia'], $hoja['filas_con_margen_agregado'],
-                $hoja['filas_con_precio_agregado'], $hoja['sin_ganancia_ejemplo']);
+                $hoja['filas_con_precio_agregado'], $hoja['sin_ganancia_ejemplo'], $hoja['margen_agregado_ejemplo'],
+                $hoja['precio_agregado_ejemplo'], $hoja['filas_sin_codigo'], $hoja['sin_codigo_ejemplos']);
             if (!empty($plan['salteadas'][$hoja['indice']])) {
                 $hoja['filas_salteadas'] = $plan['salteadas'][$hoja['indice']];
             }
@@ -190,6 +192,16 @@ class ImportacionDePruebaService
             }
             if (!empty($plan['margen_agregado'][$hoja['indice']])) {
                 $hoja['filas_con_margen_agregado'] = $plan['margen_agregado'][$hoja['indice']];
+            }
+            // B1 y B3 (ronda 8): cuál quedó con el margen o el precio del dueño, y los que quedaron sin código.
+            foreach (['margen_agregado_ejemplo', 'precio_agregado_ejemplo'] as $clave) {
+                if (!empty($plan[$clave][$hoja['indice']])) {
+                    $hoja[$clave] = $plan[$clave][$hoja['indice']];
+                }
+            }
+            if (!empty($plan['sin_codigo'][$hoja['indice']]['cantidad'])) {
+                $hoja['filas_sin_codigo'] = (int) $plan['sin_codigo'][$hoja['indice']]['cantidad'];
+                $hoja['sin_codigo_ejemplos'] = $plan['sin_codigo'][$hoja['indice']]['nombres'];
             }
         }
         unset($hoja);
@@ -452,7 +464,7 @@ class ImportacionDePruebaService
             // El código del dueño quedó como SKU (ver `PlanillaDePrueba::codigo_del_dueno_como_sku`): se busca por él.
             if (isset($campos['sku'])) {
                 self::buscar_tambien_por_sku((int) $run->user_id);
-                $texto .= ' Cada artículo lo encontrás por tu código en el Listado y en Vender.';
+                $texto .= self::texto_de_la_busqueda_por_codigo($run->hojas ?? []);
             }
             $semilla_borrada_at = optional(PruebaHelper::config((int) $run->user_id))->semilla_borrada_at;
             if ($semilla_borrada_at !== null && $semilla_borrada_at->gte($historial->created_at)) {
@@ -528,16 +540,28 @@ class ImportacionDePruebaService
             $texto .= $para_revisar === 1 ? ' 1 fila quedó para revisar.' : ' ' . $para_revisar . ' filas quedaron para revisar.';
         }
 
-        // Los que traían costo y ninguna ganancia: o se les sumó la que contestó el dueño, o quedaron al costo.
+        // Los que traían costo y no el precio de venta: se les sumó la ganancia que dijo el dueño. B3 (ronda 8): cuál
+        // (o cuántos), el porcentaje y en cuánto quedó el precio final de uno de ellos, leído del artículo cargado.
         $agregado = (int) array_sum(array_column($hojas, 'filas_con_margen_agregado'));
         if ($agregado > 0 && $margen !== null) {
-            $texto .= $agregado === 1 ? ' Al que no traía ganancia le sumé un ' . $margen . ' %.'
-                : ' A los ' . $agregado . ' que no traían ganancia les sumé un ' . $margen . ' %.';
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_con_margen_agregado', 'margen_agregado_ejemplo');
+            $nombre = is_null($ejemplo) ? '' : mb_substr(trim((string) $ejemplo['nombre']), 0, 60);
+            $quedo = $this->en_cuanto_quedo($run, $ejemplo, (float) $margen);
+            if ($agregado === 1) {
+                $texto .= ' ' . ($nombre !== '' ? '«' . $nombre . '»' : '1 artículo') . ' no traía precio de venta: le sumé un '
+                    . $margen . ' % de ganancia' . ($quedo === '' ? '' : ' y quedó en ' . $quedo) . '.';
+            } else {
+                $texto .= ' ' . $agregado . ' artículos no traían precio de venta: les sumé un ' . $margen . ' % de ganancia'
+                    . ($quedo === '' || $nombre === '' ? '' : ' (por ejemplo, «' . $nombre . '» quedó en ' . $quedo . ')') . '.';
+            }
         }
-        // El precio que dijo el dueño para el único que no lo traía (ronda 8, D2).
+        // El precio que dijo el dueño para el único que no lo traía (ronda 8, D2), con su nombre (B3).
         $precio = PlanillaDePrueba::precio_de_decision(($run->decisiones ?? [])[PlanillaDePrueba::CLAVE_MARGEN] ?? null);
         if ($precio !== null && (int) array_sum(array_column($hojas, 'filas_con_precio_agregado')) > 0) {
-            $texto .= ' Al que no traía precio le puse ' . self::pesos((float) $precio) . ' como precio de venta.';
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_con_precio_agregado', 'precio_agregado_ejemplo');
+            $nombre = is_null($ejemplo) ? '' : mb_substr(trim((string) $ejemplo['nombre']), 0, 60);
+            $texto .= ' Al que no traía precio' . ($nombre !== '' ? ' («' . $nombre . '»)' : '') . ' le puse '
+                . self::pesos((float) $precio) . ' como precio de venta.';
         }
         // D3 (ronda 8): lo que quedó sin ganancia, dicho como quedó de verdad. Nunca «lo actualizo»: Martín no tiene con qué.
         $sin_ganancia = (int) array_sum(array_column($hojas, 'filas_sin_ganancia'));
@@ -557,8 +581,11 @@ class ImportacionDePruebaService
 
     /**
      * Cómo quedó el único artículo que no traía precio de venta, leído del artículo cargado (el último actualizado del
-     * dueño con ese nombre, y ese SKU si lo había): «quedó al costo más IVA ($ 799,11)», «quedó al costo ($ 660,42)» o,
-     * si no se encuentra, «quedó sin ganancia, al costo».
+     * dueño con ese nombre, y ese SKU si lo había). B4 (ronda 8): el rótulo dice la verdad del número:
+     *  - ya tenía su ganancia (un artículo que existía con margen): «quedó con la ganancia que ya tenía ($ X)»;
+     *  - el precio final es mayor que el costo: «quedó al costo más IVA ($ X)», o «quedó al costo con impuestos ($ X)»
+     *    si el negocio tiene impuestos sobre ventas prendidos (Ingresos Brutos), que también van en X;
+     *  - igual al costo: «quedó al costo ($ X)»; si no se encuentra: «quedó sin ganancia, al costo».
      *
      * @param  ImportacionDePrueba $run
      * @param  array $hojas
@@ -566,27 +593,121 @@ class ImportacionDePruebaService
      */
     private function como_quedo_el_sin_ganancia(ImportacionDePrueba $run, array $hojas): string
     {
-        $ejemplo = null;
-        foreach ($hojas as $hoja) {
-            if (!empty($hoja['filas_sin_ganancia']) && !empty($hoja['sin_ganancia_ejemplo']['nombre'])) {
-                $ejemplo = $hoja['sin_ganancia_ejemplo'];
-                break;
-            }
-        }
-        $articulo = null;
-        if ($ejemplo !== null) {
-            $articulo = Article::where('user_id', (int) $run->user_id)->where('name', trim((string) $ejemplo['nombre']))
-                ->when(!empty($ejemplo['sku']), function ($consulta) use ($ejemplo) {
-                    $consulta->where('sku', trim((string) $ejemplo['sku']));
-                })->orderByDesc('updated_at')->orderByDesc('id')->first(['id', 'cost', 'final_price']);
-        }
+        $articulo = $this->articulo_del_ejemplo($run, self::ejemplo_de_las_hojas($hojas, 'filas_sin_ganancia', 'sin_ganancia_ejemplo'));
         if ($articulo === null || $articulo->final_price === null) {
             return 'quedó sin ganancia, al costo';
         }
-        $costo = (float) $articulo->cost;
         $final = (float) $articulo->final_price;
+        if ((float) $articulo->percentage_gain > 0.004) {
+            return 'quedó con la ganancia que ya tenía (' . self::pesos($final) . ')';
+        }
+        if ($final > (float) $articulo->cost + 0.005) {
+            return self::con_impuestos_sobre_ventas((int) $run->user_id)
+                ? 'quedó al costo con impuestos (' . self::pesos($final) . ')' : 'quedó al costo más IVA (' . self::pesos($final) . ')';
+        }
 
-        return $final > $costo + 0.005 ? 'quedó al costo más IVA (' . self::pesos($final) . ')' : 'quedó al costo (' . self::pesos($final) . ')';
+        return 'quedó al costo (' . self::pesos($final) . ')';
+    }
+
+    /**
+     * En cuánto quedó el precio final de un artículo al que se le sumó el margen del dueño (B3): «$ 1.118,75 con IVA»
+     * (o «con impuestos» si el negocio tiene impuestos sobre ventas prendidos, B4), «$ 1.400,00» si no lleva nada
+     * encima, o '' si no se encuentra.
+     *
+     * @param  ImportacionDePrueba $run
+     * @param  array|null $ejemplo
+     * @param  float $margen
+     * @return string
+     */
+    private function en_cuanto_quedo(ImportacionDePrueba $run, ?array $ejemplo, float $margen): string
+    {
+        $articulo = $this->articulo_del_ejemplo($run, $ejemplo);
+        if ($articulo === null || $articulo->final_price === null) {
+            return '';
+        }
+        $final = (float) $articulo->final_price;
+        $sin_nada_encima = round((float) $articulo->cost * (1 + $margen / 100), 2);
+        if ($final <= $sin_nada_encima + 0.005) {
+            return self::pesos($final);
+        }
+
+        return self::pesos($final) . (self::con_impuestos_sobre_ventas((int) $run->user_id) ? ' con impuestos' : ' con IVA');
+    }
+
+    /**
+     * El primer ejemplo guardado de las hojas que tienen filas de esa clase.
+     *
+     * @param  array  $hojas
+     * @param  string $cuenta   Clave de la cantidad en la hoja (filas_sin_ganancia, filas_con_margen_agregado…)
+     * @param  string $ejemplo  Clave del ejemplo en la hoja
+     * @return array|null       ['nombre' => ..., 'sku' => ...]
+     */
+    private static function ejemplo_de_las_hojas(array $hojas, string $cuenta, string $ejemplo): ?array
+    {
+        foreach ($hojas as $hoja) {
+            if (!empty($hoja[$cuenta]) && !empty($hoja[$ejemplo]['nombre'])) {
+                return $hoja[$ejemplo];
+            }
+        }
+
+        return null;
+    }
+
+    /** El artículo cargado de un ejemplo: el último actualizado del dueño con ese nombre (y ese SKU si lo había). */
+    private function articulo_del_ejemplo(ImportacionDePrueba $run, ?array $ejemplo): ?Article
+    {
+        if ($ejemplo === null || trim((string) ($ejemplo['nombre'] ?? '')) === '') {
+            return null;
+        }
+
+        return Article::where('user_id', (int) $run->user_id)->where('name', trim((string) $ejemplo['nombre']))
+            ->when(!empty($ejemplo['sku']), function ($consulta) use ($ejemplo) {
+                $consulta->where('sku', trim((string) $ejemplo['sku']));
+            })->orderByDesc('updated_at')->orderByDesc('id')->first(['id', 'cost', 'final_price', 'percentage_gain']);
+    }
+
+    /** ¿El negocio tiene impuestos sobre ventas prendidos (Ingresos Brutos…), que van en el precio final? (B4) */
+    private static function con_impuestos_sobre_ventas(int $owner_id): bool
+    {
+        try {
+            return SaleTax::where('user_id', $owner_id)->where('activo', 1)->exists();
+        } catch (Throwable $error) {
+            return false;
+        }
+    }
+
+    /**
+     * Cómo se encuentran los artículos por el código del dueño (B1, ronda 8). Si todos lo traían: « Cada artículo lo
+     * encontrás por tu código en el Listado y en Vender.» (como hasta hoy). Si alguno no: lo dice, con los nombres si
+     * son pocos (NOMBRES_SIN_CODIGO), porque esos se buscan por nombre.
+     *
+     * @param  array $hojas
+     * @return string
+     */
+    public static function texto_de_la_busqueda_por_codigo(array $hojas): string
+    {
+        $sin_codigo = (int) array_sum(array_column($hojas, 'filas_sin_codigo'));
+        if ($sin_codigo === 0) {
+            return ' Cada artículo lo encontrás por tu código en el Listado y en Vender.';
+        }
+        $nombres = [];
+        foreach ($hojas as $hoja) {
+            foreach ((array) ($hoja['sin_codigo_ejemplos'] ?? []) as $nombre) {
+                $nombres[] = '«' . $nombre . '»';
+            }
+        }
+        $nombres = array_slice($nombres, 0, PlanillaDePrueba::NOMBRES_SIN_CODIGO);
+        if ($nombres === []) {
+            $cuales = '';
+        } elseif (count($nombres) < $sin_codigo) {
+            $cuales = ' (por ejemplo ' . implode(', ', $nombres) . ')';
+        } else {
+            $cuales = ' (' . (count($nombres) > 1 ? implode(', ', array_slice($nombres, 0, -1)) . ' y ' . end($nombres) : $nombres[0]) . ')';
+        }
+
+        return ' Los que traían tu código los encontrás por ese código en el Listado y en Vender; '
+            . ($sin_codigo === 1 ? '1 quedó sin código' . $cuales . ' y se busca por su nombre.'
+                : $sin_codigo . ' quedaron sin código' . $cuales . ' y se buscan por su nombre.');
     }
 
     /** «$ 1.300,00»: el formato de los montos del resumen de artículos (ronda 8, D3). */
