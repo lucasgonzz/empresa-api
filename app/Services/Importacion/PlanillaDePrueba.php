@@ -46,6 +46,8 @@ class PlanillaDePrueba
     // Por qué una fila no se importa: un título de sección o una nota suelta, o el total al pie.
     public const FILA_TITULO = 'titulo';
     public const FILA_TOTAL = 'total';
+    // Un total parcial en el medio de la hoja («Subtotal plomería | | 39»), en una hoja cuyos artículos traen código.
+    public const FILA_SUBTOTAL = 'subtotal';
     // Cuántos textos de filas salteadas se guardan y se muestran, para que el dueño pueda decir «ese sí era un producto».
     public const EJEMPLOS_DE_SALTEADAS = 5;
 
@@ -91,12 +93,19 @@ class PlanillaDePrueba
         'importe' => [
             'campos' => ['costo', 'precio'],
             'tambien' => [],
-            'titulo' => '/(?:^| )(?:precio|precios|costo|costos|importe|importes|valor|pvp|unitario|contado|final)(?: |$)/',
+            'titulo' => '/(?:^| )(?:precio|precios|pcio|costo|costos|cto|importe|importes|valor|pvp|unitario|contado|final|vta)(?: |$)/',
         ],
         'cantidad' => [
             'campos' => ['stock_actual', 'u_individuales'],
             'tambien' => ['stock_minimo'],
             'titulo' => '/(?:^| )(?:stock|cant|cantidad|cantidades|unid|unidades|bulto|bultos|caja|cajas|pack|existencia|existencias|hay|disponible)(?: |$)/',
+        ],
+        // «% UTIL», «Utilidad», «Ganancia %», «Margen», «Recargo» (E8.2): se sugiere el margen. Va última: «Precio con
+        // recargo» es un importe.
+        'margen' => [
+            'campos' => ['margen_de_ganancia'],
+            'tambien' => [],
+            'titulo' => '/(?:^| )(?:util|utilidad|utilidades|ganancia|ganancias|margen|margenes|recargo|recargos|markup|rentabilidad)(?: |$)/',
         ],
     ];
 
@@ -290,6 +299,8 @@ class PlanillaDePrueba
 
             // En la prueba un importe no se adivina: si el título no dice qué es, se le pregunta al dueño.
             if (!$this->run->modo_soporte) {
+                // Las columnas que el sistema no tiene dónde guardar no se preguntan (E8.6).
+                $columnas = $this->sin_destino($columnas, $ruta, $indice, $inicio);
                 $columnas = self::dudar_de_los_importes($columnas);
                 // Una hoja con una sola columna que el analizador no reconoció es una hoja de notas: no se pregunta por ella.
                 if (count($columnas) === 1 && (reset($columnas)['campo'] ?? null) === null) {
@@ -323,8 +334,157 @@ class PlanillaDePrueba
         return $hojas;
     }
 
+    /**
+     * Las columnas que no son un dato del artículo en el sistema (misión prueba-e2e-campana-imperio, E8.6, solo en la
+     * prueba): «Obs.», «Observaciones», «Notas», «Comentarios», «Ubic.», «Ubicación», «Estante», «Valorizado»,
+     * «Importe total», «Subtotal», y «Nº», «#», «Ítem» cuando traen un contador (enteros consecutivos) y OTRA columna
+     * ya es el código (E8.7: sin otra, el contador puede ser el código del dueño y se pregunta). Antes se le
+     * preguntaba al dueño qué eran y la única sugerencia era «ignorar». El importador de artículos no tiene destino
+     * para ninguna (ni observaciones ni ubicación: ver AiExcelAnalyzer::SYSTEM_PROPERTIES), así que se ignoran sin
+     * preguntar (`sin_destino`) y el resumen lo dice (texto_de_columnas_sin_destino()). Solo las que el analizador
+     * dejó sin asignar: si les dio un campo, se respeta.
+     *
+     * @param  array  $columnas
+     * @param  string $ruta
+     * @param  int    $indice
+     * @param  int    $inicio
+     * @return array
+     */
+    private function sin_destino(array $columnas, string $ruta, int $indice, int $inicio): array
+    {
+        // ¿Otra columna ya es el código? (código propio, de barras, de proveedor o número)
+        $hay_otro_codigo = array_filter($columnas, function ($columna) {
+            return in_array($columna['campo'] ?? null, ['numero', 'sku', 'codigo_de_barras', 'codigo_de_proveedor'], true);
+        }) !== [];
+        foreach ($columnas as $posicion => $columna) {
+            if (($columna['campo'] ?? null) !== null) {
+                continue;
+            }
+            $crudo = trim((string) ($columna['titulo'] ?? ''));
+            $titulo = self::titulo_comparable($crudo);
+            $sin_destino = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios|ubic|ubicacion|ubicaciones'
+                . '|estante|estantes|valorizado|valorizacion|importe total|total importe|subtotal|subtotales)$/', $titulo) === 1;
+            if (!$sin_destino && ($crudo === '#' || preg_match('/^(?:n|no|nro|num|numero|item|items|n item)$/', $titulo) === 1)
+                && $this->es_un_contador($ruta, $indice, $inicio, (int) $posicion)) {
+                /*
+                 * E8.7: numerar 1..N es el código propio más común de un negocio chico. El contador se ignora solo si
+                 * otra columna ya es el código; si no, se pregunta como cualquier columna dudosa, sugiriendo su código.
+                 */
+                if ($hay_otro_codigo) {
+                    $sin_destino = true;
+                } else {
+                    $columnas[$posicion]['contador'] = true;
+                }
+            }
+            if ($sin_destino) {
+                $columnas[$posicion]['sin_destino'] = true;
+                $columnas[$posicion]['segura'] = true;
+            }
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * ¿La columna es un contador? Todos sus valores son enteros consecutivos (1, 2, 3…; puede arrancar en cualquiera)
+     * y son al menos tres. Las filas sin valor (un rubro, el total) no cortan la cuenta.
+     */
+    private function es_un_contador(string $ruta, int $indice, int $inicio, int $posicion): bool
+    {
+        $anterior = null;
+        $cuantos = 0;
+        foreach ($this->filas_crudas($ruta, $indice, $inicio) as $fila) {
+            $valor = trim((string) ($fila[$posicion] ?? ''));
+            if ($valor === '') {
+                continue;
+            }
+            if (!ctype_digit($valor) || ($anterior !== null && (int) $valor !== $anterior + 1)) {
+                return false;
+            }
+            $anterior = (int) $valor;
+            $cuantos++;
+        }
+
+        return $cuantos >= 3;
+    }
+
+    /**
+     * La frase del resumen sobre las columnas que no se cargaron porque el sistema no tiene dónde guardarlas (ver
+     * sin_destino()), o '' si no hubo.
+     *
+     * @param  array $hojas
+     * @return string
+     */
+    public static function texto_de_columnas_sin_destino(array $hojas): string
+    {
+        /*
+         * E8.7: «Obs.», «Notas», «Comentarios» sí tendrían dónde ir (la descripción), así que para esas no se dice que
+         * el sistema no tiene dónde guardarlas. Tampoco se le ofrece cargarlas como descripción: con la carga ya
+         * terminada no queda una pregunta abierta por donde contestarlo.
+         */
+        $de_notas = [];
+        $sin_lugar = [];
+        foreach ($hojas as $hoja) {
+            foreach ((array) ($hoja['columnas'] ?? []) as $columna) {
+                if (!empty($columna['sin_destino'])) {
+                    $titulo = '«' . mb_substr(trim((string) ($columna['titulo'] ?? '')), 0, 40) . '»';
+                    $es_nota = preg_match('/^(?:obs|observacion|observaciones|nota|notas|comentario|comentarios)$/',
+                        self::titulo_comparable($columna['titulo'] ?? '')) === 1;
+                    if ($es_nota) {
+                        $de_notas[] = $titulo;
+                    } else {
+                        $sin_lugar[] = $titulo;
+                    }
+                }
+            }
+        }
+        $lista = function (array $titulos) {
+            $titulos = array_values(array_unique($titulos));
+            $ultima = array_pop($titulos);
+
+            return ($titulos === [] ? '' : implode(', ', $titulos) . ' y ') . $ultima;
+        };
+        $texto = '';
+        if ($de_notas !== []) {
+            $texto .= (count(array_unique($de_notas)) === 1 ? ' No cargué la columna ' : ' No cargué las columnas ') . $lista($de_notas) . '.';
+        }
+        if ($sin_lugar !== []) {
+            $texto .= count(array_unique($sin_lugar)) === 1
+                ? ' No cargué la columna ' . $lista($sin_lugar) . ': el sistema no tiene dónde guardarla. Si era otra cosa, decímelo.'
+                : ' No cargué las columnas ' . $lista($sin_lugar) . ': el sistema no tiene dónde guardarlas. Si alguna era otra cosa, decímelo.';
+        }
+
+        return $texto;
+    }
+
     private function descripcion_como_nombre(array $titulos, array $mapeo, array $muestras): ?int
     {
+        /*
+         * Solo en la prueba (misión prueba-e2e-campana-imperio, ronda 6, E8.2): una sola columna con título de «texto
+         * del artículo» (detalle, descripción, artículo, producto, ítem, denominación, concepto, mercadería, nombre; con
+         * o sin acentos, punto final o plural, y «… del artículo»), y ninguna OTRA columna mapeada a nombre: esa es el
+         * nombre y no se le pregunta al dueño. AiExcelAnalyzer le baja la confianza a «DETALLE» (la toma por etiqueta
+         * de descripción) y el dueño recibía «¿Qué es la columna DETALLE?». No se rescata si la IA la mapeó a otro dato
+         * (un código, un precio): ahí el título miente. Con dos candidatas («Artículo» y «Descripción») sigue lo de antes.
+         */
+        if (!$this->run->modo_soporte) {
+            $candidatas = [];
+            foreach (array_intersect_key($titulos, $muestras) as $posicion => $titulo) {
+                if (self::es_titulo_de_texto_del_articulo((string) $titulo)) {
+                    $candidatas[] = $posicion;
+                }
+            }
+            if (count($candidatas) === 1 && in_array($mapeo[$candidatas[0]]['system_property'] ?? null, [null, '', 'nombre', 'descripcion'], true)) {
+                $otra_es_el_nombre = false;
+                foreach ($mapeo as $posicion => $columna) {
+                    $otra_es_el_nombre = $otra_es_el_nombre || ($posicion !== $candidatas[0] && ($columna['system_property'] ?? null) === 'nombre');
+                }
+                if (!$otra_es_el_nombre) {
+                    return $candidatas[0];
+                }
+            }
+        }
+
         $descripciones = [];
         foreach (array_intersect_key($titulos, $muestras) as $posicion => $titulo) {
             $titulo = self::titulo_comparable($titulo);
@@ -345,6 +505,19 @@ class PlanillaDePrueba
         }
 
         return $descripciones[0];
+    }
+
+    /**
+     * ¿El título de la columna dice que trae el texto del artículo? «DETALLE», «Descripción», «Artículos», «Ítem.»,
+     * «Denominación», «Concepto», «Mercadería», «Nombre del producto» (ver descripcion_como_nombre()).
+     *
+     * @param  string $titulo
+     * @return bool
+     */
+    private static function es_titulo_de_texto_del_articulo(string $titulo): bool
+    {
+        return preg_match('/^(?:nombres?|detalles?|descripcion(?:es)?|articulos?|productos?|items?|denominacion(?:es)?|conceptos?|mercaderias?)'
+            . '(?: (?:de |del )?(?:articulo|producto|item)s?)?$/', self::titulo_comparable($titulo)) === 1;
     }
 
     public static function titulo_comparable($titulo): string
@@ -395,7 +568,7 @@ class PlanillaDePrueba
              * la del total no sirven de ejemplo: «--- TORNILLERIA ---» no es un código.
              */
             $con_dato = self::celdas_con_dato($fila);
-            $es_un_total = count($con_dato) === 2 && array_filter($con_dato, function ($valor) { return self::empieza_como_total($valor); }) !== [];
+            $es_un_total = count($con_dato) === 2 && array_filter($con_dato, function ($valor) { return self::es_rotulo_de_total($valor); }) !== [];
             if (count($con_dato) >= 2 && !$es_un_total) {
                 foreach ($con_dato as $posicion => $valor) {
                     $valor = mb_substr($valor, 0, 40);
@@ -600,6 +773,10 @@ class PlanillaDePrueba
      */
     public static function sugeridas_para(array $columna, array $disponibles): array
     {
+        // Un contador 1..N sin otra columna de código: puede ser el código del dueño (E8.7).
+        if (!empty($columna['contador'])) {
+            return isset($disponibles['sku']) ? ['sku'] : [];
+        }
         $campo = $columna['campo'] ?? null;
         $titulo = self::titulo_comparable($columna['titulo'] ?? '');
         $familia = !empty($columna['importe']) ? 'importe' : null;
@@ -693,7 +870,7 @@ class PlanillaDePrueba
      * @param  bool   $varios  Si la hoja tiene más de una columna de importe
      * @return string|null
      */
-    public static function importe_segun_titulo(string $titulo, bool $varios = false): ?string
+    public static function importe_segun_titulo(string $titulo, bool $varios = false, bool $abreviaturas = true): ?string
     {
         $titulo = self::titulo_comparable($titulo);
         if (preg_match('/^(?:costos?|p costo|precio (?:de )?(?:costo|compra))(?: |$)/', $titulo)) {
@@ -701,6 +878,19 @@ class PlanillaDePrueba
         }
         if (preg_match('/^(?:precio (?:de |al )?(?:venta|publico)|pvp|p v p|venta|publico)(?: |$)/', $titulo)) {
             return 'precio';
+        }
+        /*
+         * Las abreviaturas (E8.6, solo en la prueba): «P. Venta», «P.Vta», «Pr. Venta», «Pcio. venta», «P. Público»,
+         * «Vta.»; «Pr. Costo», «Pcio. costo», «P. Cto», «Cto.». «$ Venta» y «$ Costo» ya son «venta» y «costo» (el
+         * signo no cuenta). «P. Lista» NO: la lista de un proveedor suele ser su costo, se sigue preguntando.
+         */
+        if ($abreviaturas) {
+            if (preg_match('/^(?:cto|(?:p|pr|pcio) (?:de )?(?:costo|cto))(?: |$)/', $titulo)) {
+                return 'costo';
+            }
+            if (preg_match('/^(?:vta|(?:p|pr|pcio|precio) (?:de |al )?(?:venta|vta|publico))(?: |$)/', $titulo)) {
+                return 'precio';
+            }
         }
         if (!$varios && preg_match('/^(?:precio )?final(?: |$)/', $titulo)) {
             return 'precio';
@@ -729,6 +919,9 @@ class PlanillaDePrueba
     {
         $importes = [];
         foreach ($columnas as $posicion => $columna) {
+            if (!empty($columna['sin_destino'])) {
+                continue;
+            }
             $campo = $columna['campo'] ?? null;
             $titulo = self::titulo_comparable($columna['titulo'] ?? '');
             if (in_array($campo, ['costo', 'precio'], true)
@@ -737,10 +930,20 @@ class PlanillaDePrueba
             }
         }
 
+        /*
+         * Las abreviaturas valen con UNA sola candidata a venta: con dos («P. Venta» y «P. Contado») se pregunta como
+         * siempre, en una sola pregunta (E8.6).
+         */
+        $candidatas_a_venta = 0;
+        foreach ($importes as $posicion) {
+            $candidatas_a_venta += self::importe_segun_titulo((string) ($columnas[$posicion]['titulo'] ?? ''), count($importes) > 1) !== 'costo' ? 1 : 0;
+        }
+        $abreviaturas = $candidatas_a_venta <= 1;
+
         $sin_tipo = [];
         foreach ($importes as $posicion) {
             $columnas[$posicion]['importe'] = true;
-            $segun_titulo = self::importe_segun_titulo((string) ($columnas[$posicion]['titulo'] ?? ''), count($importes) > 1);
+            $segun_titulo = self::importe_segun_titulo((string) ($columnas[$posicion]['titulo'] ?? ''), count($importes) > 1, $abreviaturas);
             if ($segun_titulo === null || $segun_titulo !== ($columnas[$posicion]['campo'] ?? null)) {
                 $columnas[$posicion]['segura'] = false;
             }
@@ -1310,6 +1513,33 @@ class PlanillaDePrueba
         }
     }
 
+    /**
+     * Como filas_crudas(), pero también devuelve las filas que EncabezadosRepetidos descarta, marcadas: número de
+     * fila => [celdas, es_encabezado_repetido]. En la prueba esas filas se cuentan entre las salteadas (E8.6:
+     * ninguna fila que queda afuera desaparece en silencio).
+     */
+    private function filas_crudas_marcadas(string $ruta, int $indice, int $inicio): \Generator
+    {
+        $csv = fopen(CsvDeHoja::ruta_csv($ruta, $indice), 'rb');
+        if ($csv === false) {
+            throw new RuntimeException('No se pudo abrir la hoja del Excel.');
+        }
+        $regla_de_encabezados = EncabezadosRepetidos::leer($ruta, $indice);
+        try {
+            if (fread($csv, 3) !== CsvDeHoja::BOM_UTF8) {
+                rewind($csv);
+            }
+            $numero = 0;
+            while (($fila = fgetcsv($csv, 0, ',', '"', '')) !== false) {
+                if (++$numero >= $inicio) {
+                    yield $numero => [$fila, EncabezadosRepetidos::es_encabezado($fila, $numero, $regla_de_encabezados)];
+                }
+            }
+        } finally {
+            fclose($csv);
+        }
+    }
+
     public function filas(array $hojas): \Generator
     {
         $ruta = $this->ruta();
@@ -1321,21 +1551,33 @@ class PlanillaDePrueba
         $descarta = !$this->run->modo_soporte;
         foreach ($hojas as $hoja) {
             ExcelWorkbookReader::asegurar_csv($ruta, $hoja['indice']);
-            // La única fila que puede ser el total: la última con datos, sin contar las notas sueltas del pie.
-            $cierre = $descarta ? $this->fila_de_cierre($ruta, $hoja) : null;
-            $despues_del_total = false;
-            foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
+            // Si los artículos traen código, dónde empieza el pie: una pasada sobre la hoja entera (ver resumir_la_hoja()).
+            $resumen = $descarta ? self::resumir_la_hoja($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']), $hoja['mapeo']) : [];
+            // Los títulos de la cabecera, por posición: una fila que los repite no es un artículo.
+            $titulos = $descarta ? self::titulos_de_la_cabecera($hoja) : [];
+            $recorrido = $descarta ? $this->filas_crudas_marcadas($ruta, $hoja['indice'], $hoja['inicio'])
+                : $this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']);
+            foreach ($recorrido as $numero => $fila) {
+                if ($descarta) {
+                    [$fila, $es_encabezado] = $fila;
+                    // La cabecera repetida que reconoce EncabezadosRepetidos también se cuenta (E8.6), sin nombrarla:
+                    // «“COD”» no le dice nada al dueño.
+                    if ($es_encabezado) {
+                        $this->anotar_salteada((int) $hoja['indice'], self::FILA_TITULO, $fila, $hoja['mapeo'], false);
+                        continue;
+                    }
+                }
+                // Toda fila que queda afuera se nombra (E8.6); en soporte, la fila sin datos mapeados se saltea como siempre.
+                $motivo = $descarta ? self::motivo_de_la_fila($fila, $hoja['mapeo'], $resumen, (int) $numero, $titulos) : null;
+                if ($motivo === null && self::sin_datos_mapeados($fila, $hoja['mapeo'])) {
+                    continue;
+                }
                 $datos = [];
                 foreach ($hoja['mapeo'] as $campo => $posicion) {
                     $datos[$campo] = ImportHelper::getColumnValue($fila, $campo, $hoja['mapeo'], $campo === 'nombre');
                 }
-                if (array_filter($datos, function ($valor) { return $valor !== null && $valor !== ''; }) === []) {
-                    continue;
-                }
-                // Un título de rubro o el total al pie no son artículos: no llegan ni a los repetidos ni al motor.
-                $motivo = $descarta ? self::motivo_para_saltear($fila, $hoja['mapeo'], $numero === $cierre, $despues_del_total) : null;
+                // Un título de rubro, un subtotal o el pie no son artículos: no llegan ni a los repetidos ni al motor.
                 if ($motivo !== null) {
-                    $despues_del_total = $despues_del_total || $motivo === self::FILA_TOTAL;
                     $this->anotar_salteada((int) $hoja['indice'], $motivo, $fila, $hoja['mapeo']);
                     continue;
                 }
@@ -1619,6 +1861,10 @@ class PlanillaDePrueba
      * ¿El texto empieza como el nombre de una fila de total? («TOTAL LISTA», «Total general», «Subtotal»,
      * «Sub total», «Suma de importes»), sin acentos ni mayúsculas. «Stock total» no empieza así.
      *
+     * La palabra tiene que estar COMPLETA al principio: «Totales:», «SUBTOTAL - Plomería» y «Sub-total» sí;
+     * «Totalgaz garrafa» o «Sumatoria» no (después de la palabra viene un espacio o nada, los signos cuentan
+     * como espacio). Lo usa también ClientImport para la fila de total de una lista de clientes (E8.1).
+     *
      * @param  string $texto
      * @return bool
      */
@@ -1631,61 +1877,337 @@ class PlanillaDePrueba
     }
 
     /**
+     * ¿El rótulo es el pie que CUENTA las filas (misión prueba-e2e-campana-imperio, ronda 6, E8.2)? «Total
+     * artículos: 21», «Total: 21 artículos», «Total de la hoja 1», «TOTAL 21», «Cantidad de artículos: 21»,
+     * «Son 21 artículos». Empieza con la palabra completa total/totales/subtotal o con «cantidad de», o es «son»
+     * seguido de un número; trae algún número, y TODOS sus números son números sueltos (sin letras pegadas);
+     * seis palabras como mucho y ninguna de razón social (sa, srl, sas, sh, hnos).
+     *
+     * Por qué así: «Total Quartz 5W40», «Total 10W40 aceite» o «500g» traen el número pegado a letras, que es
+     * como se escribe un producto, y no entran; «Suma dental x 12» no empieza con una palabra de conteo; «Total
+     * 2000 SA» es una razón social. Igual, quien llama exige además que la fila no tenga código ni precio.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    public static function cuenta_en_el_rotulo(string $texto): bool
+    {
+        $comparable = self::titulo_comparable($texto);
+        // «TOTAL-2024» (sin espacios) es un código, no un rótulo.
+        if (preg_match('/\d/', $comparable) !== 1 || preg_match('/\s/u', trim($texto)) !== 1) {
+            return false;
+        }
+        $palabras = explode(' ', $comparable);
+        if (count($palabras) > 6) {
+            return false;
+        }
+        foreach ($palabras as $palabra) {
+            if ((preg_match('/\d/', $palabra) === 1 && !ctype_digit($palabra)) || in_array($palabra, ['sa', 'srl', 'sas', 'sh', 'hnos'], true)) {
+                return false;
+            }
+        }
+
+        return preg_match('/^(?:(?:sub ?)?total(?:es)?|cantidad de) /', $comparable) === 1
+            || preg_match('/^son \d+(?: |$)/', $comparable) === 1;
+    }
+
+    /**
+     * ¿El rótulo es de una fila de total? empieza_como_total() o cuenta_en_el_rotulo().
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    public static function es_rotulo_de_total(string $texto): bool
+    {
+        return self::empieza_como_total($texto) || self::cuenta_en_el_rotulo($texto);
+    }
+
+    /**
      * ¿El texto es un título decorado? Abre y cierra con el mismo signo repetido («--- X ---», «*** X ***»,
      * «=== X ===», «## X ##») y adentro no trae números: «-- Martillo 500g --» es un artículo.
      *
      * @param  string $texto
      * @return bool
      */
-    private static function es_titulo_decorado(string $texto): bool
+    public static function es_titulo_decorado(string $texto): bool
     {
         return preg_match('/^([-=*#_~•·])\1+\s*(.*?)\s*\1{2,}$/u', $texto, $partes) === 1
             && preg_match('/\pL/u', $partes[2]) === 1 && preg_match('/\d/', $partes[2]) !== 1;
     }
 
     /**
-     * El número de la última fila con datos de la hoja, sin contar las notas sueltas del pie (una fila con
-     * un único texto, como «Consulte por descuentos por cantidad.»). Es la única fila que puede ser el total:
-     * un «Total» en el medio de la planilla es un artículo.
+     * Lo que hay que saber de la hoja ENTERA antes de juzgar fila por fila (misión prueba-e2e-campana-imperio, E8,
+     * E8.1 y E8.3). Una sola pasada sobre las filas crudas, sin guardarlas:
      *
-     * @param  string $ruta
-     * @param  array  $hoja
-     * @return int|null
+     *  - `con_codigos` (E8.5): ¿los artículos de la hoja traen código? Sobre la hoja entera:
+     *      · D = filas CON DATOS: el nombre y al menos otro dato mapeado (código, precio, costo, stock, marca,
+     *        categoría, proveedor…), sin rótulo de total;
+     *      · C = las de D que traen código;
+     *      · S = filas SUELTAS: una sola celda (solo el nombre, o solo un valor en la columna del código: un texto,
+     *        una fecha, un número, una firma), sin rótulo de total (es_fila_suelta());
+     *      · con_codigos = C ≥ 10 y 4·C ≥ 3·D y 2·S ≤ D.
+     *    Ni las sueltas ni los totales están en el denominador: son justo las filas que se juzgan (E8.1, E8.2 y
+     *    E8.4 fallaron por contarlas). La tercera condición: si las sueltas son más de la mitad de las filas con
+     *    datos («10 con código + 200 nombres pelados») no son títulos, son artículos, y la hoja no es «con
+     *    códigos». Una hoja a medio codificar tampoco (E8.4: «10 con código + 200 con stock» perdía los 200).
+     *  - `ultima_con_codigo`: la última fila de C (nombre + código).
+     *  - `pie_por_total`: dónde empieza el pie que abre un total. Al final de la hoja hay una tanda de filas que
+     *    son notas (un solo texto) o totales (es_fila_de_total_al_pie()); el pie empieza en el PRIMER total de esa
+     *    tanda. Las notas que estén antes de ese total (sin total arriba) no son pie.
+     *  - `ultimo_total`: la última fila cuyo rótulo es de total (un «Subtotal X» del pie antes de ella es subtotal).
+     *
+     * Reemplaza a fila_de_cierre() (la «última fila con datos», que con un pie que cuenta seguido de una nota
+     * quedaba mal ubicada: E8.3) y a hoja_con_codigos().
+     *
+     * @param  iterable $filas  número de fila => celdas crudas
+     * @param  array    $mapeo
+     * @return array{con_codigos: bool, ultima_con_codigo: int|null, pie_por_total: int|null, ultimo_total: int|null}
      */
-    private function fila_de_cierre(string $ruta, array $hoja): ?int
+    public static function resumir_la_hoja(iterable $filas, array $mapeo): array
     {
-        $cierre = null;
-        foreach ($this->filas_crudas($ruta, $hoja['indice'], $hoja['inicio']) as $numero => $fila) {
+        $de_codigo = self::columnas_de_codigo($mapeo);
+        $de_importe = self::columnas_de_importe($mapeo);
+        $del_nombre = isset($mapeo['nombre']) ? (int) $mapeo['nombre'] : null;
+
+        // Las columnas mapeadas que no son el nombre: código, precio, costo, stock, marca, categoría, proveedor…
+        $otras_mapeadas = [];
+        foreach ($mapeo as $campo => $posicion) {
+            if ($campo !== 'nombre') {
+                $otras_mapeadas[(int) $posicion] = true;
+            }
+        }
+        $con_datos = 0;   // D
+        $con_codigo = 0;  // C
+        $sueltas = 0;     // S
+        $ultima_con_codigo = null;
+        $primer_total_de_la_tanda = null;
+        $ultimo_total = null;
+        foreach ($filas as $numero => $fila) {
             $con_dato = self::celdas_con_dato($fila);
             if ($con_dato === []) {
                 continue;
             }
-            $valor = (string) reset($con_dato);
-            $es_nota = count($con_dato) === 1 && self::importe($valor) === null
-                && preg_match('/\pL/u', $valor) === 1 && !self::empieza_como_total($valor);
-            if (!$es_nota) {
-                $cierre = (int) $numero;
+            $rotulo = self::posicion_del_rotulo($con_dato, $del_nombre, $de_codigo);
+            $es_total = $rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo]);
+            if ($es_total) {
+                $ultimo_total = (int) $numero;
+            } elseif ($del_nombre !== null && isset($con_dato[$del_nombre]) && array_intersect_key($con_dato, $otras_mapeadas) !== []) {
+                $con_datos++;
+                // C ⊂ D (E8.6): una fila «con código» trae el nombre y el código; un valor solo en la columna del
+                // código (una fecha, un número, una firma) es una fila suelta, nunca un código.
+                if (array_intersect_key($con_dato, $de_codigo) !== []) {
+                    $con_codigo++;
+                    $ultima_con_codigo = (int) $numero;
+                }
+            } elseif (self::es_fila_suelta($con_dato, $del_nombre, $de_codigo)) {
+                $sueltas++;
+            }
+
+            // La tanda del pie: notas y totales seguidos, hasta el final. Cualquier otra fila la corta.
+            if (self::es_fila_de_total_al_pie($con_dato, $del_nombre, $de_codigo, $de_importe)) {
+                $primer_total_de_la_tanda = $primer_total_de_la_tanda ?? (int) $numero;
+            } elseif (!self::es_nota_suelta($con_dato)) {
+                $primer_total_de_la_tanda = null;
             }
         }
 
-        return $cierre;
+        return [
+            'con_codigos' => $de_codigo !== [] && $del_nombre !== null && $con_codigo >= 10
+                && $con_codigo * 4 >= $con_datos * 3 && $sueltas * 2 <= $con_datos,
+            'ultima_con_codigo' => $ultima_con_codigo,
+            'pie_por_total' => $primer_total_de_la_tanda,
+            'ultimo_total' => $ultimo_total,
+            // Lo armó resumir_la_hoja() sobre la hoja entera (no un test de una fila suelta: ver motivo_para_saltear()).
+            'hoja_entera' => true,
+        ];
+    }
+
+    /**
+     * Los motivos de las filas que no son artículos de una hoja ya en memoria: número de fila => motivo. Es lo mismo
+     * que hace filas() (resumir_la_hoja() + motivo_de_la_fila(); desde E8.6 tampoco las filas sin datos mapeados se
+     * saltean en silencio: tienen su motivo), para
+     * poder medir la regla sin escribir un Excel (ImportacionDePruebaFilasQueNoSonDatosGenerativoTest).
+     *
+     * @param  array $filas    número de fila => celdas crudas (desde la primera fila de datos)
+     * @param  array $mapeo
+     * @param  array $titulos  Posición => título de la cabecera ya comparable
+     * @return array<int, string>
+     */
+    public static function motivos_de_la_hoja(array $filas, array $mapeo, array $titulos = []): array
+    {
+        $resumen = self::resumir_la_hoja($filas, $mapeo);
+        $motivos = [];
+        foreach ($filas as $numero => $fila) {
+            $motivo = self::motivo_de_la_fila($fila, $mapeo, $resumen, (int) $numero, $titulos);
+            if ($motivo !== null) {
+                $motivos[(int) $numero] = $motivo;
+            }
+        }
+
+        return $motivos;
+    }
+
+    /**
+     * ¿La fila no trae nada en ninguna columna mapeada? filas() la saltea sin contarla.
+     *
+     * @param  array $fila
+     * @param  array $mapeo
+     * @return bool
+     */
+    private static function sin_datos_mapeados(array $fila, array $mapeo): bool
+    {
+        foreach ($mapeo as $campo => $posicion) {
+            $valor = ImportHelper::getColumnValue($fila, $campo, $mapeo, $campo === 'nombre');
+            if ($valor !== null && $valor !== '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * ¿La fila es una nota suelta? Una sola celda en todo su ancho que no es un rótulo de total («Consulte por
+     * descuentos por cantidad.», «Stock valorizado al costo: $ 1.234.567», «14/11/2026», una suma sin rótulo): no
+     * corta la tanda del pie.
+     *
+     * @param  array $con_dato
+     * @return bool
+     */
+    private static function es_nota_suelta(array $con_dato): bool
+    {
+        if (count($con_dato) !== 1) {
+            return false;
+        }
+        // Cualquier celda sola que no sea un rótulo de total: un texto, un número, un importe, una fecha (E8.6).
+        return !self::es_rotulo_de_total((string) reset($con_dato));
+    }
+
+    /**
+     * ¿Es una fila de total del pie? El rótulo de total (es_rotulo_de_total()) en la columna del nombre o, con el
+     * nombre vacío, en una de código, y al lado: nada; o un solo número fuera de las columnas de código («TOTAL
+     * LISTA | 12.345» en la del precio, como vino la lista del ensayo); o solo números fuera de las columnas de
+     * código, precio y costo («TOTAL UNIDADES | 299 | 338», ver es_total_de_columnas()).
+     *
+     * @param  array    $con_dato
+     * @param  int|null $columna_del_nombre
+     * @param  array    $columnas_de_codigo
+     * @param  array    $columnas_de_importe
+     * @return bool
+     */
+    private static function es_fila_de_total_al_pie(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo, array $columnas_de_importe): bool
+    {
+        if (self::es_total_de_columnas($con_dato, $columna_del_nombre, $columnas_de_codigo, $columnas_de_importe)) {
+            return true;
+        }
+        if (count($con_dato) > 2) {
+            return false;
+        }
+        $rotulo = self::posicion_del_rotulo($con_dato, $columna_del_nombre, $columnas_de_codigo);
+        if ($rotulo === null || !self::es_rotulo_de_total($con_dato[$rotulo])) {
+            return false;
+        }
+        $resto = array_diff_key($con_dato, [$rotulo => true]);
+        if ($resto === []) {
+            return true;
+        }
+        $otra = (int) array_key_first($resto);
+
+        return !isset($columnas_de_codigo[$otra]) && self::importe($resto[$otra]) !== null;
+    }
+
+    /**
+     * Dónde está el rótulo de la fila: la columna del nombre si trae dato o, si no, la primera de código con dato.
+     *
+     * @param  array    $con_dato
+     * @param  int|null $columna_del_nombre
+     * @param  array    $columnas_de_codigo
+     * @return int|null
+     */
+    private static function posicion_del_rotulo(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo): ?int
+    {
+        if ($columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])) {
+            return $columna_del_nombre;
+        }
+        foreach (array_keys($columnas_de_codigo) as $de_codigo) {
+            if (isset($con_dato[$de_codigo])) {
+                return $de_codigo;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Las posiciones de las columnas de código del mapeo (número, código de barras, SKU, código de proveedor).
+     *
+     * @param  array $mapeo
+     * @return array<int, true>
+     */
+    private static function columnas_de_codigo(array $mapeo): array
+    {
+        $columnas = [];
+        foreach (['numero', 'codigo_de_barras', 'sku', 'codigo_de_proveedor'] as $campo) {
+            if (isset($mapeo[$campo])) {
+                $columnas[(int) $mapeo[$campo]] = true;
+            }
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * Las posiciones de las columnas de importe del artículo: precio de venta, costo y el precio final de una
+     * lista de precios.
+     *
+     * @param  array $mapeo
+     * @return array<int, true>
+     */
+    private static function columnas_de_importe(array $mapeo): array
+    {
+        $columnas = [];
+        foreach ($mapeo as $campo => $posicion) {
+            if (in_array($campo, ['precio', 'costo'], true) || strpos((string) $campo, '$_final_') === 0) {
+                $columnas[(int) $posicion] = true;
+            }
+        }
+
+        return $columnas;
+    }
+
+    /**
+     * ¿El texto puede ser el nombre de un rubro? Solo letras y espacios (y como mucho «&», «/», «,», «.», «-»
+     * entre ellas), sin números y de hasta cuatro palabras: «HERRAMIENTAS», «Herramientas manuales». Con
+     * números o signos («Martillo 500g», «**Martillo») es un artículo.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    private static function parece_un_rubro(string $texto): bool
+    {
+        return preg_match('/^\pL[\pL\s&\/,.\-]*$/u', $texto) === 1
+            && count(preg_split('/\s+/u', trim($texto))) <= 4;
     }
 
     /**
      * Cuenta una fila salteada y guarda su texto (los primeros EJEMPLOS_DE_SALTEADAS de cada motivo).
      *
      * @param  int    $indice  Índice de la hoja
-     * @param  string $motivo  self::FILA_TITULO o self::FILA_TOTAL
+     * @param  string $motivo  self::FILA_TITULO, self::FILA_TOTAL o self::FILA_SUBTOTAL
      * @param  array  $fila
      * @param  array  $mapeo
+     * @param  bool   $con_texto  Si se guarda su texto entre los ejemplos (la cabecera repetida solo se cuenta)
      * @return void
      */
-    private function anotar_salteada(int $indice, string $motivo, array $fila, array $mapeo): void
+    private function anotar_salteada(int $indice, string $motivo, array $fila, array $mapeo, bool $con_texto = true): void
     {
         $this->salteadas[$indice][$motivo] = ($this->salteadas[$indice][$motivo] ?? 0) + 1;
+        if (!$con_texto) {
+            return;
+        }
 
         $con_dato = self::celdas_con_dato($fila);
-        $texto = $motivo === self::FILA_TOTAL && isset($mapeo['nombre'], $con_dato[(int) $mapeo['nombre']])
+        $texto = in_array($motivo, [self::FILA_TOTAL, self::FILA_SUBTOTAL], true) && isset($mapeo['nombre'], $con_dato[(int) $mapeo['nombre']])
             ? $con_dato[(int) $mapeo['nombre']] : (string) reset($con_dato);
         // Sin el punto final: la frase del resumen ya cierra con el suyo.
         $texto = rtrim($texto, '. ');
@@ -1704,66 +2226,130 @@ class PlanillaDePrueba
      * solo descarta la fila que no tiene código NI nombre.
      *
      * 🔴 La regla es conservadora a propósito: descartar de más es perder un artículo sin que nadie lo vea.
-     * Ante la duda la fila se importa, como siempre.
+     * Ante la duda la fila se importa, como siempre. Lo descartado sale nombrado en el resumen al dueño.
      *
-     *  - FILA_TOTAL: solo la fila de cierre de la hoja (`$es_el_cierre`: la última con datos, sin contar las
-     *    notas sueltas de abajo), sin código, con un nombre que EMPIEZA con total, subtotal o suma, y con un
-     *    importe como único otro dato (o ninguno). «Total» o «Suma» en el medio de la planilla, «Stock total»
-     *    y un total con dos datos al lado son artículos.
-     *  - FILA_TITULO: la fila tiene UN solo valor en todo su ancho, es texto, y además:
-     *      · está decorado de apertura y de cierre con el mismo signo y sin números adentro («--- X ---»,
-     *        «*** X ***», «=== X ===», «## X ##»); o
-     *      · está en una columna de código, la hoja tiene columna de nombre, y no parece un código (un código
-     *        no tiene espacios y trae algún dígito): es un rubro suelto, como «--- TORNILLERIA ---».
-     *    Un nombre suelto en la columna del NOMBRE («Martillo», «**Martillo carpintero», «-- Martillo 500g --»)
-     *    no se descarta: es un artículo sin precio.
+     * Una fila es «no dato» por lo que ES (E8 a E8.3). «Es un total» lo decide UNA sola función,
+     * es_rotulo_de_total(): empieza con la palabra completa total/totales/subtotal/suma(s) («TOTAL GENERAL»,
+     * «Sub-total plomería:») o es el pie que cuenta («Total artículos: 21», «Son 21 artículos»).
      *
-     * @param  array $fila          Celdas crudas de la fila, por posición
-     * @param  array $mapeo         Campo del importador => posición de su columna
-     * @param  bool  $es_el_cierre  Si es la última fila con datos de la hoja (ver fila_de_cierre())
-     * @return string|null          self::FILA_TITULO, self::FILA_TOTAL o null
+     *  - EL PIE (FILA_TOTAL si su rótulo es de total; FILA_TITULO si es una nota, una firma, una fecha):
+     *      · en cualquier hoja, desde el primer total de la tanda final de notas y totales (ver
+     *        resumir_la_hoja(), `pie_por_total`);
+     *      · en una hoja cuyos artículos traen código (`con_codigos`, contado sobre la hoja entera), además,
+     *        DEBAJO de la última fila con código: una sola celda de texto (solo el nombre, o solo un texto en la
+     *        columna del código: «Actualizó: Mirta 12/11» después de «Total artículos: 20») o un rótulo de total.
+     *        Una fila con el nombre y algún otro dato (stock, marca, precio) es un ARTÍCULO y entra (E8.4). Un
+     *        nombre suelto ahí abajo se deja afuera, como ya hacía parece_un_rubro() en el medio: en una hoja con
+     *        códigos un nombre sin ningún otro dato no se distingue de un rubro o una nota (queda nombrado).
+     *  - En el medio de la hoja:
+     *      · FILA_TITULO: la cabecera repetida entera (repite_la_cabecera()).
+     *      · FILA_SUBTOTAL (o FILA_TOTAL si cuenta): solo en una hoja con códigos, rótulo de total en la columna
+     *        del nombre (o, sin nombre, en la del código), sin código, sin precio ni costo y al lado solo números
+     *        o nada («Subtotal plomeria | | 39»). En una hoja SIN códigos un «Total X» del medio no se toca: ahí
+     *        la falta de código no dice nada.
+     *      · FILA_TITULO con UN solo valor de texto en toda la fila: decorado («--- X ---», «*** X ***»), con
+     *        rótulo de título («Rubro: X», «Pinturería:», es_titulo_con_rotulo()), en una columna de código sin
+     *        parecer un código, o, en una hoja con códigos, en la del nombre y con forma de rubro (solo letras,
+     *        hasta cuatro palabras: «HERRAMIENTAS»). Un nombre suelto en una hoja sin códigos es un artículo.
+     *  «Totalgaz garrafa», «Total Quartz 5W40», «Suma dental x 12» y «Total Flex» con precio o con código son
+     *  artículos.
+     *
+     * @param  array $fila              Celdas crudas de la fila, por posición
+     * @param  array $mapeo             Campo del importador => posición de su columna
+     * Esta firma juzga UNA fila suelta, con lo que de la hoja diga quien llama (la usan los tests de forma); la
+     * carga usa motivo_de_la_fila() con el resumen de la hoja entera (resumir_la_hoja()).
+     *
+     * @param  bool  $es_el_cierre      Si la fila es el total del pie (la que abre la tanda final de notas y totales)
+     * @param  bool  $despues_del_total Si la fila está debajo de ese total (una nota)
+     * @param  bool  $hoja_con_codigos  Si los artículos de la hoja traen código
+     * @param  array $titulos           Posición => título de la cabecera ya comparable (ver titulos_de_la_cabecera())
+     * @return string|null              self::FILA_TITULO, self::FILA_TOTAL, self::FILA_SUBTOTAL o null
      */
-    public static function motivo_para_saltear(array $fila, array $mapeo, bool $es_el_cierre = false, bool $despues_del_total = false): ?string
+    public static function motivo_para_saltear(array $fila, array $mapeo, bool $es_el_cierre = false, bool $despues_del_total = false, bool $hoja_con_codigos = false, array $titulos = []): ?string
     {
         $con_dato = self::celdas_con_dato($fila);
-        if ($con_dato === [] || count($con_dato) > 2) {
+        // Debajo del total, un texto suelto es una nota al pie, esté en la columna que esté.
+        if ($despues_del_total && count($con_dato) === 1 && self::importe((string) reset($con_dato)) === null
+            && preg_match('/\pL/u', (string) reset($con_dato)) === 1) {
+            return self::FILA_TITULO;
+        }
+        $resumen = ['con_codigos' => $hoja_con_codigos, 'ultima_con_codigo' => null, 'pie_por_total' => null, 'ultimo_total' => null];
+        $columna_del_nombre = isset($mapeo['nombre']) ? (int) $mapeo['nombre'] : null;
+        if ($es_el_cierre && self::es_fila_de_total_al_pie($con_dato, $columna_del_nombre, self::columnas_de_codigo($mapeo), self::columnas_de_importe($mapeo))) {
+            $resumen['pie_por_total'] = 1;
+        }
+
+        return self::motivo_de_la_fila($fila, $mapeo, $resumen, 1, $titulos);
+    }
+
+    /**
+     * La regla de verdad (ver motivo_para_saltear()), con el resumen de la hoja entera (resumir_la_hoja()). La usan
+     * filas() y motivos_de_la_hoja().
+     *
+     * @param  array $fila
+     * @param  array $mapeo
+     * @param  array $resumen
+     * @param  int   $numero
+     * @param  array $titulos
+     * @return string|null
+     */
+    private static function motivo_de_la_fila(array $fila, array $mapeo, array $resumen, int $numero, array $titulos): ?string
+    {
+        $con_dato = self::celdas_con_dato($fila);
+        if ($con_dato === []) {
             return null;
         }
 
         $columna_del_nombre = isset($mapeo['nombre']) ? (int) $mapeo['nombre'] : null;
-        $columnas_de_codigo = [];
-        foreach (['numero', 'codigo_de_barras', 'sku', 'codigo_de_proveedor'] as $campo) {
-            if (isset($mapeo[$campo])) {
-                $columnas_de_codigo[(int) $mapeo[$campo]] = true;
+        $columnas_de_codigo = self::columnas_de_codigo($mapeo);
+        $columnas_de_importe = self::columnas_de_importe($mapeo);
+        $hoja_con_codigos = !empty($resumen['con_codigos']);
+
+        // EL PIE (E8.3, E8.4). Lo que viene desde el total del pie (notas, firmas, fechas) y, en una hoja con códigos,
+        // debajo de la última fila con código: una celda sola de texto o un rótulo de total. Una fila con el nombre y
+        // algún otro dato (stock, marca, precio) es un artículo, esté donde esté.
+        $en_el_pie = (isset($resumen['pie_por_total']) && $numero >= (int) $resumen['pie_por_total'])
+            || ($hoja_con_codigos && $numero > (int) ($resumen['ultima_con_codigo'] ?? PHP_INT_MAX)
+                && (self::es_fila_suelta($con_dato, $columna_del_nombre, $columnas_de_codigo)
+                    || self::es_fila_de_total($con_dato, $columna_del_nombre, $columnas_de_codigo, $columnas_de_importe) !== null));
+        if ($en_el_pie) {
+            $rotulo = self::posicion_del_rotulo($con_dato, $columna_del_nombre, $columnas_de_codigo);
+            $texto = $rotulo !== null ? $con_dato[$rotulo] : (string) reset($con_dato);
+
+            if (!self::es_rotulo_de_total($texto)) {
+                return self::FILA_TITULO;
             }
+            // El subtotal del último rubro también cae debajo del último código: si hay un total más abajo, sigue
+            // siendo un subtotal; el último rótulo de total de la hoja es EL total.
+            $es_sub = preg_match('/^sub ?total/', self::titulo_comparable($texto)) === 1;
+
+            return $es_sub && $numero < (int) ($resumen['ultimo_total'] ?? 0) ? self::FILA_SUBTOTAL : self::FILA_TOTAL;
         }
 
-        if ($es_el_cierre) {
-            /*
-             * El rótulo del total puede estar en la columna del nombre o, con el nombre vacío, en la del
-             * código («TOTAL LISTA» en la primera columna: así vino la lista del ensayo). Un rótulo no trae
-             * números, así que no se confunde con un código.
-             */
-            $rotulo = null;
-            if ($columna_del_nombre !== null && isset($con_dato[$columna_del_nombre])) {
-                $rotulo = $columna_del_nombre;
-            } else {
-                foreach (array_keys($columnas_de_codigo) as $de_codigo) {
-                    if (isset($con_dato[$de_codigo])) {
-                        $rotulo = $de_codigo;
-                        break;
-                    }
-                }
+        // La cabecera repetida entera («Art | Descripcion | Stock» otra vez, a mitad de la hoja).
+        if (self::repite_la_cabecera($con_dato, $titulos)) {
+            return self::FILA_TITULO;
+        }
+        // Un subtotal o total en el medio de una hoja cuyos artículos traen código (E8.1). El que cuenta en su
+        // rótulo («Total artículos: 21») es un total (E8.2).
+        $rotulo = $hoja_con_codigos ? self::es_fila_de_total($con_dato, $columna_del_nombre, $columnas_de_codigo, $columnas_de_importe) : null;
+        if ($rotulo !== null) {
+            return self::cuenta_en_el_rotulo($rotulo) ? self::FILA_TOTAL : self::FILA_SUBTOTAL;
+        }
+        // En una hoja con códigos TODA fila suelta queda afuera, traiga lo que traiga (E8.6): un artículo ahí trae al
+        // menos otro dato además del nombre.
+        if ($hoja_con_codigos && self::es_fila_suelta($con_dato, $columna_del_nombre, $columnas_de_codigo)) {
+            return self::FILA_TITULO;
+        }
+        if (!empty($resumen['hoja_entera'])) {
+            // Una fila sin ningún dato en las columnas mapeadas (solo una suma en una columna sin mapear) no es nada:
+            // se cuenta (E8.6).
+            if (self::sin_datos_mapeados($fila, $mapeo)) {
+                return self::FILA_TITULO;
             }
-            if ($rotulo !== null && self::empieza_como_total($con_dato[$rotulo])) {
-                $resto = array_diff_key($con_dato, [$rotulo => true]);
-                if ($resto === []) {
-                    return self::FILA_TOTAL;
-                }
-                $otra = (int) array_key_first($resto);
-                if (!isset($columnas_de_codigo[$otra]) && self::importe($resto[$otra]) !== null) {
-                    return self::FILA_TOTAL;
-                }
+            // Sin nombre y sin un código de verdad (una fecha, un importe sueltos) no es un artículo (E8.6).
+            if ($columna_del_nombre !== null && !isset($con_dato[$columna_del_nombre]) && !self::trae_un_codigo($con_dato, $columnas_de_codigo)) {
+                return self::FILA_TITULO;
             }
         }
 
@@ -1775,19 +2361,182 @@ class PlanillaDePrueba
         if (self::importe($valor) !== null || !preg_match('/\pL/u', $valor)) {
             return null;
         }
-        // Debajo del total, un texto suelto es una nota al pie, esté en la columna que esté.
-        if ($despues_del_total) {
-            return self::FILA_TITULO;
-        }
-        if (self::es_titulo_decorado($valor)) {
+        if (self::es_titulo_decorado($valor) || self::es_titulo_con_rotulo($valor)) {
             return self::FILA_TITULO;
         }
         $parece_un_codigo = !preg_match('/\s/u', $valor) && preg_match('/\d/', $valor);
         if (isset($columnas_de_codigo[$posicion]) && $columna_del_nombre !== null && !$parece_un_codigo) {
             return self::FILA_TITULO;
         }
+        // Un nombre suelto en la columna del nombre, en una hoja cuyos artículos traen código: el rubro sin decorar.
+        if ($hoja_con_codigos && $posicion === $columna_del_nombre && self::parece_un_rubro($valor)) {
+            return self::FILA_TITULO;
+        }
 
         return null;
+    }
+
+    /**
+     * ¿La fila es SUELTA? Una sola celda en todo su ancho, en la columna del nombre o en una de código, sin rótulo de
+     * total: solo el nombre, o solo un valor en la columna del código (un texto, una fecha, un número, una firma).
+     * Ver resumir_la_hoja() (S) y motivo_de_la_fila().
+     *
+     * @param  array    $con_dato
+     * @param  int|null $columna_del_nombre
+     * @param  array    $columnas_de_codigo
+     * @return bool
+     */
+    private static function es_fila_suelta(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo): bool
+    {
+        if (count($con_dato) !== 1) {
+            return false;
+        }
+        $posicion = (int) array_key_first($con_dato);
+
+        return ($posicion === $columna_del_nombre || isset($columnas_de_codigo[$posicion]))
+            && !self::es_rotulo_de_total((string) reset($con_dato));
+    }
+
+    /**
+     * ¿Hay en la fila un código de verdad? Un valor en una columna de código que no es una fecha («14/11/2026») ni un
+     * importe con separadores o signo («$ 1.234», «1.234,50»). Un número entero solo (un código de barras) sí es un
+     * código.
+     *
+     * @param  array $con_dato
+     * @param  array $columnas_de_codigo
+     * @return bool
+     */
+    private static function trae_un_codigo(array $con_dato, array $columnas_de_codigo): bool
+    {
+        foreach (array_intersect_key($con_dato, $columnas_de_codigo) as $valor) {
+            $valor = (string) $valor;
+            $fecha = preg_match('#^\d{1,4}[/.\-]\d{1,2}[/.\-]\d{1,4}$#', $valor) === 1;
+            $importe = strpos($valor, '$') !== false || (self::importe($valor) !== null && !ctype_digit($valor));
+            if (!$fecha && !$importe) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿El texto se presenta como título? Empieza con «Rubro», «Sección», «Categoría», «Familia» o «Línea» seguido de
+     * dos puntos («Rubro: Construcción», «LINEA: Sanitarios»), o termina en dos puntos y no trae números
+     * («Pinturería:»; «Cable 2x1,5:» es un artículo). Vale en cualquier hoja (E8.3, E8.4).
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    private static function es_titulo_con_rotulo(string $texto): bool
+    {
+        // «Cable 2x1,5:» es un artículo: el «:» final solo cuenta sin números (E8.4).
+        return count(preg_split('/\s+/u', trim($texto))) <= 5
+            && ((substr(rtrim($texto), -1) === ':' && preg_match('/\d/', $texto) !== 1)
+                || preg_match('/^\s*(?:rubro|secci[oó]n|categor[ií]a|familia|l[ií]nea)s?\s*:/iu', $texto) === 1);
+    }
+
+    /**
+     * ¿Es la fila de los totales por columna? El rótulo de total en la columna del nombre, nada en las columnas
+     * de código ni en las de precio o costo, y al lado al menos un dato y solo importes («TOTAL UNIDADES»,
+     * 299, 338). Quien llama ya sabe que es la fila de cierre.
+     *
+     * @param  array    $con_dato            Celdas con dato, por posición
+     * @param  int|null $columna_del_nombre
+     * @param  array    $columnas_de_codigo  Posición => true
+     * @param  array    $columnas_de_importe Posición => true
+     * @return bool
+     */
+    private static function es_total_de_columnas(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo, array $columnas_de_importe): bool
+    {
+        if ($columna_del_nombre === null || !isset($con_dato[$columna_del_nombre]) || !self::es_rotulo_de_total($con_dato[$columna_del_nombre])) {
+            return false;
+        }
+        $resto = array_diff_key($con_dato, [$columna_del_nombre => true]);
+        if ($resto === [] || array_intersect_key($resto, $columnas_de_codigo + $columnas_de_importe) !== []) {
+            return false;
+        }
+        foreach ($resto as $valor) {
+            if (self::importe($valor) === null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * ¿Es una fila de total o subtotal, esté donde esté (E8.1)? El rótulo («Subtotal plomeria», «TOTAL
+     * GENERAL», «Totales:») en la columna del nombre o, con el nombre vacío, en una columna de código; ninguna
+     * otra celda en columnas de código ni de precio, costo o precio de lista; y el resto, si hay, solo números.
+     * Quien llama ya sabe que la hoja trae códigos (ver motivo_para_saltear()).
+     *
+     * @param  array    $con_dato            Celdas con dato, por posición
+     * @param  int|null $columna_del_nombre
+     * @param  array    $columnas_de_codigo  Posición => true
+     * @param  array    $columnas_de_importe Posición => true
+     * @return string|null                   El rótulo, o null si no es una fila de total
+     */
+    private static function es_fila_de_total(array $con_dato, ?int $columna_del_nombre, array $columnas_de_codigo, array $columnas_de_importe): ?string
+    {
+        $rotulo = self::posicion_del_rotulo($con_dato, $columna_del_nombre, $columnas_de_codigo);
+        if ($rotulo === null || !self::es_rotulo_de_total($con_dato[$rotulo])) {
+            return null;
+        }
+        $resto = array_diff_key($con_dato, [$rotulo => true]);
+        if (array_intersect_key($resto, $columnas_de_codigo + $columnas_de_importe) !== []) {
+            return null;
+        }
+        foreach ($resto as $valor) {
+            if (self::importe($valor) === null) {
+                return null;
+            }
+        }
+
+        return $con_dato[$rotulo];
+    }
+
+    /**
+     * Los títulos de la cabecera de la hoja, por posición y ya comparables (sin acentos ni signos), o [] si la
+     * hoja no los trae.
+     *
+     * @param  array $hoja
+     * @return array<int, string>
+     */
+    private static function titulos_de_la_cabecera(array $hoja): array
+    {
+        $titulos = [];
+        foreach ((array) ($hoja['columnas'] ?? []) as $posicion => $columna) {
+            $titulo = self::titulo_comparable($columna['titulo'] ?? '');
+            if ($titulo !== '') {
+                $titulos[(int) $posicion] = $titulo;
+            }
+        }
+
+        return $titulos;
+    }
+
+    /**
+     * ¿La fila repite la cabecera? Dos celdas con dato o más y TODAS iguales al título de su misma columna
+     * («Art | Descripcion | Marca | Stock» otra vez a mitad de la hoja, al pegar dos listas). Con una sola celda
+     * no alcanza: «Marca» suelta puede ser un artículo o un rubro, y eso lo juzga el resto de las reglas.
+     *
+     * @param  array $con_dato  Celdas con dato, por posición
+     * @param  array $titulos   Posición => título comparable
+     * @return bool
+     */
+    private static function repite_la_cabecera(array $con_dato, array $titulos): bool
+    {
+        if ($titulos === [] || count($con_dato) < 2) {
+            return false;
+        }
+        foreach ($con_dato as $posicion => $valor) {
+            if (!isset($titulos[$posicion]) || self::titulo_comparable($valor) !== $titulos[$posicion]) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -1803,25 +2552,34 @@ class PlanillaDePrueba
     {
         $filas = 0;
         $titulos = [];
+        $subtotales = [];
         $totales = [];
         foreach ($hojas as $hoja) {
             $salteadas = $hoja['filas_salteadas'] ?? [];
-            $filas += (int) ($salteadas[self::FILA_TITULO] ?? 0) + (int) ($salteadas[self::FILA_TOTAL] ?? 0);
+            $filas += (int) ($salteadas[self::FILA_TITULO] ?? 0) + (int) ($salteadas[self::FILA_TOTAL] ?? 0)
+                + (int) ($salteadas[self::FILA_SUBTOTAL] ?? 0);
             $titulos = array_merge($titulos, array_values($salteadas['textos_' . self::FILA_TITULO] ?? []));
+            $subtotales = array_merge($subtotales, array_values($salteadas['textos_' . self::FILA_SUBTOTAL] ?? []));
             $totales = array_merge($totales, array_values($salteadas['textos_' . self::FILA_TOTAL] ?? []));
         }
         if ($filas === 0) {
             return '';
         }
 
-        // El total va siempre a la vista, al final; el resto del cupo es para los títulos, en su orden.
+        /*
+         * El total va siempre a la vista, al final; el resto del cupo es para los títulos, en su orden. Con
+         * subtotales (E8.1), uno se nombra antes del «…» para que el dueño vea que esa clase de fila también
+         * quedó afuera; si no hay títulos, los subtotales usan todo el cupo.
+         */
         $totales = array_slice($totales, 0, 2);
-        $titulos = array_slice($titulos, 0, self::EJEMPLOS_DE_SALTEADAS - count($totales));
+        $lugar = self::EJEMPLOS_DE_SALTEADAS - count($totales);
+        $subtotales = array_slice($subtotales, 0, $titulos === [] ? $lugar : min(1, $lugar));
+        $titulos = array_slice($titulos, 0, $lugar - count($subtotales));
         $entre_comillas = function ($texto) {
             return '“' . $texto . '”';
         };
-        $partes = array_map($entre_comillas, $titulos);
-        if ($partes !== [] && $filas > count($titulos) + count($totales)) {
+        $partes = array_map($entre_comillas, array_merge($titulos, $subtotales));
+        if ($partes !== [] && $filas > count($titulos) + count($subtotales) + count($totales)) {
             $partes[] = '…';
         }
         $partes = array_merge($partes, array_map($entre_comillas, $totales));

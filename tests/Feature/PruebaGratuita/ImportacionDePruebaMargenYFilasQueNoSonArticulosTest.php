@@ -292,15 +292,16 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
 
         // 5. El resumen dice cuántas filas dejó afuera y con qué ganancia calculó el precio.
         $run = $run->fresh();
-        // 5 títulos de rubro y la nota del pie; y el total. (La columna JSON no conserva el orden de las claves.)
+        // 5 títulos de rubro, la cabecera repetida («COD | DESCRIPCION») y la nota del pie; y el total. (La columna
+        // JSON no conserva el orden de las claves.) E8.6: la cabecera repetida también se cuenta (antes: 6 títulos).
         $salteadas = $run->hojas[0]['filas_salteadas'];
-        $this->assertSame(6, $salteadas['titulo']);
+        $this->assertSame(7, $salteadas['titulo']);
         $this->assertSame(1, $salteadas['total']);
         $this->assertSame(self::TITULOS, $salteadas['textos_titulo'], 'Se guardan los primeros cinco textos, en su orden.');
         $this->assertSame(['TOTAL LISTA'], $salteadas['textos_total']);
         // Sin cupo de imágenes: el cierre de la importación no sale a buscar fotos (no es lo que se mide acá).
         \App\Services\ImageAssignment\CupoImagenesDePrueba::editar((int) $this->dueno->id, 0);
-        $frase = ' Dejé afuera 7 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
+        $frase = ' Dejé afuera 8 filas que no son artículos: “--- TORNILLERIA ---”, “--- HERRAMIENTAS ---”, “--- PINTURERIA ---”,'
             . ' “--- ELECTRICIDAD ---”, …, “TOTAL LISTA”. Si alguna era un producto, decímelo y la cargo.';
         $this->assertSame($frase, PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
         $run = $this->avanzar($run);
@@ -781,13 +782,16 @@ class ImportacionDePruebaMargenYFilasQueNoSonArticulosTest extends EmpresaTestCa
         $run = $this->avanzar($this->corrida(null, [], 'costos_y_margen.xlsx'));
 
         // 1. Qué es el «%» y qué es el «Final» (al lado de un costo, se confirma). El costo no se pregunta.
-        //    (El «Detalle» lo pregunta el analizador de siempre: puede ser el nombre o la descripción.)
+        //    «Detalle» ya no se pregunta (E8.2, 14/11/2026): es la única columna con título de texto del artículo y
+        //    ninguna otra es el nombre, así que es el nombre (antes: «columna_0_1», nombre o descripción).
         $this->assertSame('columnas', $run->estado);
-        $this->assertSame(['columna_0_1', 'columna_0_3', 'columna_0_4'], array_keys($run->preguntas));
+        $this->assertSame(['columna_0_3', 'columna_0_4'], array_keys($run->preguntas));
+        $this->assertSame('nombre', $run->hojas[0]['columnas'][1]['campo']);
+        $this->assertTrue($run->hojas[0]['columnas'][1]['segura'], '«Detalle» es el nombre.');
         $this->assertTrue($run->hojas[0]['columnas'][2]['segura'], '«Costo s/IVA» dice lo que es.');
         $this->assertStringStartsWith('En tu lista hay una columna que se llama «%» (por ejemplo: 50, 30). ¿Qué es? Puede ser «margen de ganancia».', $run->preguntas['columna_0_3']['texto']);
         $this->assertStringStartsWith('En tu lista hay una columna que se llama «Final» (por ejemplo: 561,54 y 438,55). ¿Qué es?', $run->preguntas['columna_0_4']['texto']);
-        $this->responder($run, ['columna_0_1' => 'nombre', 'columna_0_3' => 'margen_de_ganancia', 'columna_0_4' => 'ignorar'])->assertStatus(202);
+        $this->responder($run, ['columna_0_3' => 'margen_de_ganancia', 'columna_0_4' => 'ignorar'])->assertStatus(202);
 
         // 2. 11 de los 32 traen el costo y no el porcentaje: se pregunta la ganancia SOLO para esos.
         $run = $this->avanzar($run);

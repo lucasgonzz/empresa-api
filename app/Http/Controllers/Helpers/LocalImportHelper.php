@@ -159,6 +159,405 @@ class LocalImportHelper {
 	}
 
 	/**
+	 * Columnas de una lista de clientes o proveedores que dicen QUIÉN es el contacto: si una de estas trae
+	 * dato, la fila es un contacto, se llame como se llame.
+	 */
+	const COLUMNAS_QUE_IDENTIFICAN_UN_CONTACTO = ['numero', 'telefono', 'direccion', 'email', 'razon_social', 'cuit', 'cuil', 'dni', 'localidad', 'provincia'];
+
+	/**
+	 * ¿La fila de una lista de clientes o proveedores no es un contacto sino el total, un subtotal o un título
+	 * decorado de la planilla? Devuelve el texto de la fila para el aviso, o null si es un contacto (misión
+	 * prueba-e2e-campana-imperio, ronda 6, E8.1: «deudores.xlsx» de la prueba creaba un cliente «TOTAL» con
+	 * $ 555.700,50 de saldo, la suma de la columna «Debe»).
+	 *
+	 * Es la misma clase de fila que la carga asistida de artículos de la prueba deja afuera
+	 * (PlanillaDePrueba::motivo_para_saltear()), con el mismo criterio para el nombre:
+	 *  - el nombre empieza con la PALABRA COMPLETA total, totales, subtotal o suma(s), sin números y con dos
+	 *    palabras más como mucho (PlanillaDePrueba::es_rotulo_de_total(): «TOTAL», «Total general:», «Subtotal
+	 *    zona norte»; NO «Totalgas SRL»), o el pie que cuenta («Total: 21 clientes», E8.2; NO «Total 2000 SA»), o es un título decorado («--- MAYORISTAS ---»); y
+	 *  - ninguna columna que identifica a un contacto trae dato (número, teléfono, dirección, email, razón
+	 *    social, CUIT, CUIL, DNI, localidad, provincia), y las demás columnas mapeadas traen solo números (el
+	 *    saldo sumado) o nada.
+	 * Un cliente real que se llame «Total Gas» y venga sin ningún dato más que el saldo se dejaría afuera: por eso
+	 * la fila sale NOMBRADA en el aviso de la importación y el dueño puede cargarlo a mano.
+	 *
+	 * Solo lo llaman ClientImport y ProviderImport cuando el negocio está en la prueba gratuita (ver
+	 * descartando_filas_que_no_son_contactos()); a un negocio que paga le sigue entrando todo como siempre.
+	 *
+	 * @param  array|\ArrayAccess $row
+	 * @param  array              $columns  Clave de columna => índice
+	 * @return string|null
+	 */
+	static function fila_que_no_es_un_contacto($row, $columns) {
+		$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns);
+
+		return is_null($motivo) ? null : $motivo[1];
+	}
+
+	/**
+	 * Cuántos contactos con algún dato además del nombre (teléfono, CUIT, saldo…) tiene que traer la lista, como
+	 * mínimo, para juzgar un título de sección con señal FUERTE (ver motivo_de_fila_que_no_es_un_contacto()).
+	 */
+	const CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL = 3;
+
+	/**
+	 * Para la señal DÉBIL (todo en mayúsculas): cuántos contactos con datos, como mínimo, y además 3 de cada 4.
+	 */
+	const CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS = 5;
+
+	/**
+	 * Las filas de una lista de clientes o proveedores que no son contactos: número de fila => [motivo, texto]
+	 * (misión prueba-e2e-campana-imperio, E8.1 a E8.3). Es lo que usan ClientImport y ProviderImport en la prueba
+	 * y lo que mide ImportacionDePruebaFilasQueNoSonDatosGenerativoTest: una sola función para los dos.
+	 *
+	 * ClientImport y ProviderImport son ToCollection sin WithChunkReading: reciben la hoja completa, así que esto
+	 * son dos pasadas en memoria, sin consultas.
+	 *
+	 * @param  \Illuminate\Support\Collection|array $rows
+	 * @param  array                                $columns
+	 * @param  int                                  $start_row   1-based
+	 * @param  int                                  $finish_row  1-based, incluida
+	 * @return array<int, array>
+	 */
+	static function filas_que_no_son_contactos_de($rows, $columns, $start_row, $finish_row) {
+		$contexto = self::contexto_de_contactos($rows, $columns, $start_row, $finish_row);
+		$descartes = [];
+		$despues_del_total = false;
+		$numero = 0;
+		foreach ($rows as $row) {
+			$numero++;
+			if ($numero < (int) $start_row || $numero > (int) $finish_row) {
+				continue;
+			}
+			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, $contexto, $numero, $despues_del_total);
+			if (!is_null($motivo)) {
+				$despues_del_total = $despues_del_total || $motivo[0] === 'total';
+				$descartes[$numero] = $motivo;
+			}
+		}
+
+		return $descartes;
+	}
+
+	/**
+	 * Lo que hay que saber de la lista ENTERA antes de juzgar fila por fila (E8.2, rehecho en E8.3).
+	 *
+	 *  - `con_datos`: cuántos contactos traen algún dato además del nombre (teléfono, CUIT, dirección, saldo…).
+	 *  - `sin_senal`: cuántas filas traen SOLO el nombre y no tienen ninguna señal de título. Del denominador salen
+	 *    todos los candidatos a no-dato: los totales, la cabecera repetida, las notas al pie y las filas de solo
+	 *    nombre con señal de título (E8.3: en E8.2 contaban, y con dos títulos y una nota la proporción no daba y
+	 *    los títulos entraban como clientes; el mismo error que E8.1 corrigió en las hojas de artículos).
+	 *  - `nombres_en_mayusculas`: más de 1 de cada 4 contactos con datos se escribe todo en mayúsculas (ahí las
+	 *    mayúsculas no distinguen un título).
+	 *  - `cabecera`: los títulos de la fila anterior a la de inicio, por columna mapeada, ya comparables.
+	 *  - `ultima_con_datos`: la última fila con algún dato además del nombre (el total incluido).
+	 *
+	 * @param  \Illuminate\Support\Collection|array $rows
+	 * @param  array                                $columns
+	 * @param  int                                  $start_row
+	 * @param  int                                  $finish_row
+	 * @return array
+	 */
+	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row) {
+		$cabecera = [];
+		$con_datos = 0;
+		$mayusculas = 0;
+		$ultima_con_datos = 0;
+		$primer_total = null;
+		$sin_senal = [];
+		$numero = 0;
+		foreach ($rows as $row) {
+			$numero++;
+			if ($numero == (int) $start_row - 1) {
+				foreach ($columns as $clave => $indice) {
+					$titulo = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable(ImportHelper::getColumnValue($row, $clave, $columns));
+					if ($titulo !== '') {
+						$cabecera[$indice] = $titulo;
+					}
+				}
+			}
+			if ($numero < (int) $start_row || $numero > (int) $finish_row) {
+				continue;
+			}
+			$otros = self::otros_datos_del_contacto($row, $columns) !== [];
+			if ($otros) {
+				$ultima_con_datos = $numero;
+			}
+			$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+			if (is_null($nombre) || $nombre === '') {
+				continue;
+			}
+			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, ['cabecera' => $cabecera]);
+			if (!is_null($motivo)) {
+				$primer_total = is_null($primer_total) && $motivo[0] === 'total' ? $numero : $primer_total;
+				continue;
+			}
+			if ($otros) {
+				$con_datos++;
+				$mayusculas += self::en_mayusculas($nombre) ? 1 : 0;
+			} elseif (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
+				$sin_senal[] = $numero;
+			}
+		}
+		// Las notas al pie (solo nombre, después del total y debajo de la última fila con datos) tampoco cuentan.
+		$sin_senal = array_filter($sin_senal, function ($fila) use ($primer_total, $ultima_con_datos) {
+			return is_null($primer_total) || $fila < $primer_total || $fila <= $ultima_con_datos;
+		});
+
+		return [
+			'con_datos'             => $con_datos,
+			'sin_senal'             => count($sin_senal),
+			'nombres_en_mayusculas' => $mayusculas * 4 > $con_datos,
+			'cabecera'              => $cabecera,
+			'ultima_con_datos'      => $ultima_con_datos,
+		];
+	}
+
+	/**
+	 * Por qué una fila de una lista de clientes o proveedores no es un contacto, o null si lo es (E8.1 a E8.3).
+	 * Devuelve [motivo, texto]: motivo 'total', 'titulo' o 'nota'; el texto es el nombre de la fila, para el aviso.
+	 *
+	 *  - 'total': el rótulo es de total (PlanillaDePrueba::es_rotulo_de_total(): «TOTAL», «Subtotal zona norte»,
+	 *    «Total: 21 clientes», «Son 21 clientes»), o 'titulo' si es un título decorado («--- MAYORISTAS ---»); en los
+	 *    dos casos sin dato en ninguna columna que identifica a un contacto y con el resto solo números o nada.
+	 *  - 'titulo' por cabecera repetida: dos o más celdas mapeadas con dato y TODAS iguales al título de su columna.
+	 *  - Con SOLO el nombre (ninguna otra columna mapeada con dato: ni teléfono, CUIT, saldo, nada; el saldo SÍ es
+	 *    un dato: «Sandra Ojeda | | | 1500» es un cliente):
+	 *      · 'nota': ya pasó el total y no hay filas con datos debajo (las notas al pie).
+	 *      · 'titulo' con señal FUERTE (senal_fuerte_de_titulo()) y cinco palabras como mucho, si la lista tiene
+	 *        al menos CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL contactos con datos. Sin proporción: la señal ya
+	 *        alcanza.
+	 *      · 'titulo' con señal DÉBIL (senal_debil_de_titulo(): todo en mayúsculas en una lista que no escribe así
+	 *        sus nombres), solo si hay al menos CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS contactos con datos y
+	 *        son 3 de cada 4 de los contactos que se juzgan (con datos + de solo nombre sin señal).
+	 *      · NUNCA es título una razón social ni un cliente genérico de mostrador (nunca_es_titulo()).
+	 *    🔴 Sin señal, un nombre solo es un contacto sin datos y entra. Todo lo descartado sale nombrado en el aviso.
+	 *
+	 * @param  array|\ArrayAccess $row
+	 * @param  array              $columns
+	 * @param  array              $contexto          El de contexto_de_contactos(); [] = solo totales y decorados
+	 * @param  int                $numero            Número de la fila (1-based)
+	 * @param  bool               $despues_del_total Si la lista ya pasó por su total
+	 * @return array|null
+	 */
+	static function motivo_de_fila_que_no_es_un_contacto($row, $columns, array $contexto = [], $numero = 0, $despues_del_total = false) {
+		$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+		if (is_null($nombre) || $nombre === '') {
+			return null;
+		}
+		$otros = self::otros_datos_del_contacto($row, $columns);
+
+		$es_total = \App\Services\Importacion\PlanillaDePrueba::es_rotulo_de_total($nombre);
+		if ($es_total || \App\Services\Importacion\PlanillaDePrueba::es_titulo_decorado($nombre)) {
+			foreach ($otros as $clave => $valor) {
+				if (in_array($clave, self::COLUMNAS_QUE_IDENTIFICAN_UN_CONTACTO, true)) {
+					return null;
+				}
+				try {
+					if (is_null(ImportHelper::parseNumericValue($valor))) {
+						return null;
+					}
+				} catch (\InvalidArgumentException $e) {
+					return null;
+				}
+			}
+
+			return [$es_total ? 'total' : 'titulo', $nombre];
+		}
+
+		$cabecera = isset($contexto['cabecera']) ? $contexto['cabecera'] : [];
+		if ($cabecera !== [] && self::repite_la_cabecera_del_contacto($row, $columns, $cabecera)) {
+			return ['titulo', $nombre];
+		}
+
+		if ($otros !== [] || !isset($contexto['con_datos'])) {
+			return null;
+		}
+		if ($despues_del_total && (int) $numero > (int) $contexto['ultima_con_datos']) {
+			return ['nota', $nombre];
+		}
+		if (count(preg_split('/\s+/u', trim($nombre))) > 5) {
+			return null;
+		}
+		if (self::senal_fuerte_de_titulo($nombre)) {
+			return $contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL ? ['titulo', $nombre] : null;
+		}
+		$proporcion = $contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS
+			&& $contexto['con_datos'] * 4 >= ($contexto['con_datos'] + $contexto['sin_senal']) * 3;
+		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::senal_debil_de_titulo($nombre)) {
+			return ['titulo', $nombre];
+		}
+
+		return null;
+	}
+
+	/**
+	 * ¿El nombre se presenta como título de sección (señal FUERTE)? (E8.2, ajustado en E8.4)
+	 *  - termina en «:» («Zona norte:», «Proveedores de obra:»); o
+	 *  - empieza con una palabra de sección (clientes, proveedores, deudores, morosos, zona, listado, lista, rubro,
+	 *    sección, grupo, categoría, sucursal, al día, cuentas), tiene a lo sumo tres palabras y NO tiene forma de
+	 *    nombre propio: «Zona centro», «Morosos», «Clientes del interior» sí; «Zona Sur Materiales», «Grupo Lopez»,
+	 *    «Sucursal Centro», «Rubro Hogar» (cada palabra con mayúscula inicial, como se escribe un negocio) no.
+	 * Nunca una razón social ni un cliente genérico (nunca_es_titulo()).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function senal_fuerte_de_titulo($nombre) {
+		if (self::nunca_es_titulo($nombre)) {
+			return false;
+		}
+		if (substr(rtrim($nombre), -1) === ':') {
+			return true;
+		}
+		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
+
+		return preg_match('/^(?:clientes|proveedores|deudores|morosos|zona|zonas|listado|lista|rubro|rubros|seccion|grupo|categoria|sucursal|al dia|cuentas)(?: |$)/', $comparable) === 1
+			&& count(explode(' ', $comparable)) <= 3
+			&& !self::parece_un_nombre_propio($nombre);
+	}
+
+	/**
+	 * ¿El nombre está todo en mayúsculas (señal DÉBIL de título)? No cuenta una sigla de una sola palabra corta
+	 * (cinco letras o menos: «YPF», «ACA») ni una razón social o un cliente genérico (nunca_es_titulo()).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function senal_debil_de_titulo($nombre) {
+		$palabras = preg_split('/\s+/u', trim($nombre));
+		if (count($palabras) === 1 && mb_strlen(preg_replace('/[^\pL]/u', '', $nombre)) <= 5) {
+			return false;
+		}
+
+		return !self::nunca_es_titulo($nombre) && self::en_mayusculas($nombre);
+	}
+
+	/**
+	 * ¿El nombre NUNCA puede ser un título? Tiene forma de razón social (SA, SRL, SAS, SH, SCS, Hnos, «y Cía», «e
+	 * Hijos», como palabra) o es un cliente genérico de mostrador («Clientes varios», «Consumidor final», «Varios»,
+	 * «Mostrador», «Público en general», «Cliente mostrador»).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function nunca_es_titulo($nombre) {
+		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
+
+		return preg_match('/(?:^| )(?:sa|srl|sas|sh|scs|hnos|hermanos)(?: |$)|(?:^| )y cia(?: |$)|(?:^| )e hijos(?: |$)/', $comparable) === 1
+			|| in_array($comparable, ['clientes varios', 'cliente varios', 'consumidor final', 'varios', 'mostrador', 'publico en general',
+				'cliente mostrador', 'clientes mostrador', 'cliente generico', 'consumidor final mostrador'], true);
+	}
+
+	/**
+	 * ¿Se escribe como el nombre de un negocio o una persona? Dos palabras o más (sin contar de, del, la, las, los,
+	 * el, y, e) y todas con mayúscula inicial y alguna minúscula: «Zona Sur Materiales», «Grupo Lopez».
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function parece_un_nombre_propio($nombre) {
+		$palabras = array_values(array_filter(preg_split('/\s+/u', trim($nombre)), function ($palabra) {
+			return !in_array(mb_strtolower($palabra, 'UTF-8'), ['de', 'del', 'la', 'las', 'los', 'el', 'y', 'e'], true);
+		}));
+		if (count($palabras) < 2) {
+			return false;
+		}
+		foreach ($palabras as $palabra) {
+			if (preg_match('/^\p{Lu}.*\p{Ll}/u', $palabra) !== 1) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Las columnas mapeadas, salvo el nombre, que traen dato en la fila: clave => valor.
+	 *
+	 * @param  array|\ArrayAccess $row
+	 * @param  array              $columns
+	 * @return array
+	 */
+	private static function otros_datos_del_contacto($row, $columns) {
+		$otros = [];
+		foreach ($columns as $clave => $indice) {
+			if ($clave === 'nombre') {
+				continue;
+			}
+			$valor = ImportHelper::getColumnValue($row, $clave, $columns);
+			if (!is_null($valor) && $valor !== '') {
+				$otros[$clave] = $valor;
+			}
+		}
+
+		return $otros;
+	}
+
+	/**
+	 * ¿La fila repite la cabecera? Dos o más celdas mapeadas con dato, y todas iguales al título de su columna.
+	 *
+	 * @param  array|\ArrayAccess $row
+	 * @param  array              $columns
+	 * @param  array              $cabecera  Índice => título comparable
+	 * @return bool
+	 */
+	private static function repite_la_cabecera_del_contacto($row, $columns, array $cabecera) {
+		$iguales = 0;
+		foreach ($columns as $clave => $indice) {
+			$valor = ImportHelper::getColumnValue($row, $clave, $columns);
+			if (is_null($valor) || $valor === '') {
+				continue;
+			}
+			if (!isset($cabecera[$indice]) || \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($valor) !== $cabecera[$indice]) {
+				return false;
+			}
+			$iguales++;
+		}
+
+		return $iguales >= 2;
+	}
+
+	/**
+	 * ¿El texto está todo en mayúsculas? Con al menos dos letras mayúsculas («MOROSOS», «AL DÍA»).
+	 *
+	 * @param  string $texto
+	 * @return bool
+	 */
+	private static function en_mayusculas($texto) {
+		return preg_match('/\p{Lu}.*\p{Lu}/u', $texto) === 1 && mb_strtoupper($texto, 'UTF-8') === $texto;
+	}
+
+	/**
+	 * El bloque del aviso de la importación con las filas que no se cargaron por no ser contactos (ver
+	 * fila_que_no_es_un_contacto()), o null si no hubo.
+	 *
+	 * @param  array  $filas   [['fila' => int, 'nombre' => string], ...]
+	 * @param  string $modelo  'clientes' o 'proveedores'
+	 * @return array|null
+	 */
+	static function bloque_de_filas_que_no_son_contactos(array $filas, $modelo) {
+		if (count($filas) == 0) {
+			return null;
+		}
+		$parrafos = [];
+		foreach (array_slice($filas, 0, self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES) as $fila) {
+			$parrafos[] = 'Fila ' . $fila['fila'] . ': "' . self::recortar_para_el_aviso($fila['nombre'], self::LARGO_MAXIMO_DEL_NOMBRE_EN_EL_AVISO) . '"';
+		}
+		$restantes = count($filas) - self::MAXIMO_DE_FILAS_EN_EL_AVISO_DE_SALDOS_ILEGIBLES;
+		if ($restantes > 0) {
+			$parrafos[] = 'y ' . $restantes . ($restantes == 1 ? ' fila más' : ' filas más');
+		}
+		$parrafos[] = 'No las cargué como ' . $modelo . ': son el total, un subtotal o un título de la planilla. '
+			. 'Si alguna era uno de tus ' . $modelo . ', cargalo a mano o avisanos.';
+
+		return [
+			'title'    => 'Filas que no son ' . $modelo,
+			'parrafos' => $parrafos,
+		];
+	}
+
+	/**
 	 * Arma el bloque "Saldos del Excel que no se pudieron leer" de la notificación de fin de
 	 * importación (formato `title` + `parrafos`, el que el SPA ya renderiza). Lo usan ClientImport y
 	 * ProviderImport, cada uno con las filas que juntó.
@@ -944,11 +1343,27 @@ class LocalImportHelper {
 		return $iva_condition->id;
 	}
 
+	/**
+	 * El porcentaje de IVA de una celda, como se guarda en la tabla de IVAs: sin «%», sin espacios alrededor y con
+	 * punto decimal. «10,5», «10,5%» y « 10,5 % » son «10.5»; «21%» es «21»; «Exento» queda «Exento». La usan los
+	 * dos motores de artículos (ProcessRow::get_iva_id() y getIvaId(), el de ArticleImport) para que ninguno cree
+	 * un IVA nuevo «10,5» que no es ninguno de los de AFIP (misión prueba-e2e-campana-imperio, ronda 6, E8.1).
+	 *
+	 * @param  mixed  $iva
+	 * @return string  '' si la celda no trae nada
+	 */
+	static function normalizar_porcentaje_de_iva($iva) {
+		$texto = trim(str_replace('%', '', (string) $iva));
+
+		return preg_replace('/^(\d+),(\d+)$/', '$1.$2', $texto);
+	}
+
 	static function getIvaId($iva, $article = null) {
 		if (!is_null($iva)) {
 
-			$iva = str_replace('%', '', $iva);
-			if ($iva != '' || $iva == '0' || $iva == 0) {
+			$iva = self::normalizar_porcentaje_de_iva($iva);
+			// Vacío (una celda con solo «%» o espacios): el de siempre. Antes `'' == 0` creaba un IVA en blanco.
+			if ($iva !== '') {
 				$_iva = Iva::where('percentage', $iva)
 							->first();
 				if (is_null($_iva)) {
