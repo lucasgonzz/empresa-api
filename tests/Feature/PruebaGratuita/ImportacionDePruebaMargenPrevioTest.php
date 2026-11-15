@@ -366,8 +366,9 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
             return new ImportacionDePrueba(['user_id' => $this->dueno->id, 'decisiones' => $decisiones, 'hojas' => [['indice' => 0, 'mapeo' => $mapeo] + $extra]]);
         };
         $this->assertSame(
+            // Cuarta pasada, B2: sin «si corresponde»; sin artículos cargados para leer, sin ejemplo.
             'Cargué 5 artículos con su costo y su precio de venta. 3 artículos no traían precio de venta: por ahora quedaron sin'
-            . ' ganancia, al costo (con IVA si corresponde). Cuando me digas a cuánto los vendés te muestro dónde ponerlo.',
+            . ' ganancia, al costo. Cuando me digas a cuánto los vendés te muestro dónde ponerlo.',
             $resumen->invoke($servicio, $corrida(['nombre' => 1, 'costo' => 2, 'precio' => 3], ['filas_sin_ganancia' => 3]), 5, 0, 0, 0)
         );
         // Uno solo que no se encuentra en la base: sin monto.
@@ -606,6 +607,136 @@ class ImportacionDePruebaMargenPrevioTest extends EmpresaTestCase
         $this->assertSame('importando', $run->estado);
         $this->assertSame(' Dejé afuera 4 filas que no son artículos: “--- PLOMERIA ---”, “--- PINTURERIA ---”, “TOTAL”, “Precios con IVA”.'
             . ' Si alguna era un producto, decímelo y la cargo.', PlanillaDePrueba::texto_de_filas_salteadas($run->hojas));
+    }
+    // -----------------------------------------------------------------------------------------------------
+    // Cuarta pasada: B1 a B4
+    // -----------------------------------------------------------------------------------------------------
+
+    /** Hoja con códigos: 10 artículos con costo y precio, uno sin precio y, al pie, el total largo con la suma del costo. */
+    private function lista_con_total_largo(string $prefijo): array
+    {
+        $filas = [['Código', 'Descripción', 'Costo', 'Precio de venta']];
+        $costo = 0.0;
+        for ($i = 1; $i <= 10; $i++) {
+            $filas[] = [$prefijo . '-' . $i, 'Artículo ' . $prefijo . ' ' . $i, 100 * $i, 150 * $i];
+            $costo += 100 * $i;
+        }
+        $filas[] = [$prefijo . '-11', 'Llave francesa ' . $prefijo, 660.42, null];
+        $filas[] = [null, 'TOTAL MERCADERIA (al costo)', $costo + 660.42, null];
+        $filas[] = [null, 'Los precios de esta lista pueden cambiar sin previo aviso, consultar siempre antes de confirmar el pedido al cliente', null, null];
+
+        return $filas;
+    }
+
+    public function test_b1_el_total_largo_del_pie_no_se_carga_ni_cambia_la_pregunta_de_la_ganancia(): void
+    {
+        $this->analizador($this->mapeo_con_precio());
+        $uuid = $this->subir($this->planilla($this->lista_con_total_largo('MTL')), 330)->assertStatus(202)->json('analysis_uuid');
+        $run = $this->avanzar($uuid);
+        $this->assertSame('columnas', $run->estado);
+        $pregunta = $run->preguntas[PlanillaDePrueba::CLAVE_MARGEN];
+        // Un solo artículo sin precio (el total no cuenta): con su nombre y aceptando un precio.
+        $this->assertStringStartsWith('En tu lista hay 1 artículo («Llave francesa MTL»)', $pregunta['texto']);
+        $this->assertTrue($pregunta['acepta_precio']);
+        $this->responder($run, [PlanillaDePrueba::CLAVE_MARGEN => '35'])->assertStatus(202);
+        Bus::fake();
+        $run = $this->avanzar($uuid);
+        $this->assertSame('importando', $run->estado);
+        $this->correr_la_importacion();
+        $this->assertSame(11, Article::where('user_id', $this->dueno->id)->where('provider_code', 'like', 'MTL-%')->count());
+        $this->assertFalse(Article::where('user_id', $this->dueno->id)->where('name', 'like', 'TOTAL MERCADERIA%')->exists());
+        $this->assertSame(['TOTAL MERCADERIA (al costo)'], $run->hojas[0]['filas_salteadas']['textos_total']);
+        // B3: la nota larga del pie se corta en un espacio y con «…».
+        $nota = $run->hojas[0]['filas_salteadas']['textos_titulo'][0];
+        $this->assertStringEndsWith('…', $nota);
+        $this->assertLessThanOrEqual(PlanillaDePrueba::LARGO_DE_UN_TEXTO_DEL_RESUMEN, mb_strlen($nota));
+        $this->assertStringStartsWith('Los precios de esta lista pueden cambiar sin previo aviso, consultar siempre', $nota);
+    }
+
+    public function test_b1_las_clases_del_total_largo(): void
+    {
+        $mapeo = ['codigo_de_proveedor' => 0, 'nombre' => 1, 'costo' => 2, 'precio' => 3];
+        $con_codigos = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $con_codigos[$i + 1] = ['T-' . $i, 'Artículo ' . $i, 100 * $i, 150 * $i];
+        }
+        $motivos = function (array $pie) use ($con_codigos, $mapeo) {
+            $filas = $con_codigos;
+            foreach ($pie as $fila) {
+                $filas[count($filas) + 2] = $fila;
+            }
+
+            return PlanillaDePrueba::motivos_de_la_hoja($filas, $mapeo);
+        };
+        // (i) Hoja con códigos: sin código y con palabra de total, tenga lo que tenga después, aunque el número no sea la suma.
+        $this->assertSame([14 => PlanillaDePrueba::FILA_TOTAL], $motivos([[null, 'TOTAL MERCADERIA (al costo)', 99, null]]));
+        $this->assertSame([14 => PlanillaDePrueba::FILA_TOTAL], $motivos([[null, 'Suma de la mercadería en depósito', 7800, null]]));
+        // Un artículo con código que se llama «Total…» entra; «Suma dental x 12» con código también.
+        $this->assertSame([], $motivos([['T-99', 'Total Gas 10 kg', 5000, 7000], ['T-98', 'Suma dental x 12', 10, 15]]));
+
+        // (ii) Hoja SIN códigos: la suma de lo de arriba lo delata; sin la suma, entra como siempre.
+        $sin = ['nombre' => 0, 'costo' => 1, 'precio' => 2, 'stock_actual' => 3];
+        $filas = [];
+        $valorizado = 0.0;
+        $stock = 0;
+        for ($i = 1; $i <= 8; $i++) {
+            $filas[$i + 1] = ['Artículo sin código ' . $i, 100.5 * $i, 150 * $i, $i];
+            $valorizado += 100.5 * $i * $i;
+            $stock += $i;
+        }
+        $con = function (array $pie) use ($filas, $sin) {
+            $todas = $filas;
+            $todas[10] = $pie;
+
+            return PlanillaDePrueba::motivos_de_la_hoja($todas, $sin);
+        };
+        $this->assertSame([10 => PlanillaDePrueba::FILA_TOTAL], $con(['Total valorizado de la mercadería', round($valorizado, 2), null, null]));
+        $this->assertSame([10 => PlanillaDePrueba::FILA_TOTAL], $con(['TOTAL UNIDADES EN EL DEPOSITO', null, null, $stock]));
+        $this->assertSame([], $con(['Total valorizado de la mercadería', 12345, null, null]), 'Sin la suma, en una hoja sin códigos, entra.');
+        $this->assertSame([], $con(['Total Gas 10 kg', 5000, 7000, 3]));
+    }
+
+    public function test_b2_varios_sin_precio_con_despues_dicen_un_ejemplo_real(): void
+    {
+        SaleTax::where('user_id', $this->dueno->id)->update(['activo' => 0]);
+        ArticlePricesHelper::$sale_taxes_cache = [];
+        $this->analizador($this->mapeo_con_precio());
+        $uuid = $this->subir($this->lista_con_uno_sin_precio('MPW', 2), 331, 'despues')->assertStatus(202)->json('analysis_uuid');
+        $run = $this->importar_sin_preguntas($uuid);
+        $this->assertSame(2, $run->hojas[0]['filas_sin_ganancia']);
+        $this->assertStringContainsString(' 2 artículos no traían precio de venta: por ahora quedaron sin ganancia, al costo (por ejemplo,'
+            . ' «Llave francesa MPW» quedó en $ 799,11 con IVA). Cuando me digas a cuánto los vendés te muestro dónde ponerlo.', $this->resumen($run, 3));
+        $this->assertStringNotContainsString('si corresponde', $this->resumen($run, 3));
+    }
+
+    public function test_b3_el_recorte_de_los_textos(): void
+    {
+        $corto = 'Precios con IVA incluido, válidos hasta el 30/11';
+        $this->assertSame($corto, PlanillaDePrueba::recortar_para_el_resumen($corto));
+        $justo = str_repeat('a', PlanillaDePrueba::LARGO_DE_UN_TEXTO_DEL_RESUMEN);
+        $this->assertSame($justo, PlanillaDePrueba::recortar_para_el_resumen($justo));
+        $largo = 'Avisar a los clientes del interior que el flete corre por su cuenta, salvo pedidos de más de cien mil pesos';
+        $recortado = PlanillaDePrueba::recortar_para_el_resumen($largo);
+        $this->assertStringEndsWith('…', $recortado);
+        $this->assertLessThanOrEqual(PlanillaDePrueba::LARGO_DE_UN_TEXTO_DEL_RESUMEN, mb_strlen($recortado));
+        $this->assertStringNotContainsString(',…', $recortado);
+        $this->assertStringStartsWith(mb_substr($recortado, 0, -1), $largo, 'Se corta en un espacio, sin partir una palabra.');
+    }
+
+    public function test_b4_una_columna_que_el_dueno_mando_a_no_cargar_se_dice(): void
+    {
+        $this->analizador(['Código' => ['codigo_de_proveedor', 0.97], 'Descripción' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97],
+            'Comentario del vendedor' => ['descripcion', 0.5]]);
+        $uuid = $this->subir($this->planilla([
+            ['Código', 'Descripción', 'Precio de venta', 'Comentario del vendedor'],
+            ['MPC-1', 'Pinza MPC', 1500, 'se vende bien'], ['MPC-2', 'Tenaza MPC', 1200, 'pocas'], ['MPC-3', 'Llave MPC', 900, 'traer más'],
+        ]), 332)->assertStatus(202)->json('analysis_uuid');
+        $run = $this->avanzar($uuid);
+        $this->assertSame('columnas', $run->estado);
+        $clave = array_keys($run->preguntas)[0];
+        $this->responder($run, [$clave => PlanillaDePrueba::CAMPO_IGNORAR])->assertStatus(202);
+        $run = $this->importar_sin_preguntas($uuid);
+        $this->assertStringEndsWith(' No cargué la columna «Comentario del vendedor», como me dijiste.', $this->resumen($run, 3));
     }
 }
 

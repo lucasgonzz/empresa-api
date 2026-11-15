@@ -428,6 +428,69 @@ class PlanillaDePrueba
      * @param  array $hojas
      * @return string
      */
+    /** Hasta cuántos caracteres va entero el texto de una fila que quedó afuera (cuarta pasada, B3). */
+    public const LARGO_DE_UN_TEXTO_DEL_RESUMEN = 80;
+
+    /**
+     * El texto de una fila para el resumen: entero si entra en LARGO_DE_UN_TEXTO_DEL_RESUMEN; si no, cortado en un espacio
+     * (nunca en una coma ni a mitad de palabra si se puede) y con «…» al final, para que se vea que sigue.
+     *
+     * @param  string $texto
+     * @return string
+     */
+    public static function recortar_para_el_resumen(string $texto): string
+    {
+        $texto = trim((string) preg_replace('/\s+/u', ' ', $texto));
+        $tope = self::LARGO_DE_UN_TEXTO_DEL_RESUMEN;
+        if (mb_strlen($texto) <= $tope) {
+            return $texto;
+        }
+        $corte = mb_substr($texto, 0, $tope - 1);
+        $espacio = mb_strrpos($corte, ' ');
+        if ($espacio !== false && $espacio > $tope / 2) {
+            $corte = mb_substr($corte, 0, $espacio);
+        }
+
+        return rtrim($corte, " ,;:.-") . '…';
+    }
+
+    /**
+     * Las columnas que se mandaron a NO cargar, por respuesta del dueño a una pregunta o por el mapeo previo de soporte
+     * (cuarta pasada, B4): « No cargué la columna «Obs. vendedor», como me dijiste.» Las que no tienen destino ya las
+     * dice texto_de_columnas_sin_destino().
+     *
+     * @param  array $hojas
+     * @param  array $decisiones
+     * @return string
+     */
+    public static function texto_de_columnas_que_no_se_cargan(array $hojas, array $decisiones): string
+    {
+        $titulos = [];
+        foreach ($hojas as $hoja) {
+            foreach ((array) ($hoja['columnas'] ?? []) as $posicion => $columna) {
+                if (!empty($columna['sin_destino'])) {
+                    continue;
+                }
+                $por_respuesta = isset($hoja['indice']) && ($decisiones[self::clave_columna($hoja, (int) $posicion)] ?? null) === self::CAMPO_IGNORAR;
+                $por_previa = !empty($columna['previa']) && ($columna['campo'] ?? null) === null;
+                if (!$por_respuesta && !$por_previa) {
+                    continue;
+                }
+                $titulo = trim((string) ($columna['titulo'] ?? ''));
+                $titulos[] = $titulo !== '' ? '«' . mb_substr($titulo, 0, 40) . '»'
+                    : 'sin título (la ' . Coordinate::stringFromColumnIndex((int) $posicion + 1) . ')';
+            }
+        }
+        $titulos = array_values(array_unique($titulos));
+        if ($titulos === []) {
+            return '';
+        }
+        $ultima = array_pop($titulos);
+
+        return ($titulos === [] ? ' No cargué la columna ' . $ultima : ' No cargué las columnas ' . implode(', ', $titulos) . ' y ' . $ultima)
+            . ', como me dijiste.';
+    }
+
     public static function texto_de_columnas_sin_destino(array $hojas): string
     {
         /*
@@ -2005,6 +2068,89 @@ class PlanillaDePrueba
      * @param  string $texto
      * @return bool
      */
+    /**
+     * ¿El rótulo empieza con una palabra de total («total», «totales», «subtotal», «sub total», «suma», «sumas», «son
+     * N…»), tenga lo que tenga después? Cuarta pasada, B1: no alcanza solo para decidir, quien llama exige además la
+     * hoja con códigos y la fila sin código, o la suma de lo de arriba. Nunca una razón social.
+     *
+     * @param  string $texto
+     * @return bool
+     */
+    public static function empieza_con_palabra_de_total(string $texto): bool
+    {
+        $comparable = self::titulo_comparable($texto);
+
+        return preg_match('/^(?:sub ?total(?:es)?|total(?:es)?|sumas?|son \d+)(?: |$)/', $comparable) === 1
+            && preg_match('/(?:^| )(?:sa|srl|sas|sh|hnos)(?: |$)/', $comparable) !== 1;
+    }
+
+    /** ¿Al lado del rótulo la fila trae solo números (importes, cantidades) o nada? */
+    private static function al_lado_solo_numeros(array $con_dato, int $rotulo): bool
+    {
+        foreach ($con_dato as $posicion => $valor) {
+            if ($posicion !== $rotulo && self::importe($valor) === null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Suma a lo corrido los números de una fila: cada columna numérica, y cantidad × importe (B1 ii).
+     *
+     * @param  array $con_dato
+     * @param  array $de_importe
+     * @param  array $de_cantidad
+     * @param  array $sumas      posición => suma de la columna
+     * @param  array $productos  posición del importe => suma de cantidad × importe
+     * @return void
+     */
+    private static function sumar_la_fila(array $con_dato, array $de_importe, array $de_cantidad, array &$sumas, array &$productos): void
+    {
+        $cantidad = null;
+        foreach ($de_cantidad as $posicion => $_) {
+            if (isset($con_dato[$posicion]) && self::importe($con_dato[$posicion]) !== null) {
+                $cantidad = (float) self::importe($con_dato[$posicion]);
+            }
+        }
+        foreach ($con_dato as $posicion => $valor) {
+            $numero = self::importe($valor);
+            if ($numero === null || (!isset($de_importe[$posicion]) && !isset($de_cantidad[$posicion]))) {
+                continue;
+            }
+            $sumas[$posicion] = ($sumas[$posicion] ?? 0.0) + $numero;
+            if (isset($de_importe[$posicion]) && $cantidad !== null) {
+                $productos[$posicion] = ($productos[$posicion] ?? 0.0) + $numero * $cantidad;
+            }
+        }
+    }
+
+    /**
+     * ¿Algún número de la fila (fuera del rótulo) es la suma de su columna en las filas de arriba, o la de cantidad ×
+     * importe? Con tolerancia de centavos por fila sumada (redondeos de la planilla). Hacen falta dos filas o más.
+     */
+    private static function cierra_con_una_suma(array $con_dato, int $rotulo, array $sumas, array $productos, int $filas_sumadas): bool
+    {
+        if ($filas_sumadas < 2) {
+            return false;
+        }
+        $tolerancia = max(0.01, 0.005 * $filas_sumadas);
+        foreach ($con_dato as $posicion => $valor) {
+            $numero = $posicion === $rotulo ? null : self::importe($valor);
+            if ($numero === null || abs($numero) < 0.005) {
+                continue;
+            }
+            foreach (array_merge(array_values($sumas), array_values($productos)) as $suma) {
+                if (abs($numero - $suma) <= $tolerancia) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     public static function es_rotulo_de_total(string $texto): bool
     {
         return self::empieza_como_total($texto) || self::cuenta_en_el_rotulo($texto);
@@ -2070,13 +2216,34 @@ class PlanillaDePrueba
         $ultima_con_codigo = null;
         $primer_total_de_la_tanda = null;
         $ultimo_total = null;
+        // Cuarta pasada, B1 (ii): la señal aritmética. Sumas de cada columna numérica y de cantidad × importe en las filas
+        // de arriba; un rótulo que empieza con palabra de total y trae una de esas sumas es un total, diga lo que diga.
+        $de_cantidad = [];
+        foreach ($mapeo as $campo => $posicion) {
+            if ($campo === 'stock_actual') {
+                $de_cantidad[(int) $posicion] = true;
+            }
+        }
+        $sumas = [];
+        $productos = [];
+        $filas_sumadas = 0;
+        $totales_por_suma = [];
         foreach ($filas as $numero => $fila) {
             $con_dato = self::celdas_con_dato($fila);
             if ($con_dato === []) {
                 continue;
             }
             $rotulo = self::posicion_del_rotulo($con_dato, $del_nombre, $de_codigo);
-            $es_total = $rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo]);
+            $con_palabra_de_total = $rotulo !== null && self::empieza_con_palabra_de_total($con_dato[$rotulo]);
+            if ($con_palabra_de_total && !self::trae_un_codigo($con_dato, $de_codigo)
+                && self::cierra_con_una_suma($con_dato, $rotulo, $sumas, $productos, $filas_sumadas)) {
+                $totales_por_suma[(int) $numero] = true;
+            }
+            if (!$con_palabra_de_total) {
+                self::sumar_la_fila($con_dato, $de_importe, $de_cantidad, $sumas, $productos);
+                $filas_sumadas++;
+            }
+            $es_total = ($rotulo !== null && self::es_rotulo_de_total($con_dato[$rotulo])) || isset($totales_por_suma[(int) $numero]);
             if ($es_total) {
                 $ultimo_total = (int) $numero;
             } elseif ($del_nombre !== null && isset($con_dato[$del_nombre]) && array_intersect_key($con_dato, $otras_mapeadas) !== []) {
@@ -2092,7 +2259,8 @@ class PlanillaDePrueba
             }
 
             // La tanda del pie: notas y totales seguidos, hasta el final. Cualquier otra fila la corta.
-            if (self::es_fila_de_total_al_pie($con_dato, $del_nombre, $de_codigo, $de_importe)) {
+            // El total largo con la suma de lo de arriba también abre el pie (cuarta pasada, B1).
+            if (self::es_fila_de_total_al_pie($con_dato, $del_nombre, $de_codigo, $de_importe) || isset($totales_por_suma[(int) $numero])) {
                 $primer_total_de_la_tanda = $primer_total_de_la_tanda ?? (int) $numero;
             } elseif (!self::es_nota_suelta($con_dato)) {
                 $primer_total_de_la_tanda = null;
@@ -2105,6 +2273,7 @@ class PlanillaDePrueba
             'ultima_con_codigo' => $ultima_con_codigo,
             'pie_por_total' => $primer_total_de_la_tanda,
             'ultimo_total' => $ultimo_total,
+            'totales_por_suma' => $totales_por_suma,
             // Lo armó resumir_la_hoja() sobre la hoja entera (no un test de una fila suelta: ver motivo_para_saltear()).
             'hoja_entera' => true,
         ];
@@ -2300,14 +2469,14 @@ class PlanillaDePrueba
         $texto = in_array($motivo, [self::FILA_TOTAL, self::FILA_SUBTOTAL], true) && isset($mapeo['nombre'], $con_dato[(int) $mapeo['nombre']])
             ? $con_dato[(int) $mapeo['nombre']] : (string) reset($con_dato);
         // Sin el punto final: la frase del resumen ya cierra con el suyo.
-        $texto = rtrim($texto, '. ');
+        $texto = self::recortar_para_el_resumen(rtrim($texto, '. '));
         $clave = 'textos_' . $motivo;
         if (count($this->salteadas[$indice][$clave] ?? []) < self::EJEMPLOS_DE_SALTEADAS) {
-            $this->salteadas[$indice][$clave][] = mb_substr($texto, 0, 60);
+            $this->salteadas[$indice][$clave][] = $texto;
         }
         // En el orden de la planilla (ronda 8, segunda pasada): una lista, que la columna JSON no reordena.
         if (count($this->salteadas[$indice]['orden'] ?? []) < self::SALTEADAS_EN_ORDEN) {
-            $this->salteadas[$indice]['orden'][] = [$motivo, mb_substr($texto, 0, 60)];
+            $this->salteadas[$indice]['orden'][] = [$motivo, $texto];
         }
     }
 
@@ -2401,6 +2570,24 @@ class PlanillaDePrueba
         $columnas_de_codigo = self::columnas_de_codigo($mapeo);
         $columnas_de_importe = self::columnas_de_importe($mapeo);
         $hoja_con_codigos = !empty($resumen['con_codigos']);
+
+        // Cuarta pasada, B1. (ii) En cualquier hoja: un rótulo con palabra de total que trae la suma de lo de arriba.
+        // (i) En una hoja con códigos: una fila SIN código cuyo nombre empieza con total, totales, subtotal o «suma de»/«suma
+        // total», sin números en el rótulo y al lado solo números, tenga las palabras que tenga («TOTAL MERCADERIA (al
+        // costo)»). «Total Gas 10 kg» con código y «Suma dental x 12» (un producto) entran.
+        // Solo lo que las reglas de siempre no reconocen (un rótulo corto sigue con su regla: subtotal, total o artículo).
+        $rotulo_largo = self::posicion_del_rotulo($con_dato, $columna_del_nombre, $columnas_de_codigo);
+        $es_total_largo = $rotulo_largo !== null && !self::es_rotulo_de_total($con_dato[$rotulo_largo])
+            && self::empieza_con_palabra_de_total($con_dato[$rotulo_largo])
+            && (isset($resumen['totales_por_suma'][$numero])
+                || ($hoja_con_codigos && !self::trae_un_codigo($con_dato, $columnas_de_codigo)
+                    && preg_match('/\d/', $con_dato[$rotulo_largo]) !== 1
+                    && preg_match('/^(?:sub ?total(?:es)?|total(?:es)?|sumas? (?:de|total))(?: |$)/', self::titulo_comparable($con_dato[$rotulo_largo])) === 1
+                    && self::al_lado_solo_numeros($con_dato, $rotulo_largo)));
+        if ($es_total_largo) {
+            return preg_match('/^sub ?total/', self::titulo_comparable($con_dato[$rotulo_largo])) === 1
+                && $numero < (int) ($resumen['ultimo_total'] ?? 0) ? self::FILA_SUBTOTAL : self::FILA_TOTAL;
+        }
 
         // EL PIE (E8.3, E8.4). Lo que viene desde el total del pie (notas, firmas, fechas) y, en una hoja con códigos,
         // debajo de la última fila con código: una celda sola de texto o un rótulo de total. Una fila con el nombre y

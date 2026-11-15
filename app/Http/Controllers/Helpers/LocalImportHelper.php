@@ -232,6 +232,11 @@ class LocalImportHelper {
 				continue;
 			}
 			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, $contexto, $numero, $despues_del_total);
+			// El total sin nombre (el rótulo en otra columna): se nombra entre las que quedan afuera y abre el pie (A4, A5).
+			if (is_null($motivo) && isset($contexto['con_datos'])) {
+				$rotulo = self::total_sin_nombre($row, $columns);
+				$motivo = is_null($rotulo) ? null : ['total', $rotulo];
+			}
 			if (!is_null($motivo)) {
 				$despues_del_total = $despues_del_total || $motivo[0] === 'total';
 				$descartes[$numero] = $motivo;
@@ -261,7 +266,9 @@ class LocalImportHelper {
 	 * @return array
 	 */
 	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row, array $formato = []) {
-		$con_datos_destacados = 0;
+		$con_datos_en_negrita = 0;
+		$con_datos_en_minuscula = 0;
+		$solo_nombre = [];
 		$cabecera = [];
 		$con_datos = 0;
 		$mayusculas = 0;
@@ -288,6 +295,9 @@ class LocalImportHelper {
 			}
 			$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
 			if (is_null($nombre) || $nombre === '') {
+				if (is_null($primer_total) && !is_null(self::total_sin_nombre($row, $columns))) {
+					$primer_total = $numero;
+				}
 				continue;
 			}
 			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, ['cabecera' => $cabecera]);
@@ -297,16 +307,23 @@ class LocalImportHelper {
 			}
 			if ($otros) {
 				$con_datos++;
-				$con_datos_destacados += !empty($formato[$numero]) ? 1 : 0;
+				$con_datos_en_negrita += ((int) ($formato[$numero] ?? 0) & self::FORMATO_NEGRITA) !== 0 ? 1 : 0;
+				$con_datos_en_minuscula += preg_match('/^\p{Lu}/u', trim($nombre)) === 1 ? 0 : 1;
 				$mayusculas += self::en_mayusculas($nombre) ? 1 : 0;
-			} elseif (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
-				$sin_senal[] = $numero;
+			} elseif (!self::tiene_forma_de_oracion($nombre)) {
+				// Las notas con forma de oración no cuentan: quedan afuera por su forma.
+				$solo_nombre[] = $numero;
+				if (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
+					$sin_senal[] = $numero;
+				}
 			}
 		}
 		// Las notas al pie (solo nombre, después del total y debajo de la última fila con datos) tampoco cuentan.
-		$sin_senal = array_filter($sin_senal, function ($fila) use ($primer_total, $ultima_con_datos) {
+		$antes_del_pie = function ($fila) use ($primer_total, $ultima_con_datos) {
 			return is_null($primer_total) || $fila < $primer_total || $fila <= $ultima_con_datos;
-		});
+		};
+		$sin_senal = array_filter($sin_senal, $antes_del_pie);
+		$solo_nombre = array_filter($solo_nombre, $antes_del_pie);
 
 		return [
 			'con_datos'             => $con_datos,
@@ -314,9 +331,12 @@ class LocalImportHelper {
 			'nombres_en_mayusculas' => $mayusculas * 4 > $con_datos,
 			'cabecera'              => $cabecera,
 			'ultima_con_datos'      => $ultima_con_datos,
-			// El formato distingue solo si la mayoría de los contactos con datos NO lo tiene (toda la columna en negrita no
-			// dice nada).
-			'formato'               => $con_datos_destacados * 2 < $con_datos ? $formato : [],
+			// Cuarta pasada: las filas de solo nombre antes del pie (para la clara mayoría), si algún contacto con datos está
+			// en negrita (entonces la negrita no distingue) y si la lista escribe sus nombres en minúscula.
+			'solo_nombre'           => count($solo_nombre),
+			'formato'               => $formato,
+			'con_datos_en_negrita'  => $con_datos_en_negrita,
+			'nombres_en_minuscula'  => $con_datos > 0 && $con_datos_en_minuscula * 2 > $con_datos,
 		];
 	}
 
@@ -383,6 +403,10 @@ class LocalImportHelper {
 		if ($despues_del_total && (int) $numero > (int) $contexto['ultima_con_datos']) {
 			return ['nota', $nombre];
 		}
+		// Una nota con forma de oración, esté donde esté (cuarta pasada, A4).
+		if ($contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL && self::tiene_forma_de_oracion($nombre)) {
+			return ['nota', $nombre];
+		}
 		if (count(preg_split('/\s+/u', trim($nombre))) > 5) {
 			return null;
 		}
@@ -394,7 +418,7 @@ class LocalImportHelper {
 		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::senal_debil_de_titulo($nombre)) {
 			return ['titulo', $nombre];
 		}
-		if (self::es_fila_suelta($nombre, $contexto, !empty($contexto['formato'][(int) $numero]))) {
+		if (self::es_fila_suelta($nombre, $contexto, (int) ($contexto['formato'][(int) $numero] ?? 0))) {
 			return ['suelta', $nombre];
 		}
 
@@ -403,85 +427,89 @@ class LocalImportHelper {
 
 	/**
 	 * Con cuántos contactos con algún dato además del nombre, como mínimo, una lista se juzga «con datos» para dejar
-	 * afuera una fila suelta (ver es_fila_suelta()).
+	 * afuera una fila de solo nombre con señal de grupo (ver es_fila_suelta()).
 	 */
 	const CONTACTOS_CON_DATOS_PARA_SUELTAS = 5;
 
-	/** Cuántas filas de solo nombre (sin señal de título) tolera la lista antes de dudar y no descartar ninguna. */
-	const MAXIMO_DE_SUELTAS = 2;
+	/**
+	 * Clara mayoría (ronda 8, cuarta pasada): por cada fila de solo nombre de la lista (con señal o sin ella), al menos
+	 * esta cantidad de contactos con datos. Sin tope de filas: con cuatro grupos y nueve clientes, los cuatro afuera.
+	 */
+	const CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE = 2;
 
-	/** Por cada fila suelta, cuántos contactos con datos tiene que traer la lista, como mínimo. */
-	const CONTACTOS_CON_DATOS_POR_SUELTA = 4;
+	/** Formato de la celda del nombre (bits): en negrita, y combinada con tres columnas o más. */
+	const FORMATO_NEGRITA = 1;
+	const FORMATO_COMBINADA_ANCHA = 2;
 
 	/**
-	 * El vocabulario cerrado de agrupación (ronda 8, A1, segunda pasada): la PRIMERA palabra de un título de grupo, ya
-	 * comparable (sin acentos, en minúscula) y en singular. «cuenta» y «cta» valen solo seguidas de «corriente»/«cte».
+	 * El vocabulario cerrado de agrupación: la PRIMERA palabra de un título de grupo, ya comparable (sin acentos, en
+	 * minúscula) y en singular. «cuenta» y «cta» valen solo seguidas de «corriente»/«cte». Sin nombres ni apodos
+	 * habituales (cuarta pasada: salieron «nuevo», «viejo», «contado» y «activo»).
 	 */
 	const PALABRAS_DE_GRUPO = ['cliente', 'proveedor', 'empresa', 'comercio', 'mayorista', 'minorista', 'particular',
-		'revendedor', 'distribuidor', 'gremio', 'vecino', 'deudor', 'moroso', 'activo', 'inactivo', 'nuevo', 'viejo',
-		'vario', 'otro', 'resto', 'zona', 'barrio', 'obra', 'consumidor', 'contado', 'lista', 'listado', 'cuenta', 'cta'];
+		'revendedor', 'distribuidor', 'gremio', 'vecino', 'deudor', 'moroso', 'inactivo', 'vario', 'otro', 'resto', 'zona',
+		'barrio', 'obra', 'consumidor', 'lista', 'listado', 'cuenta', 'cta'];
 
 	/** Preposiciones y contracciones con las que empieza un título de grupo en minúscula («Del barrio», «Por zona»). */
 	const PREPOSICIONES_DE_GRUPO = ['de', 'del', 'para', 'por', 'con', 'sin', 'a', 'al', 'en', 'desde', 'hasta'];
 
 	/**
-	 * ¿Una fila de SOLO nombre es una «suelta» (un título de grupo sin dos puntos ni mayúsculas: «Mayoristas», «Vecinos
-	 * del barrio», «Del barrio») y no un contacto? (misión prueba-e2e-campana-imperio, ronda 8, A1; segunda pasada)
+	 * ¿Una fila de SOLO nombre es un título de grupo (motivo «suelta») y no un contacto? (misión
+	 * prueba-e2e-campana-imperio, ronda 8, A1; cuarta pasada)
 	 *
-	 * 🔴 Una fila de solo nombre ENTRA, como siempre («Gómez», «Kiosco», «la esquina», «Del Valle»), salvo que tenga una
-	 * señal POSITIVA de que nombra un grupo. Hace falta todo esto:
-	 *  1. La lista trae contactos con datos: al menos CONTACTOS_CON_DATOS_PARA_SUELTAS filas con algún dato además
-	 *     del nombre (teléfono, CUIT, saldo…; el saldo cuenta). Una lista de SOLO nombres: todas son contactos.
-	 *  2. Casi todas las demás traen algún dato: las filas de solo nombre y sin señal de título (`sin_senal` de
-	 *     contexto_de_contactos(), esta incluida) son MAXIMO_DE_SUELTAS como mucho, con al menos
-	 *     CONTACTOS_CON_DATOS_POR_SUELTA contactos con datos por cada una. Con más, la lista también carga contactos
-	 *     así y no se descarta ninguna.
-	 *  3. No es razón social ni cliente genérico (nunca_es_titulo(): «Empresas Reunidas SA», «Varios»), no se escribe
-	 *     como nombre propio («Obras Sanitarias», «Clientes Unidos»), no tiene números y no está toda en mayúsculas.
-	 *  4. Y una señal positiva (senal_de_grupo()):
-	 *      · la primera palabra, en singular, es de PALABRAS_DE_GRUPO y todo lo que sigue va en minúscula
-	 *        («Clientes del taller», «Mayoristas y distribuidores», «Gremio de la construcción»); o
-	 *      · empieza con una de PREPOSICIONES_DE_GRUPO y todo lo que sigue (al menos una palabra) va en minúscula
-	 *        («Del barrio», «De la zona norte», «Para cobrar»). Con una palabra capitalizada después es un apellido y
-	 *        entra («Del Valle», «De la Fuente», «Del Río»).
+	 * 🔴 Una fila de solo nombre ENTRA, como siempre, salvo que tenga una señal POSITIVA de grupo, y todo esto:
+	 *  1. La lista trae al menos CONTACTOS_CON_DATOS_PARA_SUELTAS contactos con datos, y son clara mayoría: al menos
+	 *     CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE por cada fila de solo nombre (`solo_nombre`). Sin tope de grupos.
+	 *  2. No es razón social ni cliente genérico (nunca_es_titulo()), no tiene números y no está toda en mayúsculas
+	 *     (eso lo juzga la señal débil, que ya existía).
+	 *  3. La señal (senal_de_grupo()), una de estas:
+	 *      · FORMATO: la celda del nombre en negrita, si NINGÚN contacto con datos está en negrita; o combinada con
+	 *        tres columnas o más. El relleno de color no es señal (así se marcan morosos y filas alternadas), y dos
+	 *        celdas vecinas combinadas tampoco.
+	 *      · VOCABULARIO: no se escribe como nombre propio, la primera palabra en singular es de PALABRAS_DE_GRUPO y, si
+	 *        hay más palabras, van en minúscula («Clientes del taller»). En una lista que escribe sus nombres en minúscula
+	 *        («juan gomez») la minúscula no dice nada: ahí vale solo una palabra sola («mayoristas»).
+	 *      · PREPOSICIÓN: empieza con una de PREPOSICIONES_DE_GRUPO y lo que sigue (al menos una palabra) va en
+	 *        minúscula («Del barrio»); con mayúscula es un apellido («Del Valle»). En una lista en minúscula no vale.
 	 * Queda afuera NOMBRADA en el aviso.
 	 *
 	 * @param  string $nombre
 	 * @param  array  $contexto  El de contexto_de_contactos()
+	 * @param  int    $formato   Bits FORMATO_* de la celda del nombre
 	 * @return bool
 	 */
-	private static function es_fila_suelta($nombre, array $contexto, $destacada = false) {
+	private static function es_fila_suelta($nombre, array $contexto, $formato = 0) {
 		$con_datos = (int) $contexto['con_datos'];
-		$sueltas = (int) $contexto['sin_senal'];
-		if ($con_datos < self::CONTACTOS_CON_DATOS_PARA_SUELTAS || $sueltas < 1 || $sueltas > self::MAXIMO_DE_SUELTAS
-			|| $con_datos < $sueltas * self::CONTACTOS_CON_DATOS_POR_SUELTA) {
+		$solo_nombre = (int) ($contexto['solo_nombre'] ?? 0);
+		if ($con_datos < self::CONTACTOS_CON_DATOS_PARA_SUELTAS
+			|| $con_datos < $solo_nombre * self::CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE) {
 			return false;
 		}
-		// Señal de FORMATO (tercera pasada): la celda del nombre está destacada y eso la distingue de los contactos con
-		// datos (ver contexto_de_contactos()). Vale para cualquier texto («Fiado», «Constructoras», «Los de siempre»)
-		// salvo una razón social o un cliente genérico. Un «Gómez» en negrita entre clientes en letra normal queda afuera:
-		// sale nombrado en el aviso.
-		if ($destacada) {
-			return !self::nunca_es_titulo($nombre);
-		}
-		if (self::nunca_es_titulo($nombre) || self::parece_un_nombre_propio($nombre) || self::en_mayusculas($nombre)
-			|| preg_match('/\d/u', $nombre) === 1) {
+		if (self::nunca_es_titulo($nombre) || self::en_mayusculas($nombre) || preg_match('/\d/u', $nombre) === 1) {
 			return false;
+		}
+		if (($formato & self::FORMATO_COMBINADA_ANCHA) !== 0
+			|| (($formato & self::FORMATO_NEGRITA) !== 0 && empty($contexto['con_datos_en_negrita']))) {
+			return true;
 		}
 
-		return self::senal_de_grupo($nombre);
+		return !self::parece_un_nombre_propio($nombre) && self::senal_de_grupo($nombre, !empty($contexto['nombres_en_minuscula']));
 	}
 
 	/**
-	 * La señal positiva de un título de grupo (ver es_fila_suelta(), punto 4).
+	 * La señal de vocabulario o de preposición (ver es_fila_suelta(), punto 3).
 	 *
 	 * @param  string $nombre
+	 * @param  bool   $lista_en_minuscula  La lista escribe sus nombres en minúscula: la minúscula no distingue
 	 * @return bool
 	 */
-	private static function senal_de_grupo($nombre) {
+	private static function senal_de_grupo($nombre, $lista_en_minuscula = false) {
 		$originales = preg_split('/\s+/u', trim($nombre));
 		$palabras = explode(' ', \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre));
 		if ($palabras === [] || $palabras[0] === '' || count($originales) !== count($palabras)) {
+			return false;
+		}
+		if (count($palabras) > 1 && $lista_en_minuscula) {
 			return false;
 		}
 		// Lo que sigue a la primera palabra va todo en minúscula: si no, es un nombre o un apellido.
@@ -506,6 +534,69 @@ class LocalImportHelper {
 
 		return true;
 	}
+
+	/**
+	 * ¿El texto de una fila de solo nombre tiene forma de oración (una nota), no de nombre? (cuarta pasada, A4)
+	 *  - con coma, punto y coma o dos puntos seguidos de espacio, o punto final, y al menos tres palabras que empiezan
+	 *    en minúscula («Fulana dejó plata de más, descontarle…»); o
+	 *  - siete palabras o más, la mitad o más empezando en minúscula.
+	 * «Consorcio Edificio Rivadavia 845» y «Cooperativa de Trabajo La Unión Limitada» (6 palabras, 1 en minúscula), o
+	 * «Gómez, Jorge (albañil)», son nombres. Nunca una razón social.
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	static function tiene_forma_de_oracion($nombre) {
+		$palabras = preg_split('/\s+/u', trim((string) $nombre));
+		$minusculas = count(array_filter($palabras, function ($palabra) {
+			return preg_match('/^\p{Ll}/u', $palabra) === 1;
+		}));
+		if (self::nunca_es_titulo($nombre)) {
+			return false;
+		}
+		$puntuada = preg_match('/[,;:]\s|\.\s|\.$/u', trim((string) $nombre)) === 1;
+
+		return ($puntuada && $minusculas >= 3) || (count($palabras) >= 7 && $minusculas * 2 >= count($palabras));
+	}
+
+	/**
+	 * La fila del total SIN nombre (el rótulo en otra columna: «| TOTAL | | 47.350,50»): devuelve el rótulo, o null.
+	 * Un solo texto en toda la fila, que es un rótulo de total, y el resto números o nada (cuarta pasada, A4 y A5).
+	 *
+	 * @param  array|\ArrayAccess $row
+	 * @param  array              $columns
+	 * @return string|null
+	 */
+	static function total_sin_nombre($row, $columns) {
+		$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
+		if (!is_null($nombre) && $nombre !== '') {
+			return null;
+		}
+		$celdas = is_object($row) && method_exists($row, 'toArray') ? $row->toArray() : (array) $row;
+		$rotulo = null;
+		foreach ($celdas as $celda) {
+			$texto = trim((string) $celda);
+			if ($texto === '') {
+				continue;
+			}
+			$numero = null;
+			try {
+				$numero = ImportHelper::parseNumericValue($texto);
+			} catch (\InvalidArgumentException $e) {
+				$numero = null;
+			}
+			if (!is_null($numero)) {
+				continue;
+			}
+			if (!is_null($rotulo) || !\App\Services\Importacion\PlanillaDePrueba::es_rotulo_de_total($texto)) {
+				return null;
+			}
+			$rotulo = $texto;
+		}
+
+		return $rotulo;
+	}
+
 	/**
 	 * ¿El nombre se presenta como título de sección (señal FUERTE)? (E8.2, ajustado en E8.4)
 	 *  - termina en «:» («Zona norte:», «Proveedores de obra:»); o

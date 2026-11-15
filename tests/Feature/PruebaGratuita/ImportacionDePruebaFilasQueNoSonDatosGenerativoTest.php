@@ -42,8 +42,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         mt_srand(self::SEMILLA);
         $fallas = [];
         $filas_juzgadas = 0;
+        $totales_largos = 0;
         for ($caso = 0; $caso < self::PLANILLAS; $caso++) {
             $planilla = GeneradorDePlanillasDesordenadas::articulos($caso);
+            $totales_largos += $planilla['totales_largos'];
             $filas = self::desde_el_inicio($planilla);
             $motivos = PlanillaDePrueba::motivos_de_la_hoja($filas, $planilla['mapeo'], $planilla['titulos']);
             foreach ($planilla['datos'] as $numero) {
@@ -81,7 +83,10 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
                     . ', datos esperados ' . count($planilla['datos']);
             }
         }
-        fwrite(STDERR, PHP_EOL . 'Artículos: ' . self::PLANILLAS . ' planillas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas.' . PHP_EOL);
+        fwrite(STDERR, PHP_EOL . 'Artículos: ' . self::PLANILLAS . ' planillas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas, '
+            . $totales_largos . ' totales del pie con rótulo largo y la suma real.' . PHP_EOL);
+        // Cuarta pasada, B1: la clase está en la muestra.
+        $this->assertGreaterThan(20, $totales_largos, 'La muestra casi no trae totales con rótulo largo.');
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . self::SEMILLA . ': ' . count($fallas) . ' fallas.');
     }
 
@@ -93,11 +98,17 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         $listas_con_sueltas = 0;
         $listas_con_reales = 0;
         $listas_con_formato = 0;
+        $notas_con_forma_de_oracion = 0;
+        $totales_sin_nombre = 0;
+        $listas_con_tres_grupos_o_mas = 0;
         for ($caso = 0; $caso < self::PLANILLAS; $caso++) {
             $lista = GeneradorDePlanillasDesordenadas::contactos($caso);
             $listas_con_sueltas += $lista['sueltas'] > 0 ? 1 : 0;
             $listas_con_reales += $lista['reales_de_solo_nombre'] > 0 ? 1 : 0;
             $listas_con_formato += $lista['sueltas_con_formato'] > 0 ? 1 : 0;
+            $notas_con_forma_de_oracion += $lista['notas_con_forma_de_oracion'];
+            $totales_sin_nombre += $lista['totales_sin_nombre'];
+            $listas_con_tres_grupos_o_mas += $lista['grupos'] >= 3 && $lista['sueltas'] > 0 ? 1 : 0;
             $filas = array_values($lista['filas']); // como llega a collection(): 0-based, la fila 1 en el índice 0
             $descartes = LocalImportHelper::filas_que_no_son_contactos_de($filas, $lista['columnas'], $lista['inicio'], count($filas),
                 $lista['formato'] ?? []);
@@ -117,13 +128,19 @@ class ImportacionDePruebaFilasQueNoSonDatosGenerativoTest extends TestCase
         }
         fwrite(STDERR, PHP_EOL . 'Contactos: ' . self::PLANILLAS . ' listas, ' . $filas_juzgadas . ' filas juzgadas, ' . count($fallas) . ' fallas, '
             . $listas_con_sueltas . ' listas con filas sueltas, ' . $listas_con_reales . ' con contactos reales de solo nombre, '
-            . $listas_con_formato . ' con sueltas que solo se reconocen por el formato.' . PHP_EOL);
+            . $listas_con_formato . ' con sueltas que solo se reconocen por el formato, ' . $listas_con_tres_grupos_o_mas
+            . ' con tres grupos o más, ' . $notas_con_forma_de_oracion . ' notas con forma de oración en el medio, '
+            . $totales_sin_nombre . ' totales sin nombre.' . PHP_EOL);
         // Ronda 8, A1: la clase de las filas sueltas tiene que estar en la muestra, no solo en los tests de forma.
         $this->assertGreaterThan(40, $listas_con_sueltas, 'La muestra casi no trae listas con filas sueltas.');
         // Segunda pasada de A1: los dos lados, también los contactos de solo nombre que tienen que entrar.
         $this->assertGreaterThan(40, $listas_con_reales, 'La muestra casi no trae contactos reales de solo nombre.');
         // Tercera pasada: las sueltas fuera del vocabulario, que solo se reconocen por el formato.
         $this->assertGreaterThan(20, $listas_con_formato, 'La muestra casi no trae sueltas con formato.');
+        // Cuarta pasada: tres grupos o más (sin tope), notas con forma de oración y totales sin nombre.
+        $this->assertGreaterThan(20, $listas_con_tres_grupos_o_mas, 'La muestra casi no trae listas con tres grupos o más.');
+        $this->assertGreaterThan(20, $notas_con_forma_de_oracion, 'La muestra casi no trae notas con forma de oración.');
+        $this->assertGreaterThan(20, $totales_sin_nombre, 'La muestra casi no trae totales sin nombre.');
         $this->assertSame([], array_slice($fallas, 0, 25), 'Semilla ' . (self::SEMILLA + 1) . ': ' . count($fallas) . ' fallas.');
     }
 

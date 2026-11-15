@@ -1275,7 +1275,8 @@ class ImportacionDeSoporteService
         $nombres = [];
         $solo_totales = true;
         foreach ($filas as $fila) {
-            $nombres[] = '«' . mb_substr((string) ($fila['texto'] ?? ''), 0, 60) . '»';
+            // Cuarta pasada, B3: entero hasta PlanillaDePrueba::LARGO_DE_UN_TEXTO_DEL_RESUMEN; si no, con «…».
+            $nombres[] = '«' . PlanillaDePrueba::recortar_para_el_resumen((string) ($fila['texto'] ?? '')) . '»';
             $solo_totales = $solo_totales && ($fila['motivo'] ?? '') === 'total';
         }
         $resto = $total - count($nombres);

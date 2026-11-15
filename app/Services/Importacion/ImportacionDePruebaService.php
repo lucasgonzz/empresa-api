@@ -573,14 +573,20 @@ class ImportacionDePruebaService
             $texto .= ' 1 artículo no traía precio de venta: por ahora ' . $this->como_quedo_el_sin_ganancia($run, $hojas)
                 . '. Cuando me digas a cuánto lo vendés te muestro dónde ponerlo.';
         } elseif ($sin_ganancia > 1) {
+            // Cuarta pasada, B2: con un ejemplo real leído del artículo, como en el caso del porcentaje.
+            $ejemplo = self::ejemplo_de_las_hojas($hojas, 'filas_sin_ganancia', 'sin_ganancia_ejemplo');
+            $quedo = $this->en_cuanto_quedo($run, $ejemplo, 0.0);
             $texto .= ' ' . $sin_ganancia . ' artículos no traían precio de venta: por ahora quedaron sin ganancia, al costo'
-                . ' (con IVA si corresponde). Cuando me digas a cuánto los vendés te muestro dónde ponerlo.';
+                . ($quedo === '' ? '' : ' (por ejemplo, «' . mb_substr(trim((string) $ejemplo['nombre']), 0, 60) . '» quedó en ' . $quedo . ')')
+                . '. Cuando me digas a cuánto los vendés te muestro dónde ponerlo.';
         }
 
         // Títulos de rubro, notas sueltas y totales de la planilla: se nombran, no se importaron.
         return $texto . PlanillaDePrueba::texto_de_filas_salteadas($hojas)
             // Las columnas que el sistema no tiene dónde guardar («Obs.», «Ubic.»), solo en la prueba (E8.6).
-            . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas);
+            . PlanillaDePrueba::texto_de_columnas_sin_destino($hojas)
+            // Cuarta pasada, B4: las que se mandaron a no cargar por respuesta o por el mapeo previo.
+            . PlanillaDePrueba::texto_de_columnas_que_no_se_cargan($hojas, $run->decisiones ?? []);
     }
 
     /**

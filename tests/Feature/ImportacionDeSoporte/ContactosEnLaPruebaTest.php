@@ -840,6 +840,14 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
                     ->getStartColor()->setRGB('FFE699');
             } elseif ($estilo === 'combinada') {
                 $hoja->mergeCells('A' . $fila . ':D' . $fila);
+            } elseif ($estilo === 'combinada_con_la_de_al_lado') {
+                $hoja->mergeCells('A' . $fila . ':B' . $fila);
+            } elseif ($estilo === 'gris') {
+                $hoja->getStyle('A' . $fila . ':D' . $fila)->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                    ->getStartColor()->setRGB('D9D9D9');
+            } elseif ($estilo === 'rojo') {
+                $hoja->getStyle('A' . $fila . ':D' . $fila)->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                    ->getStartColor()->setRGB('FF0000');
             }
         }
         $archivo = tempnam(sys_get_temp_dir(), 'soporte_formato_');
@@ -874,7 +882,8 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
     public function test_a1_formato_un_titulo_fuera_del_vocabulario_en_negrita_queda_afuera_y_sin_formato_entra(): void
     {
         $ticket = 180;
-        foreach (['Fiado' => 'negrita', 'Constructoras' => 'relleno', 'Albañiles' => 'combinada', 'Los de siempre' => 'negrita'] as $titulo => $estilo) {
+        // Cuarta pasada: el relleno ya no es señal (ver el test de abajo); «Constructoras» va en negrita (antes, con relleno).
+        foreach (['Fiado' => 'negrita', 'Constructoras' => 'negrita', 'Albañiles' => 'combinada', 'Los de siempre' => 'negrita'] as $titulo => $estilo) {
             $prefijo = 'F' . substr(md5($titulo), 0, 5);
             $corrida = $this->cargar_con_formato($this->lista_con_titulo($titulo, $prefijo), [2 => $estilo], $ticket++);
             $this->assertSame(9, $corrida->resultado['creados'], $titulo);
@@ -924,5 +933,71 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
         $this->assertSame(10, $corrida->resumen['crear']);
         $this->assertContains('Fiado AC', $corrida->resumen['ejemplos_crear']);
         $this->assertArrayNotHasKey('filas_descartadas', $corrida->resumen);
+    }
+
+    // -----------------------------------------------------------------------------------------------------
+    // Cuarta pasada: A1 a A5 de punta a punta
+    // -----------------------------------------------------------------------------------------------------
+
+    public function test_a1_cuarta_pasada_gomez_entra_con_filas_alternadas_morosos_en_rojo_o_combinada_por_error(): void
+    {
+        // Gómez (fila 2) + 9 clientes con datos (filas 3 a 11).
+        $alternadas = [2 => 'gris', 4 => 'gris', 6 => 'gris', 8 => 'gris', 10 => 'gris'];
+        $morosos = [2 => 'rojo', 5 => 'rojo', 9 => 'rojo'];
+        $ticket = 200;
+        foreach (['alternadas' => $alternadas, 'morosos' => $morosos, 'combinada' => [2 => 'combinada_con_la_de_al_lado']] as $caso => $estilos) {
+            $prefijo = 'G' . substr(md5($caso), 0, 5);
+            $corrida = $this->cargar_con_formato($this->lista_con_titulo('Gómez ' . $prefijo, $prefijo), $estilos, $ticket++);
+            $this->assertSame(10, $corrida->resultado['creados'], $caso);
+            $this->assertTrue(Client::where('user_id', $this->dueno->id)->where('name', 'Gómez ' . $prefijo)->exists(), $caso);
+        }
+    }
+
+    public function test_a3_cuatro_grupos_con_senal_y_contactos_de_solo_nombre_mezclados(): void
+    {
+        $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo'], ['Clientes de la obra', null, null, null]];
+        for ($i = 1; $i <= 4; $i++) {
+            $filas[] = ['Obra G4 cliente ' . $i, null, '34110000' . $i, 100 * $i];
+        }
+        $filas[] = ['Del barrio', null, null, null];
+        $filas[] = ['Kiosco G4', null, null, null];
+        for ($i = 5; $i <= 8; $i++) {
+            $filas[] = ['Barrio G4 cliente ' . $i, null, '34110000' . $i, 100 * $i];
+        }
+        $filas[] = ['Fiado', null, null, null];
+        for ($i = 9; $i <= 12; $i++) {
+            $filas[] = ['Fiado G4 cliente ' . $i, null, '3411000' . $i, 100 * $i];
+        }
+        $filas[] = ['mayoristas', null, null, null];
+        $filas[] = ['Gómez G4', null, null, null];
+        $corrida = $this->cargar_con_formato($filas, [13 => 'negrita'], 210);
+        // 12 con datos y dos contactos de solo nombre; los cuatro grupos afuera, sin tope.
+        $this->assertSame(14, $corrida->resultado['creados']);
+        $this->assertSame(['Clientes de la obra', 'Del barrio', 'Fiado', 'mayoristas'], array_column($corrida->resumen['filas_descartadas'], 'texto'));
+        $this->assertTrue(Client::where('user_id', $this->dueno->id)->whereIn('name', ['Kiosco G4', 'Gómez G4'])->count() === 2);
+    }
+
+    public function test_a4_a5_la_nota_debajo_del_total_sin_nombre_y_la_nota_en_el_medio_quedan_afuera_y_el_total_se_nombra(): void
+    {
+        $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo']];
+        for ($i = 1; $i <= 5; $i++) {
+            $filas[] = ['Nota cliente ' . $i, null, '34110000' . $i, 1000 * $i];
+        }
+        $filas[] = ['ojo: este paga los viernes, no antes', null, null, null];
+        for ($i = 6; $i <= 9; $i++) {
+            $filas[] = ['Nota cliente ' . $i, null, '34110000' . $i, 1000 * $i];
+        }
+        $filas[] = [null, null, 'TOTAL', 45000];
+        $filas[] = [null, null, null, null];
+        $filas[] = ['Fulana dejó plata de más, descontarle en la próxima compra', null, null, null];
+        $corrida = $this->cargar_con_formato($filas, [], 211);
+        $this->assertSame(9, $corrida->resultado['creados']);
+        $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', 'like', 'Fulana%')->exists());
+        $this->assertSame([['fila' => 7, 'texto' => 'ojo: este paga los viernes, no antes', 'motivo' => 'nota'],
+            ['fila' => 12, 'texto' => 'TOTAL', 'motivo' => 'total'],
+            ['fila' => 14, 'texto' => 'Fulana dejó plata de más, descontarle en la próxima compra', 'motivo' => 'nota']],
+            $corrida->resumen['filas_descartadas']);
+        $this->assertStringContainsString('Dejé afuera 3 filas que no son clientes: «ojo: este paga los viernes, no antes», «TOTAL» y «Fulana'
+            . ' dejó plata de más, descontarle en la próxima compra». Si alguna era un cliente, decímelo y la cargo.', $this->avisos(211)->last()->texto);
     }
 }

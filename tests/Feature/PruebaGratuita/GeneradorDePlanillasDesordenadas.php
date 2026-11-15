@@ -2,6 +2,8 @@
 
 namespace Tests\Feature\PruebaGratuita;
 
+use App\Http\Controllers\Helpers\LocalImportHelper;
+
 /**
  * Arma, con una semilla fija, planillas de artículos y listas de contactos como las que manda un dueño en la prueba
  * (misión prueba-e2e-campana-imperio, ronda 6, E8.3, 14/11/2026), y dice cuáles filas son datos reales y cuáles no.
@@ -53,6 +55,15 @@ class GeneradorDePlanillasDesordenadas
      * (negrita), que los distingue de los contactos. Sin formato serían un contacto más.
      */
     const SUELTAS_CON_FORMATO = ['Fiado', 'Constructoras', 'Albañiles', 'Los de siempre', 'Gente del club', 'Plomeros'];
+    /*
+     * Notas con forma de oración (cuarta pasada, A4): quedan afuera estén donde estén (arriba, en el medio, debajo del
+     * total).
+     */
+    /* Totales del pie con rótulo largo (cuarta pasada, B1): la palabra de total y tres palabras o más. */
+    const TOTALES_LARGOS = ['TOTAL MERCADERIA (al costo)', 'Total de la lista de precios', 'TOTAL VALORIZADO DEL STOCK', 'Suma total de unidades en depósito'];
+    const NOTAS_CON_FORMA_DE_ORACION = ['Fulana dejó plata de más, descontarle en la próxima compra',
+        'ojo: este paga los viernes, no antes', 'Avisar a Marta que pasó el cheque y todavía no lo cobramos',
+        'los que siguen se cobran a fin de mes, sin recargo', 'Revisar con el contador antes de mandar los resúmenes del mes'];
     const CONTACTOS_REALES_DE_SOLO_NOMBRE = ['Gómez', 'Carla', 'Martín', 'juan perez', 'Juan pérez', 'Kiosco', 'Panadería',
         'la esquina', 'Pirulo', 'Del Valle', 'De la Fuente', 'Obras Sanitarias', 'Doña Rosa', 'Rotisería El Gallo', 'Del Río'];
 
@@ -158,6 +169,9 @@ class GeneradorDePlanillasDesordenadas
             $items = array_fill(0, mt_rand(6, 30), 'sin_codigo');
         }
         $cuantos = count($items);
+        $suma_de_stock = 0;
+        $suma_valorizada = 0.0;
+        $totales_largos = 0;
         $cada = (int) max(1, floor($cuantos / max(1, $rubros)));
         $codigo = 11;
         $stock_del_rubro = 0;
@@ -229,6 +243,11 @@ class GeneradorDePlanillasDesordenadas
                 $fila[5] = ucfirst(mb_strtolower($rubro_actual));
             }
             $stock_del_rubro += isset($fila[3]) && is_int($fila[3]) ? $fila[3] : 0;
+            // Cuarta pasada, B1: lo que suma la planilla de verdad, para el total largo con la suma real.
+            $suma_de_stock += isset($fila[3]) && is_int($fila[3]) ? $fila[3] : 0;
+            if (isset($fila[2], $fila[3]) && is_int($fila[3])) {
+                $suma_valorizada += \App\Http\Controllers\CommonLaravel\Helpers\ImportHelper::parseNumericValue($fila[2]) * $fila[3];
+            }
             $agregar($fila, true);
             $articulos_en_el_rubro++;
         }
@@ -244,7 +263,22 @@ class GeneradorDePlanillasDesordenadas
         if ($con_total) {
             $rotulo = self::al_azar(['TOTAL', 'TOTALES', 'TOTAL GENERAL', 'Total artículos: ' . $cuantos, 'Son ' . $cuantos . ' artículos']);
             $columna = $con_codigo && mt_rand(0, 3) === 0 ? 0 : 1;
-            $agregar([$columna => $rotulo, 3 => mt_rand(0, 1) === 1 ? mt_rand(100, 900) : null], false);
+            if (mt_rand(0, 2) === 0 && ($suma_de_stock !== 0 || $suma_valorizada > 0)) {
+                /*
+                 * Cuarta pasada, B1: el total del pie con un rótulo largo y la suma REAL de la planilla (el stock, o
+                 * cantidad × precio en la columna del precio). En una hoja con códigos alcanza la forma; en las demás,
+                 * la suma.
+                 */
+                $largo = self::al_azar(self::TOTALES_LARGOS);
+                if ($con_precio && $suma_valorizada > 0 && mt_rand(0, 1) === 0) {
+                    $agregar([1 => $largo, 2 => round($suma_valorizada, 2)], false);
+                } else {
+                    $agregar([1 => $largo, 3 => $suma_de_stock], false);
+                }
+                $totales_largos++;
+            } else {
+                $agregar([$columna => $rotulo, 3 => mt_rand(0, 1) === 1 ? mt_rand(100, 900) : null], false);
+            }
         }
         $notas = ($tipo === 'con' || $con_total) ? $notas : 0;
         for ($i = 0; $i < $notas; $i++) {
@@ -265,6 +299,7 @@ class GeneradorDePlanillasDesordenadas
         return [
             'filas' => $filas, 'inicio' => $fila_de_cabecera + 1, 'mapeo' => $mapeo, 'titulos' => $titulos, 'datos' => $datos,
             'no_datos' => $no_datos, 'con_codigos' => $tipo === 'con', 'tipo' => $tipo, 'cabecera' => $fila_de_cabecera, 'caso' => $caso,
+            'totales_largos' => $totales_largos,
         ];
     }
 
@@ -380,9 +415,13 @@ class GeneradorDePlanillasDesordenadas
         };
         if (!in_array('solo_nombre', $tipos, true) && $cuantos >= 5) {
             $columna_en_negrita = mt_rand(0, 4) === 0;
-            $cupo = min(2, intdiv($cuantos, 4));
-            $sueltas = mt_rand(0, $cupo);
-            $reales = mt_rand(0, $cupo - $sueltas);
+            /*
+             * Cuarta pasada: sin tope de grupos (de 0 a 5), mientras los contactos con datos sean clara mayoría: al menos
+             * 2 por cada fila de solo nombre (los títulos con señal, los grupos y los contactos reales de solo nombre).
+             */
+            $cupo = max(0, intdiv($cuantos, LocalImportHelper::CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE) - $titulos);
+            $sueltas = mt_rand(0, min(5, $cupo));
+            $reales = mt_rand(0, min(2, $cupo - $sueltas));
             for ($s = 0; $s < $reales; $s++) {
                 $poner('real');
             }
@@ -394,6 +433,8 @@ class GeneradorDePlanillasDesordenadas
             $poner('real');
         }
         $total = 0;
+        $notas_con_forma_de_oracion = 0;
+        $totales_sin_nombre = 0;
         foreach ($tipos as $i => $tipo) {
             if (isset($sueltas_en[$i]) && $sueltas_en[$i] === 'formato') {
                 $agregar([0 => self::al_azar(self::SUELTAS_CON_FORMATO)], false);
@@ -410,6 +451,11 @@ class GeneradorDePlanillasDesordenadas
             }
             if (mt_rand(0, 8) === 0) {
                 $agregar([], null);
+            }
+            // Una nota con forma de oración en el medio (A4): afuera, esté donde esté.
+            if ($con_datos >= 3 && mt_rand(0, 25) === 0) {
+                $agregar([0 => self::al_azar(self::NOTAS_CON_FORMA_DE_ORACION)], false);
+                $notas_con_forma_de_oracion++;
             }
             /*
              * EXCLUIDO: contactos de solo nombre escritos todo en mayúsculas con más de una palabra («FERRETERIA
@@ -439,10 +485,19 @@ class GeneradorDePlanillasDesordenadas
         $con_total = mt_rand(0, 2) > 0;
         if ($con_total) {
             $rotulo = self::al_azar(['TOTAL', 'Total', 'Total: ' . $cuantos . ' clientes', 'Son ' . $cuantos . ' clientes', 'TOTAL GENERAL']);
-            $agregar([0 => $rotulo, 3 => mt_rand(0, 2) > 0 ? $total : null], false);
+            if (mt_rand(0, 3) === 0) {
+                // Cuarta pasada, A4 y A5: el rótulo en otra columna (sin nombre) y la suma en la del saldo.
+                $agregar([2 => self::al_azar(['TOTAL', 'Total', 'TOTAL GENERAL']), 3 => $total], false);
+                $totales_sin_nombre++;
+                if (mt_rand(0, 1) === 0) {
+                    $agregar([], null);
+                }
+            } else {
+                $agregar([0 => $rotulo, 3 => mt_rand(0, 2) > 0 ? $total : null], false);
+            }
             $notas = mt_rand(0, 2);
             for ($i = 0; $i < $notas; $i++) {
-                $agregar([0 => self::al_azar(self::NOTAS_DE_CONTACTOS)], false);
+                $agregar([0 => mt_rand(0, 1) === 0 ? self::al_azar(self::NOTAS_DE_CONTACTOS) : self::al_azar(self::NOTAS_CON_FORMA_DE_ORACION)], false);
             }
         }
 
@@ -451,6 +506,9 @@ class GeneradorDePlanillasDesordenadas
             'datos' => $datos, 'no_datos' => $no_datos, 'caso' => $caso, 'sueltas' => count(array_keys($sueltas_en, 'suelta', true)) + count(array_keys($sueltas_en, 'formato', true)),
             'reales_de_solo_nombre' => count(array_keys($sueltas_en, 'real', true)),
             'sueltas_con_formato' => count(array_keys($sueltas_en, 'formato', true)),
+            'notas_con_forma_de_oracion' => $notas_con_forma_de_oracion,
+            'totales_sin_nombre' => $totales_sin_nombre,
+            'grupos' => count(array_keys($sueltas_en, 'suelta', true)) + count(array_keys($sueltas_en, 'formato', true)) + $titulos,
             // Fila => la celda del nombre en negrita: las sueltas con formato y, a veces, la columna entera.
             'formato' => $columna_en_negrita ? $formato + array_fill_keys($datos, true) : $formato,
         ];

@@ -83,17 +83,105 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
     {
         // Cuatro con datos: menos que CONTACTOS_CON_DATOS_PARA_SUELTAS.
         $this->assertSame([], self::afuera(array_merge([self::sola('Mayoristas')], self::con_datos(LocalImportHelper::CONTACTOS_CON_DATOS_PARA_SUELTAS - 1))));
-        // Dos sueltas con solo 7 contactos con datos (hacen falta 4 por cada una): no se descarta ninguna.
-        $this->assertSame([], self::afuera(array_merge([self::sola('Mayoristas')], self::con_datos(7), [self::sola('Minoristas')])));
+        // Cuarta pasada (A3): sin tope, pero con los contactos con datos en clara mayoría (2 por cada fila de solo
+        // nombre). Cuatro grupos con 7 contactos con datos: no alcanza, entran (cambió a propósito: antes «dos sueltas
+        // con 7» entraban por el tope de dos; ahora quedan afuera, ver el test de abajo).
+        $this->assertSame([], self::afuera(array_merge([self::sola('Mayoristas'), self::sola('Minoristas')], self::con_datos(7),
+            [self::sola('Particulares'), self::sola('Revendedores')])));
+        $this->assertSame(['Mayoristas' => 'suelta', 'Minoristas' => 'suelta'],
+            self::afuera(array_merge([self::sola('Mayoristas')], self::con_datos(7), [self::sola('Minoristas')])));
     }
 
-    public function test_con_mas_de_dos_filas_de_solo_nombre_la_lista_carga_contactos_asi_y_entran_todas(): void
+    public function test_sin_tope_los_grupos_con_senal_quedan_afuera_y_los_contactos_de_solo_nombre_entran(): void
     {
+        // Cuarta pasada (A3; cambió a propósito: con el tope de dos «dudaba» y entraban todas). Los grupos con señal
+        // quedan afuera aunque sean varios; los contactos de solo nombre sin señal entran.
         $filas = array_merge([self::sola('Mayoristas')], self::con_datos(30), [self::sola('Pirulo'), self::sola('Particulares')]);
-        $this->assertSame([], self::afuera($filas));
-        // Un contacto de solo nombre con forma de nombre propio cuenta para dudar: con él y dos sueltas, entran las tres.
+        $this->assertSame(['Mayoristas' => 'suelta', 'Particulares' => 'suelta'], self::afuera($filas));
         $filas = array_merge([self::sola('Mayoristas')], self::con_datos(30), [self::sola('Juan Pérez'), self::sola('Minoristas')]);
-        $this->assertSame([], self::afuera($filas));
+        $this->assertSame(['Mayoristas' => 'suelta', 'Minoristas' => 'suelta'], self::afuera($filas));
+        // Cuatro grupos con señal (vocabulario, preposición, negrita exclusiva y mayúsculas) y contactos reales de solo
+        // nombre mezclados, en una lista de 12 con datos.
+        $filas = array_merge([self::sola('clientes del centro')], self::con_datos(4), [self::sola('Gómez'), self::sola('Del barrio')],
+            self::con_datos(4, 'Medio'), [self::sola('Fiado'), self::sola('Kiosco'), self::sola('DEUDORES VARIOS')], self::con_datos(4, 'Fin'));
+        $formato = [];
+        foreach ($filas as $i => $fila) {
+            if ($fila[0] === 'Fiado') {
+                $formato[$i + 2] = LocalImportHelper::FORMATO_NEGRITA;
+            }
+        }
+        $con_cabecera = array_merge([self::CABECERA], $filas);
+        $descartes = LocalImportHelper::filas_que_no_son_contactos_de($con_cabecera, self::COLUMNAS, 2, count($con_cabecera), $formato);
+        $this->assertSame(['clientes del centro', 'Del barrio', 'Fiado', 'DEUDORES VARIOS'], array_values(array_column($descartes, 1)));
+    }
+
+    public function test_cuarta_pasada_el_formato_cuenta_solo_la_negrita_exclusiva_y_la_combinada_ancha(): void
+    {
+        $filas = [self::CABECERA, self::sola('Gómez')];
+        for ($i = 1; $i <= 9; $i++) {
+            $filas[] = ['Contacto con datos ' . $i, null, '3442 40' . $i, 1000 * $i];
+        }
+        $afuera = function (array $formato) use ($filas) {
+            return LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas), $formato);
+        };
+        // Negrita con algún contacto con datos también en negrita (los morosos en rojo y negrita, filas alternadas):
+        // no distingue, «Gómez» entra.
+        $this->assertSame([], $afuera([2 => LocalImportHelper::FORMATO_NEGRITA, 5 => LocalImportHelper::FORMATO_NEGRITA]));
+        // Negrita exclusiva: afuera. Combinada ancha: afuera aunque haya negritas en los datos.
+        $this->assertSame([2 => ['suelta', 'Gómez']], $afuera([2 => LocalImportHelper::FORMATO_NEGRITA]));
+        $this->assertSame([2 => ['suelta', 'Gómez']], $afuera([2 => LocalImportHelper::FORMATO_COMBINADA_ANCHA, 5 => LocalImportHelper::FORMATO_NEGRITA]));
+    }
+
+    public function test_cuarta_pasada_en_una_lista_en_minuscula_la_minuscula_no_dice_nada(): void
+    {
+        $filas = [self::CABECERA];
+        foreach (['juan gomez', 'ana diaz', 'carlos ruiz', 'marta paz', 'hugo rey', 'elsa sosa', 'luis vega', 'rosa luna', 'pedro gil'] as $i => $nombre) {
+            $filas[] = [$nombre, null, '3442 40' . $i, 100 * ($i + 1)];
+        }
+        foreach (['de la torre', 'del valle', 'de los santos', 'mayoristas del centro'] as $nombre) {
+            $lista = $filas;
+            array_splice($lista, 4, 0, [self::sola($nombre)]);
+            $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($lista, self::COLUMNAS, 2, count($lista)), $nombre);
+        }
+        // Una palabra sola del vocabulario sigue valiendo.
+        $lista = $filas;
+        array_splice($lista, 4, 0, [self::sola('mayoristas')]);
+        $this->assertSame(['mayoristas'], array_values(array_column(LocalImportHelper::filas_que_no_son_contactos_de($lista, self::COLUMNAS, 2,
+            count($lista)), 1)));
+        // Y en una lista con mayúsculas, la preposición en minúscula es un grupo.
+        $this->assertSame(['de la zona norte' => 'suelta'], self::afuera(array_merge([self::sola('de la zona norte')], self::con_datos(9))));
+    }
+
+    public function test_cuarta_pasada_ya_no_son_grupos_nuevo_viejo_contado_activo(): void
+    {
+        foreach (['Nuevo', 'Viejo', 'Contado', 'Activo', 'Nuevos', 'Viejos'] as $nombre) {
+            $this->assertSame([], self::afuera(array_merge([self::sola($nombre)], self::con_datos(9))), $nombre);
+        }
+    }
+
+    public function test_cuarta_pasada_las_notas_con_forma_de_oracion_y_el_pie_debajo_del_total(): void
+    {
+        $nota = 'Fulana dejó plata de más, descontarle en la próxima compra';
+        // Debajo del total sin nombre (el rótulo en la columna del teléfono) y de una fila vacía: afuera, y el total
+        // también se nombra.
+        $filas = array_merge([self::CABECERA], self::con_datos(9), [[null, null, 'TOTAL', 45000], [null, null, null, null], self::sola($nota)]);
+        $descartes = LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas));
+        $this->assertSame([11 => ['total', 'TOTAL'], 13 => ['nota', $nota]], $descartes);
+        // Una nota de solo nombre debajo del total (sin forma de oración) también.
+        $filas = array_merge([self::CABECERA], self::con_datos(9), [[null, null, 'TOTAL', 45000], self::sola('Pedro')]);
+        $this->assertSame([11 => ['total', 'TOTAL'], 12 => ['nota', 'Pedro']],
+            LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas)));
+        // Arriba y en el medio: afuera por su forma.
+        foreach (['ojo: este paga los viernes, no antes', 'Avisar a Marta que pasó el cheque y todavía no lo cobramos'] as $texto) {
+            $this->assertSame([$texto => 'nota'], self::afuera(array_merge([self::sola($texto)], self::con_datos(9))), 'arriba: ' . $texto);
+            $this->assertSame([$texto => 'nota'], self::afuera(array_merge(self::con_datos(4), [self::sola($texto)], self::con_datos(5, 'Otro'))),
+                'en el medio: ' . $texto);
+        }
+        // Nombres largos o con coma siguen entrando.
+        foreach (['Consorcio Edificio Rivadavia 845', 'Cooperativa de Trabajo La Unión Limitada', 'Gómez, Jorge (albañil)',
+            'Pérez, Juan Carlos', 'Asociación de Fomento Villa del Parque'] as $nombre) {
+            $this->assertSame([], self::afuera(array_merge(self::con_datos(4), [self::sola($nombre)], self::con_datos(5, 'Otro'))), $nombre);
+        }
     }
 
     public function test_los_contactos_de_solo_nombre_con_forma_de_contacto_entran(): void

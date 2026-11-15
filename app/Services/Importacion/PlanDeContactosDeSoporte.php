@@ -18,7 +18,6 @@ use PhpOffice\PhpSpreadsheet\IOFactory;
 use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
 use PhpOffice\PhpSpreadsheet\Reader\Xls as XlsReader;
 use PhpOffice\PhpSpreadsheet\Reader\Xlsx as XlsxReader;
-use PhpOffice\PhpSpreadsheet\Style\Fill;
 use RuntimeException;
 
 /**
@@ -549,11 +548,12 @@ class PlanDeContactosDeSoporte
     }
 
     /**
-     * La celda del nombre de cada fila está destacada (negrita, relleno o combinada con las de al lado)? Ronda 8, A1,
-     * tercera pasada: es la señal de un título de grupo que no está en el vocabulario («Fiado», «Constructoras»).
+     * El formato de la celda del nombre de cada fila, en bits (LocalImportHelper::FORMATO_*): en negrita, y combinada
+     * con tres columnas o más. Ronda 8, A1: es la señal de un título de grupo fuera del vocabulario («Fiado»). El
+     * relleno de color no se lee: no es señal (cuarta pasada: así se marcan morosos y filas alternadas).
      *
-     * Solo se lee si la lista puede tener sueltas (contexto_de_contactos(): 5 contactos con datos o más, 1 o 2 filas
-     * de solo nombre sin señal, 4 con datos por cada una): en cualquier otro caso no cambiaría nada. Se abre el archivo
+     * Solo se lee si la lista puede tener títulos de grupo (contexto_de_contactos(): 5 contactos con datos o más, alguna
+     * fila de solo nombre y los contactos con datos en clara mayoría): si no, no cambiaría nada. Se abre el archivo
      * con estilos y un filtro que lee SOLO la columna del nombre (medido con 5.000 filas: ~1 a 1,3 s y ~4 a 8 MB más).
      * CSV o un archivo que no se pueda leer así: sin señal, como hasta hoy.
      *
@@ -561,14 +561,13 @@ class PlanDeContactosDeSoporte
      * @param  string               $ruta
      * @param  mixed                $filas     Las de FilasDeUnaHoja
      * @param  array                $columnas
-     * @return array<int, bool>     Número de fila (1 = la primera de la hoja) => destacada
+     * @return array<int, int>      Número de fila (1 = la primera de la hoja) => bits de formato
      */
     private static function formato_del_nombre(ImportacionDeSoporte $corrida, string $ruta, $filas, array $columnas): array
     {
         $contexto = LocalImportHelper::contexto_de_contactos($filas, $columnas, (int) $corrida->fila_inicio, count($filas));
-        if ($contexto['con_datos'] < LocalImportHelper::CONTACTOS_CON_DATOS_PARA_SUELTAS || $contexto['sin_senal'] < 1
-            || $contexto['sin_senal'] > LocalImportHelper::MAXIMO_DE_SUELTAS
-            || $contexto['con_datos'] < $contexto['sin_senal'] * LocalImportHelper::CONTACTOS_CON_DATOS_POR_SUELTA) {
+        if ($contexto['con_datos'] < LocalImportHelper::CONTACTOS_CON_DATOS_PARA_SUELTAS || $contexto['solo_nombre'] < 1
+            || $contexto['con_datos'] < $contexto['solo_nombre'] * LocalImportHelper::CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE) {
             return [];
         }
 
@@ -607,7 +606,8 @@ class PlanDeContactosDeSoporte
             $combinadas = [];
             foreach ($hoja->getMergeCells() as $rango) {
                 list($desde, $hasta) = Coordinate::rangeBoundaries($rango);
-                if ($desde[0] <= (int) $columnas['nombre'] + 1 && $hasta[0] >= (int) $columnas['nombre'] + 1 && $hasta[0] > $desde[0]) {
+                // Combinada ancha: tres columnas o más. Dos celdas vecinas combinadas (por error) no dicen nada.
+                if ($desde[0] <= (int) $columnas['nombre'] + 1 && $hasta[0] >= (int) $columnas['nombre'] + 1 && $hasta[0] - $desde[0] >= 2) {
                     for ($fila = $desde[1]; $fila <= $hasta[1]; $fila++) {
                         $combinadas[$fila] = true;
                     }
@@ -616,11 +616,8 @@ class PlanDeContactosDeSoporte
             $formato = [];
             $ultima = count($filas);
             for ($fila = (int) $corrida->fila_inicio; $fila <= $ultima; $fila++) {
-                $estilo = $hoja->getStyle($letra . $fila);
-                $relleno = $estilo->getFill()->getFillType();
-                $formato[$fila] = $estilo->getFont()->getBold() === true || isset($combinadas[$fila])
-                    || ($relleno !== null && $relleno !== Fill::FILL_NONE
-                        && strtoupper((string) $estilo->getFill()->getStartColor()->getRGB()) !== 'FFFFFF');
+                $formato[$fila] = ($hoja->getStyle($letra . $fila)->getFont()->getBold() === true ? LocalImportHelper::FORMATO_NEGRITA : 0)
+                    | (isset($combinadas[$fila]) ? LocalImportHelper::FORMATO_COMBINADA_ANCHA : 0);
             }
             $libro->disconnectWorksheets();
 
