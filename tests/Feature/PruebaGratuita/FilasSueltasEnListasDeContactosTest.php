@@ -150,4 +150,27 @@ class FilasSueltasEnListasDeContactosTest extends TestCase
         // Un contacto real de solo nombre y un grupo en la misma lista: el contacto entra y el grupo queda afuera.
         $this->assertSame(['Mayoristas'], array_keys(self::afuera(array_merge([self::sola('Mayoristas')], $datos, [self::sola('Gómez')]))));
     }
+
+    public function test_tercera_pasada_la_senal_de_formato(): void
+    {
+        $filas = [self::CABECERA, self::sola('Fiado')];
+        for ($i = 1; $i <= 9; $i++) {
+            $filas[] = ['Contacto con datos ' . $i, null, '3442 40' . $i, 1000 * $i];
+        }
+        $afuera = function (array $formato) use ($filas) {
+            return LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas), $formato);
+        };
+        $this->assertSame([2 => ['suelta', 'Fiado']], $afuera([2 => true]), 'En negrita y los demás no: afuera.');
+        $this->assertSame([], $afuera([]), 'Sin formato: entra.');
+        $todas = array_fill_keys(range(2, 11), true);
+        $this->assertSame([], $afuera($todas), 'Toda la columna en negrita no es señal.');
+        // La mitad de los contactos con datos en negrita: tampoco distingue.
+        $this->assertSame([], $afuera([2 => true, 3 => true, 4 => true, 5 => true, 6 => true, 7 => true]));
+        // Una razón social destacada entra igual; sin las condiciones de lista no se juzga.
+        $filas[1] = self::sola('Constructora Norte SRL');
+        $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($filas, self::COLUMNAS, 2, count($filas), [2 => true]));
+        $cortas = array_slice($filas, 0, 5);
+        $cortas[1] = self::sola('Fiado');
+        $this->assertSame([], LocalImportHelper::filas_que_no_son_contactos_de($cortas, self::COLUMNAS, 2, count($cortas), [2 => true]));
+    }
 }

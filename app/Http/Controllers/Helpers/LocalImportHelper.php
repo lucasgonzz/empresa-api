@@ -219,8 +219,10 @@ class LocalImportHelper {
 	 * @param  int                                  $finish_row  1-based, incluida
 	 * @return array<int, array>
 	 */
-	static function filas_que_no_son_contactos_de($rows, $columns, $start_row, $finish_row) {
-		$contexto = self::contexto_de_contactos($rows, $columns, $start_row, $finish_row);
+	static function filas_que_no_son_contactos_de($rows, $columns, $start_row, $finish_row, array $formato = []) {
+		// $formato (ronda 8, A1, tercera pasada): número de fila => la celda del nombre está destacada (negrita, relleno o
+		// combinada). Lo arma quien puede leer el archivo con estilos; vacío (ClientImport, CSV) = sin señal, como hasta hoy.
+		$contexto = self::contexto_de_contactos($rows, $columns, $start_row, $finish_row, $formato);
 		$descartes = [];
 		$despues_del_total = false;
 		$numero = 0;
@@ -258,7 +260,8 @@ class LocalImportHelper {
 	 * @param  int                                  $finish_row
 	 * @return array
 	 */
-	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row) {
+	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row, array $formato = []) {
+		$con_datos_destacados = 0;
 		$cabecera = [];
 		$con_datos = 0;
 		$mayusculas = 0;
@@ -294,6 +297,7 @@ class LocalImportHelper {
 			}
 			if ($otros) {
 				$con_datos++;
+				$con_datos_destacados += !empty($formato[$numero]) ? 1 : 0;
 				$mayusculas += self::en_mayusculas($nombre) ? 1 : 0;
 			} elseif (!self::senal_fuerte_de_titulo($nombre) && !self::senal_debil_de_titulo($nombre)) {
 				$sin_senal[] = $numero;
@@ -310,6 +314,9 @@ class LocalImportHelper {
 			'nombres_en_mayusculas' => $mayusculas * 4 > $con_datos,
 			'cabecera'              => $cabecera,
 			'ultima_con_datos'      => $ultima_con_datos,
+			// El formato distingue solo si la mayoría de los contactos con datos NO lo tiene (toda la columna en negrita no
+			// dice nada).
+			'formato'               => $con_datos_destacados * 2 < $con_datos ? $formato : [],
 		];
 	}
 
@@ -387,7 +394,7 @@ class LocalImportHelper {
 		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::senal_debil_de_titulo($nombre)) {
 			return ['titulo', $nombre];
 		}
-		if (self::es_fila_suelta($nombre, $contexto)) {
+		if (self::es_fila_suelta($nombre, $contexto, !empty($contexto['formato'][(int) $numero]))) {
 			return ['suelta', $nombre];
 		}
 
@@ -443,12 +450,19 @@ class LocalImportHelper {
 	 * @param  array  $contexto  El de contexto_de_contactos()
 	 * @return bool
 	 */
-	private static function es_fila_suelta($nombre, array $contexto) {
+	private static function es_fila_suelta($nombre, array $contexto, $destacada = false) {
 		$con_datos = (int) $contexto['con_datos'];
 		$sueltas = (int) $contexto['sin_senal'];
 		if ($con_datos < self::CONTACTOS_CON_DATOS_PARA_SUELTAS || $sueltas < 1 || $sueltas > self::MAXIMO_DE_SUELTAS
 			|| $con_datos < $sueltas * self::CONTACTOS_CON_DATOS_POR_SUELTA) {
 			return false;
+		}
+		// Señal de FORMATO (tercera pasada): la celda del nombre está destacada y eso la distingue de los contactos con
+		// datos (ver contexto_de_contactos()). Vale para cualquier texto («Fiado», «Constructoras», «Los de siempre»)
+		// salvo una razón social o un cliente genérico. Un «Gómez» en negrita entre clientes en letra normal queda afuera:
+		// sale nombrado en el aviso.
+		if ($destacada) {
+			return !self::nunca_es_titulo($nombre);
 		}
 		if (self::nunca_es_titulo($nombre) || self::parece_un_nombre_propio($nombre) || self::en_mayusculas($nombre)
 			|| preg_match('/\d/u', $nombre) === 1) {

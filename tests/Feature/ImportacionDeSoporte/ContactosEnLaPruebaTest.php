@@ -817,4 +817,112 @@ class ContactosEnLaPruebaTest extends ImportacionDeSoporteTestCase
             . ' el saldo de tu planilla ($800) porque su cuenta ya tenía movimientos: en el sistema sigue con $500. Si algo no coincide'
             . ' con tu lista, decímelo y lo deshago.', $this->avisos(170)->last()->texto);
     }
+
+    // -----------------------------------------------------------------------------------------------------
+    // A1, tercera pasada: la señal de formato
+    // -----------------------------------------------------------------------------------------------------
+
+    /**
+     * Una planilla con formato en la columna del nombre: fila => 'negrita' | 'relleno' | 'combinada'. La cabecera va en
+     * negrita, como la escribe cualquiera.
+     */
+    private function planilla_con_formato(array $filas, array $estilos): string
+    {
+        $libro = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $hoja = $libro->getActiveSheet()->setTitle('Hoja 0');
+        $hoja->fromArray($filas, null, 'A1', true);
+        $hoja->getStyle('A1:D1')->getFont()->setBold(true);
+        foreach ($estilos as $fila => $estilo) {
+            if ($estilo === 'negrita') {
+                $hoja->getStyle('A' . $fila)->getFont()->setBold(true);
+            } elseif ($estilo === 'relleno') {
+                $hoja->getStyle('A' . $fila)->getFill()->setFillType(\PhpOffice\PhpSpreadsheet\Style\Fill::FILL_SOLID)
+                    ->getStartColor()->setRGB('FFE699');
+            } elseif ($estilo === 'combinada') {
+                $hoja->mergeCells('A' . $fila . ':D' . $fila);
+            }
+        }
+        $archivo = tempnam(sys_get_temp_dir(), 'soporte_formato_');
+        (new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($libro))->save($archivo);
+        $libro->disconnectWorksheets();
+        $this->archivos[] = $archivo;
+
+        return $archivo;
+    }
+
+    /** Un título arriba (fila 2) y 9 clientes con teléfono y saldo. */
+    private function lista_con_titulo(string $titulo, string $prefijo): array
+    {
+        $filas = [['Cliente', 'CUIT', 'Tel.', 'Saldo'], [$titulo, null, null, null]];
+        for ($i = 1; $i <= 9; $i++) {
+            $filas[] = [$prefijo . ' cliente ' . $i, null, '3411' . str_pad((string) $i, 6, '0', STR_PAD_LEFT), 100 * $i];
+        }
+
+        return $filas;
+    }
+
+    private function cargar_con_formato(array $filas, array $estilos, int $ticket): ImportacionDeSoporte
+    {
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'cuit', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar_en_la_prueba('client', $this->planilla_con_formato($filas, $estilos), $ticket, 'f.xlsx')->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('terminada', $corrida->estado, (string) $corrida->error);
+
+        return $corrida;
+    }
+
+    public function test_a1_formato_un_titulo_fuera_del_vocabulario_en_negrita_queda_afuera_y_sin_formato_entra(): void
+    {
+        $ticket = 180;
+        foreach (['Fiado' => 'negrita', 'Constructoras' => 'relleno', 'Albañiles' => 'combinada', 'Los de siempre' => 'negrita'] as $titulo => $estilo) {
+            $prefijo = 'F' . substr(md5($titulo), 0, 5);
+            $corrida = $this->cargar_con_formato($this->lista_con_titulo($titulo, $prefijo), [2 => $estilo], $ticket++);
+            $this->assertSame(9, $corrida->resultado['creados'], $titulo);
+            $this->assertFalse(Client::where('user_id', $this->dueno->id)->where('name', $titulo)->exists(), $titulo);
+            $this->assertSame([['fila' => 2, 'texto' => $titulo, 'motivo' => 'suelta']], $corrida->resumen['filas_descartadas'], $titulo);
+            $this->assertStringContainsString('Dejé afuera 1 fila que no es un cliente: «' . $titulo . '». Si era un cliente, decímelo y la'
+                . ' cargo.', $this->avisos($ticket - 1)->last()->texto);
+
+            // La misma planilla sin formato: entra como un cliente más (no está en el vocabulario).
+            $prefijo = 'S' . substr(md5($titulo), 0, 5);
+            $corrida = $this->cargar_con_formato($this->lista_con_titulo($titulo . ' S', $prefijo), [], $ticket++);
+            $this->assertSame(10, $corrida->resultado['creados'], $titulo . ' sin formato');
+            $this->assertTrue(Client::where('user_id', $this->dueno->id)->where('name', $titulo . ' S')->exists());
+        }
+    }
+
+    public function test_a1_formato_con_toda_la_columna_en_negrita_no_es_senal_y_gomez_sin_formato_entra(): void
+    {
+        $filas = $this->lista_con_titulo('Fiado TC', 'TC');
+        $todas = [];
+        for ($fila = 2; $fila <= 11; $fila++) {
+            $todas[$fila] = 'negrita';
+        }
+        $corrida = $this->cargar_con_formato($filas, $todas, 190);
+        $this->assertSame(10, $corrida->resultado['creados']);
+        $this->assertTrue(Client::where('user_id', $this->dueno->id)->where('name', 'Fiado TC')->exists());
+
+        // «Gómez» en letra normal entre clientes en letra normal: entra. En negrita queda afuera y se nombra.
+        $corrida = $this->cargar_con_formato($this->lista_con_titulo('Gómez GN', 'GN'), [], 191);
+        $this->assertSame(10, $corrida->resultado['creados']);
+        $corrida = $this->cargar_con_formato($this->lista_con_titulo('Gómez GB', 'GB'), [2 => 'negrita'], 192);
+        $this->assertSame(9, $corrida->resultado['creados']);
+        $this->assertSame('Gómez GB', $corrida->resumen['filas_descartadas'][0]['texto']);
+        // Una razón social en negrita entra igual.
+        $corrida = $this->cargar_con_formato($this->lista_con_titulo('Constructora Norte SRL', 'RS'), [2 => 'negrita'], 193);
+        $this->assertSame(10, $corrida->resultado['creados']);
+    }
+
+    public function test_a1_formato_un_activo_no_cambia(): void
+    {
+        $this->apagar_la_prueba();
+        $this->analizador(AiClientAnalyzer::class, ['nombre', 'cuit', 'telefono', 'saldo_actual']);
+        $uuid = $this->iniciar('client', $this->planilla_con_formato($this->lista_con_titulo('Fiado AC', 'AC'), [2 => 'negrita']), 194)
+            ->json('corrida.corrida_id');
+        $corrida = $this->avanzar($uuid);
+        $this->assertSame('confirmacion', $corrida->estado);
+        $this->assertSame(10, $corrida->resumen['crear']);
+        $this->assertContains('Fiado AC', $corrida->resumen['ejemplos_crear']);
+        $this->assertArrayNotHasKey('filas_descartadas', $corrida->resumen);
+    }
 }

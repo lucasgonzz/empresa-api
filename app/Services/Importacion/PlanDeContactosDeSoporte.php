@@ -13,6 +13,12 @@ use App\Models\Provider;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
+use PhpOffice\PhpSpreadsheet\Reader\Xls as XlsReader;
+use PhpOffice\PhpSpreadsheet\Reader\Xlsx as XlsxReader;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
 use RuntimeException;
 
 /**
@@ -169,7 +175,7 @@ class PlanDeContactosDeSoporte
         // ni a las filas crudas: ninguna tanda la ve y el control no espera su alta. Todas salen nombradas.
         $modo_prueba = (bool) $corrida->modo_prueba;
         $descartes = $modo_prueba ? LocalImportHelper::filas_que_no_son_contactos_de($lector->filas, $columnas,
-            (int) $corrida->fila_inicio, count($lector->filas)) : [];
+            (int) $corrida->fila_inicio, count($lector->filas), self::formato_del_nombre($corrida, $ruta, $lector->filas, $columnas)) : [];
         $descartadas = [];
 
         // 1) Las filas con nombre (las que el importador no saltea), como las recorre él.
@@ -540,6 +546,88 @@ class PlanDeContactosDeSoporte
             'saldos_a_favor' => $con_saldo_a_favor,
             'saldo_total_a_favor' => round($a_favor, 2),
         ];
+    }
+
+    /**
+     * La celda del nombre de cada fila está destacada (negrita, relleno o combinada con las de al lado)? Ronda 8, A1,
+     * tercera pasada: es la señal de un título de grupo que no está en el vocabulario («Fiado», «Constructoras»).
+     *
+     * Solo se lee si la lista puede tener sueltas (contexto_de_contactos(): 5 contactos con datos o más, 1 o 2 filas
+     * de solo nombre sin señal, 4 con datos por cada una): en cualquier otro caso no cambiaría nada. Se abre el archivo
+     * con estilos y un filtro que lee SOLO la columna del nombre (medido con 5.000 filas: ~1 a 1,3 s y ~4 a 8 MB más).
+     * CSV o un archivo que no se pueda leer así: sin señal, como hasta hoy.
+     *
+     * @param  ImportacionDeSoporte $corrida
+     * @param  string               $ruta
+     * @param  mixed                $filas     Las de FilasDeUnaHoja
+     * @param  array                $columnas
+     * @return array<int, bool>     Número de fila (1 = la primera de la hoja) => destacada
+     */
+    private static function formato_del_nombre(ImportacionDeSoporte $corrida, string $ruta, $filas, array $columnas): array
+    {
+        $contexto = LocalImportHelper::contexto_de_contactos($filas, $columnas, (int) $corrida->fila_inicio, count($filas));
+        if ($contexto['con_datos'] < LocalImportHelper::CONTACTOS_CON_DATOS_PARA_SUELTAS || $contexto['sin_senal'] < 1
+            || $contexto['sin_senal'] > LocalImportHelper::MAXIMO_DE_SUELTAS
+            || $contexto['con_datos'] < $contexto['sin_senal'] * LocalImportHelper::CONTACTOS_CON_DATOS_POR_SUELTA) {
+            return [];
+        }
+
+        try {
+            $lector = IOFactory::createReaderForFile($ruta);
+            if (!($lector instanceof XlsxReader) && !($lector instanceof XlsReader)) {
+                return [];
+            }
+            $hojas = $lector->listWorksheetNames($ruta);
+            $nombre_de_hoja = is_string($corrida->hoja_nombre) && in_array($corrida->hoja_nombre, $hojas, true)
+                ? $corrida->hoja_nombre : ($hojas[(int) $corrida->hoja] ?? null);
+            if (is_null($nombre_de_hoja)) {
+                return [];
+            }
+            $letra = Coordinate::stringFromColumnIndex((int) $columnas['nombre'] + 1);
+            $lector->setReadDataOnly(false);
+            $lector->setLoadSheetsOnly([$nombre_de_hoja]);
+            $lector->setReadFilter(new class($letra) implements IReadFilter {
+                private $letra;
+
+                public function __construct($letra)
+                {
+                    $this->letra = $letra;
+                }
+
+                public function readCell($columnAddress, $row, $worksheetName = '')
+                {
+                    return $columnAddress === $this->letra;
+                }
+            });
+            $libro = $lector->load($ruta);
+            $hoja = $libro->getSheetByName($nombre_de_hoja);
+            if (is_null($hoja)) {
+                return [];
+            }
+            $combinadas = [];
+            foreach ($hoja->getMergeCells() as $rango) {
+                list($desde, $hasta) = Coordinate::rangeBoundaries($rango);
+                if ($desde[0] <= (int) $columnas['nombre'] + 1 && $hasta[0] >= (int) $columnas['nombre'] + 1 && $hasta[0] > $desde[0]) {
+                    for ($fila = $desde[1]; $fila <= $hasta[1]; $fila++) {
+                        $combinadas[$fila] = true;
+                    }
+                }
+            }
+            $formato = [];
+            $ultima = count($filas);
+            for ($fila = (int) $corrida->fila_inicio; $fila <= $ultima; $fila++) {
+                $estilo = $hoja->getStyle($letra . $fila);
+                $relleno = $estilo->getFill()->getFillType();
+                $formato[$fila] = $estilo->getFont()->getBold() === true || isset($combinadas[$fila])
+                    || ($relleno !== null && $relleno !== Fill::FILL_NONE
+                        && strtoupper((string) $estilo->getFill()->getStartColor()->getRGB()) !== 'FFFFFF');
+            }
+            $libro->disconnectWorksheets();
+
+            return $formato;
+        } catch (\Throwable $error) {
+            return [];
+        }
     }
 
     private static function fila_con_datos($row): bool

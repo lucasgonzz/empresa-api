@@ -48,6 +48,11 @@ class GeneradorDePlanillasDesordenadas
      * Contactos REALES de solo nombre sin ninguna señal de grupo (segunda pasada de A1): una palabra, minúsculas, un
      * apellido con preposición. Van en listas con datos y tienen que entrar.
      */
+    /*
+     * Títulos de grupo FUERA del vocabulario (tercera pasada de A1): solo se reconocen por el formato de la celda
+     * (negrita), que los distingue de los contactos. Sin formato serían un contacto más.
+     */
+    const SUELTAS_CON_FORMATO = ['Fiado', 'Constructoras', 'Albañiles', 'Los de siempre', 'Gente del club', 'Plomeros'];
     const CONTACTOS_REALES_DE_SOLO_NOMBRE = ['Gómez', 'Carla', 'Martín', 'juan perez', 'Juan pérez', 'Kiosco', 'Panadería',
         'la esquina', 'Pirulo', 'Del Valle', 'De la Fuente', 'Obras Sanitarias', 'Doña Rosa', 'Rotisería El Gallo', 'Del Río'];
 
@@ -365,6 +370,8 @@ class GeneradorDePlanillasDesordenadas
          * la regla duda y una suelta entraría: ese caso no se genera). En las demás listas, a lo sumo un real.
          */
         $sueltas_en = [];
+        $formato = [];
+        $columna_en_negrita = false;
         $libres = range(0, $cuantos - 1);
         $poner = function (string $que) use (&$sueltas_en, &$libres) {
             $clave = mt_rand(0, count($libres) - 1);
@@ -372,6 +379,7 @@ class GeneradorDePlanillasDesordenadas
             array_splice($libres, $clave, 1);
         };
         if (!in_array('solo_nombre', $tipos, true) && $cuantos >= 5) {
+            $columna_en_negrita = mt_rand(0, 4) === 0;
             $cupo = min(2, intdiv($cuantos, 4));
             $sueltas = mt_rand(0, $cupo);
             $reales = mt_rand(0, $cupo - $sueltas);
@@ -379,14 +387,18 @@ class GeneradorDePlanillasDesordenadas
                 $poner('real');
             }
             for ($s = 0; $s < $sueltas; $s++) {
-                $poner('suelta');
+                // Con la columna entera en negrita el formato no distingue: ahí solo van las del vocabulario.
+                $poner(!$columna_en_negrita && mt_rand(0, 1) === 0 ? 'formato' : 'suelta');
             }
         } elseif ($cuantos >= 5 && mt_rand(0, 2) === 0) {
             $poner('real');
         }
         $total = 0;
         foreach ($tipos as $i => $tipo) {
-            if (isset($sueltas_en[$i])) {
+            if (isset($sueltas_en[$i]) && $sueltas_en[$i] === 'formato') {
+                $agregar([0 => self::al_azar(self::SUELTAS_CON_FORMATO)], false);
+                $formato[$numero] = true;
+            } elseif (isset($sueltas_en[$i])) {
                 $agregar([0 => $sueltas_en[$i] === 'suelta' ? self::al_azar(self::SUELTAS_SIN_SENAL)
                     : self::al_azar(self::CONTACTOS_REALES_DE_SOLO_NOMBRE)], $sueltas_en[$i] === 'real');
             }
@@ -436,8 +448,11 @@ class GeneradorDePlanillasDesordenadas
 
         return [
             'filas' => $filas, 'inicio' => $inicio, 'columnas' => ['nombre' => 0, 'cuit' => 1, 'telefono' => 2, 'saldo_actual' => 3],
-            'datos' => $datos, 'no_datos' => $no_datos, 'caso' => $caso, 'sueltas' => count(array_keys($sueltas_en, 'suelta', true)),
+            'datos' => $datos, 'no_datos' => $no_datos, 'caso' => $caso, 'sueltas' => count(array_keys($sueltas_en, 'suelta', true)) + count(array_keys($sueltas_en, 'formato', true)),
             'reales_de_solo_nombre' => count(array_keys($sueltas_en, 'real', true)),
+            'sueltas_con_formato' => count(array_keys($sueltas_en, 'formato', true)),
+            // Fila => la celda del nombre en negrita: las sueltas con formato y, a veces, la columna entera.
+            'formato' => $columna_en_negrita ? $formato + array_fill_keys($datos, true) : $formato,
         ];
     }
 }
