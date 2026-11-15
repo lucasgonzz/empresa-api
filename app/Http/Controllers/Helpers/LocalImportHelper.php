@@ -173,7 +173,7 @@ class LocalImportHelper {
 	 * Es la misma clase de fila que la carga asistida de artículos de la prueba deja afuera
 	 * (PlanillaDePrueba::motivo_para_saltear()), con el mismo criterio para el nombre:
 	 *  - el nombre empieza con la PALABRA COMPLETA total, totales, subtotal o suma(s), sin números y con dos
-	 *    palabras más como mucho (PlanillaDePrueba::empieza_como_total(): «TOTAL», «Total general:», «Subtotal
+	 *    palabras más como mucho (PlanillaDePrueba::es_rotulo_de_total(): «TOTAL», «Total general:», «Subtotal
 	 *    zona norte»; NO «Totalgas SRL»), o el pie que cuenta («Total: 21 clientes», E8.2; NO «Total 2000 SA»), o es un título decorado («--- MAYORISTAS ---»); y
 	 *  - ninguna columna que identifica a un contacto trae dato (número, teléfono, dirección, email, razón
 	 *    social, CUIT, CUIL, DNI, localidad, provincia), y las demás columnas mapeadas traen solo números (el
@@ -195,23 +195,62 @@ class LocalImportHelper {
 	}
 
 	/**
-	 * Cuántos contactos con datos hacen falta, como mínimo, para juzgar una fila que trae SOLO el nombre (ver
-	 * motivo_de_fila_que_no_es_un_contacto()): con menos, la lista es muy chica para decir cómo vienen sus contactos.
+	 * Cuántos contactos con algún dato además del nombre (teléfono, CUIT, saldo…) tiene que traer la lista, como
+	 * mínimo, para juzgar un título de sección con señal FUERTE (ver motivo_de_fila_que_no_es_un_contacto()).
 	 */
-	const CONTACTOS_CON_DATOS_PARA_JUZGAR_TITULOS = 5;
+	const CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL = 3;
 
 	/**
-	 * Lo que hay que saber de la lista ENTERA antes de juzgar fila por fila (misión prueba-e2e-campana-imperio, ronda
-	 * 6, E8.2). ClientImport y ProviderImport son ToCollection sin WithChunkReading: collection() recibe la hoja
-	 * completa de una vez, así que esto es una pasada más en memoria, sin consultas.
+	 * Para la señal DÉBIL (todo en mayúsculas): cuántos contactos con datos, como mínimo, y además 3 de cada 4.
+	 */
+	const CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS = 5;
+
+	/**
+	 * Las filas de una lista de clientes o proveedores que no son contactos: número de fila => [motivo, texto]
+	 * (misión prueba-e2e-campana-imperio, E8.1 a E8.3). Es lo que usan ClientImport y ProviderImport en la prueba
+	 * y lo que mide ImportacionDePruebaFilasQueNoSonDatosGenerativoTest: una sola función para los dos.
 	 *
-	 *  - `lista_con_datos`: al menos CONTACTOS_CON_DATOS_PARA_JUZGAR_TITULOS contactos traen algún dato además del
-	 *    nombre, y son 3 de cada 4 de las filas con nombre (sin contar los totales ni la cabecera repetida). En una
-	 *    lista así una fila con SOLO el nombre es rara; en una donde muchos traen solo el nombre, es un contacto más.
-	 *  - `nombres_en_mayusculas`: más de 1 de cada 4 de esos contactos se escribe todo en mayúsculas (entonces las
+	 * ClientImport y ProviderImport son ToCollection sin WithChunkReading: reciben la hoja completa, así que esto
+	 * son dos pasadas en memoria, sin consultas.
+	 *
+	 * @param  \Illuminate\Support\Collection|array $rows
+	 * @param  array                                $columns
+	 * @param  int                                  $start_row   1-based
+	 * @param  int                                  $finish_row  1-based, incluida
+	 * @return array<int, array>
+	 */
+	static function filas_que_no_son_contactos_de($rows, $columns, $start_row, $finish_row) {
+		$contexto = self::contexto_de_contactos($rows, $columns, $start_row, $finish_row);
+		$descartes = [];
+		$despues_del_total = false;
+		$numero = 0;
+		foreach ($rows as $row) {
+			$numero++;
+			if ($numero < (int) $start_row || $numero > (int) $finish_row) {
+				continue;
+			}
+			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, $contexto, $numero, $despues_del_total);
+			if (!is_null($motivo)) {
+				$despues_del_total = $despues_del_total || $motivo[0] === 'total';
+				$descartes[$numero] = $motivo;
+			}
+		}
+
+		return $descartes;
+	}
+
+	/**
+	 * Lo que hay que saber de la lista ENTERA antes de juzgar fila por fila (E8.2, rehecho en E8.3).
+	 *
+	 *  - `con_datos`: cuántos contactos traen algún dato además del nombre (teléfono, CUIT, dirección, saldo…).
+	 *  - `sin_senal`: cuántas filas traen SOLO el nombre y no tienen ninguna señal de título. Del denominador salen
+	 *    todos los candidatos a no-dato: los totales, la cabecera repetida, las notas al pie y las filas de solo
+	 *    nombre con señal de título (E8.3: en E8.2 contaban, y con dos títulos y una nota la proporción no daba y
+	 *    los títulos entraban como clientes; el mismo error que E8.1 corrigió en las hojas de artículos).
+	 *  - `nombres_en_mayusculas`: más de 1 de cada 4 contactos con datos se escribe todo en mayúsculas (ahí las
 	 *    mayúsculas no distinguen un título).
 	 *  - `cabecera`: los títulos de la fila anterior a la de inicio, por columna mapeada, ya comparables.
-	 *  - `ultima_con_datos`: el número de la última fila con algún dato además del nombre (el total incluido).
+	 *  - `ultima_con_datos`: la última fila con algún dato además del nombre (el total incluido).
 	 *
 	 * @param  \Illuminate\Support\Collection|array $rows
 	 * @param  array                                $columns
@@ -221,10 +260,11 @@ class LocalImportHelper {
 	 */
 	static function contexto_de_contactos($rows, $columns, $start_row, $finish_row) {
 		$cabecera = [];
-		$con_nombre = 0;
-		$con_otros = 0;
+		$con_datos = 0;
 		$mayusculas = 0;
 		$ultima_con_datos = 0;
+		$primer_total = null;
+		$sin_senal = [];
 		$numero = 0;
 		foreach ($rows as $row) {
 			$numero++;
@@ -244,42 +284,54 @@ class LocalImportHelper {
 				$ultima_con_datos = $numero;
 			}
 			$nombre = ImportHelper::getColumnValue($row, 'nombre', $columns);
-			if (is_null($nombre) || !is_null(self::motivo_de_fila_que_no_es_un_contacto($row, $columns, ['cabecera' => $cabecera]))) {
+			if (is_null($nombre) || $nombre === '') {
 				continue;
 			}
-			$con_nombre++;
+			$motivo = self::motivo_de_fila_que_no_es_un_contacto($row, $columns, ['cabecera' => $cabecera]);
+			if (!is_null($motivo)) {
+				$primer_total = is_null($primer_total) && $motivo[0] === 'total' ? $numero : $primer_total;
+				continue;
+			}
 			if ($otros) {
-				$con_otros++;
-				if (self::en_mayusculas($nombre)) {
-					$mayusculas++;
-				}
+				$con_datos++;
+				$mayusculas += self::en_mayusculas($nombre) ? 1 : 0;
+			} elseif (!self::senal_fuerte_de_titulo($nombre) && !self::en_mayusculas($nombre)) {
+				$sin_senal[] = $numero;
 			}
 		}
+		// Las notas al pie (solo nombre, después del total y debajo de la última fila con datos) tampoco cuentan.
+		$sin_senal = array_filter($sin_senal, function ($fila) use ($primer_total, $ultima_con_datos) {
+			return is_null($primer_total) || $fila < $primer_total || $fila <= $ultima_con_datos;
+		});
 
 		return [
-			'lista_con_datos'       => $con_otros >= self::CONTACTOS_CON_DATOS_PARA_JUZGAR_TITULOS && $con_otros * 4 >= $con_nombre * 3,
-			'nombres_en_mayusculas' => $mayusculas * 4 > $con_otros,
+			'con_datos'             => $con_datos,
+			'sin_senal'             => count($sin_senal),
+			'nombres_en_mayusculas' => $mayusculas * 4 > $con_datos,
 			'cabecera'              => $cabecera,
 			'ultima_con_datos'      => $ultima_con_datos,
 		];
 	}
 
 	/**
-	 * Por qué una fila de una lista de clientes o proveedores no es un contacto, o null si lo es (E8.1 y E8.2).
+	 * Por qué una fila de una lista de clientes o proveedores no es un contacto, o null si lo es (E8.1 a E8.3).
 	 * Devuelve [motivo, texto]: motivo 'total', 'titulo' o 'nota'; el texto es el nombre de la fila, para el aviso.
 	 *
 	 *  - 'total': el rótulo es de total (PlanillaDePrueba::es_rotulo_de_total(): «TOTAL», «Subtotal zona norte»,
 	 *    «Total: 21 clientes», «Son 21 clientes»), o 'titulo' si es un título decorado («--- MAYORISTAS ---»); en los
 	 *    dos casos sin dato en ninguna columna que identifica a un contacto y con el resto solo números o nada.
 	 *  - 'titulo' por cabecera repetida: dos o más celdas mapeadas con dato y TODAS iguales al título de su columna.
-	 *  - Con SOLO el nombre (ninguna otra columna mapeada con dato: ni teléfono, CUIT, saldo, nada):
-	 *      · 'nota': ya pasó el total y no hay más filas con datos debajo (las notas al pie).
-	 *      · 'titulo' de sección: en una lista con datos (`lista_con_datos`, ver contexto_de_contactos()), de cinco
-	 *        palabras como mucho y con alguna señal de título: termina en «:», empieza con una palabra de sección
-	 *        (clientes, proveedores, deudores, morosos, zona, listado, lista, rubro, sección, grupo, categoría,
-	 *        sucursal, al día, cuentas) o está todo en mayúsculas en una lista que no escribe así sus nombres.
-	 *    🔴 Conservador: sin señal, un nombre solo es un contacto sin datos y entra; y en una lista donde muchos
-	 *    traen solo el nombre no se descarta ninguno. Todo lo descartado sale nombrado en el aviso.
+	 *  - Con SOLO el nombre (ninguna otra columna mapeada con dato: ni teléfono, CUIT, saldo, nada; el saldo SÍ es
+	 *    un dato: «Sandra Ojeda | | | 1500» es un cliente):
+	 *      · 'nota': ya pasó el total y no hay filas con datos debajo (las notas al pie).
+	 *      · 'titulo' con señal FUERTE (senal_fuerte_de_titulo(): termina en «:» o empieza con clientes,
+	 *        proveedores, deudores, morosos, zona, listado, lista, rubro, sección, grupo, categoría, sucursal, al
+	 *        día, cuentas) y cinco palabras como mucho, si la lista tiene al menos
+	 *        CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL contactos con datos. Sin proporción: la señal ya alcanza.
+	 *      · 'titulo' con señal DÉBIL (todo en mayúsculas en una lista que no escribe así sus nombres), solo si
+	 *        hay al menos CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS contactos con datos y son 3 de cada 4 de
+	 *        los contactos que se juzgan (con datos + de solo nombre sin señal).
+	 *    🔴 Sin señal, un nombre solo es un contacto sin datos y entra. Todo lo descartado sale nombrado en el aviso.
 	 *
 	 * @param  array|\ArrayAccess $row
 	 * @param  array              $columns
@@ -318,21 +370,39 @@ class LocalImportHelper {
 			return ['titulo', $nombre];
 		}
 
-		if ($otros !== [] || !isset($contexto['lista_con_datos'])) {
+		if ($otros !== [] || !isset($contexto['con_datos'])) {
 			return null;
 		}
 		if ($despues_del_total && (int) $numero > (int) $contexto['ultima_con_datos']) {
 			return ['nota', $nombre];
 		}
-		if (!$contexto['lista_con_datos'] || count(preg_split('/\s+/u', trim($nombre))) > 5) {
+		if (count(preg_split('/\s+/u', trim($nombre))) > 5) {
 			return null;
 		}
-		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
-		$senal = substr(rtrim($nombre), -1) === ':'
-			|| preg_match('/^(?:clientes|proveedores|deudores|morosos|zona|zonas|listado|lista|rubro|rubros|seccion|grupo|categoria|sucursal|al dia|cuentas)(?: |$)/', $comparable) === 1
-			|| (!$contexto['nombres_en_mayusculas'] && self::en_mayusculas($nombre));
+		if (self::senal_fuerte_de_titulo($nombre)) {
+			return $contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_CON_SENAL ? ['titulo', $nombre] : null;
+		}
+		$proporcion = $contexto['con_datos'] >= self::CONTACTOS_CON_DATOS_PARA_TITULOS_EN_MAYUSCULAS
+			&& $contexto['con_datos'] * 4 >= ($contexto['con_datos'] + $contexto['sin_senal']) * 3;
+		if ($proporcion && !$contexto['nombres_en_mayusculas'] && self::en_mayusculas($nombre)) {
+			return ['titulo', $nombre];
+		}
 
-		return $senal ? ['titulo', $nombre] : null;
+		return null;
+	}
+
+	/**
+	 * ¿El nombre se presenta como título de sección? Termina en «:» («Zona norte:») o empieza con una palabra de
+	 * sección («Zona centro», «Morosos», «Clientes del interior», «Al día»).
+	 *
+	 * @param  string $nombre
+	 * @return bool
+	 */
+	private static function senal_fuerte_de_titulo($nombre) {
+		$comparable = \App\Services\Importacion\PlanillaDePrueba::titulo_comparable($nombre);
+
+		return substr(rtrim($nombre), -1) === ':'
+			|| preg_match('/^(?:clientes|proveedores|deudores|morosos|zona|zonas|listado|lista|rubro|rubros|seccion|grupo|categoria|sucursal|al dia|cuentas)(?: |$)/', $comparable) === 1;
 	}
 
 	/**

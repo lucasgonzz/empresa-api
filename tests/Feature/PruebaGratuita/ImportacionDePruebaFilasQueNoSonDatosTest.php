@@ -473,6 +473,60 @@ class ImportacionDePruebaFilasQueNoSonDatosTest extends EmpresaTestCase
         $this->assertNotSame('nombre', $hojas[0]['columnas'][1]['campo']);
     }
 
+    /* ---------- E8.3 (14/11/2026): el pie es todo lo que está debajo ---------- */
+
+    public function test_la_nota_debajo_del_pie_que_cuenta_no_entra(): void
+    {
+        // Con códigos: todo lo que está debajo de la última fila con código y no trae código ni precio es pie.
+        [$filas, $salteadas] = $this->leer($this->con_codigos(['R-50', 'Pinza', 10, 1, 1], [
+            [null, 'Total artículos: 20', null, null, null], [null, 'Actualizó: Mirta 12/11', null, null, null], ['Firma: Carlos', null, null, null, null],
+        ]), $this->mapeo_con_codigos(), [], $this->dos_stocks());
+        $this->assertSame(11, $filas, json_encode($salteadas, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(['Total artículos: 20'], $salteadas[0]['textos_total']);
+        $this->assertSame(['Actualizó: Mirta 12/11', 'Firma: Carlos'], $salteadas[0]['textos_titulo']);
+
+        // Sin códigos: el pie lo abre el total, también el que cuenta, y lo que viene debajo es nota.
+        $planilla = [['Producto', 'Precio de venta']];
+        foreach (['Martillo carpintero', 'Tenaza', 'Pinza universal', 'Serrucho', 'Destornillador', 'Lima'] as $nombre) {
+            $planilla[] = [$nombre, 1000];
+        }
+        $planilla[] = ['TOTAL', 6000];
+        $planilla[] = ['Total artículos: 6', null];
+        $planilla[] = ['Actualizó: Mirta 12/11', null];
+        [$filas, $salteadas] = $this->leer($planilla, ['Producto' => ['nombre', 0.97], 'Precio de venta' => ['precio', 0.97]], []);
+        $this->assertSame(6, $filas, json_encode($salteadas, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(['TOTAL', 'Total artículos: 6'], $salteadas[0]['textos_total']);
+        $this->assertSame(['Actualizó: Mirta 12/11'], $salteadas[0]['textos_titulo']);
+    }
+
+    public function test_planillas_generadas_por_la_carga_entera(): void
+    {
+        /*
+         * Unas pocas planillas del generador (GeneradorDePlanillasDesordenadas) por el camino entero: Excel, cabecera
+         * debajo del membrete (fila 1 a 7), mapeo, lectura y planilla preparada. El generativo en memoria
+         * (ImportacionDePruebaFilasQueNoSonDatosGenerativoTest) juzga cientos; acá se ve que la carga real hace lo mismo.
+         */
+        mt_srand(77);
+        $cabeceras = [];
+        for ($caso = 0; $caso < 6; $caso++) {
+            $planilla = GeneradorDePlanillasDesordenadas::articulos($caso);
+            $cabeceras[] = $planilla['cabecera'];
+            $titulos = array_filter($planilla['filas'][$planilla['cabecera']], function ($titulo) { return $titulo !== null; });
+            $campos = ['Código' => 'codigo_de_proveedor', 'Descripción' => 'nombre', 'Producto' => 'nombre', 'Precio de venta' => 'precio',
+                'Stock' => 'stock_actual', 'Rubro' => 'categoria'];
+            $mapeo = [];
+            foreach ($titulos as $titulo) {
+                if (isset($campos[$titulo])) {
+                    $mapeo[$titulo] = [$campos[$titulo], 0.97];
+                }
+            }
+            [$filas, $salteadas] = $this->leer(array_values($planilla['filas']), $mapeo, ['columna_0_4' => 'ignorar']);
+            $this->assertSame(count($planilla['datos']), $filas, 'caso ' . $caso . ' (cabecera en la fila ' . $planilla['cabecera'] . '): '
+                . json_encode($salteadas, JSON_UNESCAPED_UNICODE));
+        }
+        fwrite(STDERR, PHP_EOL . 'Cabeceras en las filas: ' . implode(', ', $cabeceras) . PHP_EOL);
+    }
+
     public function test_una_columna_de_utilidad_sugiere_el_margen_de_ganancia(): void
     {
         foreach (['% UTIL', 'Utilidad', 'Ganancia %', 'Margen', 'Recargo'] as $titulo) {

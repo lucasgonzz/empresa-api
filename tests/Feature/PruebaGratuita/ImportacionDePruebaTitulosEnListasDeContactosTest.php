@@ -144,6 +144,31 @@ class ImportacionDePruebaTitulosEnListasDeContactosTest extends EmpresaTestCase
         $this->assertContains('Total 2000 SA', $creados);
     }
 
+    public function test_titulos_y_nota_en_una_lista_chica_con_clientes_de_solo_nombre_y_saldo(): void
+    {
+        // E8.3: 8 clientes (6 con teléfono o CUIT y 2 con solo nombre y saldo), dos títulos con señal fuerte y una nota
+        // al pie. En E8.2 los títulos contaban en la proporción y entraban como clientes.
+        $filas = [self::CABECERA, ['Zona centro', null, null, null]];
+        for ($i = 1; $i <= 3; $i++) {
+            $filas[] = ['Ferretería número ' . $i, '20-1111111' . $i . '-2', '3442 40000' . $i, 1000 * $i];
+        }
+        $filas[] = ['Sandra Ojeda', null, null, 1500];
+        $filas[] = ['Zona norte:', null, null, null];
+        for ($i = 4; $i <= 6; $i++) {
+            $filas[] = ['Ferretería número ' . $i, null, '3442 40000' . $i, 1000 * $i];
+        }
+        $filas[] = ['Hugo Benítez', null, null, -300];
+        $filas[] = ['TOTAL', null, null, 22200];
+        $filas[] = ['Actualizado el 14/11', null, null, null];
+        [$creados, $afuera] = $this->importar($filas);
+
+        $this->assertSame(['Zona centro', 'Zona norte:', 'TOTAL', 'Actualizado el 14/11'], $afuera);
+        $this->assertCount(8, $creados);
+        // El saldo es un dato: con solo nombre y saldo es un cliente.
+        $this->assertContains('Sandra Ojeda', $creados);
+        $this->assertContains('Hugo Benítez', $creados);
+    }
+
     public function test_la_lista_de_proveedores_tambien(): void
     {
         $datos = $this->con_datos('V');
