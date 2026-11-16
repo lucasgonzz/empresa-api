@@ -4284,7 +4284,8 @@ CONFIRMACION;
             }
 
             return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
-                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message);
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message)
+                || VentaConDatosInventadosIaHelper::afirma_otro_total($saneado, $assistant_message);
         }
 
         return false;

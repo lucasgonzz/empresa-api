@@ -353,7 +353,7 @@ class PropuestaVentaIaHelper
 
         $presentacion = self::presentacion($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $observaciones, $totales, $stock, $promos);
 
-        $resumen = self::resumen($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $totales, $promos);
+        $resumen = self::resumen($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $totales, $promos, $porcentaje_del_metodo);
 
         $creada = AccionesIaHelper::crear(
             $contexto,
@@ -2360,9 +2360,10 @@ class PropuestaVentaIaHelper
      * El resumen que queda en `datos` de la tarjeta: lo mismo que la tarjeta muestra, en forma de
      * datos (para el informe, para el historial y para quien lea la fila sin la SPA).
      *
+     * @param  float|null  $porcentaje_del_metodo  31/10 #8: el % del método de pago que llevan los precios.
      * @return array<string, mixed>
      */
-    protected static function resumen(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, array $totales, array $promos = []): array
+    protected static function resumen(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, array $totales, array $promos = [], $porcentaje_del_metodo = null): array
     {
         $de_promos = [];
 
@@ -2408,6 +2409,12 @@ class PropuestaVentaIaHelper
             'total'           => $totales['total'],
             // P3, al final: las promos de vinoteca de la venta.
             'promos'          => $de_promos,
+            /*
+             * 31/10 #8 (misión asistente-diario-20261116), al final: el % del método de pago que ya llevan
+             * los precios (positivo descuenta, negativo recarga, null nada). Es el porqué que da
+             * VentaConDatosInventadosIaHelper::texto_honesto() cuando el texto cita otro total.
+             */
+            'porcentaje_del_metodo' => (is_null($porcentaje_del_metodo) || (float) $porcentaje_del_metodo == 0) ? null : (float) $porcentaje_del_metodo,
         ];
     }
 
