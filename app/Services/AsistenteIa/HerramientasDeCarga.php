@@ -1219,6 +1219,14 @@ class HerramientasDeCarga
                             'type'        => 'boolean',
                             'description' => 'true si la persona pidió la foto solo para los que todavía NO tienen ninguna ("a los que no tienen foto"): la tarjeta deja afuera a los que ya tienen alguna.',
                         ],
+                        /*
+                         * Misión asistente-mejoras-4-dias (16/11/2026, P6: V8), AL FINAL de las propiedades por la
+                         * regla del prefijo del caché: «reemplazá la foto por esta».
+                         */
+                        'reemplazar_fotos' => [
+                            'type'        => 'boolean',
+                            'description' => 'true si la persona pidió REEMPLAZAR la foto ("cambiale la foto por esta", "sacá la que tiene y poné esta"): la nueva queda como principal y las que el artículo tiene hoy se sacan al confirmar (también de la tienda). La tarjeta dice cuántas se sacan y siempre espera el sí.',
+                        ],
                     ],
                     'required'   => [],
                 ],
@@ -1823,6 +1831,23 @@ class HerramientasDeCarga
             ]],
         ];
 
+        /*
+         * Misión asistente-mejoras-4-dias (16/11/2026, P6: V8), al final por el prefijo del caché. Truvari pidió
+         * «eliminá la imagen» cuatro veces y el agente contestó que no tenía cómo: sumó la nueva y dejó la
+         * equivocada publicada. La tarjeta muestra la foto que se saca y siempre espera el sí.
+         */
+        $definiciones[] = [
+            'name' => 'quitar_foto_articulo',
+            'description' => 'Arma la tarjeta para SACARLE una foto (o todas) a un artículo que ya existe ("eliminá esa imagen", "sacale la foto", "esa foto no es"). La tarjeta MUESTRA la foto que se saca y avisa que también sale de la tienda online; SIEMPRE espera el sí de la persona, en cualquier modo, porque no se puede deshacer. Si el artículo tiene varias fotos y no sabés cuál, la respuesta trae "faltan" con las fotos numeradas (la 1 es la principal): preguntá cuál o si van todas, y volvé a llamar con imagen_numero o todas. Por WhatsApp la persona no ve la tarjeta: decile cuál foto se saca (la principal, la segunda…) y pasale el link de la foto que se saca (url_de_la_foto) para que la vea antes del sí. Para cambiarla por otra en un solo paso va proponer_foto_articulo con reemplazar_fotos. 🔴 NUNCA digas que no podés sacar una foto: con esta herramienta podés. Si trae "error", contá el motivo tal cual.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'articulo'      => ['type' => 'string', 'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.'],
+                'articulo_id'   => ['type' => 'integer', 'description' => 'Id del artículo, solo si otra herramienta lo devolvió.'],
+                'imagen_numero' => ['type' => 'integer', 'description' => 'Cuál foto se saca, en el orden de las opciones (1 = la principal).'],
+                'todas'         => ['type' => 'boolean', 'description' => 'true si la persona pidió sacarle TODAS las fotos.'],
+                'reemplaza_a'   => ['type' => 'integer'],
+            ], 'required' => []],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2321,6 +2346,15 @@ class HerramientasDeCarga
                     $conversation,
                     $assistant_message,
                     PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input)
+                ));
+
+            // P6 (16/11/2026): sacar fotos. La propuesta trae requiere_confirmacion: nunca se ejecuta sola.
+            case 'quitar_foto_articulo':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaFotoArticuloIaHelper::proponer_quitar($contexto, $assistant_message, $input)
                 ));
 
             /*

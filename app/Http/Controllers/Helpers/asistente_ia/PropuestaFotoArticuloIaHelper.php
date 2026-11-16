@@ -343,6 +343,43 @@ class PropuestaFotoArticuloIaHelper
             $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'La que mandaste ' . $cuando];
         }
 
+        /*
+         * P6 (16/11/2026): «reemplazá todas por esta». Las fotos que cada artículo tiene HOY quedan anotadas
+         * en la tarjeta (y contadas en un renglón): al confirmar se sacan esas, no las que aparezcan después.
+         */
+        $reemplaza = self::es_si(EntradaDeCargaIa::valor($input, 'reemplazar_fotos'));
+        $aviso = 'La foto también se publica en la tienda online del negocio.';
+
+        if ($reemplaza) {
+
+            $a_sacar = [];
+            $cuantas = 0;
+
+            foreach ($ids as $id) {
+
+                $de_este = Image::where('imageable_type', 'article')->where('imageable_id', $id)->orderBy('id')->pluck('id')->map(function ($foto_id) {
+                    return (int) $foto_id;
+                })->all();
+
+                if (count($de_este)) {
+                    $a_sacar[(string) $id] = $de_este;
+                    $cuantas += count($de_este);
+                }
+            }
+
+            $datos['reemplazar_fotos'] = true;
+            $datos['fotos_a_sacar'] = $a_sacar;
+
+            $renglones[] = [
+                'etiqueta' => 'Fotos que se sacan',
+                'valor'    => $cuantas === 0 ? 'Ninguna: no tiene otras fotos' : $cuantas . ($cuantas === 1 ? ' (la que tiene hoy)' : ' (las que tiene hoy)') . '; la nueva queda como principal',
+            ];
+
+            if ($cuantas > 0) {
+                $aviso = 'La foto nueva se publica en la tienda online y las de antes se sacan también de ahí. Sacar una foto no se puede deshacer.';
+            }
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
@@ -356,7 +393,7 @@ class PropuestaFotoArticuloIaHelper
                  * El aviso es la contracara de que esto NO se auto-confirme: la persona tiene que
                  * saber, antes de tocar Confirmar, que esta foto sale publicada.
                  */
-                'aviso'     => 'La foto también se publica en la tienda online del negocio.',
+                'aviso'     => $aviso,
                 'imagen_url' => FotosDelMensajeIaHelper::url($foto->ai_message_id, $foto->orden),
                 'imagen_mensaje' => ['ai_message_id' => (int) $foto->ai_message_id, 'orden' => (int) $foto->orden],
             ],
@@ -366,6 +403,15 @@ class PropuestaFotoArticuloIaHelper
         $texto_del_resumen = $uno_solo
             ? 'Foto del artículo ' . $nombres[0]
             : 'Foto de ' . count($ids) . ' artículos: ' . implode(', ', $nombres);
+
+        /*
+         * P6 (16/11/2026, V13): una foto de INTERNET o un reemplazo nunca se ponen solos, ni en "directo": la
+         * persona tiene que ver la foto en la tarjeta y decir que sí («preguntame antes», Truvari conv 24).
+         */
+        if ($reemplaza || !FotosDeLaConversacionIaHelper::la_mando_el_dueno($foto)) {
+
+            $resumen['requiere_confirmacion'] = true;
+        }
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $texto_del_resumen, $resumen);
     }
@@ -937,6 +983,11 @@ class PropuestaFotoArticuloIaHelper
             return self::ejecutar_generada($contexto, $datos);
         }
 
+        // P6 (16/11/2026): la tarjeta que SACA fotos (quitar_foto_articulo).
+        if (isset($datos['operacion']) && $datos['operacion'] === self::OPERACION_QUITAR) {
+            return self::ejecutar_quitar($contexto, $datos);
+        }
+
         $pedidos = self::articulos_de_la_tarjeta($datos);
 
         /*
@@ -1069,7 +1120,15 @@ class PropuestaFotoArticuloIaHelper
 
                 $escritos[] = $name;
 
-                self::colgar_y_sincronizar($contexto, $articulo, $name);
+                $reemplaza = !empty($datos['reemplazar_fotos']);
+
+                // P6 (16/11/2026): con reemplazar_fotos la nueva queda como PRINCIPAL y después se sacan las de antes.
+                self::colgar_y_sincronizar($contexto, $articulo, $name, $reemplaza);
+
+                if ($reemplaza) {
+
+                    self::sacar_las_de_antes($contexto, $articulo, $datos);
+                }
 
                 $hechos[] = ['article_id' => (int) $articulo->id, 'articulo' => self::nombre_de_articulo($articulo)];
             }
@@ -1107,6 +1166,308 @@ class PropuestaFotoArticuloIaHelper
             'hechos'    => $hechos,
             'no_hechos' => $no_hechos,
         ];
+    }
+
+    /*
+     * ════════════════════════════════════════════════════════════════════════════════════════════
+     * 🔴 QUITAR Y REEMPLAZAR LA FOTO (misión asistente-mejoras-4-dias, 16/11/2026, P6: V8)
+     * ════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * EL CASO REAL (Truvari, conv 19 y 24): «eliminá la imagen y yo te envío una imagen que
+     * corresponde». El agente contestó cuatro veces «No tengo herramienta para borrar fotos», sumó la
+     * nueva y dejó la equivocada (un vino blanco en un Malbec) publicada en la tienda.
+     *
+     * Desde esta misión:
+     *  - proponer_quitar() (herramienta quitar_foto_articulo): una tarjeta que MUESTRA la foto que se saca
+     *    (`imagen_url`), dice cuántas se sacan y avisa que sale también de la tienda y que no tiene vuelta.
+     *  - proponer() con `reemplazar_fotos`: la foto nueva se suma como principal y las que el artículo
+     *    tenía AL PROPONER se sacan en la misma confirmación («reemplazá todas por esta»).
+     *  - Las dos piden SIEMPRE el sí de la persona (`requiere_confirmacion`), también en "directo": borrar
+     *    una foto no se deshace.
+     *  - La baja es la de la pantalla (ImageController::deleteImageModel), con sus efectos: el artículo
+     *    espejo de un inventario vinculado, Tienda Nube (borra la imagen remota bajo su candado y encola el
+     *    sync), Mercado Libre (encola) y el `updated_at` del artículo, para que el sync del front y la
+     *    tienda lo bajen sin la foto. 🔴 El ARCHIVO del disco se borra recién DESPUÉS DEL COMMIT
+     *    (DB::afterCommit): si la confirmación se vuelve atrás, la fila de `images` vuelve y su archivo
+     *    tiene que seguir estando.
+     */
+
+    /** La operación de la tarjeta de foto que saca fotos (datos.operacion). Sin operación: agregar, la de siempre. */
+    const OPERACION_QUITAR = 'quitar';
+
+    /** El aviso de las tarjetas que sacan fotos. */
+    const AVISO_SACAR = 'La foto también se saca de la tienda online del negocio, y no se puede deshacer.';
+
+    /**
+     * Herramienta quitar_foto_articulo.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  array  $input  articulo / articulo_id, todas (bool), imagen_numero (int, 1 = la principal), reemplaza_a
+     * @return array
+     */
+    public static function proponer_quitar(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)
+    {
+        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO)) {
+
+            return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('fotos de artículos'));
+        }
+
+        $articulo = self::resolver_articulo($contexto, $input);
+
+        if (RespuestaDeCargaIa::es_negativa($articulo)) {
+
+            return $articulo;
+        }
+
+        $fotos = self::fotos_en_orden((int) $articulo->id);
+
+        $nombre = self::nombre_de_articulo($articulo);
+
+        if (!count($fotos)) {
+
+            return RespuestaDeCargaIa::error('El artículo ' . $nombre . ' no tiene ninguna foto, así que no hay nada para sacar. Decíselo a la persona tal cual.');
+        }
+
+        $todas = self::es_si(EntradaDeCargaIa::valor($input, 'todas'));
+        $numero = EntradaDeCargaIa::valor($input, 'imagen_numero');
+
+        if ($todas) {
+
+            $a_sacar = $fotos;
+
+        } elseif (!EntradaDeCargaIa::vacio($numero) && is_numeric($numero)) {
+
+            $indice = (int) $numero - 1;
+
+            if ($indice < 0 || !isset($fotos[$indice])) {
+
+                return RespuestaDeCargaIa::error('El artículo ' . $nombre . ' tiene ' . count($fotos) . ' foto(s): imagen_numero va de 1 a ' . count($fotos) . '.');
+            }
+
+            $a_sacar = [$fotos[$indice]];
+
+        } elseif (count($fotos) === 1) {
+
+            $a_sacar = $fotos;
+
+        } else {
+
+            $opciones = [];
+
+            foreach ($fotos as $i => $foto) {
+                $opciones[] = ['imagen_numero' => $i + 1, 'principal' => $i === 0, 'url' => ApiUrlHelper::url_publica_de_imagen($foto->hosting_url)];
+            }
+
+            return RespuestaDeCargaIa::faltan(
+                ['cuál de las ' . count($fotos) . ' fotos de ' . $nombre . ' saco (o si van todas)'],
+                [
+                    'fotos'       => $opciones,
+                    'como_seguir' => 'Si la persona ya dijo cuál (la principal es la 1) o que van todas, volvé a llamar con imagen_numero o con todas: true. Si no, mostrale las fotos con mostrar_imagenes_de_articulos y preguntale.',
+                ]
+            );
+        }
+
+        $ids = [];
+
+        foreach ($a_sacar as $foto) {
+            $ids[] = (int) $foto->id;
+        }
+
+        $queda_sin_foto = count($a_sacar) === count($fotos);
+
+        $creada = AccionesIaHelper::crear(
+            $contexto,
+            $mensaje,
+            AiMessageAction::TIPO_FOTO_ARTICULO,
+            'foto_articulo:quitar:' . (int) $articulo->id,
+            [
+                'operacion'  => self::OPERACION_QUITAR,
+                'article_id' => (int) $articulo->id,
+                'articulo'   => $nombre,
+                'image_ids'  => $ids,
+            ],
+            [
+                'titulo'     => count($ids) === 1 ? 'Quitar una foto del artículo' : 'Quitar ' . count($ids) . ' fotos del artículo',
+                'renglones'  => [
+                    ['etiqueta' => 'Artículo', 'valor' => $nombre],
+                    ['etiqueta' => 'Qué se hace', 'valor' => $queda_sin_foto
+                        ? (count($ids) === 1 ? 'Se saca su única foto: queda sin foto' : 'Se sacan sus ' . count($ids) . ' fotos: queda sin foto')
+                        : 'Se saca ' . (count($ids) === 1 ? 'la foto que se ve acá' : count($ids) . ' fotos') . ' (le quedan ' . (count($fotos) - count($ids)) . ')'],
+                ],
+                'aviso'      => self::AVISO_SACAR,
+                // 🔴 La foto QUE SE SACA, para que la persona la vea antes de confirmar.
+                'imagen_url' => ApiUrlHelper::url_publica_de_imagen($a_sacar[0]->hosting_url),
+            ],
+            EntradaDeCargaIa::valor($input, 'reemplaza_a')
+        );
+
+        return AccionesIaHelper::respuesta_de_propuesta(
+            $creada,
+            'Quitar ' . (count($ids) === 1 ? 'una foto' : count($ids) . ' fotos') . ' de ' . $nombre,
+            ['requiere_confirmacion' => true, 'fotos_que_tiene' => count($fotos), 'fotos_que_se_sacan' => count($ids), 'url_de_la_foto' => ApiUrlHelper::url_publica_de_imagen($a_sacar[0]->hosting_url)]
+        );
+    }
+
+    /**
+     * Las fotos de un artículo en el orden en que se ven: la principal (la de portada_del_articulo())
+     * primero y después por id.
+     *
+     * @param  int  $article_id
+     * @return array<int, \App\Models\Image>
+     */
+    public static function fotos_en_orden($article_id)
+    {
+        $fotos = Image::where('imageable_type', 'article')
+                        ->where('imageable_id', (int) $article_id)
+                        ->orderBy('id')
+                        ->get()
+                        ->all();
+
+        $portada = self::portada_del_articulo((int) $article_id);
+
+        if (is_null($portada)) {
+
+            return $fotos;
+        }
+
+        $resto = array_values(array_filter($fotos, function ($foto) use ($portada) {
+            return (int) $foto->id !== (int) $portada->id;
+        }));
+
+        array_unshift($resto, $portada);
+
+        return $resto;
+    }
+
+    /**
+     * Ejecuta la tarjeta de quitar fotos: saca las fotos de la tarjeta que SIGAN siendo de ese artículo.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $datos
+     * @return array
+     *
+     * @throws AccionIaException
+     */
+    protected static function ejecutar_quitar(ContextoDeCargaIa $contexto, array $datos)
+    {
+        $articulo = Article::where('user_id', $contexto->owner_id)->find(isset($datos['article_id']) ? (int) $datos['article_id'] : 0);
+
+        if (is_null($articulo)) {
+
+            throw new AccionIaException(422, 'Ese artículo ya no existe entre los tuyos. Pedímelo de nuevo.');
+        }
+
+        $ids = isset($datos['image_ids']) && is_array($datos['image_ids']) ? array_map('intval', $datos['image_ids']) : [];
+
+        $fotos = Image::where('imageable_type', 'article')
+                        ->where('imageable_id', (int) $articulo->id)
+                        ->whereIn('id', $ids)
+                        ->get();
+
+        if (!count($fotos)) {
+
+            throw new AccionIaException(422, 'Esas fotos ya no están en el artículo (se sacaron después de armar la tarjeta). No hice nada.');
+        }
+
+        foreach ($fotos as $foto) {
+
+            self::sacar_foto($contexto, $articulo, $foto);
+        }
+
+        $quedan = Image::where('imageable_type', 'article')->where('imageable_id', (int) $articulo->id)->count();
+
+        $nombre = self::nombre_de_articulo($articulo);
+
+        return [
+            'texto'   => (count($fotos) === 1 ? 'Saqué 1 foto' : 'Saqué ' . count($fotos) . ' fotos') . ' del artículo ' . $nombre
+                . ($quedan === 0 ? '; quedó sin foto.' : '; le quedan ' . $quedan . '.'),
+            'ruta'    => ['name' => 'article', 'params' => new \stdClass(), 'texto' => 'Ver el listado'],
+            'sacadas' => count($fotos),
+            'quedan'  => $quedan,
+        ];
+    }
+
+    /**
+     * Con `reemplazar_fotos`: saca del artículo las fotos que tenía AL PROPONER (las de la tarjeta, que la
+     * persona vio contadas). Una foto que se le sumó después no se toca.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $articulo
+     * @param  array  $datos
+     * @return void
+     */
+    protected static function sacar_las_de_antes(ContextoDeCargaIa $contexto, Article $articulo, array $datos)
+    {
+        $por_articulo = isset($datos['fotos_a_sacar']) && is_array($datos['fotos_a_sacar']) ? $datos['fotos_a_sacar'] : [];
+
+        $ids = isset($por_articulo[(string) $articulo->id]) && is_array($por_articulo[(string) $articulo->id])
+            ? array_map('intval', $por_articulo[(string) $articulo->id])
+            : [];
+
+        if (!count($ids)) {
+
+            return;
+        }
+
+        $fotos = Image::where('imageable_type', 'article')
+                        ->where('imageable_id', (int) $articulo->id)
+                        ->whereIn('id', $ids)
+                        ->get();
+
+        foreach ($fotos as $foto) {
+
+            self::sacar_foto($contexto, $articulo, $foto);
+        }
+    }
+
+    /**
+     * Saca UNA foto de un artículo con los efectos de la pantalla (ImageController::deleteImageModel; ver
+     * el bloque de arriba). El archivo se borra después del commit, y solo si ninguna otra fila lo usa.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\Article  $articulo  El modelo ENTERO (lo leen los servicios de sincronización).
+     * @param  \App\Models\Image  $foto
+     * @return void
+     */
+    protected static function sacar_foto(ContextoDeCargaIa $contexto, Article $articulo, Image $foto)
+    {
+        $partes = explode('/', (string) $foto->hosting_url);
+        $archivo = (string) end($partes);
+
+        $compartido = $archivo !== '' && Image::where('id', '<>', (int) $foto->id)
+                            ->where('hosting_url', 'LIKE', '%/' . addcslashes($archivo, '%_\\'))
+                            ->exists();
+
+        $owner_id = $contexto->owner_id;
+
+        $baja_local = function () use ($foto, $owner_id) {
+            (new InventoryLinkageHelper(null, $owner_id))->delete_image($foto);
+            $foto->delete();
+        };
+
+        ProductService::add_article_to_sync($articulo);
+
+        /*
+         * Tienda Nube: borra la imagen remota (si la tiene) y la baja local va adentro de su candado, igual
+         * que la pantalla. Si la tienda no contesta, lanza: la confirmación se vuelve atrás entera y la
+         * persona lo puede reintentar, en vez de quedar la foto en la tienda y no en el sistema.
+         */
+        $tn = new \App\Services\TiendaNube\TiendaNubeProductImageService($articulo->user_id);
+
+        $tn->delete_image_from_article($articulo, $foto, $baja_local);
+
+        TiendaNubeSyncArticleService::add_article_to_sync($articulo);
+
+        // updated_at: el sync incremental del front y la tienda vuelven a bajar el artículo sin la foto.
+        $articulo->touch();
+
+        if ($archivo !== '' && !$compartido && strpos($archivo, '..') === false) {
+
+            \Illuminate\Support\Facades\DB::afterCommit(function () use ($archivo) {
+                Storage::disk('public')->delete($archivo);
+            });
+        }
     }
 
     protected static function ejecutar_generada(ContextoDeCargaIa $contexto, array $datos)

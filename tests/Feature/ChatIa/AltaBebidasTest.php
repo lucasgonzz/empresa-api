@@ -251,7 +251,13 @@ class AltaBebidasTest extends EmpresaTestCase
         $this->assertSame(0, \App\Models\AiMessageImagen::where('ai_message_id', $this->mensaje->id)->count());
     }
 
-    public function test_imagen_verificada_viaja_en_la_unica_propuesta_y_se_asigna_tras_confirmar()
+    /**
+     * 🔴 POLÍTICA CAMBIADA (misión asistente-mejoras-4-dias, 16/11/2026, P6/V13). Hasta acá este test afirmaba
+     * que la foto verificada de internet viajaba DENTRO del alta y se asignaba al confirmarla. Truvari (conv 19
+     * y 24) recibió así un vino blanco en un Malbec y pidió «preguntame antes». Ahora el alta se crea sin la
+     * foto y la foto va aparte, en su propia tarjeta, que la muestra y espera su propio sí (también en directo).
+     */
+    public function test_imagen_de_internet_va_aparte_del_alta_con_su_propia_confirmacion()
     {
         \Illuminate\Support\Facades\Storage::fake('local');
         config(['services.serper.api_key' => 'prueba117']);
@@ -267,12 +273,53 @@ class AltaBebidasTest extends EmpresaTestCase
         $this->instance(\App\Services\ArticleImageValidationService::class, $validador);
         $r = BusquedaImagenBebidaIaHelper::buscar($this->dueno->id, $this->conversacion, ['nombre' => $this->datos['name']], $this->mensaje);
         $this->assertTrue($r['found'], json_encode($r));
-        $this->proponer([], [], ['imagen_id' => $r['imagen_id']]);
+        $this->assertStringContainsString('NO va dentro del alta', $r['siguiente']);
+        $alta = $this->proponer([], [], ['imagen_id' => $r['imagen_id']]);
+        $this->assertSame($r['imagen_id'], $alta['foto_aparte']['imagen_id'], json_encode($alta));
+        $this->assertStringContainsString('proponer_foto_articulo', $alta['foto_aparte']['como_seguir']);
         $accion = $this->accion();
-        $this->assertNotEmpty($accion->presentacion['imagen_url']);
-        $this->assertFalse(Article::where('name', $this->datos['name'])->exists());
+        $this->assertArrayNotHasKey('imagen_id', $accion->datos['extras'] ?? [], 'La foto de internet no viaja en el alta.');
+        $this->assertSame($r['imagen_id'], $accion->datos['bebida']['foto_web_aparte']);
+        $this->assertContains('Foto', array_column($accion->presentacion['renglones'], 'etiqueta'));
         $this->confirmar($accion->id)->assertStatus(200);
-        $this->assertTrue(Article::where('name', $this->datos['name'])->firstOrFail()->images()->exists());
+        $articulo = Article::where('name', $this->datos['name'])->firstOrFail();
+        $this->assertFalse($articulo->images()->exists(), 'El alta NO le pone la foto de internet.');
+
+        // La foto aparte: su tarjeta la muestra y, aunque el dueño esté en directo, espera el sí.
+        $foto = HerramientasDeCarga::ejecutar('proponer_foto_articulo', ['articulo_id' => $articulo->id, 'imagen_id' => $r['imagen_id']], $this->conversacion, $this->mensaje);
+        $this->assertFalse($foto['is_error'], $foto['content']);
+        $foto = json_decode($foto['content'], true);
+        $this->assertTrue($foto['requiere_confirmacion'], json_encode($foto));
+        $tarjeta = AiMessageAction::findOrFail($foto['tarjeta_id']);
+        $this->assertSame('propuesta', $tarjeta->estado, 'Una foto de internet nunca se asigna sola.');
+        $this->assertNotEmpty($tarjeta->presentacion['imagen_url']);
+        $this->assertFalse($articulo->images()->exists());
+        $this->confirmar($tarjeta->id)->assertStatus(200);
+        $this->assertTrue($articulo->images()->exists());
+    }
+
+    public function test_candidata_de_otro_color_o_de_otra_cepa_se_descarta_por_su_titulo()
+    {
+        $this->assertTrue(BusquedaImagenBebidaIaHelper::contradice_la_bebida('Killka Malbec', 'Killka Sauvignon Blanc 750 ml'));
+        $this->assertTrue(BusquedaImagenBebidaIaHelper::contradice_la_bebida('Killka Malbec', 'Killka vino blanco'));
+        $this->assertTrue(BusquedaImagenBebidaIaHelper::contradice_la_bebida('Gran Enemigo Cabernet Franc', 'Gran Enemigo Malbec'));
+        $this->assertFalse(BusquedaImagenBebidaIaHelper::contradice_la_bebida('Killka Malbec', 'Killka Malbec 750 | Vinoteca'));
+        $this->assertFalse(BusquedaImagenBebidaIaHelper::contradice_la_bebida('Killka Malbec', ''));
+        $this->assertFalse(BusquedaImagenBebidaIaHelper::contradice_la_bebida('Gran Enemigo Cabernet Franc', 'Gran Enemigo Cabernet Franc Gualtallary'));
+
+        // Por el camino real: la única candidata es de un vino blanco y no llega ni a evaluarse.
+        config(['services.serper.api_key' => 'prueba117']);
+        $this->respuesta_http = ['images' => [['imageUrl' => 'https://example.com/b.jpg', 'title' => 'Killka Sauvignon Blanc', 'link' => 'https://example.com/b']]];
+        \App\Models\GeocoderCounter::where('user_id', $this->dueno->id)->whereDate('created_at', today())->update(['counter' => 0]);
+        $procesador = \Mockery::mock(\App\Services\ImageAssignment\CandidateImageProcessor::class);
+        $procesador->shouldReceive('preparar')->once()->andReturn(['listas' => [['clave' => 0, 'base64' => 'x', 'binario' => 'x']], 'candidatas' => [['titulo' => 'Killka Sauvignon Blanc 750', 'pagina' => 'https://example.com/b']]]);
+        $this->instance(\App\Services\ImageAssignment\CandidateImageProcessor::class, $procesador);
+        $validador = \Mockery::mock(\App\Services\ArticleImageValidationService::class);
+        $validador->shouldNotReceive('evaluar_candidatas');
+        $this->instance(\App\Services\ArticleImageValidationService::class, $validador);
+        $r = BusquedaImagenBebidaIaHelper::buscar($this->dueno->id, $this->conversacion, ['nombre' => 'Killka Malbec ticket117'], $this->mensaje);
+        $this->assertFalse($r['found']);
+        $this->assertArrayNotHasKey('imagen_id', $r);
     }
 
     public function test_botellas_por_caja_se_guardan_en_bulto_solo_con_la_propiedad_real_de_distribuidora()

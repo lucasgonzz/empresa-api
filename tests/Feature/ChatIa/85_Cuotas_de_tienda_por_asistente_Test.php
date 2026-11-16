@@ -293,12 +293,12 @@ class Cuotas_de_tienda_por_asistente_Test extends TestCase
         $nombres = HerramientasDeCarga::nombres();
         // Fichas verificadas agrega una propuesta AL FINAL, sin mover la de cuotas ni sus campos; los avisos
         // del dueño (C2, 13/11/2026) agregan otra detrás.
-        $this->assertSame(['proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -3, 2));
-        $this->assertSame(['proponer_avisos_por_whatsapp'], array_slice($nombres, -1));
+        $this->assertSame(['proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -4, 2)); // quitar_foto_articulo (asistente-mejoras-4-dias, P6, 16/11/2026) va al final de todo.
+        $this->assertSame(['proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -2));
         $this->assertTrue(HerramientasDeCarga::maneja('proponer_cuotas_tienda'));
         $this->assertContains('proponer_cuotas_tienda', HerramientasDeCarga::nombres(true));
         $definiciones = HerramientasDeCarga::definiciones();
-        $de_cuotas = $definiciones[count($definiciones) - 3];
+        $de_cuotas = $definiciones[count($definiciones) - 4]; // Una más atrás por quitar_foto_articulo (P6, 16/11/2026).
         $this->assertSame(['cuotas'], $de_cuotas['input_schema']['required']);
         $this->assertSame(['cantidad_cuotas'], $de_cuotas['input_schema']['properties']['cuotas']['items']['required']);
         $this->assertSame(36, $de_cuotas['input_schema']['properties']['cuotas']['maxItems']);

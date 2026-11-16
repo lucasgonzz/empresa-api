@@ -466,6 +466,13 @@ class PropuestaGenericaIaHelper
 
         $extra_de_la_respuesta = $avisa_al_modelo ? ['aviso' => $aviso] : [];
         if (count($bebida)) $extra_de_la_respuesta['requiere_confirmacion'] = true;
+        // P6 (16/11/2026, V13): la foto de internet va aparte (AltaBebidasIaHelper::preparar), con su imagen_id para después.
+        if (!empty($bebida['foto_web_aparte'])) {
+            $extra_de_la_respuesta['foto_aparte'] = [
+                'imagen_id'   => (int) $bebida['foto_web_aparte'],
+                'como_seguir' => 'Esta alta NO lleva la foto de internet. Cuando la persona confirme el alta, proponé la foto aparte con proponer_foto_articulo (articulo_id del artículo creado e imagen_id '.(int) $bebida['foto_web_aparte'].'): la tarjeta la muestra y espera su propio sí. Decile que la foto se la mostrás aparte para que confirme si es la correcta.',
+            ];
+        }
         if (AltaBebidasIaHelper::activa($contexto->owner) && in_array($declaracion['entidad'], ['bodega', 'cepa', 'provider'], true)) {
             // Una relación que falta no autoriza inventar catálogos antes del alta de la bebida.
             $extra_de_la_respuesta['requiere_confirmacion'] = true;

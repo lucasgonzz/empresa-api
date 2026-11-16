@@ -182,6 +182,11 @@ class EjecutorGenericoIaHelper
             $resultado['texto'] .= isset($payload['unidades_por_bulto'])
                 ? ' Botellas por caja guardadas: '.$guardado->unidades_por_bulto.'.'
                 : ' La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.';
+            // P6 (16/11/2026, V13): la foto de internet no va en el alta; queda para su propia tarjeta.
+            if (!empty($datos[AltaBebidasIaHelper::CLAVE]['foto_web_aparte'])) {
+                $resultado['foto_aparte'] = ['articulo_id' => (int) $id, 'imagen_id' => (int) $datos[AltaBebidasIaHelper::CLAVE]['foto_web_aparte']];
+                $resultado['texto'] .= ' La foto que encontré en internet todavía NO se puso: te la muestro aparte para que confirmes si es la correcta.';
+            }
         }
 
         /*
