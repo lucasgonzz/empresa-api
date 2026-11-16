@@ -184,17 +184,40 @@ class CargaSinPropuestaIaHelper
             return (string) $texto;
         }
 
+        /*
+         * 🔴 Solo la pregunta PELADA («¿Lo hago?», «¿Lo cargo?», «¿Confirmás?», «¿Lo dejo así?»): una con objeto
+         * o complemento ofrece OTRA carga y queda («¿Registro el pago de Pedro?», «¿Lo agendo para el viernes?»,
+         * «¿Lo cargo a nombre de Juan?»). Revisión independiente de la rama B, 16/11/2026.
+         */
         $sin = VeracidadDelTurnoIaHelper::sin_las_oraciones($texto, function ($oracion, $indice, array $todas) {
-
-            /* «¿Te agendo también el pago?» ofrece OTRA carga: esa pregunta queda. */
-            if (preg_match('/\b(?:tambien|ademas|otro|otra|otros|otras)\b/', VeracidadDelTurnoIaHelper::normalizar($oracion))) {
-                return false;
-            }
-
-            return $indice >= count($todas) - self::ORACIONES_DEL_FINAL && self::oracion_pide_confirmar($oracion);
+            return $indice >= count($todas) - self::ORACIONES_DEL_FINAL && self::es_pregunta_pelada($oracion);
         }, '');
 
         return trim($sin) === '' ? (string) $texto : $sin;
+    }
+
+    /**
+     * true si la oración es SOLO el pedido de confirmación, sin objeto ni complemento: «¿Lo hago?», «¿Lo cargo
+     * así?», «¿Confirmás?», «¿Me lo confirmás?», «¿Querés que lo registre?», «Confirmame para activarlo.».
+     *
+     * @param  string  $oracion
+     * @return bool
+     */
+    protected static function es_pregunta_pelada($oracion)
+    {
+        if (! self::oracion_pide_confirmar($oracion)) {
+            return false;
+        }
+
+        $abre = mb_strpos($oracion, '¿');
+        $n = VeracidadDelTurnoIaHelper::normalizar($abre === false ? $oracion : mb_substr($oracion, $abre));
+
+        $apertura = '^(?:(?:y|entonces|listo|dale|ok|bueno)\s+)?(?:(?:te|se|le|les|me)\s+)?';
+        $cierre = '(?:\s+(?:asi|ahora|entonces|nomas))?$';
+
+        return (bool) preg_match('/' . $apertura . '(?:(?:lo|la|los|las)\s+)?(?:' . self::VERBO_DE_CARGA . '|' . self::VERBO_CON_PRONOMBRE . '|confirmas)' . $cierre . '/', $n)
+            || (bool) preg_match('/^queres que\s+(?:(?:te|se|le|les)\s+)?(?:lo|la|los|las)\s+(?:' . self::SUBJUNTIVO_DE_CARGA . '|' . self::SUBJUNTIVO_CON_PRONOMBRE . ')' . $cierre . '/', $n)
+            || (bool) preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno|asi que)\s+)?(?:confirmame(?:lo|la|los|las)?|decime que si)(?:\s+(?:para|y)\s+\S+)?$/', $n);
     }
 
     /**

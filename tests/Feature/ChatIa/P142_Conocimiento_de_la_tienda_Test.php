@@ -23,7 +23,7 @@ use Tests\TestCase;
  *
  * @group chat-ia
  */
-class Conocimiento_de_la_tienda_Test extends TestCase
+class P142_Conocimiento_de_la_tienda_Test extends TestCase
 {
     use DatabaseTransactions;
 

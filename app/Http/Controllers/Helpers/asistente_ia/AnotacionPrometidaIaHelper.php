@@ -128,6 +128,9 @@ class AnotacionPrometidaIaHelper
     /** Lo que en el mensaje de la persona es un pedido o una pregunta, normalizado. */
     const PEDIDO_O_PREGUNTA = '/\b(?:decime|deci|fijate|fijese|pasame|mandame|enviame|mostrame|contame|averigua|revisa|revisame|calcula|calculame|consulta|busca|buscame|borra|borrale|borrala|borralo|elimina|eliminale|sacale|saca|cambia|cambiale|carga|cargale|cargame|agrega|agregale|pone|ponele|subi|subile|baja|bajale|activa|desactiva|prende|apaga|necesito que|quiero que|te pido que|podes|podrias|me podes|me podrias|cual es|cuales son|cuanto sale|cuanto cuesta|cuanto hay|cuantos hay|cuantas hay|que precio|que stock)\b/';
 
+    /** Una preferencia de cómo trabajar, normalizada: el pedido que la abre no cuenta como pedido. */
+    const PREFERENCIA = '/\b(?:quiero que|necesito que|te pido que)\s+(?:cada vez|siempre|desde ahora|de ahora en mas|a partir de ahora|nunca|no me)\b/';
+
     /**
      * true si el texto, sacando lo que dice que lo anota, queda vacío: «Me lo anoto.» y nada más.
      *
@@ -157,7 +160,14 @@ class AnotacionPrometidaIaHelper
             return true;
         }
 
-        return (bool) preg_match(self::PEDIDO_O_PREGUNTA, VeracidadDelTurnoIaHelper::normalizar($pedido));
+        /*
+         * «Te pido que cada vez que cargues una venta me consultes», «quiero que siempre…», «necesito que no me
+         * preguntes dos veces» son PREFERENCIAS (V25): ahí «Me lo anoto.» es la respuesta entera. Se sacan antes de
+         * buscar el pedido (revisión independiente de la rama B, 16/11/2026).
+         */
+        $n = (string) preg_replace(self::PREFERENCIA, ' ', VeracidadDelTurnoIaHelper::normalizar($pedido));
+
+        return (bool) preg_match(self::PEDIDO_O_PREGUNTA, $n);
     }
 
     /**

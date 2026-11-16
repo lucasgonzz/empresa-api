@@ -189,9 +189,9 @@ class TextoFinalIaHelper
      * agarraban. Lo que lo delata es la etiqueta, y una persona nunca escribe una así.
      *
      *   - Un bloque cerrado se saca entero, aunque ocupe varios renglones.
-     *   - Una etiqueta que abre y nunca cierra se lleva lo que sigue hasta la próxima línea en blanco (el
-     *     párrafo): lo de después ya suele ser la respuesta.
-     *   - Una etiqueta suelta (un cierre huérfano) se saca sola.
+     *   - Una etiqueta suelta (una que abre y nunca cierra, o un cierre huérfano) se saca sola, sin el texto de
+     *     al lado: llevarse el párrafo podía comerse la respuesta.
+     *   - No quedan dobles espacios donde estaba lo que se sacó.
      *
      * @param  string  $texto
      * @return string
@@ -214,15 +214,10 @@ class TextoFinalIaHelper
             return $texto;
         }
 
-        /* Una que abre y no cierra: hasta la próxima línea en blanco o el final. */
-        $limpio = preg_replace('/<\s*(?:' . $etiquetas . ')\b[^>]*>.*?(?:\R\s*\R|$)/isu', "\n\n", $limpio);
-
-        if (!is_string($limpio)) {
-
-            return $texto;
-        }
-
-        /* Los cierres huérfanos y las que se cierran solas. */
+        /*
+         * Las etiquetas sueltas: una que abre y no cierra, un cierre huérfano, las que se cierran solas. Se saca SOLO
+         * la etiqueta (revisión independiente de la rama B: llevarse el párrafo podía comerse la respuesta).
+         */
         $limpio = preg_replace('/<\s*\/?\s*(?:' . $etiquetas . ')\b[^>]*\/?\s*>/iu', '', $limpio);
 
         if (!is_string($limpio) || $limpio === $texto) {
@@ -230,7 +225,12 @@ class TextoFinalIaHelper
             return $texto;
         }
 
-        return trim(preg_replace('/\n{3,}/', "\n\n", $limpio));
+        /* Sin el doble espacio ni el espacio en el borde de un renglón que deja lo que se sacó. */
+        $limpio = (string) preg_replace('/(?<=\S)[ \t]{2,}(?=\S)/u', ' ', $limpio);
+        $limpio = (string) preg_replace('/[ \t]+(\r?\n|$)/u', '$1', $limpio);
+        $limpio = (string) preg_replace('/^[ \t]+(?=\S)/u', '', $limpio);
+
+        return trim(preg_replace('/\n{3,}/', "\n\n", str_replace("\r\n", "\n", $limpio)));
     }
 
     /**

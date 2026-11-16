@@ -28,7 +28,7 @@ use Tests\TestCase;
  *
  * @group chat-ia
  */
-class Mensajes_que_llegan_juntos_Test extends TestCase
+class P141_Mensajes_que_llegan_juntos_Test extends TestCase
 {
     use DatabaseTransactions;
 

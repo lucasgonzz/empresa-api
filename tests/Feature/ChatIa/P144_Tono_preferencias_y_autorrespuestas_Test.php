@@ -25,7 +25,7 @@ use Tests\TestCase;
  *
  * @group chat-ia
  */
-class Tono_preferencias_y_autorrespuestas_Test extends TestCase
+class P144_Tono_preferencias_y_autorrespuestas_Test extends TestCase
 {
     use DatabaseTransactions;
 

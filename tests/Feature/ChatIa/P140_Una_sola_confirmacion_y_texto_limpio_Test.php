@@ -40,7 +40,7 @@ use Tests\TestCase;
  *
  * @group chat-ia
  */
-class Una_sola_confirmacion_y_texto_limpio_Test extends TestCase
+class P140_Una_sola_confirmacion_y_texto_limpio_Test extends TestCase
 {
     use DatabaseTransactions;
 
@@ -223,7 +223,15 @@ class Una_sola_confirmacion_y_texto_limpio_Test extends TestCase
         /* Otras etiquetas, mayúsculas, varios renglones, una que no cierra y un cierre huérfano. */
         $this->assertSame('Hay 3 unidades.', TextoFinalIaHelper::sin_bloques_internos("<thinking>\nel stock es 3\nlo digo\n</thinking>\nHay 3 unidades."));
         $this->assertSame('Hay 3 unidades.', TextoFinalIaHelper::sin_bloques_internos("<SYSTEM>nota interna</SYSTEM> Hay 3 unidades."));
-        $this->assertSame('Hay 3 unidades.', TextoFinalIaHelper::sin_bloques_internos("<think>pienso que hay 3\n\nHay 3 unidades."));
+        /*
+         * Una etiqueta que abre y no cierra: se saca SOLO la etiqueta (revisión independiente de la rama B; la primera
+         * versión se llevaba el párrafo, y con él podía irse la respuesta).
+         */
+        $this->assertSame('Hay 3 unidades.', TextoFinalIaHelper::sin_bloques_internos('<think>Hay 3 unidades.'));
+        $this->assertSame("Hay 3 unidades.\n\nY 2 en el depósito.", TextoFinalIaHelper::sin_bloques_internos("<system>Hay 3 unidades.\n\nY 2 en el depósito."));
+
+        /* Sin el doble espacio donde estaba el bloque. */
+        $this->assertSame('Listo, quedó así.', TextoFinalIaHelper::sin_bloques_internos('Listo, <system>nota</system> quedó así.'));
         $this->assertSame('Hay 3 unidades.', TextoFinalIaHelper::sin_bloques_internos("Hay 3 unidades.</system>"));
 
         /* Lo que no es una etiqueta interna no se toca. */
@@ -478,6 +486,18 @@ class Una_sola_confirmacion_y_texto_limpio_Test extends TestCase
         $this->assertTrue(AnotacionPrometidaIaHelper::pide_o_pregunta_algo('Te pido que le borres la imagen porque no es correcto que tenga esa imagen'));
         $this->assertFalse(AnotacionPrometidaIaHelper::pide_o_pregunta_algo('Te aclaro que viene en 2 presentaciones: una en caja de cartón y otra en caja de madera'));
 
+        /* Una PREFERENCIA de cómo trabajar no es un pedido sin contestar (V25): ahí «Me lo anoto.» alcanza. */
+        foreach ([
+            'Te pido que cada vez que cargues una venta me consultes si la quiero facturar',
+            'Quiero que siempre me muestres la foto antes de cargarla',
+            'Necesito que no me preguntes tres veces lo mismo',
+            'Quiero que desde ahora uses la presentación para el precio por botella',
+        ] as $preferencia) {
+            $this->assertFalse(AnotacionPrometidaIaHelper::pide_o_pregunta_algo($preferencia), $preferencia);
+        }
+
+        $this->assertTrue(AnotacionPrometidaIaHelper::pide_o_pregunta_algo('Quiero que me borres la imagen del Killka'));
+
         list($conversation, $assistant) = $this->conversacion([], 'Bueno, entonces si ya lo anotaste y ya lo comprendiste, decime cuál es el precio por botella del gran enemigo');
 
         $dispara = new \ReflectionMethod(AsistenteIaService::class, 'dispara_la_guarda_de_veracidad');
@@ -505,5 +525,27 @@ class Una_sola_confirmacion_y_texto_limpio_Test extends TestCase
 
         $this->assertStringContainsString('$45.666,67', $texto);
         $this->assertCount(2, $this->bodies_enviados());
+    }
+
+    // ---------------------------------------------------------------------
+    // W2 — solo se saca la pregunta pelada (revisión independiente de la rama B)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Con la carga ya hecha en el turno, se saca «¿Lo hago?» pero NUNCA una pregunta que ofrece otra carga.
+     *
+     * @test
+     */
+    public function con_la_carga_hecha_se_saca_solo_la_pregunta_pelada()
+    {
+        $hecho = 'Listo, quedó cargada la venta 3100.';
+
+        foreach (['¿Registro el pago de Pedro?', '¿Lo agendo para el viernes?', '¿Lo cargo a nombre de Juan?'] as $oferta) {
+            $this->assertSame($hecho . ' ' . $oferta, CargaSinPropuestaIaHelper::sin_la_pregunta_de_confirmar($hecho . ' ' . $oferta), $oferta);
+        }
+
+        foreach (['¿Lo hago?', '¿Lo cargo?', '¿Confirmás?', '¿Lo dejo así?', '¿Me lo confirmás?'] as $pelada) {
+            $this->assertSame($hecho, CargaSinPropuestaIaHelper::sin_la_pregunta_de_confirmar($hecho . ' ' . $pelada), $pelada);
+        }
     }
 }
