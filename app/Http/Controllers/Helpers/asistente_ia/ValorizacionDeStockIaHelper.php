@@ -430,7 +430,7 @@ class ValorizacionDeStockIaHelper
      * @param  AiConversation|null  $conversation
      * @return User|null
      */
-    protected static function persona($conversation)
+    public static function persona($conversation)
     {
         if (!($conversation instanceof AiConversation) || empty($conversation->auth_user_id)) {
 
@@ -448,7 +448,7 @@ class ValorizacionDeStockIaHelper
      * @param  string  $texto
      * @return array  {address_id, nombre} o la respuesta negativa.
      */
-    protected static function resolver_deposito($owner_id, $texto)
+    public static function resolver_deposito($owner_id, $texto)
     {
         $sucursales = DB::table('addresses')
             ->where('user_id', $owner_id)
@@ -573,10 +573,15 @@ class ValorizacionDeStockIaHelper
      * (InventoryPerformanceHelper::costo_unitario_normalizado) por la cotización si está en dólares
      * (RecolectorStock). Lleva UN binding: el dólar de la cuenta (ver bindings_del_costo()).
      *
+     * Pública desde la misión asistente-diario-20261116 (30/10 #11), igual que persona() y
+     * resolver_deposito(): las reusa RendimientoDeComprasIaHelper para valorizar lo que no rotó con el
+     * MISMO costo que valorizar_stock (un solo criterio de costo en el asistente). Necesita
+     * `providers` unido a `articles` y `$preparado['dolar']`.
+     *
      * @param  array  $preparado
      * @return string
      */
-    protected static function expresion_costo_unitario(array $preparado)
+    public static function expresion_costo_unitario(array $preparado)
     {
         return '(articles.cost'
             . ' * (CASE WHEN articles.presentacion IS NULL THEN 1 ELSE articles.presentacion END)'
