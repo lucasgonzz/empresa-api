@@ -2648,15 +2648,19 @@ class PlanillaIaHelper
      */
     protected static function rechazo_del_importe(AiPlanilla $planilla, $importe_es, $ultimo, $pregunta, array $ventana)
     {
-        $dice = ConfirmacionDeterministaIaHelper::es_afirmacion($ultimo) ? null : Anclas::lo_que_dice_del_importe($ultimo, $pregunta);
+        $evidencia = ConfirmacionDeterministaIaHelper::es_afirmacion($ultimo)
+            ? ['dice' => null, 'sin_autorizacion' => false]
+            : Anclas::evidencia_del_importe($ultimo, $pregunta);
+        $dice = $evidencia['dice'];
 
-        if (is_null($dice) && is_null($planilla->importe_es)) {
+        if (is_null($dice) && !$evidencia['sin_autorizacion'] && is_null($planilla->importe_es)) {
 
             foreach ($ventana as $mensaje) {
 
-                $dice = Anclas::lo_que_dice_del_importe($mensaje);
+                $evidencia_anterior = Anclas::evidencia_del_importe($mensaje);
+                $dice = $evidencia_anterior['dice'];
 
-                if (!is_null($dice)) {
+                if (!is_null($dice) || $evidencia_anterior['sin_autorizacion']) {
                     break;
                 }
             }

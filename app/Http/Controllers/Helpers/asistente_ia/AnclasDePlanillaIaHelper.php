@@ -528,29 +528,118 @@ class AnclasDePlanillaIaHelper
      */
     public static function lo_que_dice_del_importe($mensaje, $pregunta_del_asistente = '')
     {
+        return self::evidencia_del_importe($mensaje, $pregunta_del_asistente)['dice'];
+    }
+
+    /**
+     * Una declaración no autorizante no equivale a que no se habló del importe: al buscar en la
+     * ventana tampoco se puede saltar una negación/cita para rescatar una afirmación más vieja.
+     * La modalidad elegida necesita su propia afirmación; negar la otra nunca la inventa.
+     */
+    public static function evidencia_del_importe($mensaje, $pregunta_del_asistente = ''): array
+    {
         $crudo = Roles::normalizar_texto($mensaje);
+        $sin_autorizacion = false;
+
+        // Las comillas se consumen por pares: el cierre no puede abrir otra cita hacia adelante.
+        $crudo = (string) preg_replace_callback('/«[^»]*(?:»|$)|“[^”]*(?:”|$)|"[^"]*(?:"|$)/u', function ($cita) use (&$sin_autorizacion, $pregunta_del_asistente) {
+            if (self::hay_declaracion_del_importe($cita[0], $pregunta_del_asistente)) {
+                $sin_autorizacion = true;
+                return ' ';
+            }
+            return $cita[0];
+        }, $crudo);
+
+        // Una pregunta sobre el importe tampoco es una respuesta afirmativa del dueño.
+        $crudo = (string) preg_replace_callback('/¿[^?]*(?:\?|$)|(?:^|(?<=[.!;\n]))[^.!;\n?]*\?/u', function ($pregunta) use (&$sin_autorizacion, $pregunta_del_asistente) {
+            if (self::hay_declaracion_del_importe($pregunta[0], $pregunta_del_asistente)) {
+                $sin_autorizacion = true;
+                return ' ';
+            }
+            return $pregunta[0];
+        }, $crudo);
+
+        $gramatica = self::gramatica_del_importe();
+        $declaracion = '(?:(?:es|son)\s+)?(?:' . implode('|', $gramatica) . ')\b';
+        $sujeto = '(?:(?:el|los)\s+(?:importe|importes|precio|precios)\s+|cada\s+renglon\s+)?';
+        $marco = '\b(?:como ejemplo|por ejemplo|hipotesis|hipoteticamente|supongamos|si\s+(?:(?:yo|te|vos)\s+)*(?:dijera|dijese|pidiera|pidiese))\b';
+        $hipotesis_del_importe = $marco . '\s*(?:que\s+)?' . $sujeto . $declaracion;
+        $veto_de_la_declaracion = '\bno\s+(?:lo|la)\s+(?:tomes|tome|apliques|aplique|interpretes)\s+como\s+(?:(?:un|una)\s+)?(?:pedido|orden|instruccion|definicion)\b';
+
+        $total = '(?:(?:el|los|un)\s+)?(?:(?:importe|precio)\s+)?total(?:es)?';
+        $unidad = '(?:(?:el|los|un)\s+)?(?:precios?\s+)?(?:por\s+unidad|unitarios?|c\s*(?:\/|\s)\s*u)';
+        $modalidad = '(?:' . $total . '|' . $unidad . '|' . $gramatica['unidad'] . ')\b';
+        $subordinada = '\b(?:no|nunca|tampoco)\s+(?:dije|digo|afirme|afirmo|pedi|pido|quiero|deseo|necesito|autorice|autorizo|permito)\s+que\s+' . $sujeto . '(?:(?:es|son|sea|sean|era|eran|fuera|fueran)\s+)?' . $modalidad;
+        $envoltura = '\b(?:no|nunca|tampoco)\s+(?:(?:quiero|deseo|pido|necesito)\s+que\s+)?(?:hagas|ejecutes|apliques|realices|sigas|tomes)\s+(?:lo siguiente|esto|esta orden|este pedido|estas instrucciones)\s+' . $sujeto . $declaracion;
+
+        if (preg_match('/' . $hipotesis_del_importe . '/u', self::normalizar($crudo))
+            || preg_match('/(?:' . $subordinada . '|' . $envoltura . ')/u', self::normalizar($crudo))
+            || (preg_match('/' . $veto_de_la_declaracion . '/u', $crudo) && self::hay_declaracion_del_importe($crudo, $pregunta_del_asistente))) {
+            return ['dice' => null, 'sin_autorizacion' => true];
+        }
+
+        // Son objetos distintos del importe de la planilla, no otra modalidad de ese importe.
+        $crudo = (string) preg_replace('/\bunidad(?:es)?\s+de\s+medida\b/u', ' ', $crudo);
+        $crudo = (string) preg_replace('/\b(?:no\s+(?:cambies|modifiques|toques|alteres)|conserva|mantene|deja)(?:me)?\s+(?:(?:el|la|los|las)\s+)?(?:cantidades?\s+(?:y|ni)\s+(?:(?:el|los)\s+)?)?precios?\s+(?:por\s+unidad|unitarios?)\s+del\s+(?:catalogo|articulo)\b/u', ' ', $crudo);
+
+        $negacion = '\b(?:no|nunca|tampoco)\s+(?:(?:es|son|era|eran)\s+|(?:uses|apliques|tomes|definas|interpretes)\s+(?:(?:el|la)\s+)?(?:(?:importe|precio|modalidad|definicion)\s+)?(?:como\s+)?)?';
+        $negadas = ['total' => false, 'unidad' => false];
+
+        // Antes de normalizar los signos: «No, es por unidad» sigue afirmando unidad.
+        $crudo = (string) preg_replace_callback('/' . $negacion . '(?:' . $total . '\s+(?:ni|o)\s+' . $unidad . '|' . $unidad . '\s+(?:ni|o)\s+' . $total . '|' . $total . '|' . $unidad . '|' . $gramatica['unidad'] . ')\b/u', function ($negada) use (&$sin_autorizacion, &$negadas, $gramatica) {
+            $sin_autorizacion = true;
+            $negadas['total'] = $negadas['total'] || self::alguna_palabra_en(self::PALABRAS_DEL_TOTAL, [$negada[0]]);
+            $negadas['unidad'] = $negadas['unidad'] || self::alguna_palabra_en(self::PALABRAS_DE_LA_UNIDAD, [$negada[0]])
+                || preg_match('/\b' . $gramatica['unidad'] . '\b/u', self::normalizar($negada[0]));
+            return ' ';
+        }, $crudo);
 
         /* «Es el total y van a la cuenta corriente de cada uno»: ese «cada uno» es de los clientes, no del precio. */
-        $mensaje = (string) preg_replace('/\bcuenta( corriente)? de cada (uno|una)\b/', ' ', self::normalizar($mensaje));
+        $mensaje = (string) preg_replace('/\bcuenta( corriente)? de cada (uno|una)\b/', ' ', self::normalizar($crudo));
 
-        $cada_uno_a = (bool) preg_match('/\bcada (?:uno|una) a \d/', $mensaje);
+        $afirma_unidad = (bool) preg_match('/\b' . $gramatica['unidad'] . '\b/u', $mensaje);
 
-        if (self::alguna_palabra_en(self::PALABRAS_DEL_TOTAL, [$mensaje]) && ($cada_uno_a || self::alguna_palabra_en(self::PALABRAS_DE_LA_UNIDAD, [$mensaje]))) {
+        if (self::alguna_palabra_en(self::PALABRAS_DEL_TOTAL, [$mensaje]) && ($afirma_unidad || self::alguna_palabra_en(self::PALABRAS_DE_LA_UNIDAD, [$mensaje]))) {
 
-            return 'las_dos';
+            return ['dice' => 'las_dos', 'sin_autorizacion' => $sin_autorizacion];
         }
 
-        if (self::alguna_palabra_en(self::FRASES_DEL_TOTAL, [$mensaje])) {
+        if (preg_match('/\b' . $gramatica['total'] . '\b/u', $mensaje)) {
 
-            return AiPlanilla::IMPORTE_TOTAL;
+            return ['dice' => $negadas['total'] ? null : AiPlanilla::IMPORTE_TOTAL, 'sin_autorizacion' => $sin_autorizacion];
         }
 
-        if ($cada_uno_a || self::alguna_palabra_en(self::FRASES_DE_LA_UNIDAD, [$mensaje])) {
+        if ($afirma_unidad) {
 
-            return AiPlanilla::IMPORTE_UNIDAD;
+            return ['dice' => $negadas['unidad'] ? null : AiPlanilla::IMPORTE_UNIDAD, 'sin_autorizacion' => $sin_autorizacion];
         }
 
-        return self::respuesta_a_la_pregunta_del_importe($crudo, $pregunta_del_asistente);
+        $respuesta_corta = self::respuesta_a_la_pregunta_del_importe($crudo, $pregunta_del_asistente);
+
+        return ['dice' => !is_null($respuesta_corta) && $negadas[$respuesta_corta] ? null : $respuesta_corta, 'sin_autorizacion' => $sin_autorizacion];
+    }
+
+    /** Las mismas frases/respuestas que autorizan una definición, sin atribuirla aún al dueño. */
+    protected static function hay_declaracion_del_importe($texto, $pregunta): bool
+    {
+        foreach (self::gramatica_del_importe() as $forma) {
+            if (preg_match('/\b' . $forma . '\b/u', self::normalizar($texto))) {
+                return true;
+            }
+        }
+
+        return !is_null(self::respuesta_a_la_pregunta_del_importe(Roles::normalizar_texto($texto), $pregunta));
+    }
+
+    /** Una sola gramática para afirmar y para reconocer lo que una cita/marco no autoriza. */
+    protected static function gramatica_del_importe(): array
+    {
+        $escapar = function ($frase) { return preg_quote($frase, '/'); };
+
+        return [
+            'total' => '(?:' . implode('|', array_map($escapar, self::FRASES_DEL_TOTAL)) . ')',
+            'unidad' => '(?:' . implode('|', array_map($escapar, self::FRASES_DE_LA_UNIDAD)) . '|cada (?:uno|una) a (?:\$\s*)?\d+)',
+        ];
     }
 
     /**
