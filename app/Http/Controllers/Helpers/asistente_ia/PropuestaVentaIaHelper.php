@@ -82,6 +82,13 @@ class PropuestaVentaIaHelper
      */
     const PERMISO_DESCUENTOS = 'sale.discount_surchage.aplicar';
 
+    /**
+     * Permiso para el descuento POR RENGLÓN (M6-descuento, misión asistente-diario-20261116): en Vender
+     * la columna `discount` del remito se dibuja con `can('vender.article_discount')`
+     * (src/components/vender/components/remito/ArticlesTable.vue, dynamic_fields()).
+     */
+    const PERMISO_DESCUENTO_POR_RENGLON = 'vender.article_discount';
+
     /** Tope de renglones por venta (contrato §4). */
     const MAX_ITEMS = 50;
 
@@ -257,7 +264,7 @@ class PropuestaVentaIaHelper
 
         $renglones = count($items_de_promos) && is_array($items_de_articulos) && !count($items_de_articulos)
             ? []
-            : self::resolver_renglones($contexto, $items_de_articulos, $lista, $porcentaje_del_metodo, $faltan, $opciones);
+            : self::resolver_renglones($contexto, $items_de_articulos, $lista, $porcentaje_del_metodo, $faltan, $opciones, true);
 
         if (RespuestaDeCargaIa::es_negativa($renglones)) {
 
@@ -1342,9 +1349,12 @@ class PropuestaVentaIaHelper
      * @param  float|null  $porcentaje_del_metodo  Positivo descuenta, negativo recarga, null nada.
      * @param  array  $faltan  Se llena por referencia.
      * @param  array  $opciones  Se llena por referencia.
+     * @param  bool  $con_descuento_por_renglon  M6-descuento (misión asistente-diario-20261116): true solo
+     *         desde proponer_venta, que lee `descuento_porcentaje` de cada item. El presupuesto comparte este
+     *         método y no lo ofrece en su esquema: con false, cada renglón queda con `descuento` null.
      * @return array<int, array<string, mixed>>|array  Renglones (vacío si alguno quedó pendiente), o la respuesta negativa.
      */
-    public static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones)
+    public static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones, $con_descuento_por_renglon = false)
     {
         if (!is_array($items) || !count($items)) {
 
@@ -1374,6 +1384,13 @@ class PropuestaVentaIaHelper
             }
 
             $cantidad = round((float) $cantidad, 2);
+
+            $descuento_del_renglon = $con_descuento_por_renglon ? self::descuento_del_renglon($contexto, $item, $indice) : null;
+
+            if (RespuestaDeCargaIa::es_negativa($descuento_del_renglon)) {
+
+                return $descuento_del_renglon;
+            }
 
             $article = self::resolver_articulo($contexto, $item, $lista);
 
@@ -1467,6 +1484,11 @@ class PropuestaVentaIaHelper
                     $renglones[$id]['origen'] = $origen;
                 }
 
+                // M6-descuento: dos renglones del mismo artículo se funden; el descuento dicho después manda.
+                if (!is_null($descuento_del_renglon)) {
+                    $renglones[$id]['descuento'] = $descuento_del_renglon;
+                }
+
                 continue;
             }
 
@@ -1477,6 +1499,8 @@ class PropuestaVentaIaHelper
                 'precio_dictado' => $precio_dictado,
                 'origen'         => $origen,
                 'caja_de'        => is_null($precio_dictado) && $origen === 'final_price' ? self::caja_de($contexto, $article) : null,
+                // M6-descuento (misión asistente-diario-20261116), al final: el % de descuento del renglón, o null.
+                'descuento'      => $descuento_del_renglon,
             ];
         }
 
@@ -1968,6 +1992,69 @@ class PropuestaVentaIaHelper
     }
 
     /**
+     * EL DESCUENTO % DE UN RENGLÓN QUE DICTÓ LA PERSONA (M6-descuento, misión asistente-diario-20261116).
+     *
+     * 🔴 EL PEDIDO REAL (Ferre Total, 14/11/2026): «a este hacele 15 %». Vender lo hace en el remito con
+     * la columna `discount` de cada artículo, y el asistente solo sabía el descuento de venta del
+     * catálogo (`descuento_porcentaje` de arriba, sobre el total). Este es el otro: va en el renglón, se
+     * guarda en `article_sale.discount` por el mismo camino que Vender (`SaleHelper::attachArticle()`
+     * lee `discount` del item) y pide el mismo permiso que dibuja esa columna.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $item
+     * @param  int  $indice  Posición del item (para el mensaje de error).
+     * @return float|null|array  El porcentaje (0 < d ≤ 100), null si no hay, o la respuesta negativa.
+     */
+    protected static function descuento_del_renglon(ContextoDeCargaIa $contexto, array $item, $indice)
+    {
+        $valor = EntradaDeCargaIa::valor($item, 'descuento_porcentaje');
+
+        if (EntradaDeCargaIa::vacio($valor)) {
+
+            return null;
+        }
+
+        if (!is_numeric($valor) || (float) $valor < 0 || (float) $valor > 100) {
+
+            return RespuestaDeCargaIa::error('El descuento del artículo ' . ($indice + 1) . ' tiene que ser un porcentaje entre 0 y 100.');
+        }
+
+        $porcentaje = round((float) $valor, 2);
+
+        if ($porcentaje == 0) {
+
+            return null;
+        }
+
+        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO_DESCUENTO_POR_RENGLON)) {
+
+            return RespuestaDeCargaIa::error('No tenés permiso para hacerle descuento a cada artículo desde tu usuario (en Vender es la columna de descuento del remito).');
+        }
+
+        return $porcentaje;
+    }
+
+    /**
+     * La plata de UN renglón de artículo con la cuenta de Vender: `getTotalItem()` de
+     * src/mixins/model_functions.js —`total = precio × cantidad` y, con descuento,
+     * `total -= total × descuento / 100`—, en ese mismo orden para dar el mismo número. Sin redondear:
+     * el redondeo va sobre la suma, como en vender_set_total.js.
+     *
+     * @param  array  $renglon
+     * @return float
+     */
+    public static function importe_del_renglon(array $renglon): float
+    {
+        $total = (float) $renglon['precio'] * (float) $renglon['cantidad'];
+
+        if (!empty($renglon['descuento'])) {
+            $total -= $total * (float) $renglon['descuento'] / 100;
+        }
+
+        return $total;
+    }
+
+    /**
      * Sub total y total como los calcula `mixins/vender_set_total.js`: el sub total es la suma de
      * los renglones (precio unitario ya con el descuento del método de pago, × cantidad), y el total
      * es esa suma menos el descuento de venta (`aplicar_discounts()` se lo resta a `total_articles`
@@ -1981,8 +2068,9 @@ class PropuestaVentaIaHelper
     {
         $sub_total = 0.0;
 
+        // M6-descuento: cada renglón con su descuento, como getTotalItem() de Vender.
         foreach ($renglones as $renglon) {
-            $sub_total += (float) $renglon['precio'] * (float) $renglon['cantidad'];
+            $sub_total += self::importe_del_renglon($renglon);
         }
 
         // P3: las promos suman al subtotal como `total_promocion_vinoteca` de vender_set_total.js.
@@ -2128,6 +2216,8 @@ class PropuestaVentaIaHelper
                 'iva_id'                     => $article->iva_id,
                 'iva'                        => is_null($article->iva) ? null : ['id' => (int) $article->iva->id, 'percentage' => $article->iva->percentage],
                 'stock'                      => $article->stock,
+                // M6-descuento: el % del renglón, la clave que lee SaleHelper::getDiscount() → article_sale.discount.
+                'discount'                   => empty($renglon['descuento']) ? null : (float) $renglon['descuento'],
             ];
 
             $items[] = $item;
@@ -2135,6 +2225,10 @@ class PropuestaVentaIaHelper
             $descripcion[] = 'ITEM: ' . $article->name;
             $descripcion[] = ($renglon['origen'] === 'dictado' ? 'Precio personalizado: ' : 'Precio (' . $renglon['origen'] . '): ') . FormatoIaHelper::monto($renglon['precio']);
             $descripcion[] = 'Precio unitario final: ' . FormatoIaHelper::monto($renglon['precio']);
+
+            if (!empty($renglon['descuento'])) {
+                $descripcion[] = 'Descuento del renglon: ' . self::porcentaje((float) $renglon['descuento']) . '%';
+            }
         }
 
         $descripcion[] = 'SubTotal: ' . FormatoIaHelper::monto($totales['sub_total']) . ' (sumatoria de todos los items con descuentos individuales y descuentos/recargos de metodos de pago aplicados)';
@@ -2293,8 +2387,10 @@ class PropuestaVentaIaHelper
                 'nombre'      => (string) $renglon['article']->name,
                 'cantidad'    => (float) $renglon['cantidad'],
                 'precio'      => (float) $renglon['precio'],
-                'subtotal'    => round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2),
+                // M6-descuento: el subtotal ya con el descuento del renglón (el mismo de la tarjeta).
+                'subtotal'    => round(self::importe_del_renglon($renglon), 2),
                 'origen'      => (string) $renglon['origen'],
+                'descuento'   => empty($renglon['descuento']) ? null : (float) $renglon['descuento'],
             ];
         }
 
@@ -2346,13 +2442,17 @@ class PropuestaVentaIaHelper
      */
     public static function renglon_de_articulo(array $renglon): string
     {
-        $subtotal = round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2);
+        // M6-descuento: con descuento de renglón el subtotal ya lo trae (el presupuesto no lo usa: sin clave, igual que antes).
+        $subtotal = round(self::importe_del_renglon($renglon), 2);
 
         // B7 (13/11/2026): con Vinoteca el artículo ES la caja, y la tarjeta lo dice. Ver caja_de().
         $caja = !empty($renglon['caja_de']) ? ' (caja de ' . self::numero((float) $renglon['caja_de']) . ')' : '';
 
+        $descuento = !empty($renglon['descuento']) ? ' − ' . self::porcentaje((float) $renglon['descuento']) . ' %' : '';
+
         return self::numero((float) $renglon['cantidad']) . ' × ' . $renglon['article']->name . $caja
             . ' — ' . FormatoIaHelper::monto($renglon['precio'])
+            . $descuento
             . ' = ' . FormatoIaHelper::monto($subtotal);
     }
 

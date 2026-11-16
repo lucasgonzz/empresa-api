@@ -1114,6 +1114,11 @@ class HerramientasDeCarga
                                         'type'        => 'integer',
                                         'description' => 'Id de la promo de vinoteca, solo si otra herramienta o un "faltan" lo devolvió.',
                                     ],
+                                    // Misión asistente-diario-20261116 (M6-descuento), al final: el descuento de ESTE renglón.
+                                    'descuento_porcentaje' => [
+                                        'type'        => 'number',
+                                        'description' => 'Descuento de ESTE artículo, en porcentaje (0 a 100), como la columna de descuento del remito de Vender: "a este hacele 15 %". El total de la tarjeta ya lo descuenta. Es distinto del descuento_porcentaje de la venta entera.',
+                                    ],
                                 ],
                                 'required'   => ['cantidad'],
                             ],
