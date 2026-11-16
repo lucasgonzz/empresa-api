@@ -1077,7 +1077,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_venta',
-                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; una promo de vinoteca va como renglón con promo (o promo_id), igual que en Vender, y descuenta su stock; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1105,6 +1105,15 @@ class HerramientasDeCarga
                                         'type'        => 'number',
                                         'description' => 'Solo si la persona dictó un precio distinto al de la lista. Mayor a 0.',
                                     ],
+                                    // Misión asistente-mejoras-4-dias (P3), al final: la promo de vinoteca como renglón.
+                                    'promo'           => [
+                                        'type'        => 'string',
+                                        'description' => 'Si el renglón es una PROMO de vinoteca (botón Promos; el dueño les dice combos, mix o promos): su nombre, en vez de articulo. 1 de cantidad = 1 promo (nunca las botellas que trae). Si mandás un nombre en articulo que no es ningún artículo y sí una promo, se toma como promo.',
+                                    ],
+                                    'promo_id'        => [
+                                        'type'        => 'integer',
+                                        'description' => 'Id de la promo de vinoteca, solo si otra herramienta o un "faltan" lo devolvió.',
+                                    ],
                                 ],
                                 'required'   => ['cantidad'],
                             ],
@@ -1116,7 +1125,7 @@ class HerramientasDeCarga
                         'cobro'                => [
                             'type'        => 'string',
                             'enum'        => ['contado', 'cuenta_corriente'],
-                            'description' => 'Cómo se cobra. Sin cliente solo puede ser contado.',
+                            'description' => 'Cómo se cobra. Sin cliente solo puede ser contado. Mandalo (con el método y la caja) solo si la persona lo dijo en ESTE pedido: nunca lo copies de otra venta ni de otra charla; si no lo dijo, la herramienta te lo pide.',
                         ],
                         'metodo_de_pago'       => [
                             'type'        => 'string',
@@ -1219,6 +1228,14 @@ class HerramientasDeCarga
                             'type'        => 'boolean',
                             'description' => 'true si la persona pidió la foto solo para los que todavía NO tienen ninguna ("a los que no tienen foto"): la tarjeta deja afuera a los que ya tienen alguna.',
                         ],
+                        /*
+                         * Misión asistente-mejoras-4-dias (16/11/2026, P6: V8), AL FINAL de las propiedades por la
+                         * regla del prefijo del caché: «reemplazá la foto por esta».
+                         */
+                        'reemplazar_fotos' => [
+                            'type'        => 'boolean',
+                            'description' => 'true si la persona pidió REEMPLAZAR la foto ("cambiale la foto por esta", "sacá la que tiene y poné esta"): la nueva queda como principal y las que el artículo tiene hoy se sacan al confirmar (también de la tienda). La tarjeta dice cuántas se sacan y siempre espera el sí.',
+                        ],
                     ],
                     'required'   => [],
                 ],
@@ -1283,7 +1300,7 @@ class HerramientasDeCarga
                         ],
                         'cantidad'    => [
                             'type'        => 'number',
-                            'description' => 'Cuántas unidades. Con modo sumar o restar es cuánto se mueve; con modo fijar es en cuánto queda.',
+                            'description' => 'Cuántas unidades DEL LISTADO. Con modo sumar o restar es cuánto se mueve; con modo fijar es en cuánto queda. Si el artículo se vende por caja (consultar_stock_de_articulos trae precio_es_por «caja de N»), una caja es 1: «4 cajas» es 4, nunca 4 × las botellas.',
                         ],
                         'modo'        => [
                             'type'        => 'string',
@@ -1442,7 +1459,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_accion_de_pantalla',
-                'description'  => 'Arma la tarjeta para HACER algo por la misma ruta POST o PUT que usa una pantalla del sistema (una de que_acciones_de_pantalla_hay), para que la persona la confirme: NO hace nada por sí sola. Al confirmar corre el mismo controller que la pantalla, autenticado como la persona; lo que la pantalla rechazaría (validación, permisos, un registro que no existe) vuelve como `error`. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros`, lo que la pantalla manda en el formulario en `cuerpo` (las `claves` del catálogo son una guía) y una `descripcion` de UNA línea que diga qué hace esta acción: es el título que la persona lee en la tarjeta, así que tiene que ser fiel y concreta ("Abrir la caja Efectivo", "Confirmar el presupuesto N° 12"). Con la confianza en "directo" se ejecuta en el acto. Para BORRAR está proponer_borrado_por_pantalla, y para leer, consultar_por_pantalla. Nunca la uses para lo que ya tiene herramienta propia. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para HACER algo por la misma ruta POST o PUT que usa una pantalla del sistema (una de que_acciones_de_pantalla_hay), para que la persona la confirme: NO hace nada por sí sola. Al confirmar corre el mismo controller que la pantalla, autenticado como la persona; lo que la pantalla rechazaría (validación, permisos, un registro que no existe) vuelve como `error`. Pasá la `ruta` tal cual (con sus {param}), los valores de los {param} en `parametros`, lo que la pantalla manda en el formulario en `cuerpo` (las `claves` del catálogo son una guía) (para facturar una venta por api/afip-ticket alcanza con su N° como lo ve la persona: cuerpo {"numero": N}, sin buscar el id) y una `descripcion` de UNA línea que diga qué hace esta acción: es el título que la persona lee en la tarjeta, así que tiene que ser fiel y concreta ("Abrir la caja Efectivo", "Confirmar el presupuesto N° 12"). Con la confianza en "directo" se ejecuta en el acto. Para BORRAR está proponer_borrado_por_pantalla, y para leer, consultar_por_pantalla. Nunca la uses para lo que ya tiene herramienta propia. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1821,6 +1838,23 @@ class HerramientasDeCarga
                 'stock_cero' => ['type' => 'boolean', 'description' => 'true prende el aviso de artículos sin stock; false lo apaga.'],
                 'reemplaza_a' => ['type' => 'integer'],
             ]],
+        ];
+
+        /*
+         * Misión asistente-mejoras-4-dias (16/11/2026, P6: V8), al final por el prefijo del caché. Truvari pidió
+         * «eliminá la imagen» cuatro veces y el agente contestó que no tenía cómo: sumó la nueva y dejó la
+         * equivocada publicada. La tarjeta muestra la foto que se saca y siempre espera el sí.
+         */
+        $definiciones[] = [
+            'name' => 'quitar_foto_articulo',
+            'description' => 'Arma la tarjeta para SACARLE una foto (o todas) a un artículo que ya existe ("eliminá esa imagen", "sacale la foto", "esa foto no es"). La tarjeta MUESTRA la foto que se saca y avisa que también sale de la tienda online; SIEMPRE espera el sí de la persona, en cualquier modo, porque no se puede deshacer. Si el artículo tiene varias fotos y no sabés cuál, la respuesta trae "faltan" con las fotos numeradas (la 1 es la principal): preguntá cuál o si van todas, y volvé a llamar con imagen_numero o todas. Por WhatsApp la persona no ve la tarjeta: decile cuál foto se saca (la principal, la segunda…) y pasale el link de la foto que se saca (url_de_la_foto) para que la vea antes del sí. Para cambiarla por otra en un solo paso va proponer_foto_articulo con reemplazar_fotos. 🔴 NUNCA digas que no podés sacar una foto: con esta herramienta podés. Si trae "error", contá el motivo tal cual.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'articulo'      => ['type' => 'string', 'description' => 'Nombre o código del artículo, como lo dijo la persona. Si mandás articulo_id no hace falta.'],
+                'articulo_id'   => ['type' => 'integer', 'description' => 'Id del artículo, solo si otra herramienta lo devolvió.'],
+                'imagen_numero' => ['type' => 'integer', 'description' => 'Cuál foto se saca, en el orden de las opciones (1 = la principal).'],
+                'todas'         => ['type' => 'boolean', 'description' => 'true si la persona pidió sacarle TODAS las fotos.'],
+                'reemplaza_a'   => ['type' => 'integer'],
+            ], 'required' => []],
         ];
 
         if ($con_whatsapp) {
@@ -2323,6 +2357,15 @@ class HerramientasDeCarga
                     PropuestaFotoArticuloIaHelper::proponer($contexto, $assistant_message, $input)
                 ));
 
+            // P6 (16/11/2026): sacar fotos. La propuesta trae requiere_confirmacion: nunca se ejecuta sola.
+            case 'quitar_foto_articulo':
+                return self::resultado(self::quizas_auto_confirmar(
+                    $contexto,
+                    $conversation,
+                    $assistant_message,
+                    PropuestaFotoArticuloIaHelper::proponer_quitar($contexto, $assistant_message, $input)
+                ));
+
             /*
              * Misión asistente-capacidades-y-hilos (22/9/2026). Las dos de stock pasan por la
              * puerta única: con el dueño en "directo" se hacen en el acto, y en los otros dos modos
@@ -2635,7 +2678,9 @@ class HerramientasDeCarga
 
         $owner = $contexto->owner;
 
-        if (!in_array($tipo, self::auto_confirmables_de(ConfianzaDelAgenteIaHelper::guardada($owner)), true)) {
+        if (!in_array($tipo, self::auto_confirmables_de(ConfianzaDelAgenteIaHelper::guardada($owner)), true)
+            // P4 (misión asistente-mejoras-4-dias): o la ejecuta el sí que la persona ya dio sin propuesta.
+            && !\App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::ejecuta($conversation, $assistant_message, $tipo, ConfianzaDelAgenteIaHelper::guardada($owner))) {
 
             return $respuesta;
         }
@@ -2787,7 +2832,7 @@ class HerramientasDeCarga
      *
      * @return array
      */
-    protected static function esquema_de_filtros(): array
+    public static function esquema_de_filtros(): array
     {
         return [
             'type'        => 'array',

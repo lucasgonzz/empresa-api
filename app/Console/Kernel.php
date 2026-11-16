@@ -248,6 +248,16 @@ class Kernel extends ConsoleKernel
                 ->withoutOverlapping(25);
         }
 
+        // El sueño consolida enseñanzas del día argentino anterior en la memoria del onboarding.
+        // El comando repite el gate y usa checkpoints: un fallo no pierde ni duplica el lote.
+        if ($company_owner && UserHelper::hasExtencion('agentes_ia', $company_owner)) {
+            $schedule->command('agente:consolidar-memoria')
+                ->timezone('America/Argentina/Buenos_Aires')
+                ->dailyAt('03:00')
+                ->runInBackground()
+                ->withoutOverlapping(65);
+        }
+
         // sugerencias:generar (05:00) y compras:generar (05:30) YA NO SE AGENDAN (misión
         // modulo-ia-mostrador, 14/9/2026): las carpetas Stock y Compras del mostrador del módulo
         // IA las reemplazan. Los hechos de esas dos carpetas los calcula el API a pedido de la

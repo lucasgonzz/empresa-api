@@ -57,6 +57,9 @@ class CargaSinPropuestaIaHelper
     /** Los mismos en subjuntivo, para «¿Querés que lo registre?». */
     const SUBJUNTIVO_DE_CARGA = '(?:cargue|registre|elimine|borre|agende|anule|de de alta|de de baja)';
 
+    /** Los infinitivos que anuncian una carga concreta («Voy a prender el aviso…»), normalizados. */
+    const VERBO_QUE_ANUNCIA = 'prender|apagar|activar|desactivar|encender|cargar|registrar|crear|dar de alta|dar de baja|cambiar|subir|bajar|poner|sacar|agendar|asignar|borrar|eliminar|anular|mover|corregir|actualizar|modificar|ajustar';
+
     const SUBJUNTIVO_CON_PRONOMBRE = '(?:prepare|guarde|actualice|cambie|corrija|confirme|modifique|ajuste|deje|aplique|cree|arme|haga|pase|suba|baje)';
 
     /**
@@ -152,7 +155,84 @@ class CargaSinPropuestaIaHelper
     {
         $n = VeracidadDelTurnoIaHelper::normalizar($texto);
 
-        return (bool) preg_match('/\d|\b(?:una|un|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doce|media) (?:caja|cajas|unidad|unidades|botella|botellas|docena|docenas|de)\b/', $n);
+        if (preg_match('/\d|\b(?:una|un|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|doce|media) (?:caja|cajas|unidad|unidades|botella|botellas|docena|docenas|de)\b/', $n)) {
+            return true;
+        }
+
+        /*
+         * P4 de la misión asistente-mejoras-4-dias (16/11/2026): anunciar la carga con su verbo también es dar
+         * los datos. «Voy a prender también el aviso de artículos sin stock: te llega un mensaje cuando un
+         * artículo queda en cero o menos, uno por artículo y por día. ¿Lo hago?» (Truvari, 13/11, mensaje 227)
+         * no traía un solo número y pasaba sin la guarda: el «Si» del dueño no tenía nada que registrar y le
+         * volvieron a preguntar dos veces más.
+         */
+        return (bool) preg_match('/\bvoy a (?:' . self::VERBO_QUE_ANUNCIA . ')\b/', $n);
+    }
+
+    /**
+     * El texto sin las oraciones del final que piden confirmar una carga, sin ningún aviso en su lugar (P4 de
+     * la misión asistente-mejoras-4-dias, W2): es lo que se le saca a una respuesta cuya carga YA quedó
+     * ejecutada en el turno («Listo, quedó prendido el aviso. ¿Lo hago?»). Si no hay nada que sacar, o si
+     * sacarlo deja el texto vacío, vuelve igual.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    public static function sin_la_pregunta_de_confirmar($texto)
+    {
+        if (! self::termina_pidiendo_confirmar($texto)) {
+            return (string) $texto;
+        }
+
+        /*
+         * 🔴 Solo la pregunta PELADA («¿Lo hago?», «¿Lo cargo?», «¿Confirmás?», «¿Lo dejo así?»): una con objeto
+         * o complemento ofrece OTRA carga y queda («¿Registro el pago de Pedro?», «¿Lo agendo para el viernes?»,
+         * «¿Lo cargo a nombre de Juan?»). Revisión independiente de la rama B, 16/11/2026.
+         */
+        $sin = VeracidadDelTurnoIaHelper::sin_las_oraciones($texto, function ($oracion, $indice, array $todas) {
+            return $indice >= count($todas) - self::ORACIONES_DEL_FINAL && self::es_pregunta_pelada($oracion);
+        }, '');
+
+        return trim($sin) === '' ? (string) $texto : $sin;
+    }
+
+    /**
+     * true si la oración es SOLO el pedido de confirmación, sin objeto ni complemento: «¿Lo hago?», «¿Lo cargo
+     * así?», «¿Confirmás?», «¿Me lo confirmás?», «¿Querés que lo registre?», «Confirmame para activarlo.».
+     *
+     * @param  string  $oracion
+     * @return bool
+     */
+    protected static function es_pregunta_pelada($oracion)
+    {
+        if (! self::oracion_pide_confirmar($oracion)) {
+            return false;
+        }
+
+        $abre = mb_strpos($oracion, '¿');
+        $n = VeracidadDelTurnoIaHelper::normalizar($abre === false ? $oracion : mb_substr($oracion, $abre));
+
+        $apertura = '^(?:(?:y|entonces|listo|dale|ok|bueno)\s+)?(?:(?:te|se|le|les|me)\s+)?';
+        $cierre = '(?:\s+(?:asi|ahora|entonces|nomas))?$';
+
+        return (bool) preg_match('/' . $apertura . '(?:(?:lo|la|los|las)\s+)?(?:' . self::VERBO_DE_CARGA . '|' . self::VERBO_CON_PRONOMBRE . '|confirmas)' . $cierre . '/', $n)
+            || (bool) preg_match('/^queres que\s+(?:(?:te|se|le|les)\s+)?(?:lo|la|los|las)\s+(?:' . self::SUBJUNTIVO_DE_CARGA . '|' . self::SUBJUNTIVO_CON_PRONOMBRE . ')' . $cierre . '/', $n)
+            || (bool) preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno|asi que)\s+)?(?:confirmame(?:lo|la|los|las)?|decime que si)(?:\s+(?:para|y)\s+\S+)?$/', $n);
+    }
+
+    /**
+     * true si la oración, SIN signo de pregunta, pide igual el sí para una carga: «Confirmame para
+     * activarlo.» (Truvari, 13/11, mensaje 229, el segundo de los tres pedidos de confirmación), «Confirmame
+     * y lo cargo.», «Decime que sí y lo registro.». No «Confirmame el nombre del cliente», que pide un dato.
+     *
+     * @param  string  $oracion
+     * @return bool
+     */
+    protected static function imperativo_que_pide_confirmar($oracion)
+    {
+        $n = VeracidadDelTurnoIaHelper::normalizar($oracion);
+
+        return (bool) preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno|asi que)\s+)?(?:confirmame(?:lo|la|los|las)?|decime que si)(?:\s+(?:para|y)\b.*)?$/', $n);
     }
 
     /**
@@ -164,7 +244,7 @@ class CargaSinPropuestaIaHelper
     protected static function oracion_pide_confirmar($oracion)
     {
         if (! VeracidadDelTurnoIaHelper::es_pregunta($oracion)) {
-            return false;
+            return self::imperativo_que_pide_confirmar($oracion);
         }
 
         /* Solo la pregunta: «Te propongo esto, ¿lo cargo?» → «lo cargo». */

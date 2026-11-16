@@ -171,6 +171,8 @@ class HerramientasDeLaApp
                         'pedido_imagen_uuid' => ['type' => 'string', 'description' => 'UUID de la imagen lista en esta conversación.'],
                         'como_principal' => ['type' => 'boolean', 'description' => 'True la pone como principal y conserva la anterior. False la agrega a la galería.'],
                         'articulo_id' => ['type' => 'integer', 'description' => 'Opcional. ID del artículo para el que se generó la imagen.'],
+                        // Misión asistente-mejoras-4-dias (revisión de P6, 16/11/2026), al final por el prefijo del caché.
+                        'reemplazar_fotos' => ['type' => 'boolean', 'description' => 'True si la persona pidió REEMPLAZAR las fotos del artículo por esta: queda como principal y las que tiene hoy se sacan al confirmar (también de la tienda).'],
                     ],
                     'required' => ['pedido_imagen_uuid'],
                 ],

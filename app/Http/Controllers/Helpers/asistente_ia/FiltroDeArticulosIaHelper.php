@@ -805,6 +805,29 @@ class FiltroDeArticulosIaHelper
 
         if (count($candidatos) === 0) {
 
+            /*
+             * P8 (misión asistente-mejoras-4-dias, 16/11/2026, V14): un nombre dictado o mal escrito («Gruppo
+             * Vid») no encuentra nada por palabras. Los que se le PARECEN van como opciones marcadas
+             * `parecido`: una masiva sobre el proveedor equivocado toca cientos de precios, así que nunca se
+             * toma uno solo.
+             */
+            $parecidos = BusquedaPorPalabrasIaHelper::parecidos($modelo::where('user_id', $owner_id), $nombre, 'name');
+
+            if (count($parecidos)) {
+
+                $opciones = [];
+
+                foreach ($parecidos as $parecido) {
+
+                    $opciones[] = ['id' => $parecido['id'], 'nombre' => $parecido['nombre'], 'parecido' => true];
+                }
+
+                return RespuestaDeCargaIa::faltan(
+                    ['cuál ' . $etiqueta_en_minuscula . ': ninguno se llama "' . $nombre . '", pero estos se le parecen (puede estar mal escrito)'],
+                    [$definicion['plural'] => $opciones]
+                );
+            }
+
             return RespuestaDeCargaIa::error(
                 'No encontré ' . $definicion['articulo'] . ' que se llame "' . $nombre . '".'
             );

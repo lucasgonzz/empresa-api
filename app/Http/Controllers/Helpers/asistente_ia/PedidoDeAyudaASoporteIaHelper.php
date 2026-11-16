@@ -6,6 +6,7 @@ use App\Events\SupportMessageReceived;
 use App\Http\Controllers\Helpers\SupportSyncHelper;
 use App\Http\Controllers\Helpers\SupportTicketHelper;
 use App\Models\AiMessage;
+use App\Models\AiMessageAction;
 use App\Models\SupportMessage;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Log;
@@ -63,6 +64,28 @@ class PedidoDeAyudaASoporteIaHelper
     /** Cómo empieza el cuerpo de todo pedido del agente: con esto se cuentan para el tope. */
     const PREFIJO = '[Pedido desde el agente personal';
 
+    /*
+     * 🔴 P10 DE LA MISIÓN asistente-mejoras-4-dias (16/11/2026, decisión de Lucas): UN PEDIDO POR LA FALLA TÉCNICA
+     * DE UNA ACCIÓN DEL ASISTENTE NO CUENTA PARA EL TOPE. Truvari, 13/11: la facturación de las ventas 3102-3104
+     * falló («No se pudo registrar») y, con los 3 pedidos del día usados, el asistente mandó al dueño a escribir
+     * él mismo la falla. El tope no sube; lo que cambia es que, si en esta conversación hay una tarjeta cuya
+     * ejecución falló hace menos de HORAS_DE_LA_FALLA y que todavía no se reportó, el pedido sale marcado con
+     * MARCA_DE_FALLA y la tarjeta, y no se cuenta. Una tarjeta, un pedido exento: un modelo trabado no llena el
+     * chat de soporte, porque cada exento necesita una falla real distinta.
+     */
+
+    /** Lo que marca en el cuerpo un pedido por la falla de una acción (seguido del id de la tarjeta). */
+    const MARCA_DE_FALLA = '(falla técnica de la acción #';
+
+    /** Qué tan reciente tiene que ser la falla para que el pedido sea por ella. */
+    const HORAS_DE_LA_FALLA = 2;
+
+    /** Cuántos pedidos exentos por fallas puede dejar el agente por persona y por día (un tope aparte). */
+    const TOPE_DE_EXENTOS_POR_DIA = 3;
+
+    /** En cuántas de las últimas respuestas del asistente tiene que estar la tarjeta que falló. */
+    const MENSAJES_DE_LA_FALLA = 2;
+
     /** Códigos de los motivos. */
     const CODIGO_SIN_DETALLE = 'sin_detalle';
 
@@ -107,7 +130,10 @@ class PedidoDeAyudaASoporteIaHelper
 
         $de_hoy = self::pedidos_de_hoy($persona_id);
 
-        if ($de_hoy >= self::TOPE_POR_DIA) {
+        // P10: la falla de una acción del asistente, sin reportar todavía, no cuenta para el tope.
+        $falla = self::falla_sin_reportar($contexto, $persona_id, $assistant_message);
+
+        if ($de_hoy >= self::TOPE_POR_DIA && is_null($falla)) {
 
             /*
              * 🔴 A7 de la misión asistente-truvari-pedidos-fallidos (13/11/2026): este texto decía «Decile a la
@@ -125,7 +151,7 @@ class PedidoDeAyudaASoporteIaHelper
         // El ticket abierto de la persona, o uno nuevo: el mismo hilo que ve en el chat de soporte.
         $ticket = SupportTicketHelper::get_or_create_open_ticket($persona_id);
 
-        $cuerpo = self::cuerpo($contexto, $assistant_message, $detalle);
+        $cuerpo = self::cuerpo($contexto, $assistant_message, $detalle, $falla);
 
         $mensaje = SupportMessage::create([
             'support_ticket_id' => $ticket->id,
@@ -165,7 +191,7 @@ class PedidoDeAyudaASoporteIaHelper
                 'estado' => (string) $ticket->status,
             ],
             'llego_a_soporte' => (bool) $llego,
-            'pedidos_de_hoy'  => $de_hoy + 1,
+            'pedidos_de_hoy'  => is_null($falla) ? $de_hoy + 1 : $de_hoy,
             'nota'            => 'Listo: el pedido quedó en el chat de soporte de la persona con ComercioCity (el mismo de Ayuda del sistema), con lo que '
                 . 'charlaron. Decile eso en una oración: que soporte lo va a ver y le contesta por ese chat. No prometas tiempos ni digas que ya está resuelto.'
                 . ($llego ? '' : ' Todavía no llegó a ComercioCity por una falla de conexión: queda guardado y se reenvía solo en unos minutos; decíselo así.'),
@@ -183,8 +209,98 @@ class PedidoDeAyudaASoporteIaHelper
         return (int) SupportMessage::where('sender_type', 'user')
             ->where('sender_user_id', (int) $persona_id)
             ->where('body', 'like', self::PREFIJO . '%')
+            ->where('body', 'not like', '%' . self::MARCA_DE_FALLA . '%')
             ->where('created_at', '>=', Carbon::today())
             ->count();
+    }
+
+    /**
+     * La tarjeta de esta conversación cuya ejecución falló hace poco y que todavía no tiene su pedido a soporte,
+     * o null (P10). Falló = sigue `propuesta` con su `error_mensaje` (EjecutorAccionesIaHelper::guardar_error()).
+     * Protegido: si la consulta falla, null (el tope de siempre).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * Revisión independiente de la rama B (16/11/2026): además, tope propio de TOPE_DE_EXENTOS_POR_DIA, un exento por
+     * cada error distinto, y la tarjeta tiene que ser de las últimas MENSAJES_DE_LA_FALLA respuestas del asistente.
+     *
+     * @param  int  $persona_id
+     * @param  \App\Models\AiMessage|null  $assistant_message  El turno que pide: ata la falla a lo reciente.
+     * @return \App\Models\AiMessageAction|null
+     */
+    public static function falla_sin_reportar(ContextoDeCargaIa $contexto, $persona_id, $assistant_message = null)
+    {
+        try {
+            /* Las marcas de los exentos de hoy: el tope propio y lo que ya se reportó. */
+            $exentos = SupportMessage::where('sender_type', 'user')
+                ->where('sender_user_id', (int) $persona_id)
+                ->where('body', 'like', self::PREFIJO . '%')
+                ->where('body', 'like', '%' . self::MARCA_DE_FALLA . '%')
+                ->where('created_at', '>=', Carbon::today())
+                ->pluck('body')
+                ->all();
+
+            if (count($exentos) >= self::TOPE_DE_EXENTOS_POR_DIA) {
+                return null;
+            }
+
+            $query = AiMessageAction::where('ai_conversation_id', (int) $contexto->conversation->id)
+                ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                ->whereNotNull('error_mensaje')
+                ->where('error_mensaje', '!=', '')
+                ->where('updated_at', '>=', Carbon::now()->subHours(self::HORAS_DE_LA_FALLA));
+
+            /*
+             * Atado a la falla: la tarjeta tiene que ser de las últimas respuestas del asistente antes de este pedido
+             * (MENSAJES_DE_LA_FALLA), no de una charla de hace una hora sobre otra cosa.
+             */
+            if ($assistant_message instanceof AiMessage) {
+                $recientes = AiMessage::where('ai_conversation_id', (int) $contexto->conversation->id)
+                    ->where('rol', 'assistant')
+                    ->where('id', '<', (int) $assistant_message->id)
+                    ->orderBy('id', 'DESC')
+                    ->limit(self::MENSAJES_DE_LA_FALLA)
+                    ->pluck('id')
+                    ->all();
+
+                $query->whereIn('ai_message_id', array_merge($recientes, [(int) $assistant_message->id]));
+            }
+
+            foreach ($query->orderBy('updated_at', 'DESC')->get() as $falla) {
+
+                $marca = self::MARCA_DE_FALLA . (int) $falla->id . ',';
+                $error = '): ' . self::error_de_la_falla($falla);
+                $reportada = false;
+
+                foreach ($exentos as $cuerpo) {
+                    /* Un exento por tarjeta y uno por cada error distinto (la misma falla repetida en otra tarjeta, no). */
+                    if (mb_strpos((string) $cuerpo, $marca) !== false || mb_strpos((string) $cuerpo, $error) !== false) {
+                        $reportada = true;
+                        break;
+                    }
+                }
+
+                if (! $reportada) {
+                    return $falla;
+                }
+            }
+        } catch (\Throwable $e) {
+            Log::warning('PedidoDeAyudaASoporteIaHelper: no se pudo buscar la falla de una acción; va el tope de siempre.', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        return null;
+    }
+
+    /**
+     * El error de la tarjeta tal como va en el cuerpo del pedido.
+     *
+     * @param  AiMessageAction  $falla
+     * @return string
+     */
+    protected static function error_de_la_falla(AiMessageAction $falla): string
+    {
+        return mb_substr(trim((string) $falla->error_mensaje), 0, self::MAX_POR_MENSAJE);
     }
 
     /**
@@ -196,9 +312,17 @@ class PedidoDeAyudaASoporteIaHelper
      * @param  string  $detalle
      * @return string
      */
-    protected static function cuerpo(ContextoDeCargaIa $contexto, $assistant_message, $detalle): string
+    protected static function cuerpo(ContextoDeCargaIa $contexto, $assistant_message, $detalle, $falla = null): string
     {
         $cuerpo = self::PREFIJO . ' por ' . self::nombre_del_canal($assistant_message) . '] ' . $detalle;
+
+        // P10: el pedido por la falla de una acción lleva la tarjeta y el error que dio, y no cuenta para el tope.
+        if ($falla instanceof AiMessageAction) {
+            $cuerpo .= "
+
+" . self::MARCA_DE_FALLA . (int) $falla->id . ', ' . (string) $falla->tipo . '): '
+                . self::error_de_la_falla($falla);
+        }
 
         $vueltas = self::ultimas_vueltas($contexto, $assistant_message);
 

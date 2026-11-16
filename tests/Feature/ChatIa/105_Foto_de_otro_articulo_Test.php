@@ -808,7 +808,8 @@ class Foto_de_otro_articulo_Test extends TestCase
         $propiedades = array_keys($definicion['input_schema']['properties']);
 
         $this->assertSame(
-            ['articulo', 'articulo_id', 'imagen_id', 'reemplaza_a', 'articulo_ids', 'todos_los_que_coinciden', 'de_articulo_id', 'de_articulo', 'solo_sin_foto'],
+            // reemplazar_fotos (asistente-mejoras-4-dias, P6, 16/11/2026) se suma al final de todas.
+            ['articulo', 'articulo_id', 'imagen_id', 'reemplaza_a', 'articulo_ids', 'todos_los_que_coinciden', 'de_articulo_id', 'de_articulo', 'solo_sin_foto', 'reemplazar_fotos'],
             $propiedades
         );
         $this->assertSame('integer', $definicion['input_schema']['properties']['de_articulo_id']['type']);

@@ -316,7 +316,8 @@ class Modo_directo_y_escalado_Test extends EmpresaTestCase
 
         $ventas_antes = Sale::where('user_id', $this->dueno->id)->count();
 
-        list($conversation, $assistant) = $this->conversacion('Vendé 2 martillos y no me preguntes');
+        /* Misión asistente-mejoras-4-dias (P1): el cobro que no dijo la persona ya no se hereda; el pedido lo nombra. */
+        list($conversation, $assistant) = $this->conversacion('Vendé 2 martillos por transferencia a la caja efectivo y no me preguntes');
 
         $respuesta = $this->herramienta($conversation, $assistant, 'proponer_venta', [
             'items'          => [['articulo' => 'zz-p51 Martillo directo', 'cantidad' => 2]],

@@ -95,11 +95,30 @@ class ResponderMensajeChatIaJob implements ShouldQueue
     protected $ai_message_id;
 
     /**
-     * @param int $ai_message_id
+     * Cuántas veces este turno ya esperó a que termine el anterior de la misma conversación (P7 de la misión
+     * asistente-mejoras-4-dias). Ver handle().
+     *
+     * @var int
      */
-    public function __construct($ai_message_id)
+    public $esperas = 0;
+
+    /** Cuántas veces se vuelve a encolar como mucho: después sigue igual, para no colgar al dueño. */
+    const MAX_ESPERAS = 15;
+
+    /** Cada cuánto vuelve a mirar si el turno anterior terminó. */
+    const SEGUNDOS_DE_ESPERA = 8;
+
+    /** Un turno anterior más viejo que esto ya no se espera: quedó colgado y lo levanta el vigía. */
+    const MINUTOS_DEL_TURNO_ANTERIOR = 10;
+
+    /**
+     * @param int $ai_message_id
+     * @param int $esperas  Las esperas que ya hizo (solo al volver a encolarse).
+     */
+    public function __construct($ai_message_id, $esperas = 0)
     {
         $this->ai_message_id = $ai_message_id;
+        $this->esperas = (int) $esperas;
     }
 
     public function handle()
@@ -119,6 +138,19 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         $conversation = AiConversation::find($message->ai_conversation_id);
 
         if (!$conversation) {
+            return;
+        }
+
+        /*
+         * 🔴 P7 DE LA MISIÓN asistente-mejoras-4-dias: CON MÁS DE UN WORKER, UN TURNO A LA VEZ POR CONVERSACIÓN. Si
+         * el dueño mandó dos mensajes seguidos y otro worker todavía está contestando el anterior, este turno se
+         * vuelve a encolar en SEGUNDOS_DE_ESPERA (hasta MAX_ESPERAS veces; después sigue igual). Así lee la respuesta
+         * anterior en su historial y no contesta dos veces ni registra una venta dos veces. No avisa nada al admin:
+         * el mensaje sigue 'pendiente' y la respuesta sale una sola vez, cuando corre de verdad.
+         */
+        if ($this->esperas < self::MAX_ESPERAS && $this->hay_un_turno_anterior_en_curso($message)) {
+            dispatch(new self($this->ai_message_id, $this->esperas + 1))->delay(now()->addSeconds(self::SEGUNDOS_DE_ESPERA));
+
             return;
         }
 
@@ -252,6 +284,27 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         }
 
         $this->avisar($conversation, $message);
+    }
+
+    /**
+     * true si la misma conversación tiene un turno ANTERIOR del asistente que todavía se está generando (pendiente,
+     * de menos de MINUTOS_DEL_TURNO_ANTERIOR). Protegido: si la consulta falla, false (sigue como siempre).
+     *
+     * @param  AiMessage  $message
+     * @return bool
+     */
+    protected function hay_un_turno_anterior_en_curso(AiMessage $message)
+    {
+        try {
+            return AiMessage::where('ai_conversation_id', $message->ai_conversation_id)
+                ->where('rol', 'assistant')
+                ->where('id', '<', (int) $message->id)
+                ->where('estado', 'pendiente')
+                ->where('created_at', '>=', now()->subMinutes(self::MINUTOS_DEL_TURNO_ANTERIOR))
+                ->exists();
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**

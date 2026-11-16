@@ -89,6 +89,9 @@ class Acciones_service_y_job_Test extends TestCase
         'buscar_ficha_de_articulo',
         // Alta optativa de bebidas (e175e3ee, ticket 117): la búsqueda de la foto de una bebida, al final.
         'buscar_imagen_de_bebida',
+        // asistente-mejoras-4-dias (P5, 16/11/2026), al final de las de lectura.
+        'valorizar_stock',
+        'exportar_articulos_excel',
     ];
 
     /**
@@ -789,7 +792,8 @@ class Acciones_service_y_job_Test extends TestCase
         // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
         // Fichas verificadas agrega UNA propuesta al final; se conserva cada prefijo y su despacho.
         // asistente-truvari-pedidos-fallidos (C2, 13/11/2026) agrega proponer_avisos_por_whatsapp al final.
-        $this->assertCount(47, HerramientasDeCarga::definiciones());
+        // asistente-mejoras-4-dias (P6, 16/11/2026) agrega quitar_foto_articulo al final.
+        $this->assertCount(48, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -879,6 +883,8 @@ class Acciones_service_y_job_Test extends TestCase
                 'proponer_descripcion_verificada',
                 // asistente-truvari-pedidos-fallidos (C2, 13/11/2026), al final de todo.
                 'proponer_avisos_por_whatsapp',
+                // asistente-mejoras-4-dias (P6, 16/11/2026), al final de todo.
+                'quitar_foto_articulo',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
         );

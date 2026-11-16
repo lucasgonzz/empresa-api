@@ -668,8 +668,10 @@ class Una_foto_para_varios_articulos_Test extends TestCase
         $claves = array_keys($definicion['input_schema']['properties']);
         // La misión agente-mejoras-diario-30-10 (B3, 31/10/2026) sumó de_articulo_id, de_articulo y solo_sin_foto
         // detrás de estas dos, por la misma regla: por eso -5 (los nombres esperados no cambiaron) y las nuevas al final.
-        $this->assertSame(['articulo_ids', 'todos_los_que_coinciden'], array_slice($claves, -5, 2), 'Al final, por la regla del prefijo del caché.');
-        $this->assertSame(['de_articulo_id', 'de_articulo', 'solo_sin_foto'], array_slice($claves, -3));
+        $this->assertSame(['articulo_ids', 'todos_los_que_coinciden'], array_slice($claves, -6, 2), 'Al final, por la regla del prefijo del caché.');
+        $this->assertSame(['de_articulo_id', 'de_articulo', 'solo_sin_foto'], array_slice($claves, -4, 3));
+        // reemplazar_fotos (asistente-mejoras-4-dias, P6, 16/11/2026) va detrás de todas.
+        $this->assertSame(['reemplazar_fotos'], array_slice($claves, -1));
         $this->assertStringContainsString('articulo_ids', $definicion['description']);
 
         $prompt = (new AsistenteIaService())->build_system_prompt($this->conversacion(), $this->comercio, true, true);

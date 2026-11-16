@@ -45,9 +45,16 @@ class BusquedaImagenBebidaIaHelper
             // La descarga existente aplica límites de tamaño, SSRF y redirecciones.
             $preparadas = app(CandidateImageProcessor::class)->preparar(array_slice($encontradas['resultados'], 0, 8));
             $candidatas = [];
-            foreach (array_slice($preparadas['listas'], 0, 4) as $lista) {
+            foreach ($preparadas['listas'] as $lista) {
+                if (count($candidatas) >= 4) break;
+                // P6 (16/11/2026, V13): una candidata cuyo título dice OTRO color u otra cepa se descarta antes de evaluarla.
+                $origen = $preparadas['candidatas'][$lista['clave']] ?? [];
+                if (self::contradice_la_bebida($consulta, trim(($origen['titulo'] ?? '').' '.($origen['pagina'] ?? '')))) continue;
                 $lista['indice'] = $lista['clave'];
                 $candidatas[] = $lista;
+            }
+            if (!count($candidatas)) {
+                return ['found' => false, 'motivo' => 'Las fotos que encontré eran de otra variedad o de otro color de la bebida. Informalo y proponé el alta sin foto, o pedí una foto del producto.'];
             }
             $articulo = new Article(['name' => $consulta, 'user_id' => $c->owner_id]);
             // evaluar_candidatas rechaza ante duda: una foto dudosa o sin evaluar nunca se ofrece como exacta.
@@ -59,7 +66,7 @@ class BusquedaImagenBebidaIaHelper
                 if (!$fila) continue;
                 $fuente = $preparadas['candidatas'][$candidata['clave']]['pagina'] ?? '';
                 $resultado = ['found' => true, 'nombre' => $nombre, 'imagen_id' => (int) $fila->id, 'fuente' => $fuente,
-                    'siguiente' => 'Mostrá esta foto en la única propuesta de alta, con todos los datos. No se asignó a ningún artículo.'];
+                    'siguiente' => 'No se asignó a ningún artículo. La foto de internet NO va dentro del alta: proponé el alta y, cuando la persona la confirme, proponé esta foto aparte con proponer_foto_articulo (imagen_id), que la muestra y espera su propio sí.'];
                 Cache::put('alta_bebida_imagen:'.$fila->id, ['owner_id' => $c->owner_id, 'conversation_id' => $conversation->id, 'nombre' => $nombre], now()->addHours(24));
                 Cache::put($clave, $resultado, now()->addMinutes(30));
                 return $resultado;
@@ -68,6 +75,73 @@ class BusquedaImagenBebidaIaHelper
             return ['found' => false, 'motivo' => 'No pude verificar una imagen exacta en este momento. No se asignó ninguna foto ni se inventó un código.'];
         }
         return ['found' => false, 'motivo' => 'No encontré una imagen exacta verificada. Informalo y proponé el alta sin foto, o pedí una foto del producto.'];
+    }
+
+    /*
+     * 🔴 P6 (misión asistente-mejoras-4-dias, 16/11/2026, V13). Truvari, conv 19: al Malbec le tocó la foto
+     * de un vino BLANCO. Lo que se puede saber del nombre se mira antes de gastar la evaluación: si la
+     * bebida pedida tiene color (dicho, o deducido de su cepa) y el título o la página de la candidata
+     * nombra OTRO color u otra cepa de otro color, o si se pidió una cepa y la candidata nombra otra y no
+     * la pedida, se descarta. Sin título ni página no se descarta nada (lo decide la evaluación de siempre).
+     */
+
+    /** Las cepas, de la más larga a la más corta (así «cabernet sauvignon» no se lee como «sauvignon»), con su color. */
+    const CEPAS = [
+        'cabernet sauvignon' => 'tinto', 'cabernet franc' => 'tinto', 'sauvignon blanc' => 'blanco', 'pinot noir' => 'tinto',
+        'pinot grigio' => 'blanco', 'petit verdot' => 'tinto', 'tempranillo' => 'tinto', 'chardonnay' => 'blanco',
+        'sangiovese' => 'tinto', 'torrontes' => 'blanco', 'semillon' => 'blanco', 'viognier' => 'blanco', 'riesling' => 'blanco',
+        'malbec' => 'tinto', 'merlot' => 'tinto', 'bonarda' => 'tinto', 'syrah' => 'tinto', 'shiraz' => 'tinto', 'tannat' => 'tinto',
+        'chenin' => 'blanco', 'moscatel' => 'blanco',
+    ];
+
+    /** Las palabras de color y a qué color van. */
+    const COLORES = [
+        'tinto' => 'tinto', 'red' => 'tinto', 'rouge' => 'tinto', 'blanco' => 'blanco', 'white' => 'blanco', 'blanc' => 'blanco',
+        'rosado' => 'rosado', 'rose' => 'rosado',
+    ];
+
+    /**
+     * true si el texto de una candidata contradice el color o la cepa de lo pedido. Pública para los tests.
+     *
+     * @param  string  $pedido  Nombre e identificación de la bebida.
+     * @param  string  $candidata  Título y página de la foto encontrada.
+     * @return bool
+     */
+    public static function contradice_la_bebida($pedido, $candidata): bool
+    {
+        if (trim((string) $candidata) === '') return false;
+        list($color_pedido, $cepas_pedidas) = self::color_y_cepas($pedido);
+        list($color_otro, $cepas_otras, $colores_otros) = self::color_y_cepas($candidata, true);
+        // Otra cepa y no la pedida («Kaiken Cabernet» para un «Malbec»).
+        if (count($cepas_pedidas) && count($cepas_otras) && !count(array_intersect($cepas_pedidas, $cepas_otras))) return true;
+        // Otro color, dicho o por su cepa.
+        if (!is_null($color_pedido) && count($colores_otros) && !in_array($color_pedido, $colores_otros, true)) return true;
+        return false;
+    }
+
+    /**
+     * El color y las cepas que nombra un texto. Con $todos, además, todos los colores que nombra.
+     *
+     * @return array
+     */
+    protected static function color_y_cepas($texto, $todos = false): array
+    {
+        $texto = ' '.preg_replace('/[^a-z0-9]+/', ' ', \Illuminate\Support\Str::ascii(mb_strtolower((string) $texto))).' ';
+        $cepas = [];
+        $colores = [];
+        foreach (self::CEPAS as $cepa => $color) {
+            if (strpos($texto, ' '.$cepa.' ') !== false) {
+                $cepas[] = $cepa;
+                $colores[] = $color;
+                $texto = str_replace(' '.$cepa.' ', ' ', $texto);
+            }
+        }
+        foreach (self::COLORES as $palabra => $color) {
+            if (strpos($texto, ' '.$palabra.' ') !== false) $colores[] = $color;
+        }
+        $colores = array_values(array_unique($colores));
+        $color = count($colores) === 1 ? $colores[0] : null;
+        return $todos ? [$color, $cepas, $colores] : [$color, $cepas];
     }
 
     protected static function buscar_con_cupo(ContextoDeCargaIa $c, string $consulta): array
