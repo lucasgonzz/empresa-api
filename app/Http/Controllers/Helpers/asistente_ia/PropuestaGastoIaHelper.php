@@ -247,7 +247,14 @@ class PropuestaGastoIaHelper {
 
         $resumen = 'Gasto '.$subcategoria.' '.FormatoIaHelper::monto($monto, $moneda_id).' · '.$pagos['resumen'].' · '.FormatoIaHelper::fecha_con_dia($fecha);
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
+        /*
+         * Decisión del coordinador de la misión (revisión de la rama B): si la tarjeta CREA una
+         * categoría o una subcategoría, espera el sí de la persona en todos los modos, también en
+         * "directo". `requiere_confirmacion` lo respeta la puerta única
+         * (HerramientasDeCarga::quizas_auto_confirmar); un gasto sobre una subcategoría que ya existe
+         * sigue como siempre.
+         */
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, is_null($alta) ? [] : ['requiere_confirmacion' => true]);
     }
 
     /**

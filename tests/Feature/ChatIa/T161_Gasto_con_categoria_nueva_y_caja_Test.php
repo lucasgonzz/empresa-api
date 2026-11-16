@@ -157,6 +157,34 @@ class T161_Gasto_con_categoria_nueva_y_caja_Test extends EmpresaTestCase
     }
 
     /**
+     * Revisión de la rama B (decisión del coordinador): con el dueño en "directo", una tarjeta que CREA
+     * categoría o subcategoría igual espera el sí. Un gasto sobre una subcategoría existente se hace solo.
+     *
+     * @test
+     */
+    public function en_directo_la_tarjeta_que_crea_subcategoria_espera_el_si()
+    {
+        \App\Models\User::where('id', $this->dueno->id)->update(['agente_confianza' => 'directo']);
+        $this->dueno = $this->dueno->fresh();
+        $this->actuar_como($this->dueno);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->gasto($conversation, $assistant, [
+            'subcategoria_nueva' => 'Peajes T161',
+            'categoria'          => 'Viajes T161',
+            'monto'              => 800,
+            'pagos'              => [['metodo_de_pago_id' => $this->efectivo()->id]],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertTrue($respuesta['requiere_confirmacion']);
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($respuesta['tarjeta_id'])->estado_guardado());
+        $this->assertSame(0, ExpenseConcept::where('user_id', $this->dueno->id)->where('name', 'Peajes T161')->count(), 'No se creó nada sin el sí.');
+        $this->assertSame(0, Expense::where('user_id', $this->dueno->id)->count());
+    }
+
+    /**
      * Una categoría que ya existe (escrita distinto) se reusa, y la subcategoría nueva cuelga de ella.
      *
      * @test
