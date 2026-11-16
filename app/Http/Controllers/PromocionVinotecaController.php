@@ -22,7 +22,7 @@ class PromocionVinotecaController extends Controller
     }
 
     public function store(Request $request) {
-        $medidas = MedidasEnvioHelper::datos($request->all(), 'promocion_vinotecas');
+        $medidas = MedidasEnvioHelper::datos($request->all());
         $model = PromocionVinoteca::create(array_merge([
             'name'                  => $request->name,
             'slug'                  => ArticleHelper::slug($request->name),

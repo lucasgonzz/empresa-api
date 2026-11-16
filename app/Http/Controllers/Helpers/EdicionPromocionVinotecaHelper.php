@@ -48,7 +48,7 @@ class EdicionPromocionVinotecaHelper
         if (!$datos) {
             self::rechazar('promo', 'Indicá qué dato de la promo querés cambiar antes de guardar.');
         }
-        $medidas = MedidasEnvioHelper::datos($datos, 'promocion_vinotecas');
+        $medidas = MedidasEnvioHelper::datos($datos);
         $datos = array_merge(array_diff_key($datos, array_flip(MedidasEnvioHelper::CAMPOS)), $medidas);
         if (isset($datos['name']) && is_string($datos['name'])) {
             $datos['name'] = trim($datos['name']);
@@ -148,7 +148,8 @@ class EdicionPromocionVinotecaHelper
         sort($campos);
         $valores = [];
         foreach ($campos as $campo) {
-            $valores[$campo] = $promo->getRawOriginal($campo);
+            $valores[$campo] = in_array($campo, MedidasEnvioHelper::CAMPOS, true)
+                ? $promo->{$campo} : $promo->getRawOriginal($campo);
         }
         return ['campos' => $campos, 'huella' => hash('sha256', json_encode($valores))];
     }

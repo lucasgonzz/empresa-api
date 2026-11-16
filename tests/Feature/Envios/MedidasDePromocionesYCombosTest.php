@@ -4,6 +4,7 @@ namespace Tests\Feature\Envios;
 
 use App\Models\Combo;
 use App\Models\PromocionVinoteca;
+use App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper;
 use Illuminate\Support\Facades\DB;
 use Tests\EmpresaTestCase;
 
@@ -40,7 +41,7 @@ class MedidasDePromocionesYCombosTest extends EmpresaTestCase
         $id = $alta->json('model.id');
         foreach ($this->medidas() as $campo => $valor) {
             $this->assertEquals($valor, $alta->json('model.'.$campo));
-            $this->assertEquals($valor, DB::table($this->tabla($tipo))->where('id', $id)->value($campo));
+            $this->assertEquals($valor, DB::table('medidas_envio_paquetes')->where('tipo', str_replace('-', '_', $tipo))->where('paquete_id', $id)->value($campo));
         }
         // Una SPA anterior no conoce las medidas: editar el nombre no las borra.
         $payload['name'] = 'Paquete renombrado';
@@ -113,37 +114,63 @@ class MedidasDePromocionesYCombosTest extends EmpresaTestCase
         $this->assertSame(0, $combo->articles()->count());
     }
 
-    /** Código nuevo antes de migrar: el alta y la edición siguen andando sin nombrar las columnas. */
-    public function test_sin_columnas_de_medidas_los_dos_endpoints_siguen_funcionando()
+    /** Código nuevo antes de migrar: los endpoints siguen funcionando sin la tabla lateral. */
+    public function test_sin_tabla_de_medidas_los_dos_endpoints_siguen_funcionando()
     {
         DB::rollBack();
         $config = config('database.connections.'.config('database.default'));
         $pdo = new \PDO('mysql:host='.$config['host'].';port='.$config['port'].';dbname='.$config['database'],
             $config['username'], $config['password'], [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
         $pdo->exec('SET SESSION lock_wait_timeout = 10');
-        $renombradas = [];
+        $renombrada = false;
         try {
-            foreach (['combos', 'promocion_vinotecas'] as $tabla) {
-                foreach (array_keys($this->medidas()) as $campo) {
-                    $pdo->exec('ALTER TABLE `'.$tabla.'` RENAME COLUMN `'.$campo.'` TO `'.$campo.'_sin_migrar`');
-                    $renombradas[] = [$tabla, $campo];
-                }
-            }
+            $pdo->exec('RENAME TABLE medidas_envio_paquetes TO medidas_envio_paquetes_sin_migrar');
+            $renombrada = true;
             DB::beginTransaction();
             foreach (['combo', 'promocion-vinoteca'] as $tipo) {
                 $datos = array_merge($this->payload($tipo), $this->medidas());
                 $alta = $this->postJson('api/'.$tipo, $datos)->assertCreated();
-                $this->assertArrayNotHasKey('peso', $alta->json('model'));
+                $this->assertNull($alta->json('model.peso'));
                 $this->putJson('api/'.$tipo.'/'.$alta->json('model.id'), $datos)->assertOk();
             }
         } finally {
             if (DB::transactionLevel() > 0) {
                 DB::rollBack();
             }
-            foreach (array_reverse($renombradas) as $par) {
-                $pdo->exec('ALTER TABLE `'.$par[0].'` RENAME COLUMN `'.$par[1].'_sin_migrar` TO `'.$par[1].'`');
+            if ($renombrada) {
+                $pdo->exec('RENAME TABLE medidas_envio_paquetes_sin_migrar TO medidas_envio_paquetes');
             }
             DB::beginTransaction();
         }
+    }
+
+    public function test_api_anterior_sigue_leyendo_solo_columnas_historicas_con_base_migrada()
+    {
+        $alta = $this->postJson('api/promocion-vinoteca', array_merge($this->payload('promocion-vinoteca'), $this->medidas()))->assertCreated();
+        // Es el SELECT * de la API anterior: su modelo no tiene accessors ni appends nuevos.
+        $legado = new class extends \Illuminate\Database\Eloquent\Model {
+            protected $table = 'promocion_vinotecas';
+        };
+        $modelo_viejo = $legado->newQuery()->findOrFail($alta->json('model.id'));
+        $cuerpo_viejo = $modelo_viejo->toArray();
+        foreach (array_keys($this->medidas()) as $campo) {
+            $this->assertArrayNotHasKey($campo, $cuerpo_viejo);
+        }
+        // Lista blanca exacta del contrato anterior de edición de promos.
+        $permitidos = ['name', 'cost', 'final_price', 'stock', 'online', 'address_id', 'description',
+            'id', 'user_id', 'slug', 'created_at', 'updated_at', 'deleted_at', 'articles', 'images', 'childrens', 'temporal_id'];
+        $this->assertSame([], array_values(array_diff(array_keys($cuerpo_viejo), $permitidos)));
+        $this->putJson('api/promocion-vinoteca/'.$modelo_viejo->id, $cuerpo_viejo)->assertOk();
+        $this->assertEquals('7.1250', PromocionVinoteca::findOrFail($modelo_viejo->id)->peso);
+    }
+
+    public function test_referencia_de_una_propuesta_detecta_cambios_en_las_medidas_laterales()
+    {
+        $alta = $this->postJson('api/promocion-vinoteca', array_merge($this->payload('promocion-vinoteca'), $this->medidas()))->assertCreated();
+        $promo = PromocionVinoteca::findOrFail($alta->json('model.id'));
+        $antes = EdicionPromocionVinotecaHelper::referencia($promo, ['peso' => 8]);
+        $this->putJson('api/promocion-vinoteca/'.$promo->id, ['peso' => 9])->assertOk();
+        $despues = EdicionPromocionVinotecaHelper::referencia($promo->fresh(), ['peso' => 8]);
+        $this->assertNotSame($antes, $despues);
     }
 }

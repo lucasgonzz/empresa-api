@@ -121,7 +121,7 @@ class ComboController extends Controller
      */
     public function update(Request $request, $id) {
 
-        $medidas = MedidasEnvioHelper::datos($request->all(), 'combos');
+        $medidas = MedidasEnvioHelper::datos($request->all());
         $model = Combo::find($id);
 
         $disponible = ComboCalculadoEsquemaHelper::disponible();

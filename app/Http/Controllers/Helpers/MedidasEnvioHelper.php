@@ -11,8 +11,8 @@ class MedidasEnvioHelper
     const CAMPOS = ['peso', 'alto', 'ancho', 'profundidad'];
     const ETIQUETAS = ['peso' => 'Peso (kg)', 'alto' => 'Alto (cm)', 'ancho' => 'Ancho (cm)', 'profundidad' => 'Largo / profundidad (cm)'];
 
-    /** Omitido conserva, null limpia. Nunca se nombran columnas que todavía no se migraron. */
-    public static function datos(array $cuerpo, $tabla)
+    /** Omitido conserva, null limpia. La tabla lateral conserva compatible el SELECT * de las APIs anteriores. */
+    public static function datos(array $cuerpo)
     {
         $datos = [];
         foreach (self::CAMPOS as $campo) {
@@ -26,7 +26,7 @@ class MedidasEnvioHelper
                     'Ingresá '.self::ETIQUETAS[$campo].' como un número mayor o igual a cero, con hasta cuatro decimales, o dejalo vacío.',
                 ]]);
             }
-            if (Schema::hasColumn($tabla, $campo)) {
+            if (Schema::hasTable('medidas_envio_paquetes')) {
                 $datos[$campo] = $valor;
             }
         }

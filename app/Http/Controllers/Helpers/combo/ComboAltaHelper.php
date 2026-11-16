@@ -145,7 +145,7 @@ class ComboAltaHelper {
      */
     static function crear(array $data, $user_id, $num) {
 
-        $medidas = MedidasEnvioHelper::datos($data, 'combos');
+        $medidas = MedidasEnvioHelper::datos($data);
         /*
          * Una clave que no vino vale null, igual que `$request->clave` en el controller de origen: un
          * "Undefined index" acá sería un 500 nuevo donde antes había un combo con ese campo en null.
