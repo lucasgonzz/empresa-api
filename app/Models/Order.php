@@ -34,6 +34,9 @@ class Order extends Model
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
         'envio_direccion'  => 'array',
+        'reserva_stock_web' => 'boolean',
+        'reserva_stock_web_consumida' => 'boolean',
+        'reserva_stock_web_egreso' => 'array',
     ];
 
     /**

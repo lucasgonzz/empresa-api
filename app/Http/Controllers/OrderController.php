@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\sale\DeleteSaleHelper;
 use App\Http\Controllers\Pdf\OrderPdf;
 use App\Http\Controllers\Pdf\ProfileDocumentPdf;
 use App\Models\Order;
+use App\Http\Controllers\Helpers\Order\ReservaStockWebHelper;
 use App\Models\OrderStatus;
 use App\Models\Sale;
 use App\Services\PdfColumnService;
@@ -179,7 +180,23 @@ class OrderController extends Controller
              * la foto leída y la máquina de estados no se toca en este ítem. Lo que importa
              * es el lock de la fila, no releer los atributos.
              */
-            Order::where('id', $model->id)->lockForUpdate()->first();
+            ReservaStockWebHelper::bloquear_configuracion($model->user_id);
+            $model = Order::where('id', $model->id)->lockForUpdate()->firstOrFail();
+            // El modelo anterior al lock puede haber sido confirmado/cancelado por otra pestaña.
+            $nombre_desde = $model->order_status ? $model->order_status->name : null;
+            $nombre_hacia = is_null($request->order_status_id) ? $nombre_desde : $status_pedido->name;
+            if (!OrderStatusHelper::puede_pasar($nombre_desde, $nombre_hacia)) {
+                DB::rollBack();
+                return response()->json(['message' => OrderStatusHelper::motivo_del_rechazo($nombre_desde, $nombre_hacia), 'error_transicion_de_estado' => true], 422);
+            }
+            $venta_vinculada = Sale::where('order_id', $model->id)->lockForUpdate()->first();
+            if ((bool) $model->reserva_stock_web
+                && ((bool) $model->reserva_stock_web_consumida || $venta_vinculada)
+                && ReservaStockWebHelper::cambia_mercaderia($model, $request)) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['articles' => $venta_vinculada
+                    ? 'El pedido ya generó su venta. Ajustá las cantidades y el depósito desde esa venta.'
+                    : 'El pedido ya descontó stock. Cancelalo antes de cambiar sus cantidades o su depósito.']);
+            }
 
             /*
              * 🔴 Y después del pedido, el candado de la cuenta corriente del cliente (misión
@@ -271,7 +288,10 @@ class OrderController extends Controller
              * Indica si ya existe una venta vinculada al pedido.
              * Evita duplicados cuando el usuario vuelve a pasar por estados posteriores.
              */
-            $has_sale = Sale::where('order_id', $model->id)->exists();
+            $has_sale = !is_null($venta_vinculada);
+            if (!$has_sale && $nombre_hacia !== 'Cancelado' && ReservaStockWebHelper::participa($model)) {
+                ReservaStockWebHelper::sincronizar_pedido($model);
+            }
 
             /**
              * Cancelar un pedido que ya tiene venta la DA DE BAJA, con todo lo que eso implica
@@ -318,6 +338,7 @@ class OrderController extends Controller
 
                     DeleteSaleHelper::eliminar_venta($venta_del_pedido, $this);
                 }
+                ReservaStockWebHelper::cancelar($model);
             }
 
             /**
@@ -363,6 +384,9 @@ class OrderController extends Controller
                 }
 
                 CreateSaleOrderHelper::save_sale($model, $this);
+                if (!Sale::where('order_id', $model->id)->lockForUpdate()->first()) {
+                    ReservaStockWebHelper::confirmar_sin_venta($model);
+                }
             }
 
             DB::commit();
@@ -518,8 +542,19 @@ class OrderController extends Controller
             return $ajeno;
         }
 
-        $model = Order::find($id);
-        $model->delete();
+        $model = DB::transaction(function () use ($id) {
+            ReservaStockWebHelper::bloquear_configuracion($this->userId());
+            $pedido = Order::where('id', $id)->lockForUpdate()->firstOrFail();
+            $venta_viva = Sale::where('order_id', $id)->lockForUpdate()->first();
+            $cancelado_sin_egreso = $pedido->order_status && $pedido->order_status->name === 'Cancelado'
+                && !$venta_viva && !$pedido->reserva_stock_web_egreso;
+            if ($pedido->reserva_stock_web && !$cancelado_sin_egreso && ($pedido->reserva_stock_web_consumida || $venta_viva)) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['order' => 'Cancelá el pedido antes de eliminarlo: ya tiene un egreso o una venta vinculada.']);
+            }
+            ReservaStockWebHelper::cancelar($pedido);
+            $pedido->delete();
+            return $pedido;
+        });
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Order', $model->id);
         return response(null);
