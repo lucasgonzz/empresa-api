@@ -3,7 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\ConfirmacionDeterministaIaHelper;
-use App\Http\Controllers\Helpers\asistente_ia\PadronDeArcaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaGenericaIaHelper;
 use App\Models\AiMessageAction;
 use App\Models\Client;
 use App\Models\Provider;
@@ -217,7 +217,7 @@ class T175_Ok_a_todo_y_consumidor_final_Test extends EmpresaTestCase
         $accion = AiMessageAction::find($r['tarjeta_id']);
         $payload = json_decode(json_encode($accion->datos), true)['payload'];
 
-        $this->assertSame(PadronDeArcaIaHelper::id_de_condicion('Consumidor final'), (int) $payload['iva_condition_id']);
+        $this->assertSame(PropuestaGenericaIaHelper::id_de_condicion_de_iva('Consumidor final'), (int) $payload['iva_condition_id']);
         $this->assertStringContainsString('Consumidor final', json_encode($accion->presentacion, JSON_UNESCAPED_UNICODE));
     }
 
@@ -228,7 +228,7 @@ class T175_Ok_a_todo_y_consumidor_final_Test extends EmpresaTestCase
      */
     public function con_condicion_o_con_cuit_no_se_toca()
     {
-        $monotributo = PadronDeArcaIaHelper::id_de_condicion('Monotributista');
+        $monotributo = PropuestaGenericaIaHelper::id_de_condicion_de_iva('Monotributista');
 
         list($conversation, $assistant) = $this->vuelta('cliente monotributista');
 
@@ -242,6 +242,6 @@ class T175_Ok_a_todo_y_consumidor_final_Test extends EmpresaTestCase
         $r = $this->herramienta($conversation, $assistant, 'proponer_alta', ['entidad' => 'client', 'datos' => ['name' => 'ZZC175 Con cuit', 'cuit' => '30712345671']]);
 
         $payload = json_decode(json_encode(AiMessageAction::find($r['tarjeta_id'])->datos), true)['payload'];
-        $this->assertTrue(empty($payload['iva_condition_id']), 'Con CUIT la condición la dice el padrón, no se supone.');
+        $this->assertTrue(empty($payload['iva_condition_id']), 'Con CUIT la condición no se supone: la pregunta el asistente.');
     }
 }
