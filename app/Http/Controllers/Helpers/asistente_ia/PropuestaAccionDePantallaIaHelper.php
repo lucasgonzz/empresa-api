@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\BudgetController;
 use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
+use App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper as EdicionPromo;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper as Catalogo;
 use App\Http\Controllers\Helpers\asistente_ia\EjecutorAccionDePantallaIaHelper as Ejecutor;
 use App\Models\AiMessage;
@@ -483,6 +484,25 @@ class PropuestaAccionDePantallaIaHelper
 
         $declaracion = $resuelta['declaracion'];
 
+        $edicion_promo = null;
+        if ($declaracion['accion'] === 'PromocionVinotecaController@update') {
+            try {
+                $id = reset($resuelta['parametros']);
+                $promo = EdicionPromo::promo($id, $contexto->owner_id);
+                // El asistente conserva solo el delta pedido: nunca completa el formulario
+                // con una copia vieja que pueda pisar el precio, la publicación o el stock.
+                $cuerpo = EdicionPromo::validar($promo, $cuerpo, $contexto->owner_id, true);
+                $edicion_promo = [
+                    'referencia' => EdicionPromo::referencia($promo, $cuerpo),
+                    'resumen' => EdicionPromo::resumen($promo, $cuerpo),
+                ];
+                $descripcion = 'Editar promo '.$promo->name.' (ID '.$promo->id.')';
+            } catch (ValidationException $e) {
+                $errores = $e->errors();
+                return RespuestaDeCargaIa::error(reset($errores)[0]);
+            }
+        }
+
         $fiscal = null;
         if ($declaracion['accion'] === 'SaleController@makeAfipTicket') {
 
@@ -570,16 +590,24 @@ class PropuestaAccionDePantallaIaHelper
                 'ruta'       => $declaracion['ruta'],
                 'parametros' => $parametros_ligados,
                 'cuerpo'     => $cuerpo,
-            ], $fiscal ? ['firma_fiscal_ia' => $fiscal['huella']] : []),
+            ], $fiscal ? ['firma_fiscal_ia' => $fiscal['huella']] : [],
+                $edicion_promo ? ['referencia_edicion_promo' => $edicion_promo['referencia']] : []),
             [
                 'titulo'    => mb_substr($descripcion, 0, self::LARGO_TITULO),
-                'renglones' => $fiscal ? $fiscal['resumen'] : self::renglones($accion_legible, $cuerpo),
+                'renglones' => $fiscal ? $fiscal['resumen'] : ($edicion_promo ? $edicion_promo['resumen'] : self::renglones($accion_legible, $cuerpo)),
                 'aviso'     => $aviso,
             ],
             $reemplaza_a
         );
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $descripcion.' ('.$accion_legible.')', $extra);
+        $resumen = $descripcion.' ('.$accion_legible.')';
+        if ($edicion_promo) {
+            $extra['cambios'] = $edicion_promo['resumen'];
+            foreach (array_slice($edicion_promo['resumen'], 1) as $renglon) {
+                $resumen .= '. '.$renglon['etiqueta'].': '.$renglon['valor'];
+            }
+        }
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
     }
 
     // -------------------------------------------------------------------------------------------
@@ -649,8 +677,15 @@ class PropuestaAccionDePantallaIaHelper
          */
         try {
 
+            if ($declaracion['accion'] === 'PromocionVinotecaController@update') {
+                $promo = EdicionPromo::promo(reset($resuelta['parametros']), $contexto->owner_id);
+                EdicionPromo::validar($promo, $cuerpo, $contexto->owner_id, true);
+            }
             Ejecutor::verificar_tenencia_de_la_llamada($contexto, $resuelta, $parametros, $cuerpo);
 
+        } catch (ValidationException $e) {
+            $errores = $e->errors();
+            return RespuestaDeCargaIa::error(reset($errores)[0]);
         } catch (AccionIaException $e) {
 
             return RespuestaDeCargaIa::error($e->getMessage());

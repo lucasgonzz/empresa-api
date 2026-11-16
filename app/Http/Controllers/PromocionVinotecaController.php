@@ -4,8 +4,10 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\PromocionVinotecaHelper;
+use App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper as Edicion;
 use App\Models\PromocionVinoteca;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 
 class PromocionVinotecaController extends Controller
 {
@@ -46,22 +48,21 @@ class PromocionVinotecaController extends Controller
     }
 
     public function update(Request $request, $id) {
-        $model = PromocionVinoteca::find($id);
-        $model->name                = $request->name;
-        $model->cost                = $request->cost;
-        $model->slug                = ArticleHelper::slug($request->name);
-        $model->final_price         = $request->final_price;
-        $model->stock               = $request->stock;
-        $model->online              = $request->online;
-        $model->address_id          = $request->address_id;
-        $model->description         = $request->description;
-        $model->save();
-
-        PromocionVinotecaHelper::set_cost($model, $request->articles);
-        
-        // $this->sendAddModelNotification('PromocionVinoteca', $model->id);
-
-        return response()->json(['model' => $this->fullModel('PromocionVinoteca', $model->id)], 200);
+        return DB::transaction(function () use ($request, $id) {
+            $model = Edicion::promo($id, $this->userId(), true);
+            $datos = Edicion::validar($model, $request->all(), $this->userId());
+            if ($request->attributes->has('referencia_edicion_promo')) {
+                Edicion::comprobar_referencia($model, $datos, $request->attributes->get('referencia_edicion_promo'));
+            }
+            // Omitido no significa vacío. El costo guardado es POR PROMO y no se vuelve a
+            // dividir por el stock remanente: la cantidad del armado solo se conoce al crear.
+            $model->fill($datos);
+            if (array_key_exists('name', $datos)) {
+                $model->slug = ArticleHelper::slug($datos['name']);
+            }
+            $model->save();
+            return response()->json(['model' => $this->fullModel('PromocionVinoteca', $model->id)], 200);
+        });
     }
 
     function delete_stock(Request $request, $id) {

@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelp
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Escritura;
 use App\Models\AiMessageAction;
 use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
+use App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper as EdicionPromo;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\ImplicitRouteBinding;
@@ -223,6 +224,16 @@ class EjecutorAccionDePantallaIaHelper
         }
 
         $declaracion = Catalogo::declaracion($metodo, $ruta);
+        $referencia_promo = null;
+        if ($declaracion && $declaracion['accion'] === 'PromocionVinotecaController@update') {
+            if (!PermisosIaHelper::es_admin($contexto->persona)) {
+                throw new AccionIaException(422, PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
+            }
+            $referencia_promo = $datos['referencia_edicion_promo'] ?? null;
+            if (!is_array($referencia_promo)) {
+                throw new AccionIaException(422, 'Esta tarjeta no tiene el cambio de la promo verificado. Pedí una propuesta nueva y revisala antes de confirmar.');
+            }
+        }
         $es_factura = $declaracion && $declaracion['accion'] === 'SaleController@makeAfipTicket';
         if ($es_factura) {
             if (!PermisosIaHelper::es_admin($contexto->persona)) {
@@ -234,7 +245,7 @@ class EjecutorAccionDePantallaIaHelper
             // La ruta vuelve a validar la firma bajo los candados de venta/emisor, antes de emitir.
             $cuerpo['_firma_fiscal_ia'] = $datos['firma_fiscal_ia'];
         }
-        $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo);
+        $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo, $referencia_promo);
         $texto = $es_factura ? ($llamada['cuerpo']['message'] ?? 'No se pudo confirmar el resultado de la facturación.') : 'Hecho: '.$metodo.' '.$llamada['uri'];
 
         return [
@@ -262,7 +273,7 @@ class EjecutorAccionDePantallaIaHelper
      *
      * @throws AccionIaException
      */
-    public static function llamar(ContextoDeCargaIa $contexto, string $metodo, string $uri, array $parametros, array $cuerpo): array
+    public static function llamar(ContextoDeCargaIa $contexto, string $metodo, string $uri, array $parametros, array $cuerpo, $referencia_promo = null): array
     {
         $metodo = Catalogo::normalizar_metodo($metodo);
 
@@ -299,6 +310,14 @@ class EjecutorAccionDePantallaIaHelper
 
         // Se vuelve a verificar acá y no solo al proponer: el registro pudo cambiar de dueño entre
         // la tarjeta y el clic, y una tarjeta se puede forjar.
+        if ($declaracion['accion'] === 'PromocionVinotecaController@update') {
+            try {
+                $promo = EdicionPromo::promo(reset($resuelta['parametros']), $contexto->owner_id);
+                EdicionPromo::validar($promo, $cuerpo, $contexto->owner_id, true);
+            } catch (ValidationException $e) {
+                throw new AccionIaException(422, self::primer_mensaje($e->errors()));
+            }
+        }
         self::verificar_tenencia_de_la_llamada($contexto, $resuelta, $parametros, $cuerpo);
 
         if (is_null($contexto->persona) || is_null(Auth::id()) || (int) Auth::id() !== (int) $contexto->persona->id) {
@@ -313,6 +332,14 @@ class EjecutorAccionDePantallaIaHelper
         $request->setUserResolver(function () {
             return Auth::user();
         });
+
+        if ($declaracion['accion'] === 'PromocionVinotecaController@update') {
+            if ($referencia_promo !== null) {
+                // Viaja como atributo interno; un campo inventado en el body no elude el
+                // control que el controller vuelve a hacer bajo el candado de la promo.
+                $request->attributes->set('referencia_edicion_promo', $referencia_promo);
+            }
+        }
 
         /*
          * La instancia de Route es compartida por todo el proceso: se la vuelve a ligar a ESTE
