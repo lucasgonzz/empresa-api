@@ -265,7 +265,7 @@ class ProveedorDeLaFacturaIaHelper
          * «Franko» leído de la factura no encontraba a «Franco»: se daba de alta un duplicado. Un nombre
          * que se PARECE a uno guardado nunca es un alta sin preguntar.
          */
-        $parecidos = self::parecidos($proveedores, $nombre);
+        $parecidos = self::parecidos($proveedores, $nombre, $cuit);
 
         if (count($parecidos) && !self::nuevo_ya_confirmado($contexto, $mensaje, $buscado, $nuevo_confirmado)) {
 
@@ -297,11 +297,16 @@ class ProveedorDeLaFacturaIaHelper
      *
      * 🔴 NUNCA ELIGE: lo que devuelve son candidatos para preguntar, aunque sea uno.
      *
+     * Revisión de la rama B, hallazgo 6: si vino el CUIT de la factura, un proveedor con OTRO CUIT cargado
+     * no es candidato (el papel dice que es otra empresa, aunque el nombre se parezca). Uno sin CUIT
+     * cargado sigue contando.
+     *
      * @param  iterable  $proveedores
      * @param  string  $nombre
+     * @param  string  $cuit  El CUIT de la factura, solo dígitos ('' si no vino).
      * @return array<int, \App\Models\Provider>
      */
-    public static function parecidos($proveedores, $nombre)
+    public static function parecidos($proveedores, $nombre, $cuit = '')
     {
         $leidas = self::distintivas($nombre);
 
@@ -310,9 +315,18 @@ class ProveedorDeLaFacturaIaHelper
             return [];
         }
 
+        $cuit = self::solo_digitos($cuit);
+
         $encontrados = [];
 
         foreach ($proveedores as $proveedor) {
+
+            $cuit_guardado = self::solo_digitos($proveedor->cuit);
+
+            if (strlen($cuit) === self::DIGITOS_CUIT && $cuit_guardado !== '' && $cuit_guardado !== $cuit) {
+
+                continue;
+            }
 
             foreach ([$proveedor->name, $proveedor->razon_social] as $guardado) {
 

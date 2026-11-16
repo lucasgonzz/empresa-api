@@ -115,6 +115,26 @@ class T162_Proveedor_parecido_antes_del_alta_Test extends EmpresaTestCase
     }
 
     /**
+     * Revisión de la rama B, hallazgo 6: un parecido con OTRO CUIT cargado que el de la factura no es
+     * candidato; uno sin CUIT cargado, sí.
+     *
+     * @test
+     */
+    public function un_parecido_con_otro_cuit_cargado_no_es_candidato()
+    {
+        $this->proveedor('Cárdenas Martín', ['cuit' => '20-11111111-2']);
+
+        $con_otro_cuit = $this->resolver('Martin Cardenas', $this->turno('Fijate en la factura'), '30712345678');
+        $this->assertSame(['nuevo' => 'Martin Cardenas'], $con_otro_cuit, 'La factura es de otra empresa (otro CUIT).');
+
+        $sin_cuit = $this->proveedor('Franco Fia SRL');
+
+        $respuesta = $this->resolver('Distribuidora Franko Fia', $this->turno('Fijate en la factura'), '30712345678');
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame((int) $sin_cuit->id, (int) $respuesta['opciones']['proveedores'][0]['id']);
+    }
+
+    /**
      * 🔴 `proveedor_nuevo: true` de entrada NO saltea la pregunta; en el turno siguiente, sí.
      *
      * @test
