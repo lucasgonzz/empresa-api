@@ -35,6 +35,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPromocionWhatsappIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaAjusteDeStockPorLoteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReintentoDeEscaneoIaHelper;
@@ -281,6 +282,12 @@ class HerramientasDeCarga
          * de más: la persona ve el total, el IVA y la cuenta corriente, y confirma ella.
          */
         AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS,
+        /*
+         * 🔴 El ajuste de stock por lote (misión asistente-diario-20261116, rama B, 30/10 #2): deja el stock
+         * de muchos artículos en un número de un saque, como la actualización masiva. La persona mira la
+         * lista (y lo que quedó afuera) y confirma ella.
+         */
+        AiMessageAction::TIPO_AJUSTE_STOCK_LOTE,
     ];
 
     /**
@@ -1857,6 +1864,34 @@ class HerramientasDeCarga
             ], 'required' => []],
         ];
 
+        /*
+         * Misión asistente-diario-20261116 (rama B, 30/10 #2), al final por el prefijo del caché: el ajuste de
+         * stock POR LOTE. En Ferre Total la foto de un conteo terminó en error renglón por renglón y no se
+         * ajustó nada. Ver PropuestaAjusteDeStockPorLoteIaHelper.
+         */
+        $definiciones[] = [
+            'name' => 'proponer_ajuste_de_stock_por_lote',
+            'description' => 'Arma UNA tarjeta para dejar el stock de VARIOS artículos en la cantidad que contó la persona (un conteo, un inventario, la foto de una lista: "ajustá el stock de estos", "esto es lo que hay"). Mandá TODOS los renglones en UNA sola llamada (hasta 60; si son más, una llamada por tanda), cada uno con el artículo como lo escribió la persona (o su id si otra herramienta lo devolvió) y la cantidad FINAL contada: no es sumar ni restar, es dejarlo en ese número. Nunca armes una tarjeta por artículo ni uses una acción de pantalla para esto. Sin depósitos o con una sola sucursal va al total del artículo; con varios depósitos mandá deposito si la persona lo dijo (si no, uso el suyo o te digo que preguntes, una sola vez para todo el lote). Lo que no pude ubicar (no existe, o el nombre encaja con varios) NO frena al resto: viene en quedaron_afuera con el motivo y los candidatos; contale a la persona cuáles quedaron afuera, preguntá por esos y armá otra tarjeta con ellos. Siempre espera el sí de la persona. Al confirmar, el resultado trae hechos y no_hechos: contá cuántos se ajustaron y cuáles NO, con el motivo; nunca digas que quedó todo si quedó alguno sin hacer. Para sumar o restar a un solo artículo va proponer_stock_en_deposito. Si trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es un ajuste hecho.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'renglones' => [
+                    'type'     => 'array',
+                    'minItems' => 1,
+                    'maxItems' => 60,
+                    'items'    => [
+                        'type'       => 'object',
+                        'properties' => [
+                            'articulo'    => ['type' => 'string', 'description' => 'Nombre o código del artículo, como lo escribió la persona o como figura en la foto.'],
+                            'articulo_id' => ['type' => 'integer', 'description' => 'Id del artículo, solo si otra herramienta lo devolvió.'],
+                            'cantidad'    => ['type' => 'number', 'description' => 'La cantidad FINAL contada (en unidades del Listado). 0 si no hay ninguno.'],
+                        ],
+                        'required'   => ['cantidad'],
+                    ],
+                ],
+                'deposito'    => ['type' => 'string', 'description' => 'Depósito o sucursal del conteo, solo si la persona lo dijo y el negocio tiene varios. Vale para todo el lote.'],
+                'reemplaza_a' => ['type' => 'integer'],
+            ], 'required' => ['renglones']],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2524,6 +2559,13 @@ class HerramientasDeCarga
              */
             case 'armar_texto_de_promocion':
                 return self::resultado(PropuestaPromocionWhatsappIaHelper::texto_para_reenviar($contexto, $input));
+
+            /*
+             * Misión asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock por lote. 🔴 SIN la puerta
+             * de la auto-confirmación, a propósito: siempre espera el sí (ver NUNCA_AUTO_CONFIRMABLES).
+             */
+            case 'proponer_ajuste_de_stock_por_lote':
+                return self::resultado(PropuestaAjusteDeStockPorLoteIaHelper::proponer($contexto, $assistant_message, $input));
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
