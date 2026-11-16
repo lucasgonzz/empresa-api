@@ -2076,6 +2076,15 @@ class PropuestaGenericaIaHelper
                         ->limit(self::MAX_OPCIONES + 1)
                         ->get();
 
+        /*
+         * Misión asistente-diario-20261116 (rama C, M3): una LOCALIDAD que no coincide no deja al dueño
+         * adivinando. Ver localidad_que_no_coincide().
+         */
+        if (!count($candidatas) && $relacion['tabla'] === 'locations') {
+
+            return self::localidad_que_no_coincide($campo, $etiqueta, $texto, $consulta_base);
+        }
+
         if (!count($candidatas)) {
 
             $opciones = [$campo['columna'] => self::opciones_de_relacion($consulta_base()->orderBy($relacion['campo'])->limit(self::MAX_OPCIONES)->get(), $relacion['campo'])];
@@ -2109,6 +2118,105 @@ class PropuestaGenericaIaHelper
         return RespuestaDeCargaIa::faltan(
             ['cuál '.$etiqueta.' es (hay '.count($candidatas).' que encajan con "'.$texto.'")'],
             [$campo['columna'] => self::opciones_de_relacion($candidatas, $relacion['campo'])]
+        );
+    }
+
+    /**
+     * Los nombres que la gente usa para una localidad que el negocio puede tener cargada con otro nombre
+     * (misión asistente-diario-20261116, rama C, M3). Clave y valores ya en minúsculas y sin tildes; el
+     * valor es lo que se busca además de lo dicho. Lista CERRADA: solo los alias que no se parecen por
+     * letras («CABA» no se parece a «Ciudad Autónoma de Buenos Aires»).
+     */
+    const ALIAS_DE_LOCALIDADES = [
+        'caba'                     => ['ciudad autonoma de buenos aires', 'capital federal', 'buenos aires'],
+        'capital federal'          => ['ciudad autonoma de buenos aires', 'caba', 'buenos aires'],
+        'capital'                  => ['ciudad autonoma de buenos aires', 'capital federal', 'caba'],
+        'ciudad de buenos aires'   => ['ciudad autonoma de buenos aires', 'caba', 'capital federal'],
+        'cordoba capital'          => ['cordoba'],
+        'rosario santa fe'         => ['rosario'],
+    ];
+
+    /** Tope de localidades del negocio que se le devuelven al modelo cuando no hubo coincidencia. */
+    const MAX_LOCALIDADES = 40;
+
+    /**
+     * La respuesta cuando la LOCALIDAD dictada no coincide por LIKE con ninguna del negocio (misión
+     * asistente-diario-20261116, rama C, M3).
+     *
+     * 🔴 EL CASO REAL (Pesca, conversación 7, mensajes 66-114, 14/11/2026): el dueño quiso dar de alta a un
+     * cliente para un presupuesto y la localidad no encajaba —probó «CABA», «Ciudad de Buenos Aires»…—; el
+     * agente no le listó las opciones y después de veinte turnos lo cargó a mano. El orden ahora:
+     *
+     *   1. PARECIDAS: alias conocidos (ALIAS_DE_LOCALIDADES) y parecidos tolerantes por letras
+     *      (BusquedaPorPalabrasIaHelper::parecidos, el mismo de la búsqueda tolerante). 🔴 Nunca se elige
+     *      una sola: vuelven como opciones para que la persona diga cuál (crear un cliente en otra
+     *      localidad es un dato mal guardado que nadie ve).
+     *   2. NINGUNA: las localidades del negocio (hasta MAX_LOCALIDADES) y `opciones.si_no_esta` con las dos
+     *      salidas: crearla con proponer_alta de location, o seguir sin localidad (el campo vacío).
+     *
+     * Siempre por `$consulta_base`, que filtra por el dueño: la base puede ser compartida.
+     *
+     * @param  array  $campo  La declaración del campo (`location_id`).
+     * @param  string  $etiqueta  «localidad».
+     * @param  string  $texto  Lo que se dictó.
+     * @param  callable  $consulta_base  La consulta de `locations` del dueño (resolver_relacion()).
+     * @return array  La respuesta negativa (`faltan` con opciones).
+     */
+    protected static function localidad_que_no_coincide(array $campo, $etiqueta, $texto, callable $consulta_base)
+    {
+        $columna = $campo['columna'];
+        $nombre_campo = $campo['relacion']['campo'];
+
+        $parecidas = [];
+
+        // 1a. Los alias: «CABA» → «Ciudad Autónoma de Buenos Aires».
+        $clave = strtr(mb_strtolower(trim((string) $texto)), ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u']);
+        $clave = trim(preg_replace('/[^a-z0-9ñ]+/u', ' ', $clave));
+
+        if (isset(self::ALIAS_DE_LOCALIDADES[$clave])) {
+
+            foreach (self::ALIAS_DE_LOCALIDADES[$clave] as $alias) {
+
+                $filas = $consulta_base()->where($nombre_campo, 'LIKE', '%'.self::escapar_like($alias).'%')->orderBy($nombre_campo)->limit(self::MAX_OPCIONES)->get();
+
+                foreach ($filas as $fila) {
+
+                    $parecidas[(int) $fila->id] = ['id' => (int) $fila->id, 'nombre' => (string) $fila->{$nombre_campo}];
+                }
+            }
+        }
+
+        // 1b. Parecidos por letras («Rosaio» → «Rosario», «Ciudad de Bs As» no, pero «Ciudad de Buenos Aires» sí).
+        foreach (BusquedaPorPalabrasIaHelper::parecidos($consulta_base(), (string) $texto, $nombre_campo) as $parecido) {
+
+            $parecidas[(int) $parecido['id']] = ['id' => (int) $parecido['id'], 'nombre' => (string) $parecido['nombre']];
+        }
+
+        if (count($parecidas)) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['qué '.$etiqueta.' es: "'.$texto.'" no está cargada así, pero hay '.(count($parecidas) === 1 ? 'una parecida' : 'parecidas').'. Preguntale si es '.(count($parecidas) === 1 ? 'esa' : 'alguna de esas').'; no elijas vos'],
+                [
+                    $columna         => array_slice(array_values($parecidas), 0, self::MAX_OPCIONES),
+                    'si_no_es_ninguna' => 'Si no es ninguna: ofrecele crear la localidad "'.$texto.'" (proponer_alta de location) o seguir sin localidad (mandá '.$columna.' vacío).',
+                ]
+            );
+        }
+
+        // 2. Ninguna: todas las del negocio y las dos salidas.
+        $todas = [];
+
+        foreach ($consulta_base()->orderBy($nombre_campo)->limit(self::MAX_LOCALIDADES)->get() as $fila) {
+
+            $todas[] = ['id' => (int) $fila->id, 'nombre' => (string) $fila->{$nombre_campo}];
+        }
+
+        return RespuestaDeCargaIa::faltan(
+            ['qué '.$etiqueta.' es: no hay ninguna que se llame como "'.$texto.'" ni parecida'],
+            [
+                $columna     => $todas,
+                'si_no_esta' => 'Mostrale estas localidades a la persona'.(count($todas) ? '' : ' (el negocio no tiene ninguna cargada)').' y ofrecele dos salidas: crear la localidad "'.$texto.'" con proponer_alta de location y después seguir con la carga, o seguir sin localidad (mandá '.$columna.' vacío). No vuelvas a probar otros nombres por tu cuenta.',
+            ]
         );
     }
 
