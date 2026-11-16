@@ -185,6 +185,54 @@ class T161_Gasto_con_categoria_nueva_y_caja_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Revisión de la rama B, hallazgo 1: el mismo gasto propuesto dos veces en el turno, en "directo".
+     * La primera tarjeta CREA la subcategoría (clave por nombre) y se confirma; la segunda llega con la
+     * subcategoría ya creada (por id). La guarda de doble registro tiene que verla: un solo gasto.
+     *
+     * @test
+     */
+    public function el_mismo_gasto_dos_veces_en_el_turno_en_directo_queda_una_sola_vez()
+    {
+        \App\Models\User::where('id', $this->dueno->id)->update(['agente_confianza' => 'directo']);
+        $this->dueno = $this->dueno->fresh();
+        $this->actuar_como($this->dueno);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $primera = $this->gasto($conversation, $assistant, [
+            'subcategoria_nueva' => 'Impuesto al cheque T161',
+            'categoria'          => 'Gastos bancarios T161',
+            'monto'              => 416179,
+            'pagos'              => [['metodo_de_pago_id' => $this->efectivo()->id]],
+        ]);
+
+        $this->assertTrue($primera['ok'], json_encode($primera));
+
+        $this->confirmar($conversation, $assistant, $primera['tarjeta_id'])->assertStatus(200);
+
+        $concepto = ExpenseConcept::where('user_id', $this->dueno->id)->where('name', 'Impuesto al cheque T161')->first();
+        $this->assertNotNull($concepto);
+        $this->assertSame(1, Expense::where('user_id', $this->dueno->id)->count());
+
+        // En el mismo turno (sin un mensaje nuevo de la persona), el modelo vuelve a proponer el mismo gasto.
+        $otro_assistant = AiMessage::create([
+            'ai_conversation_id'   => $conversation->id,
+            'rol'                  => 'assistant',
+            'estado'               => 'pendiente',
+            'acciones_habilitadas' => true,
+        ]);
+
+        $segunda = $this->gasto($conversation, $otro_assistant, [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 416179,
+            'pagos'           => [['metodo_de_pago_id' => $this->efectivo()->id]],
+        ]);
+
+        $this->assertNotEmpty($segunda['confirmada_parecida'], 'La guarda ve el gasto ya registrado: ' . json_encode($segunda));
+        $this->assertSame(1, Expense::where('user_id', $this->dueno->id)->count(), 'Un solo gasto, no dos.');
+    }
+
+    /**
      * Una categoría que ya existe (escrita distinto) se reusa, y la subcategoría nueva cuelga de ella.
      *
      * @test

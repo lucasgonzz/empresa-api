@@ -239,7 +239,7 @@ class PropuestaGastoIaHelper {
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_GASTO,
-            is_null($concepto) ? self::clave_de_nueva($alta) : self::clave($concepto->id),
+            is_null($concepto) ? self::clave_de_nueva($alta) : self::clave_de_la_subcategoria($contexto, $concepto),
             $datos,
             ['titulo' => 'Gasto', 'renglones' => $renglones, 'aviso' => count($avisos) ? implode(' ', $avisos) : null],
             $reemplaza_a
@@ -278,7 +278,44 @@ class PropuestaGastoIaHelper {
      */
     static function clave_de_nueva(array $alta) {
 
-        return 'gasto:nueva:'.md5(self::normalizado($alta['subcategoria']));
+        return self::clave_por_nombre($alta['subcategoria']);
+    }
+
+    /**
+     * La clave por nombre normalizado de la subcategoría: la de una tarjeta que la crea.
+     *
+     * @param  string  $nombre
+     * @return string
+     */
+    protected static function clave_por_nombre($nombre) {
+
+        return 'gasto:nueva:'.md5(self::normalizado($nombre));
+    }
+
+    /**
+     * La clave de un gasto sobre una subcategoría que YA existe (revisión de la rama B, hallazgo 1).
+     *
+     * 🔴 La guarda de doble registro (el reemplazo y `confirmada_parecida` de AccionesIaHelper::crear) es
+     * por clave. Si en esta conversación hubo una tarjeta que CREABA esta subcategoría (clave por nombre)
+     * y después se vuelve a proponer el mismo gasto con la subcategoría ya creada (clave por id), las dos
+     * claves no coincidían y el segundo gasto pasaba, en "directo", sin aviso: el mismo gasto dos veces.
+     * Por eso, si existe esa tarjeta por nombre en la conversación, se usa SU clave; si no, la de siempre
+     * (`gasto:<id>`, la que leen los tests y las tarjetas viejas).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\ExpenseConcept  $concepto
+     * @return string
+     */
+    protected static function clave_de_la_subcategoria(ContextoDeCargaIa $contexto, ExpenseConcept $concepto) {
+
+        $por_nombre = self::clave_por_nombre($concepto->name);
+
+        $hubo_una_que_la_creaba = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                                                ->where('tipo', AiMessageAction::TIPO_GASTO)
+                                                ->where('clave', $por_nombre)
+                                                ->exists();
+
+        return $hubo_una_que_la_creaba ? $por_nombre : self::clave($concepto->id);
     }
 
     /**
