@@ -59,7 +59,13 @@ class ResumenDeVentasIaHelper
      * `enum` de la definición de la tool, que es el prefijo que cachea AsistenteIaService::
      * con_cache_control(). Reordenarlo tira el caché de todas las conversaciones.
      */
-    const AGRUPACIONES = ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor', 'facturada'];
+    const AGRUPACIONES = ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor', 'facturada', 'caja'];
+
+    /** Etiqueta del grupo de lo cobrado sin caja asignada (ver por_caja()). */
+    const ETIQUETA_SIN_CAJA = 'Sin caja';
+
+    /** Etiqueta del grupo de lo vendido a cuenta corriente, que no entra a ninguna caja (ver por_caja()). */
+    const ETIQUETA_CAJA_CUENTA_CORRIENTE = 'Cuenta corriente (no entra a caja)';
 
     /** Etiqueta del grupo de las ventas con comprobante de ARCA (ver expresion_facturada()). */
     const ETIQUETA_FACTURADA = 'Facturada ante ARCA';
@@ -718,6 +724,11 @@ class ResumenDeVentasIaHelper
             return self::por_metodo_de_pago($ventas, $totales);
         }
 
+        // M6-caja (misión asistente-diario-20261116): lo que entró a cada caja.
+        if ($agrupar_por === 'caja') {
+            return self::por_caja($owner, $ventas, $totales);
+        }
+
         if ($agrupar_por === 'facturada') {
 
             return self::con_la_nota(self::por_facturada($ventas), $agrupar_por);
@@ -1100,6 +1111,106 @@ class ResumenDeVentasIaHelper
          * otro grupo.
          */
         $resultado['nota'] = 'el grupo "' . self::METODO_CUENTA_CORRIENTE . '" es lo VENDIDO a cuenta corriente y no se desglosa por como se cobro despues: en el momento de la venta no hay metodo de pago, hay una deuda. Y una venta pagada con dos metodos cuenta en los dos grupos, con la parte que le toca a cada uno.';
+
+        return $resultado;
+    }
+
+    /**
+     * POR CAJA: LO QUE LAS VENTAS DEL CONJUNTO HICIERON ENTRAR A CADA CAJA (M6-caja, misión
+     * asistente-diario-20261116; pedido de Ferre Total del 14/11/2026: «ventas por caja»).
+     *
+     * Espeja por_metodo_de_pago() con la caja en lugar del método, para que las dos agrupaciones
+     * sumen lo mismo y cuadren con el total:
+     *  - las ventas de mostrador con pivot `current_acount_payment_method_sale` reparten su plata por
+     *    `caja_id` del pivot, con `amount - discount_amount` (el mismo importe que el reparto por
+     *    método y que Rendimiento; decisión de la misión, 16/11/2026);
+     *  - las de mostrador sin pivot van enteras a `sales.caja_id`;
+     *  - lo que no tiene caja (null o 0) va a "Sin caja";
+     *  - lo vendido a cuenta corriente es un grupo aparte que NO entró a ninguna caja.
+     *
+     * 🔴 LO QUE ESTO NO ES: el saldo ni los movimientos de la caja. Los cobros de cuenta corriente que
+     * entran a caja, los gastos y los movimientos manuales no son ventas y no están: para eso va
+     * consultar_reporte_contable con flujo_caja. Va dicho en la nota.
+     *
+     * @param  User    $owner
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @param  array   $totales
+     * @return array<string, mixed>
+     */
+    protected static function por_caja(User $owner, $ventas, array $totales): array
+    {
+        $mostrador = self::ventas_de_mostrador($ventas);
+
+        $con_pivot = DB::table('current_acount_payment_method_sale')
+            ->whereIn('sale_id', (clone $mostrador)->select('sales.id'))
+            ->groupByRaw('COALESCE(caja_id, 0)')
+            ->selectRaw('COALESCE(caja_id, 0) as caja_id, COUNT(DISTINCT sale_id) as cantidad, COALESCE(SUM(amount - COALESCE(discount_amount, 0)), 0) as total')
+            ->get();
+
+        $sin_pivot = (clone $mostrador)
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('current_acount_payment_method_sale')
+                    ->whereColumn('current_acount_payment_method_sale.sale_id', 'sales.id');
+            })
+            ->toBase()
+            ->selectRaw('COALESCE(sales.caja_id, 0) as caja_id, COUNT(*) as cantidad, COALESCE(SUM(sales.total), 0) as total')
+            ->groupByRaw('COALESCE(sales.caja_id, 0)')
+            ->get();
+
+        $por_caja = [];
+
+        foreach ([$con_pivot, $sin_pivot] as $lote) {
+            foreach ($lote as $fila) {
+                $caja_id = (int) $fila->caja_id;
+
+                if (! isset($por_caja[$caja_id])) {
+                    $por_caja[$caja_id] = ['cantidad' => 0, 'total' => 0.0];
+                }
+
+                $por_caja[$caja_id]['cantidad'] += (int) $fila->cantidad;
+                $por_caja[$caja_id]['total'] += (float) $fila->total;
+            }
+        }
+
+        // Los nombres, solo de las cajas del comercio: un id ajeno o borrado cae en "Caja #id".
+        $ids = array_values(array_filter(array_keys($por_caja)));
+        $nombres = empty($ids) ? [] : DB::table('cajas')
+            ->where('user_id', $owner->id)
+            ->whereIn('id', $ids)
+            ->pluck('name', 'id')
+            ->map(function ($v) {
+                return (string) $v;
+            })
+            ->all();
+
+        $grupos = [];
+
+        foreach ($por_caja as $caja_id => $suma) {
+            if ($caja_id <= 0) {
+                $etiqueta = self::ETIQUETA_SIN_CAJA;
+            } else {
+                $etiqueta = isset($nombres[$caja_id]) && $nombres[$caja_id] !== '' ? $nombres[$caja_id] : 'Caja #' . $caja_id;
+            }
+
+            $grupos[] = [
+                'etiqueta' => $etiqueta,
+                'cantidad' => $suma['cantidad'],
+                'total'    => round($suma['total'], 2),
+            ];
+        }
+
+        if (! is_null($totales['a_cuenta_corriente']) && $totales['a_cuenta_corriente'] > 0) {
+            $grupos[] = [
+                'etiqueta' => self::ETIQUETA_CAJA_CUENTA_CORRIENTE,
+                'cantidad' => (int) self::ventas_a_cuenta_corriente($ventas)->count(),
+                'total'    => (float) $totales['a_cuenta_corriente'],
+            ];
+        }
+
+        $resultado = self::ordenar_y_topear($grupos);
+
+        $resultado['nota'] = 'por caja es lo que las VENTAS del periodo hicieron entrar a cada caja (una venta cobrada con dos metodos reparte su plata entre sus cajas). "' . self::ETIQUETA_SIN_CAJA . '" es lo cobrado sin caja asignada, y "' . self::ETIQUETA_CAJA_CUENTA_CORRIENTE . '" lo vendido fiado, que no entro a ninguna caja. No es el saldo de la caja: los cobros de cuenta corriente, los gastos y los movimientos manuales no estan; para eso va consultar_reporte_contable con flujo_caja.';
 
         return $resultado;
     }
