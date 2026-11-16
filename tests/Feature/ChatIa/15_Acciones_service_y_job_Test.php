@@ -92,6 +92,8 @@ class Acciones_service_y_job_Test extends TestCase
         // asistente-mejoras-4-dias (P5, 16/11/2026), al final de las de lectura.
         'valorizar_stock',
         'exportar_articulos_excel',
+        // asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, al final.
+        'consultar_rendimiento_de_compras',
     ];
 
     /**

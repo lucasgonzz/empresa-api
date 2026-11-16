@@ -1097,7 +1097,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_venta',
-                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; una promo de vinoteca va como renglón con promo (o promo_id), igual que en Vender, y descuenta su stock; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; una promo de vinoteca va como renglón con promo (o promo_id), igual que en Vender, y descuenta su stock; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. 🔴 El total que le decís a la persona es el `total` de la respuesta (el de la tarjeta, con la cuenta de Vender): nunca tu propia cuenta; si no es lo que esperabas, decí por qué (descuento o recargo del método de pago, la lista, el descuento de cada artículo o el de la venta). NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1133,6 +1133,11 @@ class HerramientasDeCarga
                                     'promo_id'        => [
                                         'type'        => 'integer',
                                         'description' => 'Id de la promo de vinoteca, solo si otra herramienta o un "faltan" lo devolvió.',
+                                    ],
+                                    // Misión asistente-diario-20261116 (M6-descuento), al final: el descuento de ESTE renglón.
+                                    'descuento_porcentaje' => [
+                                        'type'        => 'number',
+                                        'description' => 'Descuento de ESTE artículo, en porcentaje (0 a 100), como la columna de descuento del remito de Vender: "a este hacele 15 %". El total de la tarjeta ya lo descuenta. Es distinto del descuento_porcentaje de la venta entera.',
                                     ],
                                 ],
                                 'required'   => ['cantidad'],

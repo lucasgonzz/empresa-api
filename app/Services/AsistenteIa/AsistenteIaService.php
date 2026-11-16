@@ -2410,6 +2410,8 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- 🔴 «Cómo van las ventas», «actualizá», «revisalo», «de nuevo», «fijate otra vez»: SIEMPRE volvé a
+  llamar a consultar_resumen_de_ventas; nunca repitas un número de una respuesta anterior de la charla.
 - Leé el pedido como lo diría un comerciante (misión asistente-altas-y-conversacion, 16/10/2026):
   "lo que más vendo de [proveedor]" es una pregunta de VENTAS: consultar_articulos_mas_vendidos
   con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
@@ -4282,7 +4284,8 @@ CONFIRMACION;
             }
 
             return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
-                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message);
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message)
+                || VentaConDatosInventadosIaHelper::afirma_otro_total($saneado, $assistant_message);
         }
 
         return false;
@@ -6330,7 +6333,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total. 🔴 Las ventas cambian minuto a minuto: cada "cómo van", "actualizá", "revisalo" o "de nuevo" es una llamada NUEVA, nunca el número de una respuesta anterior; decí la hora de consultado_a_las. "caja" (ventas por caja) reparte lo que las ventas hicieron entrar a cada caja, con un grupo aparte para lo vendido a cuenta corriente, que no entra a ninguna: no es el saldo de la caja (eso es flujo_caja de consultar_reporte_contable).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6362,6 +6365,11 @@ CONFIRMACION;
                             'description' => 'desc (default: de mayor a menor) o asc (de menor a mayor: "los que menos", "margen negativo").',
                             'enum'        => ['desc', 'asc'],
                         ],
+                        // Misión asistente-diario-20261116 (A9), al final por el prefijo del caché.
+                        'hasta_hora' => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM (24 h). Solo las ventas cargadas hasta esa hora de cada día. Para "cómo vamos hoy contra ayer": una llamada de hoy y otra de ayer, las dos con hasta_hora = la hora de consultado_a_las de la de hoy.',
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -6374,7 +6382,8 @@ CONFIRMACION;
                         isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
                         isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null,
                         isset($input['orden']) ? (string) $input['orden'] : null,
-                        isset($input['direccion']) ? (string) $input['direccion'] : null
+                        isset($input['direccion']) ? (string) $input['direccion'] : null,
+                        isset($input['hasta_hora']) ? (string) $input['hasta_hora'] : null
                     );
                 },
             ],
@@ -6769,6 +6778,39 @@ CONFIRMACION;
                         (int) $owner_id,
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                        $input
+                    );
+                },
+            ],
+            /*
+             * Misión asistente-diario-20261116 (rama A, 30/10 #11), AL FINAL del registro por el prefijo del
+             * caché. Ferre Total: «de lo que compré este mes, ¿cuánto quedó en stock?», «¿qué compré mal?», y
+             * el agente dijo que el sistema no guarda qué se compró. El cruce lo hace el SERVIDOR:
+             * RendimientoDeComprasIaHelper. De lectura, en los tres canales.
+             */
+            [
+                'name' => 'consultar_rendimiento_de_compras',
+                'description' => 'CÓMO RINDIÓ LO QUE SE COMPRÓ: por cada artículo comprado en el período (por defecto, el mes en curso), cuánto se compró, cuánto se vendió desde la compra, el stock de hoy y lo que no rotó (sin_rotar, y su valor a costo si quien pregunta puede ver costos), ordenado por la plata que quedó parada. Con totales de todo el período. Es LA herramienta de "de lo que compré este mes, ¿cuánto quedó en stock?", "¿qué compré mal?", "¿qué compra no se vendió?": nunca digas que el sistema no guarda qué se compró. Opcional: proveedor (por nombre) y deposito (sucursal). Contestá con los números que trae, sin recalcular; si trae "nota", decí lo que dice. Si trae "error" o "faltan", contá eso.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día de las compras, AAAA-MM-DD. Sin desde ni hasta: el mes en curso.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día de las compras, AAAA-MM-DD. Sin hasta: hoy.'],
+                        'proveedor' => ['type' => 'string', 'description' => 'Opcional: solo las compras a ese proveedor, por su nombre.'],
+                        'deposito' => ['type' => 'string', 'description' => 'Opcional: la sucursal o depósito por su nombre (sus compras, sus ventas y su stock).'],
+                        'orden' => [
+                            'type'        => 'string',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::ORDENES,
+                            'description' => 'valor_sin_rotar (default: la plata parada primero), sin_rotar, comprado o vendido.',
+                        ],
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántos artículos listar (default 20, hasta 100). Los totales son siempre de todos.'],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
                         $input
                     );
                 },

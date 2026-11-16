@@ -620,11 +620,17 @@ class Ventas_sin_cobrar_y_facturadas_Test extends TestCase
     {
         $agrupaciones = ResumenDeVentasIaHelper::AGRUPACIONES;
 
-        $this->assertEquals('facturada', $agrupaciones[count($agrupaciones) - 1]);
+        /*
+         * La misión asistente-diario-20261116 (M6-caja) sumó `caja` DESPUÉS de facturada, que es la única
+         * forma correcta de agregar una agrupación: facturada sigue en su lugar y lo de antes no se movió.
+         * Por eso -2 (el orden esperado no cambió).
+         */
+        $this->assertEquals('facturada', $agrupaciones[count($agrupaciones) - 2]);
+        $this->assertEquals('caja', $agrupaciones[count($agrupaciones) - 1]);
 
         $this->assertEquals(
             ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor'],
-            array_slice($agrupaciones, 0, -1),
+            array_slice($agrupaciones, 0, -2),
             'Lo de antes no se reordena: el orden es el prefijo del caché.'
         );
     }
