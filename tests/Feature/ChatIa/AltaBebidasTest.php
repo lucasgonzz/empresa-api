@@ -53,6 +53,34 @@ class AltaBebidasTest extends EmpresaTestCase
         Catalogo::olvidar();
     }
 
+    /** La carpeta del disco `local` propio de este test (ver disco_local_propio()). */
+    protected $raiz_local_propia = null;
+
+    /**
+     * El disco `local` en una carpeta PROPIA de este test, en vez de Storage::fake('local').
+     *
+     * 🔴 Storage::fake('local') usa SIEMPRE la misma carpeta (storage/framework/testing/disks/local) y la
+     * VACÍA al empezar. Si otro proceso de tests del mismo slot hace su propio Storage::fake('local') entre
+     * que buscar_imagen_de_bebida guarda la foto y la confirmación, la foto desaparece y la confirmación da
+     * 422 «No pude leer esa foto» (medido el 16/11/2026: 3 de 6 corridas con otra suite andando al lado).
+     * Una carpeta única por test no la comparte nadie.
+     */
+    protected function disco_local_propio()
+    {
+        $this->raiz_local_propia = storage_path('framework/testing/disks/local-' . str_replace('.', '', uniqid('alta-bebidas-', true)));
+
+        \Illuminate\Support\Facades\Storage::set('local', \Illuminate\Support\Facades\Storage::createLocalDriver(['root' => $this->raiz_local_propia]));
+    }
+
+    protected function tearDown(): void
+    {
+        if (!is_null($this->raiz_local_propia)) {
+            (new \Illuminate\Filesystem\Filesystem())->deleteDirectory($this->raiz_local_propia);
+        }
+
+        parent::tearDown();
+    }
+
     protected function catalogo($tabla, $nombre)
     {
         return DB::table($tabla)->insertGetId(['name' => $nombre, 'user_id' => $this->dueno->id]);
@@ -259,7 +287,7 @@ class AltaBebidasTest extends EmpresaTestCase
      */
     public function test_imagen_de_internet_va_aparte_del_alta_con_su_propia_confirmacion()
     {
-        \Illuminate\Support\Facades\Storage::fake('local');
+        $this->disco_local_propio();
         config(['services.serper.api_key' => 'prueba117']);
         $this->respuesta_http = ['images' => [['imageUrl' => 'https://example.com/vino.jpg', 'title' => $this->datos['name'], 'link' => 'https://example.com/ficha']]];
         \App\Models\GeocoderCounter::where('user_id', $this->dueno->id)->whereDate('created_at', today())->update(['counter' => 0]);
