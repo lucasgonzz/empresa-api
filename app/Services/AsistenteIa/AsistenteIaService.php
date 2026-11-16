@@ -2475,12 +2475,12 @@ Qué podés afirmar:
   no la vuelve una pregunta de compras.
 - «Esos», «estos», «los dos» se refieren a lo que nombraste en tu última respuesta, no a una foto
   ni a un pedido viejo: armá la carga con esos, sin preguntar cuáles.
-- "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
-  además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
-  monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
-  Nunca compares X contra lo atrasado solo.
-- "Los que me deben más de X" sin antigüedad: consultar_ventas_sin_cobrar con monto_minimo = X y
-  contestá con cuenta_corriente.clientes.
+- "Los que me deben más de X": consultar_ventas_sin_cobrar con monto_minimo = X y contestá con
+  cuenta_corriente.clientes (saldo_en_pesos).
+- "Los que me deben más de X hace más de N días" (deben X o más en total y tienen alguna venta
+  impaga de N días o más): consultar_ventas_sin_cobrar con dias = N y monto_minimo = X, y contestá
+  con las filas de cuenta_corriente.clientes que traen tiene_ventas_impagas_de_esos_dias = true
+  (saldo_en_pesos y dias_de_la_venta_impaga_mas_vieja). Nunca compares X contra lo atrasado solo.
 - Si una herramienta devuelve error con opciones porque el nombre no encajó y una opción es
   claramente lo que dijo la persona (otra letra, sin tilde, abreviado), volvé a llamar con ese
   nombre exacto y decile cuál usaste; si no es obvio, preguntá cuál.
@@ -2998,9 +2998,11 @@ AUTO_RESUELTO;
   presupuesto o un pago = proponer_envio_de_comprobante con su número. NO le pases el link a la
   persona para que lo mande ella: el envío lo hacés vos, con su sí.
 - "Mandales un recordatorio a los que me deben más de X hace más de N días" =
-  proponer_recordatorios_de_cobro con monto_minimo = X y dias = N: el MISMO filtro de
-  consultar_ventas_sin_cobrar (deuda TOTAL de X o más y alguna venta impaga de N días o más), así
-  le llega a los mismos clientes que le listaste.
+  proponer_recordatorios_de_cobro con monto_minimo = X y dias = N. Le llega solo a los clientes
+  cuyas VENTAS sin cobrar cumplen el filtro (X contra lo que deben en ventas): puede ser a menos de
+  los que listaste con cuenta_corriente, y no le llega a quien debe solo un saldo que no es venta ni
+  a quien no alcanza X con sus ventas. No prometas a quiénes: los destinatarios reales los muestra
+  la tarjeta antes del sí, y eso es lo que le contás.
 - "Armá un combo y mandales una promo" = primero proponer_combo (si el negocio tiene Combos) y,
   ya creado, proponer_promocion_por_whatsapp con el nombre del combo. El texto de la promo lo
   redactás VOS (qué se ofrece y a qué precio, con el precio de cada artículo como lo devolvió
@@ -6540,17 +6542,17 @@ CONFIRMACION;
              */
             [
                 'name' => 'consultar_ventas_sin_cobrar',
-                'description' => 'Cuánto le deben al negocio y qué ventas quedaron sin cobrar, en una sola llamada. 🔴 "Cuánto me deben", "quién me debe", "quién me debe más" y "cuánta plata tengo en la calle" se contestan con cuenta_corriente: el saldo de cuenta corriente de TODOS los clientes en pesos, que incluye los saldos iniciales importados o cargados a mano (que no son ventas): total_que_te_deben_en_pesos y clientes, de mayor a menor saldo_en_pesos. Los saldos a favor y las otras monedas vienen aparte (clientes_con_saldo_a_favor, en_otras_monedas): nunca los restes ni los sumes a los pesos. Si cuenta_corriente viene null, contá el motivo (cuenta_corriente_no_incluida o cuenta_corriente_error) y no presentes las ventas como toda la deuda. El resto de la respuesta son las VENTAS sin cobrar, para "ventas sin cobrar", lo atrasado y la venta más vieja: cuántas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes por esas ventas. Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLAN LOS NÚMEROS DE VENTAS, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. Cada cliente trae deuda_total_en_pesos (TODO lo que debe), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda total. 🔴 "Los que me deben más de X hace más de N días" = deuda TOTAL de X o más Y alguna deuda de más de N días: mandá dias = N y monto_minimo = X, y contestá con deuda_total_en_pesos de cada cliente. NUNCA compares X contra lo atrasado solo.',
+                'description' => 'Cuánto le deben al negocio y qué ventas quedaron sin cobrar, en una sola llamada. 🔴 "Cuánto me deben", "quién me debe", "quién me debe más" y "cuánta plata tengo en la calle" se contestan con cuenta_corriente: el saldo de cuenta corriente de TODOS los clientes en pesos, que incluye los saldos iniciales importados o cargados a mano (que no son ventas): total_que_te_deben_en_pesos y clientes, de mayor a menor saldo_en_pesos. Los saldos a favor y las otras monedas vienen aparte (clientes_con_saldo_a_favor, en_otras_monedas): nunca los restes ni los sumes a los pesos. Si cuenta_corriente viene null, contá el motivo (cuenta_corriente_no_incluida o cuenta_corriente_error) y no presentes las ventas como toda la deuda. El resto de la respuesta son las VENTAS sin cobrar, para "ventas sin cobrar", lo atrasado y la venta más vieja: cuántas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes por esas ventas. Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLAN LOS NÚMEROS DE VENTAS, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. En el ranking de ventas cada cliente trae deuda_total_en_pesos (todo lo que debe EN VENTAS sin cobrar, sin saldos iniciales), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda en ventas. 🔴 "Los que me deben más de X": mandá monto_minimo = X y contestá con cuenta_corriente.clientes (la lista de ventas puede venir vacía y eso no quiere decir que nadie deba). "Los que me deben más de X hace más de N días" (deben X o más en total y tienen alguna venta impaga de N días o más): mandá dias = N y monto_minimo = X, y contestá con las filas de cuenta_corriente.clientes que traen tiene_ventas_impagas_de_esos_dias = true, con saldo_en_pesos y dias_de_la_venta_impaga_mas_vieja. NUNCA compares X contra lo atrasado solo. La respuesta trae como_contestar para el caso que pediste: seguilo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. No acota cuenta_corriente (el saldo no tiene antigüedad). Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy. Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Con dias cuentan esos días tal cual, aunque la venta tenga su propio umbral de alerta cargado. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
+                            'description' => 'Antigüedad mínima de la venta, en días. No saca a nadie de cuenta_corriente (el saldo no tiene antigüedad): ahí marca con tiene_ventas_impagas_de_esos_dias a quien tiene una venta impaga de esa antigüedad. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy. Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Con dias cuentan esos días tal cual, aunque la venta tenga su propio umbral de alerta cargado. Con dias, un cliente entra al ranking de ventas si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en ventas en deuda_total_en_pesos.',
                         ],
                         'monto_minimo' => [
                             'type' => 'number',
-                            'description' => 'Deuda TOTAL mínima del cliente, en pesos, para "los que me deben más de X". En las ventas se compara contra todo lo que debe el cliente (deuda_total_en_pesos), no contra lo atrasado; en cuenta_corriente, contra su saldo_en_pesos. Va junto con dias cuando la pregunta dice además "hace más de N días".',
+                            'description' => 'Deuda mínima del cliente, en pesos, para "los que me deben más de X". En cuenta_corriente se compara contra su saldo_en_pesos (todo lo que debe); en el ranking de ventas, contra deuda_total_en_pesos (lo que debe en ventas sin cobrar), nunca contra lo atrasado. Va junto con dias cuando la pregunta dice además "hace más de N días".',
                         ],
                     ],
                     'required' => [],
