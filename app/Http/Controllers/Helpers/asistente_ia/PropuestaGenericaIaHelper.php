@@ -257,20 +257,17 @@ class PropuestaGenericaIaHelper
 
         /*
          * Misión asistente-diario-20261116 (rama C, 30/10 #9): el alta de un cliente o proveedor con CUIT y sin
-         * razón social dictada avisa que la razón social queda vacía y espera el sí. Ver con_aviso_de_razon_social().
+         * razón social dictada le dice AL MODELO (no a la tarjeta) que la razón social queda vacía, para que la
+         * pregunte. En un alta no hay una razón social vieja que quede pegada a otro CUIT (el caso real fue una
+         * edición), así que la tarjeta queda como siempre y no espera un sí de más. Ver con_aviso_de_razon_social().
          */
-        list($validado, $aviso_de_la_razon_social, $espera_la_razon_social) = self::con_aviso_de_razon_social($declaracion, $validado, null, true);
+        list($validado, $razon_social_pendiente) = self::con_aviso_de_razon_social($declaracion, $validado, null, true);
 
         /*
          * Rama C, 31/10 #10: un CLIENTE sin condición de IVA ni CUIT («creá el cliente sin más datos») queda como
          * Consumidor final, y la tarjeta lo dice. Ver con_consumidor_final_por_defecto().
          */
         list($validado, $aviso_de_consumidor_final) = self::con_consumidor_final_por_defecto($declaracion, $validado);
-
-        if (!is_null($aviso_de_consumidor_final)) {
-
-            $aviso_de_la_razon_social = is_null($aviso_de_la_razon_social) ? $aviso_de_consumidor_final : $aviso_de_la_razon_social.' '.$aviso_de_consumidor_final;
-        }
 
         $bebida = [];
         $renglones_bebida = [];
@@ -349,9 +346,9 @@ class PropuestaGenericaIaHelper
             $aviso = is_null($aviso) ? $aviso_de_la_categoria : $aviso.' '.$aviso_de_la_categoria;
         }
 
-        if (!is_null($aviso_de_la_razon_social)) {
+        if (!is_null($aviso_de_consumidor_final)) {
 
-            $aviso = is_null($aviso) ? $aviso_de_la_razon_social : $aviso.' '.$aviso_de_la_razon_social;
+            $aviso = is_null($aviso) ? $aviso_de_consumidor_final : $aviso.' '.$aviso_de_consumidor_final;
         }
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
@@ -484,14 +481,14 @@ class PropuestaGenericaIaHelper
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA).(is_null($nombre) ? '' : ' '.$nombre).self::resumen_de_renglones($renglones, $nombre);
 
         // El aviso viaja también al modelo cuando habla de listas, de algo que se descartó o de la subcategoría que se sacó.
-        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria) || !is_null($aviso_de_la_razon_social);
+        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria) || !is_null($aviso_de_consumidor_final);
 
         $extra_de_la_respuesta = $avisa_al_modelo ? ['aviso' => $aviso] : [];
 
-        // Rama C, 30/10 #9: un CUIT sin razón social espera el sí de la persona, que ve el aviso (ni en "directo").
-        if ($espera_la_razon_social) {
+        // Rama C, 30/10 #9: el CUIT sin razón social, solo para el modelo (que la pregunte).
+        if (!is_null($razon_social_pendiente)) {
 
-            $extra_de_la_respuesta['requiere_confirmacion'] = true;
+            $extra_de_la_respuesta['razon_social_pendiente'] = $razon_social_pendiente;
         }
         if (count($bebida)) $extra_de_la_respuesta['requiere_confirmacion'] = true;
         // P6 (16/11/2026, V13): la foto de internet va aparte (AltaBebidasIaHelper::preparar), con su imagen_id para después.

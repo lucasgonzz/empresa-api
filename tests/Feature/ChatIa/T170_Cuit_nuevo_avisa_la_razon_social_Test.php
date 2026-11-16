@@ -17,7 +17,7 @@ use Tests\EmpresaTestCase;
  *
  *  - un CUIT nuevo sin razón social dictada: la tarjeta avisa que la razón social y la condición de IVA quedan
  *    como estaban, sugiere el botón de AFIP de Clientes y espera el sí aun en "directo";
- *  - en un alta, el aviso dice que quedan vacías;
+ *  - en un alta, solo al modelo le llega que quedan vacías (la tarjeta queda como siempre);
  *  - lo que la persona dicta gana (mayúsculas incluidas) y no hay aviso;
  *  - un CUIT que no cambia no avisa nada.
  *
@@ -143,7 +143,7 @@ class T170_Cuit_nuevo_avisa_la_razon_social_Test extends EmpresaTestCase
      *
      * @test
      */
-    public function el_alta_de_un_proveedor_con_cuit_avisa_que_queda_vacia()
+    public function el_alta_de_un_proveedor_con_cuit_le_avisa_al_modelo_que_queda_vacia()
     {
         list($conversation, $assistant) = $this->vuelta('dá de alta al proveedor transfarmaco');
 
@@ -153,8 +153,9 @@ class T170_Cuit_nuevo_avisa_la_razon_social_Test extends EmpresaTestCase
         ]);
 
         $this->assertTrue($r['ok'], json_encode($r));
-        $this->assertStringContainsString('quedan vacías', $r['aviso']);
-        $this->assertTrue(!empty($r['requiere_confirmacion']));
+        $this->assertStringContainsString('quedan vacías', $r['razon_social_pendiente'], 'Al modelo le llega, para que la pregunte.');
+        $this->assertArrayNotHasKey('requiere_confirmacion', $r, 'Un alta no tiene una razón social vieja pegada a otro CUIT.');
+        $this->assertNull(AiMessageAction::find($r['tarjeta_id'])->presentacion['aviso'], 'La tarjeta del alta queda como siempre.');
 
         $payload = json_decode(json_encode(AiMessageAction::find($r['tarjeta_id'])->datos), true)['payload'];
 
