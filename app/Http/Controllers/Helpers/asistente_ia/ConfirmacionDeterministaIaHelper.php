@@ -62,6 +62,12 @@ class ConfirmacionDeterministaIaHelper
         'confirmalo', 'confirmala', 'confirma', 'de una', 'hacelo', 'hacela', 'cargalo', 'cargala',
         'registralo', 'registrala', 'perfecto', 'perfecta', 'va', 'joya', 'claro', 'correcto',
         'exacto', 'obvio', 'adelante', 'mandale', 'asignala', 'asignalo', 'ponela', 'ponele',
+        /*
+         * Misión asistente-mejoras-4-dias (P4, 16/11/2026): «Si  te confirmo» (Truvari, 13/11, mensaje 230)
+         * quedaba afuera por el «te». «Encendelo» o «Activalo» NO entran: con una tarjeta de avisos a la
+         * vista pueden ser «prendé también el otro», un pedido distinto de lo que dice la tarjeta.
+         */
+        'te confirmo',
     ];
 
     /**

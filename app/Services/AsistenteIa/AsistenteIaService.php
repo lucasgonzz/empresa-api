@@ -37,6 +37,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\VentaConDatosInventadosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
@@ -308,9 +309,11 @@ class AsistenteIaService
      *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
      *   - 'soporte' (A7): «Listo el pedido a soporte» sin un pedir_ayuda_a_soporte ok;
      *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
-     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento».
+     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento»;
+     *   - 'solo_anotacion' (P4 de la misión asistente-mejoras-4-dias, V22): «Me lo anoto.» y nada más, cuando la
+     *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento.
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -640,7 +643,8 @@ class AsistenteIaService
         $this->imagen_por_whatsapp = $es_whatsapp && ImagenPorWhatsappIaHelper::disponible($conversation, $owner);
 
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
-        $messages = $this->build_messages_payload($conversation);
+        /* P7 de la misión asistente-mejoras-4-dias: el historial termina en el mensaje que este turno contesta. */
+        $messages = $this->build_messages_payload($conversation, (int) $assistant_message->id);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app, $conversation);
 
         /*
@@ -700,6 +704,17 @@ class AsistenteIaService
          * confirmar_carga_pendiente (es justo el texto donde se inventan números).
          */
         if (! is_null($confirmacion_determinista)) {
+            $toco_una_carga = true;
+        }
+
+        /*
+         * P4 de la misión asistente-mejoras-4-dias (16/11/2026): el sí a una pregunta de carga que no tenía
+         * propuesta detrás arma la carga en ESTE turno, sin volver a preguntar (ver SiQueRearmaLaCargaIaHelper).
+         * Rearmar una carga es decidir una carga: arranca escalado.
+         */
+        if (is_null($confirmacion_determinista) && $con_acciones
+            && \App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::aplica($conversation, $assistant_message)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::nota());
             $toco_una_carga = true;
         }
 
@@ -1648,7 +1663,8 @@ class AsistenteIaService
          * le mostraría a la persona la nota interna; queda vacío y va lo hecho armado sin el modelo
          * (respuesta_sin_terminar()).
          */
-        $crudo = trim($final_text);
+        /* P4 de la misión asistente-mejoras-4-dias: el crudo de respaldo tampoco lleva un bloque <system> ni <thinking>. */
+        $crudo = trim(TextoFinalIaHelper::sin_bloques_internos($final_text));
 
         if (TextoFinalIaHelper::contiene_prosa_cjk($crudo)) {
             $respaldo = is_null($confirmacion_determinista)
@@ -1920,6 +1936,9 @@ class AsistenteIaService
         if (! $la_tarjeta_cambio_el_texto) {
             $final_text = $this->texto_veraz($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas, $guarda_de_envio, ! is_null($texto_antes_del_reintento));
         }
+
+        /* P4 (W2) de la misión asistente-mejoras-4-dias: lo que ya quedó hecho en el turno no se vuelve a preguntar. */
+        $final_text = $this->sin_preguntar_lo_ya_hecho($final_text, $assistant_message, $confirmacion_determinista);
 
         /*
          * Misión app-ia-imagen-prometida, después del reintento (o sin él, si no quedaba vuelta ni tiempo,
@@ -2343,6 +2362,19 @@ Cómo hablás:
 - Respuestas cortas: hasta 6 oraciones, salvo que te pidan explícitamente el detalle.
 - No saludes ni te presentes en cada mensaje: la conversación ya está empezada.
 - Cuando la persona se despida, despedite brevemente. Si quedó algo pendiente, decí qué falta.
+  🔴 Antes de nombrar un pendiente, fijate en la conversación si ya se hizo (una carga confirmada,
+  un aviso que ya se prendió): lo que ya está hecho no se repite como pendiente.
+- Si la persona te dice CÓMO quiere que trabajes («cada vez que cargues una venta preguntame si la
+  facturo», «no me preguntes dos veces»), no le discutas si se puede: guardalo en tu memoria si la
+  tenés y cumplilo desde el próximo mensaje.
+- Si el mensaje es una respuesta automática de OTRA empresa («Gracias por contactarte con…», «Nuestro
+  horario de atención es…», «nos pondremos en contacto a la brevedad»), no es un pedido de la persona:
+  no lo contestes como si lo fuera ni retomes pendientes; decí en una línea que parece una respuesta
+  automática y preguntá si necesita algo.
+- Si te repite la MISMA pregunta de cómo se usa una pantalla, tu explicación no le sirvió: no la
+  repitas. Preguntale qué ve en la pantalla o qué le aparece, o ofrecele pedirle ayuda a soporte.
+- Antes de mandarla a hacer algo a una pantalla, fijate si alguna de tus herramientas lo hace y
+  ofrecé hacerlo vos.
 
 {$formato}
 Qué podés afirmar:
@@ -3620,10 +3652,22 @@ CONFIRMACION;
      * foto no la necesita el modelo para cargar la compra: la engancha
      * proponer_compra_con_factura leyendo las que todavía no se gestionaron.
      *
+     * 🔴 P7 DE LA MISIÓN asistente-mejoras-4-dias (16/11/2026): CON `$hasta_id`, SOLO LO ANTERIOR AL TURNO.
+     * Cada mensaje del dueño tiene su assistant y su job, y cuando escribe dos seguidos (un audio y un texto,
+     * o un texto mientras el anterior todavía se contesta) el job del PRIMERO arrancaba con el SEGUNDO ya
+     * guardado: la consulta traía los últimos N `listo` de la conversación sin tope de id. El modelo
+     * contestaba los dos juntos, y el job del segundo, que ve esa respuesta y su propio mensaje, volvía a
+     * contestar lo mismo. Truvari, 13/11: «*La Linda Malbec*… la botella sale $7.833,33» (281, a las
+     * 09:08:39) contesta el audio 282, que es de las 09:08:50, y 283 lo repite; lo mismo 285/287 (Angélica) y
+     * la venta 3098 con los $1.000 que pedía un audio posterior. Con `$hasta_id` (el assistant que se
+     * genera) entra solo lo que el dueño ya había dicho ANTES de este turno: cada mensaje se contesta en su
+     * turno y una sola vez. Sin el parámetro, lo de siempre (lo usan los tests y otros lectores).
+     *
      * @param AiConversation $conversation
+     * @param int|null $hasta_id  El id del assistant que se está generando: entra solo lo anterior.
      * @return array<int, array{role: string, content: string|array}>
      */
-    public function build_messages_payload(AiConversation $conversation): array
+    public function build_messages_payload(AiConversation $conversation, $hasta_id = null): array
     {
         $this->fotos_del_payload = [];
 
@@ -3646,6 +3690,9 @@ CONFIRMACION;
 
         $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('estado', 'listo')
+            ->when(! is_null($hasta_id), function ($query) use ($hasta_id) {
+                $query->where('id', '<', (int) $hasta_id);
+            })
             ->where(function ($query) use ($con_archivos) {
                 $query->where(function ($con_texto) {
                     $con_texto->whereNotNull('contenido')->where('contenido', '!=', '');
@@ -4221,6 +4268,23 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
         }
 
+        /* P4 (V22): «Me lo anoto.» y nada más, con un pedido o una pregunta sin contestar. */
+        if ($guarda === 'solo_anotacion') {
+            return AnotacionPrometidaIaHelper::es_solo_la_anotacion($saneado)
+                && AnotacionPrometidaIaHelper::pide_o_pregunta_algo($this->pedido_de_la_persona($conversation, $assistant_message));
+        }
+
+        /* Misión asistente-mejoras-4-dias (P1, V1): una venta «con fecha 11/11» o «cobrada con» lo que la tarjeta no tiene. */
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+
+            if (! VentaConDatosInventadosIaHelper::es_turno_de_venta($saneado, $herramientas_pedidas, $assistant_message)) {
+                return false;
+            }
+
+            return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message);
+        }
+
         return false;
     }
 
@@ -4245,6 +4309,14 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
         }
 
+        if ($guarda === 'solo_anotacion') {
+            return AnotacionPrometidaIaHelper::nota_para_contestar_lo_pedido();
+        }
+
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+            return VentaConDatosInventadosIaHelper::nota_para_reintentar();
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4255,8 +4327,12 @@ CONFIRMACION;
      * @param  string  $texto
      * @return string
      */
-    protected function texto_honesto_de_la_guarda($guarda, $texto): string
+    protected function texto_honesto_de_la_guarda($guarda, $texto, $assistant_message = null): string
     {
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA && $assistant_message instanceof AiMessage) {
+            return VentaConDatosInventadosIaHelper::texto_honesto($texto, $assistant_message);
+        }
+
         if ($guarda === 'soporte') {
             return PedidoDeAyudaASoporteIaHelper::sin_el_pedido_inventado($texto, $this->codigo_de_la_herramienta(PedidoDeAyudaASoporteIaHelper::HERRAMIENTA));
         }
@@ -4267,6 +4343,11 @@ CONFIRMACION;
 
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::sin_lo_prometido($texto);
+        }
+
+        /* Sin aviso que reemplace: si el reintento tampoco contestó, el texto queda como está. */
+        if ($guarda === 'solo_anotacion') {
+            return (string) $texto;
         }
 
         return CargaSinPropuestaIaHelper::texto_honesto($texto);
@@ -4308,7 +4389,7 @@ CONFIRMACION;
                     'texto'                => mb_substr($texto, 0, 300),
                 ]);
 
-                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto);
+                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto, $assistant_message);
             } catch (\Throwable $e) {
                 Log::warning('AsistenteIaService: no se pudo corregir la veracidad del texto; se deja como está.', [
                     'ai_message_id' => (int) $assistant_message->id,
@@ -4319,6 +4400,42 @@ CONFIRMACION;
         }
 
         return $texto;
+    }
+
+    /**
+     * El texto sin la pregunta de confirmación del final cuando la carga YA quedó hecha en este turno (P4 de
+     * la misión asistente-mejoras-4-dias, W2): ejecutada en el acto por el modo de confianza o por el sí que la
+     * persona ya había dado, o confirmada por el sistema antes de llamar al modelo. «Listo, quedó prendido el
+     * aviso. ¿Lo hago?» le pide un sí a algo que ya está hecho. Si el mensaje dejó alguna tarjeta esperando, la
+     * pregunta puede ser de ésa y no se toca. Nunca rompe el turno: si algo falla, el texto tal cual.
+     *
+     * @param  string  $texto
+     * @param  AiMessage  $assistant_message
+     * @param  array|null  $confirmacion_determinista
+     * @return string
+     */
+    protected function sin_preguntar_lo_ya_hecho($texto, AiMessage $assistant_message, $confirmacion_determinista): string
+    {
+        $texto = (string) $texto;
+
+        try {
+            $acciones = AiMessageAction::where('ai_message_id', $assistant_message->id)->get();
+
+            if ($acciones->contains(function ($accion) {
+                return $accion->estado_guardado() === AiMessageAction::ESTADO_PROPUESTA;
+            })) {
+                return $texto;
+            }
+
+            $hecha = $acciones->contains(function ($accion) {
+                return $accion->estado_guardado() === AiMessageAction::ESTADO_CONFIRMADA;
+            }) || (is_array($confirmacion_determinista) && ! empty($confirmacion_determinista['resultado']['ok']));
+
+            return $hecha ? CargaSinPropuestaIaHelper::sin_la_pregunta_de_confirmar($texto) : $texto;
+
+        } catch (\Throwable $e) {
+            return $texto;
+        }
     }
 
     /**
@@ -5664,7 +5781,7 @@ CONFIRMACION;
         return [
             [
                 'name' => 'consultar_stock_de_articulos',
-                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado.',
+                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado. presentacion es cuántas unidades trae la caja; si precio_es_por dice «caja de N», precio es el de la CAJA y precio_por_unidad el de una unidad (una botella). costo (si viene) es por lo que dice costo_es_por. Nunca completes una presentación, un precio por unidad ni un costo que no venga acá.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -5677,8 +5794,11 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
-                'handler' => function (array $input, $owner_id) {
-                    $resultado = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    // Misión asistente-mejoras-4-dias (P2): el costo, solo a quien lo ve en la pantalla (`articles.cost`).
+                    $persona = $conversation instanceof AiConversation ? User::find($conversation->auth_user_id) : null;
+
+                    $resultado = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input), PermisosIaHelper::puede($persona, 'articles.cost'));
 
                     // P8 (16/11/2026, V14): sin resultados por el nombre, los PARECIDOS (artículos y promos) para preguntar.
                     if ($resultado === [] && trim((string) ($input['busqueda'] ?? '')) !== '' && is_null(self::articulo_id_del_input($input))) {

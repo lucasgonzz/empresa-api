@@ -126,7 +126,8 @@ class Confirmacion_en_dos_etapas_Test extends EmpresaTestCase
         AiMessage::create([
             'ai_conversation_id' => $conversation->id,
             'rol'                => 'user',
-            'contenido'          => 'Cargame esto',
+            /* Misión asistente-mejoras-4-dias (P1): el cobro que no dijo la persona ya no se hereda; el pedido lo nombra. */
+            'contenido'          => 'Cargame esto, por transferencia a la caja efectivo',
         ]);
 
         $assistant = AiMessage::create([

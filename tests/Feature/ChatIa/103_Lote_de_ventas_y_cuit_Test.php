@@ -124,7 +124,8 @@ class Lote_de_ventas_y_cuit_Test extends EmpresaTestCase
         AiMessage::create([
             'ai_conversation_id' => $conversation->id,
             'rol'                => 'user',
-            'contenido'          => 'Cargá las ventas de la planilla',
+            /* Misión asistente-mejoras-4-dias (P1): el cobro que no dijo la persona ya no se hereda; el pedido lo nombra. */
+            'contenido'          => 'Cargá las ventas de la planilla: las que no van a cuenta corriente las pagaron por transferencia a la caja efectivo',
         ]);
 
         $assistant = AiMessage::create([
