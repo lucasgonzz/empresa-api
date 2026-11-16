@@ -6782,6 +6782,39 @@ CONFIRMACION;
                     );
                 },
             ],
+            /*
+             * Misión asistente-diario-20261116 (rama A, 30/10 #11), AL FINAL del registro por el prefijo del
+             * caché. Ferre Total: «de lo que compré este mes, ¿cuánto quedó en stock?», «¿qué compré mal?», y
+             * el agente dijo que el sistema no guarda qué se compró. El cruce lo hace el SERVIDOR:
+             * RendimientoDeComprasIaHelper. De lectura, en los tres canales.
+             */
+            [
+                'name' => 'consultar_rendimiento_de_compras',
+                'description' => 'CÓMO RINDIÓ LO QUE SE COMPRÓ: por cada artículo comprado en el período (por defecto, el mes en curso), cuánto se compró, cuánto se vendió desde la compra, el stock de hoy y lo que no rotó (sin_rotar, y su valor a costo si quien pregunta puede ver costos), ordenado por la plata que quedó parada. Con totales de todo el período. Es LA herramienta de "de lo que compré este mes, ¿cuánto quedó en stock?", "¿qué compré mal?", "¿qué compra no se vendió?": nunca digas que el sistema no guarda qué se compró. Opcional: proveedor (por nombre) y deposito (sucursal). Contestá con los números que trae, sin recalcular; si trae "nota", decí lo que dice. Si trae "error" o "faltan", contá eso.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día de las compras, AAAA-MM-DD. Sin desde ni hasta: el mes en curso.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día de las compras, AAAA-MM-DD. Sin hasta: hoy.'],
+                        'proveedor' => ['type' => 'string', 'description' => 'Opcional: solo las compras a ese proveedor, por su nombre.'],
+                        'deposito' => ['type' => 'string', 'description' => 'Opcional: la sucursal o depósito por su nombre (sus compras, sus ventas y su stock).'],
+                        'orden' => [
+                            'type'        => 'string',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::ORDENES,
+                            'description' => 'valor_sin_rotar (default: la plata parada primero), sin_rotar, comprado o vendido.',
+                        ],
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántos artículos listar (default 20, hasta 100). Los totales son siempre de todos.'],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        $input
+                    );
+                },
+            ],
         ];
     }
 

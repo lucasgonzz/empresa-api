@@ -53,6 +53,8 @@ class ProgresoIaHelper
         'consultar_compras_a_un_proveedor'          => 'Buscando las compras al proveedor…',
         'consultar_proveedores'                     => 'Buscando los proveedores…',
         'consultar_resumen_de_ventas'               => 'Buscando las ventas…',
+        // Misión asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock.
+        'consultar_rendimiento_de_compras'          => 'Cruzando compras, ventas y stock…',
         'consultar_reporte_contable'                => 'Armando el reporte…',
         'consultar_datos'                           => 'Consultando los datos…',
         'resumir_datos'                             => 'Haciendo las cuentas…',
