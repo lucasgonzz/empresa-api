@@ -417,7 +417,7 @@ class VentaConDatosInventadosIaHelper
     {
         $o = self::normalizar($oracion);
 
-        if (preg_match('/\b(saldo|vuelto|lista|cada|unitario|por unidad|c\/u|debe|deben|deuda|por kg|el kilo)\b/u', $o)) {
+        if (preg_match('/\b(saldo|vuelto|lista|cada|unitario|por unidad|c\/u|debe|deben|debiendo|adeuda|deuda|por kg|el kilo)\b/u', $o)) {
             return [];
         }
 
