@@ -109,6 +109,24 @@ class TextoFinalIaHelper
             return $texto;
         }
 
+        /*
+         * Primero los bloques internos etiquetados (`<system>…</system>`, `<thinking>…</thinking>`): ver
+         * sin_bloques_internos(). Si sacó algo, lo que sigue trabaja sobre lo que quedó.
+         */
+        $sin_bloques = self::sin_bloques_internos($texto);
+
+        if ($sin_bloques !== $texto) {
+
+            $texto = $sin_bloques;
+
+            if (trim($texto) === '') {
+
+                return '';
+            }
+
+            return trim(self::limpiar($texto, $nombres_de_herramientas));
+        }
+
         $renglones = preg_split('/\r\n|\n/u', $texto);
 
         if (!is_array($renglones)) {
@@ -150,6 +168,69 @@ class TextoFinalIaHelper
 
         /* Los huecos que dejó un renglón sacado se colapsan a UNA línea en blanco, como un párrafo. */
         return trim(preg_replace('/\n{3,}/', "\n\n", implode("\n", $quedan)));
+    }
+
+    /**
+     * Las etiquetas de bloques internos que nunca le llegan a la persona (misión asistente-mejoras-4-dias, P4,
+     * 16/11/2026): son las que usan los modelos para su razonamiento o para «hablarle al sistema».
+     */
+    const ETIQUETAS_INTERNAS = 'system|thinking|think|reasoning|analysis|internal|scratchpad|reflection|tool_call|function_calls';
+
+    /**
+     * El texto sin los BLOQUES INTERNOS etiquetados: `<system>…</system>`, `<thinking>…</thinking>` y sus
+     * parientes (ETIQUETAS_INTERNAS), en cualquier canal. Si no hay nada que sacar, vuelve igual, byte por byte.
+     *
+     * 🔴 EL CASO REAL (Truvari, 13/11/2026, mensaje 259, por WhatsApp, ya en 4.3.59). Le llegó al dueño:
+     *
+     *   <system>El usuario aclara el criterio: el precio cargado es por caja y hay que dividirlo por la
+     *   presentación. En el caso del Rutini, 89.000 / 6 = 14.833,33 por botella. Confirmo.</system>
+     *
+     * en castellano y sin nombrar ninguna herramienta, así que las reglas por oración (a) y (b) no lo
+     * agarraban. Lo que lo delata es la etiqueta, y una persona nunca escribe una así.
+     *
+     *   - Un bloque cerrado se saca entero, aunque ocupe varios renglones.
+     *   - Una etiqueta que abre y nunca cierra se lleva lo que sigue hasta la próxima línea en blanco (el
+     *     párrafo): lo de después ya suele ser la respuesta.
+     *   - Una etiqueta suelta (un cierre huérfano) se saca sola.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    public static function sin_bloques_internos($texto)
+    {
+        $texto = (string) $texto;
+
+        if (strpos($texto, '<') === false) {
+
+            return $texto;
+        }
+
+        $etiquetas = self::ETIQUETAS_INTERNAS;
+
+        $limpio = preg_replace('/<\s*(' . $etiquetas . ')\b[^>]*>.*?<\s*\/\s*\1\s*>/isu', '', $texto);
+
+        if (!is_string($limpio)) {
+
+            return $texto;
+        }
+
+        /* Una que abre y no cierra: hasta la próxima línea en blanco o el final. */
+        $limpio = preg_replace('/<\s*(?:' . $etiquetas . ')\b[^>]*>.*?(?:\R\s*\R|$)/isu', "\n\n", $limpio);
+
+        if (!is_string($limpio)) {
+
+            return $texto;
+        }
+
+        /* Los cierres huérfanos y las que se cierran solas. */
+        $limpio = preg_replace('/<\s*\/?\s*(?:' . $etiquetas . ')\b[^>]*\/?\s*>/iu', '', $limpio);
+
+        if (!is_string($limpio) || $limpio === $texto) {
+
+            return $texto;
+        }
+
+        return trim(preg_replace('/\n{3,}/', "\n\n", $limpio));
     }
 
     /**

@@ -2635,7 +2635,9 @@ class HerramientasDeCarga
 
         $owner = $contexto->owner;
 
-        if (!in_array($tipo, self::auto_confirmables_de(ConfianzaDelAgenteIaHelper::guardada($owner)), true)) {
+        if (!in_array($tipo, self::auto_confirmables_de(ConfianzaDelAgenteIaHelper::guardada($owner)), true)
+            // P4 (misión asistente-mejoras-4-dias): o la ejecuta el sí que la persona ya dio sin propuesta.
+            && !\App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::ejecuta($conversation, $assistant_message, $tipo, ConfianzaDelAgenteIaHelper::guardada($owner))) {
 
             return $respuesta;
         }

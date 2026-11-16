@@ -308,9 +308,11 @@ class AsistenteIaService
      *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
      *   - 'soporte' (A7): «Listo el pedido a soporte» sin un pedir_ayuda_a_soporte ok;
      *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
-     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento».
+     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento»;
+     *   - 'solo_anotacion' (P4 de la misión asistente-mejoras-4-dias, V22): «Me lo anoto.» y nada más, cuando la
+     *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento.
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', 'solo_anotacion'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -700,6 +702,17 @@ class AsistenteIaService
          * confirmar_carga_pendiente (es justo el texto donde se inventan números).
          */
         if (! is_null($confirmacion_determinista)) {
+            $toco_una_carga = true;
+        }
+
+        /*
+         * P4 de la misión asistente-mejoras-4-dias (16/11/2026): el sí a una pregunta de carga que no tenía
+         * propuesta detrás arma la carga en ESTE turno, sin volver a preguntar (ver SiQueRearmaLaCargaIaHelper).
+         * Rearmar una carga es decidir una carga: arranca escalado.
+         */
+        if (is_null($confirmacion_determinista) && $con_acciones
+            && \App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::aplica($conversation, $assistant_message)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::nota());
             $toco_una_carga = true;
         }
 
@@ -1648,7 +1661,8 @@ class AsistenteIaService
          * le mostraría a la persona la nota interna; queda vacío y va lo hecho armado sin el modelo
          * (respuesta_sin_terminar()).
          */
-        $crudo = trim($final_text);
+        /* P4 de la misión asistente-mejoras-4-dias: el crudo de respaldo tampoco lleva un bloque <system> ni <thinking>. */
+        $crudo = trim(TextoFinalIaHelper::sin_bloques_internos($final_text));
 
         if (TextoFinalIaHelper::contiene_prosa_cjk($crudo)) {
             $respaldo = is_null($confirmacion_determinista)
@@ -1920,6 +1934,9 @@ class AsistenteIaService
         if (! $la_tarjeta_cambio_el_texto) {
             $final_text = $this->texto_veraz($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas, $guarda_de_envio, ! is_null($texto_antes_del_reintento));
         }
+
+        /* P4 (W2) de la misión asistente-mejoras-4-dias: lo que ya quedó hecho en el turno no se vuelve a preguntar. */
+        $final_text = $this->sin_preguntar_lo_ya_hecho($final_text, $assistant_message, $confirmacion_determinista);
 
         /*
          * Misión app-ia-imagen-prometida, después del reintento (o sin él, si no quedaba vuelta ni tiempo,
@@ -2343,6 +2360,8 @@ Cómo hablás:
 - Respuestas cortas: hasta 6 oraciones, salvo que te pidan explícitamente el detalle.
 - No saludes ni te presentes en cada mensaje: la conversación ya está empezada.
 - Cuando la persona se despida, despedite brevemente. Si quedó algo pendiente, decí qué falta.
+  🔴 Antes de nombrar un pendiente, fijate en la conversación si ya se hizo (una carga confirmada,
+  un aviso que ya se prendió): lo que ya está hecho no se repite como pendiente.
 
 {$formato}
 Qué podés afirmar:
@@ -4221,6 +4240,12 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
         }
 
+        /* P4 (V22): «Me lo anoto.» y nada más, con un pedido o una pregunta sin contestar. */
+        if ($guarda === 'solo_anotacion') {
+            return AnotacionPrometidaIaHelper::es_solo_la_anotacion($saneado)
+                && AnotacionPrometidaIaHelper::pide_o_pregunta_algo($this->pedido_de_la_persona($conversation, $assistant_message));
+        }
+
         return false;
     }
 
@@ -4245,6 +4270,10 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
         }
 
+        if ($guarda === 'solo_anotacion') {
+            return AnotacionPrometidaIaHelper::nota_para_contestar_lo_pedido();
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4267,6 +4296,11 @@ CONFIRMACION;
 
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::sin_lo_prometido($texto);
+        }
+
+        /* Sin aviso que reemplace: si el reintento tampoco contestó, el texto queda como está. */
+        if ($guarda === 'solo_anotacion') {
+            return (string) $texto;
         }
 
         return CargaSinPropuestaIaHelper::texto_honesto($texto);
@@ -4319,6 +4353,42 @@ CONFIRMACION;
         }
 
         return $texto;
+    }
+
+    /**
+     * El texto sin la pregunta de confirmación del final cuando la carga YA quedó hecha en este turno (P4 de
+     * la misión asistente-mejoras-4-dias, W2): ejecutada en el acto por el modo de confianza o por el sí que la
+     * persona ya había dado, o confirmada por el sistema antes de llamar al modelo. «Listo, quedó prendido el
+     * aviso. ¿Lo hago?» le pide un sí a algo que ya está hecho. Si el mensaje dejó alguna tarjeta esperando, la
+     * pregunta puede ser de ésa y no se toca. Nunca rompe el turno: si algo falla, el texto tal cual.
+     *
+     * @param  string  $texto
+     * @param  AiMessage  $assistant_message
+     * @param  array|null  $confirmacion_determinista
+     * @return string
+     */
+    protected function sin_preguntar_lo_ya_hecho($texto, AiMessage $assistant_message, $confirmacion_determinista): string
+    {
+        $texto = (string) $texto;
+
+        try {
+            $acciones = AiMessageAction::where('ai_message_id', $assistant_message->id)->get();
+
+            if ($acciones->contains(function ($accion) {
+                return $accion->estado_guardado() === AiMessageAction::ESTADO_PROPUESTA;
+            })) {
+                return $texto;
+            }
+
+            $hecha = $acciones->contains(function ($accion) {
+                return $accion->estado_guardado() === AiMessageAction::ESTADO_CONFIRMADA;
+            }) || (is_array($confirmacion_determinista) && ! empty($confirmacion_determinista['resultado']['ok']));
+
+            return $hecha ? CargaSinPropuestaIaHelper::sin_la_pregunta_de_confirmar($texto) : $texto;
+
+        } catch (\Throwable $e) {
+            return $texto;
+        }
     }
 
     /**

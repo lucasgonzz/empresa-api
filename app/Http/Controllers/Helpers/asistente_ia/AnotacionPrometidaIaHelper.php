@@ -114,6 +114,65 @@ class AnotacionPrometidaIaHelper
         }, self::AVISO);
     }
 
+    // ------------------------------------------------------------------------------------------
+    // «Me lo anoto.» y nada más (P4 de la misión asistente-mejoras-4-dias, V22, 16/11/2026)
+    // ------------------------------------------------------------------------------------------
+
+    /*
+     * 🔴 EL CASO REAL (Truvari, 13/11/2026, ya en 4.3.59). «Bueno, entonces si ya lo anotaste y ya lo comprendiste,
+     * decime cuál es el precio por botella del gran enemigo» (300) → «Me lo anoto.» (301), y lo mismo con «Te pido que
+     * le borres la imagen» (450 → 451). La guarda de arriba exige el guardar_en_contexto para decirlo; ésta exige que
+     * el turno, además, CONTESTE lo que la persona pidió o preguntó.
+     */
+
+    /** Lo que en el mensaje de la persona es un pedido o una pregunta, normalizado. */
+    const PEDIDO_O_PREGUNTA = '/\b(?:decime|deci|fijate|fijese|pasame|mandame|enviame|mostrame|contame|averigua|revisa|revisame|calcula|calculame|consulta|busca|buscame|borra|borrale|borrala|borralo|elimina|eliminale|sacale|saca|cambia|cambiale|carga|cargale|cargame|agrega|agregale|pone|ponele|subi|subile|baja|bajale|activa|desactiva|prende|apaga|necesito que|quiero que|te pido que|podes|podrias|me podes|me podrias|cual es|cuales son|cuanto sale|cuanto cuesta|cuanto hay|cuantos hay|cuantas hay|que precio|que stock)\b/';
+
+    /**
+     * true si el texto, sacando lo que dice que lo anota, queda vacío: «Me lo anoto.» y nada más.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function es_solo_la_anotacion($texto)
+    {
+        if (! self::dice_que_lo_anota($texto)) {
+            return false;
+        }
+
+        return trim(str_replace(self::AVISO, '', self::sin_lo_anotado($texto))) === '';
+    }
+
+    /**
+     * true si el mensaje de la persona pide algo o pregunta algo (y no es solo una corrección o un dato).
+     *
+     * @param  string|null  $pedido
+     * @return bool
+     */
+    public static function pide_o_pregunta_algo($pedido)
+    {
+        $pedido = (string) $pedido;
+
+        if (mb_strpos($pedido, '?') !== false) {
+            return true;
+        }
+
+        return (bool) preg_match(self::PEDIDO_O_PREGUNTA, VeracidadDelTurnoIaHelper::normalizar($pedido));
+    }
+
+    /**
+     * La nota del reintento cuando la respuesta es solo «Me lo anoto.».
+     *
+     * @return string
+     */
+    public static function nota_para_contestar_lo_pedido()
+    {
+        return '[El sistema revisó tu respuesta: es solo «Me lo anoto.», pero en su mensaje la persona te pidió o te preguntó algo y no se lo contestaste. '
+            . '«Me lo anoto.» nunca es la respuesta entera: hacé lo que pidió (consultá con las herramientas, armá la propuesta) y contestale con el dato o '
+            . 'con lo que quedó hecho; si además guardaste algo en la memoria, sumá «Me lo anoto.» en una línea. Si no se puede, decí por qué en una oración. '
+            . VeracidadDelTurnoIaHelper::FRASE_DE_LA_RESPUESTA_COMPLETA;
+    }
+
     /**
      * true si la oración dice que lo anota (y no lo ofrece, lo pregunta ni lo niega).
      *
