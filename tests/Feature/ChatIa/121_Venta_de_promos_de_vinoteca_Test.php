@@ -264,4 +264,43 @@ class Venta_de_promos_de_vinoteca_Test extends EmpresaTestCase
         $this->assertFalse($respuesta['ok']);
         $this->assertStringContainsString('No encontré ningún artículo', (string) $respuesta['error']);
     }
+
+    /**
+     * Revisión independiente (menor 5): la misma venta con la misma promo al mismo cliente, ya registrada,
+     * contesta `venta_repetida`; con OTRA cantidad de promos no.
+     *
+     * @test
+     */
+    public function la_misma_venta_con_la_misma_promo_es_repetida()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+
+        $input = [
+            'items'          => [['promo_id' => $this->mix->id, 'cantidad' => 1]],
+            'cliente'        => TestingFerreteriaSeeder::CLIENTE_CC,
+            'cobro'          => 'contado',
+            'metodo_de_pago' => 'Transferencia',
+            'caja'           => TestingFerreteriaSeeder::CAJA_EFECTIVO,
+        ];
+
+        list($conversation, $assistant) = $this->conversacion('Un mix para el cliente, por transferencia a la caja efectivo');
+
+        $primera = $this->proponer($conversation, $assistant, $input);
+        $this->assertTrue(!empty($primera['ok']), json_encode($primera));
+        $this->assertSame(200, $this->confirmar($conversation, $assistant, $primera['tarjeta_id'])->getStatusCode());
+
+        list($conversation, $assistant) = $this->conversacion('Un mix para el cliente, por transferencia a la caja efectivo');
+
+        $repetida = $this->proponer($conversation, $assistant, $input);
+
+        $this->assertFalse($repetida['ok']);
+        $this->assertSame('venta_repetida', $repetida['codigo'] ?? null, json_encode($repetida));
+
+        $input['items'][0]['cantidad'] = 2;
+
+        $otra = $this->proponer($conversation, $assistant, $input);
+
+        $this->assertTrue(!empty($otra['ok']), json_encode($otra));
+    }
 }

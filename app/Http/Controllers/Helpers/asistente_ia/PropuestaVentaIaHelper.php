@@ -325,7 +325,7 @@ class PropuestaVentaIaHelper
          */
         if (!self::pidio_otra_venta($input)) {
 
-            $repetida = self::venta_repetida($contexto, $cliente, $renglones, $totales);
+            $repetida = self::venta_repetida($contexto, $cliente, $renglones, $totales, $promos);
 
             if (!is_null($repetida)) {
 
@@ -450,9 +450,9 @@ class PropuestaVentaIaHelper
      * @param  array  $totales  Los de totales().
      * @return array|null
      */
-    protected static function venta_repetida(ContextoDeCargaIa $contexto, $cliente, array $renglones, array $totales)
+    protected static function venta_repetida(ContextoDeCargaIa $contexto, $cliente, array $renglones, array $totales, array $promos = [])
     {
-        if (is_null($cliente) || !count($renglones)) {
+        if (is_null($cliente) || (!count($renglones) && !count($promos))) {
 
             return null;
         }
@@ -482,6 +482,12 @@ class PropuestaVentaIaHelper
             $firma_propuesta[(int) $renglon['article']->id . ':0'] = (float) $renglon['cantidad'];
         }
 
+        // P3 (revisión independiente, menor 5): las promos también son parte de la firma, con su marca.
+        foreach ($promos as $renglon) {
+
+            $firma_propuesta['p' . (int) $renglon['promo']->id . ':0'] = (float) $renglon['cantidad'];
+        }
+
         $firma_propuesta = self::firma_de_renglones($firma_propuesta);
 
         // Los renglones de las candidatas en una sola consulta, sumados por artículo y variante.
@@ -495,6 +501,22 @@ class PropuestaVentaIaHelper
 
             $venta_id = (int) $fila->sale_id;
             $llave = (int) $fila->article_id . ':' . (int) $fila->article_variant_id;
+
+            if (!isset($por_venta[$venta_id])) {
+                $por_venta[$venta_id] = [];
+            }
+
+            $por_venta[$venta_id][$llave] = (isset($por_venta[$venta_id][$llave]) ? $por_venta[$venta_id][$llave] : 0) + (float) $fila->amount;
+        }
+
+        $filas_de_promos = DB::table('promocion_vinoteca_sale')
+                    ->whereIn('sale_id', $candidatas->pluck('id')->all())
+                    ->get(['sale_id', 'promocion_vinoteca_id', 'amount']);
+
+        foreach ($filas_de_promos as $fila) {
+
+            $venta_id = (int) $fila->sale_id;
+            $llave = 'p' . (int) $fila->promocion_vinoteca_id . ':0';
 
             if (!isset($por_venta[$venta_id])) {
                 $por_venta[$venta_id] = [];
