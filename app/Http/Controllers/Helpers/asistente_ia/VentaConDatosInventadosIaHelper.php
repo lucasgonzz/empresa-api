@@ -369,18 +369,80 @@ class VentaConDatosInventadosIaHelper
 
         foreach ($coincidencias[1] as $crudo) {
 
-            $crudo = rtrim($crudo, '.');
+            $numero = self::a_numero($crudo);
 
-            if (strpos($crudo, ',') !== false) {
-                $numero = str_replace(',', '.', str_replace('.', '', $crudo));
-            } elseif (substr_count($crudo, '.') === 1 && preg_match('/\.\d{1,2}$/', $crudo)) {
-                $numero = $crudo;
-            } else {
-                $numero = str_replace('.', '', $crudo);
+            if (!is_null($numero)) {
+                $montos[] = $numero;
+            }
+        }
+
+        return $montos;
+    }
+
+    /**
+     * Un monto escrito («31.470,43», «30516.79», «1.202.047») como número, o null.
+     *
+     * @param  string  $crudo  Sin el signo $.
+     * @return float|null
+     */
+    protected static function a_numero($crudo)
+    {
+        $crudo = rtrim((string) $crudo, '.');
+
+        if (strpos($crudo, ',') !== false) {
+            $numero = str_replace(',', '.', str_replace('.', '', $crudo));
+        } elseif (substr_count($crudo, '.') === 1 && preg_match('/\.\d{1,2}$/', $crudo)) {
+            $numero = $crudo;
+        } else {
+            $numero = str_replace('.', '', $crudo);
+        }
+
+        return is_numeric($numero) ? (float) $numero : null;
+    }
+
+    /**
+     * Los montos que la oración presenta COMO TOTAL DE LA VENTA: el que sigue a «total» (no a «subtotal»)
+     * y, si la oración nombra la venta o el total, el que sigue a «queda en» / «quedaría en».
+     *
+     * Revisión independiente (16/11/2026): la primera versión miraba TODOS los montos de una oración que
+     * dijera «total» o «queda en», y disparaba con el precio por unidad («…con el efectivo queda en
+     * $6.103,36»), con el saldo de un cliente o con el vuelto. Ahora solo cuenta el monto que sigue a la
+     * palabra, y las oraciones de otra cosa (saldo, vuelto, lista, cada, unitario, por unidad, debe) no
+     * cuentan.
+     *
+     * @param  string  $oracion
+     * @return array<int, float>
+     */
+    protected static function montos_del_total($oracion)
+    {
+        $o = self::normalizar($oracion);
+
+        if (preg_match('/\b(saldo|vuelto|lista|cada|unitario|por unidad|c\/u|debe|deben|deuda|por kg|el kilo)\b/u', $o)) {
+            return [];
+        }
+
+        $monto = '\$\s?(\d[\d\.]*(?:,\d{1,2})?)';
+        $patrones = ['/(?<![a-záéíóúñ])total(?:es)?\b[^$\d]{0,40}?' . $monto . '/iu'];
+
+        if (preg_match('/\b(venta|total)\b/u', $o)) {
+            $patrones[] = '/\b(?:queda|quedan|quedar[ií]a|quedar[ií]an)\s+en\s+' . $monto . '/iu';
+        }
+
+        $montos = [];
+
+        foreach ($patrones as $patron) {
+
+            if (!preg_match_all($patron, (string) $oracion, $coincidencias)) {
+                continue;
             }
 
-            if (is_numeric($numero)) {
-                $montos[] = (float) $numero;
+            foreach ($coincidencias[1] as $crudo) {
+
+                $numero = self::a_numero($crudo);
+
+                if (!is_null($numero)) {
+                    $montos[] = $numero;
+                }
             }
         }
 
@@ -390,10 +452,11 @@ class VentaConDatosInventadosIaHelper
     /**
      * true si la oración cita como TOTAL de la venta un monto que ninguna tarjeta del turno tiene.
      *
-     * Dispara solo si: la oración habla del total («total», «queda en», «quedaría en»), cita algún monto
-     * en pesos, NINGUNO de esos montos es el total de una tarjeta, y alguno no es tampoco otro número que
-     * la tarjeta muestra (subtotal, descuento, precio o subtotal de un renglón). Así «subtotal $33.907,
-     * total $31.470» con la tarjeta en $31.470 no dispara, y «total $30.516» con la tarjeta en $31.470 sí.
+     * Mira solo los montos que la oración presenta como total (montos_del_total()). Cada uno vale si es el
+     * total de alguna tarjeta, la SUMA de los totales de las tarjetas del turno («el total de las dos ventas
+     * da $X») u otro número que la tarjeta muestra (subtotal, descuento, precio o subtotal de un renglón).
+     * Dispara si alguno no es nada de eso: «total $30.516» con la tarjeta en $31.470 sí; «subtotal $33.907,
+     * total $31.470» no.
      *
      * @param  string  $oracion
      * @param  array  $tarjetas  De tarjetas_de_venta().
@@ -405,44 +468,44 @@ class VentaConDatosInventadosIaHelper
             return false;
         }
 
-        $o = self::normalizar($oracion);
-
-        if (!preg_match('/\b(total|queda en|quedaria en|quedaria|te queda)\b/u', $o)) {
-            return false;
-        }
-
-        $montos = self::montos_citados($oracion);
+        $montos = self::montos_del_total($oracion);
 
         if (!count($montos)) {
             return false;
         }
 
-        $hay_desconocido = false;
+        $validos = [];
+        $suma = 0.0;
 
-        foreach ($montos as $monto) {
+        foreach ($tarjetas as $tarjeta) {
+            $validos[] = (float) $tarjeta['total'];
+            $suma += (float) $tarjeta['total'];
 
-            foreach ($tarjetas as $tarjeta) {
-                if (abs($monto - $tarjeta['total']) <= self::TOLERANCIA_TOTAL) {
-                    return false;
-                }
-            }
-
-            $conocido = false;
-
-            foreach ($tarjetas as $tarjeta) {
-                foreach ($tarjeta['conocidos'] as $otro) {
-                    if (abs($monto - $otro) <= self::TOLERANCIA_TOTAL) {
-                        $conocido = true;
-                    }
-                }
-            }
-
-            if (!$conocido) {
-                $hay_desconocido = true;
+            foreach ($tarjeta['conocidos'] as $otro) {
+                $validos[] = (float) $otro;
             }
         }
 
-        return $hay_desconocido;
+        if (count($tarjetas) > 1) {
+            $validos[] = $suma;
+        }
+
+        foreach ($montos as $monto) {
+
+            $es_valido = false;
+
+            foreach ($validos as $valido) {
+                if (abs($monto - $valido) <= self::TOLERANCIA_TOTAL) {
+                    $es_valido = true;
+                }
+            }
+
+            if (!$es_valido) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

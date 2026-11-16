@@ -150,6 +150,49 @@ class T153_Total_citado_es_el_de_la_tarjeta_Test extends EmpresaTestCase
     }
 
     /**
+     * Revisión independiente (16/11/2026): los falsos positivos. El precio por unidad que «queda en», el
+     * saldo de un cliente, el vuelto y la suma de dos ventas del turno no son el total de la venta; el
+     * caso real (el total ingenuo) sigue disparando.
+     *
+     * @test
+     */
+    public function el_precio_el_saldo_el_vuelto_y_la_suma_de_dos_ventas_no_disparan()
+    {
+        list($conversation, $assistant) = $this->turno_con_tarjeta();
+
+        $bueno = $this->total_de_la_tarjeta();
+        $precio = FormatoIaHelper::monto(2000 - 2000 * TestingFerreteriaSeeder::DESCUENTO_EFECTIVO / 100);
+
+        $negativos = [
+            'Cada kilo sale $ 2.000 de lista y con el efectivo queda en ' . $precio . '.',
+            'Con esta venta el saldo total de Juan queda en $120.000.',
+            'Te paga con $50.000 y el vuelto te queda en ' . FormatoIaHelper::monto(50000 - $bueno) . '.',
+        ];
+
+        foreach ($negativos as $texto) {
+            $this->assertFalse(VentaConDatosInventadosIaHelper::afirma_otro_total($texto, $assistant), $texto);
+        }
+
+        // El caso real sigue disparando.
+        $this->assertTrue(VentaConDatosInventadosIaHelper::afirma_otro_total('El total queda en ' . FormatoIaHelper::monto($this->total_ingenuo()) . '.', $assistant));
+
+        // Dos ventas en el mismo turno: la suma de los dos totales vale; un número que no es ninguno, no.
+        $otra = $this->input();
+        $otra['items'][0]['cantidad'] = 2;
+        $otra['es_otra_venta'] = true;
+        $segunda = PropuestaVentaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, array_merge($otra, ['cliente' => TestingFerreteriaSeeder::CLIENTE_CONTADO]));
+        $this->assertTrue(!empty($segunda['ok']), json_encode($segunda));
+
+        $totales = AiMessageAction::where('ai_message_id', $assistant->id)->where('tipo', AiMessageAction::TIPO_VENTA)->get()->map(function ($a) {
+            return (float) $a->datos['resumen']['total'];
+        })->all();
+        $this->assertCount(2, $totales);
+
+        $this->assertFalse(VentaConDatosInventadosIaHelper::afirma_otro_total('El total de las dos ventas da ' . FormatoIaHelper::monto(array_sum($totales)) . '.', $assistant));
+        $this->assertTrue(VentaConDatosInventadosIaHelper::afirma_otro_total('El total de las dos ventas da ' . FormatoIaHelper::monto(array_sum($totales) + 999) . '.', $assistant));
+    }
+
+    /**
      * El texto honesto: la oración con el total ingenuo se cambia por el de la tarjeta y el porqué.
      *
      * @test
