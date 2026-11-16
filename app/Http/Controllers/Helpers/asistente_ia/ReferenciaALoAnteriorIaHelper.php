@@ -120,7 +120,17 @@ class ReferenciaALoAnteriorIaHelper
     }
 
     /**
-     * true si el texto usa alguna de las REFERENCIAS como palabras enteras.
+     * Los verbos de CARGA, como raíz (cubre «poné», «ponele», «ponelos», «cambiá», «cambiales»…), ya sin tildes.
+     * Revisión de la rama C (M1): sin uno de éstos el mensaje no es un pedido sobre «esos», y «¿cómo estás?»,
+     * «estas ahí?» o «que tal, como estas» no son referencias.
+     */
+    const VERBOS_DE_CARGA = [
+        'pon', 'cambi', 'sub', 'baj', 'pas', 'carg', 'borr', 'sac', 'dej', 'actualiz', 'agreg', 'elimin',
+        'ajust', 'modific', 'correg', 'corregi', 'asign', 'activ', 'desactiv', 'anot', 'registr', 'mand',
+    ];
+
+    /**
+     * true si el texto usa alguna de las REFERENCIAS como palabras enteras Y trae un verbo de carga.
      *
      * @param  string|null  $texto
      * @return bool
@@ -131,14 +141,47 @@ class ReferenciaALoAnteriorIaHelper
     }
 
     /**
-     * La primera referencia que aparece en el texto (normalizada), o '' si no hay ninguna.
+     * true si alguna palabra del texto (sin tildes) empieza con un VERBOS_DE_CARGA.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    protected static function tiene_verbo_de_carga($texto)
+    {
+        foreach (explode(' ', self::normalizar((string) $texto)) as $palabra) {
+
+            foreach (self::VERBOS_DE_CARGA as $raiz) {
+
+                if (mb_strpos($palabra, $raiz) === 0) {
+
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La primera referencia que aparece en el texto, o '' si no hay ninguna (o si no hay verbo de carga).
+     *
+     * 🔴 Las tildes se miran ANTES de normalizar (revisión de la rama C, M1): «estás» es el verbo («¿cómo
+     * estás?», «¿estás seguro?») y no «estas». Por eso la búsqueda va sobre el texto en minúsculas CON sus
+     * tildes: REFERENCIAS no tiene ninguna, así que «estás» nunca encaja.
      *
      * @param  string|null  $texto
      * @return string
      */
     protected static function referencia_usada($texto)
     {
-        $normalizado = ' '.self::normalizar((string) $texto).' ';
+        if (!self::tiene_verbo_de_carga((string) $texto)) {
+
+            return '';
+        }
+
+        $con_tildes = mb_strtolower(trim((string) $texto));
+        $con_tildes = preg_replace('/[^\p{L}\p{N}]+/u', ' ', $con_tildes);
+        $normalizado = ' '.trim(preg_replace('/\s+/u', ' ', (string) $con_tildes)).' ';
 
         foreach (self::REFERENCIAS as $referencia) {
 

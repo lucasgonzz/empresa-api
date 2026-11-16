@@ -195,6 +195,13 @@ class T172_Esos_se_resuelven_contra_la_ultima_respuesta_Test extends TestCase
         list($conversation, $assistant) = $this->conversacion([], 'Poné el stock de esos en 0');
 
         $this->assertNull(ReferenciaALoAnteriorIaHelper::nota($conversation, $assistant));
+
+        // «¿cómo estás?» después de nombrar artículos tampoco es una referencia.
+        list($conversation, $assistant) = $this->conversacion([
+            ['Cargá las ventas', 'El Taladro Percutor C172 quedó negativo.'],
+        ], 'Hola, ¿cómo estás?');
+
+        $this->assertNull(ReferenciaALoAnteriorIaHelper::nota($conversation, $assistant));
     }
 
     /**
@@ -228,5 +235,14 @@ class T172_Esos_se_resuelven_contra_la_ultima_respuesta_Test extends TestCase
         $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('eso es todo, gracias'));
         $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('ese día no vendí nada'));
         $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('pesos'));
+
+        // Revisión M1: «estás» es el verbo, y sin un verbo de carga no hay pedido sobre «esos».
+        $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('¿cómo estás?'));
+        $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('estás seguro?'));
+        $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('estas ahí?'));
+        $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('que tal, como estas'));
+        $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('¿estás ahí? poné atención'));
+        $this->assertFalse(ReferenciaALoAnteriorIaHelper::usa_una_referencia('¿y esos cuánto salen?'));
+        $this->assertTrue(ReferenciaALoAnteriorIaHelper::usa_una_referencia('cambiales el precio a estas'));
     }
 }
