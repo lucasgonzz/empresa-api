@@ -176,9 +176,9 @@ class OrderController extends Controller
              * y la venta borrada por una cancelación sigue ocupando el valor — un unique
              * rompería cualquier flujo legítimo que vuelva a crear la venta del pedido.
              *
-             * No se reasigna $model: la validación de transición de arriba ya corrió sobre
-             * la foto leída y la máquina de estados no se toca en este ítem. Lo que importa
-             * es el lock de la fila, no releer los atributos.
+             * La fila se vuelve a leer bajo el lock y se repite la validación de transición:
+             * mientras se esperaba, otra pestaña pudo confirmar o cancelar el mismo pedido.
+             * Usar la foto anterior comprometería reservas o movimientos ya consumidos.
              */
             ReservaStockWebHelper::bloquear_configuracion($model->user_id);
             $model = Order::where('id', $model->id)->lockForUpdate()->firstOrFail();

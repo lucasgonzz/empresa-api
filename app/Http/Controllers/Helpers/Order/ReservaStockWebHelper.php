@@ -76,13 +76,22 @@ class ReservaStockWebHelper
             return false;
         }
         $antes = [];
+        $variantes_previas = [];
         foreach ($order->articles as $article) {
             $clave = $article->id.':'.(int) $article->pivot->variant_id;
             $antes[$clave] = ($antes[$clave] ?? 0) + (float) $article->pivot->amount;
+            $variantes_previas[$article->id][(int) $article->pivot->variant_id] = true;
         }
         $despues = [];
         foreach ($request->articles as $article) {
-            $clave = ($article['id'] ?? 0).':'.(int) ($article['pivot']['variant_id'] ?? 0);
+            $id = $article['id'] ?? 0;
+            $variante = $article['pivot']['variant_id'] ?? null;
+            // Misma compatibilidad de adjuntar_renglones(): una pantalla vieja puede omitir
+            // variante si el artículo tiene un único renglón; conservarla no es una edición.
+            if (is_null($variante) && isset($variantes_previas[$id]) && count($variantes_previas[$id]) === 1) {
+                $variante = key($variantes_previas[$id]);
+            }
+            $clave = $id.':'.(int) $variante;
             $despues[$clave] = ($despues[$clave] ?? 0) + (float) ($article['pivot']['amount'] ?? 0);
         }
         ksort($antes);

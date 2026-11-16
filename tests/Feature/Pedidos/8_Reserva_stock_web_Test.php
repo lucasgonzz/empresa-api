@@ -305,4 +305,21 @@ class Reserva_stock_web_Test extends EmpresaTestCase
         $this->assertEquals(4, $articulo->fresh()->stock);
         $this->assertEquals(1, $promo->fresh()->stock);
     }
+
+    /** @test */
+    public function formulario_viejo_puede_guardar_pedido_consumido_sin_repetir_su_unica_variante()
+    {
+        list($pedido, $articulo) = $this->reservado();
+        $variante = $articulo->article_variants()->create(['variant_description' => 'Variante formulario viejo', 'stock' => 10]);
+        $variante->addresses()->attach($pedido->address_id, ['amount' => 10]);
+        $pedido->articles()->detach();
+        $pedido->articles()->attach($articulo->id, ['amount' => 6, 'price' => 100, 'variant_id' => $variante->id]);
+        $url = 'api/order/'.$pedido->id;
+        $this->putJson($url, $this->payload_de_estado('Confirmado'))->assertOk();
+        $this->assertEquals(4, $variante->fresh()->stock);
+        $this->putJson($url, ['articles' => [['id' => $articulo->id, 'pivot' => ['amount' => 6, 'price' => 100]]]])->assertOk();
+        $this->assertEquals($variante->id, $pedido->fresh()->articles->first()->pivot->variant_id);
+        $this->assertEquals(4, $variante->fresh()->stock);
+        $this->assertEquals(1, Sale::where('order_id', $pedido->id)->count());
+    }
 }
