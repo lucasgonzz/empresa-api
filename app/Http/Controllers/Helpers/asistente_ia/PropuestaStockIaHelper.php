@@ -2015,13 +2015,6 @@ class PropuestaStockIaHelper
         return is_null($deposito) ? 'Sucursal ' . (int) $address_id : self::nombre_de_deposito($deposito);
     }
 
-    /**
-     * El nombre del artículo, con su código de respaldo: "Artículo 123" sin nada atrás no le dice a
-     * nadie qué está por confirmar.
-     *
-     * @param  \App\Models\Article  $articulo
-     * @return string
-     */
     /** Los números que se dicen con letras al pedir cajas («cuatro cajas»). */
     const NUMEROS_CON_LETRAS = [
         'una' => 1, 'un' => 1, 'uno' => 1, 'dos' => 2, 'tres' => 3, 'cuatro' => 4, 'cinco' => 5, 'seis' => 6,
@@ -2145,6 +2138,13 @@ class PropuestaStockIaHelper
         return count($avisos) ? implode(' ', $avisos) : null;
     }
 
+    /**
+     * El nombre del artículo, con su código de respaldo: "Artículo 123" sin nada atrás no le dice a
+     * nadie qué está por confirmar.
+     *
+     * @param  \App\Models\Article  $articulo
+     * @return string
+     */
     public static function nombre_de_articulo(Article $articulo): string
     {
         $nombre = trim((string) $articulo->name);
