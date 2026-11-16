@@ -107,7 +107,7 @@ class SaleHelper extends Controller {
             && !$request->to_check && !$request->checked
             && \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::hay_esquema()) {
             $pedido = \App\Models\Order::where('id', $sale->order_id)->first();
-            if ($pedido && \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::participa($pedido)) {
+            if ($pedido && $pedido->reserva_stock_web && !$pedido->reserva_stock_web_consumida) {
                 return true;
             }
         }

@@ -392,7 +392,7 @@ class DeleteSaleHelper {
         if ($model->order_id) {
             \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::liberar($model->order_id);
             if (\App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::hay_esquema()) {
-                \App\Models\Order::where('id', $model->order_id)->where('reserva_stock_web_consumida', false)->update(['reserva_stock_web' => false]);
+                \App\Models\Order::where('id', $model->order_id)->where('reserva_stock_web_consumida', false)->update(['reserva_stock_web_liberada' => true]);
             }
         }
 

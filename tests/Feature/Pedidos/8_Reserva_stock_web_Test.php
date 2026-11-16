@@ -102,7 +102,8 @@ class Reserva_stock_web_Test extends EmpresaTestCase
         list($pedido, $articulo) = $this->reservado();
         $config = $this->configuracion();
         $this->guardado_config($config, false)->assertOk();
-        $this->assertFalse($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web_liberada);
         $this->assertEquals(10, $articulo->fresh()->stock);
         $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
         $config->update(['reserva_stock_tienda_url' => 'https://tienda-prueba.test', 'reserva_stock_tienda_protocolo' => 1]);
@@ -184,7 +185,8 @@ class Reserva_stock_web_Test extends EmpresaTestCase
         $this->assertEquals(6, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->sum('amount'));
         $payload['reservar_stock_pedidos_web'] = false;
         $this->putJson('api/online-configuration/'.$config->id, $payload)->assertOk();
-        $this->assertFalse($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web_liberada);
         $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
     }
 
@@ -248,7 +250,8 @@ class Reserva_stock_web_Test extends EmpresaTestCase
         $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado('Confirmado'))->assertOk();
         $venta = Sale::where('order_id', $pedido->id)->firstOrFail();
         $this->deleteJson('api/sale/'.$venta->id)->assertSuccessful();
-        $this->assertFalse($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web_liberada);
         $this->putJson('api/order/'.$pedido->id, [])->assertOk();
         $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
         $this->assertEquals(10, $articulo->fresh()->stock);
@@ -321,5 +324,76 @@ class Reserva_stock_web_Test extends EmpresaTestCase
         $this->assertEquals($variante->id, $pedido->fresh()->articles->first()->pivot->variant_id);
         $this->assertEquals(4, $variante->fresh()->stock);
         $this->assertEquals(1, Sale::where('order_id', $pedido->id)->count());
+    }
+
+    /** @test */
+    public function apagar_durante_revision_no_olvida_el_primer_descuento_de_la_venta()
+    {
+        list($pedido, $articulo) = $this->reservado();
+        $this->activar_check_sales();
+        $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado('Confirmado'))->assertOk();
+        $venta = Sale::where('order_id', $pedido->id)->firstOrFail();
+        $this->guardado_config($this->configuracion(), false)->assertOk();
+        $this->assertTrue($pedido->fresh()->reserva_stock_web);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web_liberada);
+        $this->assertFalse($pedido->fresh()->reserva_stock_web_consumida);
+        $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
+        $this->assertEquals(10, $articulo->fresh()->stock);
+        $this->putJson('api/sale/'.$venta->id, $this->payload_venta_reservada($venta, $articulo, 6, true))->assertOk();
+        $this->assertEquals(4, $articulo->fresh()->stock);
+        $this->assertTrue($pedido->fresh()->reserva_stock_web_consumida);
+        $this->putJson('api/sale/'.$venta->id, $this->payload_venta_reservada($venta, $articulo, 6, true))->assertOk();
+        $this->assertEquals(4, $articulo->fresh()->stock);
+        $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
+    }
+
+    /** @test */
+    public function rechaza_cantidades_decimales_antes_de_que_el_pivote_las_redondee()
+    {
+        list($pedido, $articulo) = $this->reservado();
+        $this->putJson('api/order/'.$pedido->id, ['articles' => [[
+            'id' => $articulo->id, 'pivot' => ['amount' => 1.2, 'price' => 100],
+        ]]])->assertStatus(422);
+        $this->assertEquals(6, $pedido->fresh()->articles->first()->pivot->amount);
+        $this->assertEquals(6, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->sum('amount'));
+        $this->assertEquals(10, $articulo->fresh()->stock);
+        $this->putJson('api/order/'.$pedido->id, ['articles' => [[
+            'id' => $articulo->id, 'pivot' => ['amount' => 2147483648, 'price' => 100],
+        ]]])->assertStatus(422);
+        $this->assertEquals(6, $pedido->fresh()->articles->first()->pivot->amount);
+    }
+
+    /** @test */
+    public function rechaza_pivotes_duplicados_sin_alterar_stock_ni_reserva()
+    {
+        list($pedido, $articulo) = $this->reservado();
+        $articulo->addresses()->detach();
+        $articulo->addresses()->attach($pedido->address_id, ['amount' => 4]);
+        $articulo->addresses()->attach($pedido->address_id, ['amount' => 6]);
+        $this->putJson('api/order/'.$pedido->id, [])->assertStatus(422);
+        $this->assertEquals(6, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->sum('amount'));
+        $this->assertEquals(10, $articulo->fresh()->stock);
+        $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado('Confirmado'))->assertStatus(422);
+        $this->assertFalse(Sale::where('order_id', $pedido->id)->exists());
+        $this->assertEquals(10, $articulo->fresh()->stock);
+        $this->putJson('api/order/'.$pedido->id, $this->payload_de_estado('Cancelado'))->assertOk();
+        $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
+        $this->assertEquals(10, $articulo->fresh()->stock);
+    }
+
+    /** @test */
+    public function rechaza_stock_de_variante_con_pivotes_duplicados()
+    {
+        list($pedido, $articulo) = $this->reservado();
+        $variante = $articulo->article_variants()->create(['variant_description' => 'Variante duplicada', 'stock' => 10]);
+        $variante->addresses()->attach($pedido->address_id, ['amount' => 4]);
+        $variante->addresses()->attach($pedido->address_id, ['amount' => 6]);
+        $pedido->articles()->detach();
+        $pedido->articles()->attach($articulo->id, ['amount' => 6, 'price' => 100, 'variant_id' => $variante->id]);
+        DB::table('order_stock_reservations')->where('order_id', $pedido->id)->delete();
+        $this->putJson('api/order/'.$pedido->id, [])->assertStatus(422);
+        $this->assertEquals(0, DB::table('order_stock_reservations')->where('order_id', $pedido->id)->count());
+        $this->assertEquals(10, $variante->fresh()->stock);
+        $this->assertFalse(Sale::where('order_id', $pedido->id)->exists());
     }
 }

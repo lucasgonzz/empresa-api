@@ -272,6 +272,9 @@ class OrderController extends Controller
              */
             if (is_array($request->articles)) {
 
+                if (ReservaStockWebHelper::participa($model)) {
+                    ReservaStockWebHelper::validar_cantidades_del_pedido($request->articles);
+                }
                 $this->adjuntar_renglones($model, $request->articles);
 
                 $model->total = OrderHelper::get_total($model);

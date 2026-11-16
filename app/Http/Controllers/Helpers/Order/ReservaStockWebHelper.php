@@ -22,6 +22,7 @@ class ReservaStockWebHelper
     {
         return Schema::hasTable('order_stock_reservations')
             && Schema::hasColumn('orders', 'reserva_stock_web_egreso')
+            && Schema::hasColumn('orders', 'reserva_stock_web_liberada')
             && Schema::hasColumn('online_configurations', 'reservar_stock_pedidos_web');
     }
 
@@ -59,12 +60,12 @@ class ReservaStockWebHelper
         DB::table('order_stock_reservations')->where('user_id', $user_id)->delete();
         // Lo consumido ya es físico: apagar no devuelve ventas ni egresos confirmados.
         Order::where('user_id', $user_id)->where('reserva_stock_web_consumida', false)
-            ->update(['reserva_stock_web' => false]);
+            ->update(['reserva_stock_web_liberada' => true]);
     }
 
     public static function participa($order)
     {
-        return self::hay_esquema() && (bool) $order->reserva_stock_web && !(bool) $order->reserva_stock_web_consumida;
+        return self::hay_esquema() && (bool) $order->reserva_stock_web && !(bool) $order->reserva_stock_web_consumida && !(bool) $order->reserva_stock_web_liberada;
     }
 
     public static function cambia_mercaderia($order, $request)
@@ -97,6 +98,19 @@ class ReservaStockWebHelper
         ksort($antes);
         ksort($despues);
         return $antes !== $despues;
+    }
+
+    public static function validar_cantidades_del_pedido($articles)
+    {
+        foreach ($articles as $article) {
+            $amount = \App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper::getPivotValue($article, 'amount');
+            // article_order.amount es entero. Validar antes del INSERT evita que MySQL
+            // transforme silenciosamente una cantidad decimal y reserve otras unidades.
+            if (!is_numeric($amount) || !is_finite((float) $amount) || (float) $amount < 0
+                || (float) $amount > 2147483647 || floor((float) $amount) !== (float) $amount) {
+                throw ValidationException::withMessages(['articles' => 'La cantidad de los renglones del pedido debe ser un número entero mayor o igual a cero.']);
+            }
+        }
     }
 
     public static function deposito($user_id, $address_id)
@@ -217,8 +231,15 @@ class ReservaStockWebHelper
         if ($filas->isEmpty()) {
             return ['amount' => $global, 'por_deposito' => false];
         }
-        $fila = $filas->first(function ($fila) use ($address_id) { return (int) $fila->address_id === (int) $address_id; });
-        return ['amount' => $fila ? $fila->amount : 0, 'por_deposito' => true];
+        // Los pivotes históricos no tienen clave única: la disponibilidad comparte la suma
+        // de todas las filas del depósito con Tienda y con Address::stock_en_fila().
+        $coincidentes = $filas->filter(function ($fila) use ($address_id) { return (int) $fila->address_id === (int) $address_id; });
+        // El motor legado aplica el delta en cada fila: 4+6, venta por6, termina en-2.
+        // Reservar no debe normalizar datos físicos ni aceptar un compromiso con egreso doble.
+        if ($coincidentes->count() > 1) {
+            throw ValidationException::withMessages(['articles' => 'El stock del depósito tiene registros duplicados. Pedí al equipo de soporte que lo revise antes de reservar este artículo.']);
+        }
+        return ['amount' => $coincidentes->sum('amount'), 'por_deposito' => true];
     }
 
     public static function liberar($order_id)
@@ -301,6 +322,10 @@ class ReservaStockWebHelper
         }
         if ($order->reserva_stock_web_egreso) {
             $order->reserva_stock_web_egreso = [];
+            $order->save();
+        }
+        if ($order->reserva_stock_web && !$order->reserva_stock_web_consumida) {
+            $order->reserva_stock_web_liberada = true;
             $order->save();
         }
         self::liberar($order->id);
