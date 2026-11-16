@@ -32,7 +32,7 @@ use Tests\EmpresaTestCase;
  *
  * @group chat-ia
  */
-class Busqueda_tolerante_de_nombres_Test extends EmpresaTestCase
+class T133_Busqueda_tolerante_de_nombres_Test extends EmpresaTestCase
 {
     use EnviosAClientesFixtures;
 
@@ -177,5 +177,35 @@ class Busqueda_tolerante_de_nombres_Test extends EmpresaTestCase
         $this->assertFalse($r['ok']);
         $this->assertNotEmpty($r['faltan'], json_encode($r));
         $this->assertSame('KILLKA MALBEC 750 ZZP8', $r['opciones']['articulos'][0]['nombre']);
+    }
+
+    /**
+     * Revisión 4: el prefiltro exige TODAS las palabras (cada una por alguno de sus pedazos): «kilka malbec» no
+     * trae cada Malbec del catálogo.
+     *
+     * @test
+     */
+    public function el_prefiltro_exige_todas_las_palabras()
+    {
+        $this->articulo_p8('KILLKA MALBEC 750 ZZP8');
+        $this->articulo_p8('ALTOS MALBEC ZZP8');
+        $this->articulo_p8('KAIKEN MALBEC ZZP8');
+
+        DB::enableQueryLog();
+
+        BusquedaPorPalabrasIaHelper::parecidos(Article::where('user_id', $this->dueno->id), 'Kilka Malbec', 'name');
+
+        $consulta = collect(DB::getQueryLog())->last();
+        DB::disableQueryLog();
+
+        $this->assertStringContainsString('(`name` LIKE ? or `name` LIKE ?) and (`name` LIKE ? or `name` LIKE ?)', $consulta['query']);
+
+        // Solo el KILLKA pasa el prefiltro: los otros Malbec no tienen «kil» ni «lka».
+        $filas = Article::where('user_id', $this->dueno->id)
+            ->where(function ($q) { $q->where('name', 'LIKE', '%kil%')->orWhere('name', 'LIKE', '%lka%'); })
+            ->where(function ($q) { $q->where('name', 'LIKE', '%mal%')->orWhere('name', 'LIKE', '%bec%'); })
+            ->pluck('name')->all();
+
+        $this->assertSame(['KILLKA MALBEC 750 ZZP8'], $filas);
     }
 }

@@ -399,7 +399,7 @@ class BusquedaPorPalabrasIaHelper
      *     );
      *     // [['id' => 12, 'nombre' => 'Rossotto Gustavo', 'similitud' => 0.94], ...]
      *
-     * El prefiltro en la base es por pedazos de cada palabra (sus primeras y sus últimas tres letras, o
+     * El prefiltro en la base exige TODAS las palabras, cada una por alguno de sus pedazos (sus primeras y sus últimas tres letras, o
      * el número entero), así no se lee el catálogo entero; la comparación fina va en PHP.
      *
      * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $query  Ya acotada al dueño.
@@ -418,37 +418,43 @@ class BusquedaPorPalabrasIaHelper
             return [];
         }
 
-        $pedazos = [];
+        /*
+         * Revisión de P8 (16/11/2026): el prefiltro es por PALABRA: cada palabra que importa tiene que aparecer
+         * por alguno de sus pedazos (OR adentro de la palabra), y TODAS las palabras a la vez (AND entre
+         * ellas). Con un OR general, «kilka malbec» traía cada Malbec del catálogo y el tope de filas podía
+         * dejar afuera justo al KILLKA. Una palabra de menos de tres letras no filtra (no tiene pedazos).
+         */
+        $grupos = [];
 
         foreach ($pedidas as $palabra) {
 
             if (preg_match('/^\d+$/u', $palabra)) {
 
-                $pedazos[] = $palabra;
+                $grupos[] = [$palabra];
 
             } elseif (mb_strlen($palabra) >= 3) {
 
-                $pedazos[] = mb_substr($palabra, 0, 3);
-                $pedazos[] = mb_substr($palabra, -3);
+                $grupos[] = array_values(array_unique([mb_substr($palabra, 0, 3), mb_substr($palabra, -3)]));
             }
         }
 
-        $pedazos = array_values(array_unique($pedazos));
-
-        if (!count($pedazos)) {
+        if (!count($grupos)) {
 
             return [];
         }
 
         $consulta = clone $query;
 
-        $consulta->where(function ($sub) use ($pedazos, $columna) {
+        foreach ($grupos as $pedazos) {
 
-            foreach ($pedazos as $pedazo) {
+            $consulta->where(function ($sub) use ($pedazos, $columna) {
 
-                $sub->orWhere($columna, 'LIKE', '%' . addcslashes($pedazo, '%_\\') . '%');
-            }
-        });
+                foreach ($pedazos as $pedazo) {
+
+                    $sub->orWhere($columna, 'LIKE', '%' . addcslashes($pedazo, '%_\\') . '%');
+                }
+            });
+        }
 
         $filas = $consulta->limit(self::TOPE_PREFILTRO)->get([$columna_id . ' as parecido_id', $columna . ' as parecido_nombre']);
 
