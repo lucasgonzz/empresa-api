@@ -10,9 +10,10 @@ use Illuminate\Validation\ValidationException;
 /** Contrato único de edición para el formulario y las propuestas del asistente. */
 class EdicionPromocionVinotecaHelper
 {
-    const CAMPOS = ['name', 'cost', 'final_price', 'stock', 'online', 'address_id', 'description'];
+    const CAMPOS = ['name', 'cost', 'final_price', 'stock', 'online', 'address_id', 'description', 'peso', 'alto', 'ancho', 'profundidad'];
     const ETIQUETAS = ['name' => 'Nombre', 'cost' => 'Costo por promo', 'final_price' => 'Precio de venta',
-        'stock' => 'Stock de promos', 'online' => 'Disponible en la tienda', 'address_id' => 'Depósito', 'description' => 'Descripción'];
+        'stock' => 'Stock de promos', 'online' => 'Disponible en la tienda', 'address_id' => 'Depósito', 'description' => 'Descripción',
+        'peso' => 'Peso (kg)', 'alto' => 'Alto (cm)', 'ancho' => 'Ancho (cm)', 'profundidad' => 'Largo / profundidad (cm)'];
 
     public static function promo($id, $owner_id, $candado = false)
     {
@@ -35,7 +36,7 @@ class EdicionPromocionVinotecaHelper
         $permitidos = $solo_cambios ? self::CAMPOS : array_merge(self::CAMPOS, $compatibles);
         foreach (array_keys($cuerpo) as $campo) {
             if (!in_array($campo, $permitidos, true)) {
-                self::rechazar('promo', 'Ese dato no se puede editar en una promo. Indicá solamente nombre, costo por promo, precio, stock, publicación, depósito o descripción.');
+                self::rechazar('promo', 'Ese dato no se puede editar en una promo. Indicá solamente nombre, costo por promo, precio, stock, publicación, depósito, descripción o medidas de envío.');
             }
         }
         foreach (['id' => $promo->id, 'user_id' => $owner_id] as $campo => $valor) {
@@ -47,6 +48,8 @@ class EdicionPromocionVinotecaHelper
         if (!$datos) {
             self::rechazar('promo', 'Indicá qué dato de la promo querés cambiar antes de guardar.');
         }
+        $medidas = MedidasEnvioHelper::datos($datos, 'promocion_vinotecas');
+        $datos = array_merge(array_diff_key($datos, array_flip(MedidasEnvioHelper::CAMPOS)), $medidas);
         if (isset($datos['name']) && is_string($datos['name'])) {
             $datos['name'] = trim($datos['name']);
         }

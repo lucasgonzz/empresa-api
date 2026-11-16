@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\MedidasEnvioHelper;
 use App\Http\Controllers\Helpers\PromocionVinotecaHelper;
 use App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper as Edicion;
 use App\Models\PromocionVinoteca;
@@ -21,7 +22,8 @@ class PromocionVinotecaController extends Controller
     }
 
     public function store(Request $request) {
-        $model = PromocionVinoteca::create([
+        $medidas = MedidasEnvioHelper::datos($request->all(), 'promocion_vinotecas');
+        $model = PromocionVinoteca::create(array_merge([
             'name'                  => $request->name,
             'slug'                  => ArticleHelper::slug($request->name),
             'cost'                  => $request->cost,
@@ -31,7 +33,7 @@ class PromocionVinotecaController extends Controller
             'address_id'            => $request->address_id,
             'description'           => $request->description,
             'user_id'               => $this->userId(),
-        ]);
+        ], $medidas));
 
         PromocionVinotecaHelper::attach_articles($model, $request->articles);
 

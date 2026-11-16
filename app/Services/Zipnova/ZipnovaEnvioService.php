@@ -3,6 +3,7 @@
 namespace App\Services\Zipnova;
 
 use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
+use App\Http\Controllers\Helpers\Order\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Envio;
 use App\Models\Order;
@@ -219,6 +220,13 @@ class ZipnovaEnvioService
         $lineas = [];
         foreach ($order->articles as $article) {
             $lineas[] = ['article' => $article, 'amount' => $article->pivot->amount];
+        }
+        // Cada promo/combo ya es un paquete: no se vuelven a sumar sus componentes.
+        foreach ($order->promocion_vinotecas as $promo) {
+            $lineas[] = ['article' => $promo, 'amount' => $promo->pivot->amount];
+        }
+        foreach (ComboEsquemaHelper::combos_del_pedido($order) as $combo) {
+            $lineas[] = ['article' => $combo, 'amount' => $combo->pivot->amount];
         }
         $items = ZipnovaPaquetesHelper::items_desde_lineas($lineas, $config['bulto_default']);
         if (count($items) === 0) {
