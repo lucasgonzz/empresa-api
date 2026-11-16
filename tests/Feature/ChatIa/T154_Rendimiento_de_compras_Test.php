@@ -133,6 +133,24 @@ class T154_Rendimiento_de_compras_Test extends TestCase
     }
 
     /**
+     * Revisión independiente: una compra que no actualiza stock no cuenta como comprada.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function una_compra_que_no_actualiza_stock_no_entra()
+    {
+        $id = $this->compra($this->proveedores['ferretera'], now()->subDays(2), [[$this->articulos['tornillo'], 500, null, 10, null]]);
+        DB::table('provider_orders')->where('id', $id)->update(['update_stock' => 0]);
+
+        $respuesta = $this->consultar($this->comercio);
+
+        $this->assertEquals(125.0, $respuesta['unidades_compradas'], 'Los 500 de la compra sin stock no suman.');
+        $this->assertEquals(100.0, $respuesta['articulos'][0]['comprado']);
+        $this->assertStringContainsString('no descuenta devoluciones', $respuesta['nota']);
+    }
+
+    /**
      * Por proveedor, y un proveedor que no existe es error.
      *
      * @group chat-ia

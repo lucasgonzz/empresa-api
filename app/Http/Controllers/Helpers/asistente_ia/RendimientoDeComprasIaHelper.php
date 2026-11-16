@@ -126,6 +126,12 @@ class RendimientoDeComprasIaHelper
         $limite = $limite <= 0 ? self::LIMITE_POR_DEFECTO : min($limite, self::LIMITE_MAXIMO);
 
         // ------------------------------------------------------------------ la consulta
+        /*
+         * ⚠️ DEUDA DECLARADA (revisión independiente, 16/11/2026): el mismo builder se ejecuta dos veces, una
+         * para los totales y otra para la lista topeada. Juntarlas en una sola pasada pide funciones de
+         * ventana (SUM() OVER ()), que no están garantizadas en todos los motores de la flota (shared y VPS);
+         * se deja así, que son dos consultas agrupadas y acotadas al período, no una por artículo.
+         */
         $filas = self::consulta((int) $owner_id, $owner, $inicio, $fin, $proveedor, $deposito);
 
         $totales = DB::query()->fromSub($filas, 't')->selectRaw(
@@ -363,6 +369,14 @@ class RendimientoDeComprasIaHelper
         $compras = DB::table('article_provider_order as apo')
             ->join('provider_orders as po', 'po.id', '=', 'apo.provider_order_id')
             ->where('po.user_id', $owner_id)
+            /*
+             * Revisión independiente (16/11/2026): solo las compras que MUEVEN STOCK. Una compra cargada con
+             * «actualizar stock» apagado no sumó nada al depósito, y contarla como comprada inventaba
+             * mercadería que nunca entró. El default de la columna es 1; null se toma como el default.
+             */
+            ->where(function ($q) {
+                $q->whereNull('po.update_stock')->orWhere('po.update_stock', 1);
+            })
             ->where('po.created_at', '>=', $inicio->copy()->startOfDay()->format('Y-m-d H:i:s'))
             ->where('po.created_at', '<', $fin->copy()->startOfDay()->addDay()->format('Y-m-d H:i:s'))
             ->groupBy('apo.article_id')
@@ -489,7 +503,8 @@ class RendimientoDeComprasIaHelper
     protected static function nota($ver_costo, $hay_dolares, $con_deposito)
     {
         $nota = 'sin_rotar es lo comprado en el periodo que no se vendio y sigue en stock (nunca mas que el stock de hoy). '
-            . 'vendido_desde_la_compra cuenta las ventas desde la PRIMERA compra del articulo en el periodo, y puede incluir unidades de stock anterior. ';
+            . 'vendido_desde_la_compra cuenta las ventas desde la PRIMERA compra del articulo en el periodo, y puede incluir unidades de stock anterior; no descuenta devoluciones. '
+            . 'Solo entran las compras que actualizan stock. ';
 
         if ($ver_costo) {
             $nota .= 'valor_sin_rotar es sin_rotar por el costo de HOY en pesos (el mismo de valorizar_stock); invertido es lo que se pago en esas compras, en pesos. Un articulo sin costo cargado va con valor null: decilo, no lo cuentes como cero. ';
