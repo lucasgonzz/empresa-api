@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Models\AiMessage;
 use App\Models\Provider;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\Cache;
 
 /**
  * A QUÉ PROVEEDOR VA UNA COMPRA CON FACTURA, sin duplicar proveedores ni creárselos al emisor de la
@@ -63,6 +64,35 @@ class ProveedorDeLaFacturaIaHelper
     const DIGITOS_CUIT = 11;
 
     /**
+     * Palabras de rubro que NO identifican a un proveedor (misión asistente-diario-20261116, rama B, A7):
+     * «Distribuidora de Sanitarios Franco Fia» y «FRANCO FIA S.R.L.» son el mismo, y lo que los distingue
+     * es «Franco Fia», no «Distribuidora» ni «Sanitarios». Se comparan en su forma fonética
+     * (NombreParecidoIaHelper::palabra_fonetica), así que alcanza con escribirlas una vez.
+     */
+    const GENERICAS = [
+        'distribuidora', 'distribuidor', 'distribuciones', 'distribucion', 'mayorista', 'mayoristas',
+        'comercial', 'comercializadora', 'ferreteria', 'ferreterias', 'sanitarios', 'sanitaria', 'materiales',
+        'construccion', 'importadora', 'importaciones', 'industrias', 'industrial', 'servicios', 'insumos',
+        'electricidad', 'hijos', 'hijo', 'grupo', 'empresa', 'compania', 'sociedad', 'argentina', 'cia',
+        'ltda', 'sau', 'saic', 'saci', 'sh', 'sca', 'casa',
+    ];
+
+    /** Cuántos candidatos parecidos se ofrecen antes de un alta. */
+    const TOPE_PARECIDOS = 5;
+
+    /**
+     * Largo mínimo (en su forma fonética) de una palabra distintiva para que ALCANCE SOLA: «Diferenciarte»
+     * sí, «Juan» no. Con menos, un proveedor de una sola palabra corta aparecería en cualquier factura.
+     */
+    const LARGO_PALABRA_SOLA = 5;
+
+    /** Cuánto se recuerda que en esta conversación ya se ofrecieron candidatos para un nombre. */
+    const HORAS_RECUERDO_PARECIDOS = 24;
+
+    /** Prefijo de la clave del caché donde se recuerda la oferta de candidatos. */
+    const CLAVE_PARECIDOS = 'asistente_ia:proveedor_parecidos:';
+
+    /**
      * El proveedor del dueño que corresponde a `$nombre` (y a `$cuit` si vino); `['nuevo' => nombre]`
      * si no hay ninguno; o la respuesta de negocio que pregunta cuál.
      *
@@ -78,13 +108,20 @@ class ProveedorDeLaFacturaIaHelper
      *   3. Nombre normalizado CONTENIDO en el guardado o el guardado contenido en el nombre (las dos
      *      direcciones: ver el caso 1 del docblock de la clase). Uno solo: ése. Varios: se pregunta.
      *
+     *   4. 🔴 (misión asistente-diario-20261116, rama B, A7) Si nada de lo anterior encaja, ANTES de
+     *      devolver `nuevo` se buscan los PARECIDOS tolerantes (parecidos()): otro orden de palabras,
+     *      una letra cambiada, palabras de rubro de más. Si hay, vuelven como candidatos y no se arma
+     *      ningún alta; recién en un turno POSTERIOR al que los ofreció, con `$nuevo_confirmado`
+     *      (proveedor_nuevo: true de la herramienta), se acepta que es otro.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  string  $nombre
      * @param  string  $cuit
      * @param  \App\Models\AiMessage|null  $mensaje  El assistant que propone (para saber qué dijo la persona).
+     * @param  bool  $nuevo_confirmado  true si la persona dijo que es un proveedor NUEVO después de ver los parecidos.
      * @return \App\Models\Provider|array
      */
-    public static function resolver(ContextoDeCargaIa $contexto, $nombre, $cuit = '', $mensaje = null)
+    public static function resolver(ContextoDeCargaIa $contexto, $nombre, $cuit = '', $mensaje = null, $nuevo_confirmado = false)
     {
         $nombre = trim((string) $nombre);
         $buscado = self::normalizar($nombre);
@@ -223,7 +260,240 @@ class ProveedorDeLaFacturaIaHelper
             return self::preguntar_cual($contenidos);
         }
 
+        /*
+         * 🔴 A7 (Ferre Total, 14/11/2026): «Martin Cardenas» no encontraba a «Cárdenas Martín» y un
+         * «Franko» leído de la factura no encontraba a «Franco»: se daba de alta un duplicado. Un nombre
+         * que se PARECE a uno guardado nunca es un alta sin preguntar.
+         */
+        $parecidos = self::parecidos($proveedores, $nombre);
+
+        if (count($parecidos) && !self::nuevo_ya_confirmado($contexto, $mensaje, $buscado, $nuevo_confirmado)) {
+
+            self::recordar_oferta_de_parecidos($contexto, $mensaje, $buscado);
+
+            return RespuestaDeCargaIa::faltan(
+                [
+                    'si la factura es de alguno de estos proveedores que ya tenés: ninguno se llama "' . $nombre . '", pero se le parecen. '
+                    . 'Preguntale a la persona cuál es ANTES de dar de alta uno nuevo. Si es uno de estos, volvé a llamar con su nombre; '
+                    . 'si te dice que es otro proveedor, volvé a llamar con proveedor_nuevo: true',
+                ],
+                ['proveedores' => self::como_opciones($parecidos, true)]
+            );
+        }
+
         return ['nuevo' => $nombre];
+    }
+
+    /**
+     * Los proveedores del dueño que se PARECEN al nombre (A7): los distintivos de un lado están, en
+     * cualquier orden y con tolerancia fonética (NombreParecidoIaHelper::palabras_parecidas), en el
+     * otro. Se mira contra `name` y `razon_social`, en las dos direcciones, y sin las palabras de rubro
+     * (GENERICAS) ni las vacías.
+     *
+     * Para que el lado "contenido" alcance tiene que tener 2 palabras distintivas o una sola de
+     * LARGO_PALABRA_SOLA letras o más: «Juan S.A.» no aparece en «Distribuidora Juan Mayorista SRL», y
+     * «Mayorista», «Los Hermanos» o «Sa-Ra» (sin ninguna distintiva) no aparecen en nada. Es el mismo
+     * cuidado que PALABRAS_PARA_CONTENERSE, del segundo chequeo adversarial del 24/9/2026.
+     *
+     * 🔴 NUNCA ELIGE: lo que devuelve son candidatos para preguntar, aunque sea uno.
+     *
+     * @param  iterable  $proveedores
+     * @param  string  $nombre
+     * @return array<int, \App\Models\Provider>
+     */
+    public static function parecidos($proveedores, $nombre)
+    {
+        $leidas = self::distintivas($nombre);
+
+        if (!count($leidas)) {
+
+            return [];
+        }
+
+        $encontrados = [];
+
+        foreach ($proveedores as $proveedor) {
+
+            foreach ([$proveedor->name, $proveedor->razon_social] as $guardado) {
+
+                $guardadas = self::distintivas($guardado);
+
+                if (!count($guardadas)) {
+
+                    continue;
+                }
+
+                if ((self::alcanzan($guardadas) && self::estan_todas($guardadas, $leidas))
+                    || (self::alcanzan($leidas) && self::estan_todas($leidas, $guardadas))) {
+
+                    $encontrados[(int) $proveedor->id] = $proveedor;
+
+                    break;
+                }
+            }
+
+            if (count($encontrados) >= self::TOPE_PARECIDOS) {
+
+                break;
+            }
+        }
+
+        return array_values($encontrados);
+    }
+
+    /**
+     * Las palabras que identifican a un proveedor, en forma fonética: sin vacías, sin sufijos societarios
+     * y sin las de rubro (GENERICAS).
+     *
+     * @param  string|null  $texto
+     * @return array<int, string>
+     */
+    protected static function distintivas($texto)
+    {
+        $normalizado = self::normalizar((string) $texto);
+
+        if ($normalizado === '') {
+
+            return [];
+        }
+
+        $genericas = array_map(function ($palabra) {
+            return NombreParecidoIaHelper::palabra_fonetica($palabra);
+        }, self::GENERICAS);
+
+        $distintivas = [];
+
+        foreach (NombreParecidoIaHelper::palabras_que_cuentan($normalizado) as $palabra) {
+
+            if (in_array($palabra, $genericas, true) || in_array($palabra, self::PALABRAS_VACIAS, true)) {
+
+                continue;
+            }
+
+            $distintivas[] = $palabra;
+        }
+
+        return $distintivas;
+    }
+
+    /**
+     * true si un conjunto de distintivas alcanza para reconocer a alguien adentro de otro nombre.
+     *
+     * @param  array<int, string>  $palabras
+     * @return bool
+     */
+    protected static function alcanzan(array $palabras)
+    {
+        if (count($palabras) >= self::PALABRAS_PARA_CONTENERSE) {
+
+            return true;
+        }
+
+        return count($palabras) === 1 && mb_strlen($palabras[0]) >= self::LARGO_PALABRA_SOLA;
+    }
+
+    /**
+     * true si TODAS las palabras de `$buscadas` tienen una parecida en `$en`, en cualquier orden.
+     *
+     * @param  array<int, string>  $buscadas
+     * @param  array<int, string>  $en
+     * @return bool
+     */
+    protected static function estan_todas(array $buscadas, array $en)
+    {
+        foreach ($buscadas as $buscada) {
+
+            $esta = false;
+
+            foreach ($en as $palabra) {
+
+                if (NombreParecidoIaHelper::palabras_parecidas($buscada, $palabra)) {
+
+                    $esta = true;
+
+                    break;
+                }
+            }
+
+            if (!$esta) {
+
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * true si el alta de un proveedor NUEVO ya se puede aceptar aunque haya parecidos: la herramienta
+     * mandó `proveedor_nuevo: true` Y en esta conversación ya se le ofrecieron los candidatos de ese
+     * nombre en un turno ANTERIOR (otro assistant). Mandado de entrada, o en el mismo turno en que se
+     * ofrecieron, no vale: la persona todavía no contestó.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage|null  $mensaje
+     * @param  string  $buscado  El nombre normalizado.
+     * @param  bool  $nuevo_confirmado
+     * @return bool
+     */
+    protected static function nuevo_ya_confirmado(ContextoDeCargaIa $contexto, $mensaje, $buscado, $nuevo_confirmado)
+    {
+        if (!$nuevo_confirmado || !($mensaje instanceof AiMessage) || is_null($contexto->conversation)) {
+
+            return false;
+        }
+
+        $ofrecido_en = Cache::get(self::clave_de_parecidos($contexto, $buscado));
+
+        return !is_null($ofrecido_en) && (int) $ofrecido_en !== (int) $mensaje->id;
+    }
+
+    /**
+     * Recuerda en qué assistant se ofrecieron los candidatos de este nombre (el primero, si se ofrecen
+     * varias veces en el mismo turno), para que el «es otro» de la persona valga en el turno siguiente.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage|null  $mensaje
+     * @param  string  $buscado
+     * @return void
+     */
+    protected static function recordar_oferta_de_parecidos(ContextoDeCargaIa $contexto, $mensaje, $buscado)
+    {
+        if (!($mensaje instanceof AiMessage) || is_null($contexto->conversation)) {
+
+            return;
+        }
+
+        $clave = self::clave_de_parecidos($contexto, $buscado);
+
+        if (is_null(Cache::get($clave))) {
+
+            Cache::put($clave, (int) $mensaje->id, Carbon::now()->addHours(self::HORAS_RECUERDO_PARECIDOS));
+        }
+    }
+
+    /**
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $buscado
+     * @return string
+     */
+    protected static function clave_de_parecidos(ContextoDeCargaIa $contexto, $buscado)
+    {
+        return self::CLAVE_PARECIDOS . (int) $contexto->conversation->id . ':' . md5((string) $buscado);
+    }
+
+    /**
+     * true si la herramienta mandó `proveedor_nuevo: true` (la persona dijo que es OTRO proveedor después
+     * de ver los parecidos). Acepta el booleano y sus formas en texto, que algunos modelos mandan.
+     *
+     * @param  array  $input
+     * @return bool
+     */
+    public static function pidio_proveedor_nuevo(array $input)
+    {
+        $valor = EntradaDeCargaIa::valor($input, 'proveedor_nuevo');
+
+        return in_array($valor, [true, 1, '1', 'true', 'si', 'sí'], true);
     }
 
     /**
@@ -511,15 +781,23 @@ class ProveedorDeLaFacturaIaHelper
 
     /**
      * @param  iterable  $proveedores
+     * @param  bool  $parecidos  true marca cada opción con `parecido` (A7: candidatos tolerantes, no iguales).
      * @return array
      */
-    protected static function como_opciones($proveedores)
+    protected static function como_opciones($proveedores, $parecidos = false)
     {
         $opciones = [];
 
         foreach ($proveedores as $proveedor) {
 
-            $opciones[] = ['id' => (int) $proveedor->id, 'proveedor' => (string) $proveedor->name];
+            $opcion = ['id' => (int) $proveedor->id, 'proveedor' => (string) $proveedor->name];
+
+            if ($parecidos) {
+
+                $opcion['parecido'] = true;
+            }
+
+            $opciones[] = $opcion;
         }
 
         return $opciones;

@@ -1678,6 +1678,8 @@ class HerramientasDeCarga
                             'description' => 'false solo si la persona pidió que NO vaya a la cuenta corriente del proveedor. Por defecto va.',
                         ],
                         'reemplaza_a'        => self::esquema_de_reemplazo(),
+                        // A7 (misión asistente-diario-20261116), al final: ver ProveedorDeLaFacturaIaHelper::parecidos().
+                        'proveedor_nuevo'    => self::esquema_de_proveedor_nuevo(),
                     ],
                     'required'   => ['proveedor', 'total'],
                 ],
@@ -1697,6 +1699,8 @@ class HerramientasDeCarga
                             'description' => 'El N° de la compra a corregir (el de "Creé la Compra N° X"). Si es la que acabás de crear en esta conversación, podés no mandarlo.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        // A7 (misión asistente-diario-20261116), al final: ver ProveedorDeLaFacturaIaHelper::parecidos().
+                        'proveedor_nuevo' => self::esquema_de_proveedor_nuevo(),
                     ],
                     'required'   => ['proveedor'],
                 ],
@@ -1964,6 +1968,8 @@ class HerramientasDeCarga
                             'type'        => 'boolean',
                             'description' => 'Opcional: true solo si la persona pidió una compra NUEVA para esta factura (por ejemplo, cuando le preguntaste si la sumabas a la compra vacía de opciones.compra_vacia y te dijo que no, que es otra). Con true no te vuelvo a preguntar y no la sumo a ninguna compra existente. Nunca junto con compra_num: mandá uno solo. Si no lo dijo, no lo mandes.',
                         ],
+                        // A7 (misión asistente-diario-20261116), al final: ver ProveedorDeLaFacturaIaHelper::parecidos().
+                        'proveedor_nuevo' => self::esquema_de_proveedor_nuevo(),
                     ],
                     'required'   => ['proveedor'],
                 ],
@@ -2942,6 +2948,22 @@ class HerramientasDeCarga
         return [
             'type'        => 'integer',
             'description' => 'tarjeta_id de una tarjeta anterior que esta corrige, si la corrección cambia la subcategoría, la cuenta o la tarea.',
+        ];
+    }
+
+    /**
+     * Esquema de `proveedor_nuevo` (misión asistente-diario-20261116, rama B, A7), común a las tres cargas
+     * que resuelven el proveedor por nombre: la compra con factura, la compra sin artículos y el cambio de
+     * proveedor. Solo vale en un turno POSTERIOR al que ofreció los parecidos (ver
+     * ProveedorDeLaFacturaIaHelper::nuevo_ya_confirmado()).
+     *
+     * @return array
+     */
+    protected static function esquema_de_proveedor_nuevo(): array
+    {
+        return [
+            'type'        => 'boolean',
+            'description' => 'Opcional: true SOLO si te contesté con proveedores parecidos (opciones.proveedores con parecido) y la persona te dijo que no es ninguno de esos, que es un proveedor nuevo. Nunca lo mandes de entrada: si hay parecidos sin preguntar, no doy de alta ninguno.',
         ];
     }
 
