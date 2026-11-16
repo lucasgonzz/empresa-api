@@ -1077,7 +1077,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_venta',
-                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; una promo de vinoteca va como renglón con promo (o promo_id), igual que en Vender, y descuenta su stock; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1104,6 +1104,15 @@ class HerramientasDeCarga
                                     'precio_unitario' => [
                                         'type'        => 'number',
                                         'description' => 'Solo si la persona dictó un precio distinto al de la lista. Mayor a 0.',
+                                    ],
+                                    // Misión asistente-mejoras-4-dias (P3), al final: la promo de vinoteca como renglón.
+                                    'promo'           => [
+                                        'type'        => 'string',
+                                        'description' => 'Si el renglón es una PROMO de vinoteca (botón Promos; el dueño les dice combos, mix o promos): su nombre, en vez de articulo. 1 de cantidad = 1 promo (nunca las botellas que trae). Si mandás un nombre en articulo que no es ningún artículo y sí una promo, se toma como promo.',
+                                    ],
+                                    'promo_id'        => [
+                                        'type'        => 'integer',
+                                        'description' => 'Id de la promo de vinoteca, solo si otra herramienta o un "faltan" lo devolvió.',
                                     ],
                                 ],
                                 'required'   => ['cantidad'],
