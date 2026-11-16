@@ -49,10 +49,22 @@ class PagosIaHelper {
      * @param  mixed  $pagos  Input `pagos` de la herramienta: [{metodo_de_pago_id, monto?, caja_id?}].
      * @param  float  $total  Monto total de la carga.
      * @param  int  $moneda_id  Moneda de la carga (1 pesos, 2 dólares): filtra las cajas ofrecibles.
-     * @return array  ['ok' => true, 'filas' => [...], 'renglones' => [...], 'resumen' => string], o la
-     *                respuesta negativa de RespuestaDeCargaIa.
+     * @param  bool  $criterio_de_gastos  true para el GASTO (misión asistente-diario-20261116, rama B, 30/10
+     *                                    #3): la pantalla de Gastos NO exige caja (su modal solo valida que
+     *                                    cada fila tenga método: expenses/modals/payment-methods/Index.vue
+     *                                    no llama a hay_metodo_de_pago_sin_caja). Por eso, sin caja en la
+     *                                    fila y sin caja por defecto: con UNA sola caja ofrecible se usa
+     *                                    ésa y la tarjeta la nombra, y con cajas pero NINGUNA ofrecible
+     *                                    (todas cerradas) la fila va sin caja con el aviso, en vez de
+     *                                    cortar con «abrila en Tesorería». Con varias cajas se sigue
+     *                                    preguntando: elegir una al azar movería la plata de otra caja.
+     *                                    El pago y la tarea con gasto siguen como siempre.
+     * @return array  ['ok' => true, 'filas' => [...], 'renglones' => [...], 'resumen' => string,
+     *                'aviso_de_caja' => string|null], o la respuesta negativa de RespuestaDeCargaIa.
      */
-    static function validar(ContextoDeCargaIa $contexto, $pagos, $total, $moneda_id) {
+    static function validar(ContextoDeCargaIa $contexto, $pagos, $total, $moneda_id, $criterio_de_gastos = false) {
+
+        $aviso_de_caja = null;
 
         $metodos = OpcionesDeCargaIaHelper::metodos_de_pago();
 
@@ -166,10 +178,31 @@ class PagosIaHelper {
 
         $calles = OpcionesDeCargaIaHelper::calles_de_sucursales($contexto->owner_id);
 
-        if (OpcionesDeCargaIaHelper::hay_cajas($contexto->owner_id)) {
+        $cajas = OpcionesDeCargaIaHelper::hay_cajas($contexto->owner_id) ? OpcionesDeCargaIaHelper::cajas_de_la_cuenta($contexto->owner_id) : [];
+        $ofrecibles = count($cajas) ? OpcionesDeCargaIaHelper::cajas_ofrecibles($contexto, $moneda_id, $cajas) : [];
 
-            $cajas = OpcionesDeCargaIaHelper::cajas_de_la_cuenta($contexto->owner_id);
-            $ofrecibles = OpcionesDeCargaIaHelper::cajas_ofrecibles($contexto, $moneda_id, $cajas);
+        /*
+         * 🔴 Gasto con cajas pero ninguna abierta (30/10 #3, Ferre Total): la pantalla de Gastos lo deja
+         * guardar sin caja, así que el asistente no le pide al dueño que abra una. La fila va sin caja
+         * (el camino del `else` de abajo) y la tarjeta lo avisa. Una caja pedida que no se puede usar
+         * sigue siendo un error: no se la cambia por "sin caja" en silencio.
+         */
+        $gasto_sin_caja_abierta = $criterio_de_gastos && count($cajas) && !count($ofrecibles);
+
+        if ($gasto_sin_caja_abierta) {
+
+            foreach ($filas as $fila) {
+
+                if ($fila['caja_id'] > 0) {
+
+                    return RespuestaDeCargaIa::error('La caja elegida para el pago con '.$fila['metodo']->name.' no está abierta: el gasto puede ir sin caja, o abrila en Tesorería.');
+                }
+            }
+
+            $aviso_de_caja = 'No hay ninguna caja abierta: el gasto queda sin caja (no mueve ninguna caja), como cuando se carga desde Gastos sin elegir caja.';
+        }
+
+        if (count($cajas) && !$gasto_sin_caja_abierta) {
 
             if (!count($ofrecibles)) {
 
@@ -222,6 +255,15 @@ class PagosIaHelper {
                 } else {
 
                     $caja = OpcionesDeCargaIaHelper::caja_por_defecto($contexto, $fila['metodo']->id, $moneda_id, $ofrecibles, $cajas);
+
+                    /*
+                     * 30/10 #3: en un gasto, con UNA sola caja que se puede usar no hay nada que
+                     * preguntar. Se usa ésa y el renglón de la tarjeta la nombra (" → Caja X").
+                     */
+                    if (is_null($caja) && $criterio_de_gastos && count($ofrecibles) === 1) {
+
+                        $caja = $ofrecibles[0];
+                    }
 
                     if (is_null($caja)) {
 
@@ -294,6 +336,8 @@ class PagosIaHelper {
             'filas'     => $datos,
             'renglones' => $renglones,
             'resumen'   => implode(' + ', $partes),
+            // 30/10 #3 (misión asistente-diario-20261116): solo el gasto, cuando va sin caja por no haber ninguna abierta.
+            'aviso_de_caja' => $aviso_de_caja,
             // Misión agente-mejoras-uso-real: lo que la tarjeta tiene que marcar de los cheques (ver avisos_de_cheques()).
             'avisos_de_cheques'        => self::avisos_de_cheques($filas),
             'cheques_para_revisar'     => self::numeros_para_revisar($filas),

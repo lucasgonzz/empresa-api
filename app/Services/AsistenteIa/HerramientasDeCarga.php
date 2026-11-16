@@ -404,7 +404,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_gasto',
-                'description'  => 'Arma la tarjeta de un gasto para que la persona la confirme: NO registra nada. Con fecha futura no arma un gasto sino una tarea en la agenda con el gasto asociado (la respuesta lo dice en convertido_desde): en ese caso NO mandes pagos ni preguntes cómo se paga, eso se pregunta el día que la tarea se marca como hecha. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un gasto para que la persona la confirme: NO registra nada. Con fecha futura no arma un gasto sino una tarea en la agenda con el gasto asociado (la respuesta lo dice en convertido_desde): en ese caso NO mandes pagos ni preguntes cómo se paga, eso se pregunta el día que la tarea se marca como hecha. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Si la subcategoría (o su categoría) no existe, mandá subcategoria_nueva y categoria: la categoría, la subcategoría y el gasto van en UNA sola tarjeta y se crean juntos con el sí; nunca digas que el gasto queda «en espera». La caja: si la persona no la dijo no la preguntes de entrada; si hay una sola abierta la uso y la nombro, y si no hay ninguna abierta el gasto va sin caja (como en la pantalla de Gastos).',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -433,8 +433,21 @@ class HerramientasDeCarga
                             'description' => 'IVA del gasto, en pesos. Solo si la persona lo dice.',
                         ],
                         'reemplaza_a'     => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión asistente-diario-20261116 (rama B, 30/10 #3), al FINAL por el prefijo del caché:
+                         * la subcategoría y la categoría NUEVAS por nombre, en la misma tarjeta del gasto. Por eso
+                         * subcategoria_id dejó de ser obligatorio (va una de las dos).
+                         */
+                        'subcategoria_nueva' => [
+                            'type'        => 'string',
+                            'description' => 'En vez de subcategoria_id: el NOMBRE de una subcategoría que no está en consultar_subcategorias_de_gasto. La creo en la misma tarjeta del gasto (si ya existe con ese nombre, uso ésa). No la crees antes con proponer_alta.',
+                        ],
+                        'categoria'          => [
+                            'type'        => 'string',
+                            'description' => 'Con subcategoria_nueva: el nombre de la categoría de gasto donde va (una que ya tiene o una nueva, que también creo en la misma tarjeta).',
+                        ],
                     ],
-                    'required'   => ['subcategoria_id', 'monto'],
+                    'required'   => ['monto'],
                 ],
             ],
             [
