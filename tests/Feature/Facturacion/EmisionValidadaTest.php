@@ -328,6 +328,115 @@ class EmisionValidadaTest extends EmpresaTestCase
         $this->assertSame(0, $this->transporte->emisiones);
     }
 
+    public function test_vender_sin_exportacion_con_incoterms_cero_emite_una_sola_vez()
+    {
+        $venta = $this->venta(['incoterms' => '0']);
+        // Payload que conserva Vender al iniciar y al limpiar los datos fiscales.
+        $datos = ['incoterms' => 0, 'forma_de_pago' => '', 'permiso_existente' => ''];
+        $this->postear($venta, $datos)->assertStatus(201)->assertJsonPath('estado', 'emitida');
+        $this->postear($venta, $datos)->assertStatus(422);
+        $ticket = $venta->afip_tickets()->firstOrFail();
+        $this->assertSame((int) $this->emisor->id, (int) $ticket->afip_information_id);
+        $this->assertSame(1, $venta->afip_tickets()->count());
+        $this->assertSame(1, $this->transporte->emisiones);
+        $this->assertSame(0, $this->transporte->consultas);
+    }
+
+    public function test_ausencia_de_incoterms_es_canonica_en_formularios_y_conciliacion()
+    {
+        foreach ([null, '', 0, '0'] as $ausencia) {
+            $venta = $this->venta(['incoterms' => '0']);
+            $this->transporte->modo = 'timeout';
+            $this->postear($venta, ['incoterms' => $ausencia])->assertStatus(201)->assertJsonPath('estado', 'pendiente_verificacion');
+            $this->transporte->modo = 'recuperado';
+            $respuesta = $this->postear($venta, ['incoterms' => null]);
+            $this->assertSame(201, $respuesta->getStatusCode(), $respuesta->getContent());
+            $respuesta->assertJsonPath('estado', 'emitida');
+            $this->assertSame(1, $venta->afip_tickets()->count());
+        }
+        $this->assertSame(4, $this->transporte->emisiones);
+        $this->assertSame(4, $this->transporte->consultas);
+    }
+
+    public function test_opcionales_invalidos_informan_el_dato_y_la_accion_sin_ticket_ni_red()
+    {
+        $venta = $this->venta();
+        foreach (['forma_de_pago' => 'forma de pago', 'permiso_existente' => 'permiso de exportación', 'incoterms' => 'condición de venta'] as $campo => $nombre) {
+            foreach ([['invalido'], true, 1, str_repeat('x', 256)] as $valor) {
+                $respuesta = $this->postear($venta, [$campo => $valor])->assertStatus(422);
+                $this->assertStringContainsString($nombre, $respuesta->json('message'));
+                $this->assertStringContainsString('Corregí', $respuesta->json('message'));
+                $this->assertSame(0, $venta->afip_tickets()->count());
+            }
+        }
+        $this->postear($venta, ['permiso_existente' => 'invalido'])->assertStatus(422)
+            ->assertJsonPath('message', 'Indicá S o N en el permiso de exportación.');
+        $this->assertSame(0, $venta->afip_tickets()->count());
+        $this->assertSame(0, $this->transporte->emisiones);
+    }
+
+    public function test_exportacion_conserva_textos_y_valida_incoterms_recuperado_de_la_venta()
+    {
+        $venta = $this->venta_exportacion();
+        $venta->update(['incoterms' => 'CIF']);
+        $datos = ['afip_tipo_comprobante_id' => AfipTipoComprobante::where('codigo', 19)->firstOrFail()->id,
+            'forma_de_pago' => 'Transferencia a 30 días', 'permiso_existente' => 'S'];
+        $preparada = FacturaDeVentaHelper::preparar(FacturaDeVentaHelper::datos_del_cuerpo($this->cuerpo($venta, $datos)), $this->dueno->id);
+        $this->assertSame('CIF', $preparada['data']['incoterms']);
+        $this->assertSame('Transferencia a 30 días', $preparada['data']['forma_de_pago']);
+        $this->assertSame('S', $preparada['data']['permiso_existente']);
+        $this->postear($venta, $datos + ['incoterms' => 'CFR'])->assertStatus(201)->assertJsonPath('estado', 'emitida');
+        $this->assertSame('CFR', $venta->fresh()->incoterms);
+        $otra = $this->venta_exportacion();
+        // La columna actual impide persistir más de 255; se simula una lectura legada
+        // para comprobar la guarda del valor recuperado sin alterar el esquema del slot.
+        $dispatcher = Sale::getEventDispatcher();
+        Sale::setEventDispatcher(clone $dispatcher);
+        Sale::retrieved(function ($modelo) use ($otra) {
+            if ((int) $modelo->id === (int) $otra->id) {
+                $modelo->incoterms = str_repeat('x', 256);
+            }
+        });
+        try {
+            $r = $this->postear($otra, $datos)->assertStatus(422);
+        } finally {
+            Sale::setEventDispatcher($dispatcher);
+        }
+        $this->assertStringContainsString('condición de venta', $r->json('message'));
+        $this->assertStringContainsString('pedí su revisión a soporte', $r->json('message'));
+        $this->assertSame(0, $otra->afip_tickets()->count());
+        $this->assertSame(1, $this->transporte->emisiones);
+    }
+
+    public function test_asistente_acepta_la_ausencia_legacy_sin_elegir_otro_emisor()
+    {
+        $venta = $this->venta(['incoterms' => '0']);
+        list($c, $m, $r) = $this->proponer($venta, ['incoterms' => 0]);
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(0, $venta->afip_tickets()->count());
+        $this->assertSame(0, $this->transporte->emisiones);
+    }
+
+    public function test_consolidacion_con_opcional_invalido_informa_y_revierte_toda_la_escritura()
+    {
+        $cliente = Client::create(['user_id' => $this->dueno->id, 'name' => 'Cliente de consolidación']);
+        $venta = $this->venta(['client_id' => $cliente->id, 'iva_aplicado' => 1]);
+        $articulo = Article::where('user_id', $this->dueno->id)->firstOrFail();
+        $venta->articles()->attach($articulo->id, ['amount' => 1, 'price' => 1000, 'cost' => 500]);
+        $cantidad = Sale::count();
+        $respuesta = $this->postJson('api/sales/consolidar-facturacion', [
+            'sale_ids' => [$venta->id], 'client_id' => $cliente->id,
+            'afip_information_id' => $this->emisor->id, 'afip_tipo_comprobante_id' => $this->tipo->id,
+            'incoterms' => ['invalido'],
+        ])->assertStatus(422);
+        $this->assertStringContainsString('condición de venta', $respuesta->json('message'));
+        $this->assertStringContainsString('Corregí', $respuesta->json('message'));
+        $this->assertSame($cantidad, Sale::count());
+        $this->assertNull($venta->fresh()->consolidacion_facturacion_id);
+        $this->assertSame(0, $venta->afip_tickets()->count());
+        $this->assertSame(0, $this->transporte->emisiones);
+    }
+
     public function test_perfil_de_vender_puede_facturar_su_venta_y_sin_permiso_no_puede()
     {
         $empleado = User::forceCreate(['name' => 'Empleado prueba fiscal', 'email' => uniqid().'@ejemplo.test',

@@ -2660,7 +2660,7 @@ class SaleController extends Controller
 
         } catch (\Throwable $e) {
             $mensaje = $e instanceof \Illuminate\Validation\ValidationException
-                ? ($e->errors()['message'][0] ?? $e->getMessage())
+                ? ($e->errors()['facturacion'][0] ?? $e->errors()['message'][0] ?? $e->getMessage())
                 : $e->getMessage();
             Log::error('consolidarFacturacion error: ' . $mensaje);
             return response()->json(['error' => true, 'message' => $mensaje], 422);
