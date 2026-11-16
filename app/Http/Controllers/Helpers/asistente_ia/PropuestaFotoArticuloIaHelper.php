@@ -2103,6 +2103,26 @@ class PropuestaFotoArticuloIaHelper
 
         if (count($candidatos) === 0) {
 
+            /*
+             * P8 (misión asistente-mejoras-4-dias, 16/11/2026, V14): «Kilka Malbec» por «KILLKA MALBEC». Los que se
+             * le PARECEN van como opciones (nunca se elige uno solo: la foto se publica).
+             */
+            $parecidos = BusquedaPorPalabrasIaHelper::parecidos((clone $base)->where('status', 'active'), $texto, 'name', self::TOPE_CANDIDATOS);
+
+            if (count($parecidos)) {
+
+                $opciones = [];
+
+                foreach ($parecidos as $parecido) {
+
+                    $opciones[] = ['articulo_id' => $parecido['id'], 'nombre' => $parecido['nombre'], 'parecido' => true];
+                }
+
+                return RespuestaDeCargaIa::faltan(['a cuál de estos artículos (ninguno se llama "' . $texto . '", pero se le parecen)'], [
+                    'articulos' => $opciones,
+                ]);
+            }
+
             return RespuestaDeCargaIa::error(
                 'No encontré ningún artículo que se llame "' . $texto . '" ni con ese código. Buscalo con otra palabra o decime el código. '
                 /*

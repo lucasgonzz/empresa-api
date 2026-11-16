@@ -5678,7 +5678,17 @@ CONFIRMACION;
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
+                    $resultado = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
+
+                    // P8 (16/11/2026, V14): sin resultados por el nombre, los PARECIDOS (artículos y promos) para preguntar.
+                    if ($resultado === [] && trim((string) ($input['busqueda'] ?? '')) !== '' && is_null(self::articulo_id_del_input($input))) {
+                        $parecidos = \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::parecidos_de_articulos((int) $owner_id, (string) $input['busqueda']);
+                        if (count($parecidos)) {
+                            return \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::sin_resultados_con_parecidos($parecidos, (string) $input['busqueda'], 'artículos');
+                        }
+                    }
+
+                    return $resultado;
                 },
             ],
             [
@@ -5695,7 +5705,17 @@ CONFIRMACION;
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::clientes($owner_id, (string) ($input['busqueda'] ?? ''));
+                    $resultado = ConsultasSistemaIaHelper::clientes($owner_id, (string) ($input['busqueda'] ?? ''));
+
+                    // P8 (16/11/2026, V14): «Rosotto Gustavo» sin resultados → los clientes que se le PARECEN.
+                    if ($resultado === [] && trim((string) ($input['busqueda'] ?? '')) !== '') {
+                        $parecidos = \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::parecidos(\App\Models\Client::query()->where('user_id', (int) $owner_id), (string) $input['busqueda'], 'name');
+                        if (count($parecidos)) {
+                            return \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::sin_resultados_con_parecidos($parecidos, (string) $input['busqueda'], 'clientes');
+                        }
+                    }
+
+                    return $resultado;
                 },
             ],
             [

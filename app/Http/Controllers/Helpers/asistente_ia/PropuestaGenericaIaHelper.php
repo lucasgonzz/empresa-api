@@ -1538,6 +1538,27 @@ class PropuestaGenericaIaHelper
 
         if (!count($candidatas)) {
 
+            /*
+             * P8 (misión asistente-mejoras-4-dias, 16/11/2026, V14): un nombre mal escrito o dictado. Los que se
+             * le PARECEN vuelven como opciones; en una edición o una baja nunca se elige uno solo.
+             */
+            $parecidas = BusquedaPorPalabrasIaHelper::parecidos(self::consulta_del_dueno($contexto, $declaracion), $texto, $columna, self::MAX_OPCIONES);
+
+            if (count($parecidas)) {
+
+                $opciones = [];
+
+                foreach ($parecidas as $parecida) {
+
+                    $opciones[] = ['id' => $parecida['id'], 'nombre' => $parecida['nombre'], 'parecido' => true];
+                }
+
+                return RespuestaDeCargaIa::faltan(
+                    ['cuál de '.($declaracion['genero'] === 'f' ? 'estas ' : 'estos ').$declaracion['etiqueta'].' es: ninguno se llama "'.$texto.'", pero se le parecen (puede estar mal escrito)'],
+                    [$declaracion['entidad'] => $opciones]
+                );
+            }
+
             return RespuestaDeCargaIa::error('No encontré '.($declaracion['genero'] === 'f' ? 'ninguna ' : 'ningún ').$etiqueta.' que se llame como "'.$texto.'".');
         }
 
