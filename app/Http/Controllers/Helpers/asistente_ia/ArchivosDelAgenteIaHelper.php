@@ -107,6 +107,30 @@ class ArchivosDelAgenteIaHelper
             return self::no_se_puede('La tabla no tiene filas. Primero consultá los datos con las herramientas de consulta y después mandá las filas acá.');
         }
 
+        return self::guardar_tabla_en_excel($owner_id, $conversation, $assistant_message, $tabla, isset($input['nombre_archivo']) ? $input['nombre_archivo'] : null);
+    }
+
+    /**
+     * Arma el .xlsx de una tabla YA NORMALIZADA ({titulo, columnas: [{clave, etiqueta, formato}], filas}),
+     * lo deja en el disco privado, guarda la fila y devuelve el link con su token. Es lo que hacía
+     * exportar_excel() después de validar; separado en la misión asistente-mejoras-4-dias (16/11/2026, P5)
+     * para que el Excel que arma el SERVIDOR (ValorizacionDeStockIaHelper::exportar_excel, sin el techo de
+     * filas que escribe el modelo) salga por el mismo canal, con la misma seguridad del link.
+     *
+     * @param  int  $owner_id
+     * @param  \App\Models\AiConversation|null  $conversation
+     * @param  \App\Models\AiMessage|null  $assistant_message
+     * @param  array  $tabla
+     * @param  mixed  $nombre_pedido  El nombre_archivo que pidió el modelo, o null.
+     * @return array<string, mixed>
+     */
+    public static function guardar_tabla_en_excel($owner_id, $conversation, $assistant_message, array $tabla, $nombre_pedido = null): array
+    {
+        if (!self::hay_tabla()) {
+
+            return self::no_se_puede('Esta instalación todavía no tiene lista la parte de archivos del agente (falta actualizar el sistema). Por ahora no puedo armar el Excel: decíselo a la persona y ofrecele los datos en el texto.');
+        }
+
         $base = LinkDePdfIaHelper::base_publica((int) $owner_id);
 
         if ($base === '') {
@@ -120,7 +144,7 @@ class ArchivosDelAgenteIaHelper
         $uuid = (string) Str::uuid();
         $token = Str::random(self::LARGO_DEL_TOKEN);
         $path = self::CARPETA . '/' . (int) $owner_id . '/' . $uuid . '.xlsx';
-        $nombre = self::nombre_de_archivo(isset($input['nombre_archivo']) ? $input['nombre_archivo'] : null, $tabla['titulo']);
+        $nombre = self::nombre_de_archivo($nombre_pedido, $tabla['titulo']);
         $vence = Carbon::now()->addDays(self::DIAS_DE_VIDA);
 
         try {
@@ -303,6 +327,12 @@ class ArchivosDelAgenteIaHelper
      */
     protected static function armar_xlsx(array $tabla): string
     {
+        // P5 (16/11/2026): las tablas grandes que arma el servidor van por el camino directo (ver armar_xlsx_grande()).
+        if (count($tabla['filas']) > self::MAX_FILAS_DEL_EXCEL) {
+
+            return self::armar_xlsx_grande($tabla);
+        }
+
         $binder_anterior = Cell::getValueBinder();
 
         try {
@@ -312,6 +342,99 @@ class ArchivosDelAgenteIaHelper
         } finally {
 
             Cell::setValueBinder($binder_anterior);
+        }
+    }
+
+    /**
+     * El .xlsx de una tabla GRANDE (más de MAX_FILAS_DEL_EXCEL filas: solo las que arma el servidor, como
+     * ValorizacionDeStockIaHelper::exportar_excel), escrito directo con PhpSpreadsheet.
+     *
+     * Misión asistente-mejoras-4-dias (16/11/2026, P5). Medido en s3 con 10.000 artículos: por maatwebsite
+     * (con ShouldAutoSize, que mide cada celda) 12,6 s; directo, 5 s. El turno del agente tiene techo de
+     * tiempo y el Excel de un catálogo entero no puede comérselo. El contenido es el MISMO: las filas, el
+     * encabezado, el título y los formatos salen de TablaDelAgenteExport (array(), headings(), title(),
+     * columnFormats()), y cada celda se escribe con su tipo EXPLÍCITO como en su bindValue(): los números
+     * como número y todo lo demás como texto, 🔴 nunca como fórmula. El ancho de cada columna se estima
+     * con las primeras filas en vez de medir todas.
+     *
+     * No pasa por el binder estático, así que no hay nada que devolver como estaba (ver armar_xlsx()).
+     *
+     * @param  array  $tabla
+     * @return string
+     */
+    protected static function armar_xlsx_grande(array $tabla): string
+    {
+        $export = new TablaDelAgenteExport($tabla);
+
+        $libro = new \PhpOffice\PhpSpreadsheet\Spreadsheet();
+        $hoja = $libro->getActiveSheet();
+        $hoja->setTitle($export->title());
+
+        $encabezado = $export->headings();
+        $anchos = [];
+
+        foreach ($encabezado as $i => $etiqueta) {
+
+            $hoja->setCellValueExplicitByColumnAndRow($i + 1, 1, (string) $etiqueta, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+            $anchos[$i] = mb_strlen((string) $etiqueta);
+        }
+
+        $hoja->getStyle('1:1')->getFont()->setBold(true);
+
+        $fila = 1;
+
+        foreach ($export->array() as $renglon) {
+
+            $fila++;
+
+            foreach ($renglon as $i => $valor) {
+
+                if (is_null($valor)) {
+                    continue;
+                }
+
+                if (is_int($valor) || is_float($valor)) {
+
+                    $hoja->setCellValueExplicitByColumnAndRow($i + 1, $fila, $valor, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_NUMERIC);
+
+                } else {
+
+                    $texto = is_bool($valor) ? ($valor ? 'Sí' : 'No') : (string) $valor;
+
+                    $hoja->setCellValueExplicitByColumnAndRow($i + 1, $fila, $texto, \PhpOffice\PhpSpreadsheet\Cell\DataType::TYPE_STRING);
+
+                    if ($fila <= 200) {
+                        $anchos[$i] = max($anchos[$i], mb_strlen($texto));
+                    }
+                }
+            }
+        }
+
+        foreach ($export->columnFormats() as $letra => $formato) {
+
+            $hoja->getStyle($letra . '2:' . $letra . max(2, $fila))->getNumberFormat()->setFormatCode($formato);
+        }
+
+        foreach ($anchos as $i => $ancho) {
+
+            $hoja->getColumnDimensionByColumn($i + 1)->setWidth(min(60, max(10, $ancho + 2)));
+        }
+
+        $escritor = new \PhpOffice\PhpSpreadsheet\Writer\Xlsx($libro);
+
+        ob_start();
+
+        try {
+
+            $escritor->save('php://output');
+
+            return (string) ob_get_contents();
+
+        } finally {
+
+            ob_end_clean();
+
+            $libro->disconnectWorksheets();
         }
     }
 

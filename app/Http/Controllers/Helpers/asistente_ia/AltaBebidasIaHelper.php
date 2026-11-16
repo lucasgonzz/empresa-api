@@ -36,7 +36,24 @@ class AltaBebidasIaHelper
             .'el sistema convierte una sola vez. No mandes además stock_inicial. Si el negocio tiene más de una sucursal, elegí explícitamente el depósito para ese ingreso; con una sola, no lo mandes ni lo preguntes. '
             .'Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras. '
             .'Si no hay coincidencia verificada, informalo y mandá bebida.sin_imagen=true para mostrar ese límite. '
-            .'Una única propuesta muestra datos, imagen, conversión y depósito; SIEMPRE requiere confirmación, incluso en modo directo.';
+            .'Una única propuesta muestra datos, conversión y depósito; SIEMPRE requiere confirmación, incluso en modo directo. '
+            .'La foto encontrada en INTERNET nunca va dentro del alta (el artículo se crea sin ella): cuando la persona confirme el alta, proponé la foto APARTE con proponer_foto_articulo (articulo_id del alta e imagen_id de foto_aparte), que la muestra y espera su propio sí. Nunca la pongas sin preguntar.';
+    }
+
+    /**
+     * true si la foto del alta la encontró el asistente en INTERNET (no la mandó el dueño). P6 (16/11/2026).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $imagen_id
+     * @return bool
+     */
+    public static function es_foto_de_internet(ContextoDeCargaIa $contexto, $imagen_id): bool
+    {
+        if (is_array(\Illuminate\Support\Facades\Cache::get('alta_bebida_imagen:'.(int) $imagen_id))) {
+            return true;
+        }
+        $foto = FotosDeLaConversacionIaHelper::por_id($contexto, $imagen_id);
+        return !is_null($foto) && !FotosDeLaConversacionIaHelper::la_mando_el_dueno($foto);
     }
 
     public static function heredar(ContextoDeCargaIa $contexto, $reemplaza_a, $bebida): array
@@ -120,8 +137,22 @@ class AltaBebidasIaHelper
         } else {
             unset($bebida['stock_unidades']);
         }
-        if (empty($extras['imagen_id']) && empty($extras['con_foto_de_la_conversacion'])) {
-            $renglones[] = ['etiqueta' => 'Imagen', 'valor' => 'Sin imagen: no se asignará ninguna foto.'];
+        /*
+         * 🔴 P6 (misión asistente-mejoras-4-dias, 16/11/2026, V13). Truvari, conv 19 y 24: el alta le puso al
+         * Malbec la foto de un vino BLANCO encontrada en internet («agregaste una imagen de un vino blanco y
+         * es un vino tinto… preguntame antes»). La foto de INTERNET ya no viaja dentro del alta: el artículo
+         * se crea sin ella y la foto va APARTE, en su propia tarjeta (proponer_foto_articulo con este
+         * imagen_id), que la muestra y espera su propio sí. La que mandó el dueño sigue en el alta.
+         */
+        if (!empty($extras['imagen_id']) && self::es_foto_de_internet($contexto, $extras['imagen_id'])) {
+            $bebida['foto_web_aparte'] = (int) $extras['imagen_id'];
+            unset($extras['imagen_id']);
+            $renglones[] = ['etiqueta' => 'Foto', 'valor' => 'La que encontré en internet NO va en esta alta: te la muestro aparte, para que confirmes si es la correcta.'];
+        } else {
+            unset($bebida['foto_web_aparte']);
+            if (empty($extras['imagen_id']) && empty($extras['con_foto_de_la_conversacion'])) {
+                $renglones[] = ['etiqueta' => 'Imagen', 'valor' => 'Sin imagen: no se asignará ninguna foto.'];
+            }
         }
         $bebida['botellas_por_caja'] = (int) $botellas;
         return ['extras' => $extras, 'bebida' => $bebida, 'renglones' => $renglones];

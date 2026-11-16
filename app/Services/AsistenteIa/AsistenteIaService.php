@@ -41,6 +41,7 @@ use App\Http\Controllers\Helpers\asistente_ia\LecturaDePlanillaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PlanillaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\VentaConDatosInventadosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
@@ -312,9 +313,11 @@ class AsistenteIaService
      *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
      *   - 'soporte' (A7): «Listo el pedido a soporte» sin un pedir_ayuda_a_soporte ok;
      *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
-     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento».
+     *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento»;
+     *   - 'solo_anotacion' (P4 de la misión asistente-mejoras-4-dias, V22): «Me lo anoto.» y nada más, cuando la
+     *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento.
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -715,7 +718,8 @@ class AsistenteIaService
         $this->imagen_por_whatsapp = $es_whatsapp && ImagenPorWhatsappIaHelper::disponible($conversation, $owner);
 
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
-        $messages = $this->build_messages_payload($conversation);
+        /* P7 de la misión asistente-mejoras-4-dias: el historial termina en el mensaje que este turno contesta. */
+        $messages = $this->build_messages_payload($conversation, (int) $assistant_message->id);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app, $conversation);
 
         foreach ($notas_de_planilla as $nota_de_planilla) {
@@ -739,6 +743,25 @@ class AsistenteIaService
          */
         if (! is_null($confirmacion_determinista)) {
             $messages = $this->con_nota_en_el_ultimo_user($messages, ConfirmacionDeterministaIaHelper::nota($confirmacion_determinista));
+        }
+
+        /*
+         * Misión asistente-diario-20261116 (rama C, 31/10 #5): «poné el stock de esos en 0» se resuelve contra
+         * los artículos nombrados en la ÚLTIMA respuesta; la nota viaja pegada al mensaje. Ver
+         * ReferenciaALoAnteriorIaHelper.
+         */
+        $nota_de_referencia = \App\Http\Controllers\Helpers\asistente_ia\ReferenciaALoAnteriorIaHelper::nota($conversation, $assistant_message);
+
+        if (! is_null($nota_de_referencia)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, $nota_de_referencia);
+        }
+
+        /*
+         * Rama C, B2: un mensaje que no se entiende (audio sin transcribir o en otra escritura) lleva la nota de
+         * pedir que lo repita; la guarda dura está en ConfirmacionPorTextoIaHelper::rechazo().
+         */
+        if (\App\Http\Controllers\Helpers\asistente_ia\EntradaIninteligibleIaHelper::es_ininteligible($this->pedido_de_la_persona($conversation, $assistant_message))) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\EntradaIninteligibleIaHelper::NOTA);
         }
 
         /*
@@ -790,6 +813,17 @@ class AsistenteIaService
          * confirmar_carga_pendiente (es justo el texto donde se inventan números).
          */
         if (! is_null($confirmacion_determinista)) {
+            $toco_una_carga = true;
+        }
+
+        /*
+         * P4 de la misión asistente-mejoras-4-dias (16/11/2026): el sí a una pregunta de carga que no tenía
+         * propuesta detrás arma la carga en ESTE turno, sin volver a preguntar (ver SiQueRearmaLaCargaIaHelper).
+         * Rearmar una carga es decidir una carga: arranca escalado.
+         */
+        if (is_null($confirmacion_determinista) && $con_acciones
+            && \App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::aplica($conversation, $assistant_message)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\SiQueRearmaLaCargaIaHelper::nota());
             $toco_una_carga = true;
         }
 
@@ -979,6 +1013,9 @@ class AsistenteIaService
          * después del bucle: el cierre es siempre la última vuelta, y el final sin texto lo mira.
          */
         $cerrando = false;
+
+        /* Rama C (M2): true solo para la vuelta del reintento por portugués o inglés (sale sin herramientas). */
+        $reintento_de_idioma = false;
 
         /* Por qué cerró el turno ('techo', 'presupuesto' o 'ventana'), para el log y el detalle técnico. */
         $motivo_del_cierre = '';
@@ -1170,6 +1207,15 @@ class AsistenteIaService
              */
             if ($cerrando) {
                 $body['tool_choice'] = ['type' => 'none'];
+            }
+
+            /*
+             * Rama C (M2): la vuelta del reintento por idioma tampoco puede pedir herramientas: es reescribir
+             * en español lo que ya se contestó. Una sola vuelta: después se apaga.
+             */
+            if ($reintento_de_idioma) {
+                $body['tool_choice'] = ['type' => 'none'];
+                $reintento_de_idioma = false;
             }
 
             try {
@@ -1721,6 +1767,31 @@ class AsistenteIaService
                 }
             }
 
+            /*
+             * Misión asistente-diario-20261116 (rama C, 30/10 #14): una respuesta en PORTUGUÉS o en INGLÉS
+             * («$228 milhões», Ferre Total 30/10) se reintenta UNA vez pidiendo la MISMA respuesta en español.
+             * A diferencia del chino, vale también después de herramientas (el caso real fue así): el pedido
+             * es reescribir, no rehacer. Si el reintento vuelve igual, queda ese texto (no se descarta).
+             *
+             * Revisión de la rama C (M2): va DESPUÉS de las guardas de veracidad (imagen, tarjeta, carga,
+             * envío, veracidad) y solo si ninguna disparó —si disparó una, su reintento es el único del turno—,
+             * y la vuelta del reintento sale con `tool_choice: none` ($reintento_de_idioma): solo puede
+             * escribir, así no duplica tarjetas ni cargas.
+             */
+            if (TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles($final_text)
+                && ! $cerrando && is_null($texto_antes_del_reintento) && $iterations < $max_iterations
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+                $texto_antes_del_reintento = $final_text;
+                $reintento_de_idioma       = true;
+                $messages[] = ['role' => 'assistant', 'content' => $final_text];
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => '[El sistema detectó una respuesta en portugués o en inglés. Reescribí esa misma respuesta en español rioplatense, con los mismos datos y números. No vuelvas a llamar herramientas por lo que ya hiciste.]',
+                ];
+                $final_text = '';
+                continue;
+            }
+
             break;
         }
 
@@ -1750,7 +1821,8 @@ class AsistenteIaService
          * le mostraría a la persona la nota interna; queda vacío y va lo hecho armado sin el modelo
          * (respuesta_sin_terminar()).
          */
-        $crudo = trim($final_text);
+        /* P4 de la misión asistente-mejoras-4-dias: el crudo de respaldo tampoco lleva un bloque <system> ni <thinking>. */
+        $crudo = trim(TextoFinalIaHelper::sin_bloques_internos($final_text));
 
         if (TextoFinalIaHelper::contiene_prosa_cjk($crudo)) {
             $respaldo = is_null($confirmacion_determinista)
@@ -2022,6 +2094,9 @@ class AsistenteIaService
         if (! $la_tarjeta_cambio_el_texto) {
             $final_text = $this->texto_veraz($final_text, $tools, $conversation, $assistant_message, $herramientas_pedidas, $guarda_de_envio, ! is_null($texto_antes_del_reintento));
         }
+
+        /* P4 (W2) de la misión asistente-mejoras-4-dias: lo que ya quedó hecho en el turno no se vuelve a preguntar. */
+        $final_text = $this->sin_preguntar_lo_ya_hecho($final_text, $assistant_message, $confirmacion_determinista);
 
         /*
          * Misión app-ia-imagen-prometida, después del reintento (o sin él, si no quedaba vuelta ni tiempo,
@@ -2452,6 +2527,19 @@ Cómo hablás:
 - Respuestas cortas: hasta 6 oraciones, salvo que te pidan explícitamente el detalle.
 - No saludes ni te presentes en cada mensaje: la conversación ya está empezada.
 - Cuando la persona se despida, despedite brevemente. Si quedó algo pendiente, decí qué falta.
+  🔴 Antes de nombrar un pendiente, fijate en la conversación si ya se hizo (una carga confirmada,
+  un aviso que ya se prendió): lo que ya está hecho no se repite como pendiente.
+- Si la persona te dice CÓMO quiere que trabajes («cada vez que cargues una venta preguntame si la
+  facturo», «no me preguntes dos veces»), no le discutas si se puede: guardalo en tu memoria si la
+  tenés y cumplilo desde el próximo mensaje.
+- Si el mensaje es una respuesta automática de OTRA empresa («Gracias por contactarte con…», «Nuestro
+  horario de atención es…», «nos pondremos en contacto a la brevedad»), no es un pedido de la persona:
+  no lo contestes como si lo fuera ni retomes pendientes; decí en una línea que parece una respuesta
+  automática y preguntá si necesita algo.
+- Si te repite la MISMA pregunta de cómo se usa una pantalla, tu explicación no le sirvió: no la
+  repitas. Preguntale qué ve en la pantalla o qué le aparece, o ofrecele pedirle ayuda a soporte.
+- Antes de mandarla a hacer algo a una pantalla, fijate si alguna de tus herramientas lo hace y
+  ofrecé hacerlo vos.
 
 {$formato}
 Qué podés afirmar:
@@ -2487,11 +2575,15 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- 🔴 «Cómo van las ventas», «actualizá», «revisalo», «de nuevo», «fijate otra vez»: SIEMPRE volvé a
+  llamar a consultar_resumen_de_ventas; nunca repitas un número de una respuesta anterior de la charla.
 - Leé el pedido como lo diría un comerciante (misión asistente-altas-y-conversacion, 16/10/2026):
   "lo que más vendo de [proveedor]" es una pregunta de VENTAS: consultar_articulos_mas_vendidos
   con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
   compro a [proveedor]" es consultar_compras_a_un_proveedor. Que una frase nombre a un proveedor
   no la vuelve una pregunta de compras.
+- «Esos», «estos», «los dos» se refieren a lo que nombraste en tu última respuesta, no a una foto
+  ni a un pedido viejo: armá la carga con esos, sin preguntar cuáles.
 - "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
   además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
   monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
@@ -2522,11 +2614,44 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}{$reglas_del_manual}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}{$reglas_del_manual}{$this->bloque_de_la_direccion_del_sistema($owner)}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
 SYSTEM;
+    }
+
+    /**
+     * La dirección del sistema del negocio, para que el asistente la pueda dar (misión
+     * asistente-diario-20261116, rama C, M6-url).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, 14/11/2026, mensajes 488-493): el dueño le pidió la dirección del
+     * sistema y el asistente contestó «no la tengo». La sabe el sistema: es la `spa_url` que el admin anuncia
+     * en cada mensaje de WhatsApp (o la `SPA_URL` del `.env`), la misma base de los links de los avisos
+     * (AvisosDelAsistenteHelper::base_del_link()). 🔴 Nunca `app.url`: es la de la API y daría 404.
+     *
+     * Sin una dirección conocida, la regla dice que no la invente. Va al final del bloque fijo, antes de la
+     * fecha: cambia por dueño (como el nombre del negocio), no por turno.
+     *
+     * @param  mixed  $owner
+     * @return string
+     */
+    protected function bloque_de_la_direccion_del_sistema($owner): string
+    {
+        $url = null;
+
+        try {
+            $url = is_null($owner) ? null : \App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper::base_del_link((int) $owner->id);
+        } catch (\Throwable $e) {
+            $url = null;
+        }
+
+        if (is_null($url) || trim((string) $url) === '') {
+            return "Si te piden la dirección (el link) del sistema, no la inventes: decí que es la misma con la que entran desde la computadora y que la pueden copiar de la barra del navegador.\n\n";
+        }
+
+        return 'La dirección del sistema de este negocio es ' . $url . ' . Si te la piden (para entrar desde otra '
+            . "computadora o el celular, o para pasársela a un empleado), dala tal cual.\n\n";
     }
 
     /**
@@ -3746,10 +3871,22 @@ CONFIRMACION;
      * foto no la necesita el modelo para cargar la compra: la engancha
      * proponer_compra_con_factura leyendo las que todavía no se gestionaron.
      *
+     * 🔴 P7 DE LA MISIÓN asistente-mejoras-4-dias (16/11/2026): CON `$hasta_id`, SOLO LO ANTERIOR AL TURNO.
+     * Cada mensaje del dueño tiene su assistant y su job, y cuando escribe dos seguidos (un audio y un texto,
+     * o un texto mientras el anterior todavía se contesta) el job del PRIMERO arrancaba con el SEGUNDO ya
+     * guardado: la consulta traía los últimos N `listo` de la conversación sin tope de id. El modelo
+     * contestaba los dos juntos, y el job del segundo, que ve esa respuesta y su propio mensaje, volvía a
+     * contestar lo mismo. Truvari, 13/11: «*La Linda Malbec*… la botella sale $7.833,33» (281, a las
+     * 09:08:39) contesta el audio 282, que es de las 09:08:50, y 283 lo repite; lo mismo 285/287 (Angélica) y
+     * la venta 3098 con los $1.000 que pedía un audio posterior. Con `$hasta_id` (el assistant que se
+     * genera) entra solo lo que el dueño ya había dicho ANTES de este turno: cada mensaje se contesta en su
+     * turno y una sola vez. Sin el parámetro, lo de siempre (lo usan los tests y otros lectores).
+     *
      * @param AiConversation $conversation
+     * @param int|null $hasta_id  El id del assistant que se está generando: entra solo lo anterior.
      * @return array<int, array{role: string, content: string|array}>
      */
-    public function build_messages_payload(AiConversation $conversation): array
+    public function build_messages_payload(AiConversation $conversation, $hasta_id = null): array
     {
         $this->fotos_del_payload = [];
 
@@ -3777,6 +3914,9 @@ CONFIRMACION;
 
         $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('estado', 'listo')
+            ->when(! is_null($hasta_id), function ($query) use ($hasta_id) {
+                $query->where('id', '<', (int) $hasta_id);
+            })
             ->where(function ($query) use ($con_archivos) {
                 $query->where(function ($con_texto) {
                     $con_texto->whereNotNull('contenido')->where('contenido', '!=', '');
@@ -4365,6 +4505,24 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
         }
 
+        /* P4 (V22): «Me lo anoto.» y nada más, con un pedido o una pregunta sin contestar. */
+        if ($guarda === 'solo_anotacion') {
+            return AnotacionPrometidaIaHelper::es_solo_la_anotacion($saneado)
+                && AnotacionPrometidaIaHelper::pide_o_pregunta_algo($this->pedido_de_la_persona($conversation, $assistant_message));
+        }
+
+        /* Misión asistente-mejoras-4-dias (P1, V1): una venta «con fecha 11/11» o «cobrada con» lo que la tarjeta no tiene. */
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+
+            if (! VentaConDatosInventadosIaHelper::es_turno_de_venta($saneado, $herramientas_pedidas, $assistant_message)) {
+                return false;
+            }
+
+            return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message)
+                || VentaConDatosInventadosIaHelper::afirma_otro_total($saneado, $assistant_message);
+        }
+
         return false;
     }
 
@@ -4389,6 +4547,14 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
         }
 
+        if ($guarda === 'solo_anotacion') {
+            return AnotacionPrometidaIaHelper::nota_para_contestar_lo_pedido();
+        }
+
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+            return VentaConDatosInventadosIaHelper::nota_para_reintentar();
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4399,8 +4565,12 @@ CONFIRMACION;
      * @param  string  $texto
      * @return string
      */
-    protected function texto_honesto_de_la_guarda($guarda, $texto): string
+    protected function texto_honesto_de_la_guarda($guarda, $texto, $assistant_message = null): string
     {
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA && $assistant_message instanceof AiMessage) {
+            return VentaConDatosInventadosIaHelper::texto_honesto($texto, $assistant_message);
+        }
+
         if ($guarda === 'soporte') {
             return PedidoDeAyudaASoporteIaHelper::sin_el_pedido_inventado($texto, $this->codigo_de_la_herramienta(PedidoDeAyudaASoporteIaHelper::HERRAMIENTA));
         }
@@ -4411,6 +4581,11 @@ CONFIRMACION;
 
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::sin_lo_prometido($texto);
+        }
+
+        /* Sin aviso que reemplace: si el reintento tampoco contestó, el texto queda como está. */
+        if ($guarda === 'solo_anotacion') {
+            return (string) $texto;
         }
 
         return CargaSinPropuestaIaHelper::texto_honesto($texto);
@@ -4452,7 +4627,7 @@ CONFIRMACION;
                     'texto'                => mb_substr($texto, 0, 300),
                 ]);
 
-                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto);
+                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto, $assistant_message);
             } catch (\Throwable $e) {
                 Log::warning('AsistenteIaService: no se pudo corregir la veracidad del texto; se deja como está.', [
                     'ai_message_id' => (int) $assistant_message->id,
@@ -4463,6 +4638,42 @@ CONFIRMACION;
         }
 
         return $texto;
+    }
+
+    /**
+     * El texto sin la pregunta de confirmación del final cuando la carga YA quedó hecha en este turno (P4 de
+     * la misión asistente-mejoras-4-dias, W2): ejecutada en el acto por el modo de confianza o por el sí que la
+     * persona ya había dado, o confirmada por el sistema antes de llamar al modelo. «Listo, quedó prendido el
+     * aviso. ¿Lo hago?» le pide un sí a algo que ya está hecho. Si el mensaje dejó alguna tarjeta esperando, la
+     * pregunta puede ser de ésa y no se toca. Nunca rompe el turno: si algo falla, el texto tal cual.
+     *
+     * @param  string  $texto
+     * @param  AiMessage  $assistant_message
+     * @param  array|null  $confirmacion_determinista
+     * @return string
+     */
+    protected function sin_preguntar_lo_ya_hecho($texto, AiMessage $assistant_message, $confirmacion_determinista): string
+    {
+        $texto = (string) $texto;
+
+        try {
+            $acciones = AiMessageAction::where('ai_message_id', $assistant_message->id)->get();
+
+            if ($acciones->contains(function ($accion) {
+                return $accion->estado_guardado() === AiMessageAction::ESTADO_PROPUESTA;
+            })) {
+                return $texto;
+            }
+
+            $hecha = $acciones->contains(function ($accion) {
+                return $accion->estado_guardado() === AiMessageAction::ESTADO_CONFIRMADA;
+            }) || (is_array($confirmacion_determinista) && ! empty($confirmacion_determinista['resultado']['ok']));
+
+            return $hecha ? CargaSinPropuestaIaHelper::sin_la_pregunta_de_confirmar($texto) : $texto;
+
+        } catch (\Throwable $e) {
+            return $texto;
+        }
     }
 
     /**
@@ -5872,7 +6083,7 @@ CONFIRMACION;
         return [
             [
                 'name' => 'consultar_stock_de_articulos',
-                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado.',
+                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado. presentacion es cuántas unidades trae la caja; si precio_es_por dice «caja de N», precio es el de la CAJA y precio_por_unidad el de una unidad (una botella). costo (si viene) es por lo que dice costo_es_por. Nunca completes una presentación, un precio por unidad ni un costo que no venga acá.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -5885,8 +6096,21 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
-                'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    // Misión asistente-mejoras-4-dias (P2): el costo, solo a quien lo ve en la pantalla (`articles.cost`).
+                    $persona = $conversation instanceof AiConversation ? User::find($conversation->auth_user_id) : null;
+
+                    $resultado = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input), PermisosIaHelper::puede($persona, 'articles.cost'));
+
+                    // P8 (16/11/2026, V14): sin resultados por el nombre, los PARECIDOS (artículos y promos) para preguntar.
+                    if ($resultado === [] && trim((string) ($input['busqueda'] ?? '')) !== '' && is_null(self::articulo_id_del_input($input))) {
+                        $parecidos = \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::parecidos_de_articulos((int) $owner_id, (string) $input['busqueda']);
+                        if (count($parecidos)) {
+                            return \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::sin_resultados_con_parecidos($parecidos, (string) $input['busqueda'], 'artículos');
+                        }
+                    }
+
+                    return $resultado;
                 },
             ],
             [
@@ -5903,7 +6127,17 @@ CONFIRMACION;
                     'required' => ['busqueda'],
                 ],
                 'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::clientes($owner_id, (string) ($input['busqueda'] ?? ''));
+                    $resultado = ConsultasSistemaIaHelper::clientes($owner_id, (string) ($input['busqueda'] ?? ''));
+
+                    // P8 (16/11/2026, V14): «Rosotto Gustavo» sin resultados → los clientes que se le PARECEN.
+                    if ($resultado === [] && trim((string) ($input['busqueda'] ?? '')) !== '') {
+                        $parecidos = \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::parecidos(\App\Models\Client::query()->where('user_id', (int) $owner_id), (string) $input['busqueda'], 'name');
+                        if (count($parecidos)) {
+                            return \App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper::sin_resultados_con_parecidos($parecidos, (string) $input['busqueda'], 'clientes');
+                        }
+                    }
+
+                    return $resultado;
                 },
             ],
             [
@@ -6398,7 +6632,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total. 🔴 Las ventas cambian minuto a minuto: cada "cómo van", "actualizá", "revisalo" o "de nuevo" es una llamada NUEVA, nunca el número de una respuesta anterior; decí la hora de consultado_a_las. "caja" (ventas por caja) reparte lo que las ventas hicieron entrar a cada caja, con un grupo aparte para lo vendido a cuenta corriente, que no entra a ninguna: no es el saldo de la caja (eso es flujo_caja de consultar_reporte_contable).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6430,6 +6664,11 @@ CONFIRMACION;
                             'description' => 'desc (default: de mayor a menor) o asc (de menor a mayor: "los que menos", "margen negativo").',
                             'enum'        => ['desc', 'asc'],
                         ],
+                        // Misión asistente-diario-20261116 (A9), al final por el prefijo del caché.
+                        'hasta_hora' => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM (24 h). Solo las ventas cargadas hasta esa hora de cada día. Para "cómo vamos hoy contra ayer": una llamada de hoy y otra de ayer, las dos con hasta_hora = la hora de consultado_a_las de la de hoy.',
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -6442,7 +6681,8 @@ CONFIRMACION;
                         isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
                         isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null,
                         isset($input['orden']) ? (string) $input['orden'] : null,
-                        isset($input['direccion']) ? (string) $input['direccion'] : null
+                        isset($input['direccion']) ? (string) $input['direccion'] : null,
+                        isset($input['hasta_hora']) ? (string) $input['hasta_hora'] : null
                     );
                 },
             ],
@@ -6768,6 +7008,112 @@ CONFIRMACION;
                         $assistant_message instanceof AiMessage ? $assistant_message : null);
                 },
             ],
+            /*
+             * 🔴 MISIÓN asistente-mejoras-4-dias (16/11/2026, P5: V9 y V16), al final por la regla del prefijo del
+             * caché. Pesca pidió «cuánta plata hay de venta con todo el stock del depósito» y después el Excel: el
+             * agente sumaba de cabeza sobre páginas de 100 y prometió «el Excel con las 948 filas» que nunca
+             * llegó (exportar_excel le hace escribir las filas al modelo). Las cuentas y las filas las hace el
+             * SERVIDOR: ValorizacionDeStockIaHelper. Las dos son de lectura y van en los tres canales.
+             */
+            [
+                'name' => 'valorizar_stock',
+                'description' => 'CUÁNTA PLATA HAY EN STOCK, calculado por el sistema sobre TODOS los artículos (no una muestra): stock × precio de venta de hoy (valor_a_precio) y stock × costo (valor_a_costo, solo si quien pregunta puede ver costos), unidades, ganancia potencial y la AUDITORÍA DE PRECIOS (cuántos con stock no tienen precio, no tienen costo o tienen precio menor o igual al costo). En total o agrupado por rubro, proveedor o depósito; con deposito, el stock de ese depósito. Acepta los mismos filtros que contar_articulos_por_filtro (proveedor por nombre: "los precios de Albatros"). 🔴 Es LA herramienta de "cuánta plata tengo en mercadería", "cuánto vale el stock del depósito" y "¿están bien los precios de tal proveedor?": nunca lo sumes vos sobre listas paginadas. Contestá con los números que trae, sin recalcular. Para la lista artículo por artículo, exportar_articulos_excel con los mismos filtros. Si trae "error" o "faltan", contá eso.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'filtros' => HerramientasDeCarga::esquema_de_filtros(),
+                        'deposito' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el depósito o sucursal por su nombre, para valorizar solo el stock de ese depósito. Sin esto, el stock total de cada artículo.',
+                        ],
+                        'agrupar_por' => [
+                            'type'        => 'string',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::AGRUPACIONES,
+                            'description' => 'ninguna (default), rubro, proveedor o deposito.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::valorizar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        $input
+                    );
+                },
+            ],
+            [
+                'name' => 'exportar_articulos_excel',
+                'description' => 'Arma un EXCEL (.xlsx) con los ARTÍCULOS que cumplen un filtro y devuelve un LINK para bajarlo. Las filas las lee el SISTEMA (todas las que cumplen el filtro, hasta ' . \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::MAX_FILAS_DEL_EXCEL . '): vos mandás solo filtros y columnas, nunca las filas. 🔴 Para "pasame los artículos / el stock / la lista de precios en un Excel" va ESTA, no exportar_excel (que es para tablas chicas que ya consultaste). Mismos filtros que contar_articulos_por_filtro; solo recorta: con_stock, sin_stock, stock_negativo, sin_precio, sin_costo o precio_menor_o_igual_al_costo (la revisión de precios). Columnas: nombre, codigo, codigo_de_proveedor, rubro, proveedor, marca, stock, costo, precio, valor_a_costo, valor_a_precio, en_tienda (sin columnas van las de siempre; las de costo solo si quien pregunta puede ver costos). La respuesta trae el link: pasáselo TAL CUAL, sin acortarlo; vence a los 7 días. Si trae "error", contá el motivo tal cual (si son demasiados, preguntá por qué filtrar). Nunca digas que no podés armar un Excel.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'filtros' => HerramientasDeCarga::esquema_de_filtros(),
+                        'deposito' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el depósito o sucursal por su nombre; el stock (y los valores) son los de ese depósito.',
+                        ],
+                        'solo' => [
+                            'type'  => 'array',
+                            'items' => ['type' => 'string', 'enum' => \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::SOLO],
+                        ],
+                        'columnas' => [
+                            'type'  => 'array',
+                            'items' => ['type' => 'string', 'enum' => array_keys(\App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::COLUMNAS_EXCEL)],
+                        ],
+                        'titulo' => [
+                            'type'        => 'string',
+                            'description' => 'Título de la hoja ("Stock de Albatros"). Sin esto, "Artículos".',
+                        ],
+                        'nombre_archivo' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el nombre del archivo, sin la extensión.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::exportar_excel(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                        $input
+                    );
+                },
+            ],
+            /*
+             * Misión asistente-diario-20261116 (rama A, 30/10 #11), AL FINAL del registro por el prefijo del
+             * caché. Ferre Total: «de lo que compré este mes, ¿cuánto quedó en stock?», «¿qué compré mal?», y
+             * el agente dijo que el sistema no guarda qué se compró. El cruce lo hace el SERVIDOR:
+             * RendimientoDeComprasIaHelper. De lectura, en los tres canales.
+             */
+            [
+                'name' => 'consultar_rendimiento_de_compras',
+                'description' => 'CÓMO RINDIÓ LO QUE SE COMPRÓ: por cada artículo comprado en el período (por defecto, el mes en curso), cuánto se compró, cuánto se vendió desde la compra, el stock de hoy y lo que no rotó (sin_rotar, y su valor a costo si quien pregunta puede ver costos), ordenado por la plata que quedó parada. Con totales de todo el período. Es LA herramienta de "de lo que compré este mes, ¿cuánto quedó en stock?", "¿qué compré mal?", "¿qué compra no se vendió?": nunca digas que el sistema no guarda qué se compró. Opcional: proveedor (por nombre) y deposito (sucursal). Contestá con los números que trae, sin recalcular; si trae "nota", decí lo que dice. Si trae "error" o "faltan", contá eso.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día de las compras, AAAA-MM-DD. Sin desde ni hasta: el mes en curso.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día de las compras, AAAA-MM-DD. Sin hasta: hoy.'],
+                        'proveedor' => ['type' => 'string', 'description' => 'Opcional: solo las compras a ese proveedor, por su nombre.'],
+                        'deposito' => ['type' => 'string', 'description' => 'Opcional: la sucursal o depósito por su nombre (sus compras, sus ventas y su stock).'],
+                        'orden' => [
+                            'type'        => 'string',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::ORDENES,
+                            'description' => 'valor_sin_rotar (default: la plata parada primero), sin_rotar, comprado o vendido.',
+                        ],
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántos artículos listar (default 20, hasta 100). Los totales son siempre de todos.'],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        $input
+                    );
+                },
+            ],
         ];
     }
 
@@ -6814,7 +7160,7 @@ CONFIRMACION;
     protected function es_lectura_sin_efectos(string $herramienta): bool
     {
         // Aunque se ofrecen con las consultas, estas herramientas guardan archivos, tokens o contexto.
-        if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'], true)) {
+        if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras', 'exportar_articulos_excel'], true)) {
             return false;
         }
         if ($herramienta === 'buscar_ficha_de_articulo') {

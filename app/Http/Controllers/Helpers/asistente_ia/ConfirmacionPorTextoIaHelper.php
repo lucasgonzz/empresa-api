@@ -380,6 +380,16 @@ class ConfirmacionPorTextoIaHelper
         }
 
         /*
+         * 🔴 UN MENSAJE QUE NO SE ENTIENDE NO ES UN SÍ (misión asistente-diario-20261116, rama C, B2): un audio
+         * sin transcribir o transcripto en otra escritura («吉博好», Pesca 14/11) no confirma ninguna carga, sea
+         * cual sea el tipo. Solo para confirmar: cancelar sigue siendo siempre seguro.
+         */
+        if ($para_confirmar && EntradaIninteligibleIaHelper::es_ininteligible($pedido->contenido)) {
+
+            return RespuestaDeCargaIa::error(EntradaIninteligibleIaHelper::MENSAJE_NO_CONFIRMA);
+        }
+
+        /*
          * 🔴 LOS ENVÍOS A CLIENTES (misión asistente-envios-a-clientes, correcciones 2 y 3 del chequeo):
          * el sí lo verifica el CÓDIGO, no la lectura del modelo, y por MCP no se confirman nunca (un
          * agente externo podría proponer y confirmar 250 WhatsApps sin que una persona lea la tarjeta;

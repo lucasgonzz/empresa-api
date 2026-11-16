@@ -209,7 +209,9 @@ class PropuestaCompraConFacturaIaHelper
             $contexto,
             EntradaDeCargaIa::texto($input, 'proveedor'),
             EntradaDeCargaIa::texto($input, 'cuit'),
-            $mensaje
+            $mensaje,
+            /* A7 (misión asistente-diario-20261116): el «es otro» de la persona después de ver los parecidos. */
+            ProveedorDeLaFacturaIaHelper::pidio_proveedor_nuevo($input)
         );
 
         if (RespuestaDeCargaIa::es_negativa($proveedor)) {

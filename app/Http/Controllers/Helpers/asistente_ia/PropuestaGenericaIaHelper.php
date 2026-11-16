@@ -255,6 +255,20 @@ class PropuestaGenericaIaHelper
             $aviso_de_la_categoria = $con_categoria['aviso'];
         }
 
+        /*
+         * Misión asistente-diario-20261116 (rama C, 30/10 #9): el alta de un cliente o proveedor con CUIT y sin
+         * razón social dictada le dice AL MODELO (no a la tarjeta) que la razón social queda vacía, para que la
+         * pregunte. En un alta no hay una razón social vieja que quede pegada a otro CUIT (el caso real fue una
+         * edición), así que la tarjeta queda como siempre y no espera un sí de más. Ver con_aviso_de_razon_social().
+         */
+        list($validado, $razon_social_pendiente) = self::con_aviso_de_razon_social($declaracion, $validado, null, true);
+
+        /*
+         * Rama C, 31/10 #10: un CLIENTE sin condición de IVA ni CUIT («creá el cliente sin más datos») queda como
+         * Consumidor final, y la tarjeta lo dice. Ver con_consumidor_final_por_defecto().
+         */
+        list($validado, $aviso_de_consumidor_final) = self::con_consumidor_final_por_defecto($declaracion, $validado);
+
         $bebida = [];
         $renglones_bebida = [];
         $bebida_pedida = $es_articulo ? AltaBebidasIaHelper::heredar($contexto, $reemplaza_a, isset($extras[AltaBebidasIaHelper::CLAVE]) ? $extras[AltaBebidasIaHelper::CLAVE] : []) : [];
@@ -330,6 +344,11 @@ class PropuestaGenericaIaHelper
         if (!is_null($aviso_de_la_categoria)) {
 
             $aviso = is_null($aviso) ? $aviso_de_la_categoria : $aviso.' '.$aviso_de_la_categoria;
+        }
+
+        if (!is_null($aviso_de_consumidor_final)) {
+
+            $aviso = is_null($aviso) ? $aviso_de_consumidor_final : $aviso.' '.$aviso_de_consumidor_final;
         }
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
@@ -462,10 +481,23 @@ class PropuestaGenericaIaHelper
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA).(is_null($nombre) ? '' : ' '.$nombre).self::resumen_de_renglones($renglones, $nombre);
 
         // El aviso viaja también al modelo cuando habla de listas, de algo que se descartó o de la subcategoría que se sacó.
-        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria);
+        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria) || !is_null($aviso_de_consumidor_final);
 
         $extra_de_la_respuesta = $avisa_al_modelo ? ['aviso' => $aviso] : [];
+
+        // Rama C, 30/10 #9: el CUIT sin razón social, solo para el modelo (que la pregunte).
+        if (!is_null($razon_social_pendiente)) {
+
+            $extra_de_la_respuesta['razon_social_pendiente'] = $razon_social_pendiente;
+        }
         if (count($bebida)) $extra_de_la_respuesta['requiere_confirmacion'] = true;
+        // P6 (16/11/2026, V13): la foto de internet va aparte (AltaBebidasIaHelper::preparar), con su imagen_id para después.
+        if (!empty($bebida['foto_web_aparte'])) {
+            $extra_de_la_respuesta['foto_aparte'] = [
+                'imagen_id'   => (int) $bebida['foto_web_aparte'],
+                'como_seguir' => 'Esta alta NO lleva la foto de internet. Cuando la persona confirme el alta, proponé la foto aparte con proponer_foto_articulo (articulo_id del artículo creado e imagen_id '.(int) $bebida['foto_web_aparte'].'): la tarjeta la muestra y espera su propio sí. Decile que la foto se la mostrás aparte para que confirme si es la correcta.',
+            ];
+        }
         if (AltaBebidasIaHelper::activa($contexto->owner) && in_array($declaracion['entidad'], ['bodega', 'cepa', 'provider'], true)) {
             // Una relación que falta no autoriza inventar catálogos antes del alta de la bebida.
             $extra_de_la_respuesta['requiere_confirmacion'] = true;
@@ -916,6 +948,118 @@ class PropuestaGenericaIaHelper
     }
 
     /**
+     * El aviso de un CUIT NUEVO sin razón social dictada, en un CLIENTE o PROVEEDOR (misión
+     * asistente-diario-20261116, rama C, 30/10 #9). Devuelve [$validado, $aviso, $requiere_confirmacion].
+     *
+     * 🔴 EL CASO REAL: Ferre Total, 30/10, el agente cambió el CUIT de un cliente y dejó la razón social vieja
+     * sin decir nada; la factura habría salido con el CUIT de uno y el nombre de otro.
+     *
+     * 🔴 EL ASISTENTE NO CONSULTA EL PADRÓN DE ARCA (decisión de la revisión de la rama C). La consulta de la
+     * pantalla (AfipConstanciaInscripcionController) usa AfipWSAAHelper, que define TA_file una vez por proceso:
+     * adentro del worker de colas puede pisar el token de facturación del negocio, y ante un SOAP fault hace
+     * exit() y mata el worker. Por eso acá no se consulta nada: la tarjeta AVISA que la razón social y la
+     * condición de IVA quedan como estaban (o vacías, en un alta), el modelo pregunta la razón social o sugiere
+     * completarla con el botón de AFIP de la pantalla de Clientes, y la tarjeta espera el sí de la persona
+     * aun en "directo" (`requiere_confirmacion`), para que el CUIT no cambie solo.
+     *
+     * No avisa nada si: no es cliente ni proveedor, no vino CUIT, el CUIT no cambia, o la razón social vino en la
+     * misma carga (lo que dicta la persona gana, con sus mayúsculas).
+     *
+     * @param  array  $declaracion
+     * @param  array  $validado  Lo que devolvió validar_campos() (payload, pedidos, nombres).
+     * @param  mixed  $cuit_anterior  El CUIT que tenía el registro (null en un alta).
+     * @param  bool  $es_alta
+     * @return array{0: array, 1: string|null, 2: bool}
+     */
+    protected static function con_aviso_de_razon_social(array $declaracion, array $validado, $cuit_anterior, $es_alta = false): array
+    {
+        if (!in_array($declaracion['entidad'], self::ENTIDADES_CON_CUIT_Y_RAZON_SOCIAL, true)
+            || !isset($declaracion['campos']['razon_social'])
+            || !isset($validado['payload']['cuit'])
+            || CuitIaHelper::es_vacio($validado['payload']['cuit'])
+            || CuitIaHelper::es_el_mismo($validado['payload']['cuit'], $cuit_anterior)
+            || array_key_exists('razon_social', $validado['payload'])) {
+
+            return [$validado, null, false];
+        }
+
+        $cuit = trim((string) $validado['payload']['cuit']);
+
+        $como_quedan = $es_alta ? 'quedan vacías' : 'quedan como estaban';
+
+        return [
+            $validado,
+            // Texto escrito para el dueño (se ve en la tarjeta) y que también le sirve al modelo para preguntar.
+            'Con el CUIT '.$cuit.' la razón social y la condición de IVA '.$como_quedan.' (no se consultan en ARCA). '
+                .'Decime la razón social o completala con el botón de AFIP de la pantalla de '
+                .($declaracion['entidad'] === 'provider' ? 'Proveedores' : 'Clientes').'.',
+            true,
+        ];
+    }
+
+    /** Las entidades que tienen CUIT y razón social (las dos pantallas que consultan AFIP con un botón). */
+    const ENTIDADES_CON_CUIT_Y_RAZON_SOCIAL = ['client', 'provider'];
+
+    /**
+     * El id de una fila de `iva_conditions` por su nombre (sin mayúsculas), o null si no está.
+     *
+     * @param  string  $nombre  «Responsable inscripto», «Monotributista», «Consumidor final», «Exento».
+     * @return int|null
+     */
+    public static function id_de_condicion_de_iva($nombre)
+    {
+        try {
+
+            $id = DB::table('iva_conditions')->whereRaw('LOWER(name) = ?', [mb_strtolower((string) $nombre)])->value('id');
+
+            return is_null($id) ? null : (int) $id;
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+    }
+
+    /**
+     * El alta de un CLIENTE sin condición de IVA y sin CUIT queda como «Consumidor final» (misión
+     * asistente-diario-20261116, rama C, 31/10 #10). Devuelve [$validado, $aviso].
+     *
+     * 🔴 EL CASO REAL (Ferre Total, conversación 33, 31/10/2026, mensajes 328-329): Pablo dijo «creá el cliente
+     * sin más datos» y el agente le preguntó el tipo de persona. Un cliente sin CUIT es, para facturar, un
+     * consumidor final: es lo que el dueño espera y lo que la pantalla le haría elegir. La tarjeta lo dice
+     * («queda como Consumidor final») para que el dueño lo vea antes de confirmar.
+     *
+     * No se toca si la persona dijo la condición, si hay CUIT (una sociedad puede ser Responsable inscripto:
+     * eso lo pregunta el asistente, ver con_aviso_de_razon_social()), si la entidad no es un cliente o si el negocio no
+     * tiene la fila «Consumidor final».
+     *
+     * @param  array  $declaracion
+     * @param  array  $validado
+     * @return array{0: array, 1: string|null}
+     */
+    protected static function con_consumidor_final_por_defecto(array $declaracion, array $validado): array
+    {
+        if ($declaracion['entidad'] !== 'client'
+            || !isset($declaracion['campos']['iva_condition_id'])
+            || !self::vacio(isset($validado['payload']['iva_condition_id']) ? $validado['payload']['iva_condition_id'] : null)
+            || !CuitIaHelper::es_vacio(isset($validado['payload']['cuit']) ? $validado['payload']['cuit'] : null)) {
+
+            return [$validado, null];
+        }
+
+        $id = self::id_de_condicion_de_iva('Consumidor final');
+
+        if (is_null($id)) {
+
+            return [$validado, null];
+        }
+
+        $validado = self::con_campo($validado, 'iva_condition_id', $id, 'Consumidor final');
+
+        return [$validado, 'Sin CUIT ni condición de IVA, queda como Consumidor final.'];
+    }
+
+    /**
      * Saca un campo de lo validado.
      *
      * @param  array  $validado
@@ -1085,6 +1229,15 @@ class PropuestaGenericaIaHelper
             $aviso_de_la_categoria = $coherente['aviso'];
         }
 
+        /*
+         * Misión asistente-diario-20261116 (rama C, 30/10 #9): un CUIT NUEVO en un cliente o proveedor sin razón
+         * social dictada avisa que la razón social y la condición de IVA quedan como estaban. Ver
+         * con_aviso_de_razon_social().
+         */
+        $cuit_anterior = isset($fila->cuit) ? $fila->cuit : null;
+
+        list($validado, $aviso_de_la_razon_social, $espera_la_razon_social) = self::con_aviso_de_razon_social($declaracion, $validado, $cuit_anterior);
+
         $nombre_actual = Catalogo::nombre_de_fila($declaracion['entidad'], $fila);
 
         $renglones = [];
@@ -1187,6 +1340,21 @@ class PropuestaGenericaIaHelper
         if (!is_null($aviso_de_la_categoria)) {
 
             $aviso_de_la_edicion = is_null($aviso_de_la_edicion) ? $aviso_de_la_categoria : $aviso_de_la_edicion.' '.$aviso_de_la_categoria;
+        }
+
+        // El CUIT nuevo sin razón social: la tarjeta y el modelo lo dicen.
+        if (!is_null($aviso_de_la_razon_social)) {
+
+            $aviso_de_la_edicion = is_null($aviso_de_la_edicion) ? $aviso_de_la_razon_social : $aviso_de_la_edicion.' '.$aviso_de_la_razon_social;
+        }
+
+        /*
+         * Y esa tarjeta la confirma la persona, también en "directo": cambiar el CUIT dejando la razón social
+         * vieja sin que nadie lo vea es justo el caso de Ferre Total; el modelo pregunta la razón social.
+         */
+        if ($espera_la_razon_social) {
+
+            $requiere_confirmacion = true;
         }
 
         // El updated_at del registro al armar la tarjeta: si alguien lo edita en el medio, confirmar da 409 (vencida).
@@ -1530,6 +1698,27 @@ class PropuestaGenericaIaHelper
                             ->get();
 
         if (!count($candidatas)) {
+
+            /*
+             * P8 (misión asistente-mejoras-4-dias, 16/11/2026, V14): un nombre mal escrito o dictado. Los que se
+             * le PARECEN vuelven como opciones; en una edición o una baja nunca se elige uno solo.
+             */
+            $parecidas = BusquedaPorPalabrasIaHelper::parecidos(self::consulta_del_dueno($contexto, $declaracion), $texto, $columna, self::MAX_OPCIONES);
+
+            if (count($parecidas)) {
+
+                $opciones = [];
+
+                foreach ($parecidas as $parecida) {
+
+                    $opciones[] = ['id' => $parecida['id'], 'nombre' => $parecida['nombre'], 'parecido' => true];
+                }
+
+                return RespuestaDeCargaIa::faltan(
+                    ['cuál de '.($declaracion['genero'] === 'f' ? 'estas ' : 'estos ').$declaracion['etiqueta'].' es: ninguno se llama "'.$texto.'", pero se le parecen (puede estar mal escrito)'],
+                    [$declaracion['entidad'] => $opciones]
+                );
+            }
 
             return RespuestaDeCargaIa::error('No encontré '.($declaracion['genero'] === 'f' ? 'ninguna ' : 'ningún ').$etiqueta.' que se llame como "'.$texto.'".');
         }
@@ -1933,6 +2122,15 @@ class PropuestaGenericaIaHelper
                         ->limit(self::MAX_OPCIONES + 1)
                         ->get();
 
+        /*
+         * Misión asistente-diario-20261116 (rama C, M3): una LOCALIDAD que no coincide no deja al dueño
+         * adivinando. Ver localidad_que_no_coincide().
+         */
+        if (!count($candidatas) && $relacion['tabla'] === 'locations') {
+
+            return self::localidad_que_no_coincide($campo, $etiqueta, $texto, $consulta_base);
+        }
+
         if (!count($candidatas)) {
 
             $opciones = [$campo['columna'] => self::opciones_de_relacion($consulta_base()->orderBy($relacion['campo'])->limit(self::MAX_OPCIONES)->get(), $relacion['campo'])];
@@ -1966,6 +2164,105 @@ class PropuestaGenericaIaHelper
         return RespuestaDeCargaIa::faltan(
             ['cuál '.$etiqueta.' es (hay '.count($candidatas).' que encajan con "'.$texto.'")'],
             [$campo['columna'] => self::opciones_de_relacion($candidatas, $relacion['campo'])]
+        );
+    }
+
+    /**
+     * Los nombres que la gente usa para una localidad que el negocio puede tener cargada con otro nombre
+     * (misión asistente-diario-20261116, rama C, M3). Clave y valores ya en minúsculas y sin tildes; el
+     * valor es lo que se busca además de lo dicho. Lista CERRADA: solo los alias que no se parecen por
+     * letras («CABA» no se parece a «Ciudad Autónoma de Buenos Aires»).
+     */
+    const ALIAS_DE_LOCALIDADES = [
+        'caba'                     => ['ciudad autonoma de buenos aires', 'capital federal', 'buenos aires'],
+        'capital federal'          => ['ciudad autonoma de buenos aires', 'caba', 'buenos aires'],
+        'capital'                  => ['ciudad autonoma de buenos aires', 'capital federal', 'caba'],
+        'ciudad de buenos aires'   => ['ciudad autonoma de buenos aires', 'caba', 'capital federal'],
+        'cordoba capital'          => ['cordoba'],
+        'rosario santa fe'         => ['rosario'],
+    ];
+
+    /** Tope de localidades del negocio que se le devuelven al modelo cuando no hubo coincidencia. */
+    const MAX_LOCALIDADES = 40;
+
+    /**
+     * La respuesta cuando la LOCALIDAD dictada no coincide por LIKE con ninguna del negocio (misión
+     * asistente-diario-20261116, rama C, M3).
+     *
+     * 🔴 EL CASO REAL (Pesca, conversación 7, mensajes 66-114, 14/11/2026): el dueño quiso dar de alta a un
+     * cliente para un presupuesto y la localidad no encajaba —probó «CABA», «Ciudad de Buenos Aires»…—; el
+     * agente no le listó las opciones y después de veinte turnos lo cargó a mano. El orden ahora:
+     *
+     *   1. PARECIDAS: alias conocidos (ALIAS_DE_LOCALIDADES) y parecidos tolerantes por letras
+     *      (BusquedaPorPalabrasIaHelper::parecidos, el mismo de la búsqueda tolerante). 🔴 Nunca se elige
+     *      una sola: vuelven como opciones para que la persona diga cuál (crear un cliente en otra
+     *      localidad es un dato mal guardado que nadie ve).
+     *   2. NINGUNA: las localidades del negocio (hasta MAX_LOCALIDADES) y `opciones.si_no_esta` con las dos
+     *      salidas: crearla con proponer_alta de location, o seguir sin localidad (el campo vacío).
+     *
+     * Siempre por `$consulta_base`, que filtra por el dueño: la base puede ser compartida.
+     *
+     * @param  array  $campo  La declaración del campo (`location_id`).
+     * @param  string  $etiqueta  «localidad».
+     * @param  string  $texto  Lo que se dictó.
+     * @param  callable  $consulta_base  La consulta de `locations` del dueño (resolver_relacion()).
+     * @return array  La respuesta negativa (`faltan` con opciones).
+     */
+    protected static function localidad_que_no_coincide(array $campo, $etiqueta, $texto, callable $consulta_base)
+    {
+        $columna = $campo['columna'];
+        $nombre_campo = $campo['relacion']['campo'];
+
+        $parecidas = [];
+
+        // 1a. Los alias: «CABA» → «Ciudad Autónoma de Buenos Aires».
+        $clave = strtr(mb_strtolower(trim((string) $texto)), ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u']);
+        $clave = trim(preg_replace('/[^a-z0-9ñ]+/u', ' ', $clave));
+
+        if (isset(self::ALIAS_DE_LOCALIDADES[$clave])) {
+
+            foreach (self::ALIAS_DE_LOCALIDADES[$clave] as $alias) {
+
+                $filas = $consulta_base()->where($nombre_campo, 'LIKE', '%'.self::escapar_like($alias).'%')->orderBy($nombre_campo)->limit(self::MAX_OPCIONES)->get();
+
+                foreach ($filas as $fila) {
+
+                    $parecidas[(int) $fila->id] = ['id' => (int) $fila->id, 'nombre' => (string) $fila->{$nombre_campo}];
+                }
+            }
+        }
+
+        // 1b. Parecidos por letras («Rosaio» → «Rosario», «Ciudad de Bs As» no, pero «Ciudad de Buenos Aires» sí).
+        foreach (BusquedaPorPalabrasIaHelper::parecidos($consulta_base(), (string) $texto, $nombre_campo) as $parecido) {
+
+            $parecidas[(int) $parecido['id']] = ['id' => (int) $parecido['id'], 'nombre' => (string) $parecido['nombre']];
+        }
+
+        if (count($parecidas)) {
+
+            return RespuestaDeCargaIa::faltan(
+                ['qué '.$etiqueta.' es: "'.$texto.'" no está cargada así, pero hay '.(count($parecidas) === 1 ? 'una parecida' : 'parecidas').'. Preguntale si es '.(count($parecidas) === 1 ? 'esa' : 'alguna de esas').'; no elijas vos'],
+                [
+                    $columna         => array_slice(array_values($parecidas), 0, self::MAX_OPCIONES),
+                    'si_no_es_ninguna' => 'Si no es ninguna: ofrecele crear la localidad "'.$texto.'" (proponer_alta de location) o seguir sin localidad (mandá '.$columna.' vacío).',
+                ]
+            );
+        }
+
+        // 2. Ninguna: todas las del negocio y las dos salidas.
+        $todas = [];
+
+        foreach ($consulta_base()->orderBy($nombre_campo)->limit(self::MAX_LOCALIDADES)->get() as $fila) {
+
+            $todas[] = ['id' => (int) $fila->id, 'nombre' => (string) $fila->{$nombre_campo}];
+        }
+
+        return RespuestaDeCargaIa::faltan(
+            ['qué '.$etiqueta.' es: no hay ninguna que se llame como "'.$texto.'" ni parecida'],
+            [
+                $columna     => $todas,
+                'si_no_esta' => 'Mostrale estas localidades a la persona'.(count($todas) ? '' : ' (el negocio no tiene ninguna cargada)').' y ofrecele dos salidas: crear la localidad "'.$texto.'" con proponer_alta de location y después seguir con la carga, o seguir sin localidad (mandá '.$columna.' vacío). No vuelvas a probar otros nombres por tu cuenta.',
+            ]
         );
     }
 

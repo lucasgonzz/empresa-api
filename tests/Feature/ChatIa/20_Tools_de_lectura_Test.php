@@ -129,6 +129,17 @@ class Tools_de_lectura_Test extends TestCase
             // Fichas verificadas (12/11/2026): ejercita el despacho sin salir a internet; este nombre
             // no existe en el comercio. El camino completo con evidencia lo prueba Fichas_web_de_articulos_Test.
             'buscar_ficha_de_articulo'                 => ['articulo' => 'Ficha inexistente en este comercio', 'preparar_descripcion' => false],
+            // Alta de bebidas: sin la extensión activa ni mensaje del turno, corta en su puerta y contesta sin
+            // salir a internet (el camino completo lo cubre AltaBebidasTest).
+            'buscar_imagen_de_bebida'                  => ['nombre' => 'Bebida tools B'],
+            // Misión asistente-mejoras-4-dias (16/11/2026, P5): las dos que calcula el servidor. La valorización
+            // corre sobre el comercio de prueba; el Excel usa un filtro sin coincidencias a propósito, así
+            // contesta sin escribir un archivo (el camino entero lo cubren T130 y T131).
+            'valorizar_stock'                          => ['agrupar_por' => 'rubro'],
+            'exportar_articulos_excel'                 => ['filtros' => [['campo' => 'proveedor', 'operador' => 'igual', 'valor' => 'Proveedor inexistente tools B']]],
+            // Misión asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, sobre el
+            // comercio de prueba (el cálculo lo cubre T154).
+            'consultar_rendimiento_de_compras'         => ['limite' => 5],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

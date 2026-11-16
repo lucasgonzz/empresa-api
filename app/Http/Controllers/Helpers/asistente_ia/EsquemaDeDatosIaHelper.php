@@ -231,6 +231,7 @@ class EsquemaDeDatosIaHelper
         'mostrador_memorias'                 => 'memoria interna del mostrador',
         'agente_contexto_archivos'           => 'la memoria del negocio: el asistente la lee con leer_contexto, no por la consulta genérica',
         'agente_contexto_revisiones'         => 'historial de la memoria del negocio (interno)',
+        'agente_consolidacion_estados'       => 'cursor del repaso nocturno de la memoria del negocio (interno); su clave es user_id, no tiene id',
         'ia_imagen_pedidos'                  => 'pedidos de imágenes de la app (estado interno)',
         'mostrador_reportes'                 => 'informes generados (el asistente ya los tiene como contexto cuando corresponde)',
         'embedding_runs'                     => 'corridas de embeddings (interno)',
@@ -512,7 +513,10 @@ class EsquemaDeDatosIaHelper
          */
         'online_configuration' => [
             'etiqueta'    => 'configuracion de la tienda online',
-            'descripcion' => 'Como esta configurada la tienda online del negocio: si esta pausada, que lista de precios publica, si muestra articulos sin stock, si pide registro para comprar, si tiene envio a domicilio o retiro por local, y que medios (Mercado Pago, Zipnova) estan habilitados. Es una sola fila por negocio. Las credenciales (contraseñas, tokens y claves de Mercado Pago, Zipnova y el SMTP) NO salen por aca: solo se puede saber si cada integracion esta habilitada o no.',
+            'descripcion' => 'Como esta configurada la tienda online del negocio: si esta pausada, que lista de precios publica, si muestra articulos sin stock, si pide registro para comprar, si tiene envio a domicilio o retiro por local, y que medios (Mercado Pago, Zipnova) estan habilitados. Es una sola fila por negocio. Las credenciales (contraseñas, tokens y claves de Mercado Pago, Zipnova y el SMTP) NO salen por aca: solo se puede saber si cada integracion esta habilitada o no. '
+                . 'El cartel de agotado: un articulo con stock cero se ve como agotado solo si `show_articles_without_stock` esta prendido y `ignorar_stock` apagado; con `ignorar_stock` prendido la tienda no mira el stock (nada sale agotado y se puede pedir cualquier cantidad); con `permitir_pedidos_sin_stock` los de stock cero salen como «Consultar» y el pedido llega sin cobro para revisarlo. '
+                . 'Al registrarse, el comprador carga sus datos de siempre y, si `pedir_barrio_al_registrarse` esta prendido, tambien el barrio; `register_to_buy` exige registrarse para comprar. No hay otra opcion para elegir que datos se piden: si quiere otro, es un pedido a ComercioCity. '
+                . 'Estas opciones no se cambian desde aca: el dueño las prende o apaga en la configuracion de la Tienda Online del sistema (grupos «Catalogo y stock» y «Registro de clientes»).',
             'campos'      => [
                 'pausar_tienda_online'          => ['tipo' => 'checkbox', 'etiqueta' => 'la tienda esta pausada'],
                 'mostrar_catalogo'              => ['tipo' => 'checkbox', 'etiqueta' => 'muestra el catalogo'],
@@ -534,6 +538,18 @@ class EsquemaDeDatosIaHelper
                 'instagram'                     => ['tipo' => 'text',     'etiqueta' => 'instagram del negocio'],
                 'facebook'                      => ['tipo' => 'text',     'etiqueta' => 'facebook del negocio'],
                 'created_at'                    => ['tipo' => 'date',     'etiqueta' => 'fecha de alta'],
+                /*
+                 * P9 de la misión asistente-mejoras-4-dias (16/11/2026), al final. Pesca Mayorista (13/11) pidió
+                 * «que los productos sin stock aparezca el cartel» y el asistente contestó que no había opción: la
+                 * opción es `ignorar_stock` (con él prendido nada sale agotado). Y «dónde configuro qué datos pedirle
+                 * a un cliente» tenía respuesta en `pedir_barrio_al_registrarse`. Solo lectura: la escritura de esta
+                 * tabla está cerrada para el asistente (lleva credenciales).
+                 */
+                'ignorar_stock'                 => ['tipo' => 'checkbox', 'etiqueta' => 'ignora el stock: ningun articulo sale agotado'],
+                'permitir_pedidos_sin_stock'    => ['tipo' => 'checkbox', 'etiqueta' => 'los articulos sin stock salen como Consultar y se pueden pedir'],
+                'mostrar_stock_disponible'      => ['tipo' => 'checkbox', 'etiqueta' => 'muestra el stock disponible en la ficha del articulo'],
+                'pedir_barrio_al_registrarse'   => ['tipo' => 'checkbox', 'etiqueta' => 'pide el barrio al registrarse'],
+                'logear_cliente_al_registrar'   => ['tipo' => 'checkbox', 'etiqueta' => 'deja logueado al cliente al terminar el registro'],
             ],
             'relaciones'  => [],
         ],
@@ -550,7 +566,7 @@ class EsquemaDeDatosIaHelper
          */
         'promocion_vinoteca' => [
             'etiqueta'    => 'promos de vinoteca (combos y promociones del boton Promos)',
-            'descripcion' => 'Las promos de vinoteca: el boton Promos del Listado (modulo Vinoteca). El dueño tambien les dice combos: "el Combo Pinot Noir" suele ser una de estas, y no un combo de la entidad combo. `online` dice si esta publicada en la tienda, `final_price` es su precio y `stock` cuantas hay. Cada fila trae `link_tienda`, el link de su ficha en la tienda (null si no esta publicada, no tiene slug o el negocio no tiene la direccion de la tienda): pasalo tal cual, nunca lo armes. Lo que se vendio de cada promo en un pedido de la tienda esta en renglon_de_pedido_promo.',
+            'descripcion' => 'Las promos de vinoteca: el boton Promos del Listado (modulo Vinoteca). El dueño tambien les dice combos: "el Combo Pinot Noir" suele ser una de estas, y no un combo de la entidad combo. `online` dice si esta publicada en la tienda, `final_price` es su precio y `stock` cuantas hay. Cada fila trae `link_tienda`, el link de su ficha en la tienda (null si no esta publicada, no tiene slug o el negocio no tiene la direccion de la tienda): pasalo tal cual, nunca lo armes. Lo que se vendio de cada promo en un pedido de la tienda esta en renglon_de_pedido_promo. En una vinoteca, «el combo N° 4», «el mix clasico» o «la promo» es una de estas: buscala aca por la palabra y el numero de su nombre (COMBO Nº4), no en otro modulo. Para VENDERLA, proponer_venta con el renglon promo (1 = una promo).',
             'campos'      => [
                 'name'        => ['tipo' => 'text',     'etiqueta' => 'nombre'],
                 'final_price' => ['tipo' => 'number',   'etiqueta' => 'precio'],

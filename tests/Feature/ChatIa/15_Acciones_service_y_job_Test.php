@@ -89,6 +89,11 @@ class Acciones_service_y_job_Test extends TestCase
         'buscar_ficha_de_articulo',
         // Alta optativa de bebidas (e175e3ee, ticket 117): la búsqueda de la foto de una bebida, al final.
         'buscar_imagen_de_bebida',
+        // asistente-mejoras-4-dias (P5, 16/11/2026), al final de las de lectura.
+        'valorizar_stock',
+        'exportar_articulos_excel',
+        // asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, al final.
+        'consultar_rendimiento_de_compras',
     ];
 
     /**
@@ -792,7 +797,10 @@ class Acciones_service_y_job_Test extends TestCase
         // sin que nadie lo haya pedido, es que algo se declaró (o se borró) de más.
         // Fichas verificadas agrega UNA propuesta al final; se conserva cada prefijo y su despacho.
         // asistente-truvari-pedidos-fallidos (C2, 13/11/2026) agrega proponer_avisos_por_whatsapp al final.
-        $this->assertCount(53, HerramientasDeCarga::definiciones());
+        // asistente-mejoras-4-dias (P6, 16/11/2026) agrega quitar_foto_articulo al final.
+        // asistente-diario-20261116 (rama B, 30/10 #2) agrega proponer_ajuste_de_stock_por_lote al final.
+        // Las seis de planillas y fotos siguen al prefijo vigente de herramientas comunes.
+        $this->assertCount(55, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -882,8 +890,12 @@ class Acciones_service_y_job_Test extends TestCase
                 'proponer_descripcion_verificada',
                 // asistente-truvari-pedidos-fallidos (C2, 13/11/2026), al final de todo.
                 'proponer_avisos_por_whatsapp',
+                // asistente-mejoras-4-dias (P6, 16/11/2026), al final de todo.
+                'quitar_foto_articulo',
+                // asistente-diario-20261116 (rama B, 30/10 #2), al final de todo.
+                'proponer_ajuste_de_stock_por_lote',
             ],
-            array_slice(HerramientasDeCarga::nombres(), 39, 8)
+            array_slice(HerramientasDeCarga::nombres(), 39, 10)
         );
 
         // ...y las seis de la planilla y las fotos de agente-venta-por-planilla (02/11/2026) al final de todo.
@@ -896,7 +908,7 @@ class Acciones_service_y_job_Test extends TestCase
                 'leer_planilla_de_la_foto',
                 'volver_a_mirar_la_foto',
             ],
-            array_slice(HerramientasDeCarga::nombres(), 47)
+            array_slice(HerramientasDeCarga::nombres(), 49)
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

@@ -360,6 +360,312 @@ class BusquedaPorPalabrasIaHelper
         return $palabra;
     }
 
+    /*
+     * ════════════════════════════════════════════════════════════════════════════════════════════
+     * 🔴 LA BÚSQUEDA TOLERANTE (misión asistente-mejoras-4-dias, 16/11/2026, P8: V14)
+     * ════════════════════════════════════════════════════════════════════════════════════════════
+     *
+     * EL CASO REAL (Truvari, 13 al 15/11): «Kilka Malbec» (el vino es KILLKA), «Rosotto Gustavo» (el
+     * cliente está escrito distinto), «mix clásico» (la promo es MIX CLASICO Nº1). La búsqueda por
+     * palabras exige que cada palabra ESTÉ en el nombre: una letra de más o de menos y no aparece nada,
+     * y el agente daba vueltas o decía que no existía.
+     *
+     * parecidos() es el SEGUNDO intento, solo cuando el de siempre no trajo nada: cada palabra que
+     * importa tiene que parecerse a una palabra del nombre (Levenshtein normalizado, sin tildes ni
+     * mayúsculas; los números, enteros e iguales), y devuelve los candidatos con su `similitud`. 🔴 NUNCA
+     * ELIGE: lo que devuelve son "parecidos" y quien llama los ofrece como opciones para que la persona
+     * diga cuál (un parecido elegido solo es una venta o una foto en el artículo equivocado).
+     */
+
+    /** Lo mínimo que se tiene que parecer cada palabra (1 = igual). «kilka»/«killka» da 0,83. */
+    const UMBRAL_PARECIDO = 0.75;
+
+    /** Cuántos registros se leen como mucho para comparar (el prefiltro por pedazos de palabra). */
+    const TOPE_PREFILTRO = 3000;
+
+    /** Cuántos parecidos se devuelven si no se pide otra cosa. */
+    const TOPE_PARECIDOS = 5;
+
+    /**
+     * 🔴 MÉTODO PÚBLICO Y REUTILIZABLE (para artículos, clientes, proveedores, promos o cualquier tabla
+     * con una columna de nombre). Los registros cuyo nombre se PARECE al texto, de más a menos parecido.
+     *
+     * Uso típico, después de una búsqueda que no trajo nada:
+     *
+     *     $parecidos = BusquedaPorPalabrasIaHelper::parecidos(
+     *         Client::where('user_id', $owner_id),   // la consulta YA acotada al dueño (y a los activos)
+     *         'Rosotto Gustavo',                     // lo que dijo la persona
+     *         'name'                                 // la columna del nombre
+     *     );
+     *     // [['id' => 12, 'nombre' => 'Rossotto Gustavo', 'similitud' => 0.94], ...]
+     *
+     * El prefiltro en la base exige TODAS las palabras, cada una por alguno de sus pedazos (sus primeras y sus últimas tres letras, o
+     * el número entero), así no se lee el catálogo entero; la comparación fina va en PHP.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder|\Illuminate\Database\Query\Builder  $query  Ya acotada al dueño.
+     * @param  string  $texto  Lo que dijo la persona.
+     * @param  string  $columna  La columna del nombre ('name', 'clients.name'...). La pone el código, nunca la persona.
+     * @param  int  $limite  Cuántos parecidos devolver.
+     * @param  string  $columna_id  La columna del id.
+     * @return array<int, array{id: int, nombre: string, similitud: float}>
+     */
+    public static function parecidos($query, $texto, $columna = 'name', $limite = self::TOPE_PARECIDOS, $columna_id = 'id')
+    {
+        $pedidas = self::palabras_para_comparar($texto);
+
+        if (!count($pedidas)) {
+
+            return [];
+        }
+
+        /*
+         * Revisión de P8 (16/11/2026): el prefiltro es por PALABRA: cada palabra que importa tiene que aparecer
+         * por alguno de sus pedazos (OR adentro de la palabra), y TODAS las palabras a la vez (AND entre
+         * ellas). Con un OR general, «kilka malbec» traía cada Malbec del catálogo y el tope de filas podía
+         * dejar afuera justo al KILLKA. Una palabra de menos de tres letras no filtra (no tiene pedazos).
+         */
+        $grupos = [];
+
+        foreach ($pedidas as $palabra) {
+
+            if (preg_match('/^\d+$/u', $palabra)) {
+
+                $grupos[] = [$palabra];
+
+            } elseif (mb_strlen($palabra) >= 3) {
+
+                $grupos[] = array_values(array_unique([mb_substr($palabra, 0, 3), mb_substr($palabra, -3)]));
+            }
+        }
+
+        if (!count($grupos)) {
+
+            return [];
+        }
+
+        $consulta = clone $query;
+
+        foreach ($grupos as $pedazos) {
+
+            $consulta->where(function ($sub) use ($pedazos, $columna) {
+
+                foreach ($pedazos as $pedazo) {
+
+                    $sub->orWhere($columna, 'LIKE', '%' . addcslashes($pedazo, '%_\\') . '%');
+                }
+            });
+        }
+
+        $filas = $consulta->limit(self::TOPE_PREFILTRO)->get([$columna_id . ' as parecido_id', $columna . ' as parecido_nombre']);
+
+        $encontrados = [];
+
+        foreach ($filas as $fila) {
+
+            $similitud = self::similitud($texto, (string) $fila->parecido_nombre);
+
+            if ($similitud >= self::UMBRAL_PARECIDO) {
+
+                $encontrados[] = [
+                    'id'        => (int) $fila->parecido_id,
+                    'nombre'    => (string) $fila->parecido_nombre,
+                    'similitud' => round($similitud, 2),
+                ];
+            }
+        }
+
+        usort($encontrados, function ($a, $b) {
+
+            if ($a['similitud'] === $b['similitud']) {
+
+                return strcmp($a['nombre'], $b['nombre']);
+            }
+
+            return $a['similitud'] < $b['similitud'] ? 1 : -1;
+        });
+
+        return array_slice($encontrados, 0, max(1, (int) $limite));
+    }
+
+    /**
+     * Los parecidos entre los ARTÍCULOS activos del dueño y, si el negocio tiene promos de vinoteca,
+     * también entre sus PROMOS («mix clásico» era una promo: V7/V14). Cada uno dice su `tipo`.
+     *
+     * @param  int  $owner_id
+     * @param  string  $texto
+     * @param  int  $limite
+     * @return array<int, array{tipo: string, id: int, nombre: string, similitud: float}>
+     */
+    public static function parecidos_de_articulos($owner_id, $texto, $limite = self::TOPE_PARECIDOS)
+    {
+        $todos = [];
+
+        foreach (self::parecidos(\App\Models\Article::query()->where('user_id', (int) $owner_id)->where('status', 'active'), $texto, 'name', $limite) as $parecido) {
+
+            $todos[] = array_merge(['tipo' => 'articulo'], $parecido);
+        }
+
+        try {
+
+            if (\Illuminate\Support\Facades\Schema::hasTable('promocion_vinotecas')) {
+
+                $promos = \Illuminate\Support\Facades\DB::table('promocion_vinotecas')
+                    ->where('user_id', (int) $owner_id)
+                    ->whereNull('deleted_at');
+
+                foreach (self::parecidos($promos, $texto, 'name', $limite) as $parecido) {
+
+                    $todos[] = array_merge(['tipo' => 'promocion'], $parecido);
+                }
+            }
+
+        } catch (\Throwable $e) {
+            // Sin la tabla de promos, quedan los artículos.
+        }
+
+        usort($todos, function ($a, $b) {
+            return $b['similitud'] <=> $a['similitud'];
+        });
+
+        return array_slice($todos, 0, max(1, (int) $limite));
+    }
+
+    /**
+     * La respuesta de una consulta que no encontró nada pero tiene parecidos: la lista vacía de siempre
+     * más los parecidos y la regla para el modelo (ofrecerlos, nunca elegir).
+     *
+     * @param  array  $parecidos  Lo que devolvió parecidos() / parecidos_de_articulos().
+     * @param  string  $texto  Lo que se buscó.
+     * @param  string  $que  "artículos", "clientes"...
+     * @return array<string, mixed>
+     */
+    public static function sin_resultados_con_parecidos(array $parecidos, $texto, $que)
+    {
+        return [
+            'encontrados' => 0,
+            'resultados'  => [],
+            'parecidos'   => $parecidos,
+            'nota'        => 'No hay ' . $que . ' que se llamen "' . $texto . '", pero estos se le PARECEN (puede estar mal escrito o dictado). '
+                . 'Preguntale a la persona si es alguno de estos, nombrándolos como están cargados; nunca elijas uno solo sin que te lo confirme. '
+                . 'Con el que elija, volvé a consultar por su id o por su nombre exacto.',
+        ];
+    }
+
+    /**
+     * Cuánto se parece un nombre a lo que dijo la persona, de 0 a 1: el promedio, para cada palabra que
+     * importa del pedido, de su mejor parecido con alguna palabra del nombre. Si UNA sola palabra no
+     * llega a UMBRAL_PARECIDO, da 0 (el nombre no es ese). Un número tiene que estar entero ("210" no se
+     * parece a "120"). Pública para que quien ya tiene los candidatos en la mano los pueda ordenar.
+     *
+     * @param  string  $texto
+     * @param  string  $nombre
+     * @return float
+     */
+    public static function similitud($texto, $nombre)
+    {
+        $pedidas = self::palabras_para_comparar($texto);
+        $del_nombre = self::palabras_para_comparar($nombre, false);
+
+        if (!count($pedidas) || !count($del_nombre)) {
+
+            return 0.0;
+        }
+
+        $suma = 0.0;
+
+        foreach ($pedidas as $pedida) {
+
+            $mejor = 0.0;
+
+            foreach ($del_nombre as $palabra) {
+
+                $mejor = max($mejor, self::parecido_de_palabras($pedida, $palabra));
+
+                if ($mejor >= 1.0) {
+                    break;
+                }
+            }
+
+            if ($mejor < self::UMBRAL_PARECIDO) {
+
+                return 0.0;
+            }
+
+            $suma += $mejor;
+        }
+
+        return $suma / count($pedidas);
+    }
+
+    /**
+     * El parecido de dos palabras ya normalizadas, de 0 a 1. Un número solo se parece a sí mismo. Una
+     * palabra que es el comienzo de la otra (3 letras o más: «clas» de «clasico») cuenta como igual.
+     *
+     * @param  string  $pedida
+     * @param  string  $palabra
+     * @return float
+     */
+    protected static function parecido_de_palabras($pedida, $palabra)
+    {
+        if ($pedida === $palabra) {
+
+            return 1.0;
+        }
+
+        if (preg_match('/\d/u', $pedida) || preg_match('/\d/u', $palabra)) {
+
+            return 0.0;
+        }
+
+        if (mb_strlen($pedida) >= 3 && mb_strpos($palabra, $pedida) === 0) {
+
+            return 1.0;
+        }
+
+        $largo = max(strlen($pedida), strlen($palabra));
+
+        if ($largo === 0) {
+
+            return 0.0;
+        }
+
+        return 1.0 - (levenshtein($pedida, $palabra) / $largo);
+    }
+
+    /**
+     * Las palabras para comparar: minúsculas, sin tildes (y la ñ como n), sin símbolos, separadas por
+     * espacios y signos. Del pedido se sacan los conectores; del nombre no (pueden ser parte de él).
+     *
+     * @param  string  $texto
+     * @param  bool  $sin_conectores
+     * @return array<int, string>
+     */
+    protected static function palabras_para_comparar($texto, $sin_conectores = true)
+    {
+        $normal = self::normalizar($texto);
+
+        $partes = preg_split('/[^\p{L}\p{N}\/.]+/u', $normal, -1, PREG_SPLIT_NO_EMPTY);
+
+        $palabras = [];
+
+        foreach ($partes as $parte) {
+
+            $parte = trim($parte, './');
+
+            if ($parte === '') {
+                continue;
+            }
+
+            if ($sin_conectores && in_array($parte, self::PALABRAS_VACIAS, true)) {
+                continue;
+            }
+
+            $palabras[] = $parte;
+        }
+
+        return array_values(array_unique($palabras));
+    }
+
     /**
      * `(col1 LIKE '%t%' OR col2 LIKE '%t%' ...)`, con los comodines del texto escapados.
      *

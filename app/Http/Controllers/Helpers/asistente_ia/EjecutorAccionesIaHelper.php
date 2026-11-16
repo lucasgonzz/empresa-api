@@ -737,6 +737,14 @@ class EjecutorAccionesIaHelper {
             /* El reescaneo de una factura que falló, con las fotos guardadas (misma misión). */
             case AiMessageAction::TIPO_REINTENTO_ESCANEO:
                 return ReintentoDeEscaneoIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock por lote. Cada
+             * renglón va por ejecutar_stock_en_deposito() en su propio punto de guardado y el
+             * resultado trae hechos / no_hechos. Ver PropuestaAjusteDeStockPorLoteIaHelper.
+             */
+            case AiMessageAction::TIPO_AJUSTE_STOCK_LOTE:
+                return PropuestaAjusteDeStockPorLoteIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

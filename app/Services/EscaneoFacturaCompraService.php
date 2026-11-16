@@ -58,6 +58,24 @@ class EscaneoFacturaCompraService
     const VERSION_CONTRATO = 1;
 
     /**
+     * El motivo de una lectura cuya respuesta no se pudo usar (vacía, sin JSON o con el JSON roto). Es el
+     * mismo texto que leer_factura() guarda en `motivo_falla` y que va al rastro.
+     *
+     * @var string
+     */
+    const MOTIVO_RESPUESTA_INVALIDA = 'respuesta_invalida';
+
+    /**
+     * Lo que ve el dueño cuando, después de la revisión y su reintento (A2, misión
+     * asistente-diario-20261116), la IA sigue sin devolver una lectura utilizable. Dice qué pasó y qué
+     * hacer, sin el error técnico del decodificador.
+     *
+     * @var string
+     */
+    const MENSAJE_LECTURA_ILEGIBLE = 'No pude leer la factura: la IA devolvió una respuesta incompleta varias veces seguidas. '
+        . 'Probá volver a escanearla; si sigue igual, sacale una foto nueva con buena luz y sin recortar el comprobante.';
+
+    /**
      * Únicas claves válidas para `columnas_detectadas[].clave`. Cualquier otra cosa que
      * devuelva Claude se descarta: el frontend arma la grilla con estas y solo estas.
      *
@@ -284,6 +302,21 @@ class EscaneoFacturaCompraService
             $tokens['input']  += $ganadora['tokens']['input'];
             $tokens['output'] += $ganadora['tokens']['output'];
 
+            /*
+             * 🔴 A2 (misión asistente-diario-20261116, rama B): si la REVISIÓN también devolvió algo que
+             * no es un JSON utilizable (vacío, «Syntax error», texto suelto), se le pide UNA vez más
+             * antes de darle el error al dueño. En Ferre Total (14/11) dos escaneos terminaron en «La IA
+             * no devolvió contenido» / «Syntax error» y el dueño tuvo que volver a mandar la foto. Solo
+             * para `respuesta_invalida`: un error de la API (timeout, 5xx) no se arregla pidiendo de
+             * nuevo en el mismo segundo, y un rechazo del modelo tampoco.
+             */
+            if (!is_null($ganadora['error']) && $ganadora['motivo_falla'] === self::MOTIVO_RESPUESTA_INVALIDA) {
+                $ganadora = $this->leer_factura($scan, $imagenes, $this->modelo_de_revision());
+
+                $tokens['input']  += $ganadora['tokens']['input'];
+                $tokens['output'] += $ganadora['tokens']['output'];
+            }
+
             /* La revisión pasa por el mismo control: que la haya leído otro modelo no la hace cierta. */
             if (is_null($ganadora['error'])) {
                 $sigue_sin_cerrar = $this->necesita_revision($ganadora);
@@ -303,6 +336,15 @@ class EscaneoFacturaCompraService
          *     silencio: va con aviso y con los renglones marcados (ver anotar_lo_que_sigue_sin_cerrar()).
          */
         if (!is_null($ganadora['error'])) {
+            /*
+             * A2: si después del reintento sigue sin haber un JSON utilizable, el dueño recibe un
+             * mensaje que entiende y que le dice qué hacer, no el «Syntax error» del decodificador
+             * (el detalle técnico ya quedó en el log de parse_respuesta()).
+             */
+            if ($ganadora['motivo_falla'] === self::MOTIVO_RESPUESTA_INVALIDA) {
+                throw new \RuntimeException(self::MENSAJE_LECTURA_ILEGIBLE);
+            }
+
             throw $ganadora['error'];
         }
 

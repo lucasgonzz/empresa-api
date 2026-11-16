@@ -62,6 +62,12 @@ class ConfirmacionDeterministaIaHelper
         'confirmalo', 'confirmala', 'confirma', 'de una', 'hacelo', 'hacela', 'cargalo', 'cargala',
         'registralo', 'registrala', 'perfecto', 'perfecta', 'va', 'joya', 'claro', 'correcto',
         'exacto', 'obvio', 'adelante', 'mandale', 'asignala', 'asignalo', 'ponela', 'ponele',
+        /*
+         * Misión asistente-mejoras-4-dias (P4, 16/11/2026): «Si  te confirmo» (Truvari, 13/11, mensaje 230)
+         * quedaba afuera por el «te». «Encendelo» o «Activalo» NO entran: con una tarjeta de avisos a la
+         * vista pueden ser «prendé también el otro», un pedido distinto de lo que dice la tarjeta.
+         */
+        'te confirmo',
     ];
 
     /**
@@ -91,6 +97,17 @@ class ConfirmacionDeterministaIaHelper
     public static function quizas_confirmar(AiConversation $conversation, AiMessage $assistant_message)
     {
         try {
+
+            /*
+             * Rama C, 31/10 #10: «ok a todo» confirma la CADENA de tarjetas pendientes. Ver
+             * tarjetas_de_la_cadena() y confirmar_la_cadena().
+             */
+            $cadena = self::tarjetas_de_la_cadena($conversation, $assistant_message);
+
+            if (!is_null($cadena)) {
+
+                return self::confirmar_la_cadena($conversation, $assistant_message, $cadena);
+            }
 
             $accion = self::tarjeta_a_confirmar($conversation, $assistant_message);
 
@@ -186,6 +203,11 @@ class ConfirmacionDeterministaIaHelper
      */
     public static function nota(array $confirmacion)
     {
+        if (isset($confirmacion['cadena'])) {
+
+            return self::nota_de_la_cadena($confirmacion['cadena']);
+        }
+
         $id = (int) $confirmacion['tarjeta_id'];
         $resultado = $confirmacion['resultado'];
 
@@ -239,6 +261,11 @@ class ConfirmacionDeterministaIaHelper
      */
     public static function texto_de_respaldo(array $confirmacion)
     {
+        if (isset($confirmacion['cadena'])) {
+
+            return self::respaldo_de_la_cadena($confirmacion['cadena']);
+        }
+
         $resultado = $confirmacion['resultado'];
 
         if (empty($resultado['ok'])) {
@@ -742,6 +769,357 @@ class ConfirmacionDeterministaIaHelper
         $propuso = AiMessage::find($accion->ai_message_id);
 
         return (!is_null($propuso) && $propuso->estado === 'listo') ? $accion : null;
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // «Ok a todo»: la cadena (misión asistente-diario-20261116, rama C, 31/10 #10)
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Lo que convierte un sí en un sí A TODO, ya normalizado. Se saca del mensaje y lo que queda tiene que ser
+     * una afirmación de AFIRMACIONES («ok a todo» → «ok», «confirmo todo» → «confirmo», «sí a los dos» → «si»).
+     */
+    const A_TODO = ['a todo', 'a todos', 'a todas', 'con todo', 'todo', 'todos', 'todas', 'a los dos', 'a las dos', 'los dos', 'las dos', 'a ambos', 'a ambas', 'ambos', 'ambas'];
+
+    /**
+     * Los ÚNICOS tipos de tarjeta que confirma un «ok a todo» (revisión de la rama C, pedido del coordinador):
+     * altas y ediciones de registros (clientes, proveedores, artículos, categorías, localidades…). Una venta,
+     * un pago, un gasto, un cobro, una compra, un movimiento de stock o de caja NUNCA se confirman en cadena:
+     * si hay alguna pendiente, no se confirma ninguna y decide el modelo, como siempre.
+     */
+    const TIPOS_DE_LA_CADENA = [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION];
+
+    /**
+     * Las entidades de una alta o edición que mueven plata, caja o stock: tampoco van en cadena (proponer_edicion
+     * edita ventas y gastos por su número; los turnos de caja y los métodos por caja son de caja).
+     */
+    const ENTIDADES_FUERA_DE_LA_CADENA = ['sale', 'expense', 'pending', 'turno_caja', 'default_payment_method_caja', 'cuota'];
+
+    /** Cuántas tarjetas confirma un «ok a todo» como mucho: una cadena de altas, no un lote. */
+    const MAXIMO_DE_LA_CADENA = 6;
+
+    /**
+     * true si el texto es un «sí a todo»: una afirmación corta (es_afirmacion()) más una de A_TODO.
+     *
+     * @param  string|null  $texto
+     * @return bool
+     */
+    public static function es_si_a_todo($texto)
+    {
+        if (preg_match('/[?¿]/u', (string) $texto)) {
+
+            return false;
+        }
+
+        $normalizado = ' '.self::normalizar((string) $texto).' ';
+
+        if (mb_strlen(trim($normalizado)) > self::LARGO_MAXIMO) {
+
+            return false;
+        }
+
+        // De la frase más larga a la más corta: «a todo» antes que «todo».
+        $frases = self::frases(self::A_TODO);
+
+        usort($frases, function ($a, $b) {
+            return mb_strlen($b) - mb_strlen($a);
+        });
+
+        foreach ($frases as $frase) {
+
+            if (mb_strpos($normalizado, ' '.$frase.' ') !== false) {
+
+                $resto = trim(preg_replace('/\s+/', ' ', str_replace(' '.$frase.' ', ' ', $normalizado)));
+
+                return $resto !== '' && self::es_afirmacion($resto);
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Las tarjetas que confirma un «ok a todo», en orden, o null si no corresponde (y el turno sigue por el
+     * camino de siempre: la tarjeta única, o el modelo).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, conversación 33, 31/10/2026, mensajes 265-268): Pablo contestó «OK a todo»
+     * y el agente le pidió confirmar el alta dos veces seguidas. Las reglas, las MISMAS del sí de una tarjeta
+     * aplicadas a cada una, y ninguna más amplia:
+     *
+     *   - el mensaje es un sí a todo (es_si_a_todo()), sin foto, en un turno con herramientas de carga;
+     *   - 🔴 solo ALTAS y EDICIONES de registros (TIPOS_DE_LA_CADENA, sin ENTIDADES_FUERA_DE_LA_CADENA): con
+     *     una venta, un pago, un gasto, una compra, stock o caja pendiente, no se confirma ninguna;
+     *   - 🔴 tampoco un alta de artículo con `stock_inicial` (mueve stock al confirmarse);
+     *   - 🔴 solo entran las tarjetas pendientes propuestas DESDE EL ÚLTIMO MENSAJE DE LA PERSONA anterior al
+     *     sí (revisión de la rama C, B2): las que el dueño tiene a la vista, las mismas que un «sí» hoy
+     *     confirmaría. Una tarjeta vieja que quedó colgada más atrás no entra (y sigue pendiente);
+     *   - si alguna de esas no se puede confirmar con un sí —🔴 NUNCA_AUTO_CONFIRMABLES (plata sin factura,
+     *     borrados, masivas, envíos a clientes…), de más de MINUTOS_MAXIMOS, o que confirmar por texto
+     *     rechazaría—, NO se confirma ninguna y decide el modelo. «A todo» nunca ensancha lo que un sí puede;
+     *   - a lo sumo MAXIMO_DE_LA_CADENA.
+     *
+     * Con una sola tarjeta también vale: «ok a todo» a una sola tarjeta es su sí.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $assistant_message
+     * @return array<int, \App\Models\AiMessageAction>|null
+     */
+    protected static function tarjetas_de_la_cadena(AiConversation $conversation, AiMessage $assistant_message)
+    {
+        if (!$assistant_message->acciones_habilitadas) {
+
+            return null;
+        }
+
+        $pedido = AiMessage::where('ai_conversation_id', $conversation->id)
+                            ->where('rol', 'user')
+                            ->where('id', '<', $assistant_message->id)
+                            ->orderBy('id', 'DESC')
+                            ->first();
+
+        if (is_null($pedido) || !self::es_si_a_todo($pedido->contenido)) {
+
+            return null;
+        }
+
+        if (AiMessageImagen::where('ai_message_id', $pedido->id)->exists()) {
+
+            return null;
+        }
+
+        /* El mensaje anterior de la persona: solo cuentan las tarjetas propuestas después de él (B2). */
+        $persona_antes = (int) AiMessage::where('ai_conversation_id', $conversation->id)
+                                        ->where('rol', 'user')
+                                        ->where('id', '<', $pedido->id)
+                                        ->max('id');
+
+        $pendientes = AiMessageAction::where('ai_conversation_id', $conversation->id)
+                                        ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                        ->where('ai_message_id', '>', $persona_antes)
+                                        ->where('ai_message_id', '<', $pedido->id)
+                                        ->orderBy('id')
+                                        ->get()
+                                        ->filter(function ($accion) {
+                                            return !$accion->vencio();
+                                        })
+                                        ->values();
+
+        if (!count($pendientes) || count($pendientes) > self::MAXIMO_DE_LA_CADENA) {
+
+            return null;
+        }
+
+        $ultimo_del_asistente = AiMessage::where('ai_conversation_id', $conversation->id)
+                                            ->where('rol', 'assistant')
+                                            ->where('id', '<', $pedido->id)
+                                            ->orderBy('id', 'DESC')
+                                            ->value('id');
+
+        $hay_una_del_ultimo = false;
+
+        foreach ($pendientes as $accion) {
+
+            // 🔴 Solo altas y ediciones de registros: nada de plata, stock ni caja en cadena.
+            if (!in_array((string) $accion->tipo, self::TIPOS_DE_LA_CADENA, true)
+                || in_array(self::entidad_de_la_tarjeta($accion), self::ENTIDADES_FUERA_DE_LA_CADENA, true)
+                || self::trae_stock_inicial($accion)) {
+
+                return null;
+            }
+
+            // 🔴 Lo que un sí no confirma solo, un «a todo» tampoco.
+            if (in_array((string) $accion->tipo, HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES, true)
+                || in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
+
+                return null;
+            }
+
+            if (is_null($accion->created_at) || $accion->created_at->lt(Carbon::now()->subMinutes(self::MINUTOS_MAXIMOS))) {
+
+                return null;
+            }
+
+            if ($assistant_message->confirma_por_texto()) {
+
+                if (!ConfirmacionPorTextoIaHelper::se_puede_confirmar_por_texto($conversation, $assistant_message, $accion->id)) {
+
+                    return null;
+                }
+
+            } else {
+
+                $propuso = AiMessage::find($accion->ai_message_id);
+
+                if (is_null($propuso) || $propuso->estado !== 'listo' || (int) $propuso->id > (int) $pedido->id) {
+
+                    return null;
+                }
+            }
+
+            if (!is_null($ultimo_del_asistente) && (int) $accion->ai_message_id === (int) $ultimo_del_asistente) {
+
+                $hay_una_del_ultimo = true;
+            }
+        }
+
+        return $hay_una_del_ultimo ? $pendientes->all() : null;
+    }
+
+    /**
+     * true si la tarjeta es un alta de artículo que carga stock inicial al confirmarse (`datos.extras.stock_inicial`).
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return bool
+     */
+    protected static function trae_stock_inicial(AiMessageAction $accion)
+    {
+        $datos = json_decode(json_encode($accion->datos), true);
+
+        return is_array($datos)
+            && isset($datos['extras']) && is_array($datos['extras'])
+            && !empty($datos['extras'][AltaDeArticuloConFotoIaHelper::STOCK_INICIAL]);
+    }
+
+    /**
+     * La entidad de una tarjeta de alta o edición (`datos.entidad`), o '' si no la tiene.
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return string
+     */
+    protected static function entidad_de_la_tarjeta(AiMessageAction $accion)
+    {
+        $datos = json_decode(json_encode($accion->datos), true);
+
+        return is_array($datos) && isset($datos['entidad']) && is_scalar($datos['entidad']) ? (string) $datos['entidad'] : '';
+    }
+
+    /**
+     * Confirma las tarjetas de la cadena en orden, por el MISMO camino que el sí de una (confirmar() por texto,
+     * o el del botón en el panel). Si una no se puede, las siguientes NO se intentan (pueden depender de ella:
+     * la venta al cliente que se iba a crear). Devuelve la forma de quizas_confirmar() con `cadena`.
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessage  $assistant_message
+     * @param  array<int, \App\Models\AiMessageAction>  $acciones
+     * @return array{tarjeta_id: int, resultado: array, cadena: array}
+     */
+    protected static function confirmar_la_cadena(AiConversation $conversation, AiMessage $assistant_message, array $acciones)
+    {
+        $cadena = [];
+        $alguna_ok = false;
+        $textos = [];
+
+        foreach ($acciones as $accion) {
+
+            $resultado = $assistant_message->confirma_por_texto()
+                ? ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, (int) $accion->id)
+                : ConfirmacionPorTextoIaHelper::confirmar_como_el_boton($conversation, (int) $accion->id);
+
+            if (empty($resultado['ok'])) {
+
+                $resultado = self::resultado_si_ya_quedo_confirmada((int) $accion->id, $resultado);
+            }
+
+            $cadena[] = ['tarjeta_id' => (int) $accion->id, 'resultado' => $resultado];
+
+            if (empty($resultado['ok'])) {
+
+                break;
+            }
+
+            $alguna_ok = true;
+
+            $texto = isset($resultado['resultado']) ? trim((string) $resultado['resultado']) : '';
+
+            if ($texto !== '') {
+
+                $textos[] = $texto;
+            }
+        }
+
+        /*
+         * El `resultado` de afuera es el resumen, para los que leen solo eso (el respaldo si el modelo falla,
+         * sin_la_pregunta_de_confirmar()): ok si se hizo al menos una.
+         */
+        return [
+            'tarjeta_id' => (int) $acciones[0]->id,
+            'resultado'  => [
+                'ok'         => $alguna_ok,
+                'tarjeta_id' => (int) $acciones[0]->id,
+                'resultado'  => implode('; ', $textos),
+                'nota'       => ConfirmacionPorTextoIaHelper::NOTA_EJECUTADA,
+            ],
+            'cadena'     => $cadena,
+        ];
+    }
+
+    /**
+     * La nota para el modelo de una cadena: qué quedó hecho, qué no y por qué, y qué no se intentó.
+     *
+     * @param  array  $cadena
+     * @return string
+     */
+    protected static function nota_de_la_cadena(array $cadena)
+    {
+        $partes = [];
+
+        foreach ($cadena as $eslabon) {
+
+            $id = (int) $eslabon['tarjeta_id'];
+            $resultado = $eslabon['resultado'];
+
+            if (!empty($resultado['ok'])) {
+
+                $texto = isset($resultado['resultado']) ? trim((string) $resultado['resultado']) : '';
+
+                $partes[] = 'tarjeta #'.$id.': '.($texto === '' ? 'quedó registrada (sin número que decir)' : $texto).self::aviso_del_resultado($resultado);
+
+            } else {
+
+                $error = isset($resultado['error']) ? trim((string) $resultado['error']) : '';
+
+                $partes[] = 'tarjeta #'.$id.': NO se pudo ('.($error === '' ? EjecutorAccionesIaHelper::MENSAJE_ERROR_GENERICO : $error).'); las que seguían no se intentaron';
+            }
+        }
+
+        return '[El sistema confirmó las cargas pendientes por el «sí a todo» de la persona, en orden. '.implode(' | ', $partes)
+            .'. Contale cada resultado con esas palabras, no las vuelvas a confirmar, y si algo no se pudo, contá ese motivo tal cual '
+            .'y no digas que quedó cargado.]';
+    }
+
+    /**
+     * El respaldo de una cadena si el modelo falla después: cada resultado hecho, y el motivo del que no, o
+     * null si no se hizo nada.
+     *
+     * @param  array  $cadena
+     * @return string|null
+     */
+    protected static function respaldo_de_la_cadena(array $cadena)
+    {
+        $renglones = [];
+        $alguna = false;
+
+        foreach ($cadena as $eslabon) {
+
+            $resultado = $eslabon['resultado'];
+
+            if (!empty($resultado['ok'])) {
+
+                $alguna = true;
+
+                $texto = isset($resultado['resultado']) ? trim((string) $resultado['resultado']) : '';
+
+                $renglones[] = $texto === '' ? 'Listo, quedó registrado.' : 'Listo: '.rtrim($texto, '. ').'.';
+
+            } else {
+
+                $error = isset($resultado['error']) ? trim((string) $resultado['error']) : '';
+
+                $renglones[] = 'No se pudo: '.($error === '' ? EjecutorAccionesIaHelper::MENSAJE_ERROR_GENERICO : rtrim($error, '. ')).'.';
+            }
+        }
+
+        return $alguna ? implode("\n", $renglones) : null;
     }
 
     /**

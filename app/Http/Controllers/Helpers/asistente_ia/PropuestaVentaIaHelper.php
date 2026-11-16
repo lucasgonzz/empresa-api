@@ -86,6 +86,13 @@ class PropuestaVentaIaHelper
      */
     const PERMISO_DESCUENTOS = 'sale.discount_surchage.aplicar';
 
+    /**
+     * Permiso para el descuento POR RENGLÓN (M6-descuento, misión asistente-diario-20261116): en Vender
+     * la columna `discount` del remito se dibuja con `can('vender.article_discount')`
+     * (src/components/vender/components/remito/ArticlesTable.vue, dynamic_fields()).
+     */
+    const PERMISO_DESCUENTO_POR_RENGLON = 'vender.article_discount';
+
     /** Tope de renglones por venta (contrato §4). */
     const MAX_ITEMS = 50;
 
@@ -167,6 +174,13 @@ class PropuestaVentaIaHelper
             $reemplaza_a = EntradaDeCargaIa::valor($input, 'reemplaza_a');
         }
 
+        /*
+         * 🔴 El cobro que la persona NO dijo no se hereda (misión asistente-mejoras-4-dias, P1, V2): el
+         * método, la caja o la cuenta corriente que el modelo trae de otra venta u otra charla se
+         * descartan y se preguntan como si no hubieran venido. Ver CobroDichoIaHelper.
+         */
+        list($input, $cobro_descartado) = CobroDichoIaHelper::sin_lo_no_dicho($contexto, $mensaje, $input);
+
         /** Lo que falta para armar la venta, para preguntarlo todo en un solo mensaje. */
         $faltan = [];
 
@@ -237,7 +251,27 @@ class PropuestaVentaIaHelper
             ? null
             : SaleHelper::resolver_descuento_recargo_metodo_pago($contexto->owner_id, (int) $metodo->id, null);
 
-        $renglones = self::resolver_renglones($contexto, EntradaDeCargaIa::valor($input, 'items'), $lista, $porcentaje_del_metodo, $faltan, $opciones);
+        /*
+         * Misión asistente-mejoras-4-dias (P3, V7): las promos de vinoteca van como renglón propio, igual
+         * que en el buscador «Promocion» de Vender. Ver PromoDeVinotecaEnVentaIaHelper.
+         */
+        list($items_de_articulos, $items_de_promos) = PromoDeVinotecaEnVentaIaHelper::separar($contexto, EntradaDeCargaIa::valor($input, 'items'));
+
+        $promos = [];
+
+        if (count($items_de_promos)) {
+
+            $promos = PromoDeVinotecaEnVentaIaHelper::resolver($contexto, $items_de_promos, $porcentaje_del_metodo, $faltan, $opciones);
+
+            if (RespuestaDeCargaIa::es_negativa($promos)) {
+
+                return $promos;
+            }
+        }
+
+        $renglones = count($items_de_promos) && is_array($items_de_articulos) && !count($items_de_articulos)
+            ? []
+            : self::resolver_renglones($contexto, $items_de_articulos, $lista, $porcentaje_del_metodo, $faltan, $opciones, true);
 
         if (RespuestaDeCargaIa::es_negativa($renglones)) {
 
@@ -293,11 +327,19 @@ class PropuestaVentaIaHelper
 
         if (count($faltan)) {
 
-            return RespuestaDeCargaIa::faltan($faltan, $opciones);
+            $respuesta = RespuestaDeCargaIa::faltan($faltan, $opciones);
+
+            // Clave nueva al final: le dice al modelo por qué se le pregunta un cobro que mandó.
+            if (count($cobro_descartado)) {
+                $respuesta['nota'] = 'La persona no dijo en este pedido cómo se cobra (' . implode(', ', $cobro_descartado)
+                    . '): no lo saques de otra venta ni de otra charla. Preguntáselo.';
+            }
+
+            return $respuesta;
         }
 
         // ------------------------------------------------------------------ totales, como vender_set_total.js
-        $totales = self::totales($renglones, $descuento);
+        $totales = self::totales($renglones, $descuento, $promos);
 
         // ------------------------------------------------------------------ venta ya registrada
         /*
@@ -311,7 +353,7 @@ class PropuestaVentaIaHelper
          */
         if (!self::pidio_otra_venta($input)) {
 
-            $repetida = self::venta_repetida($contexto, $cliente, $renglones, $totales);
+            $repetida = self::venta_repetida($contexto, $cliente, $renglones, $totales, $promos);
 
             if (!is_null($repetida)) {
 
@@ -320,7 +362,7 @@ class PropuestaVentaIaHelper
         }
 
         // ------------------------------------------------------------------ stock
-        $stock = self::revisar_stock($contexto, $renglones);
+        $stock = self::revisar_stock($contexto, $renglones, $promos);
 
         if (RespuestaDeCargaIa::es_negativa($stock)) {
 
@@ -328,23 +370,23 @@ class PropuestaVentaIaHelper
         }
 
         // ------------------------------------------------------------------ payload y tarjeta
-        $payload = self::payload($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $tipo_de_venta, $fecha_entrega, $observaciones, $totales);
+        $payload = self::payload($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $tipo_de_venta, $fecha_entrega, $observaciones, $totales, $promos);
 
-        $presentacion = self::presentacion($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $observaciones, $totales, $stock);
+        $presentacion = self::presentacion($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $observaciones, $totales, $stock, $promos);
 
-        $resumen = self::resumen($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $totales);
+        $resumen = self::resumen($renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $totales, $promos, $porcentaje_del_metodo);
 
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             self::tipo(),
-            self::clave($renglones, $cliente),
+            self::clave($renglones, $cliente, $promos),
             ['payload' => $payload, 'resumen' => $resumen],
             $presentacion,
             $reemplaza_a
         );
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, self::resumen_en_una_linea($renglones, $cliente, $cobro, $metodo, $caja, $totales));
+        return AccionesIaHelper::respuesta_de_propuesta($creada, self::resumen_en_una_linea($renglones, $cliente, $cobro, $metodo, $caja, $totales, $promos));
     }
 
     /**
@@ -356,12 +398,17 @@ class PropuestaVentaIaHelper
      * @param  \App\Models\Client|null  $cliente
      * @return string
      */
-    public static function clave(array $renglones, $cliente): string
+    public static function clave(array $renglones, $cliente, array $promos = []): string
     {
         $ids = [];
 
         foreach ($renglones as $renglon) {
             $ids[] = (int) $renglon['article']->id;
+        }
+
+        // Las promos (P3) con otra marca: la promo 7 no es el artículo 7.
+        foreach ($promos as $renglon) {
+            $ids[] = 'p' . (int) $renglon['promo']->id;
         }
 
         sort($ids);
@@ -431,9 +478,9 @@ class PropuestaVentaIaHelper
      * @param  array  $totales  Los de totales().
      * @return array|null
      */
-    protected static function venta_repetida(ContextoDeCargaIa $contexto, $cliente, array $renglones, array $totales)
+    protected static function venta_repetida(ContextoDeCargaIa $contexto, $cliente, array $renglones, array $totales, array $promos = [])
     {
-        if (is_null($cliente) || !count($renglones)) {
+        if (is_null($cliente) || (!count($renglones) && !count($promos))) {
 
             return null;
         }
@@ -463,6 +510,12 @@ class PropuestaVentaIaHelper
             $firma_propuesta[(int) $renglon['article']->id . ':0'] = (float) $renglon['cantidad'];
         }
 
+        // P3 (revisión independiente, menor 5): las promos también son parte de la firma, con su marca.
+        foreach ($promos as $renglon) {
+
+            $firma_propuesta['p' . (int) $renglon['promo']->id . ':0'] = (float) $renglon['cantidad'];
+        }
+
         $firma_propuesta = self::firma_de_renglones($firma_propuesta);
 
         // Los renglones de las candidatas en una sola consulta, sumados por artículo y variante.
@@ -476,6 +529,22 @@ class PropuestaVentaIaHelper
 
             $venta_id = (int) $fila->sale_id;
             $llave = (int) $fila->article_id . ':' . (int) $fila->article_variant_id;
+
+            if (!isset($por_venta[$venta_id])) {
+                $por_venta[$venta_id] = [];
+            }
+
+            $por_venta[$venta_id][$llave] = (isset($por_venta[$venta_id][$llave]) ? $por_venta[$venta_id][$llave] : 0) + (float) $fila->amount;
+        }
+
+        $filas_de_promos = DB::table('promocion_vinoteca_sale')
+                    ->whereIn('sale_id', $candidatas->pluck('id')->all())
+                    ->get(['sale_id', 'promocion_vinoteca_id', 'amount']);
+
+        foreach ($filas_de_promos as $fila) {
+
+            $venta_id = (int) $fila->sale_id;
+            $llave = 'p' . (int) $fila->promocion_vinoteca_id . ':0';
 
             if (!isset($por_venta[$venta_id])) {
                 $por_venta[$venta_id] = [];
@@ -677,11 +746,26 @@ class PropuestaVentaIaHelper
     protected static function verificar_para_ejecutar(ContextoDeCargaIa $contexto, array $payload)
     {
         $ids = [];
+        $promo_ids = [];
 
         foreach ($payload['items'] as $item) {
+
             if (is_array($item) && isset($item['id'])) {
+
+                // P3: un renglón de promo lleva el id de la promo, no de un artículo.
+                if (!empty($item['is_promocion_vinoteca'])) {
+                    $promo_ids[] = (int) $item['id'];
+                    continue;
+                }
+
                 $ids[] = (int) $item['id'];
             }
+        }
+
+        if (count($promo_ids)
+            && \App\Models\PromocionVinoteca::where('user_id', $contexto->owner_id)->whereIn('id', $promo_ids)->count('id') !== count(array_unique($promo_ids))) {
+
+            throw new AccionIaException(422, 'Alguna de las promos de la tarjeta ya no existe entre las tuyas. Pedímela de nuevo.');
         }
 
         $existen = Article::where('user_id', $contexto->owner_id)
@@ -768,6 +852,22 @@ class PropuestaVentaIaHelper
 
         if (count($candidatos) === 0) {
 
+            /*
+             * P8 (misión asistente-mejoras-4-dias, V14): un nombre DICTADO o mal escrito («Justo Rubén» por
+             * RUBEN EDUARDO GIUSTO, «Nespeka» por NESPECA) no lo encuentra el LIKE. Se buscan los que SUENAN
+             * parecido y se PREGUNTAN, aunque sea uno solo: a un cliente parecido no se le carga una venta
+             * sin que la persona diga que es ese.
+             */
+            $parecidos = self::clientes_parecidos($contexto, $nombre);
+
+            if (count($parecidos)) {
+
+                return RespuestaDeCargaIa::faltan(
+                    ['si el cliente "' . $nombre . '" es alguno de estos (los nombres se parecen; no elijo solo)'],
+                    ['clientes' => $parecidos]
+                );
+            }
+
             return RespuestaDeCargaIa::error(
                 'No encontré ningún cliente que se llame así. No puedo crear clientes: cargalo desde Clientes y volvé a pedírmelo, o hacé la venta sin cliente.'
             );
@@ -794,6 +894,60 @@ class PropuestaVentaIaHelper
         }
 
         return RespuestaDeCargaIa::faltan(['cuál de estos clientes es'], ['clientes' => $opciones]);
+    }
+
+    /**
+     * Cuántos clientes se recorren como mucho buscando nombres parecidos (de a CHUNK_CLIENTES): acota el
+     * costo en un negocio con una cartera enorme.
+     */
+    const TOPE_CLIENTES_PARECIDOS = 20000;
+
+    const CHUNK_CLIENTES = 2000;
+
+    /**
+     * Los clientes del dueño cuyo nombre se parece al dictado (NombreParecidoIaHelper), como opciones
+     * `{cliente_id, nombre, parecido: true}`, hasta 5.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombre
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function clientes_parecidos(ContextoDeCargaIa $contexto, $nombre)
+    {
+        if (!count(NombreParecidoIaHelper::palabras_que_cuentan($nombre))) {
+
+            return [];
+        }
+
+        $encontrados = [];
+        $leidos = 0;
+
+        Client::where('user_id', $contexto->owner_id)
+            ->select(['id', 'name'])
+            ->orderBy('id')
+            ->chunk(self::CHUNK_CLIENTES, function ($clientes) use ($nombre, &$encontrados, &$leidos) {
+
+                $encontrados = array_merge($encontrados, NombreParecidoIaHelper::candidatos($nombre, $clientes->pluck('name', 'id')->all(), 5));
+
+                $leidos += count($clientes);
+
+                return $leidos < self::TOPE_CLIENTES_PARECIDOS;
+            });
+
+        // Re-ordenado entre chunks: el más parecido primero.
+        $nombres = [];
+
+        foreach ($encontrados as $fila) {
+            $nombres[$fila['id']] = $fila['nombre'];
+        }
+
+        $opciones = [];
+
+        foreach (NombreParecidoIaHelper::candidatos($nombre, $nombres, 5) as $fila) {
+            $opciones[] = ['cliente_id' => (int) $fila['id'], 'nombre' => (string) $fila['nombre'], 'parecido' => true];
+        }
+
+        return $opciones;
     }
 
     /**
@@ -1038,6 +1192,27 @@ class PropuestaVentaIaHelper
             return $ofrecibles[0];
         }
 
+        /*
+         * Misión asistente-mejoras-4-dias (P1, V24): «Dejalo como pago en efectivo» → «¿A qué caja va el
+         * efectivo? Tenés CAJA EFECTIVO, BRUBANK NADIA y BRUBANK FER». Con el método Efectivo y UNA sola
+         * caja ofrecible que se llama «efectivo», es esa: la tarjeta la nombra y la persona la ve.
+         */
+        if (!is_null($metodo) && mb_strpos(ConsultasSistemaIaHelper::normalize_text((string) $metodo->name), 'efectivo') !== false) {
+
+            $de_efectivo = [];
+
+            foreach ($ofrecibles as $ofrecible) {
+                if (mb_strpos(ConsultasSistemaIaHelper::normalize_text(OpcionesDeCargaIaHelper::nombre_de_caja($ofrecible, $calles)), 'efectivo') !== false) {
+                    $de_efectivo[] = $ofrecible;
+                }
+            }
+
+            if (count($de_efectivo) === 1) {
+
+                return $de_efectivo[0];
+            }
+        }
+
         $faltan[] = 'a qué caja va el cobro';
         $opciones['cajas'] = $opciones_de_cajas;
 
@@ -1195,9 +1370,12 @@ class PropuestaVentaIaHelper
      * @param  float|null  $porcentaje_del_metodo  Positivo descuenta, negativo recarga, null nada.
      * @param  array  $faltan  Se llena por referencia.
      * @param  array  $opciones  Se llena por referencia.
+     * @param  bool  $con_descuento_por_renglon  M6-descuento (misión asistente-diario-20261116): true solo
+     *         desde proponer_venta, que lee `descuento_porcentaje` de cada item. El presupuesto comparte este
+     *         método y no lo ofrece en su esquema: con false, cada renglón queda con `descuento` null.
      * @return array<int, array<string, mixed>>|array  Renglones (vacío si alguno quedó pendiente), o la respuesta negativa.
      */
-    public static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones)
+    public static function resolver_renglones(ContextoDeCargaIa $contexto, $items, $lista, $porcentaje_del_metodo, array &$faltan, array &$opciones, $con_descuento_por_renglon = false)
     {
         if (!is_array($items) || !count($items)) {
 
@@ -1227,6 +1405,13 @@ class PropuestaVentaIaHelper
             }
 
             $cantidad = round((float) $cantidad, 2);
+
+            $descuento_del_renglon = $con_descuento_por_renglon ? self::descuento_del_renglon($contexto, $item, $indice) : null;
+
+            if (RespuestaDeCargaIa::es_negativa($descuento_del_renglon)) {
+
+                return $descuento_del_renglon;
+            }
 
             $article = self::resolver_articulo($contexto, $item, $lista);
 
@@ -1312,6 +1497,24 @@ class PropuestaVentaIaHelper
 
             if (isset($renglones[$id])) {
 
+                /*
+                 * Revisión independiente (16/11/2026, M6-descuento): el mismo artículo dos veces con
+                 * descuentos DISTINTOS no se funde (un renglón se quedaría con el descuento del otro y el
+                 * total cambiaría sin que nadie lo diga), ni se arma en dos renglones del mismo artículo
+                 * (Vender no lo hace). Se pregunta.
+                 */
+                $descuento_anterior = isset($renglones[$id]['descuento']) ? (float) $renglones[$id]['descuento'] : 0.0;
+                $descuento_nuevo = is_null($descuento_del_renglon) ? 0.0 : (float) $descuento_del_renglon;
+
+                if ($con_descuento_por_renglon && abs($descuento_anterior - $descuento_nuevo) > 0.004) {
+
+                    return RespuestaDeCargaIa::error(
+                        $article->name . ' está dos veces en la venta con descuentos distintos (' . self::porcentaje($descuento_anterior) . ' % y '
+                            . self::porcentaje($descuento_nuevo) . ' %). Un artículo va en un solo renglón con un solo descuento: '
+                            . 'preguntá cuál va (o si son dos ventas) y volvé a pedirla con un renglón.'
+                    );
+                }
+
                 $renglones[$id]['cantidad'] = round($renglones[$id]['cantidad'] + $cantidad, 2);
 
                 if (!is_null($precio_dictado)) {
@@ -1320,6 +1523,7 @@ class PropuestaVentaIaHelper
                     $renglones[$id]['origen'] = $origen;
                 }
 
+                // M6-descuento: acá los dos renglones tienen el mismo descuento (lo distinto cortó arriba), así que se funden.
                 continue;
             }
 
@@ -1330,6 +1534,8 @@ class PropuestaVentaIaHelper
                 'precio_dictado' => $precio_dictado,
                 'origen'         => $origen,
                 'caja_de'        => is_null($precio_dictado) && $origen === 'final_price' ? self::caja_de($contexto, $article) : null,
+                // M6-descuento (misión asistente-diario-20261116), al final: el % de descuento del renglón, o null.
+                'descuento'      => $descuento_del_renglon,
             ];
         }
 
@@ -1821,6 +2027,69 @@ class PropuestaVentaIaHelper
     }
 
     /**
+     * EL DESCUENTO % DE UN RENGLÓN QUE DICTÓ LA PERSONA (M6-descuento, misión asistente-diario-20261116).
+     *
+     * 🔴 EL PEDIDO REAL (Ferre Total, 14/11/2026): «a este hacele 15 %». Vender lo hace en el remito con
+     * la columna `discount` de cada artículo, y el asistente solo sabía el descuento de venta del
+     * catálogo (`descuento_porcentaje` de arriba, sobre el total). Este es el otro: va en el renglón, se
+     * guarda en `article_sale.discount` por el mismo camino que Vender (`SaleHelper::attachArticle()`
+     * lee `discount` del item) y pide el mismo permiso que dibuja esa columna.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $item
+     * @param  int  $indice  Posición del item (para el mensaje de error).
+     * @return float|null|array  El porcentaje (0 < d ≤ 100), null si no hay, o la respuesta negativa.
+     */
+    protected static function descuento_del_renglon(ContextoDeCargaIa $contexto, array $item, $indice)
+    {
+        $valor = EntradaDeCargaIa::valor($item, 'descuento_porcentaje');
+
+        if (EntradaDeCargaIa::vacio($valor)) {
+
+            return null;
+        }
+
+        if (!is_numeric($valor) || (float) $valor < 0 || (float) $valor > 100) {
+
+            return RespuestaDeCargaIa::error('El descuento del artículo ' . ($indice + 1) . ' tiene que ser un porcentaje entre 0 y 100.');
+        }
+
+        $porcentaje = round((float) $valor, 2);
+
+        if ($porcentaje == 0) {
+
+            return null;
+        }
+
+        if (!PermisosIaHelper::puede($contexto->persona, self::PERMISO_DESCUENTO_POR_RENGLON)) {
+
+            return RespuestaDeCargaIa::error('No tenés permiso para hacerle descuento a cada artículo desde tu usuario (en Vender es la columna de descuento del remito).');
+        }
+
+        return $porcentaje;
+    }
+
+    /**
+     * La plata de UN renglón de artículo con la cuenta de Vender: `getTotalItem()` de
+     * src/mixins/model_functions.js —`total = precio × cantidad` y, con descuento,
+     * `total -= total × descuento / 100`—, en ese mismo orden para dar el mismo número. Sin redondear:
+     * el redondeo va sobre la suma, como en vender_set_total.js.
+     *
+     * @param  array  $renglon
+     * @return float
+     */
+    public static function importe_del_renglon(array $renglon): float
+    {
+        $total = (float) $renglon['precio'] * (float) $renglon['cantidad'];
+
+        if (!empty($renglon['descuento'])) {
+            $total -= $total * (float) $renglon['descuento'] / 100;
+        }
+
+        return $total;
+    }
+
+    /**
      * Sub total y total como los calcula `mixins/vender_set_total.js`: el sub total es la suma de
      * los renglones (precio unitario ya con el descuento del método de pago, × cantidad), y el total
      * es esa suma menos el descuento de venta (`aplicar_discounts()` se lo resta a `total_articles`
@@ -1830,11 +2099,17 @@ class PropuestaVentaIaHelper
      * @param  \App\Models\Discount|null  $descuento
      * @return array{sub_total: float, total: float, descuento_monto: float}
      */
-    public static function totales(array $renglones, $descuento): array
+    public static function totales(array $renglones, $descuento, array $promos = []): array
     {
         $sub_total = 0.0;
 
+        // M6-descuento: cada renglón con su descuento, como getTotalItem() de Vender.
         foreach ($renglones as $renglon) {
+            $sub_total += self::importe_del_renglon($renglon);
+        }
+
+        // P3: las promos suman al subtotal como `total_promocion_vinoteca` de vender_set_total.js.
+        foreach ($promos as $renglon) {
             $sub_total += (float) $renglon['precio'] * (float) $renglon['cantidad'];
         }
 
@@ -1866,9 +2141,10 @@ class PropuestaVentaIaHelper
      * @param  array  $renglones
      * @return string|null|array
      */
-    protected static function revisar_stock(ContextoDeCargaIa $contexto, array $renglones)
+    protected static function revisar_stock(ContextoDeCargaIa $contexto, array $renglones, array $promos = [])
     {
-        $en_negativo = [];
+        // P3: el stock de la promo es el que descuenta la venta (las botellas ya salieron al armarla).
+        $en_negativo = PromoDeVinotecaEnVentaIaHelper::en_negativo($promos);
 
         foreach ($renglones as $renglon) {
 
@@ -1939,10 +2215,20 @@ class PropuestaVentaIaHelper
      * @param  array  $totales
      * @return array<string, mixed>
      */
-    public static function payload(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $tipo_de_venta, $fecha_entrega, $observaciones, array $totales): array
+    public static function payload(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $tipo_de_venta, $fecha_entrega, $observaciones, array $totales, array $promos = []): array
     {
         $items = [];
         $descripcion = [];
+
+        // P3: el renglón de promo como lo arma PromocionVinoteca.vue (is_promocion_vinoteca); lo procesa store().
+        foreach ($promos as $renglon) {
+
+            $items[] = PromoDeVinotecaEnVentaIaHelper::item_del_payload($renglon);
+
+            $descripcion[] = 'ITEM: ' . $renglon['promo']->name;
+            $descripcion[] = ($renglon['origen'] === 'dictado' ? 'Precio personalizado: ' : 'Precio (promo): ') . FormatoIaHelper::monto($renglon['precio']);
+            $descripcion[] = 'Precio unitario final: ' . FormatoIaHelper::monto($renglon['precio']);
+        }
 
         foreach ($renglones as $renglon) {
 
@@ -1965,6 +2251,8 @@ class PropuestaVentaIaHelper
                 'iva_id'                     => $article->iva_id,
                 'iva'                        => is_null($article->iva) ? null : ['id' => (int) $article->iva->id, 'percentage' => $article->iva->percentage],
                 'stock'                      => $article->stock,
+                // M6-descuento: el % del renglón, la clave que lee SaleHelper::getDiscount() → article_sale.discount.
+                'discount'                   => empty($renglon['descuento']) ? null : (float) $renglon['descuento'],
             ];
 
             $items[] = $item;
@@ -1972,6 +2260,10 @@ class PropuestaVentaIaHelper
             $descripcion[] = 'ITEM: ' . $article->name;
             $descripcion[] = ($renglon['origen'] === 'dictado' ? 'Precio personalizado: ' : 'Precio (' . $renglon['origen'] . '): ') . FormatoIaHelper::monto($renglon['precio']);
             $descripcion[] = 'Precio unitario final: ' . FormatoIaHelper::monto($renglon['precio']);
+
+            if (!empty($renglon['descuento'])) {
+                $descripcion[] = 'Descuento del renglon: ' . self::porcentaje((float) $renglon['descuento']) . '%';
+            }
         }
 
         $descripcion[] = 'SubTotal: ' . FormatoIaHelper::monto($totales['sub_total']) . ' (sumatoria de todos los items con descuentos individuales y descuentos/recargos de metodos de pago aplicados)';
@@ -2052,13 +2344,18 @@ class PropuestaVentaIaHelper
      *
      * @return array{titulo: string, renglones: array, aviso: string|null}
      */
-    protected static function presentacion(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $observaciones, array $totales, $aviso): array
+    protected static function presentacion(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, $observaciones, array $totales, $aviso, array $promos = []): array
     {
         $filas = [];
 
         foreach ($renglones as $renglon) {
 
             $filas[] = ['etiqueta' => 'Artículo', 'valor' => self::renglon_de_articulo($renglon)];
+        }
+
+        foreach ($promos as $renglon) {
+
+            $filas[] = ['etiqueta' => 'Promo', 'valor' => PromoDeVinotecaEnVentaIaHelper::renglon_de_promo($renglon)];
         }
 
         $filas[] = ['etiqueta' => 'Cliente', 'valor' => is_null($cliente) ? 'Sin cliente' : (string) $cliente->name];
@@ -2098,10 +2395,25 @@ class PropuestaVentaIaHelper
      * El resumen que queda en `datos` de la tarjeta: lo mismo que la tarjeta muestra, en forma de
      * datos (para el informe, para el historial y para quien lea la fila sin la SPA).
      *
+     * @param  float|null  $porcentaje_del_metodo  31/10 #8: el % del método de pago que llevan los precios.
      * @return array<string, mixed>
      */
-    protected static function resumen(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, array $totales): array
+    protected static function resumen(array $renglones, $cliente, $cobro, $metodo, $caja, $lista, $descuento, $sucursal, $fecha_entrega, array $totales, array $promos = [], $porcentaje_del_metodo = null): array
     {
+        $de_promos = [];
+
+        foreach ($promos as $renglon) {
+
+            $de_promos[] = [
+                'promo_id' => (int) $renglon['promo']->id,
+                'nombre'   => (string) $renglon['promo']->name,
+                'cantidad' => (int) $renglon['cantidad'],
+                'precio'   => (float) $renglon['precio'],
+                'subtotal' => round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2),
+                'origen'   => (string) $renglon['origen'],
+            ];
+        }
+
         $articulos = [];
 
         foreach ($renglones as $renglon) {
@@ -2111,8 +2423,10 @@ class PropuestaVentaIaHelper
                 'nombre'      => (string) $renglon['article']->name,
                 'cantidad'    => (float) $renglon['cantidad'],
                 'precio'      => (float) $renglon['precio'],
-                'subtotal'    => round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2),
+                // M6-descuento: el subtotal ya con el descuento del renglón (el mismo de la tarjeta).
+                'subtotal'    => round(self::importe_del_renglon($renglon), 2),
                 'origen'      => (string) $renglon['origen'],
+                'descuento'   => empty($renglon['descuento']) ? null : (float) $renglon['descuento'],
             ];
         }
 
@@ -2128,6 +2442,14 @@ class PropuestaVentaIaHelper
             'fecha_entrega'   => is_null($fecha_entrega) ? null : $fecha_entrega->format('Y-m-d'),
             'sub_total'       => $totales['sub_total'],
             'total'           => $totales['total'],
+            // P3, al final: las promos de vinoteca de la venta.
+            'promos'          => $de_promos,
+            /*
+             * 31/10 #8 (misión asistente-diario-20261116), al final: el % del método de pago que ya llevan
+             * los precios (positivo descuenta, negativo recarga, null nada). Es el porqué que da
+             * VentaConDatosInventadosIaHelper::texto_honesto() cuando el texto cita otro total.
+             */
+            'porcentaje_del_metodo' => (is_null($porcentaje_del_metodo) || (float) $porcentaje_del_metodo == 0) ? null : (float) $porcentaje_del_metodo,
         ];
     }
 
@@ -2136,12 +2458,16 @@ class PropuestaVentaIaHelper
      *
      * @return string
      */
-    protected static function resumen_en_una_linea(array $renglones, $cliente, $cobro, $metodo, $caja, array $totales): string
+    protected static function resumen_en_una_linea(array $renglones, $cliente, $cobro, $metodo, $caja, array $totales, array $promos = []): string
     {
         $partes = [];
 
         foreach ($renglones as $renglon) {
             $partes[] = self::numero((float) $renglon['cantidad']) . ' × ' . $renglon['article']->name;
+        }
+
+        foreach ($promos as $renglon) {
+            $partes[] = (int) $renglon['cantidad'] . ' × Promo ' . $renglon['promo']->name;
         }
 
         return 'Venta · ' . implode(' + ', $partes)
@@ -2158,13 +2484,17 @@ class PropuestaVentaIaHelper
      */
     public static function renglon_de_articulo(array $renglon): string
     {
-        $subtotal = round((float) $renglon['precio'] * (float) $renglon['cantidad'], 2);
+        // M6-descuento: con descuento de renglón el subtotal ya lo trae (el presupuesto no lo usa: sin clave, igual que antes).
+        $subtotal = round(self::importe_del_renglon($renglon), 2);
 
         // B7 (13/11/2026): con Vinoteca el artículo ES la caja, y la tarjeta lo dice. Ver caja_de().
         $caja = !empty($renglon['caja_de']) ? ' (caja de ' . self::numero((float) $renglon['caja_de']) . ')' : '';
 
+        $descuento = !empty($renglon['descuento']) ? ' − ' . self::porcentaje((float) $renglon['descuento']) . ' %' : '';
+
         return self::numero((float) $renglon['cantidad']) . ' × ' . $renglon['article']->name . $caja
             . ' — ' . FormatoIaHelper::monto($renglon['precio'])
+            . $descuento
             . ' = ' . FormatoIaHelper::monto($subtotal);
     }
 

@@ -258,6 +258,13 @@ class AiMessageAction extends Model
      */
     const TIPO_VENTAS_PLANILLA = 'ventas_planilla';
 
+    /**
+     * Misión asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock POR LOTE, muchos artículos
+     * con su cantidad contada en UNA tarjeta. Cada renglón se ejecuta por el mismo camino que
+     * TIPO_STOCK_DEPOSITO (PropuestaAjusteDeStockPorLoteIaHelper). 🔴 Nunca se auto-confirma.
+     */
+    const TIPO_AJUSTE_STOCK_LOTE = 'ajuste_stock_lote';
+
     protected $guarded = [];
 
     /**
