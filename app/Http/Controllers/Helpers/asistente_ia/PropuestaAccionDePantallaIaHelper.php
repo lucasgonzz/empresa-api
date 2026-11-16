@@ -257,6 +257,23 @@ class PropuestaAccionDePantallaIaHelper
 
         $tiene_id = isset($cuerpo['sale_id']) && FacturaDeVentaHelper::es_id($cuerpo['sale_id']);
 
+        /*
+         * Revisión independiente (importante 4): con `numero` Y `sale_id`, el id tiene que ser el de la venta
+         * con ese N°. Si no coincide (el modelo puso el N° en sale_id, o un id de otra venta), manda el N°
+         * —es lo que dijo la persona—: nunca se factura por un sale_id a ciegas.
+         */
+        if ($tiene_id && !is_null($numero)) {
+
+            $num_del_id = \App\Models\Sale::where('user_id', $contexto->owner_id)->where('id', (int) $cuerpo['sale_id'])->value('num');
+
+            if (!is_null($num_del_id) && (int) $num_del_id === $numero) {
+                return $cuerpo;
+            }
+
+            unset($cuerpo['sale_id']);
+            $tiene_id = false;
+        }
+
         if ($tiene_id) {
             return $cuerpo;
         }

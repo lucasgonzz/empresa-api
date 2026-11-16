@@ -179,4 +179,36 @@ class Facturar_por_numero_de_venta_Test extends EmpresaTestCase
         $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
         $this->assertSame((int) $venta->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['cuerpo']['sale_id']);
     }
+
+    /**
+     * Revisión independiente (importante 4): con `numero` y un `sale_id` que NO es esa venta (el modelo puso
+     * otro id), manda el N°: la tarjeta queda sobre la venta con ese número, nunca sobre el id a ciegas.
+     *
+     * @test
+     */
+    public function con_numero_y_un_sale_id_que_no_coincide_manda_el_numero()
+    {
+        $venta = $this->venta();
+        $otra = $this->venta();
+        list($emisor, $tipo) = $this->emisor_y_tipo();
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'POST', 'ruta' => 'api/afip-ticket', 'descripcion' => 'Facturar',
+            'cuerpo' => ['numero' => $venta->num, 'sale_id' => $otra->id, 'ventas_afip_information_id' => $emisor->id, 'afip_tipo_comprobante_id' => $tipo->id],
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+        $this->assertSame((int) $venta->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['cuerpo']['sale_id']);
+
+        // Y si coinciden, queda el id.
+        list($conversation, $assistant) = $this->conversacion();
+
+        $coinciden = $this->herramienta($conversation, $assistant, 'proponer_accion_de_pantalla', [
+            'metodo' => 'POST', 'ruta' => 'api/afip-ticket', 'descripcion' => 'Facturar',
+            'cuerpo' => ['numero' => $otra->num, 'sale_id' => $otra->id, 'ventas_afip_information_id' => $emisor->id, 'afip_tipo_comprobante_id' => $tipo->id],
+        ]);
+
+        $this->assertSame((int) $otra->id, (int) AiMessageAction::find($coinciden['tarjeta_id'])->datos['cuerpo']['sale_id']);
+    }
 }
