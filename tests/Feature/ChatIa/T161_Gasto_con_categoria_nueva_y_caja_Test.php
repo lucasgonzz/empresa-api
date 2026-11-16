@@ -344,6 +344,7 @@ class T161_Gasto_con_categoria_nueva_y_caja_Test extends EmpresaTestCase
         $accion = AiMessageAction::find($respuesta['tarjeta_id']);
         $this->assertSame(0, (int) $accion->datos['payment_methods'][0]['caja_id']);
         $this->assertNotEmpty($accion->presentacion['aviso'], 'La tarjeta avisa que va sin caja.');
+        $this->assertStringContainsString('ninguna caja que puedas usar para este gasto', $accion->presentacion['aviso']);
 
         $this->confirmar($conversation, $assistant, $respuesta['tarjeta_id'])->assertStatus(200);
 

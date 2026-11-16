@@ -204,7 +204,7 @@ class PagosIaHelper {
                 }
             }
 
-            $aviso_de_caja = 'No hay ninguna caja abierta: el gasto queda sin caja (no mueve ninguna caja), como cuando se carga desde Gastos sin elegir caja.';
+            $aviso_de_caja = 'No hay ninguna caja que puedas usar para este gasto: queda sin caja (no mueve ninguna caja), como cuando se carga desde Gastos sin elegir caja.';
         }
 
         if (count($cajas) && !$gasto_sin_caja_abierta) {
