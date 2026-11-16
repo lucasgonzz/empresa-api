@@ -263,8 +263,12 @@ class Articulos_sin_rotacion_Test extends TestCase
 
         $nombres = $servicio->nombres_de_lectura();
 
-        // Fichas verificadas añade la búsqueda web detrás: se conserva el prefijo anterior exacto.
-        $this->assertSame(['consultar_articulos_sin_rotacion', 'buscar_ficha_de_articulo'], array_slice($nombres, -2), 'Las capacidades nuevas se añaden al final del prefijo del caché.');
+        // Fichas verificadas añade la búsqueda web detrás: se conserva el prefijo anterior exacto. Después
+        // se sumaron AL FINAL buscar_imagen_de_bebida (alta de bebidas) y valorizar_stock y
+        // exportar_articulos_excel (asistente-mejoras-4-dias, 16/11/2026): el tramo se lee con -5.
+        $this->assertSame(
+            ['consultar_articulos_sin_rotacion', 'buscar_ficha_de_articulo', 'buscar_imagen_de_bebida', 'valorizar_stock', 'exportar_articulos_excel'],
+            array_slice($nombres, -5), 'Las capacidades nuevas se añaden al final del prefijo del caché.');
         $this->assertTrue($servicio->maneja_lectura('consultar_articulos_sin_rotacion'));
         $this->assertTrue(McpHerramientasHelper::existe('consultar_articulos_sin_rotacion'));
 
