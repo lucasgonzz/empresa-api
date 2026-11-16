@@ -166,6 +166,70 @@ class T175_Ok_a_todo_y_consumidor_final_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Revisión B2: la cadena son solo las tarjetas propuestas desde el último mensaje de la persona. Una
+     * tarjeta vieja que quedó colgada más atrás no se confirma (y sigue pendiente).
+     *
+     * @test
+     */
+    public function la_cadena_son_solo_las_tarjetas_desde_el_ultimo_mensaje_de_la_persona()
+    {
+        list($conversation, $viejas) = $this->propuestas_leidas([
+            ['proponer_alta', ['entidad' => 'client', 'datos' => ['name' => 'ZZC175 Vieja']]],
+        ]);
+
+        list($conversation, $assistant) = $this->vuelta('ahora el proveedor y otro cliente', $conversation);
+
+        $nuevas = [];
+
+        foreach ([['client', 'ZZC175 Nueva cliente'], ['provider', 'ZZC175 Nueva proveedor']] as $par) {
+            $r = $this->herramienta($conversation, $assistant, 'proponer_alta', ['entidad' => $par[0], 'datos' => ['name' => $par[1]]]);
+            $this->assertTrue($r['ok'], json_encode($r));
+            $nuevas[] = (int) $r['tarjeta_id'];
+        }
+
+        $assistant->estado = 'listo';
+        $assistant->contenido = 'Te dejo las dos altas nuevas.';
+        $assistant->save();
+
+        list($conversation, $siguiente) = $this->vuelta('ok a todo', $conversation);
+
+        $confirmacion = ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $siguiente);
+
+        $this->assertNotNull($confirmacion);
+        $this->assertSame($nuevas, array_column($confirmacion['cadena'], 'tarjeta_id'));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($viejas[0])->estado, 'La vieja no entra en la cadena.');
+    }
+
+    /**
+     * 🔴 Revisión B2: un alta de artículo con stock inicial no va en cadena (mueve stock).
+     *
+     * @test
+     */
+    public function un_alta_de_articulo_con_stock_inicial_no_va_en_cadena()
+    {
+        list($conversation, $ids) = $this->propuestas_leidas([
+            ['proponer_alta', ['entidad' => 'client', 'datos' => ['name' => 'ZZC175 Con stock']]],
+        ]);
+
+        AiMessageAction::create([
+            'ai_conversation_id' => $conversation->id,
+            'ai_message_id'      => AiMessageAction::find($ids[0])->ai_message_id,
+            'user_id'            => $this->dueno->id,
+            'auth_user_id'       => $this->dueno->id,
+            'tipo'               => AiMessageAction::TIPO_ALTA,
+            'clave'              => 'c175:stock:' . uniqid(),
+            'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+            'datos'              => ['entidad' => 'article', 'operacion' => 'alta', 'payload' => ['name' => 'ZZC175 Art'], 'extras' => ['stock_inicial' => ['cantidad' => 10, 'deposito' => null]]],
+            'presentacion'       => ['titulo' => 'Alta', 'renglones' => [], 'aviso' => null],
+        ]);
+
+        list($conversation, $assistant) = $this->vuelta('ok a todo', $conversation);
+
+        $this->assertNull(ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $assistant));
+        $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($ids[0])->estado);
+    }
+
+    /**
      * Un «sí» suelto con dos pendientes sigue sin confirmar nada.
      *
      * @test

@@ -849,12 +849,13 @@ class ConfirmacionDeterministaIaHelper
      *   - el mensaje es un sí a todo (es_si_a_todo()), sin foto, en un turno con herramientas de carga;
      *   - 🔴 solo ALTAS y EDICIONES de registros (TIPOS_DE_LA_CADENA, sin ENTIDADES_FUERA_DE_LA_CADENA): con
      *     una venta, un pago, un gasto, una compra, stock o caja pendiente, no se confirma ninguna;
-     *   - TODAS las tarjetas pendientes (no vencidas) de la conversación entran: si alguna no se puede
-     *     confirmar con un sí —🔴 NUNCA_AUTO_CONFIRMABLES (plata sin factura, borrados, masivas, envíos a
-     *     clientes…), de más de MINUTOS_MAXIMOS, o que confirmar por texto rechazaría—, NO se confirma
-     *     ninguna y decide el modelo. «A todo» nunca ensancha lo que un sí puede confirmar;
-     *   - al menos una la propuso el ÚLTIMO mensaje del asistente antes del sí (la cadena es la que el dueño
-     *     tiene a la vista);
+     *   - 🔴 tampoco un alta de artículo con `stock_inicial` (mueve stock al confirmarse);
+     *   - 🔴 solo entran las tarjetas pendientes propuestas DESDE EL ÚLTIMO MENSAJE DE LA PERSONA anterior al
+     *     sí (revisión de la rama C, B2): las que el dueño tiene a la vista, las mismas que un «sí» hoy
+     *     confirmaría. Una tarjeta vieja que quedó colgada más atrás no entra (y sigue pendiente);
+     *   - si alguna de esas no se puede confirmar con un sí —🔴 NUNCA_AUTO_CONFIRMABLES (plata sin factura,
+     *     borrados, masivas, envíos a clientes…), de más de MINUTOS_MAXIMOS, o que confirmar por texto
+     *     rechazaría—, NO se confirma ninguna y decide el modelo. «A todo» nunca ensancha lo que un sí puede;
      *   - a lo sumo MAXIMO_DE_LA_CADENA.
      *
      * Con una sola tarjeta también vale: «ok a todo» a una sola tarjeta es su sí.
@@ -886,8 +887,16 @@ class ConfirmacionDeterministaIaHelper
             return null;
         }
 
+        /* El mensaje anterior de la persona: solo cuentan las tarjetas propuestas después de él (B2). */
+        $persona_antes = (int) AiMessage::where('ai_conversation_id', $conversation->id)
+                                        ->where('rol', 'user')
+                                        ->where('id', '<', $pedido->id)
+                                        ->max('id');
+
         $pendientes = AiMessageAction::where('ai_conversation_id', $conversation->id)
                                         ->where('estado', AiMessageAction::ESTADO_PROPUESTA)
+                                        ->where('ai_message_id', '>', $persona_antes)
+                                        ->where('ai_message_id', '<', $pedido->id)
                                         ->orderBy('id')
                                         ->get()
                                         ->filter(function ($accion) {
@@ -912,7 +921,8 @@ class ConfirmacionDeterministaIaHelper
 
             // 🔴 Solo altas y ediciones de registros: nada de plata, stock ni caja en cadena.
             if (!in_array((string) $accion->tipo, self::TIPOS_DE_LA_CADENA, true)
-                || in_array(self::entidad_de_la_tarjeta($accion), self::ENTIDADES_FUERA_DE_LA_CADENA, true)) {
+                || in_array(self::entidad_de_la_tarjeta($accion), self::ENTIDADES_FUERA_DE_LA_CADENA, true)
+                || self::trae_stock_inicial($accion)) {
 
                 return null;
             }
@@ -953,6 +963,21 @@ class ConfirmacionDeterministaIaHelper
         }
 
         return $hay_una_del_ultimo ? $pendientes->all() : null;
+    }
+
+    /**
+     * true si la tarjeta es un alta de artículo que carga stock inicial al confirmarse (`datos.extras.stock_inicial`).
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return bool
+     */
+    protected static function trae_stock_inicial(AiMessageAction $accion)
+    {
+        $datos = json_decode(json_encode($accion->datos), true);
+
+        return is_array($datos)
+            && isset($datos['extras']) && is_array($datos['extras'])
+            && !empty($datos['extras'][AltaDeArticuloConFotoIaHelper::STOCK_INICIAL]);
     }
 
     /**
