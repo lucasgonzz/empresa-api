@@ -5684,7 +5684,7 @@ CONFIRMACION;
         return [
             [
                 'name' => 'consultar_stock_de_articulos',
-                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado.',
+                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado. presentacion es cuántas unidades trae la caja; si precio_es_por dice «caja de N», precio es el de la CAJA y precio_por_unidad el de una unidad (una botella). costo (si viene) es por lo que dice costo_es_por. Nunca completes una presentación, un precio por unidad ni un costo que no venga acá.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -5697,8 +5697,11 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
-                'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    // Misión asistente-mejoras-4-dias (P2): el costo, solo a quien lo ve en la pantalla (`articles.cost`).
+                    $persona = $conversation instanceof AiConversation ? User::find($conversation->auth_user_id) : null;
+
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input), PermisosIaHelper::puede($persona, 'articles.cost'));
                 },
             ],
             [

@@ -1292,7 +1292,7 @@ class HerramientasDeCarga
                         ],
                         'cantidad'    => [
                             'type'        => 'number',
-                            'description' => 'Cuántas unidades. Con modo sumar o restar es cuánto se mueve; con modo fijar es en cuánto queda.',
+                            'description' => 'Cuántas unidades DEL LISTADO. Con modo sumar o restar es cuánto se mueve; con modo fijar es en cuánto queda. Si el artículo se vende por caja (consultar_stock_de_articulos trae precio_es_por «caja de N»), una caja es 1: «4 cajas» es 4, nunca 4 × las botellas.',
                         ],
                         'modo'        => [
                             'type'        => 'string',

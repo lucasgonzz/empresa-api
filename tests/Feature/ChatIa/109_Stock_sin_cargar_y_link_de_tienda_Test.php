@@ -191,7 +191,8 @@ class Stock_sin_cargar_y_link_de_tienda_Test extends TestCase
         $this->articulo(['name' => 'Forma p109', 'stock' => 2]);
 
         $this->assertSame(
-            ['id', 'nombre', 'codigo', 'precio', 'stock', 'tiene_imagen', 'stock_sin_cargar', 'stock_en_depositos', 'publicado_en_tienda', 'link_tienda'],
+            // Misión asistente-mejoras-4-dias (P2): presentación y precio por unidad, también al final.
+            ['id', 'nombre', 'codigo', 'precio', 'stock', 'tiene_imagen', 'stock_sin_cargar', 'stock_en_depositos', 'publicado_en_tienda', 'link_tienda', 'presentacion', 'precio_por_unidad', 'precio_es_por'],
             array_keys($this->fila_de('Forma p109'))
         );
     }
