@@ -37,6 +37,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\VentaConDatosInventadosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
@@ -312,7 +313,7 @@ class AsistenteIaService
      *   - 'solo_anotacion' (P4 de la misión asistente-mejoras-4-dias, V22): «Me lo anoto.» y nada más, cuando la
      *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento.
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', 'solo_anotacion'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -4273,6 +4274,17 @@ CONFIRMACION;
                 && AnotacionPrometidaIaHelper::pide_o_pregunta_algo($this->pedido_de_la_persona($conversation, $assistant_message));
         }
 
+        /* Misión asistente-mejoras-4-dias (P1, V1): una venta «con fecha 11/11» o «cobrada con» lo que la tarjeta no tiene. */
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+
+            if (! VentaConDatosInventadosIaHelper::es_turno_de_venta($saneado, $herramientas_pedidas, $assistant_message)) {
+                return false;
+            }
+
+            return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message);
+        }
+
         return false;
     }
 
@@ -4301,6 +4313,10 @@ CONFIRMACION;
             return AnotacionPrometidaIaHelper::nota_para_contestar_lo_pedido();
         }
 
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+            return VentaConDatosInventadosIaHelper::nota_para_reintentar();
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4311,8 +4327,12 @@ CONFIRMACION;
      * @param  string  $texto
      * @return string
      */
-    protected function texto_honesto_de_la_guarda($guarda, $texto): string
+    protected function texto_honesto_de_la_guarda($guarda, $texto, $assistant_message = null): string
     {
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA && $assistant_message instanceof AiMessage) {
+            return VentaConDatosInventadosIaHelper::texto_honesto($texto, $assistant_message);
+        }
+
         if ($guarda === 'soporte') {
             return PedidoDeAyudaASoporteIaHelper::sin_el_pedido_inventado($texto, $this->codigo_de_la_herramienta(PedidoDeAyudaASoporteIaHelper::HERRAMIENTA));
         }
@@ -4369,7 +4389,7 @@ CONFIRMACION;
                     'texto'                => mb_substr($texto, 0, 300),
                 ]);
 
-                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto);
+                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto, $assistant_message);
             } catch (\Throwable $e) {
                 Log::warning('AsistenteIaService: no se pudo corregir la veracidad del texto; se deja como está.', [
                     'ai_message_id' => (int) $assistant_message->id,
@@ -5761,7 +5781,7 @@ CONFIRMACION;
         return [
             [
                 'name' => 'consultar_stock_de_articulos',
-                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado.',
+                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado. presentacion es cuántas unidades trae la caja; si precio_es_por dice «caja de N», precio es el de la CAJA y precio_por_unidad el de una unidad (una botella). costo (si viene) es por lo que dice costo_es_por. Nunca completes una presentación, un precio por unidad ni un costo que no venga acá.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -5774,8 +5794,11 @@ CONFIRMACION;
                     ],
                     'required' => ['busqueda'],
                 ],
-                'handler' => function (array $input, $owner_id) {
-                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input));
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    // Misión asistente-mejoras-4-dias (P2): el costo, solo a quien lo ve en la pantalla (`articles.cost`).
+                    $persona = $conversation instanceof AiConversation ? User::find($conversation->auth_user_id) : null;
+
+                    return ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input), PermisosIaHelper::puede($persona, 'articles.cost'));
                 },
             ],
             [

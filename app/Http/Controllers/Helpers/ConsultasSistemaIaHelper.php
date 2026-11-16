@@ -68,9 +68,11 @@ class ConsultasSistemaIaHelper
      * @param  int     $owner_id  Id del dueño (articles.user_id).
      * @param  string  $busqueda  Texto ya depurado a buscar; vacío trae los primeros sin filtrar.
      * @param  int|null  $articulo_id  Opcional: el id del artículo. Manda sobre la búsqueda.
+     * @param  bool  $con_costo  Misión asistente-mejoras-4-dias (P2): suma `costo` y `costo_es_por` (solo a
+     *                           quien ve costos en la pantalla; el canal «sistema:» del admin no los pide).
      * @return array<int, array<string, mixed>>
      */
-    public static function stock_de_articulos(int $owner_id, string $busqueda, $articulo_id = null): array
+    public static function stock_de_articulos(int $owner_id, string $busqueda, $articulo_id = null, $con_costo = false): array
     {
         // Por id: ese artículo y nada más (si no es del dueño, lista vacía, como una búsqueda sin nada).
         if (!is_null($articulo_id) && (int) $articulo_id > 0) {
@@ -99,7 +101,7 @@ class ConsultasSistemaIaHelper
                 $fila['estado'] = $estado;
             }
 
-            $extras = self::stock_y_tienda($owner_id, [$articulo]);
+            $extras = self::stock_y_tienda($owner_id, [$articulo], $con_costo);
 
             return [array_merge($fila, $extras[(int) $articulo->id])];
         }
@@ -130,7 +132,7 @@ class ConsultasSistemaIaHelper
         // o decir que no hay, sin adivinar.
         $con_imagen = self::articulos_con_imagen($articles->pluck('id')->all());
 
-        $extras = self::stock_y_tienda($owner_id, $articles->all());
+        $extras = self::stock_y_tienda($owner_id, $articles->all(), $con_costo);
 
         // Aplanamos a un array simple y legible para Claude.
         $result = [];
@@ -168,11 +170,23 @@ class ConsultasSistemaIaHelper
      *
      * Dos consultas para todo el lote: el dueño (para la dirección de la tienda) y el reparto.
      *
+     * Misión asistente-mejoras-4-dias (16/11/2026, P2, V4), también AL FINAL y por la misma razón:
+     *  - `presentacion`: cuántas unidades trae la caja o el pack (null si no tiene).
+     *  - `precio_por_unidad`: el precio de UNA de esas unidades, solo cuando el `precio` del artículo es el
+     *    de la caja (ArticleHelper::presentacion_multiplica_el_precio(), la misma pregunta que setFinalPrice).
+     *    En Truvari el asistente dijo «la consulta no trae la presentación» e inventó «6» («lo tomé del
+     *    ejemplo del Rutini»); el dueño se lo explicó cinco veces.
+     *  - `precio_es_por`: «caja de N» o «unidad del listado».
+     *  - Con $con_costo, `costo` y `costo_es_por`: con la presentación multiplicando, el costo cargado es el
+     *    de UNA unidad suelta (el precio sale de costo × margen × presentación), no el de la caja. El
+     *    asistente le dijo «costo $5.060 la caja» a un costo por botella.
+     *
      * @param  int  $owner_id
      * @param  array  $articulos  Articles con id, stock, online y slug.
-     * @return array<int, array<string, mixed>>  id => las cuatro claves.
+     * @param  bool  $con_costo
+     * @return array<int, array<string, mixed>>  id => las claves de arriba.
      */
-    protected static function stock_y_tienda(int $owner_id, array $articulos): array
+    protected static function stock_y_tienda(int $owner_id, array $articulos, $con_costo = false): array
     {
         $ids = [];
 
@@ -199,7 +213,14 @@ class ConsultasSistemaIaHelper
             }
         }
 
-        $tienda = count($ids) ? TiendaDelNegocioIaHelper::url(User::find($owner_id)) : null;
+        $owner = count($ids) ? User::find($owner_id) : null;
+
+        $tienda = count($ids) ? TiendaDelNegocioIaHelper::url($owner) : null;
+
+        // P2: la presentación y lo que hace falta para saber si el precio es el de la caja, en UNA consulta.
+        $de_precio = count($ids)
+            ? Article::withTrashed()->with('provider')->whereIn('id', $ids)->get(['id', 'price', 'cost', 'presentacion', 'provider_id'])->keyBy('id')
+            : collect();
 
         $extras = [];
 
@@ -212,9 +233,47 @@ class ConsultasSistemaIaHelper
                 'publicado_en_tienda' => (bool) (int) $articulo->online,
                 'link_tienda'         => TiendaDelNegocioIaHelper::link_del_articulo($tienda, $articulo, $owner_id),
             ];
+
+            $extras[$id] = array_merge($extras[$id], self::presentacion_y_unidades($articulo, $de_precio->get($id), $owner, $con_costo));
         }
 
         return $extras;
+    }
+
+    /**
+     * Las claves de presentación, precio por unidad y costo de un artículo (ver stock_y_tienda(), P2).
+     *
+     * @param  object  $articulo  La fila del listado (con final_price).
+     * @param  \App\Models\Article|null  $completo  El artículo con price, cost, presentacion y provider.
+     * @param  \App\Models\User|null  $owner
+     * @param  bool  $con_costo
+     * @return array<string, mixed>
+     */
+    protected static function presentacion_y_unidades($articulo, $completo, $owner, $con_costo): array
+    {
+        $presentacion = !is_null($completo) && is_numeric($completo->presentacion) && (float) $completo->presentacion > 0
+            ? (float) $completo->presentacion
+            : null;
+
+        $multiplica = !is_null($completo) && !is_null($presentacion) && $presentacion > 1
+            && ArticleHelper::presentacion_multiplica_el_precio($completo, $owner);
+
+        $precio = $articulo->final_price !== null ? (float) $articulo->final_price : (float) $articulo->price;
+
+        $numero = is_null($presentacion) ? '' : rtrim(rtrim(number_format($presentacion, 2, '.', ''), '0'), '.');
+
+        $claves = [
+            'presentacion'      => $presentacion,
+            'precio_por_unidad' => $multiplica ? round($precio / $presentacion, 2) : null,
+            'precio_es_por'     => $multiplica ? 'caja de ' . $numero : 'unidad del listado',
+        ];
+
+        if ($con_costo) {
+            $claves['costo'] = is_null($completo) || is_null($completo->cost) ? null : (float) $completo->cost;
+            $claves['costo_es_por'] = $multiplica ? 'unidad suelta (una de las ' . $numero . ' de la caja)' : 'unidad del listado';
+        }
+
+        return $claves;
     }
 
     /**

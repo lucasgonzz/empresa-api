@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\ArticleController;
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Models\Address;
@@ -510,6 +511,9 @@ class PropuestaStockIaHelper
 
         list($modo, $cantidad) = $modo_y_cantidad;
 
+        // P2 (V3): «4 cajas» de un artículo que se vende por caja son 4, no 24.
+        list($cantidad, $aviso_de_cajas, $caja_de) = self::cajas_dichas($contexto, $mensaje, $articulo, $cantidad);
+
         $pivots = self::pivots_del_articulo($articulo->id);
 
         $actual = self::amount_de($pivots, $deposito->id);
@@ -549,7 +553,7 @@ class PropuestaStockIaHelper
         $renglones = [
             ['etiqueta' => 'Artículo', 'valor' => self::nombre_de_articulo($articulo)],
             ['etiqueta' => 'Depósito', 'valor' => self::nombre_de_deposito($deposito)],
-            ['etiqueta' => 'Stock', 'valor' => self::numero($actual) . ' → ' . self::numero($final)],
+            ['etiqueta' => 'Stock', 'valor' => self::numero($actual) . ' → ' . self::numero($final) . self::en_cajas($final, $caja_de)],
         ];
 
         $creada = AccionesIaHelper::crear(
@@ -577,15 +581,15 @@ class PropuestaStockIaHelper
             [
                 'titulo'    => 'Stock en un depósito',
                 'renglones' => $renglones,
-                'aviso'     => $abre_deposito
+                'aviso'     => self::juntar_avisos($abre_deposito
                     ? 'Este artículo todavía no tenía stock en ' . self::nombre_de_deposito($deposito) . ': el depósito se le abre con esta carga.'
-                    : null,
+                    : null, $aviso_de_cajas),
             ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
         $resumen = self::nombre_de_articulo($articulo) . ' en ' . self::nombre_de_deposito($deposito)
-            . ': ' . self::numero($actual) . ' → ' . self::numero($final);
+            . ': ' . self::numero($actual) . ' → ' . self::numero($final) . self::en_cajas($final, $caja_de);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
     }
@@ -720,6 +724,9 @@ class PropuestaStockIaHelper
 
         list($modo, $cantidad) = $modo_y_cantidad;
 
+        // P2 (V3): «4 cajas» de un artículo que se vende por caja son 4, no 24.
+        list($cantidad, $aviso_de_cajas, $caja_de) = self::cajas_dichas($contexto, $mensaje, $articulo, $cantidad);
+
         $crudo = DB::table('articles')->where('id', (int) $articulo->id)->value('stock');
 
         $actual = is_null($crudo) ? 0.0 : (float) $crudo;
@@ -765,7 +772,7 @@ class PropuestaStockIaHelper
             ['etiqueta' => 'Artículo', 'valor' => self::nombre_de_articulo($articulo)],
             [
                 'etiqueta' => 'Stock total',
-                'valor'    => (is_null($crudo) ? 'sin stock cargado' : self::numero($actual)) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales),
+                'valor'    => (is_null($crudo) ? 'sin stock cargado' : self::numero($actual)) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales) . self::en_cajas($final, $caja_de),
             ],
         ];
 
@@ -790,14 +797,14 @@ class PropuestaStockIaHelper
             [
                 'titulo'    => 'Stock del artículo',
                 'renglones' => $renglones,
-                'aviso'     => is_null(Address::unica_sucursal_de($contexto->owner_id))
+                'aviso'     => self::juntar_avisos(is_null(Address::unica_sucursal_de($contexto->owner_id))
                     ? 'Este negocio no tiene sucursales: el stock se carga sobre el total del artículo.'
-                    : null,
+                    : null, $aviso_de_cajas),
             ],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
-        $resumen = self::nombre_de_articulo($articulo) . ', stock total: ' . self::numero($actual) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales);
+        $resumen = self::nombre_de_articulo($articulo) . ', stock total: ' . self::numero($actual) . ' → ' . self::texto_de_cantidad($final, $unidades_individuales) . self::en_cajas($final, $caja_de);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen);
     }
@@ -2006,6 +2013,129 @@ class PropuestaStockIaHelper
         $deposito = Address::find((int) $address_id);
 
         return is_null($deposito) ? 'Sucursal ' . (int) $address_id : self::nombre_de_deposito($deposito);
+    }
+
+    /** Los números que se dicen con letras al pedir cajas («cuatro cajas»). */
+    const NUMEROS_CON_LETRAS = [
+        'una' => 1, 'un' => 1, 'uno' => 1, 'dos' => 2, 'tres' => 3, 'cuatro' => 4, 'cinco' => 5, 'seis' => 6,
+        'siete' => 7, 'ocho' => 8, 'nueve' => 9, 'diez' => 10, 'once' => 11, 'doce' => 12, 'quince' => 15, 'veinte' => 20,
+    ];
+
+    /**
+     * «N cajas» de un artículo que se vende por caja (misión asistente-mejoras-4-dias, 16/11/2026, P2, V3).
+     *
+     * 🔴 EL CASO REAL (Truvari, 13/11/2026, conversación 23). «Agrégale cuatro unidades en stock» → «¿4 cajas o
+     * 4 botellas?» → «Son cuatro cajas» → stock de Maria Codorniu Brut Nature 0 → 24. Con el módulo Vinoteca
+     * y el precio por caja (ArticleHelper::presentacion_multiplica_el_precio(), la misma condición que la
+     * tarjeta de la venta), la unidad del Listado ES la caja: «una caja es 1». El modelo multiplicó por las
+     * 6 botellas.
+     *
+     * Devuelve [cantidad, aviso, caja_de]: `caja_de` es la presentación cuando el artículo se vende por caja
+     * (la tarjeta dice «4 cajas (de 6)»), o null. Si la persona dijo «N cajas» en sus últimos mensajes y la
+     * cantidad que llegó es exactamente N × la presentación, se toma N y la tarjeta lo avisa.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @param  \App\Models\Article  $articulo
+     * @param  float  $cantidad
+     * @return array{0: float, 1: string|null, 2: float|null}
+     */
+    protected static function cajas_dichas(ContextoDeCargaIa $contexto, AiMessage $mensaje, Article $articulo, $cantidad)
+    {
+        $completo = Article::with('provider')->where('user_id', $contexto->owner_id)->where('id', (int) $articulo->id)->first();
+
+        if (is_null($completo) || !is_numeric($completo->presentacion) || (float) $completo->presentacion <= 1
+            || !ArticleHelper::presentacion_multiplica_el_precio($completo, $contexto->owner)) {
+
+            return [$cantidad, null, null];
+        }
+
+        $caja_de = (float) $completo->presentacion;
+
+        $dichas = self::cajas_que_dijo($contexto, $mensaje);
+
+        foreach ($dichas as $n) {
+
+            if ($n > 0 && abs($cantidad - $n * $caja_de) < 0.01) {
+
+                return [
+                    (float) $n,
+                    'Tomé ' . self::numero($n) . ' ' . ($n == 1 ? 'caja' : 'cajas') . ' como ' . self::numero($n)
+                        . ': en este artículo una unidad del stock es una caja de ' . self::numero($caja_de) . '.',
+                    $caja_de,
+                ];
+            }
+        }
+
+        return [$cantidad, null, $caja_de];
+    }
+
+    /**
+     * Las cantidades de cajas que nombró la persona en sus últimos mensajes de la conversación: «4 cajas»,
+     * «cuatro cajas», «una caja».
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessage  $mensaje
+     * @return array<int, float>
+     */
+    protected static function cajas_que_dijo(ContextoDeCargaIa $contexto, AiMessage $mensaje)
+    {
+        if (is_null($contexto->conversation) || empty($mensaje->id)) {
+            return [];
+        }
+
+        $textos = AiMessage::where('ai_conversation_id', (int) $contexto->conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '<', (int) $mensaje->id)
+            ->orderBy('id', 'DESC')
+            ->limit(3)
+            ->pluck('contenido')
+            ->all();
+
+        $texto = mb_strtolower(\Illuminate\Support\Str::ascii(implode(' ', $textos)));
+
+        $numeros = [];
+
+        if (preg_match_all('/\b(\d+(?:[.,]\d+)?|' . implode('|', array_keys(self::NUMEROS_CON_LETRAS)) . ')\s+cajas?\b/u', $texto, $m)) {
+
+            foreach ($m[1] as $dicho) {
+                $numeros[] = isset(self::NUMEROS_CON_LETRAS[$dicho]) ? (float) self::NUMEROS_CON_LETRAS[$dicho] : (float) str_replace(',', '.', $dicho);
+            }
+        }
+
+        return array_values(array_unique($numeros));
+    }
+
+    /**
+     * « (cajas de 6)» detrás de un stock, o '' si el artículo no se vende por caja.
+     *
+     * @param  float  $cantidad
+     * @param  float|null  $caja_de
+     * @return string
+     */
+    protected static function en_cajas($cantidad, $caja_de)
+    {
+        if (is_null($caja_de)) {
+            return '';
+        }
+
+        return ' ' . (abs((float) $cantidad - 1) < 0.001 ? 'caja' : 'cajas') . ' (de ' . self::numero($caja_de) . ')';
+    }
+
+    /**
+     * Dos avisos de tarjeta en uno (o null si no hay ninguno).
+     *
+     * @param  string|null  $uno
+     * @param  string|null  $otro
+     * @return string|null
+     */
+    protected static function juntar_avisos($uno, $otro)
+    {
+        $avisos = array_values(array_filter([$uno, $otro], function ($aviso) {
+            return is_string($aviso) && $aviso !== '';
+        }));
+
+        return count($avisos) ? implode(' ', $avisos) : null;
     }
 
     /**
