@@ -36,7 +36,7 @@ use Tests\TestCase;
  *
  * @group chat-ia
  */
-class Quitar_y_reemplazar_foto_de_articulo_Test extends TestCase
+class T132_Quitar_y_reemplazar_foto_de_articulo_Test extends TestCase
 {
     use DatabaseTransactions;
 
@@ -246,7 +246,12 @@ class Quitar_y_reemplazar_foto_de_articulo_Test extends TestCase
         $r = $this->herramienta($conversation, $assistant, 'quitar_foto_articulo', ['articulo_id' => $malbec->id, 'todas' => true]);
 
         $this->assertTrue($r['ok'], json_encode($r));
-        $this->assertSame(2, $r['fotos_que_se_sacan']);
+        $this->assertSame(2, $r['cuantas_se_sacan']);
+
+        // Revisión 2: TODAS las fotos que se sacan, con su URL, en la respuesta (WhatsApp) y en la tarjeta.
+        $this->assertCount(2, $r['fotos_que_se_sacan']);
+        $this->assertNotEmpty($r['fotos_que_se_sacan'][1]['url']);
+        $this->assertCount(2, AiMessageAction::findOrFail($r['tarjeta_id'])->presentacion['fotos_que_se_sacan']);
 
         $this->assertSame(200, $this->confirmar($conversation, $r['tarjeta_id'])['status']);
         $this->assertSame(0, Image::where('imageable_type', 'article')->where('imageable_id', $malbec->id)->count());
@@ -308,5 +313,46 @@ class Quitar_y_reemplazar_foto_de_articulo_Test extends TestCase
         $this->assertTrue($r['requiere_confirmacion'], json_encode($r));
         $this->assertSame('propuesta', AiMessageAction::findOrFail($r['tarjeta_id'])->estado);
         $this->assertSame(0, Image::where('imageable_type', 'article')->where('imageable_id', $malbec->id)->count());
+    }
+
+    /**
+     * Revisión 2 y 3: reemplazar con la foto de OTRO artículo saca las de antes (antes se ignoraba), y la
+     * tarjeta lista todas las que se sacan con su URL.
+     *
+     * @test
+     */
+    public function reemplazar_con_la_foto_de_otro_articulo_saca_las_de_antes()
+    {
+        $origen = $this->articulo('MALBEC BUENO');
+        $foto_buena = $this->foto_de($origen, true);
+        file_put_contents(storage_path('app/public/' . basename((string) parse_url($foto_buena->hosting_url, PHP_URL_PATH))), (string) (new ImageManager())->canvas(12, 12, '#7A1F2B')->encode('png'));
+        $destino = $this->articulo('MALBEC CON FOTO MALA');
+        $mala_1 = $this->foto_de($destino, true);
+        $mala_2 = $this->foto_de($destino);
+
+        $conversation = $this->conversacion();
+        $assistant = $this->asistente($conversation);
+
+        $r = $this->herramienta($conversation, $assistant, 'proponer_foto_articulo', [
+            'articulo_ids'     => [$destino->id],
+            'de_articulo_id'   => $origen->id,
+            'reemplazar_fotos' => true,
+        ]);
+
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertTrue($r['requiere_confirmacion']);
+        $this->assertCount(2, $r['fotos_que_se_sacan']);
+
+        $tarjeta = AiMessageAction::findOrFail($r['tarjeta_id']);
+
+        $this->assertSame('propuesta', $tarjeta->estado);
+        $this->assertCount(2, $tarjeta->presentacion['fotos_que_se_sacan']);
+
+        $this->assertSame(200, $this->confirmar($conversation, $tarjeta->id)['status']);
+
+        $this->assertNull(Image::find($mala_1->id));
+        $this->assertNull(Image::find($mala_2->id));
+        $this->assertSame(1, Image::where('imageable_type', 'article')->where('imageable_id', $destino->id)->count());
+        $this->assertNotNull(Image::find($foto_buena->id), 'La foto del origen no se toca.');
     }
 }
