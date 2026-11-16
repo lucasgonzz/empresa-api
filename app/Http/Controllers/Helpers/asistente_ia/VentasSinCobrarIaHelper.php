@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\ConsultasSistemaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\User;
@@ -52,6 +53,13 @@ use Illuminate\Support\Facades\DB;
  * únicamente sus ventas le preguntaba al asistente y recibía el total del negocio, el ranking de los
  * veinte clientes que más deben con nombre y monto, y la venta más vieja de cualquier compañero. Por
  * eso el recorte y el umbral salen de la PERSONA que escribe (`$contexto->persona`), no del dueño.
+ *
+ * 🔴 "¿QUIÉN ME DEBE?" NO ES "¿QUÉ VENTAS TENGO SIN COBRAR?" (misión asistente-deudores-saldos-iniciales,
+ * 16/11/2026, ticket 131). Un saldo inicial importado o cargado a mano es deuda y no es una venta, así
+ * que el conjunto de arriba no lo ve. Desde esa misión la respuesta trae además `cuenta_corriente`: el
+ * saldo de cuenta corriente de todos los clientes (`credit_accounts.saldo`), que es lo que contesta
+ * "cuánto me deben" y "quién me debe más". Las claves de ventas no cambiaron. Ver
+ * `bloque_de_cuenta_corriente()`.
  */
 class VentasSinCobrarIaHelper
 {
@@ -195,7 +203,310 @@ class VentasSinCobrarIaHelper
         // La deuda total sumada de los clientes que cumplen (todos, no solo los que viajan en la lista).
         $respuesta['deuda_total_en_pesos_de_estos_clientes'] = round($deuda_total_de_estos, 2);
 
+        /*
+         * 🔴 EL SALDO DE CUENTA CORRIENTE DE TODOS LOS CLIENTES (misión
+         * asistente-deudores-saldos-iniciales, 16/11/2026, ticket 131). Todo lo de arriba habla de
+         * VENTAS, y un cliente que debe un saldo inicial importado (o cargado a mano, o una nota de
+         * débito) no tiene ninguna: no aparecía ni en el ranking ni en el total, y el asistente le
+         * contestó al dueño que "Don Pichi es el único con deuda" teniendo ocho deudores más. Se
+         * AGREGA un bloque sin tocar ninguna clave de antes (las leen los tests, el recordatorio de
+         * cobro y la descripción de la tool). Ver agregar_cuenta_corriente().
+         */
+        $respuesta = static::agregar_cuenta_corriente($respuesta, $owner_id, $employee_id, $dias, $monto_minimo);
+
         return $respuesta;
+    }
+
+    /**
+     * SUMA A LA RESPUESTA DE `ventas_sin_cobrar()` EL BLOQUE `cuenta_corriente` Y LA GUÍA
+     * `como_contestar` (misión asistente-deudores-saldos-iniciales, 16/11/2026, ticket 131).
+     *
+     * Tres salidas posibles, y las tres dejan intactas las claves de ventas:
+     *  - quien pregunta ve todo el negocio (`$employee_id` null: dueño, quien tiene
+     *    `ver_alertas_de_todos_los_empleados`, o sin persona): `cuenta_corriente` con el bloque de
+     *    `bloque_de_cuenta_corriente()`;
+     *  - quien pregunta está recortado a sus ventas: `cuenta_corriente` null y
+     *    `cuenta_corriente_no_incluida` con el porqué. 🔴 El saldo de cuenta corriente es del cliente,
+     *    no de una venta: no hay forma honesta de "recortarlo a lo suyo", y darle el de todos sería
+     *    abrirle lo que la pantalla "Ventas sin cobrar" le cierra. Se usa la MISMA regla del recorte
+     *    (`employee_id_del_recorte()`): el asistente no tiene un permiso propio para saldos de
+     *    clientes (`consultar_clientes` y `consultar_cuentas_corrientes` no chequean ninguno), así
+     *    que ésta es la más restrictiva de las dos;
+     *  - la lectura falla: `cuenta_corriente` null y `cuenta_corriente_error`, con `report()`. La
+     *    respuesta de ventas sale igual: nunca un 500 por el bloque nuevo.
+     *
+     * Se llama con `static::` (y `bloque_de_cuenta_corriente()` también) para que un test pueda
+     * forzar el fallo con una subclase, sin tocar la base.
+     *
+     * @param  array<string, mixed>  $respuesta  La respuesta de ventas ya armada.
+     * @param  int  $owner_id
+     * @param  int|null  $employee_id  El de `employee_id_del_recorte()`.
+     * @param  int  $dias  El umbral ya resuelto: no filtra el saldo, solo cambia cómo se lee.
+     * @param  float|null  $monto_minimo  Ya limpio (`monto_minimo_valido()`).
+     * @return array<string, mixed>
+     */
+    protected static function agregar_cuenta_corriente(array $respuesta, $owner_id, $employee_id, $dias, $monto_minimo)
+    {
+        if (! is_null($employee_id)) {
+            $respuesta['cuenta_corriente'] = null;
+            $respuesta['cuenta_corriente_no_incluida'] = 'Solo ves tus ventas, igual que en la pantalla "Ventas sin cobrar": el saldo de cuenta corriente de todos los clientes (que incluye saldos iniciales o cargados a mano) no se incluye para tu usuario. Lo de arriba es solo lo de tus ventas sin cobrar: no lo presentes como todo lo que le deben al negocio.';
+            $respuesta['como_contestar'] = 'Contesta con los datos de ventas y aclara que son solo tus ventas sin cobrar: el saldo de cuenta corriente de todos los clientes no esta disponible para este usuario.';
+
+            return $respuesta;
+        }
+
+        try {
+            $respuesta['cuenta_corriente'] = static::bloque_de_cuenta_corriente($owner_id, $dias, $monto_minimo);
+        } catch (\Throwable $e) {
+            report($e);
+
+            $respuesta['cuenta_corriente'] = null;
+            $respuesta['cuenta_corriente_error'] = 'No se pudo leer el saldo de las cuentas corrientes: los numeros de arriba son solo de ventas sin cobrar y pueden no ser toda la deuda.';
+        }
+
+        $respuesta['como_contestar'] = '"cuanto me deben", "quien me debe", "quien me debe mas", "cuanta plata tengo en la calle" -> se contesta con cuenta_corriente (todo lo que deben los clientes, incluidos saldos iniciales o cargados a mano). "Ventas sin cobrar", "lo atrasado", "hace mas de N dias", "la venta mas vieja" -> con los datos de ventas. Si los dos totales difieren, deci cual estas dando.';
+
+        return $respuesta;
+    }
+
+    /**
+     * EL SALDO DE CUENTA CORRIENTE DE TODOS LOS CLIENTES DEL NEGOCIO (misión
+     * asistente-deudores-saldos-iniciales, 16/11/2026, ticket 131).
+     *
+     * 🔴 EL CASO REAL. El dueño importó por Soporte diez clientes con sus saldos (nueve deudas por
+     * $417.301,90 y un saldo a favor), le vendió a cuenta corriente a uno ("Don Pichi") y le cobró
+     * una parte. "¿Quién me debe más plata?" contestó que Don Pichi era el único, con $9.150, porque
+     * el conjunto de arriba es de VENTAS impagas y los saldos iniciales no son ventas. "Electro
+     * Vilches SRL" debía $174.200,75.
+     *
+     * 🔴 LA FUENTE ES `credit_accounts.saldo` (positivo = el cliente debe), con la consulta de
+     * `ConsultasSistemaIaHelper::cuentas_en_pesos_de_clientes()` INVOCADA y no copiada: el mismo
+     * criterio de pesos (`RecolectorBase::MONEDAS_PESOS` y `moneda_id` null) que `consultar_clientes`
+     * y el informe del mostrador. Si leyeran distinto, "qué me debe Vilches" y "quién me debe" darían
+     * dos números para la misma deuda.
+     *
+     * Reglas:
+     *  - Cliente por cliente: un cliente con dos cuentas en pesos (moneda null y 1) se suma primero, y
+     *    debe si ESE neto es > 0. 🔴 Nunca se resta el saldo a favor de OTRO cliente: los que tienen
+     *    saldo a favor van aparte (`clientes_con_saldo_a_favor`, `total_a_favor_en_pesos`).
+     *  - Otras monedas, aparte (`en_otras_monedas`) y nunca sumadas a pesos. El complemento de pesos
+     *    sale del mismo `MONEDAS_PESOS`.
+     *  - Clientes borrados (soft delete), AFUERA, igual que `clientes_con_saldo_pendiente()` y que la
+     *    lista de clientes del sistema. (El ranking de ventas sí los muestra como "cliente borrado":
+     *    ahí la venta sigue siendo real; acá no hay a quién nombrar ni a quién cobrarle desde el
+     *    sistema.)
+     *  - Tenencia doble: `credit_accounts.user_id` y `clients.user_id` del dueño.
+     *  - `monto_minimo` acota a los clientes con `saldo_en_pesos >= monto`; los totales pasan a ser
+     *    los de ese filtro y `clientes_que_deben_sin_el_monto_minimo` dice cuántos eran sin él. No
+     *    acota los saldos a favor ni las otras monedas (el monto está en pesos y es de deuda).
+     *  - `dias` NO filtra: el saldo no tiene antigüedad. Con `dias > 0` el bloque viene igual y
+     *    `como_leer` lo dice.
+     *  - `de_eso_en_ventas_sin_cobrar_en_pesos`: lo que el conjunto de ventas sin cobrar SIN umbral
+     *    (`query_de_ventas(..., 0, false)` y `deuda_agrupada_por_cliente()`, las mismas piezas de
+     *    `con_deuda_total()`) le atribuye al cliente. La diferencia con `saldo_en_pesos` es lo que no
+     *    es venta (saldo inicial, nota de débito, pagos a cuenta). Solo se llama cuando quien pregunta
+     *    ve todo el negocio, así que va sin recorte por empleado.
+     *
+     * @param  int  $owner_id  Dueño. Nunca Auth: corre en un job sin sesión.
+     * @param  int  $dias  El umbral de ventas ya resuelto: solo cambia `como_leer`.
+     * @param  float|null  $monto_minimo  Ya limpio (`monto_minimo_valido()`).
+     * @return array<string, mixed>
+     */
+    public static function bloque_de_cuenta_corriente($owner_id, $dias = 0, $monto_minimo = null)
+    {
+        $owner_id = (int) $owner_id;
+
+        // Una fila por cliente vivo del dueño: la suma de sus cuentas en pesos.
+        $filas = ConsultasSistemaIaHelper::cuentas_en_pesos_de_clientes($owner_id)
+            ->join('clients', 'clients.id', '=', 'credit_accounts.model_id')
+            ->where('clients.user_id', $owner_id)
+            ->whereNull('clients.deleted_at')
+            ->groupBy('clients.id', 'clients.name')
+            ->get(['clients.id', 'clients.name', DB::raw('SUM(credit_accounts.saldo) as saldo')]);
+
+        $deben = [];
+        $a_favor = 0;
+        $total_a_favor = 0.0;
+
+        foreach ($filas as $fila) {
+            $saldo = round((float) $fila->saldo, 2);
+
+            if ($saldo > 0) {
+                $deben[] = [
+                    'cliente_id'     => (int) $fila->id,
+                    'cliente'        => (string) $fila->name,
+                    'saldo_en_pesos' => $saldo,
+                ];
+            } elseif ($saldo < 0) {
+                $a_favor++;
+                $total_a_favor += abs($saldo);
+            }
+        }
+
+        $clientes_sin_el_minimo = count($deben);
+
+        if (! is_null($monto_minimo)) {
+            $deben = array_values(array_filter($deben, function ($cliente) use ($monto_minimo) {
+                return $cliente['saldo_en_pesos'] >= $monto_minimo;
+            }));
+        }
+
+        // De mayor a menor saldo; a igual saldo, el id más bajo primero (orden estable).
+        usort($deben, function ($a, $b) {
+            if ($a['saldo_en_pesos'] != $b['saldo_en_pesos']) {
+                return $b['saldo_en_pesos'] <=> $a['saldo_en_pesos'];
+            }
+
+            return $a['cliente_id'] <=> $b['cliente_id'];
+        });
+
+        $de_ventas = self::ventas_sin_cobrar_por_cliente($owner_id, array_column($deben, 'cliente_id'));
+
+        $total = 0.0;
+        $sin_ventas = 0;
+
+        foreach ($deben as $indice => $cliente) {
+            $id = $cliente['cliente_id'];
+
+            $total += $cliente['saldo_en_pesos'];
+
+            $tiene_ventas = isset($de_ventas[$id]) && $de_ventas[$id]['ventas'] > 0;
+
+            if (! $tiene_ventas) {
+                $sin_ventas++;
+            }
+
+            $deben[$indice]['de_eso_en_ventas_sin_cobrar_en_pesos'] = $tiene_ventas ? $de_ventas[$id]['pendiente_en_pesos'] : 0.0;
+            $deben[$indice]['tiene_ventas_sin_cobrar'] = $tiene_ventas;
+        }
+
+        $lista = array_slice($deben, 0, self::TOPE_DE_CLIENTES);
+
+        $bloque = [
+            'que_es'                                   => 'El saldo de cuenta corriente de TODOS los clientes del negocio, en pesos: incluye las ventas sin cobrar y tambien lo que no es una venta (saldos iniciales importados o cargados a mano, notas de debito, pagos a cuenta). Es lo que te deben de verdad.',
+            'total_que_te_deben_en_pesos'              => round($total, 2),
+            'clientes_que_deben'                       => count($deben),
+            'clientes_en_esta_lista'                   => count($lista),
+            'clientes'                                 => $lista,
+            'clientes_que_deben_sin_ventas_sin_cobrar' => $sin_ventas,
+            'clientes_con_saldo_a_favor'               => $a_favor,
+            'total_a_favor_en_pesos'                   => round($total_a_favor, 2),
+            'en_otras_monedas'                         => self::saldos_en_otras_monedas($owner_id),
+        ];
+
+        $como_leer = 'clientes va de mayor a menor saldo_en_pesos. clientes_que_deben es cuantos deben en total y clientes_en_esta_lista cuantos viajan: si difieren, la lista esta recortada y el total no. de_eso_en_ventas_sin_cobrar_en_pesos es la parte de ese saldo que esta en ventas sin cobrar; un cliente con tiene_ventas_sin_cobrar = false debe un saldo que no es una venta (inicial o cargado a mano) y DEBE IGUAL. Los saldos a favor (clientes_con_saldo_a_favor) y las otras monedas (en_otras_monedas) van aparte: no se restan ni se suman a total_que_te_deben_en_pesos.';
+
+        if ($dias > 0) {
+            $como_leer .= ' Pediste dias = ' . $dias . ': eso acota solo las ventas de arriba. El saldo de cuenta corriente no tiene antiguedad y viene completo.';
+        }
+
+        $bloque['como_leer'] = $como_leer;
+
+        if (! is_null($monto_minimo)) {
+            $bloque['monto_minimo_pedido'] = $monto_minimo;
+            $bloque['clientes_que_deben_sin_el_monto_minimo'] = $clientes_sin_el_minimo;
+            $bloque['filtro_de_monto'] = 'Solo los clientes cuyo saldo_en_pesos es de ' . $monto_minimo . ' pesos o mas: clientes_que_deben y total_que_te_deben_en_pesos son de los que cumplen. No acota los saldos a favor ni las otras monedas.';
+        }
+
+        return $bloque;
+    }
+
+    /**
+     * Lo que el conjunto de ventas sin cobrar SIN umbral y SIN recorte le atribuye a cada cliente
+     * (misión asistente-deudores-saldos-iniciales, 16/11/2026): cuántas ventas impagas tiene y cuánto
+     * suman en pesos. Las mismas dos piezas que `con_deuda_total()` (`query_de_ventas(..., 0, false)` y
+     * `deuda_agrupada_por_cliente()`), invocadas y no copiadas.
+     *
+     * @param  int  $owner_id
+     * @param  array<int, int>  $ids  Los clientes a mirar. Vacío = no consulta nada.
+     * @return array<int, array{ventas: int, pendiente_en_pesos: float}>  Por `cliente_id`.
+     */
+    protected static function ventas_sin_cobrar_por_cliente($owner_id, array $ids)
+    {
+        if (empty($ids)) {
+
+            return [];
+        }
+
+        $toda = VentasSinCobrarHelper::query_de_ventas($owner_id, null, 0, false);
+
+        $por_cliente = [];
+
+        foreach (self::deuda_agrupada_por_cliente($toda, $ids) as $fila) {
+            $por_cliente[(int) $fila->cliente_id] = [
+                'ventas'             => (int) $fila->ventas,
+                'pendiente_en_pesos' => round((float) $fila->pendiente_en_pesos, 2),
+            ];
+        }
+
+        return $por_cliente;
+    }
+
+    /**
+     * LO QUE DEBEN LOS CLIENTES EN OTRAS MONEDAS, una fila por moneda (misión
+     * asistente-deudores-saldos-iniciales, 16/11/2026). Nunca se suma a pesos.
+     *
+     * "Otra moneda" es el complemento EXACTO de `cuentas_en_pesos_de_clientes()`: `moneda_id` no null
+     * y fuera de `RecolectorBase::MONEDAS_PESOS`. Mismas reglas que el bloque en pesos: cliente por
+     * cliente (debe si su neto en ESA moneda es > 0), clientes borrados afuera y tenencia doble.
+     *
+     * @param  int  $owner_id
+     * @return array<int, array{moneda_id: int, moneda: string|null, clientes_que_deben: int, total_que_te_deben: float}>
+     *         Lista vacía si no hay deuda en otra moneda.
+     */
+    protected static function saldos_en_otras_monedas($owner_id)
+    {
+        $filas = DB::table('credit_accounts')
+            ->join('clients', 'clients.id', '=', 'credit_accounts.model_id')
+            ->where('credit_accounts.user_id', $owner_id)
+            ->where('credit_accounts.model_name', 'client')
+            ->whereNotNull('credit_accounts.moneda_id')
+            ->whereNotIn('credit_accounts.moneda_id', RecolectorBase::MONEDAS_PESOS)
+            ->where('clients.user_id', $owner_id)
+            ->whereNull('clients.deleted_at')
+            ->groupBy('credit_accounts.moneda_id', 'clients.id')
+            ->get([DB::raw('credit_accounts.moneda_id as moneda_id'), DB::raw('SUM(credit_accounts.saldo) as saldo')]);
+
+        $por_moneda = [];
+
+        foreach ($filas as $fila) {
+            $saldo = round((float) $fila->saldo, 2);
+
+            if ($saldo <= 0) {
+                continue;
+            }
+
+            $moneda_id = (int) $fila->moneda_id;
+
+            if (! isset($por_moneda[$moneda_id])) {
+                $por_moneda[$moneda_id] = ['clientes' => 0, 'total' => 0.0];
+            }
+
+            $por_moneda[$moneda_id]['clientes']++;
+            $por_moneda[$moneda_id]['total'] += $saldo;
+        }
+
+        if (empty($por_moneda)) {
+
+            return [];
+        }
+
+        ksort($por_moneda);
+
+        $nombres = DB::table('monedas')->whereIn('id', array_keys($por_moneda))->pluck('name', 'id')->all();
+
+        $lista = [];
+
+        foreach ($por_moneda as $moneda_id => $datos) {
+            $lista[] = [
+                'moneda_id'          => $moneda_id,
+                'moneda'             => isset($nombres[$moneda_id]) ? (string) $nombres[$moneda_id] : null,
+                'clientes_que_deben' => $datos['clientes'],
+                'total_que_te_deben' => round($datos['total'], 2),
+            ];
+        }
+
+        return $lista;
     }
 
     /**
