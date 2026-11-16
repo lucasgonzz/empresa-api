@@ -230,6 +230,7 @@ class EsquemaDeDatosIaHelper
         'mostrador_memorias'                 => 'memoria interna del mostrador',
         'agente_contexto_archivos'           => 'la memoria del negocio: el asistente la lee con leer_contexto, no por la consulta genérica',
         'agente_contexto_revisiones'         => 'historial de la memoria del negocio (interno)',
+        'agente_consolidacion_estados'       => 'cursor del repaso nocturno de la memoria del negocio (interno); su clave es user_id, no tiene id',
         'ia_imagen_pedidos'                  => 'pedidos de imágenes de la app (estado interno)',
         'mostrador_reportes'                 => 'informes generados (el asistente ya los tiene como contexto cuando corresponde)',
         'embedding_runs'                     => 'corridas de embeddings (interno)',
