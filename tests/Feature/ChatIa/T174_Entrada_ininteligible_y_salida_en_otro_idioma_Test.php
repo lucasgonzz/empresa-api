@@ -187,6 +187,38 @@ class T174_Entrada_ininteligible_y_salida_en_otro_idioma_Test extends EmpresaTes
         $bodies = $this->bodies();
         $this->assertCount(2, $bodies);
         $this->assertStringContainsString('portugués o en inglés', json_encode($bodies[1]['messages'], JSON_UNESCAPED_UNICODE));
+
+        // Revisión M2: la vuelta del reintento sale sin poder pedir herramientas (no duplica tarjetas).
+        $this->assertSame(['type' => 'none'], $bodies[1]['tool_choice'] ?? null);
+        $this->assertArrayNotHasKey('tool_choice', $bodies[0]);
+    }
+
+    /**
+     * 🔴 Revisión M2: si además dispara una guarda de veracidad (el texto afirma una tarjeta que no existe), el
+     * reintento del turno es el de esa guarda, no el del idioma.
+     *
+     * @test
+     */
+    public function una_guarda_de_veracidad_le_gana_al_reintento_por_idioma()
+    {
+        Http::fake([
+            'api.deepseek.com/*' => Http::sequence()
+                ->push($this->end_turn('Dejé la tarjeta para cargar el gasto de alquiler por 400.000, você confirma.'), 200)
+                ->push($this->end_turn('No dejé ninguna tarjeta todavía: ¿me confirmás el método de pago?'), 200),
+            '*' => Http::response(['error' => 'host sin stub'], 500),
+        ]);
+
+        list($conversation, $assistant) = $this->vuelta('El alquiler de 400000 se paga el 15', null, null);
+
+        (new AsistenteIaService())->responder($conversation, $assistant);
+
+        $bodies = $this->bodies();
+        $this->assertCount(2, $bodies);
+
+        $segundo = json_encode($bodies[1]['messages'], JSON_UNESCAPED_UNICODE);
+
+        $this->assertStringNotContainsString('portugués o en inglés', $segundo, 'El reintento fue el de la tarjeta.');
+        $this->assertArrayNotHasKey('tool_choice', $bodies[1], 'El reintento de la tarjeta puede llamar herramientas.');
     }
 
     /**

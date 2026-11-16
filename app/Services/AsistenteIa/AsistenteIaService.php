@@ -912,6 +912,9 @@ class AsistenteIaService
          */
         $cerrando = false;
 
+        /* Rama C (M2): true solo para la vuelta del reintento por portugués o inglés (sale sin herramientas). */
+        $reintento_de_idioma = false;
+
         /* Por qué cerró el turno ('techo', 'presupuesto' o 'ventana'), para el log y el detalle técnico. */
         $motivo_del_cierre = '';
 
@@ -1102,6 +1105,15 @@ class AsistenteIaService
              */
             if ($cerrando) {
                 $body['tool_choice'] = ['type' => 'none'];
+            }
+
+            /*
+             * Rama C (M2): la vuelta del reintento por idioma tampoco puede pedir herramientas: es reescribir
+             * en español lo que ya se contestó. Una sola vuelta: después se apaga.
+             */
+            if ($reintento_de_idioma) {
+                $body['tool_choice'] = ['type' => 'none'];
+                $reintento_de_idioma = false;
             }
 
             try {
@@ -1412,25 +1424,6 @@ class AsistenteIaService
             }
 
             /*
-             * Misión asistente-diario-20261116 (rama C, 30/10 #14): una respuesta en PORTUGUÉS o en INGLÉS
-             * («$228 milhões», Ferre Total 30/10) se reintenta UNA vez pidiendo la MISMA respuesta en español.
-             * A diferencia del chino, vale también después de herramientas (el caso real fue así): el pedido
-             * es reescribir, no rehacer. Si el reintento vuelve igual, queda ese texto (no se descarta).
-             */
-            if (TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles($final_text)
-                && ! $cerrando && is_null($texto_antes_del_reintento) && $iterations < $max_iterations
-                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
-                $texto_antes_del_reintento = $final_text;
-                $messages[] = ['role' => 'assistant', 'content' => $final_text];
-                $messages[] = [
-                    'role' => 'user',
-                    'content' => '[El sistema detectó una respuesta en portugués o en inglés. Reescribí esa misma respuesta en español rioplatense, con los mismos datos y números. No vuelvas a llamar herramientas por lo que ya hiciste.]',
-                ];
-                $final_text = '';
-                continue;
-            }
-
-            /*
              * La guarda de la imagen prometida va PRIMERO: es la más segura de las cuatro (o se llamó a
              * pedir_imagen en este turno o no se llamó) y en el caso real el texto prometía la imagen Y
              * armaba otra tarjeta: si el reintento se lo llevaba la de la carga, la imagen nunca se pedía.
@@ -1670,6 +1663,31 @@ class AsistenteIaService
 
                     continue;
                 }
+            }
+
+            /*
+             * Misión asistente-diario-20261116 (rama C, 30/10 #14): una respuesta en PORTUGUÉS o en INGLÉS
+             * («$228 milhões», Ferre Total 30/10) se reintenta UNA vez pidiendo la MISMA respuesta en español.
+             * A diferencia del chino, vale también después de herramientas (el caso real fue así): el pedido
+             * es reescribir, no rehacer. Si el reintento vuelve igual, queda ese texto (no se descarta).
+             *
+             * Revisión de la rama C (M2): va DESPUÉS de las guardas de veracidad (imagen, tarjeta, carga,
+             * envío, veracidad) y solo si ninguna disparó —si disparó una, su reintento es el único del turno—,
+             * y la vuelta del reintento sale con `tool_choice: none` ($reintento_de_idioma): solo puede
+             * escribir, así no duplica tarjetas ni cargas.
+             */
+            if (TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles($final_text)
+                && ! $cerrando && is_null($texto_antes_del_reintento) && $iterations < $max_iterations
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+                $texto_antes_del_reintento = $final_text;
+                $reintento_de_idioma       = true;
+                $messages[] = ['role' => 'assistant', 'content' => $final_text];
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => '[El sistema detectó una respuesta en portugués o en inglés. Reescribí esa misma respuesta en español rioplatense, con los mismos datos y números. No vuelvas a llamar herramientas por lo que ya hiciste.]',
+                ];
+                $final_text = '';
+                continue;
             }
 
             break;
