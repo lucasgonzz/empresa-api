@@ -227,6 +227,73 @@ class PropuestaAccionDePantallaIaHelper
     }
 
     /**
+     * El cuerpo de la factura de una venta con el `sale_id` resuelto desde el N° de venta, o la respuesta
+     * negativa (misión asistente-mejoras-4-dias, 16/11/2026, P11 — hallazgo V18).
+     *
+     * 🔴 EL CASO REAL (Truvari, 13/11/2026, conversación 27). «Por ejemplo, la venta treinta y uno cero dos» →
+     * «Si facturala» → «Necesito el id interno de la venta para emitir el comprobante y no lo tengo: me
+     * diste el número, no el id». La persona ve el N° (`sales.num`), no el id. Igual que el borrado de
+     * presupuestos por N° (borrado_de_presupuesto()): `numero` va SOLO por número y `sale_id` SOLO por id.
+     * Con `sale_id` el cuerpo queda como vino. La emisión no cambia: esto solo dice de qué venta.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $cuerpo
+     * @param  array  $parametros
+     * @return array  El cuerpo (sin `numero`) o la respuesta negativa.
+     */
+    protected static function venta_por_numero(ContextoDeCargaIa $contexto, array $cuerpo, array $parametros)
+    {
+        $numero = null;
+
+        foreach ([$cuerpo, $parametros] as $origen) {
+
+            if (isset($origen['numero']) && is_numeric($origen['numero']) && (int) $origen['numero'] > 0) {
+                $numero = (int) $origen['numero'];
+                break;
+            }
+        }
+
+        unset($cuerpo['numero']);
+
+        $tiene_id = isset($cuerpo['sale_id']) && FacturaDeVentaHelper::es_id($cuerpo['sale_id']);
+
+        if ($tiene_id) {
+            return $cuerpo;
+        }
+
+        if (is_null($numero)) {
+            return RespuestaDeCargaIa::faltan(['el N° de la venta que hay que facturar (va en cuerpo como {"numero": N}; el id solo si una consulta te lo devolvió, como sale_id)']);
+        }
+
+        $ventas = \App\Models\Sale::where('user_id', $contexto->owner_id)->where('num', $numero)->orderBy('id', 'DESC')->limit(3)->get(['id', 'num', 'client_id', 'total', 'created_at']);
+
+        if (!count($ventas)) {
+            return RespuestaDeCargaIa::error('No encontré la venta N° ' . $numero . ' entre las de este negocio. No se facturó nada.');
+        }
+
+        if (count($ventas) > 1) {
+
+            $opciones = [];
+
+            foreach ($ventas as $venta) {
+                $opciones[] = [
+                    'sale_id' => (int) $venta->id,
+                    'numero'  => (int) $venta->num,
+                    'cliente' => (string) Client::where('id', (int) $venta->client_id)->value('name'),
+                    'total'   => round((float) $venta->total, 2),
+                    'fecha'   => is_null($venta->created_at) ? null : $venta->created_at->format('d/m/Y'),
+                ];
+            }
+
+            return RespuestaDeCargaIa::faltan(['cuál de estas ventas con el N° ' . $numero . ' es (mandá su sale_id)'], ['ventas' => $opciones]);
+        }
+
+        $cuerpo['sale_id'] = (int) $ventas[0]->id;
+
+        return $cuerpo;
+    }
+
+    /**
      * `DELETE api/budget/{budget}`, con el {param} literal o con el número metido en la ruta.
      */
     const RUTA_BORRADO_DE_PRESUPUESTO = '#^api/budget/(\{[A-Za-z_]+\}|\d+)$#';
@@ -401,6 +468,16 @@ class PropuestaAccionDePantallaIaHelper
 
         $fiscal = null;
         if ($declaracion['accion'] === 'SaleController@makeAfipTicket') {
+
+            // P11 (V18): la venta por el N° que ve la persona, además del id.
+            $por_numero = self::venta_por_numero($contexto, $cuerpo, $parametros);
+
+            if (RespuestaDeCargaIa::es_negativa($por_numero)) {
+                return $por_numero;
+            }
+
+            $cuerpo = $por_numero;
+
             try {
                 // No se ofrece ninguna configuración antes de comprobar la venta y el negocio.
                 FacturaDeVentaHelper::venta($cuerpo['sale_id'] ?? null, $contexto->owner_id, $contexto->persona);
