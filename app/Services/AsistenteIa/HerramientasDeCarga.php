@@ -1575,9 +1575,16 @@ class HerramientasDeCarga
                     'required'   => ['tipo'],
                 ],
             ],
+            /*
+             * Misión asistente-deudores-saldos-iniciales (16/11/2026, ticket 131): desde esa misión
+             * consultar_ventas_sin_cobrar contesta "quién me debe" con el saldo de cuenta corriente,
+             * que incluye a clientes sin ninguna venta. El recordatorio NO cambió de destinatarios (es
+             * el del módulo Alertas: lista las ventas impagas de cada uno), así que la descripción lo
+             * dice para que el modelo no le prometa un recordatorio a quien debe solo un saldo inicial.
+             */
             [
                 'name'         => 'proponer_recordatorios_de_cobro',
-                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. Llega a los clientes con ventas sin cobrar; uno que debe solo un saldo inicial (importado o cargado a mano) no entra. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Si la respuesta trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
