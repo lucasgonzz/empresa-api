@@ -2974,8 +2974,18 @@ class PlanillaIaHelper
                 }
             }
 
+            /*
+             * Un nombre provisional puede compartir TODAS sus palabras con el nombre completo. Si la
+             * persona identificó la fila por su número y pidió completar ese nombre, esa numeración
+             * es el ancla separada: no se borran además las palabras del valor. Las guardas de cita
+             * y de cruces entre renglones de arriba se mantienen; el helper no cambia de identidad.
+             */
+            $nombre_completado = $campo === 'cliente' && !$dijo_que_si && !$sin_resolver
+                ? self::completar_nombre_provisional($fila, $valor, $donde, $cita_del_valor, $ultimo, $filas)
+                : null;
+
             /* 🔴 LA REGLA GENERAL: el renglón nombrado, y el valor en lo que queda del mensaje. */
-            if (!$sin_resolver) {
+            if (is_null($nombre_completado) && !$sin_resolver) {
 
                 if (!$nombrado) {
 
@@ -2986,7 +2996,9 @@ class PlanillaIaHelper
                 $cita_del_valor = Anclas::sin_el_renglon($fila, $cita_del_valor);
             }
 
-            $corregida = self::aplicar_correccion($contexto, $fila, $campo, $valor, $donde, $planilla->importe_es, $cita_del_valor, $nombrado, $filas);
+            $corregida = is_null($nombre_completado)
+                ? self::aplicar_correccion($contexto, $fila, $campo, $valor, $donde, $planilla->importe_es, $cita_del_valor, $nombrado, $filas)
+                : $nombre_completado;
 
             if (RespuestaDeCargaIa::es_negativa($corregida)) {
 
@@ -3047,6 +3059,201 @@ class PlanillaIaHelper
                 ? 'Quedó corregido en la tabla. Para armar las ventas de nuevo: proponer_ventas_de_planilla.'
                 : 'Ese renglón ya decía eso: no cambió nada. No le digas «listo» ni que quedó corregido: seguí con lo que falta.',
         ];
+    }
+
+    /**
+     * Completa sólo el nombre de una identidad provisional con documento válido. Devuelve null
+     * fuera de esta excepción; un candidato sin pruebas devuelve un rechazo, sin reabrirlo por la
+     * corrección habitual. No elige clientes por nombre ni escribe un Client.
+     *
+     * La persona tiene que pedir NOMBRE/razón social en la misma parte que cita el modelo, nombrar
+     * esta fila por su número y decir el valor COMPLETO. El número y el nombre son evidencias
+     * distintas: se quita sólo «fila/renglón/línea N» antes de comprobar el nombre entero, incluido
+     * un sufijo corto como SA. No alcanza compartir una palabra o un prefijo con el nombre anterior.
+     * «Cambiá el cliente» sigue por con_otro_cliente(), que limpia el documento del anterior.
+     *
+     * @param  array  $fila
+     * @param  mixed  $valor
+     * @param  string  $donde  La parte ya localizada por las guardas de cruces entre renglones.
+     * @param  string  $cita  La cita ya comprobada contra el último mensaje de la persona.
+     * @param  string  $ultimo  El contexto completo del dueño: recortar la cita no elimina una negación.
+     * @param  array  $filas  Para distinguir las instrucciones de otras filas dentro del contexto.
+     * @return array|null
+     */
+    protected static function completar_nombre_provisional(array $fila, $valor, $donde, $cita, $ultimo, array $filas)
+    {
+        if (!is_string($valor) || trim($valor) === '' || is_numeric(trim($valor))
+            || preg_match('/^[\d.\-\s]+$/', $valor)
+            || empty($fila['cliente_nuevo']) || !empty($fila['cliente_id'])
+            || !empty($fila['cliente_elegido_id'])) {
+            return null;
+        }
+
+        $objeto_nombre = '(?:nombre\s+(?:del cliente|completo)|razon social)';
+        $accion_de_nombre = '\b(?:cambia|corregi|completa|usa|pone|anota)(?:me)?\s+(?:el\s+|la\s+)?' . $objeto_nombre . '\b';
+        $mencion_de_nombre = '\b(?:cambia|cambies|cambiar|corregi|corrijas|corregir|completa|completes|completar|usa|uses|usar|pone|pongas|poner|anota|anotes|anotar)(?:me)?\s+(?:el\s+|la\s+)?' . $objeto_nombre . '\b';
+
+        // Un filtro preliminar sólo descarta lo que no menciona NOMBRE en ninguna evidencia.
+        // La candidatura se decide abajo desde el dueño localizado, nunca desde otra fila.
+        if (!preg_match('/' . $mencion_de_nombre . '/u', RolesDePlanillaIaHelper::normalizar_texto($ultimo))
+            && !preg_match('/' . $mencion_de_nombre . '/u', RolesDePlanillaIaHelper::normalizar_texto($donde))
+            && !preg_match('/' . $mencion_de_nombre . '/u', RolesDePlanillaIaHelper::normalizar_texto($cita))) {
+            return null;
+        }
+
+        $rechazo = self::sin_ancla_de_la_correccion('un pedido afirmativo de completar el nombre de esta fila, con su número entero y el nombre completo');
+
+        $pedido_del_dueno = self::contexto_del_nombre_de_esta_fila($fila, $filas, $ultimo, true);
+
+        if (is_null($pedido_del_dueno)) {
+            return $rechazo;
+        }
+
+        if (!preg_match('/' . $mencion_de_nombre . '/u', RolesDePlanillaIaHelper::normalizar_texto($pedido_del_dueno))) {
+            return null;
+        }
+
+        // Las referencias compactas pueden haber dejado una parte más amplia en la guarda anterior.
+        // Localizar también aquí evita volver a importar una orden o un veto de otra fila.
+        $donde = self::contexto_del_nombre_de_esta_fila($fila, $filas, $donde);
+        $cita = self::contexto_del_nombre_de_esta_fila($fila, $filas, $cita);
+
+        if (is_null($donde) || is_null($cita)) {
+            return $rechazo;
+        }
+
+        if (!empty($fila['dudas'])) {
+            return $rechazo;
+        }
+
+        $documento = RolesDePlanillaIaHelper::solo_digitos($fila['valores'][RolesDePlanillaIaHelper::DOCUMENTO] ?? '');
+        $tipo = strtoupper(trim((string) ($fila['valores'][RolesDePlanillaIaHelper::TIPO_DOCUMENTO] ?? '')));
+        $tipo_coherente = ($tipo === 'DNI' && in_array(strlen($documento), [7, 8], true))
+            || (in_array($tipo, ['CUIT', 'CUIL'], true) && strlen($documento) === 11);
+
+        if (!$tipo_coherente || ltrim($documento, '0') === '' || !is_null(CuitIaHelper::motivo_si_no_sirve($documento))) {
+            return $rechazo;
+        }
+
+        $nombre = trim($valor);
+        $numero = (int) $fila['numero'];
+        $referencia = '/\b(?:renglon|fila|linea)\s*(\d+)\b/u';
+        $extremo_de_rango = '(?:\d|' . implode('|', array_keys(Anclas::NUMEROS_EN_LETRAS)) . '\b)';
+        $continuacion_numerica = '/^\s*(?:[.,\/\-–—:]\s*' . $extremo_de_rango . '|(?:a|al|hasta|y|e|o)\s*' . $extremo_de_rango . ')/u';
+        $pedido_de_nombre = '/' . $accion_de_nombre . '/u';
+
+        $contexto_de_esta_fila = self::contexto_del_nombre_de_esta_fila($fila, $filas, $ultimo);
+
+        if (is_null($contexto_de_esta_fila)) {
+            return $rechazo;
+        }
+
+        // Recortar la cita no borra una envoltura general, pero tampoco importa vetos de otra fila.
+        foreach ([$contexto_de_esta_fila, $donde, $cita] as $contexto) {
+            if (self::nombre_sin_pedido_afirmativo(RolesDePlanillaIaHelper::normalizar_texto($contexto), $accion_de_nombre)) {
+                return $rechazo;
+            }
+        }
+
+        foreach ([$donde, $cita] as $parte) {
+            // Antes de quitar signos: «fila4.5» no puede normalizarse como «fila4 5» y pasar por4.
+            $cruda = RolesDePlanillaIaHelper::normalizar_texto($parte);
+
+            if (preg_match('/[?¿]/u', $parte) || !preg_match($pedido_de_nombre, $cruda)
+                || !preg_match_all($referencia, $cruda, $referencias, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+                return $rechazo;
+            }
+
+            foreach ($referencias as $mencionada) {
+                $despues = substr($cruda, $mencionada[0][1] + strlen($mencionada[0][0]));
+
+                if ((int) $mencionada[1][0] !== $numero
+                    || preg_match($continuacion_numerica, $despues)) {
+                    return $rechazo;
+                }
+            }
+
+            $sin_el_numero = (string) preg_replace($referencia, ' ', $cruda);
+
+            if (!Anclas::cita_en($nombre, $sin_el_numero)) {
+                return $rechazo;
+            }
+        }
+
+        $completada = self::con_el_cambio($fila, 'cliente', TextoDePlanillaIaHelper::nombre_del_cliente($fila), $nombre);
+        $completada['valores'][RolesDePlanillaIaHelper::NOMBRE] = $nombre;
+        $completada['corregido'][RolesDePlanillaIaHelper::NOMBRE] = true;
+
+        return $completada;
+    }
+
+    /**
+     * Conserva el contexto general y el de esta fila usando las mismas partes y pertenencia que
+     * las guardas de cruces. Una instrucción localizada en otra fila no clasifica ni veta ésta.
+     * Sus continuaciones tampoco; una envoltura explícita sin fila vuelve a ser contexto general.
+     * Si una parte mezcla filas sin separación, esta excepción no puede probar una orden propia.
+     */
+    protected static function contexto_del_nombre_de_esta_fila(array $fila, array $filas, $ultimo, $solo_de_esta = false)
+    {
+        $contexto = [];
+        $de_otra = false;
+        $de_esta = false;
+
+        foreach (preg_split('/[,;:.]\s+|\n+|\s+(?:y|e)\s+/iu', (string) $ultimo) as $parte) {
+            $normal = RolesDePlanillaIaHelper::normalizar_texto($parte);
+            $para_anclas = (string) preg_replace('/\b(renglon|fila|linea)(\d+)\b/u', '$1 $2', $normal);
+            $esta = Anclas::nombra_el_renglon($fila, $para_anclas);
+            $otra = Anclas::nombra_otro_renglon($fila, $filas, $para_anclas, 'cliente');
+
+            if ($esta && $otra) {
+                return null;
+            }
+
+            if ($esta || $otra) {
+                $de_otra = $otra;
+                $de_esta = $esta;
+            } elseif (preg_match('/\b(?:(?:hagas|hacer|ejecutes|ejecutar|apliques|aplicar|realices|realizar|sigas|seguir|tomes|tomar)\s+(?:lo siguiente|esto|esta orden|este pedido|estas instrucciones)|ejemplo|hipotesis|hipoteticamente|supongamos)\b/u', $normal)) {
+                $de_otra = false;
+                $de_esta = false;
+            }
+
+            // Mantener las comillas evita convertir en afirmativa una cita que abarca varias filas.
+            $contexto[] = $de_otra || ($solo_de_esta && !$de_esta) ? preg_replace('/[^«»“”"]/u', '', $parte) : $parte;
+        }
+
+        return implode('. ', $contexto);
+    }
+
+    /**
+     * La acción de nombre debe ser directa y afirmativa, no un ejemplo, hipótesis o acción citada.
+     * «No cambies el documento/artículo/cantidad/total, usá el nombre completo» conserva su orden
+     * afirmativa; «no hagas ventas» tampoco niega completar un nombre. Las envolturas que remiten a
+     * «lo siguiente/esto/esta orden» no prueban la afirmación de la cola, aunque el modelo la cite
+     * sola o cambien los separadores. Ante esa incertidumbre se rechaza esta excepción.
+     */
+    protected static function nombre_sin_pedido_afirmativo($texto, $accion_de_nombre): bool
+    {
+        $envoltura_explicita = '\b(?:hagas|hacer|ejecutes|ejecutar|apliques|aplicar|realices|realizar|sigas|seguir|tomes|tomar)\s+(?:lo siguiente|esto|esta orden|este pedido|estas instrucciones)\b';
+        $veto_de_nombre = '\b(?:no|nunca|tampoco)\s+(?:(?:quiero|deseo|permito|autorizo|pido|necesito)\s+que\s+)?(?:me\s+)?(?:cambia|cambies|cambiar|corregi|corrijas|corregir|completa|completes|completar|usa|uses|usar|pone|pongas|poner|anota|anotes|anotar)\s+(?:el\s+|la\s+)?(?:nombre\s+(?:del cliente|completo)|razon social)\b';
+        $veto_de_la_accion = '\b(?:no|nunca|tampoco)\s+lo\s+(?:hagas|ejecutes|apliques|realices)\b';
+        $ejemplo_o_hipotesis = '\b(?:ejemplo|hipotesis|hipoteticamente|supongamos|si\s+(?:(?:yo|te|vos)\s+)*(?:dijera|dijese|pidiera|pidiese|digo))\b';
+        $no_es_un_pedido = '\bno\s+(?:es|era)\s+(?:un[ao]?\s+)?(?:pedido|orden|instruccion)\b';
+        $accion_citada = false;
+
+        // Consumir cada par completo impide interpretar su cierre ASCII como otra apertura.
+        if (preg_match_all('/«[^»]*(?:»|$)|“[^”]*(?:”|$)|"[^"]*(?:"|$)/u', $texto, $fragmentos)) {
+            foreach ($fragmentos[0] as $fragmento) {
+                if (preg_match('/' . $accion_de_nombre . '/u', $fragmento)) {
+                    $accion_citada = true;
+                    break;
+                }
+            }
+        }
+
+        return (bool) preg_match('/(?:' . $envoltura_explicita . '|' . $veto_de_nombre . '|' . $veto_de_la_accion . ')/u', $texto)
+            || (bool) preg_match('/(?:' . $ejemplo_o_hipotesis . '|' . $no_es_un_pedido . ').*?' . $accion_de_nombre . '/su', $texto)
+            || $accion_citada
+            || (bool) preg_match('/' . $accion_de_nombre . '.*?(?:' . $no_es_un_pedido . '|\b(?:es|era)\s+(?:solo\s+)?(?:un\s+ejemplo|una\s+hipotesis)\b)/su', $texto);
     }
 
     /**
