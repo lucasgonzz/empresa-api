@@ -45,6 +45,16 @@ class PadronDeArcaIaHelper
      * siembra IvaConditionSeeder). «NO DETERMINADO» no está a propósito: si el padrón no lo sabe, no se
      * toca la condición que tenga el registro.
      */
+    /**
+     * Tope de la consulta al padrón desde el asistente, en segundos (revisión de la rama C). La pantalla de
+     * Clientes espera lo que tarde ARCA (hasta 15 s por intento en el WS); el asistente no: un turno colgado
+     * es peor que una tarjeta que dice que el padrón no contestó y pregunta la razón social.
+     */
+    const TOPE_SEGUNDOS = 8;
+
+    /** Lo que dice la tarjeta cuando el padrón no contestó dentro del tope. */
+    const MENSAJE_FUERA_DE_TIEMPO = 'el padrón no contestó a tiempo';
+
     const CONDICIONES = [
         'RESPONSABLE INSCRIPTO' => 'Responsable inscripto',
         'MONOTRIBUTO'           => 'Monotributista',
@@ -96,16 +106,37 @@ class PadronDeArcaIaHelper
             return $vacio;
         }
 
+        $tope = self::tope_de_segundos();
+        $inicio = microtime(true);
+
         try {
 
-            $respuesta = $padron->consultar($digitos);
+            $respuesta = self::con_tope($tope, function () use ($padron, $digitos) {
+
+                return $padron->consultar($digitos);
+            });
 
         } catch (\Throwable $e) {
 
             Log::warning('PadronDeArcaIaHelper: falló la consulta al padrón de ARCA', ['cuit' => $digitos, 'error' => $e->getMessage()]);
 
             $vacio['consultado'] = true;
-            $vacio['error'] = 'ARCA no contestó';
+            $vacio['error'] = $e instanceof PadronFueraDeTiempoException ? self::MENSAJE_FUERA_DE_TIEMPO : 'ARCA no contestó';
+
+            return $vacio;
+        }
+
+        /*
+         * El tope también se mira al volver: sin pcntl (Windows, o un PHP sin la extensión) la consulta no se
+         * puede cortar en el medio, y una respuesta que llegó pasado el tope se trata igual que una que no llegó
+         * (el turno del asistente ya esperó de más; la tarjeta lo dice y la razón social se pregunta).
+         */
+        if (microtime(true) - $inicio > $tope) {
+
+            Log::warning('PadronDeArcaIaHelper: el padrón de ARCA contestó pasado el tope', ['cuit' => $digitos, 'segundos' => round(microtime(true) - $inicio, 1)]);
+
+            $vacio['consultado'] = true;
+            $vacio['error'] = self::MENSAJE_FUERA_DE_TIEMPO;
 
             return $vacio;
         }
@@ -184,6 +215,82 @@ class PadronDeArcaIaHelper
         $nombre = isset($datos['nombre']) && is_scalar($datos['nombre']) ? trim((string) $datos['nombre']) : '';
 
         return trim($apellido . ' ' . $nombre);
+    }
+
+    /**
+     * El tope de la consulta al padrón desde el asistente, en segundos (revisión de la rama C). Se puede
+     * cambiar con `services.afip.padron_tope_asistente` (los tests lo bajan); por defecto TOPE_SEGUNDOS. La
+     * pantalla de Clientes no usa este tope: su código no se toca.
+     *
+     * @return float
+     */
+    public static function tope_de_segundos()
+    {
+        $tope = (float) config('services.afip.padron_tope_asistente', self::TOPE_SEGUNDOS);
+
+        return $tope > 0 ? $tope : (float) self::TOPE_SEGUNDOS;
+    }
+
+    /**
+     * Corre la consulta con un tope DURO cuando se puede: con pcntl (el worker de colas en Linux, que es donde
+     * corre el turno del asistente) arma una alarma que corta la consulta a los `$tope` segundos tirando
+     * PadronFueraDeTiempoException. Sin pcntl, la corre tal cual (el tope se mira al volver, en
+     * datos_del_cuit()).
+     *
+     * 🔴 LA ALARMA ES DEL WORKER. `queue:work` usa SIGALRM para su propio `timeout` del job. Por eso: se guarda
+     * su manejador y lo que le faltaba a su alarma; si le faltaba MENOS que el tope, no se arma nada (la del
+     * worker corta antes y se respeta); y al terminar, salga bien o mal, se le devuelven su manejador y su
+     * alarma con el tiempo que le quedaba.
+     *
+     * @param  float  $tope
+     * @param  callable  $consulta
+     * @return mixed
+     */
+    protected static function con_tope($tope, callable $consulta)
+    {
+        if (!function_exists('pcntl_alarm') || !function_exists('pcntl_signal') || !function_exists('pcntl_async_signals')
+            || !function_exists('pcntl_signal_get_handler') || !defined('SIGALRM')) {
+
+            return call_user_func($consulta);
+        }
+
+        $segundos = max(1, (int) ceil($tope));
+
+        $manejador_previo = pcntl_signal_get_handler(SIGALRM);
+        $restante_previo = pcntl_alarm(0);
+
+        // La alarma del worker vence antes que este tope: se le devuelve tal cual y se corre sin tope propio.
+        if ($restante_previo > 0 && $restante_previo <= $segundos) {
+
+            pcntl_alarm($restante_previo);
+
+            return call_user_func($consulta);
+        }
+
+        $asincronas_previas = pcntl_async_signals(true);
+        $inicio = time();
+
+        pcntl_signal(SIGALRM, function () {
+            throw new PadronFueraDeTiempoException('El padrón de ARCA no contestó a tiempo.');
+        });
+
+        pcntl_alarm($segundos);
+
+        try {
+
+            return call_user_func($consulta);
+
+        } finally {
+
+            pcntl_alarm(0);
+            pcntl_signal(SIGALRM, $manejador_previo);
+            pcntl_async_signals($asincronas_previas);
+
+            if ($restante_previo > 0) {
+
+                pcntl_alarm(max(1, $restante_previo - (time() - $inicio)));
+            }
+        }
     }
 
     /**

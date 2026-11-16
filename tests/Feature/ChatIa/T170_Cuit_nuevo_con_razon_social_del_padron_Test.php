@@ -3,6 +3,7 @@
 namespace Tests\Feature\ChatIa;
 
 use App\Http\Controllers\Helpers\asistente_ia\PadronDeArcaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PadronFueraDeTiempoException;
 use App\Models\AiMessageAction;
 use App\Models\Provider;
 use Tests\EmpresaTestCase;
@@ -54,9 +55,23 @@ class T170_Cuit_nuevo_con_razon_social_del_padron_Test extends EmpresaTestCase
             /** @var array<int, string> Los CUIT consultados. */
             public $consultas = [];
 
+            /** @var float Segundos que tarda en contestar (un ARCA lento). */
+            public $demora = 0;
+
+            /** @var \Throwable|null Lo que tira en vez de contestar (un timeout). */
+            public $tira = null;
+
             public function consultar($digitos)
             {
                 $this->consultas[] = (string) $digitos;
+
+                if ($this->demora > 0) {
+                    usleep((int) ($this->demora * 1000000));
+                }
+
+                if (!is_null($this->tira)) {
+                    throw $this->tira;
+                }
 
                 return $this->respuesta;
             }
@@ -244,5 +259,47 @@ class T170_Cuit_nuevo_con_razon_social_del_padron_Test extends EmpresaTestCase
         $this->assertTrue($r['ok'], json_encode($r));
         $this->assertSame('Transfarmaco SA', $client->fresh()->razon_social);
         $this->assertSame(self::CUIT_NUEVO, (string) $client->fresh()->cuit);
+    }
+
+    /**
+     * 🔴 Un padrón lento: pasado el tope del asistente, la tarjeta dice que no contestó a tiempo y no trae
+     * ninguna razón social (aunque la respuesta haya llegado tarde).
+     *
+     * @test
+     */
+    public function un_padron_lento_pasa_el_tope_y_la_tarjeta_lo_dice()
+    {
+        config(['services.afip.padron_tope_asistente' => 0.3]);
+
+        $this->padron->demora = 0.6;
+
+        $client = $this->cliente('ZZC170 Padron lento');
+
+        $r = $this->editar_cliente($client->id, ['cuit' => self::CUIT_NUEVO]);
+
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertStringContainsString(PadronDeArcaIaHelper::MENSAJE_FUERA_DE_TIEMPO, $r['aviso']);
+
+        $cambios = json_decode(json_encode(AiMessageAction::find($r['tarjeta_id'])->datos), true)['cambios'];
+
+        $this->assertArrayNotHasKey('razon_social', $cambios);
+    }
+
+    /**
+     * Un padrón que tira timeout (lo que hace la alarma con pcntl, o el SOAP) sigue el mismo camino.
+     *
+     * @test
+     */
+    public function un_padron_que_tira_timeout_sigue_como_falla()
+    {
+        $this->padron->tira = new PadronFueraDeTiempoException('timeout');
+
+        $client = $this->cliente('ZZC170 Padron timeout');
+
+        $r = $this->editar_cliente($client->id, ['cuit' => self::CUIT_NUEVO]);
+
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertStringContainsString(PadronDeArcaIaHelper::MENSAJE_FUERA_DE_TIEMPO, $r['aviso']);
+        $this->assertSame(8.0, (float) PadronDeArcaIaHelper::TOPE_SEGUNDOS);
     }
 }
