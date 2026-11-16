@@ -261,6 +261,17 @@ class PropuestaGenericaIaHelper
          */
         list($validado, $aviso_del_padron, $padron_sin_respuesta) = self::con_el_padron_de_arca($declaracion, $validado, null);
 
+        /*
+         * Rama C, 31/10 #10: un CLIENTE sin condición de IVA ni CUIT («creá el cliente sin más datos») queda como
+         * Consumidor final, y la tarjeta lo dice. Ver con_consumidor_final_por_defecto().
+         */
+        list($validado, $aviso_de_consumidor_final) = self::con_consumidor_final_por_defecto($declaracion, $validado);
+
+        if (!is_null($aviso_de_consumidor_final)) {
+
+            $aviso_del_padron = is_null($aviso_del_padron) ? $aviso_de_consumidor_final : $aviso_del_padron.' '.$aviso_de_consumidor_final;
+        }
+
         $bebida = [];
         $renglones_bebida = [];
         $bebida_pedida = $es_articulo ? AltaBebidasIaHelper::heredar($contexto, $reemplaza_a, isset($extras[AltaBebidasIaHelper::CLAVE]) ? $extras[AltaBebidasIaHelper::CLAVE] : []) : [];
@@ -1011,6 +1022,45 @@ class PropuestaGenericaIaHelper
         }
 
         return [$validado, $aviso.'.', false];
+    }
+
+    /**
+     * El alta de un CLIENTE sin condición de IVA y sin CUIT queda como «Consumidor final» (misión
+     * asistente-diario-20261116, rama C, 31/10 #10). Devuelve [$validado, $aviso].
+     *
+     * 🔴 EL CASO REAL (Ferre Total, conversación 33, 31/10/2026, mensajes 328-329): Pablo dijo «creá el cliente
+     * sin más datos» y el agente le preguntó el tipo de persona. Un cliente sin CUIT es, para facturar, un
+     * consumidor final: es lo que el dueño espera y lo que la pantalla le haría elegir. La tarjeta lo dice
+     * («queda como Consumidor final») para que el dueño lo vea antes de confirmar.
+     *
+     * No se toca si la persona dijo la condición, si hay CUIT (una sociedad puede ser Responsable inscripto:
+     * eso lo dice el padrón, ver con_el_padron_de_arca()), si la entidad no es un cliente o si el negocio no
+     * tiene la fila «Consumidor final».
+     *
+     * @param  array  $declaracion
+     * @param  array  $validado
+     * @return array{0: array, 1: string|null}
+     */
+    protected static function con_consumidor_final_por_defecto(array $declaracion, array $validado): array
+    {
+        if ($declaracion['entidad'] !== 'client'
+            || !isset($declaracion['campos']['iva_condition_id'])
+            || !self::vacio(isset($validado['payload']['iva_condition_id']) ? $validado['payload']['iva_condition_id'] : null)
+            || !CuitIaHelper::es_vacio(isset($validado['payload']['cuit']) ? $validado['payload']['cuit'] : null)) {
+
+            return [$validado, null];
+        }
+
+        $id = PadronDeArcaIaHelper::id_de_condicion('Consumidor final');
+
+        if (is_null($id)) {
+
+            return [$validado, null];
+        }
+
+        $validado = self::con_campo($validado, 'iva_condition_id', $id, 'Consumidor final');
+
+        return [$validado, 'Sin CUIT ni condición de IVA, queda como Consumidor final.'];
     }
 
     /**
