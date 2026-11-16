@@ -269,6 +269,52 @@ class T160_Ajuste_de_stock_por_lote_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Revisión de la rama B, hallazgo 5: un renglón que falla DESPUÉS de escribir (el doble hace que la
+     * relectura del pivot «no cierre» una vez que el movimiento ya se guardó). Ese renglón se revierte
+     * solo (su punto de guardado), los otros quedan, y se informa en no_hechos.
+     *
+     * @test
+     */
+    public function un_renglon_que_falla_despues_de_escribir_se_revierte_solo_y_los_demas_quedan()
+    {
+        $uno = $this->articulo_t160('Uno T160 relectura', 1);
+        $dos = $this->articulo_t160('Dos T160 relectura', 1);
+        $tres = $this->articulo_t160('Tres T160 relectura', 1);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->lote($conversation, $assistant, ['renglones' => [
+            ['articulo_id' => $uno->id, 'cantidad' => 5],
+            ['articulo_id' => $dos->id, 'cantidad' => 7],
+            ['articulo_id' => $tres->id, 'cantidad' => 9],
+        ]]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+
+        LoteConRelecturaQueFallaT160::$falla_en = (int) $dos->id;
+
+        $accion = AiMessageAction::find($respuesta['tarjeta_id']);
+
+        // Como el ejecutor: adentro de UNA transacción, con la persona autenticada.
+        $resultado = DB::transaction(function () use ($conversation, $accion) {
+            return LoteConRelecturaQueFallaT160::ejecutar(
+                \App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa::de_la_conversacion($conversation),
+                $accion
+            );
+        });
+
+        $this->assertEqualsWithDelta(5, $this->stock_total($uno->id), self::DELTA, 'El anterior queda.');
+        $this->assertEqualsWithDelta(1, $this->stock_total($dos->id), self::DELTA, 'El que falló después de escribir se revirtió.');
+        $this->assertFalse(DB::table('stock_movements')->where('article_id', $dos->id)->exists(), 'Sin movimiento del que falló.');
+        $this->assertEqualsWithDelta(9, $this->stock_total($tres->id), self::DELTA, 'El siguiente también se hace.');
+
+        $this->assertCount(2, $resultado['hechos']);
+        $this->assertCount(1, $resultado['no_hechos']);
+        $this->assertSame((int) $dos->id, $resultado['no_hechos'][0]['article_id']);
+        $this->assertStringContainsString('relectura', $resultado['no_hechos'][0]['motivo']);
+    }
+
+    /**
      * La herramienta está registrada y no se auto-confirma ni en "directo".
      *
      * @test
@@ -278,5 +324,28 @@ class T160_Ajuste_de_stock_por_lote_Test extends EmpresaTestCase
         $this->assertContains('proponer_ajuste_de_stock_por_lote', HerramientasDeCarga::nombres());
         $this->assertNotContains(AiMessageAction::TIPO_AJUSTE_STOCK_LOTE, HerramientasDeCarga::AUTO_CONFIRMABLES_DIRECTO);
         $this->assertNotContains(AiMessageAction::TIPO_AJUSTE_STOCK_LOTE, HerramientasDeCarga::AUTO_CONFIRMABLES);
+    }
+}
+
+/**
+ * Doble del ajuste por lote para el test de arriba: hace el renglón de verdad (escribe el movimiento) y,
+ * para el artículo marcado, lanza DESPUÉS como si la relectura del pivot no cerrara.
+ */
+class LoteConRelecturaQueFallaT160 extends \App\Http\Controllers\Helpers\asistente_ia\PropuestaAjusteDeStockPorLoteIaHelper
+{
+    /** @var int Artículo cuyo renglón falla después de escribir. */
+    public static $falla_en = 0;
+
+    public static function ejecutar_stock_en_deposito(
+        \App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa $contexto,
+        AiMessageAction $accion
+    ): array {
+        $resultado = parent::ejecutar_stock_en_deposito($contexto, $accion);
+
+        if ((int) $accion->datos['esperado']['article_id'] === self::$falla_en) {
+            throw new \App\Http\Controllers\Helpers\asistente_ia\AccionIaException(422, 'la relectura del pivot no cerró (doble del test)');
+        }
+
+        return $resultado;
     }
 }

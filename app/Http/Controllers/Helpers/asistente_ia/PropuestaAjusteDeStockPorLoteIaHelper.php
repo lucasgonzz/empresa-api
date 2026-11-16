@@ -493,6 +493,9 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
 
             $nombre = self::nombre_para_el_resultado($contexto, $article_id);
 
+            /* El nivel de transacción ANTES del renglón: ver el 🔴 del catch. */
+            $nivel = DB::transactionLevel();
+
             try {
 
                 $resultado = DB::transaction(function () use ($contexto, $esperado) {
@@ -502,16 +505,32 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
                     $una->tipo = AiMessageAction::TIPO_STOCK_DEPOSITO;
                     $una->datos = ['esperado' => $esperado];
 
-                    return self::ejecutar_stock_en_deposito($contexto, $una);
+                    /* `static::` y no `self::`: deja que un test reemplace el renglón por un doble. */
+                    return static::ejecutar_stock_en_deposito($contexto, $una);
                 });
 
                 $hechos[] = ['article_id' => $article_id, 'articulo' => $nombre, 'detalle' => (string) $resultado['texto']];
 
-            } catch (AccionIaException $e) {
-
-                $no_hechos[] = ['article_id' => $article_id, 'articulo' => $nombre, 'motivo' => $e->getMessage()];
-
             } catch (\Exception $e) {
+
+                /*
+                 * 🔴 Revisión de la rama B, hallazgo 5. Seguir con el próximo renglón solo es seguro si
+                 * la transacción de afuera (la del ejecutor) sigue entera. Si el nivel bajó (un deadlock
+                 * adentro de una transacción anidada hace que Laravel la descuente y relance) o el error
+                 * es de concurrencia (deadlock, espera de candado), los renglones siguientes correrían
+                 * en autocommit, sin la transacción de la tarjeta: se relanza y no se ajusta nada.
+                 */
+                if (DB::transactionLevel() < $nivel || self::es_de_concurrencia($e)) {
+
+                    throw $e;
+                }
+
+                if ($e instanceof AccionIaException) {
+
+                    $no_hechos[] = ['article_id' => $article_id, 'articulo' => $nombre, 'motivo' => $e->getMessage()];
+
+                    continue;
+                }
 
                 /* Un error técnico de UN renglón no voltea al resto: se registra y se cuenta como no hecho. */
                 Log::warning('Ajuste de stock por lote: falló un renglón', ['article_id' => $article_id, 'error' => $e->getMessage()]);
@@ -542,6 +561,36 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
             'hechos'    => $hechos,
             'no_hechos' => $no_hechos,
         ];
+    }
+
+    /**
+     * true si la excepción es de concurrencia de la base (deadlock, espera de candado, serialización):
+     * ésas no son "un renglón que no se pudo" sino la transacción entera en duda, y se relanzan.
+     *
+     * @param  \Exception  $e
+     * @return bool
+     */
+    protected static function es_de_concurrencia(\Exception $e)
+    {
+        /* SQLSTATE 40001 (serialización / deadlock) o los errores 1205 y 1213 de MySQL. */
+        if ($e instanceof \Illuminate\Database\QueryException
+            && (in_array((string) $e->getCode(), ['40001'], true)
+                || (isset($e->errorInfo[1]) && in_array((int) $e->errorInfo[1], [1205, 1213], true)))) {
+
+            return true;
+        }
+
+        $mensaje = mb_strtolower($e->getMessage());
+
+        foreach (['deadlock', 'lock wait timeout', 'serialization failure', '40001', 'try restarting transaction'] as $senal) {
+
+            if (mb_strpos($mensaje, $senal) !== false) {
+
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
