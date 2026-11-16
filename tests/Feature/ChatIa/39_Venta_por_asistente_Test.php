@@ -192,7 +192,12 @@ class Venta_por_asistente_Test extends EmpresaTestCase
         AiMessage::create([
             'ai_conversation_id' => $conversation->id,
             'rol'                => 'user',
-            'contenido'          => 'Hacele una venta',
+            /*
+             * Misión asistente-mejoras-4-dias (P1): el cobro que no dijo la persona ya no se hereda
+             * (CobroDichoIaHelper). Los tests de este archivo prueban el camino de la venta con el
+             * cobro DICHO, así que el pedido lo nombra; lo no dicho lo prueba el 112.
+             */
+            'contenido'          => 'Hacele una venta: paga con transferencia o en efectivo a la caja efectivo, o va a cuenta corriente',
         ]);
 
         $assistant = AiMessage::create([

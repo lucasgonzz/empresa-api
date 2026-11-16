@@ -163,6 +163,13 @@ class PropuestaVentaIaHelper
             $reemplaza_a = EntradaDeCargaIa::valor($input, 'reemplaza_a');
         }
 
+        /*
+         * 🔴 El cobro que la persona NO dijo no se hereda (misión asistente-mejoras-4-dias, P1, V2): el
+         * método, la caja o la cuenta corriente que el modelo trae de otra venta u otra charla se
+         * descartan y se preguntan como si no hubieran venido. Ver CobroDichoIaHelper.
+         */
+        list($input, $cobro_descartado) = CobroDichoIaHelper::sin_lo_no_dicho($contexto, $mensaje, $input);
+
         /** Lo que falta para armar la venta, para preguntarlo todo en un solo mensaje. */
         $faltan = [];
 
@@ -272,7 +279,15 @@ class PropuestaVentaIaHelper
 
         if (count($faltan)) {
 
-            return RespuestaDeCargaIa::faltan($faltan, $opciones);
+            $respuesta = RespuestaDeCargaIa::faltan($faltan, $opciones);
+
+            // Clave nueva al final: le dice al modelo por qué se le pregunta un cobro que mandó.
+            if (count($cobro_descartado)) {
+                $respuesta['nota'] = 'La persona no dijo en este pedido cómo se cobra (' . implode(', ', $cobro_descartado)
+                    . '): no lo saques de otra venta ni de otra charla. Preguntáselo.';
+            }
+
+            return $respuesta;
         }
 
         // ------------------------------------------------------------------ totales, como vender_set_total.js
@@ -1015,6 +1030,27 @@ class PropuestaVentaIaHelper
         if (count($ofrecibles) === 1) {
 
             return $ofrecibles[0];
+        }
+
+        /*
+         * Misión asistente-mejoras-4-dias (P1, V24): «Dejalo como pago en efectivo» → «¿A qué caja va el
+         * efectivo? Tenés CAJA EFECTIVO, BRUBANK NADIA y BRUBANK FER». Con el método Efectivo y UNA sola
+         * caja ofrecible que se llama «efectivo», es esa: la tarjeta la nombra y la persona la ve.
+         */
+        if (!is_null($metodo) && mb_strpos(ConsultasSistemaIaHelper::normalize_text((string) $metodo->name), 'efectivo') !== false) {
+
+            $de_efectivo = [];
+
+            foreach ($ofrecibles as $ofrecible) {
+                if (mb_strpos(ConsultasSistemaIaHelper::normalize_text(OpcionesDeCargaIaHelper::nombre_de_caja($ofrecible, $calles)), 'efectivo') !== false) {
+                    $de_efectivo[] = $ofrecible;
+                }
+            }
+
+            if (count($de_efectivo) === 1) {
+
+                return $de_efectivo[0];
+            }
         }
 
         $faltan[] = 'a qué caja va el cobro';

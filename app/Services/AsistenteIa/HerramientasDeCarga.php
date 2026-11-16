@@ -1116,7 +1116,7 @@ class HerramientasDeCarga
                         'cobro'                => [
                             'type'        => 'string',
                             'enum'        => ['contado', 'cuenta_corriente'],
-                            'description' => 'Cómo se cobra. Sin cliente solo puede ser contado.',
+                            'description' => 'Cómo se cobra. Sin cliente solo puede ser contado. Mandalo (con el método y la caja) solo si la persona lo dijo en ESTE pedido: nunca lo copies de otra venta ni de otra charla; si no lo dijo, la herramienta te lo pide.',
                         ],
                         'metodo_de_pago'       => [
                             'type'        => 'string',

@@ -37,6 +37,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\VentaConDatosInventadosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ResumenDeDatosIaHelper;
@@ -310,7 +311,7 @@ class AsistenteIaService
      *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
      *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento».
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -4221,6 +4222,17 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::promete_una_accion_futura($saneado);
         }
 
+        /* Misión asistente-mejoras-4-dias (P1, V1): una venta «con fecha 11/11» o «cobrada con» lo que la tarjeta no tiene. */
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+
+            if (! VentaConDatosInventadosIaHelper::es_turno_de_venta($saneado, $herramientas_pedidas, $assistant_message)) {
+                return false;
+            }
+
+            return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message);
+        }
+
         return false;
     }
 
@@ -4245,6 +4257,10 @@ CONFIRMACION;
             return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
         }
 
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA) {
+            return VentaConDatosInventadosIaHelper::nota_para_reintentar();
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4255,8 +4271,12 @@ CONFIRMACION;
      * @param  string  $texto
      * @return string
      */
-    protected function texto_honesto_de_la_guarda($guarda, $texto): string
+    protected function texto_honesto_de_la_guarda($guarda, $texto, $assistant_message = null): string
     {
+        if ($guarda === VentaConDatosInventadosIaHelper::GUARDA && $assistant_message instanceof AiMessage) {
+            return VentaConDatosInventadosIaHelper::texto_honesto($texto, $assistant_message);
+        }
+
         if ($guarda === 'soporte') {
             return PedidoDeAyudaASoporteIaHelper::sin_el_pedido_inventado($texto, $this->codigo_de_la_herramienta(PedidoDeAyudaASoporteIaHelper::HERRAMIENTA));
         }
@@ -4308,7 +4328,7 @@ CONFIRMACION;
                     'texto'                => mb_substr($texto, 0, 300),
                 ]);
 
-                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto);
+                $texto = $this->texto_honesto_de_la_guarda($guarda, $texto, $assistant_message);
             } catch (\Throwable $e) {
                 Log::warning('AsistenteIaService: no se pudo corregir la veracidad del texto; se deja como está.', [
                     'ai_message_id' => (int) $assistant_message->id,
