@@ -50,9 +50,10 @@ class AfipItemCalculator
      * Calcula base imponible e IVA para combo/servicio con alícuota 21%.
      *
      * @param object $combo Ítem con pivot->amount.
+     * @param bool $redondear False sólo para acumular alícuotas de una consolidada nueva.
      * @return array
      */
-    public function get_combo_iva($combo)
+    public function get_combo_iva($combo, $redondear = true)
     {
         /**
          * 🔴 EL RENGLÓN EN CURSO TIENE QUE SER EL COMBO (misión afip-combos-y-comision-mostrador,
@@ -93,8 +94,8 @@ class AfipItemCalculator
         $monto_iva = $total_combo - $precio_sin_iva;
 
         return [
-            'Importe' => round($monto_iva, 2),
-            'BaseImp' => round($precio_sin_iva, 2),
+            'Importe' => $redondear ? round($monto_iva, 2) : $monto_iva,
+            'BaseImp' => $redondear ? round($precio_sin_iva, 2) : $precio_sin_iva,
         ];
     }
 
@@ -124,9 +125,10 @@ class AfipItemCalculator
      * Calcula IVA de ítem actual (total o por alícuota puntual).
      *
      * @param float|int|string|null $iva Alícuota a filtrar; null devuelve IVA total del ítem.
+     * @param bool $redondear False sólo para acumular alícuotas de una consolidada nueva.
      * @return float|array
      */
-    public function get_importe_iva($iva = null)
+    public function get_importe_iva($iva = null, $redondear = true)
     {
         if (is_null($iva)) {
             /** @var float $monto_iva IVA total por cantidad del ítem actual. */
@@ -165,7 +167,10 @@ class AfipItemCalculator
             // }
         }
 
-        return ['Importe' => round($importe, 2), 'BaseImp' => round($base_imp, 2)];
+        return [
+            'Importe' => $redondear ? round($importe, 2) : $importe,
+            'BaseImp' => $redondear ? round($base_imp, 2) : $base_imp,
+        ];
     }
 
     /**

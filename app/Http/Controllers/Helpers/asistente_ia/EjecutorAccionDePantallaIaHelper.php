@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper as Catalogo;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Escritura;
 use App\Models\AiMessageAction;
+use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Routing\ImplicitRouteBinding;
@@ -221,10 +222,23 @@ class EjecutorAccionDePantallaIaHelper
             throw new AccionIaException(422, self::MENSAJE_NO_DISPONIBLE);
         }
 
+        $declaracion = Catalogo::declaracion($metodo, $ruta);
+        $es_factura = $declaracion && $declaracion['accion'] === 'SaleController@makeAfipTicket';
+        if ($es_factura) {
+            if (!PermisosIaHelper::es_admin($contexto->persona)) {
+                throw new AccionIaException(422, PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
+            }
+            if (!isset($datos['firma_fiscal_ia'])) {
+                throw new AccionIaException(422, 'Esta tarjeta no tiene un resumen fiscal verificado. Pedí una nueva propuesta y revisala antes de confirmar.');
+            }
+            // La ruta vuelve a validar la firma bajo los candados de venta/emisor, antes de emitir.
+            $cuerpo['_firma_fiscal_ia'] = $datos['firma_fiscal_ia'];
+        }
         $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo);
+        $texto = $es_factura ? ($llamada['cuerpo']['message'] ?? 'No se pudo confirmar el resultado de la facturación.') : 'Hecho: '.$metodo.' '.$llamada['uri'];
 
         return [
-            'texto'     => 'Hecho: '.$metodo.' '.$llamada['uri'],
+            'texto'     => $texto,
             'ruta'      => null,
             'params'    => new \stdClass(),
             'metodo'    => $metodo,
@@ -232,6 +246,7 @@ class EjecutorAccionDePantallaIaHelper
             'status'    => $llamada['status'],
             'respuesta' => $llamada['cuerpo'],
             'recortado' => $llamada['recortado'],
+            'estado_fiscal' => $es_factura ? ($llamada['cuerpo']['estado'] ?? 'pendiente_verificacion') : null,
         ];
     }
 

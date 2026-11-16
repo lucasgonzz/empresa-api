@@ -2,66 +2,57 @@
 
 namespace Tests\Feature\Sales;
 
-use App\Models\Article;
-use App\Models\Client;
 use App\Models\Sale;
-use App\Models\User;
-use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Foundation\Testing\WithFaker;
-use Tests\TestCase;
+use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Tests\Concerns\EscenariosDePlata;
+use Tests\EmpresaTestCase;
 
-class Eliminar_venta_Test extends TestCase
+class Eliminar_venta_Test extends EmpresaTestCase
 {
+    use EscenariosDePlata;
 
-    public $client_name = 'Lucas Gonzalez';
-    public $sale;
+    protected function tearDown(): void
+    {
+        $this->limpiar_escenarios();
+
+        parent::tearDown();
+    }
 
     /**
+     * La venta nace por el endpoint real en este mismo escenario: no depende de clientes de
+     * fixtures antiguos ni de la última venta que haya dejado otra corrida.
+     *
      * @group sales
      * @test
-    */
+     */
     public function eliminar_venta()
     {
+        $articulo = $this->articulo(TestingFerreteriaSeeder::ARTICULO_CENTINELA);
+        $this->assertNotNull($articulo, 'El fixture debe traer el artículo para medir su stock.');
 
-        $user = User::find(500);
+        $stock_antes = (float) $articulo->stock;
+        $cantidad = 2;
+        $precio = 42137;
 
-        $this->actingAs($user, 'web');
+        $venta = $this->crear_venta_cobrada(
+            TestingFerreteriaSeeder::CAJA_EFECTIVO,
+            TestingFerreteriaSeeder::PAGO_EFECTIVO,
+            $precio * $cantidad,
+            ['items' => [[
+                'is_article' => true,
+                'id' => $articulo->id,
+                'price_vender' => $precio,
+                'amount' => $cantidad,
+            ]]]
+        );
 
-        $data = $this->get_sale();
+        $this->assertNotNull($venta, 'El alta real debe devolver la venta que se va a borrar.');
+        $this->assertTrue($venta->articles()->where('articles.id', $articulo->id)->exists());
+        $this->assertEquals($stock_antes - $cantidad, (float) $articulo->fresh()->stock, 'La creación descontó el stock antes de medir la baja.');
 
-        $response = $this->delete('api/sale/'.$data['id']);
+        $this->delete('api/sale/'.$venta->id)->assertStatus(200);
 
-        $response->assertStatus(200);
-
-        $this->console();
+        $this->assertNull(Sale::find($venta->id), 'La venta propia quedó dada de baja.');
+        $this->assertEquals($stock_antes, (float) $articulo->fresh()->stock, 'Borrar la venta devolvió todo su stock.');
     }
-
-    function console() {
-        echo 'Se elimino la venta '.PHP_EOL;
-        
-        foreach ($this->sale->articles as $article) {
-            
-            echo $article->name.' quedo en '.$article->stock.PHP_EOL;
-        }
-    }
-
-    function get_sale() {
-
-        $client = Client::where('name', $this->client_name)->first();
-        
-        $ultima_venta_de_cliente = Sale::where('client_id', $client->id)
-                                        ->orderBy('id', 'DESC')
-                                        ->first();
-
-        $this->sale = $ultima_venta_de_cliente;
-
-        if ($ultima_venta_de_cliente) {
-
-            return [
-                'id'                                => $ultima_venta_de_cliente->id,
-            ];
-        }
-
-    }
-
 }

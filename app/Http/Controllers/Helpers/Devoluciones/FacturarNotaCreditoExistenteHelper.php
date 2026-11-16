@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\Devoluciones;
 
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
 use App\Http\Controllers\Helpers\Afip\AfipNotaCreditoHelper;
 use App\Models\AfipTicket;
 use App\Models\CurrentAcount;
@@ -50,6 +51,14 @@ class FacturarNotaCreditoExistenteHelper {
      * @throws \Throwable                        si falla el emisor (el controlador responde 500)
      */
     static function facturar($nota_credito_id, $user_id, $afip_ticket_id = null) {
+        // Se resuelve antes de la transacción y se revalida abajo: la NC cambia el saldo fiscal.
+        $venta_fiscal_id = CurrentAcount::where('id', $nota_credito_id)->where('user_id', $user_id)
+            ->where('status', 'nota_credito')->value('sale_id');
+        $ventas_fiscales = $venta_fiscal_id ? [$venta_fiscal_id] : [];
+        $candado_adquirido = false;
+        try {
+        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($nota_credito_id, $user_id, $afip_ticket_id, $venta_fiscal_id, &$candado_adquirido) {
+        $candado_adquirido = true;
 
         DB::beginTransaction();
 
@@ -73,6 +82,10 @@ class FacturarNotaCreditoExistenteHelper {
              */
             if (is_null($nota_credito->sale_id) || !is_null($nota_credito->provider_id)) {
                 throw new NotaCreditoNoFacturableException('Esta nota de crédito no está atada a una venta: solo se factura sobre la factura de una venta.');
+            }
+
+            if ((int) $nota_credito->sale_id !== (int) $venta_fiscal_id) {
+                throw new NotaCreditoNoFacturableException('La venta de la nota de crédito cambió. Volvé a revisarla antes de facturar.');
             }
 
             Self::exigir_que_no_este_facturada($nota_credito);
@@ -140,6 +153,15 @@ class FacturarNotaCreditoExistenteHelper {
         return CurrentAcount::where('id', $nota_credito->id)
                     ->with('afip_ticket.afip_errors', 'afip_ticket.afip_observations', 'sale.afip_tickets', 'articles', 'discounts', 'surchages', 'nota_credito_descriptions', 'client', 'provider')
                     ->first();
+        });
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            if ($candado_adquirido) {
+                throw $e;
+            }
+            // El controller de NC conoce esta excepción de negocio y conserva su 422 útil.
+            $errores = $e->errors();
+            throw new NotaCreditoNoFacturableException($errores['facturacion'][0] ?? 'Hay una facturación en curso. Esperá a que termine antes de facturar la nota de crédito.');
+        }
     }
 
     /**

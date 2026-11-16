@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Helpers\sale;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\Afip\MakeAfipTicket;
+use App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper;
+use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
 use App\Http\Controllers\Helpers\SaleHelper;
 use App\Models\Sale;
@@ -66,7 +68,7 @@ class ConsolidarFacturacionHelper extends Controller
         ];
     }
 
-    private static function importe_de_renglones(Sale $venta, array $factores): float
+    private static function importe_de_renglones(Sale $venta, array $factores, bool $redondear = true): float
     {
         $importe = 0;
         foreach ($factores as $relacion => $factor) {
@@ -74,7 +76,7 @@ class ConsolidarFacturacionHelper extends Controller
                 $importe += SaleHelper::getTotalItem($renglon) * $factor;
             }
         }
-        return round($importe, 2);
+        return $redondear ? round($importe, 2) : $importe;
     }
 
     private static function aviso_de_importes(Sale $venta, array $factores): ?string
@@ -200,11 +202,13 @@ class ConsolidarFacturacionHelper extends Controller
             }
 
             /** No se consolidan ventas que ya tienen un comprobante AFIP autorizado (con CAE). */
-            $tiene_cae = $sale->afip_tickets->first(function ($t) {
-                return !empty($t->cae);
-            });
+            $tiene_cae = FacturaDeVentaHelper::facturas_autorizadas($sale->id)->exists();
             if ($tiene_cae) {
                 throw new Exception("La venta #{$etiqueta} ya tiene un comprobante AFIP autorizado.");
+            }
+            $pendiente = FacturaDeVentaHelper::intento_incierto($sale->id);
+            if ($pendiente) {
+                throw new Exception("La venta #{$etiqueta} tiene una emisión pendiente de verificar en ARCA. Consultá ese comprobante antes de consolidarla.");
             }
         }
     }
@@ -271,6 +275,23 @@ class ConsolidarFacturacionHelper extends Controller
         array $afip_data      = [],
         bool  $emitir_afip    = true
     ): Sale {
+        $argumentos = func_get_args();
+        // Compartido con la emisión suelta: la cuenta corriente sola no protege una venta de mostrador.
+        return CandadoDeFacturaHelper::ventas($sale_ids, function () use ($argumentos) {
+            return self::consolidar_con_candados(...$argumentos);
+        });
+    }
+
+    private static function consolidar_con_candados(
+        array $sale_ids,
+        int   $client_id,
+        int   $user_id,
+        int   $afip_information_id,
+        int   $afip_tipo_comprobante_id,
+        bool  $agrupar_items  = false,
+        array $afip_data      = [],
+        bool  $emitir_afip    = true
+    ): Sale {
         DB::beginTransaction();
 
         try {
@@ -314,6 +335,18 @@ class ConsolidarFacturacionHelper extends Controller
                 $aviso = self::aviso_de_importes($venta, $factores[$venta->id]);
                 if ($emitir_afip && $aviso !== null) {
                     throw new Exception($aviso);
+                }
+            }
+
+            $bruto_acumulado = $ventas_originales->sum(function (Sale $venta) use ($factores) {
+                return self::importe_de_renglones($venta, $factores[$venta->id], false);
+            });
+            $primera_venta = $ventas_originales->first();
+            $cotizacion = $primera_venta->moneda_id == 2 ? (float) $primera_venta->valor_dolar : 1;
+            if (round($bruto_acumulado, 2) !== $total_consolidado
+                || ($cotizacion > 0 && round($bruto_acumulado * $cotizacion, 2) !== round($total_consolidado * $cotizacion, 2))) {
+                foreach ($ventas_originales as $venta) {
+                    $factores[$venta->id] = self::factores_de_recargo($venta, true);
                 }
             }
 
@@ -378,6 +411,9 @@ class ConsolidarFacturacionHelper extends Controller
             self::copiar_services($venta_consolidada, $ventas_originales, $factores);
 
             if ($emitir_afip) {
+                FacturaDeVentaHelper::preparar(self::build_afip_ticket_data(
+                    $afip_data, $venta_consolidada->id, $afip_information_id, $afip_tipo_comprobante_id
+                ), $user_id);
                 MakeAfipTicket::validar_total_consolidado($venta_consolidada, $afip_information_id, $afip_tipo_comprobante_id);
             }
 
@@ -454,7 +490,7 @@ class ConsolidarFacturacionHelper extends Controller
      * Materializa los ajustes de cada remito sobre su propia base.
      * Los ajustes directos ya vienen en el precio de los renglones originales.
      */
-    private static function factores_de_recargo(Sale $venta): array
+    private static function factores_de_recargo(Sale $venta, bool $materializar_redondeo = false): array
     {
         $recargo = 1.0;
         if (!$venta->aplicar_recargos_directo_a_items) {
@@ -472,12 +508,44 @@ class ConsolidarFacturacionHelper extends Controller
 
         $factor_total = self::factor_de_ajustes_por_importe($venta);
 
-        return [
+        $factores = [
             'articles' => $recargo * $descuento * $factor_total * (1 - (float) $venta->descuento / 100),
             'combos' => $recargo * $descuento * $factor_total,
             'services' => $factor_total * ($venta->surchages_in_services ? $recargo : 1.0)
                 * ($venta->discounts_in_services ? $descuento : 1.0),
         ];
+
+        // Si la suma ya cierra, conservar los precios precisos originales con sus ajustes.
+        if (!$materializar_redondeo) {
+            return $factores;
+        }
+
+        // Cada remito aporta su total ya redondeado, no la suma sin redondear de todos
+        // los remitos. Sólo materializamos ese residuo si los ajustes explican su total
+        // AL CENTAVO. Una diferencia real sigue pasando intacta al aviso y a la guarda.
+        $brutos = [];
+        foreach ($factores as $relacion => $factor) {
+            $brutos[$relacion] = $venta->{$relacion}->sum(function ($item) use ($factor) {
+                return SaleHelper::getTotalItem($item) * $factor;
+            });
+        }
+        $bruto = array_sum($brutos);
+        $total = round((float) $venta->total, 2);
+        if (round($bruto, 2) === $total) {
+            // Evita que restar importes grandes agregue ruido binario a la clave
+            // de agrupación. Ocho decimales siguen muy por debajo de un centavo.
+            $residuo = round($total - $bruto, 8);
+            // Orden fijo: artículos antes que combos y servicios. Un servicio sin
+            // recargo conserva su precio cuando hay artículos sobre los que repartir.
+            foreach ($brutos as $relacion => $importe) {
+                if ($importe > 0 && $importe + $residuo > 0) {
+                    $factores[$relacion] *= ($importe + $residuo) / $importe;
+                    break;
+                }
+            }
+        }
+
+        return $factores;
     }
 
     private static function factor_de_ajustes_por_importe(Sale $venta): float

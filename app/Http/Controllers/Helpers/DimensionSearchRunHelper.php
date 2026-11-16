@@ -9,6 +9,8 @@ use App\Models\DimensionSearchItem;
 use App\Models\DimensionSearchRun;
 use App\Models\User;
 use App\Services\DimensionSearch\DimensionApplier;
+use App\Services\DimensionSearch\DimensionLawnBarnIndex;
+use App\Services\DimensionSearch\DimensionManufacturerSheets;
 use App\Services\DimensionSearch\DimensionValueValidator;
 use App\Services\ImageSearch\ImageSearchProviderFactory;
 use App\Services\ProductFacts\TopeSerperDemo;
@@ -166,7 +168,9 @@ class DimensionSearchRunHelper
      * @param  int|null         $creada_por     Quién la lanzó.
      * @param  array            $opciones       solo_con_stock (bool), purgar (bool; false si quien llama ya
      *                                          purgó fuera de su transacción), sitios_de_referencia (array de
-     *                                          dominios; si no viene, la lista actual del comercio).
+     *                                          dominios; si no viene, la lista actual del comercio), proveedor
+     *                                          (`serper` por defecto; `fichas` = corrida de fichas del fabricante,
+     *                                          sin Serper ni IA).
      * @return \App\Models\DimensionSearchRun
      */
     public static function crear(User $owner, array $article_ids, $origen, $creada_por = null, array $opciones = [])
@@ -218,12 +222,17 @@ class DimensionSearchRunHelper
             ? array_values($opciones['sitios_de_referencia'])
             : DimensionReferenceSiteHelper::listar((int) $owner->id);
 
-        return DB::transaction(function () use ($owner, $origen, $creada_por, $solo_con_stock, $total, $validos, $articulos, $sitios) {
+        // Solo los dos proveedores que conoce el motor: cualquier otra cosa es una corrida normal.
+        $proveedor = isset($opciones['proveedor']) && $opciones['proveedor'] === DimensionSearchRun::PROVEEDOR_FICHAS
+            ? DimensionSearchRun::PROVEEDOR_FICHAS
+            : DimensionSearchRun::PROVEEDOR_SERPER;
+
+        return DB::transaction(function () use ($owner, $origen, $creada_por, $solo_con_stock, $total, $validos, $articulos, $sitios, $proveedor) {
             $run = DimensionSearchRun::create([
                 'user_id'              => (int) $owner->id,
                 'creada_por'           => is_null($creada_por) ? null : (int) $creada_por,
                 'origen'               => (string) $origen,
-                'proveedor'            => DimensionSearchRun::PROVEEDOR_SERPER,
+                'proveedor'            => $proveedor,
                 'status'               => DimensionSearchRun::STATUS_PENDIENTE,
                 'solo_con_stock'       => $solo_con_stock,
                 'total'                => $total,
@@ -377,6 +386,108 @@ class DimensionSearchRunHelper
     /* ----------------------------------------------------------------------------------------
      * Selección del catálogo
      * -------------------------------------------------------------------------------------- */
+
+    /**
+     * Los artículos de una corrida de FICHAS DEL FABRICANTE (misión medidas-masquito-fichas, 14/11/2026), por id:
+     * del dueño, activos (como el universo del catálogo) y no borrados, SIN PESO (null o 0), de marca Stihl, Husqvarna u Oregon (por `brands.name`, en
+     * mayúsculas y sin espacios de más), que no estén en una corrida en curso y cuyo ÚLTIMO item no sea una decisión
+     * del dueño en contra (`rechazada` o `quitada`). Sí entran los que tienen una propuesta «a revisar» o quedaron
+     * «sin datos»: las fichas son otra fuente.
+     *
+     * @param  int      $owner_id
+     * @param  bool     $solo_con_stock
+     * @param  int|null $limite  null = sin límite (además del tope de la configuración).
+     * @return array
+     */
+    public static function ids_para_fichas($owner_id, $solo_con_stock = false, $limite = null)
+    {
+        $tope = self::tope_del_catalogo();
+
+        if (!is_null($limite) && (int) $limite > 0) {
+            $tope = min($tope, (int) $limite);
+        }
+
+        return self::base_para_fichas($owner_id, $solo_con_stock)
+            ->orderBy('articles.id')
+            ->limit(max(1, (int) $tope))
+            ->pluck('articles.id')
+            ->map(function ($id) {
+                return (int) $id;
+            })
+            ->all();
+    }
+
+    /**
+     * Cuántos de esos artículos hay por marca (para la previa del comando).
+     *
+     * @param  array $ids  Los de ids_para_fichas().
+     * @return array  marca (normalizada) => cantidad, en el orden de DimensionManufacturerSheets::MARCAS.
+     */
+    public static function marcas_de_fichas(array $ids)
+    {
+        $conteos = [];
+
+        foreach (DimensionManufacturerSheets::MARCAS as $marca) {
+            $conteos[$marca] = 0;
+        }
+
+        foreach (array_chunk($ids, 1000) as $lote) {
+            $filas = DB::table('articles')
+                ->join('brands', 'brands.id', '=', 'articles.brand_id')
+                ->whereIn('articles.id', $lote)
+                ->pluck('brands.name');
+
+            foreach ($filas as $nombre) {
+                $marca = DimensionManufacturerSheets::marca_normalizada($nombre);
+
+                if (isset($conteos[$marca])) {
+                    $conteos[$marca]++;
+                }
+            }
+        }
+
+        return $conteos;
+    }
+
+    /**
+     * La consulta base de ids_para_fichas() (sin orden ni tope).
+     *
+     * @param  int  $owner_id
+     * @param  bool $solo_con_stock
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected static function base_para_fichas($owner_id, $solo_con_stock)
+    {
+        $owner_id = (int) $owner_id;
+
+        // Activos, como el universo del catálogo (activos()).
+        $query = self::activos($owner_id)
+            ->where(function ($sin_peso) {
+                $sin_peso->whereNull('articles.peso')->orWhere('articles.peso', '<=', 0);
+            })
+            ->whereExists(function ($marca) {
+                $marca->select(DB::raw(1))
+                    ->from('brands')
+                    ->whereColumn('brands.id', 'articles.brand_id')
+                    ->whereIn(DB::raw('UPPER(TRIM(brands.name))'), DimensionManufacturerSheets::MARCAS);
+            })
+            ->whereNotExists(self::subconsulta_en_corrida_activa($owner_id))
+            ->whereNotExists(function ($ultimo) use ($owner_id) {
+                // El último item del artículo (el de id más alto) es un «no» del dueño.
+                $ultimo->select(DB::raw(1))
+                    ->from('dimension_search_items')
+                    ->where('dimension_search_items.user_id', $owner_id)
+                    ->whereColumn('dimension_search_items.article_id', 'articles.id')
+                    ->whereIn('dimension_search_items.status', [DimensionSearchItem::STATUS_RECHAZADA, DimensionSearchItem::STATUS_QUITADA])
+                    ->whereRaw('dimension_search_items.id = (SELECT MAX(ultimo.id) FROM dimension_search_items AS ultimo WHERE ultimo.user_id = ? AND ultimo.article_id = articles.id)', [$owner_id]);
+            });
+
+        if ($solo_con_stock) {
+            $query->where('articles.stock', '>', 0);
+        }
+
+        return $query;
+    }
 
     /**
      * Los números de la selección del catálogo (sin traer ids).
@@ -1488,8 +1599,9 @@ class DimensionSearchRunHelper
      */
     public static function reanudar(DimensionSearchRun $run)
     {
-        // En una demo sin búsquedas, reanudar solo volvería a cortarse.
-        if (TopeSerperDemo::agotado((int) $run->user_id)) {
+        // En una demo sin búsquedas, reanudar solo volvería a cortarse. Una corrida de fichas del fabricante no usa
+        // Serper: el tope de la demo no la frena.
+        if ((string) $run->proveedor !== DimensionSearchRun::PROVEEDOR_FICHAS && TopeSerperDemo::agotado((int) $run->user_id)) {
             return ['status' => 422, 'message' => TopeSerperDemo::MENSAJE];
         }
 
@@ -1581,6 +1693,9 @@ class DimensionSearchRunHelper
             return false;
         }
 
+        // El índice de Lawn Barn de una corrida de fichas ya no hace falta (si se reanuda, se vuelve a armar).
+        DimensionLawnBarnIndex::borrar((int) $run->id);
+
         $run->refresh();
 
         return true;
@@ -1607,6 +1722,10 @@ class DimensionSearchRunHelper
                 })
                 ->pluck('id')
                 ->all();
+
+            foreach ($ids as $id) {
+                DimensionLawnBarnIndex::borrar((int) $id);
+            }
 
             foreach (array_chunk($ids, 200) as $lote) {
                 DB::table('dimension_search_items')->whereIn('run_id', $lote)->delete();

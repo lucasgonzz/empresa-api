@@ -13,6 +13,11 @@ use App\Models\Provider;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Maatwebsite\Excel\Facades\Excel;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\IOFactory;
+use PhpOffice\PhpSpreadsheet\Reader\IReadFilter;
+use PhpOffice\PhpSpreadsheet\Reader\Xls as XlsReader;
+use PhpOffice\PhpSpreadsheet\Reader\Xlsx as XlsxReader;
 use RuntimeException;
 
 /**
@@ -163,13 +168,29 @@ class PlanDeContactosDeSoporte
         $clase = $es_cliente ? Client::class : Provider::class;
         $owner_id = (int) $corrida->user_id;
 
+        // 0) Solo en la prueba (ronda 8, D1): las filas que no son contactos (totales, títulos de sección, notas al pie)
+        // con la misma regla E8.x que usan ClientImport y ProviderImport en la prueba, sobre la lista ENTERA (cada
+        // tanda ve solo 50 filas y la regla necesita la lista completa). La fila descartada no entra a lo previsto
+        // ni a las filas crudas: ninguna tanda la ve y el control no espera su alta. Todas salen nombradas.
+        $modo_prueba = (bool) $corrida->modo_prueba;
+        // Quinta pasada (B2): en la prueba, el saldo escrito como lo escribe un comerciante («$13500.-», «1250 pesos») se
+        // lee como su número, antes de todo: el plan y las tandas ven el mismo valor. Un activo, como siempre.
+        if ($modo_prueba && isset($columnas['saldo_actual'])) {
+            $lector->filas = self::saldos_de_comerciante($lector->filas, (int) $columnas['saldo_actual'], $columnas, (int) $corrida->fila_inicio);
+        }
+        $descartes = $modo_prueba ? LocalImportHelper::filas_que_no_son_contactos_de($lector->filas, $columnas,
+            (int) $corrida->fila_inicio, count($lector->filas), self::formato_del_nombre($corrida, $ruta, $lector->filas, $columnas)) : [];
+        $descartadas = [];
+
         // 1) Las filas con nombre (las que el importador no saltea), como las recorre él.
         $filas = [];
         $crudas = [];
         $sin_nombre = 0;
         $num_row = 1;
         foreach ($lector->filas as $row) {
-            if ($num_row >= (int) $corrida->fila_inicio) {
+            if (isset($descartes[$num_row])) {
+                $descartadas[] = ['fila' => $num_row, 'texto' => (string) $descartes[$num_row][1], 'motivo' => (string) $descartes[$num_row][0]];
+            } elseif ($num_row >= (int) $corrida->fila_inicio) {
                 $crudas[$num_row] = is_object($row) && method_exists($row, 'toArray') ? $row->toArray() : (array) $row;
                 $nombre = ImportHelper::getColumnValue($row, 'nombre', $columnas);
                 if (!is_null($nombre)) {
@@ -275,7 +296,20 @@ class PlanDeContactosDeSoporte
         $sin_cambios = 0;
         $ejemplos_crear = [];
         $ejemplos_actualizar = [];
+        // Solo en la prueba (A3): el saldo de cada fila de la LISTA, se mueva o no, para que el total del aviso cierre
+        // con la planilla del dueño también en una segunda carga; y qué existentes cambian y cuáles ya estaban igual.
+        $de_la_lista = [];
+        $existentes_con_cambios = 0;
+        $existentes_iguales = 0;
+        $solo_con_el_nombre = [];
+        // Séptima pasada (1): los que entraron y empiezan con palabra de total («Total Gas»), con su saldo, para decirlos.
+        $parecen_totales = [];
         foreach ($filas as $fila) {
+            if ($modo_prueba && LocalImportHelper::empieza_con_palabra_de_total_de_contactos((string) $fila['nombre'])) {
+                $lectura = isset($columnas['saldo_actual']) ? LocalImportHelper::leerSaldoDeLaFila($fila['row'], $columnas) : ['estado' => 'vacio'];
+                $parecen_totales[] = ['nombre' => (string) $fila['nombre'],
+                    'saldo' => $lectura['estado'] === 'numero' ? round((float) $lectura['valor'], 2) : null];
+            }
             $modelo = $fila['modelo'];
             $nuevo = is_null($modelo);
             $seguro = false;
@@ -292,11 +326,30 @@ class PlanDeContactosDeSoporte
                     $saldos[] = $saldo['linea'];
                     $movimientos = $saldo['movimientos'];
                 }
+                if ($modo_prueba && !isset($saldo['ilegible'])
+                    && (is_null($saldo) || $saldo['linea']['accion'] !== 'no_se_carga')) {
+                    $lectura = LocalImportHelper::leerSaldoDeLaFila($fila['row'], $columnas);
+                    if ($lectura['estado'] === 'numero') {
+                        $de_la_lista[] = ['nombre' => $nuevo ? (string) $fila['nombre'] : (string) $modelo->name,
+                            'accion' => 'de_la_lista', 'saldo_resultante' => round((float) $lectura['valor'], 2)];
+                    }
+                }
+            }
+            if (!$nuevo) {
+                if ($seguro || $posible || $movimientos !== []) {
+                    $existentes_con_cambios++;
+                } else {
+                    $existentes_iguales++;
+                }
             }
             if ($nuevo) {
                 $crear++;
                 if (count($ejemplos_crear) < self::MAXIMO_DE_EJEMPLOS) {
                     $ejemplos_crear[] = (string) $fila['nombre'];
+                }
+                // Quinta pasada (A5): los nuevos que traen SOLO el nombre (ni teléfono, ni dirección, ni CUIT, ni saldo).
+                if ($modo_prueba && self::solo_el_nombre($fila['row'], $columnas)) {
+                    $solo_con_el_nombre[] = (string) $fila['nombre'];
                 }
             } elseif ($seguro || $posible) {
                 $actualizar++;
@@ -333,11 +386,37 @@ class PlanDeContactosDeSoporte
             'filas_ambiguas' => array_slice(array_values($ambiguas), 0, self::MAXIMO_DE_AMBIGUAS),
             'maximo_de_filas' => self::maximo_de_filas(),
         ];
+        if ($modo_prueba) {
+            // La prueba no muestra nada antes de importar: el resumen del final dice los totales de la LISTA (todas las
+            // filas con saldo legible, se muevan o no; sin las que no se cargan) para que cierre con la planilla.
+            $resumen += self::totales_de_saldos($de_la_lista) + [
+                'existentes_con_cambios' => $existentes_con_cambios,
+                // Los saldos de la planilla que no se cargan (cuenta con movimientos): para decirlos con su monto.
+                'saldo_no_cargado_total' => round(array_sum(array_map(function ($saldo) {
+                    return $saldo['accion'] === 'no_se_carga' ? (float) $saldo['saldo_excel'] : 0.0;
+                }, $saldos)), 2),
+                'saldo_no_cargado_en_el_sistema' => round(array_sum(array_map(function ($saldo) {
+                    return $saldo['accion'] === 'no_se_carga' ? (float) $saldo['saldo_actual'] : 0.0;
+                }, $saldos)), 2),
+                'existentes_iguales' => $existentes_iguales,
+                'solo_con_el_nombre' => array_slice($solo_con_el_nombre, 0, self::MAXIMO_DE_EJEMPLOS),
+                'solo_con_el_nombre_total' => count($solo_con_el_nombre),
+                'parecen_totales' => array_slice($parecen_totales, 0, self::MAXIMO_DE_EJEMPLOS),
+                'parecen_totales_total' => count($parecen_totales),
+                'saldos_ilegibles_total' => count($ilegibles),
+                'filas_descartadas' => array_slice($descartadas, 0, self::MAXIMO_DE_SALDOS),
+                'filas_descartadas_total' => count($descartadas),
+            ];
+        }
 
-        $huella = hash('sha256', json_encode([
+        $para_la_huella = [
             $modelo_nombre, $columnas, (int) $corrida->hoja, $corrida->hoja_nombre, (int) $corrida->fila_inicio,
             hash_file('sha256', $ruta), $previsto, array_values($ambiguas),
-        ]));
+        ];
+        if ($modo_prueba) {
+            $para_la_huella[] = $descartadas;
+        }
+        $huella = hash('sha256', json_encode($para_la_huella));
 
         return ['resumen' => $resumen, 'previsto' => $previsto, 'ambiguas' => array_values($ambiguas),
             'ultima_fila' => $ultima_fila, 'filas_crudas' => $crudas, 'demasiado_grande' => count($filas) > self::maximo_de_filas(),
@@ -447,6 +526,172 @@ class PlanDeContactosDeSoporte
 
         return ['linea' => $linea + ['accion' => 'no_se_carga', 'saldo_actual' => round($de_la_cuenta, 2),
             'saldo_resultante' => round($de_la_cuenta, 2), 'saldo_excel' => $monto, 'monto' => 0.0], 'movimientos' => []];
+    }
+
+    /**
+     * Los totales de las cuentas para el resumen de la prueba: positivo = debe (le deben al dueño, o el dueño le debe
+     * al proveedor), negativo = saldo a favor. Los que no se cargan (`no_se_carga`) no cuentan.
+     *
+     * @param  array $saldos  Líneas de saldo de armar(), la lista completa
+     * @return array
+     */
+    private static function totales_de_saldos(array $saldos): array
+    {
+        $deudor = 0.0;
+        $deudores = 0;
+        $mayor = null;
+        $a_favor = 0.0;
+        $con_saldo_a_favor = 0;
+        foreach ($saldos as $saldo) {
+            if (($saldo['accion'] ?? '') === 'no_se_carga') {
+                continue;
+            }
+            $monto = round((float) $saldo['saldo_resultante'], 2);
+            if ($monto > 0) {
+                $deudor += $monto;
+                $deudores++;
+                if (is_null($mayor) || $monto > $mayor['monto']) {
+                    $mayor = ['nombre' => (string) $saldo['nombre'], 'monto' => $monto];
+                }
+            } elseif ($monto < 0) {
+                $a_favor += abs($monto);
+                $con_saldo_a_favor++;
+            }
+        }
+
+        return [
+            'saldo_total_deudor' => round($deudor, 2),
+            'saldos_deudores' => $deudores,
+            'saldo_mayor' => $mayor,
+            'saldos_a_favor' => $con_saldo_a_favor,
+            'saldo_total_a_favor' => round($a_favor, 2),
+        ];
+    }
+
+    /**
+     * El formato de la celda del nombre de cada fila, en bits (LocalImportHelper::FORMATO_*): en negrita, y combinada
+     * con tres columnas o más. Ronda 8, A1: es la señal de un título de grupo fuera del vocabulario («Fiado»). El
+     * relleno de color no se lee: no es señal (cuarta pasada: así se marcan morosos y filas alternadas).
+     *
+     * Solo se lee si la lista puede tener títulos de grupo (contexto_de_contactos(): 5 contactos con datos o más, alguna
+     * fila de solo nombre y los contactos con datos en clara mayoría): si no, no cambiaría nada. Se abre el archivo
+     * con estilos y un filtro que lee SOLO la columna del nombre (medido con 5.000 filas: ~1 a 1,3 s y ~4 a 8 MB más).
+     * CSV o un archivo que no se pueda leer así: sin señal, como hasta hoy.
+     *
+     * @param  ImportacionDeSoporte $corrida
+     * @param  string               $ruta
+     * @param  mixed                $filas     Las de FilasDeUnaHoja
+     * @param  array                $columnas
+     * @return array<int, int>      Número de fila (1 = la primera de la hoja) => bits de formato
+     */
+    private static function formato_del_nombre(ImportacionDeSoporte $corrida, string $ruta, $filas, array $columnas): array
+    {
+        $contexto = LocalImportHelper::contexto_de_contactos($filas, $columnas, (int) $corrida->fila_inicio, count($filas));
+        if ($contexto['con_datos'] < LocalImportHelper::CONTACTOS_CON_DATOS_PARA_SUELTAS || $contexto['solo_nombre'] < 1
+            || $contexto['con_datos'] < $contexto['solo_nombre'] * LocalImportHelper::CONTACTOS_CON_DATOS_POR_FILA_DE_SOLO_NOMBRE) {
+            return [];
+        }
+
+        try {
+            $lector = IOFactory::createReaderForFile($ruta);
+            if (!($lector instanceof XlsxReader) && !($lector instanceof XlsReader)) {
+                return [];
+            }
+            $hojas = $lector->listWorksheetNames($ruta);
+            $nombre_de_hoja = is_string($corrida->hoja_nombre) && in_array($corrida->hoja_nombre, $hojas, true)
+                ? $corrida->hoja_nombre : ($hojas[(int) $corrida->hoja] ?? null);
+            if (is_null($nombre_de_hoja)) {
+                return [];
+            }
+            $letra = Coordinate::stringFromColumnIndex((int) $columnas['nombre'] + 1);
+            $lector->setReadDataOnly(false);
+            $lector->setLoadSheetsOnly([$nombre_de_hoja]);
+            $lector->setReadFilter(new class($letra) implements IReadFilter {
+                private $letra;
+
+                public function __construct($letra)
+                {
+                    $this->letra = $letra;
+                }
+
+                public function readCell($columnAddress, $row, $worksheetName = '')
+                {
+                    return $columnAddress === $this->letra;
+                }
+            });
+            $libro = $lector->load($ruta);
+            $hoja = $libro->getSheetByName($nombre_de_hoja);
+            if (is_null($hoja)) {
+                return [];
+            }
+            $combinadas = [];
+            foreach ($hoja->getMergeCells() as $rango) {
+                list($desde, $hasta) = Coordinate::rangeBoundaries($rango);
+                // Combinada ancha: tres columnas o más. Dos celdas vecinas combinadas (por error) no dicen nada.
+                if ($desde[0] <= (int) $columnas['nombre'] + 1 && $hasta[0] >= (int) $columnas['nombre'] + 1 && $hasta[0] - $desde[0] >= 2) {
+                    for ($fila = $desde[1]; $fila <= $hasta[1]; $fila++) {
+                        $combinadas[$fila] = true;
+                    }
+                }
+            }
+            $formato = [];
+            $ultima = count($filas);
+            for ($fila = (int) $corrida->fila_inicio; $fila <= $ultima; $fila++) {
+                $formato[$fila] = ($hoja->getStyle($letra . $fila)->getFont()->getBold() === true ? LocalImportHelper::FORMATO_NEGRITA : 0)
+                    | (isset($combinadas[$fila]) ? LocalImportHelper::FORMATO_COMBINADA_ANCHA : 0);
+            }
+            $libro->disconnectWorksheets();
+
+            return $formato;
+        } catch (\Throwable $error) {
+            return [];
+        }
+    }
+
+    /** ¿La fila trae solo el nombre, ninguna otra columna mapeada con dato? (quinta pasada, A5) */
+    private static function solo_el_nombre($row, array $columnas): bool
+    {
+        foreach ($columnas as $clave => $indice) {
+            if ($clave === 'nombre') {
+                continue;
+            }
+            $valor = ImportHelper::getColumnValue($row, $clave, $columnas);
+            if (!is_null($valor) && trim((string) $valor) !== '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Las filas con el saldo leído como lo escribe un comerciante (PlanillaDePrueba::importe_de_comerciante, solo en
+     * pesos): si el lector de siempre no lo lee y el de comerciante sí, la celda pasa a ser el número.
+     *
+     * @param  \Illuminate\Support\Collection $filas
+     * @param  int   $posicion
+     * @param  array $columnas
+     * @param  int   $desde
+     * @return \Illuminate\Support\Collection
+     */
+    private static function saldos_de_comerciante($filas, int $posicion, array $columnas, int $desde)
+    {
+        $numero = 0;
+
+        return $filas->map(function ($fila) use ($posicion, $columnas, $desde, &$numero) {
+            $numero++;
+            if ($numero < $desde || LocalImportHelper::leerSaldoDeLaFila($fila, $columnas)['estado'] !== 'ilegible') {
+                return $fila;
+            }
+            $celdas = is_object($fila) && method_exists($fila, 'toArray') ? $fila->toArray() : (array) $fila;
+            $leido = PlanillaDePrueba::importe_de_comerciante($celdas[$posicion] ?? null, true);
+            if (is_null($leido)) {
+                return $fila;
+            }
+            $celdas[$posicion] = $leido;
+
+            return is_object($fila) ? collect($celdas) : $celdas;
+        });
     }
 
     private static function fila_con_datos($row): bool

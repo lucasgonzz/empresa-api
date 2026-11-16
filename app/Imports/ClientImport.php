@@ -68,6 +68,16 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     private $saldos_ilegibles = [];
 
     /**
+     * Ver descartando_filas_que_no_son_contactos() y filas_que_no_son_contactos().
+     *
+     * @var bool
+     */
+    private $descartar_filas_que_no_son_contactos = false;
+
+    /** @var array */
+    private $filas_que_no_son_contactos = [];
+
+    /**
      * Checkbox unico por importacion: que hacer con las celdas VACIAS de las columnas
      * que el usuario mapeo.
      *
@@ -159,6 +169,30 @@ class ClientImport implements ToCollection, WithMultipleSheets {
     }
 
     /**
+     * En la prueba gratuita, las filas que no son clientes (el total, un subtotal, un título decorado: ver
+     * LocalImportHelper::fila_que_no_es_un_contacto()) se dejan afuera y se nombran en el aviso (misión
+     * prueba-e2e-campana-imperio, ronda 6, E8.1). Encadenable, como con_equivalencias() y por lo mismo: la
+     * firma del constructor está congelada. Sin llamarlo (AdminSync, un negocio que paga) entra todo como siempre.
+     *
+     * @param  bool $descartar
+     * @return $this
+     */
+    public function descartando_filas_que_no_son_contactos($descartar = true) {
+        $this->descartar_filas_que_no_son_contactos = (bool) $descartar;
+
+        return $this;
+    }
+
+    /**
+     * Las filas que se dejaron afuera por no ser clientes: [['fila' => int, 'nombre' => string], ...].
+     *
+     * @return array
+     */
+    public function filas_que_no_son_contactos() {
+        return $this->filas_que_no_son_contactos;
+    }
+
+    /**
      * Resuelve una relación de la fila: decisión del usuario → equivalencia recordada → nombre
      * exacto → el camino de siempre ($camino_de_hoy, LocalImportHelper sin cambios).
      *
@@ -243,9 +277,21 @@ class ClientImport implements ToCollection, WithMultipleSheets {
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
         } 
+        /*
+         * En la prueba, las filas que no son contactos se deciden mirando la lista entera (E8.2, E8.3): collection()
+         * recibe la hoja completa (ToCollection sin chunks). Ver LocalImportHelper::filas_que_no_son_contactos_de().
+         */
+        $descartes = $this->descartar_filas_que_no_son_contactos
+            ? LocalImportHelper::filas_que_no_son_contactos_de($rows, $this->columns, $this->start_row, $this->finish_row) : [];
         foreach ($rows as $row) {
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
+                    // En la prueba, el total, un título o una nota de la planilla no es un cliente (E8.1, E8.2).
+                    if (isset($descartes[$this->num_row])) {
+                        $this->filas_que_no_son_contactos[] = ['fila' => $this->num_row, 'nombre' => $descartes[$this->num_row][1]];
+                        $this->num_row++;
+                        continue;
+                    }
                     $client = Client::where('user_id', $this->ct->userId());
                     if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
                         $client = $client->where('num', ImportHelper::getColumnValue($row, 'numero', $this->columns));
@@ -319,6 +365,11 @@ class ClientImport implements ToCollection, WithMultipleSheets {
                 'title'    => 'Sucursales que no existen en el sistema',
                 'parrafos' => $parrafos,
             ];
+        }
+
+        $no_son = LocalImportHelper::bloque_de_filas_que_no_son_contactos($this->filas_que_no_son_contactos, 'clientes');
+        if (!is_null($no_son)) {
+            $bloques_fijos[] = $no_son;
         }
 
         $ilegibles = $this->saldos_ilegibles;

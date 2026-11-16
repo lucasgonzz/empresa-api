@@ -30,6 +30,11 @@ use Illuminate\Support\Str;
  * es un dueño activo (en prueba o vencido no entra); 404 CON `motivo: corrida_no_encontrada` si la corrida no
  * es de ese dueño y ticket. 🔴 Un 404 SIN `motivo` es un empresa viejo sin estas rutas: `version_vieja`.
  *
+ * Prueba gratuita (ronda 8, D1): `iniciar` con `modo_prueba=1` corre el mismo motor para el dueño de una prueba
+ * vigente, sin código (analizar → importar → terminada, o requiere_correccion), y si el dueño no está en una prueba
+ * vigente contesta 409 `dueno_no_en_prueba`. Sin `modo_prueba`, el dueño en prueba sigue recibiendo `dueno_no_activo`.
+ * `mostrar`/`revertir` de una corrida con `modo_prueba` pasan con la prueba vigente o con el dueño ya activo.
+ *
  * La clave X-Admin-Api-Key se exige siempre (middleware `admin.api.key:siempre` en la ruta).
  *
  * PHP 7.4: sin match, sin nullsafe, sin str_contains.
@@ -47,6 +52,7 @@ class ImportacionDeSoporteController extends Controller
             'support_ticket_id' => 'required|integer|min:1',
             'importacion_clave' => 'nullable|regex:/^[a-f0-9]{64}$/',
             'avisar_por_whatsapp' => 'nullable|in:0,1,true,false',
+            'modo_prueba' => 'nullable|in:0,1,true,false',
         ]);
         $archivo = $request->file('excel_file');
         $extension = strtolower((string) $archivo->getClientOriginalExtension());
@@ -54,16 +60,24 @@ class ImportacionDeSoporteController extends Controller
             return $this->error(422, 'archivo_invalido', 'El archivo tiene que ser un Excel (.xlsx o .xls).');
         }
         $user_id = (int) $datos['user_id'];
-        $rechazo = $this->comprobar_dueno($user_id);
-        if (!is_null($rechazo)) {
-            return $rechazo;
+        // La prueba gratuita (ronda 8, D1): mismo motor, sin código. Sin `modo_prueba`, todo como hasta hoy.
+        $modo_prueba = isset($datos['modo_prueba']) && in_array((string) $datos['modo_prueba'], ['1', 'true'], true);
+        if ($modo_prueba) {
+            if (!ImportacionDeSoporteService::habilitado($user_id, true)) {
+                return $this->error(409, 'dueno_no_en_prueba', 'La carga automática de la prueba está disponible para el dueño de una prueba vigente.');
+            }
+        } else {
+            $rechazo = $this->comprobar_dueno($user_id);
+            if (!is_null($rechazo)) {
+                return $rechazo;
+            }
         }
 
         $clave = hash('sha256', 'soporte-contactos:' . $modelo . ':'
             . (isset($datos['importacion_clave']) ? $datos['importacion_clave'] : hash_file('sha256', $archivo->getRealPath())));
         $avisar = !isset($datos['avisar_por_whatsapp']) || in_array((string) $datos['avisar_por_whatsapp'], ['1', 'true'], true);
 
-        $corrida = DB::transaction(function () use ($archivo, $extension, $datos, $user_id, $modelo, $clave, $avisar) {
+        $corrida = DB::transaction(function () use ($archivo, $extension, $datos, $user_id, $modelo, $clave, $avisar, $modo_prueba) {
             // Serializa reenvíos simultáneos del mismo adjunto.
             User::whereKey($user_id)->lockForUpdate()->firstOrFail();
             $origen = ['user_id' => $user_id, 'support_ticket_id' => (int) $datos['support_ticket_id'], 'clave' => $clave];
@@ -86,7 +100,7 @@ class ImportacionDeSoporteController extends Controller
                 'nombre' => mb_substr((string) $archivo->getClientOriginalName(), 0, 255),
                 'estado' => 'analizar',
                 'avisar_por_whatsapp' => $avisar,
-            ]);
+            ] + ($modo_prueba ? ['modo_prueba' => true] : []));
         });
 
         if ($corrida->wasRecentlyCreated) {
@@ -164,16 +178,20 @@ class ImportacionDeSoporteController extends Controller
             'user_id' => 'required|integer|min:1',
             'support_ticket_id' => 'required|integer|min:1',
         ]);
-        $rechazo = $this->comprobar_dueno((int) $datos['user_id']);
-        if (!is_null($rechazo)) {
-            return $rechazo;
-        }
+        // Primero la corrida y después la guarda, que depende de ella (ronda 8, D1): la de la prueba se puede consultar
+        // y deshacer con la prueba vigente o, ya contratado, como dueño activo; la de un activo, como siempre.
         $corrida = ImportacionDeSoporte::where('uuid', $uuid)->where('user_id', (int) $datos['user_id'])
             ->where('support_ticket_id', (int) $datos['support_ticket_id'])->first();
+        if (is_null($corrida)) {
+            return $this->error(404, 'corrida_no_encontrada', 'No se encontró esa importación para este negocio y ticket.');
+        }
+        if (!ImportacionDeSoporteService::habilitado((int) $datos['user_id'], (bool) $corrida->modo_prueba, true)) {
+            return $corrida->modo_prueba
+                ? $this->error(409, 'dueno_no_en_prueba', 'La importación de la prueba está disponible para el dueño de una prueba vigente o de un negocio activo.')
+                : $this->comprobar_dueno((int) $datos['user_id']);
+        }
 
-        return is_null($corrida)
-            ? $this->error(404, 'corrida_no_encontrada', 'No se encontró esa importación para este negocio y ticket.')
-            : $corrida;
+        return $corrida;
     }
 
     private function comprobar_dueno(int $user_id)

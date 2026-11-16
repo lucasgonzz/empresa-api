@@ -164,6 +164,7 @@ class ConfirmacionDeterministaIaHelper
             'resultado'  => $texto,
             'nota'       => ConfirmacionPorTextoIaHelper::NOTA_EJECUTADA,
         ];
+        $exito = ConfirmacionPorTextoIaHelper::con_resultado_fiscal($exito, $accion->resultado);
 
         /* El mismo `detalle` que arma traducir() para la confirmación que ganó: el aviso tiene que llegar igual. */
         $detalle = ConfirmacionPorTextoIaHelper::detalle_del_resultado($accion->resultado, (string) $accion->tipo);
@@ -247,6 +248,9 @@ class ConfirmacionDeterministaIaHelper
 
         $texto = isset($resultado['resultado']) ? trim((string) $resultado['resultado']) : '';
 
+        if (!empty($resultado['estado_fiscal'])) {
+            return $texto === '' ? 'No se pudo confirmar el resultado fiscal. Revisá la venta.' : $texto;
+        }
         return $texto === '' ? 'Listo, quedó registrado.' : 'Listo: ' . rtrim($texto, '. ') . '.';
     }
 

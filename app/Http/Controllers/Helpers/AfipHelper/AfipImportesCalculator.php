@@ -49,6 +49,9 @@ class AfipImportesCalculator
 
         if ($is_responsable_inscripto) {
             $result = $this->calculate_for_responsable_inscripto($afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva, $tolerar_alicuota_desconocida);
+            if ($this->es_consolidacion_en_emision($afip_helper)) {
+                return $this->cerrar_alicuotas_consolidadas($result);
+            }
             $ivas = $result['ivas'];
             $gravado = $result['gravado'];
             $neto_no_gravado = $result['neto_no_gravado'];
@@ -86,6 +89,69 @@ class AfipImportesCalculator
             'exento' => $exento,
             'iva' => $iva,
             'ivas' => $ivas,
+            'total' => $total,
+        ];
+    }
+
+    private function es_consolidacion_en_emision(AfipHelper $helper): bool
+    {
+        return (bool) $helper->sale->is_consolidacion_facturacion
+            && !$helper->nota_credito_model
+            && empty($helper->afip_ticket->cae)
+            && is_null($helper->afip_ticket->facturar_importe_personalizado)
+            && !$helper->factura_solo_algunos_metodos_de_pago;
+    }
+
+    /**
+     * Los renglones conservan precisión y los aportes ya redondeados de cada remito.
+     * Se redondea UNA VEZ por alícuota para que agrupar no cambie los impuestos.
+     * El total nace de los componentes: nunca se toma de sales.total para tapar
+     * una diferencia. La guarda fiscal sigue comparándolo al centavo contra la venta.
+     */
+    private function cerrar_alicuotas_consolidadas(array $result): array
+    {
+        $brutos = [];
+        foreach ($result['ivas'] as $clave => $fila) {
+            $brutos[$clave] = $fila['BaseImp'] + $fila['Importe'];
+        }
+        $brutos['exento'] = $result['exento'];
+        $brutos['no_gravado'] = $result['neto_no_gravado'];
+        $total_crudo = array_sum($brutos);
+        $componentes_crudos = $result['gravado'] + $result['iva'] + $result['exento'] + $result['neto_no_gravado'];
+        if (abs($componentes_crudos - $total_crudo) > 0.00001) {
+            throw new \InvalidArgumentException('Los renglones de la consolidación no tienen un desglose de IVA completo. Revisá sus alícuotas antes de facturar.');
+        }
+
+        $total = round($total_crudo, 2);
+        $redondeados = [];
+        $mayor = null;
+        foreach ($brutos as $clave => $bruto) {
+            $redondeados[$clave] = round($bruto, 2);
+            // Desempate por el orden fijo de alícuotas. No depende del orden de ítems.
+            if ($mayor === null || abs($bruto) > abs($brutos[$mayor])) {
+                $mayor = $clave;
+            }
+        }
+        // Sólo reparte la diferencia entre redondear cada alícuota y redondear su suma.
+        $redondeados[$mayor] = round($redondeados[$mayor] + $total - array_sum($redondeados), 2);
+
+        $gravado = 0;
+        $iva = 0;
+        foreach ($result['ivas'] as $clave => &$fila) {
+            $porcentaje = AfipImportesResolver::porcentaje_de_clave($clave);
+            $fila['BaseImp'] = round($redondeados[$clave] / (1 + $porcentaje / 100), 2);
+            $fila['Importe'] = round($redondeados[$clave] - $fila['BaseImp'], 2);
+            $gravado += $fila['BaseImp'];
+            $iva += $fila['Importe'];
+        }
+        unset($fila);
+
+        return [
+            'gravado' => round($gravado, 2),
+            'neto_no_gravado' => $redondeados['no_gravado'],
+            'exento' => $redondeados['exento'],
+            'iva' => round($iva, 2),
+            'ivas' => $result['ivas'],
             'total' => $total,
         ];
     }
@@ -462,21 +528,26 @@ class AfipImportesCalculator
      */
     private function calculate_from_sale_items(AfipHelper $afip_helper, $ivas, $gravado, $neto_no_gravado, $exento, $iva, $tolerar_alicuota_desconocida = false)
     {
+        $redondear_renglones = !$this->es_consolidacion_en_emision($afip_helper);
         foreach ($afip_helper->articles as $article) {
             $afip_helper->article = $article;
             $afip_helper->article->is_article = true;
 
-            $gravado += $afip_helper->getImporteGravado();
-            $exento += $afip_helper->getImporteIva('Exento')['BaseImp'];
-            $neto_no_gravado += $afip_helper->getImporteIva('No Gravado')['BaseImp'];
+            $exento_item = $afip_helper->getImporteIva('Exento', $redondear_renglones)['BaseImp'];
+            $no_gravado_item = $afip_helper->getImporteIva('No Gravado', $redondear_renglones)['BaseImp'];
+            $gravado += $redondear_renglones
+                ? $afip_helper->getImporteGravado()
+                : $afip_helper->getPriceWithoutIva() * $afip_helper->get_article_amount() - $exento_item - $no_gravado_item;
+            $exento += $exento_item;
+            $neto_no_gravado += $no_gravado_item;
             $iva += $afip_helper->getImporteIva();
 
-            $ivas = $this->add_iva_bucket($ivas, '27', $afip_helper->getImporteIva('27'));
-            $ivas = $this->add_iva_bucket($ivas, '21', $afip_helper->getImporteIva('21'));
-            $ivas = $this->add_iva_bucket($ivas, '10', $afip_helper->getImporteIva('10.5'));
-            $ivas = $this->add_iva_bucket($ivas, '5', $afip_helper->getImporteIva('5'));
-            $ivas = $this->add_iva_bucket($ivas, '2', $afip_helper->getImporteIva('2.5'));
-            $ivas = $this->add_iva_bucket($ivas, '0', $afip_helper->getImporteIva('0'));
+            $ivas = $this->add_iva_bucket($ivas, '27', $afip_helper->getImporteIva('27', $redondear_renglones));
+            $ivas = $this->add_iva_bucket($ivas, '21', $afip_helper->getImporteIva('21', $redondear_renglones));
+            $ivas = $this->add_iva_bucket($ivas, '10', $afip_helper->getImporteIva('10.5', $redondear_renglones));
+            $ivas = $this->add_iva_bucket($ivas, '5', $afip_helper->getImporteIva('5', $redondear_renglones));
+            $ivas = $this->add_iva_bucket($ivas, '2', $afip_helper->getImporteIva('2.5', $redondear_renglones));
+            $ivas = $this->add_iva_bucket($ivas, '0', $afip_helper->getImporteIva('0', $redondear_renglones));
         }
 
         /*
@@ -498,7 +569,7 @@ class AfipImportesCalculator
                 break;
             }
 
-            $combo_iva = $afip_helper->get_combo_iva($combo);
+            $combo_iva = $afip_helper->get_combo_iva($combo, $redondear_renglones);
             $ivas = $this->add_iva_bucket($ivas, '21', $combo_iva);
             $gravado += $combo_iva['BaseImp'];
             $iva += $combo_iva['Importe'];
@@ -508,7 +579,7 @@ class AfipImportesCalculator
             $afip_helper->article = $service;
             $afip_helper->article->is_service = true;
 
-            $service_iva = $afip_helper->get_combo_iva($service);
+            $service_iva = $afip_helper->get_combo_iva($service, $redondear_renglones);
             $ivas = $this->add_iva_bucket($ivas, '21', $service_iva);
             $gravado += $service_iva['BaseImp'];
             $iva += $service_iva['Importe'];
@@ -520,7 +591,7 @@ class AfipImportesCalculator
             }
 
             Log::info('Pidiendo iva de ' . $promo->name);
-            $promo_iva = $afip_helper->get_combo_iva($promo);
+            $promo_iva = $afip_helper->get_combo_iva($promo, $redondear_renglones);
             Log::info($promo_iva);
 
             $ivas = $this->add_iva_bucket($ivas, '21', $promo_iva);

@@ -23,6 +23,10 @@ class AfipHelper extends Controller {
 
     function __construct($afip_ticket, $articles = null, $services = null, $user = null, $sale = null, $descriptions = [], $nota_credito_model = null) {
 
+        if ($afip_ticket->relationLoaded('dueno_fiscal_confirmado')) {
+            $user = $afip_ticket->getRelation('dueno_fiscal_confirmado');
+        }
+
         if (is_null($user)) {
            $this->user = $this->user();
         } else {
@@ -59,8 +63,9 @@ class AfipHelper extends Controller {
     }
 
     function set_afip_selected_payment_methods() {
-        $models = AfipSelectedPaymentMethod::where('user_id', $this->user->id)
-                                            ->get();
+        $models = $this->afip_ticket->relationLoaded('metodos_fiscales_confirmados')
+            ? $this->afip_ticket->getRelation('metodos_fiscales_confirmados')
+            : AfipSelectedPaymentMethod::where('user_id', $this->user->id)->get();
         if (count($models) >= 1) {
             
             $this->factura_solo_algunos_metodos_de_pago = true;
@@ -93,16 +98,16 @@ class AfipHelper extends Controller {
         return $importes_calculator->calculate($this, $tolerar_alicuota_desconocida);
     }
 
-    function get_combo_iva($combo) {
-        return $this->get_item_calculator()->get_combo_iva($combo);
+    function get_combo_iva($combo, $redondear = true) {
+        return $this->get_item_calculator()->get_combo_iva($combo, $redondear);
     }
 
     function get_description_iva($description, $iva) {
         return $this->get_item_calculator()->get_description_iva($description, $iva);
     }
 
-    function getImporteIva($iva = null) {
-        return $this->get_item_calculator()->get_importe_iva($iva);
+    function getImporteIva($iva = null, $redondear = true) {
+        return $this->get_item_calculator()->get_importe_iva($iva, $redondear);
     }
 
 

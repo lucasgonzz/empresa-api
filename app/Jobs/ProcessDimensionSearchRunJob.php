@@ -188,15 +188,19 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
             return;
         }
 
+        // Una corrida de fichas del fabricante no usa Serper ni la IA (misión medidas-masquito-fichas): no se frena
+        // por sus claves ni por el tope de búsquedas de una demo.
+        $de_fichas = (string) $run->proveedor === DimensionSearchRun::PROVEEDOR_FICHAS;
+
         // Le sacaron la clave de Serper con la corrida en marcha: no tiene sentido recorrer los artículos
         // fallando uno por uno. Se frena y se puede reanudar cuando vuelva la clave.
-        if (!ImageSearchProviderFactory::serper_configurado($owner)) {
+        if (!$de_fichas && !ImageSearchProviderFactory::serper_configurado($owner)) {
             DimensionSearchRunHelper::terminar($run, DimensionSearchRun::STATUS_FALLIDA, 'Se quitó la clave de Serper (no está ni la del comercio ni SERPER_API_KEY en el servidor) y la corrida no puede seguir. Cuando esté cargada de nuevo, se puede reanudar.');
 
             return;
         }
 
-        $ia = DimensionSearchRunHelper::ia_disponible($owner);
+        $ia = $de_fichas ? ['configurada' => true, 'motivo' => null] : DimensionSearchRunHelper::ia_disponible($owner);
 
         if (!$ia['configurada']) {
             DimensionSearchRunHelper::terminar($run, DimensionSearchRun::STATUS_FALLIDA, $ia['motivo'].' Sin la IA, la búsqueda no sigue (no hay quién lea las páginas); cuando esté configurada, se puede reanudar.');
@@ -251,7 +255,7 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
             }
 
             // En una demo, con las búsquedas agotadas se corta la corrida, con el motivo de la demo.
-            if (TopeSerperDemo::agotado($run->user_id)) {
+            if (!$de_fichas && TopeSerperDemo::agotado($run->user_id)) {
                 $this->cortar_por_tope_demo($run);
 
                 return;
@@ -310,8 +314,9 @@ class ProcessDimensionSearchRunJob implements ShouldQueue
                 return;
             }
 
-            // Un artículo que no intentó ninguna búsqueda (borrado, ya tenía medidas) no dice nada del proveedor.
-            if ((int) $resultado['busquedas_intentadas'] > 0
+            // Un artículo que no intentó ninguna búsqueda (borrado, ya tenía medidas) no dice nada del proveedor. En una
+            // corrida de fichas cuentan las fichas que se intentaron bajar (`fichas_intentadas`).
+            if (((int) $resultado['busquedas_intentadas'] > 0 || (isset($resultado['fichas_intentadas']) && (int) $resultado['fichas_intentadas'] > 0))
                 && $this->contar_error_de_proveedor($run, (bool) $resultado['error_de_proveedor']) >= self::MAX_ARTICULOS_SEGUIDOS_CON_ERROR_DE_PROVEEDOR) {
                 $ultimo_error = $this->ultimo_error_del_diagnostico($item->fresh());
 
