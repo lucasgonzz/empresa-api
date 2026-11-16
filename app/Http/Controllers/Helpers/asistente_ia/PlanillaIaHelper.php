@@ -2497,6 +2497,15 @@ class PlanillaIaHelper
 
             $antes = isset($definiciones[$clave]) ? (string) $definiciones[$clave] : null;
 
+            if ($clave === 'caja' && $valor !== '' && !empty($definiciones['caja_pendiente_de_elegir'])) {
+                $rechazo = self::validar_caja_que_levanta_veto($contexto, $planilla, $definiciones, $valor,
+                    $ultimo, Anclas::anterior_del_asistente($contexto, $assistant_message));
+                if (!is_null($rechazo)) {
+                    return $rechazo;
+                }
+                unset($definiciones['caja_pendiente_de_elegir']);
+            }
+
             if ($valor === '' || $antes === $valor) {
                 continue;
             }
@@ -4061,7 +4070,7 @@ class PlanillaIaHelper
             }
         }
 
-        $cobro = self::definiciones_de_cobro($contexto, $planilla, $faltan, $opciones);
+        $cobro = self::definiciones_de_cobro($contexto, $planilla, $faltan, $opciones, $mensaje);
 
         if (RespuestaDeCargaIa::es_negativa($cobro)) {
 
@@ -4243,6 +4252,219 @@ class PlanillaIaHelper
         return null;
     }
 
+
+    /**
+     * Una nominación de caja pertenece al mensaje vigente, no a una elección del modelo ni a
+     * una afirmación vieja. Las opciones son las mismas ofrecibles del circuito de venta.
+     * Revocar o poner en duda una caja deja un bloqueo persistente: «seguí» no la resucita.
+     */
+    protected static function consumir_caja_explicita(ContextoDeCargaIa $contexto, AiPlanilla $planilla, AiMessage $mensaje)
+    {
+        $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
+        $texto = Anclas::ultimo_mensaje($contexto, $mensaje);
+        $pregunta = Anclas::anterior_del_asistente($contexto, $mensaje);
+        $candidatas = self::candidatas_de_caja($contexto, $definiciones);
+        $acto = self::acto_de_caja($texto, $pregunta, $candidatas, (string) $planilla->metodo_de_pago);
+        // La disponibilidad no desambigua una instrucción plural: primero debe haber una sola
+        // nominación afirmada y recién después se comprueba si esa caja se puede ofrecer.
+        if (count($acto['afirmadas']) === 1) {
+            $id = $acto['afirmadas'][0];
+            if (!empty($candidatas[$id]['ofrecible'])) {
+                $definida = self::definir($contexto, $mensaje, ['caja' => $candidatas[$id]['nombre']]);
+                if (RespuestaDeCargaIa::es_negativa($definida)) {
+                    return $definida;
+                }
+                $planilla->refresh();
+                $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
+                if (isset($definiciones['caja_pendiente_de_elegir'])) {
+                    unset($definiciones['caja_pendiente_de_elegir']);
+                    $planilla->definiciones = $definiciones;
+                    $planilla->save();
+                    self::reemplazar_tarjetas_de($planilla);
+                }
+                return null;
+            }
+        }
+        if ($acto['mencion_no_autorizante'] || count($acto['afirmadas']) > 0) {
+            unset($definiciones['caja']);
+            $definiciones['caja_pendiente_de_elegir'] = true;
+            $planilla->definiciones = $definiciones;
+            if ($planilla->isDirty()) {
+                $planilla->save();
+                self::reemplazar_tarjetas_de($planilla);
+            }
+            return RespuestaDeCargaIa::faltan(['qué caja elegís para el cobro; no tomé una negación, cita o duda como elección']);
+        }
+        return null;
+    }
+
+    /** Mismas opciones propias y ofrecibles para la nominación y para levantar un veto. */
+    protected static function candidatas_de_caja(ContextoDeCargaIa $contexto, array $definiciones): array
+    {
+        $calles = OpcionesDeCargaIaHelper::calles_de_sucursales($contexto->owner_id);
+        $candidatas = [];
+        $todas = OpcionesDeCargaIaHelper::cajas_de_la_cuenta($contexto->owner_id);
+        $ofrecibles = [];
+        foreach (OpcionesDeCargaIaHelper::cajas_ofrecibles($contexto, 1, $todas) as $caja) {
+            $ofrecibles[(int) $caja->id] = true;
+        }
+        foreach ($todas as $caja) {
+            $candidatas[(int) $caja->id] = [
+                'nombre' => OpcionesDeCargaIaHelper::nombre_de_caja($caja, $calles),
+                'alias' => [(string) $caja->name, OpcionesDeCargaIaHelper::nombre_de_caja($caja, $calles)],
+                'ofrecible' => isset($ofrecibles[(int) $caja->id]),
+            ];
+        }
+        $guardada = isset($definiciones['caja']) ? (string) $definiciones['caja'] : '';
+        if ($guardada !== '') {
+            $ya_incluida = false;
+            foreach ($candidatas as $candidata) {
+                $ya_incluida = $ya_incluida || in_array($guardada, $candidata['alias'], true);
+            }
+            if (!$ya_incluida) {
+                $candidatas[-1] = ['nombre' => $guardada, 'alias' => [$guardada], 'ofrecible' => false];
+            }
+        }
+        return $candidatas;
+    }
+
+    /** Levantar un veto exige una elección nueva del dueño y la misma validación del cobro. */
+    protected static function validar_caja_que_levanta_veto(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array $definiciones, $valor, $ultimo, $pregunta)
+    {
+        $candidatas = self::candidatas_de_caja($contexto, $definiciones);
+        $acto = self::acto_de_caja($ultimo, $pregunta, $candidatas, (string) $planilla->metodo_de_pago);
+        $id = count($acto['afirmadas']) === 1 ? $acto['afirmadas'][0] : null;
+        $coincide = false;
+        if (!is_null($id) && !empty($candidatas[$id]['ofrecible'])) {
+            $normal = RolesDePlanillaIaHelper::normalizar_texto($valor);
+            foreach ($candidatas[$id]['alias'] as $alias) {
+                $coincide = $coincide || $normal === RolesDePlanillaIaHelper::normalizar_texto($alias);
+            }
+        }
+        if (!$coincide || $planilla->cobro !== PropuestaVentaIaHelper::COBRO_CONTADO) {
+            return RespuestaDeCargaIa::faltan(['una nueva elección de caja, afirmada y unívoca, que puedas usar para el cobro']);
+        }
+        $faltan = [];
+        $opciones = [];
+        $metodo = PropuestaVentaIaHelper::resolver_metodo_de_pago((string) $planilla->metodo_de_pago, $faltan, $opciones);
+        if (RespuestaDeCargaIa::es_negativa($metodo)) {
+            return $metodo;
+        }
+        if (count($faltan)) {
+            return RespuestaDeCargaIa::faltan($faltan, $opciones);
+        }
+        $caja = PropuestaVentaIaHelper::resolver_caja($contexto, $metodo, $candidatas[$id]['nombre'], $faltan, $opciones);
+        if (RespuestaDeCargaIa::es_negativa($caja)) {
+            return $caja;
+        }
+        if (is_null($caja) || (int) $caja->id !== (int) $id || count($faltan)) {
+            return RespuestaDeCargaIa::faltan(['una caja válida para el cobro'], $opciones);
+        }
+        return null;
+    }
+
+    /** Clasifica exclusivamente nombres de cajas del servidor; conserva los signos hasta separar actos. */
+    protected static function acto_de_caja($texto, $pregunta, array $candidatas, $medio_resuelto = ''): array
+    {
+        $crudo = RolesDePlanillaIaHelper::normalizar_texto($texto);
+        $nombres = [];
+        foreach ($candidatas as $id => $candidata) {
+            foreach ($candidata['alias'] as $alias) {
+                $nombres[$id][] = RolesDePlanillaIaHelper::normalizar_texto($alias);
+            }
+        }
+        $citas = false;
+        $crudo = (string) preg_replace_callback('/«[^»]*(?:»|$)|“[^”]*(?:”|$)|"[^"]*(?:"|$)|\'[^\']*(?:\'|$)/u', function ($m) use ($nombres, &$citas) {
+            $interior = trim($m[0], "«»“”\"'");
+            foreach ($nombres as $alias) {
+                if (in_array($interior, $alias, true)) {
+                    return $interior; // Comillas de un nombre, no una orden ajena.
+                }
+            }
+            foreach ($nombres as $alias) {
+                foreach ($alias as $nombre) {
+                    if ($nombre !== '' && mb_strpos($m[0], $nombre) !== false) {
+                        $citas = true;
+                        return ' ';
+                    }
+                }
+            }
+            return $m[0];
+        }, $crudo);
+        $marco_vetado = (bool) preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido)\s+que\s+)?(?:hagas|ejecutes|sigas|apliques)\s+(?:lo siguiente|esto|esta orden|este pedido)\b/u', $crudo);
+        // Un medio YA resuelto no es una segunda caja. Sólo se quita su mención literal
+        // precedida por en/con del control de destinos; no se modifica el texto de los actos.
+        $para_destinos = $crudo;
+        $medio = RolesDePlanillaIaHelper::normalizar_texto($medio_resuelto);
+        $medio_tambien_es_caja = false;
+        foreach ($nombres as $alias) {
+            $medio_tambien_es_caja = $medio_tambien_es_caja || in_array($medio, $alias, true);
+        }
+        if ($medio !== '' && !$medio_tambien_es_caja) {
+            $para_destinos = (string) preg_replace('/\b(?:en|con)\s+' . preg_quote($medio, '/') . '(?=\s*(?:(?:y|o)\b|[.;,\n]|$))/u', ' __MEDIO_RESUELTO__ ', $para_destinos);
+        }
+        // Detectar destinos coordinados no requiere descubrir el nombre de una caja ajena.
+        $destinos_multiples = (bool) preg_match('/\b(?:cobr[a-z]*|pag[a-z]*)\b[^.;\n]*\b(?:en|a)\b[^.;\n]*\b(?:y|o)\s+(?:tambien\s+)?(?:en|a)\b/u', $para_destinos);
+        // La segunda coordinación explicita una elección pendiente: su operando puede estar
+        // delimitado o incompleto. Sin caja propia afirmada no se convierte en ausencia.
+        $destino_tras_medio = (bool) preg_match('/__MEDIO_RESUELTO__\s+(?:y|o)\s+(?:tambien\s+)?(?:en|a)\b/u', $para_destinos);
+        $pregunto_caja = preg_match('/[?¿]/u', (string) $pregunta) && preg_match('/\bcaja\b/u', RolesDePlanillaIaHelper::normalizar_texto($pregunta));
+        $afirmadas = [];
+        $no_autorizante = $citas;
+        foreach ($nombres as $id => $alias) {
+            $afirma = false;
+            $veta = false;
+            foreach (array_unique($alias) as $nombre) {
+                if ($nombre === '') {
+                    continue;
+                }
+                $patron = '/(?<![\pL\pN])' . preg_quote($nombre, '/') . '(?![\pL\pN])/u';
+                if (!preg_match($patron, $crudo)) {
+                    continue;
+                }
+                $con_marca = (string) preg_replace($patron, ' __CAJA__ ', $crudo);
+                $partes = preg_split('/[.;,\n]+/u', $con_marca);
+                foreach ($partes as $indice => $parte) {
+                    if (strpos($parte, '__CAJA__') === false) {
+                        continue;
+                    }
+                    $normal = trim((string) preg_replace('/\s+/u', ' ', $parte));
+                    $prefijo = explode('__CAJA__', $normal, 2)[0];
+                    $siguiente = isset($partes[$indice + 1]) ? trim($partes[$indice + 1]) : '';
+                    // Una duda pospuesta sobre esta elección sigue perteneciendo al mismo acto.
+                    // No alcanza una duda acerca de otro dato, como el cliente o el artículo.
+                    $duda_pospuesta = preg_match('/^(?:pero\s+)?(?:no estoy segur[oa]|tengo dudas)(?:\s+(?:todavia|aun))?$/u', $siguiente)
+                        || preg_match('/^(?:pero\s+)?(?:no estoy segur[oa]|tengo dudas)\b.*\b(?:esa|esta|la)\s+caja\b/u', $siguiente);
+                    $duda = $marco_vetado || $destinos_multiples || preg_match('/[?¿]/u', $parte)
+                        || $duda_pospuesta
+                        || preg_match('/\b(?:quizas|tal vez|supongamos|hipotesis|hipoteticamente|por ejemplo|como ejemplo|no se|no estoy segur[oa]|no creo que|no confirmo que|me dijeron|dijo que)\b/u', $normal)
+                        || preg_match('/\bsi\b/u', $prefijo) || preg_match('/\bo\b/u', $normal);
+                    $niega = preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido|dije|afirme|deseo|necesito)\s+que\s+)?(?:(?:la caja|el cobro)\s+)?(?:(?:se|la|lo)\s+)?(?:uses|use|utilices|elijas|cobres|cobre|cobren|pagues|pague|sea|es|va|vaya|sera)\b/u', $prefijo)
+                        || preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido|dije|afirme|deseo|necesito)\s+(?:que\s+)?)?(?:(?:se|la|lo)\s+)?(?:cobr[a-z]*|pag[a-z]*)\b/u', $prefijo)
+                        || preg_match('/\b(?:no|nunca|tampoco)\s+(?:quiero|uso|elijo|acepto|prefiero)\b/u', $prefijo)
+                        || preg_match('/\b(?:no|nunca|tampoco)\s+(?:la\s+)?$/u', $prefijo);
+                    $campo = preg_match('/\bcaja\s+(?:(?:elegida|indicada|del cobro)\s+)?(?:(?:es|sera|va a ser)\s+|[:=]\s*)?__CAJA__/u', $normal);
+                    $cobro = preg_match('/\b(?:cobr[a-z]*|pag[a-z]*)\b/u', $normal)
+                        && preg_match('/\b(?:en|a|con|usando|usa|utiliza|elegi)\s+(?:la\s+)?__CAJA__/u', $normal);
+                    $respuesta = $pregunto_caja && preg_match('/^(?:la\s+)?__CAJA__$/u', $normal);
+                    if ($duda || $niega) {
+                        $veta = true;
+                        $no_autorizante = true;
+                    } elseif ($campo || $cobro || $respuesta) {
+                        $afirma = true;
+                    }
+                }
+            }
+            if ($afirma && !$veta) {
+                $afirmadas[] = $id;
+            }
+        }
+        $campo_sin_nombre_elegible = preg_match('/\bcaja\s+(?:es|elegida|indicada|del cobro)\b|\b(?:en|a|usando|usa|utiliza)\s+(?:la\s+)?caja\b/u', $crudo);
+        $duda_de_la_eleccion = preg_match('/\b(?:no estoy segur[oa]|tengo dudas|todavia no elegi)\b[^.;\n]*\bcaja\b/u', $crudo)
+            || preg_match('/\b(?:no|nunca|tampoco)\s+(?:uses|utilices|elijas)\s+(?:esa|esta|la)\s+caja\b/u', $crudo);
+        return ['afirmadas' => $afirmadas, 'mencion_no_autorizante' => count($afirmadas) ? false : ($no_autorizante || $campo_sin_nombre_elegible || $duda_de_la_eleccion || $destino_tras_medio)];
+    }
+
     /**
      * El cobro de las ventas, resuelto con los mismos métodos con los que lo resuelve una venta suelta. Lo que
      * falta se suma a $faltan. Devuelve la respuesta negativa si algo de lo que se dijo no existe.
@@ -4253,7 +4475,7 @@ class PlanillaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return array  ['cobro', 'metodo', 'caja', 'sucursal', 'tipo_de_venta'] o la respuesta negativa.
      */
-    public static function definiciones_de_cobro(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array &$faltan, array &$opciones): array
+    public static function definiciones_de_cobro(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array &$faltan, array &$opciones, AiMessage $mensaje = null): array
     {
         $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
 
@@ -4280,6 +4502,17 @@ class PlanillaIaHelper
             if (RespuestaDeCargaIa::es_negativa($metodo)) {
 
                 return $metodo;
+            }
+
+            if (!is_null($mensaje)) {
+                $de_la_caja = self::consumir_caja_explicita($contexto, $planilla, $mensaje);
+                if (RespuestaDeCargaIa::es_negativa($de_la_caja)) {
+                    return $de_la_caja;
+                }
+                $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
+            }
+            if (!empty($definiciones['caja_pendiente_de_elegir'])) {
+                return RespuestaDeCargaIa::faltan(['qué caja elegís para el cobro; la anterior no quedó autorizada']);
             }
 
             $caja = PropuestaVentaIaHelper::resolver_caja($contexto, $metodo, isset($definiciones['caja']) ? (string) $definiciones['caja'] : '', $faltan, $opciones);
