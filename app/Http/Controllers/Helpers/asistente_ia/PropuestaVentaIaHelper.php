@@ -1476,6 +1476,24 @@ class PropuestaVentaIaHelper
 
             if (isset($renglones[$id])) {
 
+                /*
+                 * Revisión independiente (16/11/2026, M6-descuento): el mismo artículo dos veces con
+                 * descuentos DISTINTOS no se funde (un renglón se quedaría con el descuento del otro y el
+                 * total cambiaría sin que nadie lo diga), ni se arma en dos renglones del mismo artículo
+                 * (Vender no lo hace). Se pregunta.
+                 */
+                $descuento_anterior = isset($renglones[$id]['descuento']) ? (float) $renglones[$id]['descuento'] : 0.0;
+                $descuento_nuevo = is_null($descuento_del_renglon) ? 0.0 : (float) $descuento_del_renglon;
+
+                if ($con_descuento_por_renglon && abs($descuento_anterior - $descuento_nuevo) > 0.004) {
+
+                    return RespuestaDeCargaIa::error(
+                        $article->name . ' está dos veces en la venta con descuentos distintos (' . self::porcentaje($descuento_anterior) . ' % y '
+                            . self::porcentaje($descuento_nuevo) . ' %). Un artículo va en un solo renglón con un solo descuento: '
+                            . 'preguntá cuál va (o si son dos ventas) y volvé a pedirla con un renglón.'
+                    );
+                }
+
                 $renglones[$id]['cantidad'] = round($renglones[$id]['cantidad'] + $cantidad, 2);
 
                 if (!is_null($precio_dictado)) {
@@ -1484,11 +1502,7 @@ class PropuestaVentaIaHelper
                     $renglones[$id]['origen'] = $origen;
                 }
 
-                // M6-descuento: dos renglones del mismo artículo se funden; el descuento dicho después manda.
-                if (!is_null($descuento_del_renglon)) {
-                    $renglones[$id]['descuento'] = $descuento_del_renglon;
-                }
-
+                // M6-descuento: acá los dos renglones tienen el mismo descuento (lo distinto cortó arriba), así que se funden.
                 continue;
             }
 

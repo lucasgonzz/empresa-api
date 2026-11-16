@@ -230,6 +230,45 @@ class T152_Descuento_por_renglon_en_la_venta_Test extends EmpresaTestCase
     }
 
     /**
+     * Revisión independiente: el mismo artículo dos veces con descuentos distintos no se funde (se pregunta);
+     * con el mismo descuento sí se funde y el total lo respeta.
+     *
+     * @test
+     */
+    public function el_mismo_articulo_con_descuentos_distintos_no_se_funde()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+
+        list($conversation, $assistant) = $this->conversacion($this->dueno);
+
+        $input = $this->input();
+        $input['items'] = [
+            ['articulo_id' => $this->martillo->id, 'cantidad' => 2, 'descuento_porcentaje' => 15],
+            ['articulo_id' => $this->martillo->id, 'cantidad' => 1],
+        ];
+
+        $respuesta = PropuestaVentaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, $input);
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertStringContainsString('descuentos distintos', json_encode($respuesta, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(0, AiMessageAction::where('ai_message_id', $assistant->id)->count());
+
+        $input['items'][1]['descuento_porcentaje'] = 15;
+
+        $igual = PropuestaVentaIaHelper::proponer(ContextoDeCargaIa::de_la_conversacion($conversation), $assistant, $input);
+
+        $this->assertTrue(!empty($igual['ok']), json_encode($igual));
+
+        $resumen = AiMessageAction::findOrFail($igual['tarjeta_id'])->datos['resumen'];
+        $precio = round(2000 - 2000 * TestingFerreteriaSeeder::DESCUENTO_EFECTIVO / 100, 2);
+
+        $this->assertCount(1, $resumen['articulos']);
+        $this->assertEquals(3.0, $resumen['articulos'][0]['cantidad']);
+        $this->assertEquals($this->total_de_vender([[$precio, 3, 15]]), $resumen['total']);
+    }
+
+    /**
      * Un descuento fuera de rango es un error; 0 es sin descuento.
      *
      * @test
