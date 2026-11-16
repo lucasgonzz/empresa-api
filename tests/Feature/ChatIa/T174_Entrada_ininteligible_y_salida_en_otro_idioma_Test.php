@@ -286,5 +286,13 @@ class T174_Entrada_ininteligible_y_salida_en_otro_idioma_Test extends EmpresaTes
         $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('Stock de Let\'s Go Naranja 1L: 12 u.'));
         $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('El Sabão Ypê quedó a $1.500.'));
         $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles("Encontré:\n1. I Will Survive (DVD): 3 u."));
+        // Revisión B1: nombres entre comillas, marcas con mayúscula y productos largos en inglés, adentro de español.
+        $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('Te queda 1 caja del Cabernet "Até o fim" a $12.000.'));
+        $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('Las Tenis Não Pare quedaron a $45.000.'));
+        $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('El proveedor es la marca Isso Store.'));
+        $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('Te recomiendo el Monitor LG 24" for gaming with HDMI and the stand, a $300.000.'));
+        $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles("Encontré esto:\nMonitor LG 24\" for gaming with HDMI and the stand: $300.000"));
+        $this->assertFalse(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('El vino «Você e eu» quedó a $9.000.'));
+        $this->assertTrue(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('Você vendeu muito hoje, não tem estoque.'));
     }
 }

@@ -117,9 +117,10 @@ class TextoFinalIaHelper
      *
      * Se mira renglón por renglón y 🔴 NUNCA un renglón de lista: ahí están los nombres de los productos, que
      * pueden estar en otro idioma («Pão de queijo», «Let's Go Naranja»). En el resto:
-     *   - portugués: alguna palabra de PALABRAS_PORTUGUESAS, o una palabra en minúscula que termina en
+     *   (antes se saca lo que está entre comillas: son nombres)
+     *   - portugués: alguna palabra de PALABRAS_PORTUGUESAS escrita en minúscula, o una palabra en minúscula que termina en
      *     «ção», «ções», «ões» o «ão» (los nombres propios van con mayúscula y se dejan);
-     *   - inglés: cuatro o más palabras de PALABRAS_INGLESAS, ninguna palabra funcional del castellano y ningún
+     *   - inglés: cuatro o más palabras de PALABRAS_INGLESAS (y la mitad o más del renglón), ninguna palabra funcional del castellano y ningún
      *     carácter con tilde, ñ, ¿ ni ¡.
      * Un falso positivo cuesta una llamada más al modelo (el reintento pide la misma respuesta en español);
      * el texto nunca se descarta por esto.
@@ -136,25 +137,38 @@ class TextoFinalIaHelper
                 continue;
             }
 
-            $minusculas = ' ' . preg_replace('/[^\p{L}\p{N}]+/u', ' ', mb_strtolower($renglon)) . ' ';
+            /*
+             * Revisión de la rama C (B1): lo que está ENTRE COMILLAS es un nombre (un vino «Até o fim», un modelo
+             * "for gaming"), no la voz del asistente: se saca antes de mirar.
+             */
+            $renglon = self::sin_lo_citado($renglon);
+
+            // Las palabras portuguesas, solo EN MINÚSCULA en el texto original: «Tenis Não Pare» o «Isso Store» son marcas.
+            $palabras = ' ' . preg_replace('/[^\p{L}\p{N}]+/u', ' ', $renglon) . ' ';
 
             foreach (self::PALABRAS_PORTUGUESAS as $palabra) {
 
-                if (mb_strpos($minusculas, ' ' . $palabra . ' ') !== false) {
+                if (mb_strpos($palabras, ' ' . $palabra . ' ') !== false) {
 
                     return true;
                 }
             }
 
-            // Una palabra en minúscula (en el renglón ORIGINAL) con terminación portuguesa.
+            // Una palabra en minúscula con terminación portuguesa.
             if (preg_match('/(?<![\p{L}])\p{Ll}+(ção|ções|ões|ão)(?![\p{L}])/u', $renglon)) {
 
                 return true;
             }
 
+            /*
+             * Inglés: cuatro o más palabras funcionales inglesas que además sean la MITAD o más de las palabras del
+             * renglón (números incluidos), sin ninguna palabra funcional del castellano ni tildes. Un nombre de
+             * producto largo en inglés («Monitor LG 24 for gaming with HDMI and the stand: $300.000») no llega.
+             */
+            $todas = preg_split('/\s+/u', trim(mb_strtolower($palabras))) ?: [];
             $inglesas = 0;
 
-            foreach (preg_split('/\s+/u', trim($minusculas)) ?: [] as $palabra) {
+            foreach ($todas as $palabra) {
 
                 if (in_array($palabra, self::PALABRAS_INGLESAS, true)) {
 
@@ -163,6 +177,7 @@ class TextoFinalIaHelper
             }
 
             if ($inglesas >= 4
+                && $inglesas * 2 >= count($todas)
                 && self::palabras_espanolas($renglon) === 0
                 && !preg_match('/[áéíóúüñÁÉÍÓÚÜÑ¿¡]/u', $renglon)) {
 
@@ -171,6 +186,18 @@ class TextoFinalIaHelper
         }
 
         return false;
+    }
+
+    /**
+     * El renglón sin lo que está entre comillas ("…", «…», “…”), que son nombres y no prosa del asistente
+     * (revisión de la rama C, B1). Una comilla suelta (las pulgadas de «24"») no se toca.
+     *
+     * @param  string  $renglon
+     * @return string
+     */
+    protected static function sin_lo_citado($renglon)
+    {
+        return (string) preg_replace(['/"[^"\r\n]*"/u', '/«[^»\r\n]*»/u', '/“[^”\r\n]*”/u'], ' ', (string) $renglon);
     }
 
     /**
