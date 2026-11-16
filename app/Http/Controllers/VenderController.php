@@ -71,6 +71,11 @@ class VenderController extends Controller
         // Id de la variante encontrada por codigo de barra (caso 1: codigo de variante)
         $variant_id = null;
 
+        // Si, como ultimo recurso, se puede buscar el codigo propio del duenio (SKU). Solo en el modo
+        // de siempre (codigo de barras): con numero interno o con codigo de proveedor el campo de
+        // Vender lee otra cosa y no se le cambia nada. Ver articulo_por_sku_exacto().
+        $buscar_por_sku = false;
+
         // Caso 1: el codigo escaneado es de una variante disponible del comercio (su bar_code o, con
         // numero interno, '0' + id). Se identifica ANTES que cualquier articulo, porque el codigo de
         // una variante manda sobre el de los articulos. El guardado de la variante impide repetir un
@@ -113,6 +118,7 @@ class VenderController extends Controller
         } else {
 
             $article = $article->where('bar_code', $code);
+            $buscar_por_sku = true;
         }
 
         // withAllSinAcopio: las mismas 27 relaciones menos sales_with_deliveries_in_acopio, que es la
@@ -203,6 +209,18 @@ class VenderController extends Controller
             }
         }
 
+        /*
+         * Código propio del dueño (SKU), ronda 5 de la prueba (14/11/2026): desde la 4.3.58 la carga
+         * asistida guarda el código del dueño en `articles.sku`, y tipear «104» + Enter en «Cod barras»
+         * daba «No se encontro articulo». Es lo ÚLTIMO que se intenta, después de la variante, del
+         * código de barras y de los tickets de balanza: solo cambia un código que hasta hoy no
+         * encontraba nada. Con un artículo por SKU se sigue por el mismo camino que uno por código
+         * de barras (selector si tiene variantes, artículo suelto si no).
+         */
+        if (!$article && $buscar_por_sku) {
+            $article = $this->articulo_por_sku_exacto($code, $user_id);
+        }
+
         $this->fin($code, $inicio, $article);
 
         // Capa 3 (Prompt 263, hotfix Prompt 313): `precios_por_metodo_pago` es un accessor del
@@ -286,6 +304,52 @@ class VenderController extends Controller
 
         // Caso 2: articulo sin variantes disponibles -> agregar directo (comportamiento previo)
         return response()->json(['article' => $article, 'has_variants' => false], 200);
+    }
+
+    /**
+     * El artículo ACTIVO del dueño cuyo SKU (su código propio) es exactamente `$code`, o null.
+     *
+     * Reglas (ronda 5 de la prueba, 14/11/2026):
+     *  - Comparación EXACTA tras `trim`, sin LIKE: «10» no encuentra «104».
+     *  - SIN distinguir mayúsculas: «f-101» encuentra «F-101». El dueño tipea su código como le sale
+     *    en el mostrador, y el Listado y el buscador de Vender ya lo encuentran así. La columna es
+     *    utf8mb4_unicode_ci, así que la base además iguala acentos y espacios finales: por eso la
+     *    consulta solo trae candidatos (por el índice `articles_user_sku_index`) y la igualdad real
+     *    se decide acá, en PHP, con la misma regla que usa Vender sin conexión (minúsculas + trim).
+     *  - Si hay más de un artículo con ese SKU, NO se elige ninguno ("no encontrado", como hoy):
+     *    agregar uno al azar a la venta sería peor que el aviso.
+     *  - Solo activos (`status = active`) y no borrados (SoftDeletes): uno dado de baja no se vende
+     *    por su código propio.
+     *
+     * @param  string $code    Lo tipeado en «Cod barras» (la SPA ya le sacó los espacios).
+     * @param  int    $user_id Dueño de los artículos.
+     * @return \App\Models\Article|null
+     */
+    private function articulo_por_sku_exacto($code, $user_id)
+    {
+        $buscado = mb_strtolower(trim((string) $code));
+
+        if ($buscado === '') {
+            return null;
+        }
+
+        $candidatos = Article::where('user_id', $user_id)
+                            ->where('sku', trim((string) $code))
+                            ->where('status', 'active')
+                            ->get(['id', 'sku']);
+
+        $ids = [];
+        foreach ($candidatos as $candidato) {
+            if (mb_strtolower(trim((string) $candidato->sku)) === $buscado) {
+                $ids[] = $candidato->id;
+            }
+        }
+
+        if (count($ids) !== 1) {
+            return null;
+        }
+
+        return Article::where('id', $ids[0])->withAllSinAcopio()->first();
     }
 
     function fin($code, $inicio, $article) {

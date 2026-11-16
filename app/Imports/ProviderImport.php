@@ -87,6 +87,16 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     private $saldos_ilegibles = [];
 
     /**
+     * Ver descartando_filas_que_no_son_contactos() y filas_que_no_son_contactos().
+     *
+     * @var bool
+     */
+    private $descartar_filas_que_no_son_contactos = false;
+
+    /** @var array */
+    private $filas_que_no_son_contactos = [];
+
+    /**
      * Propiedades que esta fila vacia a proposito, como set [prop_key => true].
      *
      * Existe SOLO para isDataUpdated(): esa funcion pregunta por isset(), y isset() sobre
@@ -164,6 +174,30 @@ class ProviderImport implements ToCollection, WithMultipleSheets
     }
 
     /**
+     * En la prueba gratuita, las filas que no son proveedores (el total, un subtotal, un título decorado: ver
+     * LocalImportHelper::fila_que_no_es_un_contacto()) se dejan afuera y se nombran en el aviso (misión
+     * prueba-e2e-campana-imperio, ronda 6, E8.1). Encadenable, como con_equivalencias() y por lo mismo: la
+     * firma del constructor está congelada. Sin llamarlo (AdminSync, un negocio que paga) entra todo como siempre.
+     *
+     * @param  bool $descartar
+     * @return $this
+     */
+    public function descartando_filas_que_no_son_contactos($descartar = true) {
+        $this->descartar_filas_que_no_son_contactos = (bool) $descartar;
+
+        return $this;
+    }
+
+    /**
+     * Las filas que se dejaron afuera por no ser proveedores: [['fila' => int, 'nombre' => string], ...].
+     *
+     * @return array
+     */
+    public function filas_que_no_son_contactos() {
+        return $this->filas_que_no_son_contactos;
+    }
+
+    /**
      * Hoja (una sola) que Maatwebsite tiene que recorrer.
      *
      * 🔴 SIN este metodo, Maatwebsite NO importa la primera hoja: importa TODAS.
@@ -216,9 +250,21 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         if (is_null($this->finish_row) || $this->finish_row == '') {
             $this->finish_row = count($rows);
         } 
+        /*
+         * En la prueba, las filas que no son contactos se deciden mirando la lista entera (E8.2, E8.3): collection()
+         * recibe la hoja completa (ToCollection sin chunks). Ver LocalImportHelper::filas_que_no_son_contactos_de().
+         */
+        $descartes = $this->descartar_filas_que_no_son_contactos
+            ? LocalImportHelper::filas_que_no_son_contactos_de($rows, $this->columns, $this->start_row, $this->finish_row) : [];
         foreach ($rows as $row) {
             if ($this->num_row >= $this->start_row && $this->num_row <= $this->finish_row) {
                 if ($this->checkRow($row)) {
+                    // En la prueba, el total, un título o una nota de la planilla no es un proveedor (E8.1, E8.2).
+                    if (isset($descartes[$this->num_row])) {
+                        $this->filas_que_no_son_contactos[] = ['fila' => $this->num_row, 'nombre' => $descartes[$this->num_row][1]];
+                        $this->num_row++;
+                        continue;
+                    }
                     $provider = Provider::where('user_id', $this->ct->userId());
                     if (!is_null(ImportHelper::getColumnValue($row, 'numero', $this->columns))) {
                         $provider = $provider->where('num', ImportHelper::getColumnValue($row, 'numero', $this->columns));
@@ -283,7 +329,13 @@ class ProviderImport implements ToCollection, WithMultipleSheets
         $no_cargados = array_values($this->saldos_no_cargados);
         $ilegibles   = $this->saldos_ilegibles;
 
-        return LocalImportHelper::avisos_dentro_del_presupuesto([], [
+        $bloques_fijos = [];
+        $no_son = LocalImportHelper::bloque_de_filas_que_no_son_contactos($this->filas_que_no_son_contactos, 'proveedores');
+        if (!is_null($no_son)) {
+            $bloques_fijos[] = $no_son;
+        }
+
+        return LocalImportHelper::avisos_dentro_del_presupuesto($bloques_fijos, [
             'no_cargados' => [
                 'tope'  => self::MAXIMO_DE_PROVEEDORES_EN_EL_AVISO,
                 'total' => count($no_cargados),

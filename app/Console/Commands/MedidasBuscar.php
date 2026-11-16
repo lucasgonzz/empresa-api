@@ -4,6 +4,7 @@ namespace App\Console\Commands;
 
 use App\Http\Controllers\Helpers\DimensionReferenceSiteHelper;
 use App\Http\Controllers\Helpers\DimensionSearchRunHelper;
+use App\Models\DimensionSearchRun;
 use App\Models\User;
 use Illuminate\Console\Command;
 
@@ -17,6 +18,16 @@ use Illuminate\Console\Command;
  *     php artisan medidas:buscar --solo-con-stock --limite=200
  *     php artisan medidas:buscar --reintentar-sin-datos    # también los «sin datos» de una búsqueda anterior
  *     php artisan medidas:buscar --sitios=obi.de,verdefacile.eu   # guarda los sitios de referencia y lanza
+ *     php artisan medidas:buscar --fichas --dry-run        # fichas del fabricante: cuántos entran, sin gastar nada
+ *     php artisan medidas:buscar --fichas --solo-con-stock --limite=500
+ *
+ * `--fichas` (misión medidas-masquito-fichas, 14/11/2026): una corrida de FICHAS DEL FABRICANTE. Lee el peso de las
+ * fichas públicas de distribuidores de Stihl, Husqvarna y Oregon, con la URL armada desde el código del artículo, SIN
+ * Serper ni IA (no exige sus claves). Entran los artículos sin peso de esas marcas que no están en una corrida en
+ * curso y cuyo último resultado no es un «no» del dueño (rechazada o quitada); sí entran los que esperan revisión o
+ * quedaron sin datos. La corrida es por selección (origen `seleccion`), con `proveedor` = fichas y sin sitios de
+ * referencia. Respeta `--solo-con-stock`, `--limite` y `--dry-run`; con `--sitios` o `--reintentar-sin-datos` es un
+ * error (no aplican).
  *
  * `--sitios=` (misión medidas-sitios-de-referencia, 11/11/2026): REEMPLAZA la lista de sitios de referencia del
  * comercio (los mismos que se editan en Alertas → Catálogo → Medidas) antes de lanzar; acepta URLs o dominios
@@ -48,6 +59,7 @@ class MedidasBuscar extends Command
                             {--limite= : Máximo de artículos de esta corrida (además del tope de la configuración)}
                             {--reintentar-sin-datos : También busca de nuevo los que quedaron «sin datos» (no los rechazados, ni los que esperan revisión, ni los que ya tienen todas las medidas)}
                             {--sitios= : Sitios de referencia separados por comas (URLs o dominios): reemplazan la lista del comercio antes de lanzar}
+                            {--fichas : Fichas del fabricante (Stihl, Husqvarna, Oregon): solo el peso, sin Serper ni IA}
                             {--dry-run : Solo muestra la previa: no crea ni despacha nada}';
 
     /**
@@ -81,6 +93,10 @@ class MedidasBuscar extends Command
         }
 
         $solo_con_stock = (bool) $this->option('solo-con-stock');
+
+        if ($this->option('fichas')) {
+            return $this->lanzar_fichas($owner, $solo_con_stock, $limite);
+        }
 
         $reintentar_sin_datos = (bool) $this->option('reintentar-sin-datos');
 
@@ -141,6 +157,63 @@ class MedidasBuscar extends Command
         $run = $resultado['run'];
 
         $this->info('Corrida #'.$run->id.' creada con '.$run->total.' artículos y despachada a la cola. Se revisa en Alertas → Catálogo → Medidas.');
+
+        return 0;
+    }
+
+    /**
+     * `--fichas`: la previa y, salvo en un --dry-run, la corrida de fichas del fabricante.
+     *
+     * @param  \App\Models\User $owner
+     * @param  bool             $solo_con_stock
+     * @param  string|null      $limite
+     * @return int
+     */
+    protected function lanzar_fichas(User $owner, $solo_con_stock, $limite)
+    {
+        if (!is_null($this->sitios_pedidos())) {
+            $this->error('--fichas no usa sitios de referencia: sacá --sitios.');
+
+            return 1;
+        }
+
+        if ($this->option('reintentar-sin-datos')) {
+            $this->error('--fichas ya incluye los que quedaron sin datos: sacá --reintentar-sin-datos.');
+
+            return 1;
+        }
+
+        $ids    = DimensionSearchRunHelper::ids_para_fichas((int) $owner->id, $solo_con_stock, is_null($limite) ? null : (int) $limite);
+        $marcas = DimensionSearchRunHelper::marcas_de_fichas($ids);
+
+        $this->line('Fichas del fabricante (solo el peso, de Stihl, Husqvarna y Oregon)'.($solo_con_stock ? ', solo con stock' : '').':');
+
+        foreach ($marcas as $marca => $cantidad) {
+            $this->line('  '.str_pad(ucfirst(strtolower($marca)).':', 12).$cantidad);
+        }
+
+        $this->line('A buscar en esta corrida:                   '.count($ids).(is_null($limite) ? '' : ' (--limite '.(int) $limite.')'));
+        $this->line('Consultas a Serper: 0 · llamadas a la IA: 0 (las fichas se leen directo).');
+
+        if ($this->option('dry-run')) {
+            $this->info('Es un --dry-run: no se creó ni se despachó nada.');
+
+            return 0;
+        }
+
+        if (empty($ids)) {
+            $this->error('No hay artículos para buscar en las fichas: ninguno de Stihl, Husqvarna u Oregon'.($solo_con_stock ? ' con stock' : '').' está sin peso, fuera de otra corrida en curso y sin un rechazo del dueño.');
+
+            return 1;
+        }
+
+        $run = DimensionSearchRunHelper::crear($owner, $ids, DimensionSearchRun::ORIGEN_SELECCION, null, [
+            'solo_con_stock'       => $solo_con_stock,
+            'sitios_de_referencia' => [],
+            'proveedor'            => DimensionSearchRun::PROVEEDOR_FICHAS,
+        ]);
+
+        $this->info('Corrida de fichas #'.$run->id.' creada con '.$run->total.' artículos y despachada a la cola. Se revisa en Alertas → Catálogo → Medidas.');
 
         return 0;
     }

@@ -30,6 +30,13 @@ class DimensionSearchRun extends Model
     const PROVEEDOR_SERPER = 'serper';
 
     /**
+     * Corrida «fichas del fabricante» (misión medidas-masquito-fichas, 14/11/2026): lee el peso de fichas públicas de
+     * distribuidores (Stihl, Husqvarna, Oregon) con la URL armada desde el código del artículo, sin Serper ni IA. Ver
+     * DimensionManufacturerSheets. La columna ya existía (string(20)): no hubo migración.
+     */
+    const PROVEEDOR_FICHAS = 'fichas';
+
+    /**
      * Minutos sin señal de vida (last_progress_at) para considerar "trabada" una corrida en proceso.
      * Un artículo, en el peor caso (tres búsquedas, nueve páginas y tres llamadas a la IA), tarda un
      * par de minutos: quince sin avanzar es un worker muerto, no uno lento.
