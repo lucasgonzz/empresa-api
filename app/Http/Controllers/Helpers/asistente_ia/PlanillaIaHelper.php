@@ -395,12 +395,14 @@ class PlanillaIaHelper
         $encabezado = isset($tabla['encabezado']) ? $tabla['encabezado'] : null;
         $filas = isset($tabla['filas']) ? $tabla['filas'] : [];
 
-        if (PlanillaDeTextoIaHelper::parece_de_ventas(RolesDePlanillaIaHelper::roles_de($encabezado, $filas), false, $encabezado, $filas)) {
+        $roles = isset($tabla['roles']) ? $tabla['roles'] : RolesDePlanillaIaHelper::roles_de($encabezado, $filas);
+
+        if (PlanillaDeTextoIaHelper::parece_de_ventas($roles, false, $encabezado, $filas)) {
 
             return true;
         }
 
-        return !is_null($activa) && PlanillaDeTextoIaHelper::parece_de_ventas(RolesDePlanillaIaHelper::roles_de($encabezado, $filas), true, $encabezado, $filas) && self::la_tabla_cruza($activa, $tabla);
+        return !is_null($activa) && PlanillaDeTextoIaHelper::parece_de_ventas($roles, true, $encabezado, $filas) && self::la_tabla_cruza($activa, $tabla);
     }
 
     /**
@@ -1032,6 +1034,12 @@ class PlanillaIaHelper
      */
     protected static function dato_de(array $fila, $rol): string
     {
+        if ($rol === RolesDePlanillaIaHelper::OPERACION) {
+            return isset($fila['valores'][$rol])
+                ? ltrim(trim(RolesDePlanillaIaHelper::operacion_sin_formato($fila['valores'][$rol])), '# ')
+                : '';
+        }
+
         return isset($fila['valores'][$rol]) ? RolesDePlanillaIaHelper::normalizar_celda($fila['valores'][$rol]) : '';
     }
 
@@ -1863,7 +1871,7 @@ class PlanillaIaHelper
         $desde = Carbon::now()->subDays(self::DIAS_DE_YA_REGISTRADA);
 
         $operacion = isset($fila['valores'][RolesDePlanillaIaHelper::OPERACION])
-            ? ltrim((string) $fila['valores'][RolesDePlanillaIaHelper::OPERACION], '# ')
+            ? ltrim(RolesDePlanillaIaHelper::operacion_sin_formato($fila['valores'][RolesDePlanillaIaHelper::OPERACION]), '# ')
             : '';
 
         if ($operacion !== '') {
@@ -1878,7 +1886,7 @@ class PlanillaIaHelper
 
             foreach ($por_operacion as $venta) {
 
-                if (!preg_match('/Op\. #' . preg_quote($operacion, '/') . '(?![\w\-])/u', (string) $venta->observations)) {
+                if (self::operacion_de_las_observaciones((string) $venta->observations) !== $operacion) {
                     continue;
                 }
 
@@ -1989,9 +1997,10 @@ class PlanillaIaHelper
      */
     protected static function la_venta_es_de_otro_renglon($observaciones, AiPlanilla $planilla, array $fila, $operacion): bool
     {
-        if (preg_match('/Op\. #?(\S+)/u', $observaciones, $coincide)) {
+        $de_la_venta = self::operacion_de_las_observaciones($observaciones);
 
-            return $operacion !== '' && ltrim($coincide[1], '#') !== $operacion;
+        if (!is_null($de_la_venta)) {
+            return $operacion !== '' && $de_la_venta !== ltrim(RolesDePlanillaIaHelper::operacion_sin_formato($operacion), '# ');
         }
 
         if (preg_match('/Planilla N° (\d+), renglón (\d+)/u', $observaciones, $coincide)) {
@@ -2000,6 +2009,16 @@ class PlanillaIaHelper
         }
 
         return false;
+    }
+
+    /** Sólo se normaliza el token de operación; no se reescriben las observaciones guardadas. */
+    protected static function operacion_de_las_observaciones($observaciones)
+    {
+        if (!preg_match('/Op\. #?(\S+)/u', (string) $observaciones, $coincide)) {
+            return null;
+        }
+
+        return ltrim(RolesDePlanillaIaHelper::operacion_sin_formato($coincide[1]), '# ');
     }
 
     /**
@@ -3605,6 +3624,10 @@ class PlanillaIaHelper
             return RespuestaDeCargaIa::error('«' . $texto . '» no es un tipo de documento. No cambié nada: tiene que ser ' . implode(', ', RolesDePlanillaIaHelper::TIPOS_DE_DOCUMENTO) . '.');
         }
 
+        if ($campo === RolesDePlanillaIaHelper::OPERACION) {
+            $texto = trim(RolesDePlanillaIaHelper::operacion_sin_formato($texto));
+        }
+
         $antes = isset($fila['valores'][$campo]) ? (string) $fila['valores'][$campo] : '';
 
         if ($antes === $texto) {
@@ -4372,6 +4395,7 @@ class PlanillaIaHelper
                 isset($fila['cliente_elegido_id']) ? (int) $fila['cliente_elegido_id'] : 0,
                 isset($fila['valores'][RolesDePlanillaIaHelper::DOCUMENTO]) ? RolesDePlanillaIaHelper::solo_digitos($fila['valores'][RolesDePlanillaIaHelper::DOCUMENTO]) : '',
                 isset($fila['valores'][RolesDePlanillaIaHelper::NOMBRE]) ? RolesDePlanillaIaHelper::normalizar_texto($fila['valores'][RolesDePlanillaIaHelper::NOMBRE]) : '',
+                self::dato_de($fila, RolesDePlanillaIaHelper::OPERACION),
                 (string) RolesDePlanillaIaHelper::cantidad_de($fila),
                 (string) RolesDePlanillaIaHelper::total_de($fila, $planilla->importe_es),
             ]);

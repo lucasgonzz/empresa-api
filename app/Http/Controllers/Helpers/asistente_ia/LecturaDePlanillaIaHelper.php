@@ -811,7 +811,7 @@ class LecturaDePlanillaIaHelper
 
         $tabla = self::combinar($lecturas);
 
-        if (!$ya_leyo_el_desempate && (is_null($tabla) || count($tabla['dudas']) > 0 || !empty($tabla['encabezado_sin_consenso']))) {
+        if (!$ya_leyo_el_desempate && (is_null($tabla) || count($tabla['dudas']) > 0 || !empty($tabla['encabezado_sin_consenso']) || !empty($tabla['operacion_sin_consenso']))) {
 
             $c = self::lectura_con_reintento($modelo_de_desempate, $tramos, $conversation, $inicio, $texto);
 
@@ -832,6 +832,10 @@ class LecturaDePlanillaIaHelper
         if (is_null($tabla) || !count($tabla['filas'])) {
 
             return self::no_se_pudo('las lecturas no coinciden en la cantidad de filas');
+        }
+
+        if (!empty($tabla['operacion_sin_consenso'])) {
+            return self::no_se_pudo('las lecturas no coinciden en la columna de operación; pegá la tabla como texto con sus títulos');
         }
 
         // Los títulos deciden qué columna es cantidad y si el importe es total o unitario.
@@ -1367,6 +1371,7 @@ class LecturaDePlanillaIaHelper
         $filas = [];
         $dudas = [];
         $desacuerdos = [];
+        $sujetos = RolesDePlanillaIaHelper::operaciones_para_consenso($elegidas);
 
         foreach ($elegidas[0]['filas'] as $f => $primera) {
 
@@ -1381,11 +1386,13 @@ class LecturaDePlanillaIaHelper
                     $opciones[] = (string) $lectura['filas'][$f][$c];
                 }
 
-                $ganadora = self::mayoria($opciones);
+                $rol = in_array($c, $sujetos['columnas'], true) ? RolesDePlanillaIaHelper::OPERACION : '';
+                $en_conflicto = in_array($c, $sujetos['conflictos'], true);
+                $ganadora = $en_conflicto ? null : self::mayoria($opciones, $rol);
 
                 if (is_null($ganadora)) {
 
-                    $unicas = self::opciones_distintas($opciones);
+                    $unicas = $en_conflicto ? array_values(array_unique($opciones)) : self::opciones_distintas($opciones, $rol);
 
                     $dudas[$f][$c] = $unicas;
                     $desacuerdos[] = ['fila' => $f + 1, 'columna' => $c + 1, 'lecturas' => $opciones];
@@ -1395,7 +1402,7 @@ class LecturaDePlanillaIaHelper
                     continue;
                 }
 
-                if (count(self::opciones_distintas($opciones)) > 1) {
+                if (count(self::opciones_distintas($opciones, $rol)) > 1) {
 
                     $desacuerdos[] = ['fila' => $f + 1, 'columna' => $c + 1, 'lecturas' => $opciones, 'quedo' => $ganadora];
                 }
@@ -1429,8 +1436,25 @@ class LecturaDePlanillaIaHelper
             $encabezado = null;
         }
 
+        // Mapa COMPLETO calculado acá por servidor; ningún roles del JSON/modelo entra al mapa.
+        $roles = RolesDePlanillaIaHelper::roles_de($encabezado, $filas);
+        foreach ($sujetos['columnas'] as $c) {
+            $otro_indice = array_search(RolesDePlanillaIaHelper::OPERACION, $roles, true);
+            $actual = $roles[$c] ?? RolesDePlanillaIaHelper::SIN_DECIDIR;
+            $titulo = isset($encabezado[$c]) ? RolesDePlanillaIaHelper::rol_por_titulo($encabezado[$c]) : null;
+
+            if (($otro_indice !== false && $otro_indice !== $c)
+                || !in_array($actual, [RolesDePlanillaIaHelper::OPERACION, RolesDePlanillaIaHelper::DESCRIPCION, RolesDePlanillaIaHelper::SIN_DECIDIR], true)
+                || ($actual !== RolesDePlanillaIaHelper::OPERACION && !is_null($titulo))) {
+                $sujetos['conflictos'][] = $c;
+                continue;
+            }
+            $roles[$c] = RolesDePlanillaIaHelper::OPERACION;
+        }
+
         return ['encabezado' => $encabezado, 'filas' => $filas, 'dudas' => $dudas, 'desacuerdos' => $desacuerdos,
-            'encabezado_sin_consenso' => $encabezado_sin_consenso];
+            'encabezado_sin_consenso' => $encabezado_sin_consenso, 'roles' => $roles,
+            'operacion_sin_consenso' => count($sujetos['conflictos']) > 0];
     }
 
     /**
@@ -1440,13 +1464,13 @@ class LecturaDePlanillaIaHelper
      * @param  array<int, string>  $opciones
      * @return string|null
      */
-    protected static function mayoria(array $opciones)
+    protected static function mayoria(array $opciones, $rol = '')
     {
         $grupos = [];
 
         foreach ($opciones as $opcion) {
 
-            $grupos[RolesDePlanillaIaHelper::normalizar_celda($opcion)][] = $opcion;
+            $grupos[RolesDePlanillaIaHelper::clave_de_consenso($opcion, $rol)][] = $opcion;
         }
 
         foreach ($grupos as $grupo) {
@@ -1466,13 +1490,13 @@ class LecturaDePlanillaIaHelper
      * @param  array<int, string>  $opciones
      * @return array<int, string>
      */
-    protected static function opciones_distintas(array $opciones): array
+    protected static function opciones_distintas(array $opciones, $rol = ''): array
     {
         $unicas = [];
 
         foreach ($opciones as $opcion) {
 
-            $clave = RolesDePlanillaIaHelper::normalizar_celda($opcion);
+            $clave = RolesDePlanillaIaHelper::clave_de_consenso($opcion, $rol);
 
             if (!isset($unicas[$clave])) {
 

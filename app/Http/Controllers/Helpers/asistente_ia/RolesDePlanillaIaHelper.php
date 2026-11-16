@@ -357,6 +357,94 @@ class RolesDePlanillaIaHelper
     }
 
     /**
+     * Sólo formato invisible de un identificador de operación. No pasa por números ni por
+     * normalizar_celda(): conserva ceros, letras, mayúsculas y separadores visibles. Cada
+     * consumidor conserva su trim/prefijo# previo; las celdas fuente siguen sin modificarse.
+     */
+    public static function operacion_sin_formato($operacion): string
+    {
+        $texto = (string) $operacion;
+        $sin_formato = preg_replace('/\p{Cf}/u', '', $texto);
+
+        return is_null($sin_formato) ? $texto : $sin_formato;
+    }
+
+    /** La comparación genérica sigue igual; un sujetoOPERACION probado usa su identidad exacta. */
+    public static function clave_de_consenso($celda, $rol = ''): string
+    {
+        return $rol === self::OPERACION
+            ? ltrim(trim(self::operacion_sin_formato($celda)), '# ')
+            : self::normalizar_celda($celda);
+    }
+
+    /**
+     * El sujeto sale sólo de las filas/títulos y roles_de del servidor, nunca de una key roles
+     * aportada por el lector. Una contradicción específica veta incluso dos votos de operación.
+     * Con un único sujeto, la ausencia sólo acompaña si TODAS sus celdas son la misma identidad.
+     */
+    public static function operaciones_para_consenso(array $lecturas): array
+    {
+        $roles = [];
+        foreach ($lecturas as $lectura) {
+            $roles[] = self::roles_de($lectura['encabezado'] ?? null, $lectura['filas']);
+        }
+
+        $confirmadas = [];
+        $conflictos = [];
+        $columnas = count($lecturas[0]['filas'][0] ?? []);
+
+        for ($c = 0; $c < $columnas; $c++) {
+            $de_operacion = [];
+            $ausentes = [];
+            $contradice = false;
+
+            foreach ($lecturas as $i => $lectura) {
+                $rol = $roles[$i][$c] ?? self::SIN_DECIDIR;
+                $titulo = isset($lectura['encabezado'][$c]) ? self::rol_por_titulo($lectura['encabezado'][$c]) : null;
+
+                if (!is_null($titulo) && $titulo !== self::OPERACION) {
+                    $contradice = true;
+                }
+                if ($rol === self::OPERACION) {
+                    $de_operacion[] = $i;
+                } elseif (is_null($titulo) && in_array($rol, [self::DESCRIPCION, self::SIN_DECIDIR], true)) {
+                    $ausentes[] = $i;
+                } else {
+                    $contradice = true;
+                }
+            }
+
+            if (!count($de_operacion)) {
+                continue;
+            }
+            if ($contradice) {
+                $conflictos[] = $c;
+                continue;
+            }
+            if (count($de_operacion) === 1) {
+                $referencia = $lecturas[$de_operacion[0]]['filas'];
+                foreach ($ausentes as $i) {
+                    foreach ($referencia as $f => $fila) {
+                        if (self::clave_de_consenso($fila[$c], self::OPERACION)
+                            !== self::clave_de_consenso($lecturas[$i]['filas'][$f][$c], self::OPERACION)) {
+                            $conflictos[] = $c;
+                            continue 3;
+                        }
+                    }
+                }
+            }
+            $confirmadas[] = $c;
+        }
+
+        if (count($confirmadas) > 1) {
+            $conflictos = array_merge($conflictos, $confirmadas);
+            $confirmadas = [];
+        }
+
+        return ['columnas' => $confirmadas, 'conflictos' => array_values(array_unique($conflictos))];
+    }
+
+    /**
      * El código de artículo sin el prefijo SKU ni espacios alrededor. Respeta mayúsculas y ceros: la
      * base compara sin mirar mayúsculas, y los ceros los resuelve quien busca.
      *
@@ -1175,6 +1263,10 @@ class RolesDePlanillaIaHelper
         foreach ($roles as $columna => $rol) {
 
             $valor = isset($celdas[$columna]) ? trim((string) $celdas[$columna]) : '';
+
+            if ($rol === self::OPERACION) {
+                $valor = trim(self::operacion_sin_formato($valor));
+            }
 
             if ($valor !== '') {
 

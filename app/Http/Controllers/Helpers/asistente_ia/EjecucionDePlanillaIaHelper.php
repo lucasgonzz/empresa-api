@@ -669,7 +669,7 @@ class EjecucionDePlanillaIaHelper
 
         if (isset($fila['valores'][RolesDePlanillaIaHelper::OPERACION])) {
 
-            $partes[] = 'Op. #' . ltrim((string) $fila['valores'][RolesDePlanillaIaHelper::OPERACION], '# ');
+            $partes[] = 'Op. #' . ltrim(RolesDePlanillaIaHelper::operacion_sin_formato($fila['valores'][RolesDePlanillaIaHelper::OPERACION]), '# ');
         }
 
         return implode(' · ', $partes);
