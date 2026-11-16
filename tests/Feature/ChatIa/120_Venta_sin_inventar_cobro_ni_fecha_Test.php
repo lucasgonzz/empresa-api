@@ -498,7 +498,13 @@ class Venta_sin_inventar_cobro_ni_fecha_Test extends EmpresaTestCase
             'El día 12/11 tuviste 5 ventas por $340.000.',
             'Hay 3 ventas con fecha 12/11 sin cobrar.',
             'Te muestro las ventas del día viernes.',
+            // Re-verificación: un rótulo «Fecha:» de varias ventas y «quedaron» sin verbo de carga.
+            'Fecha: 15/11 — 14 ventas por $ 230.000.',
+            'Las ventas del día de ayer quedaron en $ 120.000.',
         ];
+
+        // El rótulo de la venta recién cargada sigue disparando.
+        $this->assertTrue(VentaConDatosInventadosIaHelper::afirma_otra_fecha('Date: sábado 7/11, y una caja de cada uno.', $hoy));
 
         foreach ($informes as $texto) {
             $this->assertFalse(VentaConDatosInventadosIaHelper::afirma_otra_fecha($texto, $hoy), $texto);

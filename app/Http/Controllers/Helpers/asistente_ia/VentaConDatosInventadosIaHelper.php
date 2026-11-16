@@ -115,8 +115,9 @@ class VentaConDatosInventadosIaHelper
         }
 
         // El rótulo «Date:»/«Fecha:» al empezar es el resumen de lo que se acaba de cargar (la 3103 del caso real).
+        // …salvo que hable de VARIAS ventas («Fecha: 15/11 — 14 ventas por $X» es un informe).
         if (preg_match('/^(fecha|date) ?:/u', $o)) {
-            return self::nombra_otro_dia($o, $hoy);
+            return !preg_match('/\bventas\b/u', $o) && self::nombra_otro_dia($o, $hoy);
         }
 
         // La fecha puesta a la venta («con fecha», «para el sábado», «tomada como»)…
@@ -126,7 +127,9 @@ class VentaConDatosInventadosIaHelper
          * …con un verbo de CARGA en la misma oración (revisión independiente, bloqueante 1): un informe
          * («tuviste 5 ventas», «hay 3 ventas con fecha 12/11 sin cobrar») no carga nada.
          */
-        $de_carga = '/\b(cargo|cargue|cargada|cargadas|cargarla|cargarlas|cargar|registro|registre|registrada|registradas|registrarla|la armo|armarla|armada|quedo|queda|quedan|quedaron|tomada|tome)\b/u';
+        // «quedó/queda» solo con «cargada/registrada/anotada» o con «la venta» de sujeto: «Las ventas del día
+        // de ayer quedaron en $X» es un informe (re-verificación de la revisión).
+        $de_carga = '/\b(cargo|cargue|cargada|cargadas|cargarla|cargarlas|cargar|registro|registre|registrada|registradas|registrarla|anotada|la armo|armarla|armada|tomada|tome|la venta (quedo|queda))\b/u';
 
         if (!preg_match($de_fecha, $o) || !preg_match($de_carga, $o)) {
             return false;
