@@ -43,8 +43,8 @@ use Illuminate\Support\Facades\Schema;
  *
  * 🔴 EL COSTO ES DEL QUE LO PUEDE VER. En la pantalla un empleado ve costos solo con el permiso
  * `article.cost` (o siendo administrador). Si quien pregunta no lo tiene, la respuesta no trae nada del
- * costo (ni el valor a costo, ni la columna en el Excel) y lo dice. El dueño, el administrador, el MCP y
- * una conversación sin persona (el canal del dueño) lo ven.
+ * costo (ni el valor a costo, ni la columna en el Excel) y lo dice. Lo ven el dueño y el administrador
+ * (también por su WhatsApp y por el MCP, que guardan la persona); sin persona comprobada, nadie.
  *
  * Es SOLO LECTURA: no toca ningún dato del negocio. Corre sin Auth (el dueño viene explícito).
  *
@@ -399,7 +399,9 @@ class ValorizacionDeStockIaHelper
             'solo_su_sucursal' => $solo_su_sucursal,
         ];
 
-        $preparado['base'] = self::con_los_recortes($base, $preparado);
+        // La base SIN recortes queda guardada: por depósito se vuelven a aplicar con el stock de cada uno.
+        $preparado['base_filtrada'] = $base;
+        $preparado['base'] = self::con_los_recortes(clone $base, $preparado);
 
         return $preparado;
     }
@@ -412,15 +414,14 @@ class ValorizacionDeStockIaHelper
      */
     public static function puede_ver_costo($conversation): bool
     {
-        $persona = self::persona($conversation);
-
-        // El MCP (sin conversación) y una conversación sin persona son el canal del dueño.
-        if (is_null($persona)) {
-
-            return true;
-        }
-
-        return PermisosIaHelper::puede($persona, self::PERMISO_COSTO);
+        /*
+         * 🔴 Revisión de P5 (16/11/2026): sin persona comprobada NO hay costos, igual que ContextoDeCargaIa
+         * (persona null = sin permisos). Los canales del dueño ya traen la persona: el WhatsApp del dueño
+         * (AsistenteCanalHelper::nueva_conversacion) y el MCP (McpSesionHelper) crean la conversación con
+         * `auth_user_id`, y el dueño pasa por PermisosIaHelper::puede() como admin. Una llamada sin
+         * conversación o una conversación sin `auth_user_id` no sabe quién pregunta: va sin costos.
+         */
+        return PermisosIaHelper::puede(self::persona($conversation), self::PERMISO_COSTO);
     }
 
     /**
@@ -606,10 +607,40 @@ class ValorizacionDeStockIaHelper
             return 'articles.final_price';
         }
 
-        return 'COALESCE((SELECT apt_precio.final_price FROM article_price_type apt_precio'
+        /*
+         * Revisión de P5 (16/11/2026): la lista «Precio final» (`price_types.es_precio_final = 1`) ES el precio
+         * del artículo y el resolvedor contesta `articles.final_price`, no el pivote
+         * (PriceTypeHelper::es_lista_precio_final). Acá la subconsulta devuelve NULL para esa lista y el
+         * COALESCE cae en final_price; lo mismo que cuando el pivote elegido no tiene precio.
+         */
+        $del_pivote = self::hay_columna_precio_final()
+            ? 'CASE WHEN COALESCE(pt_precio.es_precio_final, 0) = 1 THEN NULL ELSE apt_precio.final_price END'
+            : 'apt_precio.final_price';
+
+        return 'COALESCE((SELECT ' . $del_pivote . ' FROM article_price_type apt_precio'
             . ' JOIN price_types pt_precio ON pt_precio.id = apt_precio.price_type_id'
             . ' WHERE apt_precio.article_id = articles.id'
             . ' ORDER BY COALESCE(pt_precio.position, 0) DESC, pt_precio.id DESC LIMIT 1), articles.final_price)';
+    }
+
+    /**
+     * true si `price_types.es_precio_final` existe en esta instalación.
+     *
+     * @return bool
+     */
+    protected static function hay_columna_precio_final()
+    {
+        static $hay = null;
+
+        if (is_null($hay)) {
+            try {
+                $hay = Schema::hasColumn('price_types', 'es_precio_final');
+            } catch (\Throwable $e) {
+                $hay = false;
+            }
+        }
+
+        return $hay;
     }
 
     /**
@@ -720,8 +751,11 @@ class ValorizacionDeStockIaHelper
             $por_deposito = $preparado;
             $por_deposito['deposito'] = ['address_id' => (int) $sucursal->id, 'nombre' => (string) $sucursal->street];
 
-            // La base se rearma con el join del stock de ESTE depósito (la de $preparado no lo tiene).
-            $por_deposito['base'] = self::rearmar_base($preparado, $por_deposito);
+            /*
+             * La base se rearma desde los ids filtrados con el join del stock de ESTE depósito, y los recortes
+             * de `solo` (sin_stock, stock_negativo...) miran ese stock y no el total (revisión de P5, 16/11/2026).
+             */
+            $por_deposito['base'] = self::con_los_recortes(clone $preparado['base_filtrada'], $por_deposito);
 
             $fila = self::agregado($por_deposito, null);
             $fila->grupo = (string) $sucursal->street;
@@ -741,36 +775,6 @@ class ValorizacionDeStockIaHelper
     }
 
     /**
-     * La base de $preparado con otro depósito: se saca el join de proveedores (con_los_recortes lo vuelve a
-     * poner) partiendo de los mismos ids filtrados.
-     *
-     * @param  array  $preparado
-     * @param  array  $nuevo
-     * @return \Illuminate\Database\Query\Builder
-     */
-    protected static function rearmar_base(array $preparado, array $nuevo)
-    {
-        $base = clone $preparado['base'];
-
-        $base->joins = null;
-
-        return self::con_los_recortes_sin_stock($base, $nuevo);
-    }
-
-    /**
-     * Como con_los_recortes() pero sin volver a aplicar `solo` (ya está en los wheres de la base que se
-     * clonó). Solo vuelve a poner los joins.
-     *
-     * @param  \Illuminate\Database\Query\Builder  $base
-     * @param  array  $preparado
-     * @return \Illuminate\Database\Query\Builder
-     */
-    protected static function con_los_recortes_sin_stock($base, array $preparado)
-    {
-        return self::con_el_stock($base, $preparado);
-    }
-
-    /**
      * Un grupo, como lo ve el modelo.
      *
      * @param  \stdClass  $fila
@@ -785,6 +789,8 @@ class ValorizacionDeStockIaHelper
             'unidades_en_stock'   => round((float) $fila->unidades, 2),
             'valor_a_precio'      => round((float) $fila->valor_a_precio, 2),
             'con_stock_sin_precio' => (int) $fila->sin_precio,
+            // Revisión de P5: el stock negativo también por grupo (por depósito, el de ESE depósito).
+            'con_stock_negativo'  => (int) $fila->negativos,
         ];
 
         if ($ver_costo) {

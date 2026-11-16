@@ -38,7 +38,7 @@ use Tests\EmpresaTestCase;
  *
  * @group chat-ia
  */
-class Valorizar_stock_desde_el_servidor_Test extends EmpresaTestCase
+class T130_Valorizar_stock_desde_el_servidor_Test extends EmpresaTestCase
 {
     use EnviosAClientesFixtures;
 
@@ -301,5 +301,76 @@ class Valorizar_stock_desde_el_servidor_Test extends EmpresaTestCase
 
         $this->assertFalse($r['ok']);
         $this->assertStringContainsString('solo puede ver el stock de su sucursal', $r['error']);
+    }
+
+    /**
+     * Revisión 1: con la lista «Precio final» (es_precio_final) el precio es articles.final_price, como el
+     * resolvedor de la pantalla; con otra lista, el del pivote.
+     *
+     * @test
+     */
+    public function con_listas_de_precio_usa_el_mismo_precio_que_la_pantalla()
+    {
+        DB::table('users')->where('id', $this->dueno->id)->update(['listas_de_precio' => 1]);
+
+        $okinawa = Article::where('name', 'Caña Okinawa 210 ZZV')->first();
+        $bronco = Article::where('name', 'Caña Bronco 180 ZZV')->first();
+
+        $final = DB::table('price_types')->insertGetId(['name' => 'Precio final ZZV', 'user_id' => $this->dueno->id, 'num' => 1, 'position' => 9, 'es_precio_final' => 1, 'created_at' => now(), 'updated_at' => now()]);
+        $mayorista = DB::table('price_types')->insertGetId(['name' => 'Mayorista ZZV', 'user_id' => $this->dueno->id, 'num' => 2, 'position' => 1, 'created_at' => now(), 'updated_at' => now()]);
+
+        // Okinawa: la de más position es «Precio final» con un pivote viejo (999): vale su final_price (150).
+        DB::table('article_price_type')->insert(['article_id' => $okinawa->id, 'price_type_id' => $final, 'final_price' => 999]);
+        DB::table('article_price_type')->insert(['article_id' => $okinawa->id, 'price_type_id' => $mayorista, 'final_price' => 120]);
+        // Bronco: solo la mayorista, a 250: vale 250 (no su final_price de 300).
+        DB::table('article_price_type')->insert(['article_id' => $bronco->id, 'price_type_id' => $mayorista, 'final_price' => 250]);
+
+        $r = $this->valorizar(['filtros' => [['campo' => 'categoria', 'operador' => 'igual', 'valor' => 'Cañas ZZV']]]);
+
+        $this->assertTrue($r['ok'], json_encode($r));
+        // 10 × 150 (final_price, por la lista «Precio final») + 5 × 250 (pivote de la mayorista).
+        $this->assertEquals(2750, $r['valor_a_precio']);
+
+        // El mismo precio que la pantalla, artículo por artículo.
+        $dueno = User::find($this->dueno->id);
+        $this->assertEquals(150, \App\Http\Controllers\Helpers\article\ArticlePricesHelper::resolver_precio_de_venta(Article::with('price_types')->find($okinawa->id), $dueno)['final_price']);
+        $this->assertEquals(250, \App\Http\Controllers\Helpers\article\ArticlePricesHelper::resolver_precio_de_venta(Article::with('price_types')->find($bronco->id), $dueno)['final_price']);
+    }
+
+    /**
+     * Revisión 5: agrupado por depósito, stock_negativo mira el stock de CADA depósito, no el total.
+     *
+     * @test
+     */
+    public function por_deposito_los_recortes_miran_el_stock_del_deposito()
+    {
+        $central = Address::create(['street' => 'Central ZZV', 'user_id' => $this->dueno->id]);
+        $costa = Address::create(['street' => 'Costa ZZV', 'user_id' => $this->dueno->id]);
+
+        // Okinawa tiene 10 en total, pero en la Costa está en -2.
+        $okinawa = Article::where('name', 'Caña Okinawa 210 ZZV')->first();
+        $okinawa->addresses()->attach($central->id, ['amount' => 12]);
+        $okinawa->addresses()->attach($costa->id, ['amount' => -2]);
+
+        $r = $this->valorizar(['agrupar_por' => 'deposito', 'solo' => ['stock_negativo']]);
+
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(['Costa ZZV'], array_column($r['grupos'], 'nombre'), 'Negativo SOLO en la Costa (en total tiene 10).');
+        $this->assertSame(1, $r['grupos'][0]['con_stock_negativo']);
+    }
+
+    /**
+     * Revisión 7: una conversación sin persona comprobada no ve costos; el dueño comprobado sí.
+     *
+     * @test
+     */
+    public function sin_persona_comprobada_no_hay_costos()
+    {
+        $r = $this->valorizar([], AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => 0]));
+
+        $this->assertTrue($r['ok']);
+        $this->assertArrayNotHasKey('valor_a_costo', $r);
+        $this->assertFalse(ValorizacionDeStockIaHelper::puede_ver_costo(null));
+        $this->assertTrue(ValorizacionDeStockIaHelper::puede_ver_costo(AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id])));
     }
 }
