@@ -891,6 +891,9 @@ class CatalogoDeAccionesDePantallaIaHelper
                     'siempre_confirma'    => !is_null($motivo_confirmacion),
                     'motivo_confirmacion' => $motivo_confirmacion,
                 ];
+                if ($accion === 'PromocionVinotecaController@update') {
+                    $catalogo[$clave]['indicaciones'] = 'Edición parcial: enviá solamente los campos que el dueño pidió cambiar. cost es el costo POR PROMO (por mix), no el costo del lote ni de cada botella: no lo dividas por el stock remanente ni lo multipliques por botellas. Conservá costo, precio de venta y stock independientes. Identificá la promo por ID y nombre exactos; ante nombres parecidos pedí aclaración. No completes un formulario viejo ni cambies otras promos o costos históricos.';
+                }
             }
         }
 
@@ -1150,6 +1153,9 @@ class CatalogoDeAccionesDePantallaIaHelper
      */
     protected static function claves_de(string $clase, string $metodo_php): array
     {
+        if (class_basename($clase) === 'PromocionVinotecaController' && $metodo_php === 'update') {
+            return \App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper::CAMPOS;
+        }
         try {
 
             return Escritura::claves_que_lee($clase, $metodo_php);
