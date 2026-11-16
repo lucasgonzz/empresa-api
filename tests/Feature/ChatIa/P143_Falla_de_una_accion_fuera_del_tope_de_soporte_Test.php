@@ -22,7 +22,7 @@ use Tests\EmpresaTestCase;
  *
  * @group chat-ia
  */
-class Falla_de_una_accion_fuera_del_tope_de_soporte_Test extends EmpresaTestCase
+class P143_Falla_de_una_accion_fuera_del_tope_de_soporte_Test extends EmpresaTestCase
 {
     use EnviosAClientesFixtures;
 
@@ -129,5 +129,79 @@ class Falla_de_una_accion_fuera_del_tope_de_soporte_Test extends EmpresaTestCase
         $con_falla_vieja = $this->pedir($conversation, $otra, 'La factura de ayer.');
         $this->assertFalse($con_falla_vieja['ok']);
         $this->assertSame(PedidoDeAyudaASoporteIaHelper::CODIGO_TOPE, $con_falla_vieja['codigo']);
+    }
+
+    /**
+     * Revisión independiente de la rama B: la MISMA falla repetida en otra tarjeta no es otro exento, y una tarjeta
+     * que falló varias respuestas atrás no está atada a este pedido.
+     *
+     * @test
+     */
+    public function el_mismo_error_en_otra_tarjeta_o_una_falla_lejana_no_son_otro_exento()
+    {
+        $this->tope_usado();
+
+        list($conversation, $facturar) = $this->vuelta('Si facturala');
+        $facturar->update(['estado' => 'listo', 'contenido' => 'No se pudo registrar la factura de la venta 3102.']);
+        $this->tarjeta_que_fallo($conversation, $facturar);
+
+        list($conversation, $assistant) = $this->vuelta('pedile a soporte por la factura', $conversation);
+        $this->assertTrue($this->pedir($conversation, $assistant, 'La factura de la 3102 falló.')['ok']);
+        $assistant->update(['estado' => 'listo', 'contenido' => 'Listo: el pedido quedó en el chat de soporte.']);
+
+        /* La 3103 falla con el mismo error: ya está reportado. */
+        list($conversation, $facturar_otra) = $this->vuelta('Facturá la 3103', $conversation);
+        $facturar_otra->update(['estado' => 'listo', 'contenido' => 'No se pudo registrar la factura de la venta 3103.']);
+        $this->tarjeta_que_fallo($conversation, $facturar_otra);
+
+        list($conversation, $otra) = $this->vuelta('pedile a soporte por la 3103', $conversation);
+        $repetida = $this->pedir($conversation, $otra, 'La factura de la 3103 falló igual.');
+        $this->assertFalse($repetida['ok'], json_encode($repetida));
+        $this->assertSame(PedidoDeAyudaASoporteIaHelper::CODIGO_TOPE, $repetida['codigo']);
+
+        /* Una falla de un error distinto, pero de varias respuestas atrás: no está atada a este pedido. */
+        list($conversation, $lejana) = $this->vuelta('Cargá el stock', $conversation);
+        $lejana->update(['estado' => 'listo', 'contenido' => 'No se pudo cargar el stock.']);
+        $this->tarjeta_que_fallo($conversation, $lejana, 'Error de stock.');
+
+        foreach (['Gracias', 'Ok'] as $charla) {
+            list($conversation, $intermedio) = $this->vuelta($charla, $conversation);
+            $intermedio->update(['estado' => 'listo', 'contenido' => 'De nada.']);
+        }
+
+        list($conversation, $tarde) = $this->vuelta('pedile a soporte por lo del stock', $conversation);
+        $this->assertFalse($this->pedir($conversation, $tarde, 'El stock no se cargó.')['ok']);
+    }
+
+    /**
+     * Los exentos tienen su propio tope por día: pasado TOPE_DE_EXENTOS_POR_DIA, ni una falla nueva libera el tope.
+     *
+     * @test
+     */
+    public function los_exentos_tienen_su_propio_tope_por_dia()
+    {
+        $this->tope_usado();
+
+        $ticket = SupportTicket::where('user_id', $this->dueno->id)->first();
+
+        for ($i = 1; $i <= PedidoDeAyudaASoporteIaHelper::TOPE_DE_EXENTOS_POR_DIA; $i++) {
+            SupportMessage::create([
+                'support_ticket_id' => $ticket->id,
+                'sender_type'       => 'user',
+                'sender_user_id'    => $this->dueno->id,
+                'kind'              => 'text',
+                'body'              => '[Pedido desde el agente personal por WhatsApp] falla ' . $i . "\n\n" . PedidoDeAyudaASoporteIaHelper::MARCA_DE_FALLA . (900000 + $i) . ', venta): error ' . $i,
+            ]);
+        }
+
+        list($conversation, $facturar) = $this->vuelta('Si facturala');
+        $facturar->update(['estado' => 'listo', 'contenido' => 'No se pudo registrar la factura.']);
+        $this->tarjeta_que_fallo($conversation, $facturar, 'Un error nuevo.');
+
+        list($conversation, $assistant) = $this->vuelta('pedile a soporte', $conversation);
+        $respuesta = $this->pedir($conversation, $assistant, 'La factura falló.');
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertSame(PedidoDeAyudaASoporteIaHelper::CODIGO_TOPE, $respuesta['codigo']);
     }
 }
