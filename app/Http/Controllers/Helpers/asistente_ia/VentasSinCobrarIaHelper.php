@@ -135,7 +135,17 @@ class VentasSinCobrarIaHelper
             return (string) $v;
         })->all();
 
-        $por_cliente = self::con_deuda_total($por_cliente, $ids, $owner_id, $employee_id);
+        /*
+         * 🔴 Para quien ve todo el negocio, el conjunto SIN umbral se lee UNA vez y lo comparten
+         * `con_deuda_total()` y el bloque `cuenta_corriente` (revisión de la misión
+         * asistente-deudores-saldos-iniciales, 16/11/2026): la primera versión del bloque volvía a
+         * correr la consulta agrupada de ventas con un `whereIn` de todos los deudores, la tercera
+         * pasada de la consulta más pesada de la tool. Con `dias = 0` ni siquiera hace falta leerlo:
+         * es `$filas`. Para un empleado recortado sigue el camino de siempre (no hay bloque).
+         */
+        $contexto = is_null($employee_id) ? self::contexto_de_ventas_del_negocio($owner_id, $dias, $filas) : null;
+
+        $por_cliente = self::con_deuda_total($por_cliente, $ids, $owner_id, $employee_id, $contexto);
 
         $clientes_sin_el_minimo = count($por_cliente);
 
@@ -186,18 +196,24 @@ class VentasSinCobrarIaHelper
         /*
          * 🔴 CÓMO SE LEE CADA CLIENTE, dicho en la respuesta y no solo en la descripción: con `dias`
          * los totales de arriba son SOLO lo atrasado, pero cada cliente trae también todo lo que
-         * debe. Sin esta línea el modelo vuelve a comparar el monto que dijo el dueño contra lo
-         * atrasado, que es el error que motivó el cambio.
+         * debe EN VENTAS. Sin esta línea el modelo vuelve a comparar el monto que dijo el dueño contra
+         * lo atrasado, que es el error que motivó el cambio.
+         *
+         * ⚠️ "En ventas" y no "todo lo que debe" (revisión de la misión
+         * asistente-deudores-saldos-iniciales, 16/11/2026): `deuda_total_en_pesos` no incluye un saldo
+         * inicial ni nada que no sea una venta. Decir "TODO lo que debe" ponía en la misma respuesta
+         * 10.000 como todo y 210.000 en `cuenta_corriente` para el mismo cliente. Las claves no
+         * cambiaron; cambió lo que se dice de ellas.
          */
         $respuesta['como_leer_cada_cliente'] = $dias > 0
-            ? 'Con dias = ' . $dias . ': ventas_sin_cobrar, total_pendiente_en_pesos y venta_mas_vieja de arriba son SOLO lo que tiene ' . $dias . ' dias o mas. En cada cliente, deuda_total_en_pesos es TODO lo que debe (incluidas las ventas recientes), deuda_atrasada_en_pesos lo que tiene ' . $dias . ' dias o mas y dias_de_la_venta_mas_vieja la antiguedad de su venta impaga mas vieja. Un cliente esta en la lista porque tiene deuda atrasada; la lista va de mayor a menor deuda total.'
-            : 'En cada cliente, deuda_total_en_pesos es todo lo que debe y dias_de_la_venta_mas_vieja la antiguedad de su venta impaga mas vieja. La lista va de mayor a menor deuda total.';
+            ? 'Con dias = ' . $dias . ': ventas_sin_cobrar, total_pendiente_en_pesos y venta_mas_vieja de arriba son SOLO lo que tiene ' . $dias . ' dias o mas. En cada cliente, deuda_total_en_pesos es todo lo que debe EN VENTAS sin cobrar (incluidas las recientes; no incluye saldos iniciales ni nada que no sea una venta, eso esta en cuenta_corriente), deuda_atrasada_en_pesos lo que tiene ' . $dias . ' dias o mas y dias_de_la_venta_mas_vieja la antiguedad de su venta impaga mas vieja. Un cliente esta en la lista porque tiene deuda atrasada; la lista va de mayor a menor deuda en ventas.'
+            : 'En cada cliente, deuda_total_en_pesos es todo lo que debe EN VENTAS sin cobrar (no incluye saldos iniciales ni nada que no sea una venta, eso esta en cuenta_corriente) y dias_de_la_venta_mas_vieja la antiguedad de su venta impaga mas vieja. La lista va de mayor a menor deuda en ventas.';
 
         if (! is_null($monto_minimo)) {
             $respuesta['monto_minimo_pedido'] = $monto_minimo;
             // Cuántos tenían deuda (atrasada, si hubo dias) antes de aplicar el mínimo.
             $respuesta['clientes_con_deuda_sin_el_monto_minimo'] = $clientes_sin_el_minimo;
-            $respuesta['filtro_de_monto'] = 'Solo los clientes cuya deuda TOTAL (deuda_total_en_pesos) es de ' . $monto_minimo . ' pesos o mas. clientes_con_deuda es cuantos cumplen.';
+            $respuesta['filtro_de_monto'] = 'Solo los clientes cuya deuda en ventas sin cobrar (deuda_total_en_pesos) es de ' . $monto_minimo . ' pesos o mas. clientes_con_deuda es cuantos cumplen. Quien debe ese monto contando saldos que no son ventas esta en cuenta_corriente.';
         }
 
         // La deuda total sumada de los clientes que cumplen (todos, no solo los que viajan en la lista).
@@ -212,7 +228,7 @@ class VentasSinCobrarIaHelper
          * AGREGA un bloque sin tocar ninguna clave de antes (las leen los tests, el recordatorio de
          * cobro y la descripción de la tool). Ver agregar_cuenta_corriente().
          */
-        $respuesta = static::agregar_cuenta_corriente($respuesta, $owner_id, $employee_id, $dias, $monto_minimo);
+        $respuesta = static::agregar_cuenta_corriente($respuesta, $owner_id, $employee_id, $dias, $monto_minimo, $contexto);
 
         return $respuesta;
     }
@@ -235,17 +251,21 @@ class VentasSinCobrarIaHelper
      *  - la lectura falla: `cuenta_corriente` null y `cuenta_corriente_error`, con `report()`. La
      *    respuesta de ventas sale igual: nunca un 500 por el bloque nuevo.
      *
+     * `como_contestar` cambia según lo que mandó el modelo (ver `como_contestar()`).
+     *
      * Se llama con `static::` (y `bloque_de_cuenta_corriente()` también) para que un test pueda
      * forzar el fallo con una subclase, sin tocar la base.
      *
      * @param  array<string, mixed>  $respuesta  La respuesta de ventas ya armada.
      * @param  int  $owner_id
      * @param  int|null  $employee_id  El de `employee_id_del_recorte()`.
-     * @param  int  $dias  El umbral ya resuelto: no filtra el saldo, solo cambia cómo se lee.
+     * @param  int  $dias  El umbral ya resuelto: no filtra el saldo, solo marca y ordena.
      * @param  float|null  $monto_minimo  Ya limpio (`monto_minimo_valido()`).
+     * @param  array|null  $contexto  El de `contexto_de_ventas_del_negocio()`, ya leído por
+     *                                `ventas_sin_cobrar()`; null = el bloque lo lee.
      * @return array<string, mixed>
      */
-    protected static function agregar_cuenta_corriente(array $respuesta, $owner_id, $employee_id, $dias, $monto_minimo)
+    protected static function agregar_cuenta_corriente(array $respuesta, $owner_id, $employee_id, $dias, $monto_minimo, $contexto = null)
     {
         if (! is_null($employee_id)) {
             $respuesta['cuenta_corriente'] = null;
@@ -256,17 +276,59 @@ class VentasSinCobrarIaHelper
         }
 
         try {
-            $respuesta['cuenta_corriente'] = static::bloque_de_cuenta_corriente($owner_id, $dias, $monto_minimo);
+            $respuesta['cuenta_corriente'] = static::bloque_de_cuenta_corriente($owner_id, $dias, $monto_minimo, $contexto);
         } catch (\Throwable $e) {
             report($e);
 
             $respuesta['cuenta_corriente'] = null;
             $respuesta['cuenta_corriente_error'] = 'No se pudo leer el saldo de las cuentas corrientes: los numeros de arriba son solo de ventas sin cobrar y pueden no ser toda la deuda.';
+            $respuesta['como_contestar'] = 'cuenta_corriente no se pudo leer: contesta con los datos de ventas y aclara que pueden no ser toda la deuda (no incluyen saldos iniciales ni nada que no sea una venta).';
+
+            return $respuesta;
         }
 
-        $respuesta['como_contestar'] = '"cuanto me deben", "quien me debe", "quien me debe mas", "cuanta plata tengo en la calle" -> se contesta con cuenta_corriente (todo lo que deben los clientes, incluidos saldos iniciales o cargados a mano). "Ventas sin cobrar", "lo atrasado", "hace mas de N dias", "la venta mas vieja" -> con los datos de ventas. Si los dos totales difieren, deci cual estas dando.';
+        $respuesta['como_contestar'] = self::como_contestar($dias, $monto_minimo);
 
         return $respuesta;
+    }
+
+    /**
+     * QUÉ DATOS CONTESTAN LA PREGUNTA, según lo que mandó el modelo (revisión de la misión
+     * asistente-deudores-saldos-iniciales, 16/11/2026). Una sola regla por caso:
+     *
+     *  - sin nada: "cuánto me deben / quién me debe" → `cuenta_corriente`; ventas para lo de ventas.
+     *  - solo `monto_minimo` ("los que me deben más de X") → `cuenta_corriente.clientes`, que ya viene
+     *    filtrada por saldo. 🔴 La lista de ventas tiene su propio filtro (deuda en ventas) y puede venir
+     *    vacía: eso no quiere decir que nadie deba.
+     *  - solo `dias` ("lo que me deben hace más de N días") → los datos de ventas, que son los que tienen
+     *    antigüedad.
+     *  - los dos ("los que me deben más de X hace más de N días", el significado decidido el 16/10/2026:
+     *    deben X o más EN TOTAL y tienen alguna venta impaga de N días o más) → las filas de
+     *    `cuenta_corriente.clientes` con `tiene_ventas_impagas_de_esos_dias = true`. El ranking de
+     *    ventas compara X contra la deuda en ventas y deja afuera a quien debe un saldo inicial.
+     *
+     * @param  int  $dias
+     * @param  float|null  $monto_minimo
+     * @return string
+     */
+    protected static function como_contestar($dias, $monto_minimo)
+    {
+        if ($dias > 0 && ! is_null($monto_minimo)) {
+
+            return '"Los que me deben mas de X hace mas de N dias" -> las filas de cuenta_corriente.clientes con tiene_ventas_impagas_de_esos_dias = true (son clientes_que_deben_con_ventas_de_esos_dias): deben X o mas en total y tienen alguna venta impaga de ' . $dias . ' dias o mas. Contesta con saldo_en_pesos y dias_de_la_venta_impaga_mas_vieja. No uses el ranking de ventas de arriba para esta pregunta: compara X contra lo que deben solo en ventas y deja afuera a quien debe un saldo inicial.';
+        }
+
+        if (! is_null($monto_minimo)) {
+
+            return '"Los que me deben mas de X" -> cuenta_corriente.clientes, que ya viene filtrada por saldo_en_pesos de X o mas. La lista de ventas de arriba tiene su propio filtro (lo que deben en ventas) y puede venir vacia: eso NO significa que nadie deba. "Cuanto me deben" o "quien me debe" -> cuenta_corriente.';
+        }
+
+        if ($dias > 0) {
+
+            return '"Lo que me deben hace mas de N dias", "lo atrasado", "la venta mas vieja" -> con los datos de ventas de arriba (solo lo de ' . $dias . ' dias o mas). "Cuanto me deben" o "quien me debe" en total -> cuenta_corriente, que no tiene antiguedad; en cada fila, tiene_ventas_impagas_de_esos_dias dice si ese cliente tiene una venta impaga de ' . $dias . ' dias o mas.';
+        }
+
+        return '"cuanto me deben", "quien me debe", "quien me debe mas", "cuanta plata tengo en la calle" -> se contesta con cuenta_corriente (todo lo que deben los clientes, incluidos saldos iniciales o cargados a mano). "Ventas sin cobrar", "lo atrasado", "hace mas de N dias", "la venta mas vieja" -> con los datos de ventas. Si los dos totales difieren, deci cual estas dando.';
     }
 
     /**
@@ -286,9 +348,10 @@ class VentasSinCobrarIaHelper
      * dos números para la misma deuda.
      *
      * Reglas:
-     *  - Cliente por cliente: un cliente con dos cuentas en pesos (moneda null y 1) se suma primero, y
-     *    debe si ESE neto es > 0. 🔴 Nunca se resta el saldo a favor de OTRO cliente: los que tienen
-     *    saldo a favor van aparte (`clientes_con_saldo_a_favor`, `total_a_favor_en_pesos`).
+     *  - Cliente por cliente: un cliente con dos cuentas en pesos (moneda null o 0, y 1) se suma
+     *    primero, y debe si ESE neto es > 0. 🔴 Nunca se resta el saldo a favor de OTRO cliente: los que
+     *    tienen saldo a favor van aparte (`clientes_con_saldo_a_favor`, `total_a_favor_en_pesos`). Un
+     *    cliente con ventas impagas cuyo neto es cero o a favor NO aparece (no debe).
      *  - Otras monedas, aparte (`en_otras_monedas`) y nunca sumadas a pesos. El complemento de pesos
      *    sale del mismo `MONEDAS_PESOS`.
      *  - Clientes borrados (soft delete), AFUERA, igual que `clientes_con_saldo_pendiente()` y que la
@@ -299,22 +362,34 @@ class VentasSinCobrarIaHelper
      *  - `monto_minimo` acota a los clientes con `saldo_en_pesos >= monto`; los totales pasan a ser
      *    los de ese filtro y `clientes_que_deben_sin_el_monto_minimo` dice cuántos eran sin él. No
      *    acota los saldos a favor ni las otras monedas (el monto está en pesos y es de deuda).
-     *  - `dias` NO filtra: el saldo no tiene antigüedad. Con `dias > 0` el bloque viene igual y
-     *    `como_leer` lo dice.
-     *  - `de_eso_en_ventas_sin_cobrar_en_pesos`: lo que el conjunto de ventas sin cobrar SIN umbral
-     *    (`query_de_ventas(..., 0, false)` y `deuda_agrupada_por_cliente()`, las mismas piezas de
-     *    `con_deuda_total()`) le atribuye al cliente. La diferencia con `saldo_en_pesos` es lo que no
-     *    es venta (saldo inicial, nota de débito, pagos a cuenta). Solo se llama cuando quien pregunta
-     *    ve todo el negocio, así que va sin recorte por empleado.
+     *  - `dias` NO saca a nadie: el saldo no tiene antigüedad. Con `dias > 0` cada fila trae
+     *    `tiene_ventas_impagas_de_esos_dias` (el cliente está en el conjunto de ventas de esa
+     *    antigüedad), el bloque trae `clientes_que_deben_con_ventas_de_esos_dias` (sobre TODOS los que
+     *    deben con el monto aplicado, no solo los que viajan) y los marcados viajan PRIMERO: si no,
+     *    con más de veinte deudores, uno que cumple "más de X hace más de N días" podía quedar afuera
+     *    del tope (revisión de la misión, 16/11/2026).
+     *  - Cada fila trae `dias_de_la_venta_impaga_mas_vieja` (null sin ventas impagas) y
+     *    `de_eso_en_ventas_sin_cobrar_en_pesos`: lo que el conjunto de ventas sin cobrar SIN umbral le
+     *    atribuye al cliente. La diferencia con `saldo_en_pesos` es lo que no es venta (saldo inicial,
+     *    nota de débito, pagos a cuenta sin imputar). Solo se arma para quien ve todo el negocio, así
+     *    que va sin recorte por empleado.
      *
      * @param  int  $owner_id  Dueño. Nunca Auth: corre en un job sin sesión.
-     * @param  int  $dias  El umbral de ventas ya resuelto: solo cambia `como_leer`.
+     * @param  int  $dias  El umbral de ventas ya resuelto: marca y ordena, no filtra.
      * @param  float|null  $monto_minimo  Ya limpio (`monto_minimo_valido()`).
+     * @param  array|null  $contexto  El de `contexto_de_ventas_del_negocio()`. null = lo lee acá (lo
+     *                                usa quien llama al bloque suelto; `ventas_sin_cobrar()` se lo pasa
+     *                                ya leído para no repetir la consulta de ventas).
      * @return array<string, mixed>
      */
-    public static function bloque_de_cuenta_corriente($owner_id, $dias = 0, $monto_minimo = null)
+    public static function bloque_de_cuenta_corriente($owner_id, $dias = 0, $monto_minimo = null, $contexto = null)
     {
         $owner_id = (int) $owner_id;
+        $dias = (int) $dias;
+
+        if (is_null($contexto)) {
+            $contexto = self::contexto_de_ventas_del_negocio($owner_id, $dias);
+        }
 
         // Una fila por cliente vivo del dueño: la suma de sus cuentas en pesos.
         $filas = ConsultasSistemaIaHelper::cuentas_en_pesos_de_clientes($owner_id)
@@ -351,19 +426,13 @@ class VentasSinCobrarIaHelper
             }));
         }
 
-        // De mayor a menor saldo; a igual saldo, el id más bajo primero (orden estable).
-        usort($deben, function ($a, $b) {
-            if ($a['saldo_en_pesos'] != $b['saldo_en_pesos']) {
-                return $b['saldo_en_pesos'] <=> $a['saldo_en_pesos'];
-            }
-
-            return $a['cliente_id'] <=> $b['cliente_id'];
-        });
-
-        $de_ventas = self::ventas_sin_cobrar_por_cliente($owner_id, array_column($deben, 'cliente_id'));
+        $de_ventas = $contexto['por_cliente'];
+        $de_esos_dias = $contexto['de_esos_dias'];
+        $hoy = now()->startOfDay();
 
         $total = 0.0;
         $sin_ventas = 0;
+        $con_ventas_de_esos_dias = 0;
 
         foreach ($deben as $indice => $cliente) {
             $id = $cliente['cliente_id'];
@@ -378,7 +447,37 @@ class VentasSinCobrarIaHelper
 
             $deben[$indice]['de_eso_en_ventas_sin_cobrar_en_pesos'] = $tiene_ventas ? $de_ventas[$id]['pendiente_en_pesos'] : 0.0;
             $deben[$indice]['tiene_ventas_sin_cobrar'] = $tiene_ventas;
+            $deben[$indice]['dias_de_la_venta_impaga_mas_vieja'] = (isset($contexto['mas_viejas'][$id]) && ! is_null($contexto['mas_viejas'][$id]))
+                ? (int) Carbon::parse($contexto['mas_viejas'][$id])->startOfDay()->diffInDays($hoy)
+                : null;
+
+            if ($dias > 0) {
+                $marcado = isset($de_esos_dias[$id]);
+
+                $deben[$indice]['tiene_ventas_impagas_de_esos_dias'] = $marcado;
+
+                if ($marcado) {
+                    $con_ventas_de_esos_dias++;
+                }
+            }
         }
+
+        /*
+         * De mayor a menor saldo; a igual saldo, el id más bajo primero (orden estable). Con `dias > 0`
+         * los que tienen ventas impagas de esa antigüedad van primero: son los que contestan "más de X
+         * hace más de N días" y no pueden quedar afuera del tope de veinte.
+         */
+        usort($deben, function ($a, $b) use ($dias) {
+            if ($dias > 0 && $a['tiene_ventas_impagas_de_esos_dias'] !== $b['tiene_ventas_impagas_de_esos_dias']) {
+                return $a['tiene_ventas_impagas_de_esos_dias'] ? -1 : 1;
+            }
+
+            if ($a['saldo_en_pesos'] != $b['saldo_en_pesos']) {
+                return $b['saldo_en_pesos'] <=> $a['saldo_en_pesos'];
+            }
+
+            return $a['cliente_id'] <=> $b['cliente_id'];
+        });
 
         $lista = array_slice($deben, 0, self::TOPE_DE_CLIENTES);
 
@@ -394,10 +493,14 @@ class VentasSinCobrarIaHelper
             'en_otras_monedas'                         => self::saldos_en_otras_monedas($owner_id),
         ];
 
-        $como_leer = 'clientes va de mayor a menor saldo_en_pesos. clientes_que_deben es cuantos deben en total y clientes_en_esta_lista cuantos viajan: si difieren, la lista esta recortada y el total no. de_eso_en_ventas_sin_cobrar_en_pesos es la parte de ese saldo que esta en ventas sin cobrar; un cliente con tiene_ventas_sin_cobrar = false debe un saldo que no es una venta (inicial o cargado a mano) y DEBE IGUAL. Los saldos a favor (clientes_con_saldo_a_favor) y las otras monedas (en_otras_monedas) van aparte: no se restan ni se suman a total_que_te_deben_en_pesos.';
+        if ($dias > 0) {
+            $bloque['clientes_que_deben_con_ventas_de_esos_dias'] = $con_ventas_de_esos_dias;
+        }
+
+        $como_leer = 'clientes va de mayor a menor saldo_en_pesos. clientes_que_deben es cuantos deben en total y clientes_en_esta_lista cuantos viajan: si difieren, la lista esta recortada y el total no. de_eso_en_ventas_sin_cobrar_en_pesos es la parte de ese saldo que esta en ventas sin cobrar; un cliente con tiene_ventas_sin_cobrar = false debe un saldo que no es una venta (inicial o cargado a mano) y DEBE IGUAL. Si el cliente tiene pagos a cuenta sin imputar, de_eso_en_ventas_sin_cobrar_en_pesos puede ser MAYOR que saldo_en_pesos: manda saldo_en_pesos. Un cliente con ventas impagas cuyo saldo neto es cero o a favor no aparece aca porque no debe. dias_de_la_venta_impaga_mas_vieja es la antiguedad de su venta impaga mas vieja (null si no tiene). Los saldos a favor (clientes_con_saldo_a_favor) y las otras monedas (en_otras_monedas) van aparte: no se restan ni se suman a total_que_te_deben_en_pesos.';
 
         if ($dias > 0) {
-            $como_leer .= ' Pediste dias = ' . $dias . ': eso acota solo las ventas de arriba. El saldo de cuenta corriente no tiene antiguedad y viene completo.';
+            $como_leer .= ' Pediste dias = ' . $dias . ': eso acota solo las ventas de arriba. El saldo de cuenta corriente no tiene antiguedad y viene completo; tiene_ventas_impagas_de_esos_dias marca a quien tiene alguna venta impaga de ' . $dias . ' dias o mas, y esos van primero en la lista (clientes_que_deben_con_ventas_de_esos_dias dice cuantos son en total).';
         }
 
         $bloque['como_leer'] = $como_leer;
@@ -412,34 +515,110 @@ class VentasSinCobrarIaHelper
     }
 
     /**
-     * Lo que el conjunto de ventas sin cobrar SIN umbral y SIN recorte le atribuye a cada cliente
-     * (misión asistente-deudores-saldos-iniciales, 16/11/2026): cuántas ventas impagas tiene y cuánto
-     * suman en pesos. Las mismas dos piezas que `con_deuda_total()` (`query_de_ventas(..., 0, false)` y
-     * `deuda_agrupada_por_cliente()`), invocadas y no copiadas.
+     * LO QUE LAS VENTAS SIN COBRAR DE TODO EL NEGOCIO DICEN DE CADA CLIENTE, leído una sola vez
+     * (revisión de la misión asistente-deudores-saldos-iniciales, 16/11/2026).
+     *
+     * Lo comparten `con_deuda_total()` (desde `ventas_sin_cobrar()`) y `bloque_de_cuenta_corriente()`,
+     * para que la consulta agrupada de ventas —la más pesada de la tool— no corra más veces que antes
+     * del bloque nuevo, y sin un `whereIn` con todos los deudores:
+     *  - `por_cliente`: del conjunto SIN umbral y SIN recorte (`query_de_ventas(..., 0, false)` +
+     *    `deuda_agrupada_por_cliente()`, las piezas de siempre). Con `dias = 0` ese conjunto es el
+     *    mismo que el pedido (`respetar_umbral_propio()` es siempre false y sin días no hay umbral), así
+     *    que se reusan `$filas_del_pedido` y no se consulta nada.
+     *  - `mas_viejas`: la venta impaga más vieja de cada cliente, del mismo conjunto sin umbral (la
+     *    misma consulta que hacía `con_deuda_total()`, sin el `whereIn`).
+     *  - `de_esos_dias`: con `dias > 0`, los clientes que tienen alguna venta impaga de esa antigüedad
+     *    (los del conjunto pedido).
+     *
+     * Solo sirve para quien ve todo el negocio: va sin recorte por empleado.
      *
      * @param  int  $owner_id
-     * @param  array<int, int>  $ids  Los clientes a mirar. Vacío = no consulta nada.
-     * @return array<int, array{ventas: int, pendiente_en_pesos: float}>  Por `cliente_id`.
+     * @param  int  $dias  El umbral ya resuelto.
+     * @param  \Illuminate\Support\Collection|null  $filas_del_pedido  Lo que `ventas_sin_cobrar()` ya
+     *         agrupó para ese `dias` (sin recorte). null = se lee acá.
+     * @return array{por_cliente: array<int, array{ventas: int, pendiente_en_pesos: float}>, mas_viejas: array<int, string|null>, de_esos_dias: array<int, bool>}
      */
-    protected static function ventas_sin_cobrar_por_cliente($owner_id, array $ids)
+    protected static function contexto_de_ventas_del_negocio($owner_id, $dias, $filas_del_pedido = null)
     {
-        if (empty($ids)) {
+        $dias = (int) $dias;
 
-            return [];
+        if ($dias > 0 && is_null($filas_del_pedido)) {
+            $filas_del_pedido = self::deuda_agrupada_por_cliente(
+                VentasSinCobrarHelper::query_de_ventas($owner_id, null, $dias, true, self::respetar_umbral_propio($dias))
+            );
         }
 
         $toda = VentasSinCobrarHelper::query_de_ventas($owner_id, null, 0, false);
 
-        $por_cliente = [];
+        $sin_umbral = ($dias === 0 && ! is_null($filas_del_pedido) && ! self::respetar_umbral_propio($dias))
+            ? $filas_del_pedido
+            : self::deuda_agrupada_por_cliente($toda);
 
-        foreach (self::deuda_agrupada_por_cliente($toda, $ids) as $fila) {
-            $por_cliente[(int) $fila->cliente_id] = [
+        $de_esos_dias = [];
+
+        if ($dias > 0) {
+            foreach (self::por_id($filas_del_pedido) as $id => $datos) {
+                if ($datos['ventas'] > 0) {
+                    $de_esos_dias[$id] = true;
+                }
+            }
+        }
+
+        return [
+            'por_cliente'  => self::por_id($sin_umbral),
+            'mas_viejas'   => self::ventas_mas_viejas_por_cliente($toda),
+            'de_esos_dias' => $de_esos_dias,
+        ];
+    }
+
+    /**
+     * Las filas de `deuda_agrupada_por_cliente()` indexadas por cliente (sin las ventas sin cliente).
+     *
+     * @param  \Illuminate\Support\Collection|array  $filas
+     * @return array<int, array{ventas: int, pendiente_en_pesos: float}>
+     */
+    protected static function por_id($filas)
+    {
+        $por_id = [];
+
+        foreach ($filas as $fila) {
+            $id = (int) $fila->cliente_id;
+
+            if ($id <= 0) {
+                continue;
+            }
+
+            $por_id[$id] = [
                 'ventas'             => (int) $fila->ventas,
                 'pendiente_en_pesos' => round((float) $fila->pendiente_en_pesos, 2),
             ];
         }
 
-        return $por_cliente;
+        return $por_id;
+    }
+
+    /**
+     * La fecha de la venta impaga más vieja de cada cliente, agrupada por `sales.client_id` (el
+     * cliente de la cuenta corriente de esa venta). Es la consulta que vivía adentro de
+     * `con_deuda_total()`, sacada para que la compartan los dos caminos.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $toda  Las ventas (sin umbral).
+     * @param  array<int, int>|null  $ids  Si viene, acota a esos clientes.
+     * @return array<int, string|null>  cliente_id => fecha
+     */
+    protected static function ventas_mas_viejas_por_cliente($toda, $ids = null)
+    {
+        $query = (clone $toda)->toBase();
+
+        if (! is_null($ids)) {
+            $query->whereIn('sales.client_id', $ids);
+        }
+
+        return $query
+            ->groupBy('sales.client_id')
+            ->selectRaw('sales.client_id as cliente_id, MIN(sales.created_at) as primera')
+            ->pluck('primera', 'cliente_id')
+            ->all();
     }
 
     /**
@@ -611,35 +790,45 @@ class VentasSinCobrarIaHelper
      * @param  array<int, int>  $ids
      * @param  int  $owner_id
      * @param  int|null  $employee_id
+     * @param  array|null  $contexto  El de `contexto_de_ventas_del_negocio()` (solo sin recorte por
+     *                                empleado): trae ya leídos el total sin umbral y la venta más vieja
+     *                                de cada cliente, y no se vuelven a consultar (revisión de la misión
+     *                                asistente-deudores-saldos-iniciales, 16/11/2026). null = el camino
+     *                                de siempre, que es el que sigue usando `clientes_deudores()`.
      * @return array<int, array<string, mixed>>
      */
-    protected static function con_deuda_total(array $por_cliente, array $ids, $owner_id, $employee_id)
+    protected static function con_deuda_total(array $por_cliente, array $ids, $owner_id, $employee_id, $contexto = null)
     {
         if (empty($por_cliente)) {
 
             return $por_cliente;
         }
 
-        $toda = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, 0, false);
-
         $totales = [];
 
-        foreach (self::deuda_agrupada_por_cliente($toda, $ids) as $fila) {
-            $totales[(int) $fila->cliente_id] = round((float) $fila->pendiente_en_pesos, 2);
-        }
+        if (! is_null($contexto)) {
 
-        /*
-         * La venta impaga más vieja de cada cliente, del conjunto entero y no del pedido: es la que
-         * dice "hace cuánto me debe". Se agrupa por `sales.client_id`, que es el cliente de la cuenta
-         * corriente de esa venta.
-         */
-        $mas_viejas = (clone $toda)
-            ->whereIn('sales.client_id', $ids)
-            ->toBase()
-            ->groupBy('sales.client_id')
-            ->selectRaw('sales.client_id as cliente_id, MIN(sales.created_at) as primera')
-            ->pluck('primera', 'cliente_id')
-            ->all();
+            foreach ($contexto['por_cliente'] as $id => $datos) {
+                $totales[$id] = $datos['pendiente_en_pesos'];
+            }
+
+            $mas_viejas = $contexto['mas_viejas'];
+
+        } else {
+
+            $toda = VentasSinCobrarHelper::query_de_ventas($owner_id, $employee_id, 0, false);
+
+            foreach (self::deuda_agrupada_por_cliente($toda, $ids) as $fila) {
+                $totales[(int) $fila->cliente_id] = round((float) $fila->pendiente_en_pesos, 2);
+            }
+
+            /*
+             * La venta impaga más vieja de cada cliente, del conjunto entero y no del pedido: es la
+             * que dice "hace cuánto me debe". Se agrupa por `sales.client_id`, que es el cliente de la
+             * cuenta corriente de esa venta.
+             */
+            $mas_viejas = self::ventas_mas_viejas_por_cliente($toda, $ids);
+        }
 
         $hoy = now()->startOfDay();
 
