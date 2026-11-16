@@ -925,7 +925,7 @@ class Planilla_correcciones_Test extends PlanillaTestCase
 
         $this->planilla_pegada($conversation);
 
-        $this->del_dueno($conversation, 'Vendele algo');
+        $this->del_dueno($conversation, 'Vendele algo. Estas ventas se cobraron en Efectivo, Caja Efectivo.');
         $assistant = $this->assistant($conversation);
 
         $venta = [
@@ -2050,7 +2050,7 @@ class Planilla_correcciones_Test extends PlanillaTestCase
 
         $this->planilla_pegada($conversation);
 
-        $this->del_dueno($conversation, 'Vendele a Ana Prueba');
+        $this->del_dueno($conversation, 'Vendele a Ana Prueba. Se cobró en Efectivo, Caja Efectivo.');
 
         $respuesta = $this->herramienta('proponer_venta', [
             'cliente'        => $parecida->name,

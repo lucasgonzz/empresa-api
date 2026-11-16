@@ -1804,7 +1804,7 @@ class Venta_por_planilla_Test extends PlanillaTestCase
 
         $cliente = Client::create(['name' => 'Bruno Prueba Dos', 'dni' => '14000002', 'user_id' => $this->dueno->id, 'num' => 910703]);
 
-        $this->del_dueno($conversation, 'Vendele a Bruno');
+        $this->del_dueno($conversation, 'Vendele a Bruno. Estas ventas se cobraron en Efectivo, Caja Efectivo.');
         $assistant = $this->assistant($conversation);
 
         $input = [
