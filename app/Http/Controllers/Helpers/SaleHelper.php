@@ -203,6 +203,15 @@ class SaleHelper extends Controller {
      * @param  mixed  $valor  Lo que mando el front en la clave `created_at`.
      * @return \Carbon\Carbon
      */
+    /** La ausencia sigue siendo compatible; una fecha explícita inválida nunca se cambia en silencio. */
+    public static function error_fecha_de_venta($request) {
+        if ($request->exists('created_at') && is_null(Self::dia_pedido($request->input('created_at')))) {
+            return ['message' => 'La fecha de la venta está vacía o no es válida. Elegí una fecha válida en Fecha y volvé a guardar.',
+                'errors' => ['created_at' => ['Elegí una fecha válida con formato AAAA-MM-DD.']]];
+        }
+        return null;
+    }
+
     static function resolver_created_at($valor) {
         $ahora = Carbon::now();
 
