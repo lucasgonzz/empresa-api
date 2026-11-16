@@ -37,7 +37,9 @@ class AltaBebidasTest extends EmpresaTestCase
         $this->dueno->listas_de_precio = 0;
         $this->dueno->save();
         foreach (['agentes_ia', 'vinoteca'] as $slug) {
-            $e = ExtencionEmpresa::firstOrCreate(['slug' => $slug], ['name' => $slug]);
+            // slug no está en el $fillable de ExtencionEmpresa: firstOrCreate tiraba MassAssignmentException
+            // cuando la base de testing no traía la extensión, y ningún caso de la clase llegaba a correr.
+            $e = ExtencionEmpresa::where('slug', $slug)->first() ?: ExtencionEmpresa::forceCreate(['slug' => $slug, 'name' => $slug]);
             $this->dueno->extencions()->syncWithoutDetaching([$e->id]);
         }
         $this->dueno->load('extencions');
