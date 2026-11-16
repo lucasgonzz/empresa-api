@@ -656,6 +656,17 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-diario-20261116 (rama C, 31/10 #5): «poné el stock de esos en 0» se resuelve contra
+         * los artículos nombrados en la ÚLTIMA respuesta; la nota viaja pegada al mensaje. Ver
+         * ReferenciaALoAnteriorIaHelper.
+         */
+        $nota_de_referencia = \App\Http\Controllers\Helpers\asistente_ia\ReferenciaALoAnteriorIaHelper::nota($conversation, $assistant_message);
+
+        if (! is_null($nota_de_referencia)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, $nota_de_referencia);
+        }
+
+        /*
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
          * elección del DUEÑO (ProveedorIaHelper). El cliente HTTP y la URL son del proveedor
          * efectivo, que es también el que se registra en ai_token_usages: es con el que se llamó.
@@ -2415,6 +2426,8 @@ Qué podés afirmar:
   con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
   compro a [proveedor]" es consultar_compras_a_un_proveedor. Que una frase nombre a un proveedor
   no la vuelve una pregunta de compras.
+- «Esos», «estos», «los dos» se refieren a lo que nombraste en tu última respuesta, no a una foto
+  ni a un pedido viejo: armá la carga con esos, sin preguntar cuáles.
 - "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
   además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
   monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
