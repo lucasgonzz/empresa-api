@@ -213,7 +213,8 @@ class NombreParecidoIaHelper
 
         foreach (self::palabras_que_cuentan($nombre) as $buscada) {
 
-            if (in_array($buscada, $sin_contar, true)) {
+            // Un número suelto no nombra nada: «Caja 1» no se da por nombrada con cualquier «1» (revisión, menor 6).
+            if (in_array($buscada, $sin_contar, true) || ctype_digit($buscada)) {
                 continue;
             }
 

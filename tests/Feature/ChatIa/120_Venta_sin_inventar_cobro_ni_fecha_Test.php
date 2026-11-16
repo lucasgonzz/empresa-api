@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\CobroDichoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ContextoDeCargaIa;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentaConDatosInventadosIaHelper;
@@ -446,7 +447,16 @@ class Venta_sin_inventar_cobro_ni_fecha_Test extends EmpresaTestCase
             return ['model' => 'x', 'stop_reason' => 'end_turn', 'content' => [['type' => 'text', 'text' => $texto]], 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]];
         };
 
+        /*
+         * Revisión independiente (bloqueante 1): la guarda corre solo si el turno armó una venta. El modelo
+         * llama a proponer_venta sin artículos (la herramienta pide el detalle) y después promete la fecha.
+         */
+        $herramienta = ['model' => 'x', 'stop_reason' => 'tool_use', 'content' => [[
+            'type' => 'tool_use', 'id' => 'toolu_c120', 'name' => 'proponer_venta', 'input' => ['items' => []],
+        ]], 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]];
+
         $secuencia = Http::sequence()
+            ->push($herramienta, 200)
             ->push($respuesta($mentira), 200)
             ->push($respuesta($mentira), 200)
             ->whenEmpty(Http::response(['error' => ['type' => 'api_error', 'message' => 'agotada c112']], 500));
@@ -469,7 +479,110 @@ class Venta_sin_inventar_cobro_ni_fecha_Test extends EmpresaTestCase
             }
         }
 
-        $this->assertCount(2, $bodies, 'Un solo reintento.');
-        $this->assertStringContainsString('quedan SIEMPRE con la fecha de hoy', $bodies[1]);
+        $this->assertCount(3, $bodies, 'La herramienta, la respuesta y un solo reintento.');
+        $this->assertStringContainsString('quedan SIEMPRE con la fecha de hoy', $bodies[2]);
+    }
+
+    /**
+     * Revisión independiente (bloqueante 1): un turno que solo INFORMA ventas pasadas no dispara la guarda,
+     * ni por el turno (no hay venta) ni por la oración (no hay verbo de carga).
+     *
+     * @test
+     */
+    public function un_informe_de_ventas_pasadas_no_es_una_venta_con_otra_fecha()
+    {
+        $hoy = Carbon::create(2026, 11, 13);
+
+        $informes = [
+            'Las ventas del día de ayer suman $120.000 en 14 ventas.',
+            'El día 12/11 tuviste 5 ventas por $340.000.',
+            'Hay 3 ventas con fecha 12/11 sin cobrar.',
+            'Te muestro las ventas del día viernes.',
+        ];
+
+        foreach ($informes as $texto) {
+            $this->assertFalse(VentaConDatosInventadosIaHelper::afirma_otra_fecha($texto, $hoy), $texto);
+        }
+
+        // Y sin venta en el turno (ni proponer_venta ni tarjeta de venta), la guarda no corre.
+        list($conversation, $assistant) = $this->conversacion('¿Cuánto vendí ayer?', false);
+
+        $this->assertFalse(VentaConDatosInventadosIaHelper::es_turno_de_venta($informes[0], ['consultar_resumen_de_ventas'], $assistant));
+        $this->assertTrue(VentaConDatosInventadosIaHelper::es_turno_de_venta('x', ['proponer_venta'], $assistant));
+    }
+
+    /**
+     * Revisión independiente (importante 2): «otra igual» toma el cobro de la venta anterior confirmada en la
+     * charla, en vez de preguntarlo.
+     *
+     * @test
+     */
+    public function otra_igual_toma_el_cobro_de_la_venta_anterior()
+    {
+        $caja = $this->resolver_caja_por_nombre(TestingFerreteriaSeeder::CAJA_EFECTIVO);
+        $this->asegurar_caja_abierta($caja);
+
+        list($conversation, $assistant) = $this->conversacion('Otra igual para ' . TestingFerreteriaSeeder::CLIENTE_CC . ', un martillo zz-c112');
+
+        // El modelo no manda el cobro: sale de la venta anterior (Transferencia a la Caja Efectivo).
+        $respuesta = $this->proponer($conversation, $assistant, [
+            'items'   => [['articulo_id' => $this->martillo->id, 'cantidad' => 1]],
+            'cliente' => TestingFerreteriaSeeder::CLIENTE_CC,
+        ]);
+
+        $this->assertTrue(!empty($respuesta['ok']), json_encode($respuesta));
+
+        $payload = AiMessageAction::find($respuesta['tarjeta_id'])->datos['payload'];
+
+        $this->assertSame((int) $this->resolver_metodo_pago_por_nombre('Transferencia')->id, (int) $payload['current_acount_payment_method_id']);
+        $this->assertSame((int) $caja->id, (int) $payload['caja_id']);
+    }
+
+    /**
+     * Revisión independiente (importante 3): una foto VIEJA del tramo no salva el cobro de un pedido dictado
+     * después; solo cuentan los adjuntos de los últimos dos mensajes de la persona.
+     *
+     * @test
+     */
+    public function una_foto_vieja_del_tramo_no_salva_el_cobro_no_dicho()
+    {
+        $conversation = AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]);
+
+        $foto = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Te paso la planilla', 'estado' => 'listo']);
+        AiMessageImagen::forceCreate(['ai_message_id' => $foto->id, 'user_id' => $this->dueno->id, 'orden' => 1, 'path' => 'ai/c120.jpg']);
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'Ahora otra cosa', 'estado' => 'listo']);
+        AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'user', 'contenido' => 'El cliente es ' . TestingFerreteriaSeeder::CLIENTE_CC . ', llevó un martillo zz-c112', 'estado' => 'listo']);
+
+        $assistant = AiMessage::create(['ai_conversation_id' => $conversation->id, 'rol' => 'assistant', 'estado' => 'pendiente', 'acciones_habilitadas' => true]);
+
+        $respuesta = $this->proponer($conversation, $assistant, $this->input_heredado());
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertArrayHasKey('nota', $respuesta);
+        $this->assertSame(0, AiMessageAction::where('ai_message_id', $assistant->id)->count());
+    }
+
+    /**
+     * Revisión independiente (menor 6): la palabra que distingue al método o a la caja.
+     *
+     * @test
+     */
+    public function el_metodo_y_la_caja_se_nombran_por_su_palabra_distintiva()
+    {
+        $metodos = ['Tarjeta de crédito', 'Tarjeta de débito', 'MODO', 'Efectivo'];
+
+        $this->assertFalse(CobroDichoIaHelper::nombra_el_metodo(' pago con tarjeta ', 'Tarjeta de crédito', $metodos));
+        $this->assertTrue(CobroDichoIaHelper::nombra_el_metodo(' pago con tarjeta de credito ', 'Tarjeta de crédito', $metodos));
+        $this->assertFalse(CobroDichoIaHelper::nombra_el_metodo(' pago con debito ', 'Tarjeta de crédito', $metodos));
+        $this->assertFalse(CobroDichoIaHelper::nombra_el_metodo(' de todos modos lo llevo ', 'MODO', $metodos));
+        $this->assertTrue(CobroDichoIaHelper::nombra_el_metodo(' me pago con modo ', 'MODO', $metodos));
+
+        $cajas = ['Caja 1', 'Caja 2', 'BRUBANK FER', 'BRUBANK NADIA'];
+
+        $this->assertFalse(CobroDichoIaHelper::nombra_la_caja(' llevo 1 martillo ', 'Caja 1', $cajas));
+        $this->assertTrue(CobroDichoIaHelper::nombra_la_caja(' va a la caja 1 ', 'Caja 1', $cajas));
+        $this->assertFalse(CobroDichoIaHelper::nombra_la_caja(' transferencia a brubank ', 'BRUBANK FER', $cajas));
+        $this->assertTrue(CobroDichoIaHelper::nombra_la_caja(' transferencia a brubank nadia ', 'BRUBANK NADIA', $cajas));
     }
 }
+

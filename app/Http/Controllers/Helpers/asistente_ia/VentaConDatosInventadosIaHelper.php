@@ -53,10 +53,15 @@ class VentaConDatosInventadosIaHelper
     ];
 
     /**
-     * true si el turno es de una venta: se pidió proponer_venta, el texto o lo último que escribió la
-     * persona habla de una venta.
+     * true si en ESTE turno hubo una venta: se pidió proponer_venta o el mensaje dejó una tarjeta (o una
+     * venta registrada) de tipo venta.
      *
-     * @param  string  $texto
+     * Revisión independiente (16/11/2026, bloqueante 1): antes alcanzaba con que el texto o la persona
+     * hablaran de «ventas», y disparaba sobre informes de ventas pasadas («Las ventas del día de ayer
+     * suman…»). Lo que se pierde a sabiendas: la promesa SIN herramienta («Pasame el detalle y la cargo
+     * con fecha 11/11») ya no dispara; el texto de la venta que después se arma, sí.
+     *
+     * @param  string  $texto  Sin uso: queda por la firma de la llamada.
      * @param  array<int, string>  $herramientas_pedidas
      * @param  \App\Models\AiMessage  $assistant
      * @return bool
@@ -67,19 +72,9 @@ class VentaConDatosInventadosIaHelper
             return true;
         }
 
-        if (preg_match('/\bventa/u', self::normalizar($texto))) {
-            return true;
-        }
-
-        $ultimos = AiMessage::where('ai_conversation_id', (int) $assistant->ai_conversation_id)
-            ->where('rol', 'user')
-            ->where('id', '<', (int) $assistant->id)
-            ->orderBy('id', 'DESC')
-            ->limit(3)
-            ->pluck('contenido')
-            ->all();
-
-        return (bool) preg_match('/\b(venta|vend)/u', self::normalizar(implode(' ', $ultimos)));
+        return AiMessageAction::where('ai_message_id', (int) $assistant->id)
+            ->where('tipo', AiMessageAction::TIPO_VENTA)
+            ->exists();
     }
 
     /**
@@ -119,14 +114,21 @@ class VentaConDatosInventadosIaHelper
             return false;
         }
 
-        // Lo que solo puede ser la fecha de la venta…
-        $de_fecha = '/\b(con fecha|de fecha|fecha ?:|date ?:|fechad[ao]s?|la fecha (quedo|queda|la tome|es)|fecha tomada|tomada como)/u';
+        // El rótulo «Date:»/«Fecha:» al empezar es el resumen de lo que se acaba de cargar (la 3103 del caso real).
+        if (preg_match('/^(fecha|date) ?:/u', $o)) {
+            return self::nombra_otro_dia($o, $hoy);
+        }
 
-        // …y lo que lo es solo si la oración habla de cargar o registrar la venta.
-        $generica = '/\b(para el( dia)?|del dia|el dia)\b/u';
-        $de_venta = '/\b(venta|ventas|la cargo|las cargo|cargarla|cargarlas|cargada|cargadas|registrada|registradas|la registro|la armo|armarla)\b/u';
+        // La fecha puesta a la venta («con fecha», «para el sábado», «tomada como»)…
+        $de_fecha = '/\b(con fecha|de fecha|fechad[ao]s?|la fecha|fecha tomada|tomada como|para el( dia)?|del dia|el dia)\b/u';
 
-        if (!preg_match($de_fecha, $o) && !(preg_match($generica, $o) && preg_match($de_venta, $o))) {
+        /*
+         * …con un verbo de CARGA en la misma oración (revisión independiente, bloqueante 1): un informe
+         * («tuviste 5 ventas», «hay 3 ventas con fecha 12/11 sin cobrar») no carga nada.
+         */
+        $de_carga = '/\b(cargo|cargue|cargada|cargadas|cargarla|cargarlas|cargar|registro|registre|registrada|registradas|registrarla|la armo|armarla|armada|quedo|queda|quedan|quedaron|tomada|tome)\b/u';
+
+        if (!preg_match($de_fecha, $o) || !preg_match($de_carga, $o)) {
             return false;
         }
 
