@@ -2787,7 +2787,7 @@ class HerramientasDeCarga
      *
      * @return array
      */
-    protected static function esquema_de_filtros(): array
+    public static function esquema_de_filtros(): array
     {
         return [
             'type'        => 'array',

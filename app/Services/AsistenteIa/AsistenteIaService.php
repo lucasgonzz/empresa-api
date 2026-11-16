@@ -6560,6 +6560,40 @@ CONFIRMACION;
                         $assistant_message instanceof AiMessage ? $assistant_message : null);
                 },
             ],
+            /*
+             * 🔴 MISIÓN asistente-mejoras-4-dias (16/11/2026, P5: V9 y V16), al final por la regla del prefijo del
+             * caché. Pesca pidió «cuánta plata hay de venta con todo el stock del depósito» y después el Excel: el
+             * agente sumaba de cabeza sobre páginas de 100 y prometió «el Excel con las 948 filas» que nunca
+             * llegó (exportar_excel le hace escribir las filas al modelo). Las cuentas y las filas las hace el
+             * SERVIDOR: ValorizacionDeStockIaHelper. Las dos son de lectura y van en los tres canales.
+             */
+            [
+                'name' => 'valorizar_stock',
+                'description' => 'CUÁNTA PLATA HAY EN STOCK, calculado por el sistema sobre TODOS los artículos (no una muestra): stock × precio de venta de hoy (valor_a_precio) y stock × costo (valor_a_costo, solo si quien pregunta puede ver costos), unidades, ganancia potencial y la AUDITORÍA DE PRECIOS (cuántos con stock no tienen precio, no tienen costo o tienen precio menor o igual al costo). En total o agrupado por rubro, proveedor o depósito; con deposito, el stock de ese depósito. Acepta los mismos filtros que contar_articulos_por_filtro (proveedor por nombre: "los precios de Albatros"). 🔴 Es LA herramienta de "cuánta plata tengo en mercadería", "cuánto vale el stock del depósito" y "¿están bien los precios de tal proveedor?": nunca lo sumes vos sobre listas paginadas. Contestá con los números que trae, sin recalcular. Para la lista artículo por artículo, exportar_articulos_excel con los mismos filtros. Si trae "error" o "faltan", contá eso.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'filtros' => HerramientasDeCarga::esquema_de_filtros(),
+                        'deposito' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el depósito o sucursal por su nombre, para valorizar solo el stock de ese depósito. Sin esto, el stock total de cada artículo.',
+                        ],
+                        'agrupar_por' => [
+                            'type'        => 'string',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::AGRUPACIONES,
+                            'description' => 'ninguna (default), rubro, proveedor o deposito.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::valorizar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        $input
+                    );
+                },
+            ],
         ];
     }
 
