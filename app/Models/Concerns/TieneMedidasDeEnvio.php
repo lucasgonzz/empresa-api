@@ -18,10 +18,16 @@ trait TieneMedidasDeEnvio
                 return;
             }
             if (Schema::hasTable('medidas_envio_paquetes')) {
-                DB::table('medidas_envio_paquetes')->updateOrInsert([
+                $identidad = [
                     'tipo' => $modelo->tipo_medidas_envio(),
                     'paquete_id' => $modelo->id,
-                ], $modelo->medidas_envio_pendientes);
+                ];
+                // Atómico también cuando dos guardados crean la primera fila del paquete.
+                DB::table('medidas_envio_paquetes')->upsert(
+                    [array_merge($identidad, $modelo->medidas_envio_pendientes)],
+                    ['tipo', 'paquete_id'],
+                    array_keys($modelo->medidas_envio_pendientes)
+                );
             }
             $modelo->medidas_envio_pendientes = [];
             $modelo->unsetRelation('medidas_envio');
