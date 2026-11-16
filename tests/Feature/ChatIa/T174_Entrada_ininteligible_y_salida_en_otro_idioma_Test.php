@@ -279,6 +279,11 @@ class T174_Entrada_ininteligible_y_salida_en_otro_idioma_Test extends EmpresaTes
         $this->assertFalse(EntradaIninteligibleIaHelper::es_ininteligible('👍'));
         $this->assertFalse(EntradaIninteligibleIaHelper::es_ininteligible(''));
 
+        // Revisión B3: una afirmación latina con un nombre en otra escritura se entiende.
+        $this->assertFalse(EntradaIninteligibleIaHelper::es_ininteligible('ok 李明'));
+        $this->assertFalse(EntradaIninteligibleIaHelper::es_ininteligible('dale, 李明'));
+        $this->assertTrue(EntradaIninteligibleIaHelper::es_ininteligible('李明 好'));
+
         $this->assertTrue(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('Vendiste $228 milhões en el mes.'));
         $this->assertTrue(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('A sua informação está pronta.'));
         $this->assertTrue(TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles('You sold 70 items today and this is the total.'));

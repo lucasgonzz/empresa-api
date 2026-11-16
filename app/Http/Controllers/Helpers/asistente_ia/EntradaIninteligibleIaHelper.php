@@ -63,6 +63,18 @@ class EntradaIninteligibleIaHelper
             return true;
         }
 
+        /*
+         * Revisión de la rama C (B3): si lo que está en letras latinas es una afirmación («ok 李明»: un ok y un
+         * nombre en otra escritura), el mensaje se entiende y no aplica. Se usa la misma lista cerrada que la
+         * confirmación determinista.
+         */
+        $solo_latino = trim((string) preg_replace('/(?!\p{Latin})[\p{L}\p{M}]+/u', ' ', $texto));
+
+        if ($solo_latino !== '' && ConfirmacionDeterministaIaHelper::es_afirmacion($solo_latino)) {
+
+            return false;
+        }
+
         $latinas = preg_match_all('/\p{Latin}/u', $texto);
 
         // Letras y marcas (las vocales del télugu son marcas) que no son latinas.
