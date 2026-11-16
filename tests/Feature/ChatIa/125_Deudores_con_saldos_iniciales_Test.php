@@ -159,10 +159,13 @@ class Deudores_con_saldos_iniciales_Test extends EmpresaTestCase
      *
      * @param  Client  $cliente
      * @param  float  $total
+     * @param  Carbon|null  $created_at  null = ahora.
      * @return Sale
      */
-    protected function venta_a_cuenta_corriente(Client $cliente, $total)
+    protected function venta_a_cuenta_corriente(Client $cliente, $total, $created_at = null)
     {
+        $created_at = is_null($created_at) ? Carbon::now() : $created_at;
+
         $venta = Sale::create([
             'num'                        => (int) Sale::where('user_id', $this->dueno->id)->max('num') + 1,
             'user_id'                    => $this->dueno->id,
@@ -175,7 +178,7 @@ class Deudores_con_saldos_iniciales_Test extends EmpresaTestCase
             'moneda_id'                  => 1,
             'sub_total'                  => $total,
             'total'                      => $total,
-            'created_at'                 => Carbon::now(),
+            'created_at'                 => $created_at,
         ]);
 
         $this->assertNotNull(SaleHelper::create_current_acount($venta), 'La venta tiene que ir a la cuenta corriente.');
@@ -529,6 +532,15 @@ class Deudores_con_saldos_iniciales_Test extends EmpresaTestCase
         $this->assertStringNotContainsString('el ranking de clientes que más deben', $descripcion);
         $this->assertStringNotContainsString('Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más"', $descripcion);
 
+        // Revisión: deuda_total_en_pesos es lo que debe EN VENTAS, no "TODO lo que debe".
+        $this->assertStringNotContainsString('deuda_total_en_pesos (TODO lo que debe)', $descripcion);
+        $this->assertStringContainsString('tiene_ventas_impagas_de_esos_dias = true', $descripcion);
+
+        // Y el prompt ya no promete que el recordatorio llega "a los mismos clientes que le listaste".
+        $prompt = file_get_contents(app_path('Services/AsistenteIa/AsistenteIaService.php'));
+        $this->assertStringNotContainsString('le llega a los mismos clientes que le listaste', $prompt);
+        $this->assertStringContainsString('No prometas a quiénes: los destinatarios reales los muestra', $prompt);
+
         $recordatorios = null;
 
         foreach (HerramientasDeCarga::definiciones() as $herramienta) {
@@ -538,7 +550,242 @@ class Deudores_con_saldos_iniciales_Test extends EmpresaTestCase
         }
 
         $this->assertNotNull($recordatorios, 'No está la tool proponer_recordatorios_de_cobro.');
-        $this->assertStringContainsString('uno que debe solo un saldo inicial (importado o cargado a mano) no entra', $recordatorios);
+        $this->assertStringContainsString('no le llega a quien debe solo un saldo que no es venta', $recordatorios);
+        $this->assertStringContainsString('ni a quien no alcanza el monto con sus ventas', $recordatorios);
+        $this->assertStringNotContainsString('El filtro es EL MISMO de consultar_ventas_sin_cobrar', $recordatorios);
+    }
+
+    // ------------------------------------------------------------------ revisión: F1
+
+    /**
+     * El caso de la revisión: un saldo inicial de 200.000 sin imputar y una venta impaga de 10.000 de 40
+     * días (debe 210.000), y otro cliente que debe 300.000 de saldo inicial y nada en ventas.
+     *
+     * @return array{0: Client, 1: Client}  [el del saldo con venta vieja, el de solo saldo]
+     */
+    protected function armar_saldo_con_venta_vieja()
+    {
+        $mixto = $this->cliente('Saldo con venta vieja');
+        $this->saldo_importado($mixto, 200000);
+        $this->venta_a_cuenta_corriente($mixto, 10000, Carbon::now()->subDays(40));
+
+        $solo_saldo = $this->cliente('Solo saldo grande');
+        $this->saldo_importado($solo_saldo, 300000);
+
+        $this->assertEqualsWithDelta(210000, (float) $this->cuenta($mixto)->saldo, 0.01);
+
+        return [$mixto, $solo_saldo];
+    }
+
+    /**
+     * La fila de un cliente en `cuenta_corriente.clientes`.
+     *
+     * @param  array  $bloque
+     * @param  Client  $cliente
+     * @return array|null
+     */
+    protected function fila_de(array $bloque, Client $cliente)
+    {
+        foreach ($bloque['clientes'] as $fila) {
+            if ($fila['cliente_id'] === (int) $cliente->id) {
+                return $fila;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 🔴 "Los que me deben más de 100 mil hace más de 30 días" no puede dar "ninguno" para el cliente
+     * que debe 210.000 (200.000 de saldo inicial + una venta de 10.000 de 40 días): con dias y monto, la
+     * fila trae la marca en true y viaja primero, aunque otro deba más con solo saldo inicial.
+     *
+     * @test
+     */
+    public function mas_de_x_hace_mas_de_n_dias_sale_bien_con_saldo_que_no_es_venta()
+    {
+        list($mixto, $solo_saldo) = $this->armar_saldo_con_venta_vieja();
+
+        // Sin argumentos: el saldo entero, la parte en ventas y la antigüedad.
+        $sin_nada = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, null, $this->dueno);
+        $fila = $this->fila_de($sin_nada['cuenta_corriente'], $mixto);
+
+        $this->assertEqualsWithDelta(210000, $fila['saldo_en_pesos'], 0.001);
+        $this->assertEqualsWithDelta(10000, $fila['de_eso_en_ventas_sin_cobrar_en_pesos'], 0.001);
+        $this->assertSame(40, $fila['dias_de_la_venta_impaga_mas_vieja']);
+        $this->assertArrayNotHasKey('tiene_ventas_impagas_de_esos_dias', $fila);
+        $this->assertNull($this->fila_de($sin_nada['cuenta_corriente'], $solo_saldo)['dias_de_la_venta_impaga_mas_vieja']);
+
+        // El ranking de ventas no cambió: 10.000 en ventas.
+        $this->assertEqualsWithDelta(10000, $sin_nada['clientes'][0]['deuda_total_en_pesos'], 0.001);
+        $this->assertStringContainsString('EN VENTAS', $sin_nada['como_leer_cada_cliente']);
+
+        // Solo monto: los dos están en cuenta_corriente; el ranking de ventas viene vacío.
+        $con_monto = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, null, $this->dueno, 100000);
+
+        $this->assertNotNull($this->fila_de($con_monto['cuenta_corriente'], $mixto));
+        $this->assertNotNull($this->fila_de($con_monto['cuenta_corriente'], $solo_saldo));
+        $this->assertSame(0, $con_monto['clientes_con_deuda']);
+        $this->assertStringContainsString('deuda en ventas sin cobrar', $con_monto['filtro_de_monto']);
+
+        // Dias y monto: la marca, el conteo y el orden.
+        $los_dos = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, 30, $this->dueno, 100000);
+        $cc = $los_dos['cuenta_corriente'];
+
+        $this->assertSame(1, $cc['clientes_que_deben_con_ventas_de_esos_dias']);
+        $this->assertSame((int) $mixto->id, $cc['clientes'][0]['cliente_id'], 'El marcado viaja primero aunque deba menos.');
+        $this->assertTrue($cc['clientes'][0]['tiene_ventas_impagas_de_esos_dias']);
+        $this->assertFalse($this->fila_de($cc, $solo_saldo)['tiene_ventas_impagas_de_esos_dias']);
+        $this->assertStringContainsString('van primero', $cc['como_leer']);
+        $this->assertSame(0, $los_dos['clientes_con_deuda'], 'El ranking de ventas sigue comparando contra la deuda en ventas.');
+    }
+
+    /**
+     * Los recordatorios con "más de 100 mil hace más de 30 días" no cambian: el cliente que debe
+     * 10.000 en ventas no alcanza el monto con sus ventas y no recibe nada (lo mismo que en 01c5d369).
+     *
+     * @test
+     */
+    public function los_recordatorios_con_monto_y_dias_no_cambian_de_destinatarios()
+    {
+        list($mixto) = $this->armar_saldo_con_venta_vieja();
+
+        $deudores = VentasSinCobrarIaHelper::clientes_deudores($this->dueno->id, 30, $this->dueno, 100000);
+
+        $this->assertSame([], $deudores['clientes']);
+        $this->assertSame(30, $deudores['dias']);
+
+        // Sin monto, sí: tiene una venta impaga de 40 días.
+        $sin_monto = VentasSinCobrarIaHelper::clientes_deudores($this->dueno->id, 30, $this->dueno);
+        $this->assertSame([(int) $mixto->id], array_column($sin_monto['clientes'], 'cliente_id'));
+    }
+
+    // ------------------------------------------------------------------ revisión: F2
+
+    /**
+     * Un cliente con dos cuentas en pesos (la de moneda 1 y una de moneda 0, que deja un alta donde
+     * no se eligió moneda) sale en UNA fila con la suma.
+     *
+     * ⚠️ La cuenta de moneda 0 se inserta directo: ningún camino actual la crea (es dato viejo de
+     * producción, ver el comentario de `cuentas_en_pesos_de_clientes()`).
+     *
+     * @test
+     */
+    public function dos_cuentas_en_pesos_de_un_cliente_salen_en_una_fila()
+    {
+        $cliente = $this->cliente('Cliente con dos cuentas en pesos');
+        $this->saldo_importado($cliente, 1000);
+
+        CreditAccount::create([
+            'user_id'    => $this->dueno->id,
+            'model_name' => 'client',
+            'model_id'   => $cliente->id,
+            'moneda_id'  => 0,
+            'saldo'      => 500,
+        ]);
+
+        $bloque = VentasSinCobrarIaHelper::bloque_de_cuenta_corriente($this->dueno->id);
+
+        $this->assertSame(1, $bloque['clientes_que_deben']);
+        $this->assertCount(1, $bloque['clientes']);
+        $this->assertEqualsWithDelta(1500, $bloque['clientes'][0]['saldo_en_pesos'], 0.001);
+        $this->assertSame([], $bloque['en_otras_monedas'], 'La moneda 0 es pesos: no va a otras monedas.');
+    }
+
+    // ------------------------------------------------------------------ revisión: F3
+
+    /**
+     * Más de veinte deudores: viajan veinte, el total y el conteo son de todos. Y con `dias`, el único
+     * que tiene una venta vieja (el que menos debe) viaja primero aunque por saldo quedaría afuera.
+     *
+     * @test
+     */
+    public function con_mas_de_veinte_deudores_la_lista_se_recorta_y_el_total_no()
+    {
+        $esperado = 0.0;
+
+        for ($i = 1; $i <= 22; $i++) {
+            $cliente = $this->cliente('Deudor ' . str_pad((string) $i, 2, '0', STR_PAD_LEFT));
+            $this->saldo_importado($cliente, 1000 * $i);
+            $esperado += 1000 * $i;
+
+            if ($i === 1) {
+                $el_que_menos_debe = $cliente;
+            }
+        }
+
+        // El que menos debe además tiene una venta impaga de 40 días.
+        $this->venta_a_cuenta_corriente($el_que_menos_debe, 100, Carbon::now()->subDays(40));
+        $esperado += 100;
+
+        $cc = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, null, $this->dueno)['cuenta_corriente'];
+
+        $this->assertSame(22, $cc['clientes_que_deben']);
+        $this->assertSame(20, $cc['clientes_en_esta_lista']);
+        $this->assertCount(20, $cc['clientes']);
+        $this->assertEqualsWithDelta($esperado, $cc['total_que_te_deben_en_pesos'], 0.001);
+        $this->assertNull($this->fila_de($cc, $el_que_menos_debe), 'Sin dias, por saldo, el que menos debe queda afuera de los veinte.');
+
+        $con_dias = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, 30, $this->dueno)['cuenta_corriente'];
+
+        $this->assertSame((int) $el_que_menos_debe->id, $con_dias['clientes'][0]['cliente_id']);
+        $this->assertSame(1, $con_dias['clientes_que_deben_con_ventas_de_esos_dias']);
+        $this->assertSame(22, $con_dias['clientes_que_deben']);
+    }
+
+    // ------------------------------------------------------------------ revisión: F4
+
+    /**
+     * El borde de `monto_minimo`: entra el que debe justo el monto, no entra el que debe un centavo menos.
+     *
+     * @test
+     */
+    public function el_borde_del_monto_minimo()
+    {
+        $justo = $this->cliente('Debe justo cien mil');
+        $this->saldo_importado($justo, 100000);
+
+        $un_centavo_menos = $this->cliente('Debe un centavo menos');
+        $this->saldo_importado($un_centavo_menos, 99999.99);
+
+        $bloque = VentasSinCobrarIaHelper::bloque_de_cuenta_corriente($this->dueno->id, 0, 100000.0);
+
+        $this->assertSame(['Debe justo cien mil'], array_column($bloque['clientes'], 'cliente'));
+        $this->assertSame(1, $bloque['clientes_que_deben']);
+        $this->assertSame(2, $bloque['clientes_que_deben_sin_el_monto_minimo']);
+        $this->assertEqualsWithDelta(100000, $bloque['total_que_te_deben_en_pesos'], 0.001);
+    }
+
+    // ------------------------------------------------------------------ revisión: F5
+
+    /**
+     * `como_contestar` dice una regla por caso: sin nada, solo monto, solo días y los dos.
+     *
+     * @test
+     */
+    public function como_contestar_cubre_los_cuatro_casos()
+    {
+        $this->armar_saldo_con_venta_vieja();
+
+        $sin_nada = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, null, $this->dueno)['como_contestar'];
+        $solo_monto = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, null, $this->dueno, 100000)['como_contestar'];
+        $solo_dias = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, 30, $this->dueno)['como_contestar'];
+        $los_dos = VentasSinCobrarIaHelper::ventas_sin_cobrar($this->dueno->id, 30, $this->dueno, 100000)['como_contestar'];
+
+        $this->assertStringContainsString('"quien me debe mas"', $sin_nada);
+        $this->assertStringContainsString('cuenta_corriente', $sin_nada);
+
+        $this->assertStringContainsString('"Los que me deben mas de X"', $solo_monto);
+        $this->assertStringContainsString('NO significa que nadie deba', $solo_monto);
+
+        $this->assertStringContainsString('"Lo que me deben hace mas de N dias"', $solo_dias);
+        $this->assertStringContainsString('30 dias o mas', $solo_dias);
+
+        $this->assertStringContainsString('"Los que me deben mas de X hace mas de N dias"', $los_dos);
+        $this->assertStringContainsString('tiene_ventas_impagas_de_esos_dias = true', $los_dos);
+        $this->assertStringContainsString('dias_de_la_venta_impaga_mas_vieja', $los_dos);
+
+        $this->assertCount(4, array_unique([$sin_nada, $solo_monto, $solo_dias, $los_dos]));
     }
 }
 
@@ -552,9 +799,10 @@ class VentasSinCobrarConLecturaRota extends VentasSinCobrarIaHelper
      * @param  int  $owner_id
      * @param  int  $dias
      * @param  float|null  $monto_minimo
+     * @param  array|null  $contexto
      * @return array
      */
-    public static function bloque_de_cuenta_corriente($owner_id, $dias = 0, $monto_minimo = null)
+    public static function bloque_de_cuenta_corriente($owner_id, $dias = 0, $monto_minimo = null, $contexto = null)
     {
         throw new \RuntimeException('Lectura de cuentas corrientes rota a propósito (test 125).');
     }
