@@ -130,6 +130,42 @@ class T175_Ok_a_todo_y_consumidor_final_Test extends EmpresaTestCase
     }
 
     /**
+     * 🔴 Solo altas y ediciones de registros van en cadena: con un gasto, o con la edición de una venta, entre
+     * las pendientes, «ok a todo» no confirma ninguna y decide el modelo.
+     *
+     * @test
+     */
+    public function con_plata_entre_las_pendientes_no_se_confirma_ninguna_en_cadena()
+    {
+        foreach ([['gasto', []], ['edicion', ['entidad' => 'sale', 'operacion' => 'edicion', 'id' => 1, 'cambios' => []]]] as $caso) {
+
+            list($conversation, $ids) = $this->propuestas_leidas([
+                ['proponer_alta', ['entidad' => 'client', 'datos' => ['name' => 'ZZC175 Con plata ' . $caso[0]]]],
+            ]);
+
+            $propuso = AiMessageAction::find($ids[0])->ai_message_id;
+
+            $plata = AiMessageAction::create([
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $propuso,
+                'user_id'            => $this->dueno->id,
+                'auth_user_id'       => $this->dueno->id,
+                'tipo'               => $caso[0],
+                'clave'              => 'c175:' . $caso[0] . ':' . uniqid(),
+                'estado'             => AiMessageAction::ESTADO_PROPUESTA,
+                'datos'              => $caso[1],
+                'presentacion'       => ['titulo' => 'Plata', 'renglones' => [], 'aviso' => null],
+            ]);
+
+            list($conversation, $assistant) = $this->vuelta('ok a todo', $conversation);
+
+            $this->assertNull(ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $assistant), $caso[0]);
+            $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::find($ids[0])->estado, $caso[0]);
+            $this->assertSame(AiMessageAction::ESTADO_PROPUESTA, $plata->fresh()->estado, $caso[0]);
+        }
+    }
+
+    /**
      * Un «sí» suelto con dos pendientes sigue sin confirmar nada.
      *
      * @test

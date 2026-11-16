@@ -781,6 +781,20 @@ class ConfirmacionDeterministaIaHelper
      */
     const A_TODO = ['a todo', 'a todos', 'a todas', 'con todo', 'todo', 'todos', 'todas', 'a los dos', 'a las dos', 'los dos', 'las dos', 'a ambos', 'a ambas', 'ambos', 'ambas'];
 
+    /**
+     * Los ÚNICOS tipos de tarjeta que confirma un «ok a todo» (revisión de la rama C, pedido del coordinador):
+     * altas y ediciones de registros (clientes, proveedores, artículos, categorías, localidades…). Una venta,
+     * un pago, un gasto, un cobro, una compra, un movimiento de stock o de caja NUNCA se confirman en cadena:
+     * si hay alguna pendiente, no se confirma ninguna y decide el modelo, como siempre.
+     */
+    const TIPOS_DE_LA_CADENA = [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION];
+
+    /**
+     * Las entidades de una alta o edición que mueven plata, caja o stock: tampoco van en cadena (proponer_edicion
+     * edita ventas y gastos por su número; los turnos de caja y los métodos por caja son de caja).
+     */
+    const ENTIDADES_FUERA_DE_LA_CADENA = ['sale', 'expense', 'pending', 'turno_caja', 'default_payment_method_caja', 'cuota'];
+
     /** Cuántas tarjetas confirma un «ok a todo» como mucho: una cadena de altas, no un lote. */
     const MAXIMO_DE_LA_CADENA = 6;
 
@@ -833,6 +847,8 @@ class ConfirmacionDeterministaIaHelper
      * aplicadas a cada una, y ninguna más amplia:
      *
      *   - el mensaje es un sí a todo (es_si_a_todo()), sin foto, en un turno con herramientas de carga;
+     *   - 🔴 solo ALTAS y EDICIONES de registros (TIPOS_DE_LA_CADENA, sin ENTIDADES_FUERA_DE_LA_CADENA): con
+     *     una venta, un pago, un gasto, una compra, stock o caja pendiente, no se confirma ninguna;
      *   - TODAS las tarjetas pendientes (no vencidas) de la conversación entran: si alguna no se puede
      *     confirmar con un sí —🔴 NUNCA_AUTO_CONFIRMABLES (plata sin factura, borrados, masivas, envíos a
      *     clientes…), de más de MINUTOS_MAXIMOS, o que confirmar por texto rechazaría—, NO se confirma
@@ -894,6 +910,13 @@ class ConfirmacionDeterministaIaHelper
 
         foreach ($pendientes as $accion) {
 
+            // 🔴 Solo altas y ediciones de registros: nada de plata, stock ni caja en cadena.
+            if (!in_array((string) $accion->tipo, self::TIPOS_DE_LA_CADENA, true)
+                || in_array(self::entidad_de_la_tarjeta($accion), self::ENTIDADES_FUERA_DE_LA_CADENA, true)) {
+
+                return null;
+            }
+
             // 🔴 Lo que un sí no confirma solo, un «a todo» tampoco.
             if (in_array((string) $accion->tipo, HerramientasDeCarga::NUNCA_AUTO_CONFIRMABLES, true)
                 || in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
@@ -930,6 +953,19 @@ class ConfirmacionDeterministaIaHelper
         }
 
         return $hay_una_del_ultimo ? $pendientes->all() : null;
+    }
+
+    /**
+     * La entidad de una tarjeta de alta o edición (`datos.entidad`), o '' si no la tiene.
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return string
+     */
+    protected static function entidad_de_la_tarjeta(AiMessageAction $accion)
+    {
+        $datos = json_decode(json_encode($accion->datos), true);
+
+        return is_array($datos) && isset($datos['entidad']) && is_scalar($datos['entidad']) ? (string) $datos['entidad'] : '';
     }
 
     /**
