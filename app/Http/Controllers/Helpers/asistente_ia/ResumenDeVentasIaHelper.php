@@ -93,9 +93,12 @@ class ResumenDeVentasIaHelper
      *         Con artículo, rubro o proveedor, pedir un orden suma además costo, ganancia y el id de
      *         cada grupo (ver por_articulo()).
      * @param  string|null  $direccion  desc (default) | asc ("los que MENOS").
+     * @param  string|null  $hasta_hora  Misión asistente-diario-20261116 (A9): HH:MM. Deja solo las ventas
+     *         cargadas hasta esa hora (inclusive) de CADA día del rango, para comparar «hoy hasta ahora»
+     *         contra «ayer hasta la misma hora». null = el día entero, como siempre. Ver corte_por_hora().
      * @return array<string, mixed>  Con la clave `error` cuando el pedido no se puede atender
      */
-    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null, $orden = null, $direccion = null): array
+    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null, $orden = null, $direccion = null, $hasta_hora = null): array
     {
         $owner = User::find($owner_id);
 
@@ -183,6 +186,23 @@ class ResumenDeVentasIaHelper
             $otra = self::acotar_por_metodo_de_pago($otra, $filtro);
         }
 
+        /*
+         * A9 (misión asistente-diario-20261116): el corte por hora va sobre los DOS conjuntos y antes
+         * de los totales, por el mismo motivo que el filtro de método: todo lo que viaja en la
+         * respuesta habla del mismo recorte.
+         */
+        $hora = self::hora_de_corte($hasta_hora);
+
+        if (isset($hora['error'])) {
+
+            return ['error' => $hora['error']];
+        }
+
+        if (! is_null($hora['hora'])) {
+            $ventas = self::corte_por_hora($ventas, $hora['hora']);
+            $otra = self::corte_por_hora($otra, $hora['hora']);
+        }
+
         $totales = self::totales($owner, $ventas, $inicio, $fin, $moneda);
 
         $respuesta = [
@@ -221,6 +241,27 @@ class ResumenDeVentasIaHelper
             $respuesta['aviso_de_devoluciones'] = 'Con el filtro por metodo de pago las devoluciones no se pueden acotar: van en null.';
         }
 
+        /*
+         * A9: con corte por hora, las devoluciones de UN día se cortan a la misma hora (las notas de
+         * crédito tienen hora: current_acounts.created_at). En un rango de varios días la franja
+         * diaria no tiene forma honesta de aplicarse a ese cálculo, y va en null con el porqué.
+         */
+        if (! is_null($hora['hora'])) {
+            $respuesta['hasta_hora'] = substr($hora['hora'], 0, 5);
+            $respuesta['aviso_de_hora'] = 'Solo las ventas cargadas hasta las ' . substr($hora['hora'], 0, 5) . ' (inclusive) de cada dia del rango, por la hora en que se cargaron.';
+
+            if ($moneda === 'pesos' && is_null($filtro['metodo'])) {
+                if ($dia_desde === $dia_hasta) {
+                    $corte = Carbon::parse($dia_hasta . ' ' . $hora['hora']);
+                    $devoluciones = self::recolector_expuesto()->devoluciones_del_periodo($owner, $inicio, $corte);
+                    $respuesta['devoluciones'] = round((float) $devoluciones['total'], 2);
+                } else {
+                    $respuesta['devoluciones'] = null;
+                    $respuesta['aviso_de_devoluciones'] = 'Con hasta_hora en un rango de varios dias las devoluciones no se pueden cortar por hora: van en null.';
+                }
+            }
+        }
+
         if ($agrupar_por !== '') {
             $grupos = self::agrupar($owner, $ventas, $agrupar_por, $totales, $orden, $direccion);
 
@@ -250,7 +291,58 @@ class ResumenDeVentasIaHelper
             }
         }
 
+        /*
+         * A9 (Ferre Total, 5/11/2026): el asistente repitió «70 ventas / $1.202.047» tres veces cuando
+         * ya eran 88. Cada respuesta dice a qué hora se consultó, así el modelo (y el dueño) saben que
+         * el número es de ese momento y que «cómo van» es otra consulta.
+         */
+        $respuesta['consultado_a_las'] = Carbon::now()->format('Y-m-d H:i');
+
         return $respuesta;
+    }
+
+    /**
+     * VALIDA EL `hasta_hora` QUE PIDIÓ EL MODELO (A9, misión asistente-diario-20261116).
+     *
+     * Acepta HH:MM o H:MM (24 h). Vacío o null = sin corte. Devuelve la hora lista para comparar
+     * contra TIME(), con los segundos en 59 para que «hasta las 15:30» incluya la venta de las
+     * 15:30:40.
+     *
+     * @param  string|null  $hasta_hora
+     * @return array<string, mixed>  ['hora' => 'HH:MM:59'|null] o ['error' => ...]
+     */
+    protected static function hora_de_corte($hasta_hora): array
+    {
+        $texto = is_null($hasta_hora) ? '' : trim((string) $hasta_hora);
+
+        if ($texto === '') {
+
+            return ['hora' => null];
+        }
+
+        if (! preg_match('/^(\d{1,2}):(\d{2})$/', $texto, $partes) || (int) $partes[1] > 23 || (int) $partes[2] > 59) {
+
+            return ['error' => '`hasta_hora` va en formato HH:MM de 24 horas (por ejemplo 15:30).'];
+        }
+
+        return ['hora' => sprintf('%02d:%02d:59', (int) $partes[1], (int) $partes[2])];
+    }
+
+    /**
+     * ACOTA EL CONJUNTO A LAS VENTAS CARGADAS HASTA ESA HORA DE CADA DÍA (A9).
+     *
+     * 🔴 LA HORA ES LA DE CARGA (`sales.created_at`), aun con el criterio "por fecha de pedido": la
+     * fecha de entrega no tiene hora útil (es un día), y la pregunta del dueño —«cómo vamos hoy
+     * contra ayer a esta hora»— es sobre cuándo se vendió. El día de cada venta lo sigue decidiendo
+     * el conjunto de Rendimiento; esto solo recorta la franja.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @param  string  $hora  HH:MM:SS
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected static function corte_por_hora($ventas, string $hora)
+    {
+        return (clone $ventas)->whereRaw('TIME(sales.created_at) <= ?', [$hora]);
     }
 
     /**
