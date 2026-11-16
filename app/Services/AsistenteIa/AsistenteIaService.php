@@ -2458,11 +2458,44 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}{$reglas_del_manual}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}{$reglas_del_manual}{$this->bloque_de_la_direccion_del_sistema($owner)}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
 SYSTEM;
+    }
+
+    /**
+     * La dirección del sistema del negocio, para que el asistente la pueda dar (misión
+     * asistente-diario-20261116, rama C, M6-url).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, 14/11/2026, mensajes 488-493): el dueño le pidió la dirección del
+     * sistema y el asistente contestó «no la tengo». La sabe el sistema: es la `spa_url` que el admin anuncia
+     * en cada mensaje de WhatsApp (o la `SPA_URL` del `.env`), la misma base de los links de los avisos
+     * (AvisosDelAsistenteHelper::base_del_link()). 🔴 Nunca `app.url`: es la de la API y daría 404.
+     *
+     * Sin una dirección conocida, la regla dice que no la invente. Va al final del bloque fijo, antes de la
+     * fecha: cambia por dueño (como el nombre del negocio), no por turno.
+     *
+     * @param  mixed  $owner
+     * @return string
+     */
+    protected function bloque_de_la_direccion_del_sistema($owner): string
+    {
+        $url = null;
+
+        try {
+            $url = is_null($owner) ? null : \App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper::base_del_link((int) $owner->id);
+        } catch (\Throwable $e) {
+            $url = null;
+        }
+
+        if (is_null($url) || trim((string) $url) === '') {
+            return "Si te piden la dirección (el link) del sistema, no la inventes: decí que es la misma con la que entran desde la computadora y que la pueden copiar de la barra del navegador.\n\n";
+        }
+
+        return 'La dirección del sistema de este negocio es ' . $url . ' . Si te la piden (para entrar desde otra '
+            . "computadora o el celular, o para pasársela a un empleado), dala tal cual.\n\n";
     }
 
     /**
