@@ -667,6 +667,14 @@ class AsistenteIaService
         }
 
         /*
+         * Rama C, B2: un mensaje que no se entiende (audio sin transcribir o en otra escritura) lleva la nota de
+         * pedir que lo repita; la guarda dura está en ConfirmacionPorTextoIaHelper::rechazo().
+         */
+        if (\App\Http\Controllers\Helpers\asistente_ia\EntradaIninteligibleIaHelper::es_ininteligible($this->pedido_de_la_persona($conversation, $assistant_message))) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\EntradaIninteligibleIaHelper::NOTA);
+        }
+
+        /*
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
          * elección del DUEÑO (ProveedorIaHelper). El cliente HTTP y la URL son del proveedor
          * efectivo, que es también el que se registra en ai_token_usages: es con el que se llamó.
@@ -1401,6 +1409,25 @@ class AsistenteIaService
                 }
 
                 break;
+            }
+
+            /*
+             * Misión asistente-diario-20261116 (rama C, 30/10 #14): una respuesta en PORTUGUÉS o en INGLÉS
+             * («$228 milhões», Ferre Total 30/10) se reintenta UNA vez pidiendo la MISMA respuesta en español.
+             * A diferencia del chino, vale también después de herramientas (el caso real fue así): el pedido
+             * es reescribir, no rehacer. Si el reintento vuelve igual, queda ese texto (no se descarta).
+             */
+            if (TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles($final_text)
+                && ! $cerrando && is_null($texto_antes_del_reintento) && $iterations < $max_iterations
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+                $texto_antes_del_reintento = $final_text;
+                $messages[] = ['role' => 'assistant', 'content' => $final_text];
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => '[El sistema detectó una respuesta en portugués o en inglés. Reescribí esa misma respuesta en español rioplatense, con los mismos datos y números. No vuelvas a llamar herramientas por lo que ya hiciste.]',
+                ];
+                $final_text = '';
+                continue;
             }
 
             /*

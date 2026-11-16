@@ -93,6 +93,87 @@ class TextoFinalIaHelper
     }
 
     /**
+     * Palabras que solo existen en portugués (minúsculas, con sus tildes). Con una sola alcanza: el caso real
+     * fue una respuesta con «$228 milhões» (Ferre Total, 30/10, mensaje 202). Misión asistente-diario-20261116,
+     * rama C, 30/10 #14.
+     */
+    const PALABRAS_PORTUGUESAS = [
+        'não', 'você', 'vocês', 'também', 'então', 'obrigado', 'obrigada', 'milhões', 'milhão', 'estão',
+        'isso', 'aqui está', 'está bem', 'até', 'já está', 'nós', 'muito obrigado', 'vendas de hoje',
+    ];
+
+    /**
+     * Palabras funcionales del inglés. Una oración en inglés de verdad trae varias (CUATRO o más, ver
+     * contiene_prosa_en_portugues_o_ingles()); un nombre de producto, a lo sumo una o dos.
+     */
+    const PALABRAS_INGLESAS = [
+        'the', 'and', 'you', 'your', 'is', 'are', 'was', 'were', 'have', 'has', 'will', 'with', 'this', 'that',
+        'for', 'of', 'to', 'it', 'today', 'sales', 'sold', 'here', 'there', 'can', 'not', 'what', 'which',
+    ];
+
+    /**
+     * true si la respuesta tiene prosa en PORTUGUÉS o en INGLÉS (misión asistente-diario-20261116, rama C,
+     * 30/10 #14), para reintentarla en español como ya se hace con el chino (contiene_prosa_cjk()).
+     *
+     * Se mira renglón por renglón y 🔴 NUNCA un renglón de lista: ahí están los nombres de los productos, que
+     * pueden estar en otro idioma («Pão de queijo», «Let's Go Naranja»). En el resto:
+     *   - portugués: alguna palabra de PALABRAS_PORTUGUESAS, o una palabra en minúscula que termina en
+     *     «ção», «ções», «ões» o «ão» (los nombres propios van con mayúscula y se dejan);
+     *   - inglés: cuatro o más palabras de PALABRAS_INGLESAS, ninguna palabra funcional del castellano y ningún
+     *     carácter con tilde, ñ, ¿ ni ¡.
+     * Un falso positivo cuesta una llamada más al modelo (el reintento pide la misma respuesta en español);
+     * el texto nunca se descarta por esto.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function contiene_prosa_en_portugues_o_ingles($texto)
+    {
+        foreach (preg_split('/\R/u', (string) $texto) ?: [] as $renglon) {
+
+            if (trim($renglon) === '' || self::es_de_lista($renglon)) {
+
+                continue;
+            }
+
+            $minusculas = ' ' . preg_replace('/[^\p{L}\p{N}]+/u', ' ', mb_strtolower($renglon)) . ' ';
+
+            foreach (self::PALABRAS_PORTUGUESAS as $palabra) {
+
+                if (mb_strpos($minusculas, ' ' . $palabra . ' ') !== false) {
+
+                    return true;
+                }
+            }
+
+            // Una palabra en minúscula (en el renglón ORIGINAL) con terminación portuguesa.
+            if (preg_match('/(?<![\p{L}])\p{Ll}+(ção|ções|ões|ão)(?![\p{L}])/u', $renglon)) {
+
+                return true;
+            }
+
+            $inglesas = 0;
+
+            foreach (preg_split('/\s+/u', trim($minusculas)) ?: [] as $palabra) {
+
+                if (in_array($palabra, self::PALABRAS_INGLESAS, true)) {
+
+                    $inglesas++;
+                }
+            }
+
+            if ($inglesas >= 4
+                && self::palabras_espanolas($renglon) === 0
+                && !preg_match('/[áéíóúüñÁÉÍÓÚÜÑ¿¡]/u', $renglon)) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * El texto sin las oraciones filtradas, AUNQUE quede vacío. Si no hubo nada que sacar, vuelve el
      * texto tal cual, byte por byte.
      *
