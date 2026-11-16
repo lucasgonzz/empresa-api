@@ -370,10 +370,16 @@ class ConsultasSistemaIaHelper
      * informe del mostrador leyeran distinto, darían dos números para la misma
      * deuda.
      *
+     * Es PÚBLICO desde la misión asistente-deudores-saldos-iniciales (16/11/2026, ticket 131):
+     * `VentasSinCobrarIaHelper::bloque_de_cuenta_corriente()` arma con esta misma consulta el saldo
+     * de cuenta corriente de todos los clientes ("¿quién me debe?"), y el criterio de qué es pesos
+     * tiene que ser uno solo, invocado y no copiado. Solo cambió la visibilidad: la consulta y la
+     * forma de `clientes_con_saldo_pendiente()` (la lee admin) quedan iguales.
+     *
      * @param  int  $owner_id
      * @return \Illuminate\Database\Query\Builder
      */
-    protected static function cuentas_en_pesos_de_clientes(int $owner_id)
+    public static function cuentas_en_pesos_de_clientes(int $owner_id)
     {
         return DB::table('credit_accounts')
             ->where('credit_accounts.user_id', $owner_id)
