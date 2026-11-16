@@ -28,8 +28,36 @@ class OnlineConfigurationController extends Controller
         if ($ajeno) {
             return $ajeno;
         }
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($request, $id) {
+            \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::bloquear_configuracion($this->userId());
+            return $this->guardar_configuracion($request, $id);
+        });
+    }
 
-        $model = OnlineConfiguration::find($id);
+    private function guardar_configuracion(Request $request, $id) {
+        $ajeno = $this->registro_ajeno_o_404($id);
+        if ($ajeno) {
+            return $ajeno;
+        }
+
+        $model = OnlineConfiguration::where('id', $id)->lockForUpdate()->first();
+        if ($request->has('reservar_stock_pedidos_web') && Schema::hasColumn('online_configurations', 'reservar_stock_pedidos_web')) {
+            $nuevo = $request->boolean('reservar_stock_pedidos_web');
+            if ($nuevo !== (bool) $model->reservar_stock_pedidos_web) {
+                if (!$this->is_owner()) {
+                    return response()->json(['message' => 'Solo el dueño puede cambiar la reserva de stock de los pedidos web.'], 403);
+                }
+                if ($nuevo) {
+                    if ((int) $model->reserva_stock_tienda_protocolo !== 1 || !$model->reserva_stock_tienda_url) {
+                        throw \Illuminate\Validation\ValidationException::withMessages(['reservar_stock_pedidos_web' => 'Primero verificá la compatibilidad de la tienda con el equipo de soporte.']);
+                    }
+                    \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::comprobar_tienda($model->reserva_stock_tienda_url, $model->user_id);
+                } else {
+                    \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::apagar($model->user_id);
+                }
+                $model->reservar_stock_pedidos_web = $nuevo;
+            }
+        }
         $model->pausar_tienda_online            = $request->pausar_tienda_online;    
         $model->register_to_buy                 = $request->register_to_buy;    
         $model->scroll_infinito_en_home         = $request->scroll_infinito_en_home;    
@@ -87,6 +115,9 @@ class OnlineConfigurationController extends Controller
         // articulo con stock null). Arranca en false, al reves que el toggle de arriba: es un
         // comportamiento nuevo y mas agresivo, asi que una pantalla vieja que manda el PUT sin la
         // clave nueva no tiene que prenderlo solo.
+        if ($model->reservar_stock_pedidos_web && $request->boolean('ignorar_stock', $model->ignorar_stock ?? false)) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['ignorar_stock' => 'Primero apagá la reserva de pedidos web para ignorar el stock de la tienda.']);
+        }
         $model->ignorar_stock                   = $request->boolean('ignorar_stock', $model->ignorar_stock ?? false);
 
         // Un formulario anterior puede guardar la configuración sin conocer esta opción.

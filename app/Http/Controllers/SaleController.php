@@ -1052,6 +1052,10 @@ class SaleController extends Controller
              * igual descontaría de nuevo. Una lectura con candado siempre devuelve lo último
              * commiteado. Es la primera lectura de esta transacción a propósito.
              */
+            if ($sale_a_actualizar->order_id) {
+                \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::bloquear_configuracion($sale_a_actualizar->user_id);
+            }
+
             $model = Sale::where('id', $id)
                             ->lockForUpdate()
                             ->first();
@@ -2656,7 +2660,7 @@ class SaleController extends Controller
 
         } catch (\Throwable $e) {
             $mensaje = $e instanceof \Illuminate\Validation\ValidationException
-                ? ($e->errors()['message'][0] ?? $e->getMessage())
+                ? ($e->errors()['facturacion'][0] ?? $e->errors()['message'][0] ?? $e->getMessage())
                 : $e->getMessage();
             Log::error('consolidarFacturacion error: ' . $mensaje);
             return response()->json(['error' => true, 'message' => $mensaje], 422);

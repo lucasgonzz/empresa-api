@@ -100,6 +100,17 @@ class SaleHelper extends Controller {
     }
 
     static function get_se_esta_confirmando($request, $sale) {
+        // Una venta del pedido reservado todavía no descontó mientras estuvo en revisión.
+        // También puede llegar directo de to_check a confirmada por API: restar el previo daría
+        // cero y consumiría la reserva sin sacar físicamente las unidades.
+        if ($sale->order_id && ($sale->to_check || $sale->checked)
+            && !$request->to_check && !$request->checked
+            && \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::hay_esquema()) {
+            $pedido = \App\Models\Order::where('id', $sale->order_id)->first();
+            if ($pedido && $pedido->reserva_stock_web && !$pedido->reserva_stock_web_consumida) {
+                return true;
+            }
+        }
         if ($request->confirmed && $sale->checked) {
             return true;
         }
@@ -441,6 +452,8 @@ class SaleHelper extends Controller {
 
     static function attachProperies($model, $request, $from_store = true, $previus_articles = null, $previus_combos = null, $previus_promos = null, $sale_modification = null, $se_esta_confirmando_por_primera_vez = false, $se_activando_discount_stock = false) {
 
+        \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::antes_de_venta($model, $request);
+
         Log::info('attachProperies');
 
         
@@ -558,6 +571,7 @@ class SaleHelper extends Controller {
          * luego de actualizar el costo total.
          */
         Self::set_sale_ganancia($model);
+        \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::despues_de_venta($model);
     }
 
     /**
