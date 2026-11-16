@@ -802,6 +802,22 @@ class PropuestaVentaIaHelper
 
         if (count($candidatos) === 0) {
 
+            /*
+             * P8 (misión asistente-mejoras-4-dias, V14): un nombre DICTADO o mal escrito («Justo Rubén» por
+             * RUBEN EDUARDO GIUSTO, «Nespeka» por NESPECA) no lo encuentra el LIKE. Se buscan los que SUENAN
+             * parecido y se PREGUNTAN, aunque sea uno solo: a un cliente parecido no se le carga una venta
+             * sin que la persona diga que es ese.
+             */
+            $parecidos = self::clientes_parecidos($contexto, $nombre);
+
+            if (count($parecidos)) {
+
+                return RespuestaDeCargaIa::faltan(
+                    ['si el cliente "' . $nombre . '" es alguno de estos (los nombres se parecen; no elijo solo)'],
+                    ['clientes' => $parecidos]
+                );
+            }
+
             return RespuestaDeCargaIa::error(
                 'No encontré ningún cliente que se llame así. No puedo crear clientes: cargalo desde Clientes y volvé a pedírmelo, o hacé la venta sin cliente.'
             );
@@ -828,6 +844,60 @@ class PropuestaVentaIaHelper
         }
 
         return RespuestaDeCargaIa::faltan(['cuál de estos clientes es'], ['clientes' => $opciones]);
+    }
+
+    /**
+     * Cuántos clientes se recorren como mucho buscando nombres parecidos (de a CHUNK_CLIENTES): acota el
+     * costo en un negocio con una cartera enorme.
+     */
+    const TOPE_CLIENTES_PARECIDOS = 20000;
+
+    const CHUNK_CLIENTES = 2000;
+
+    /**
+     * Los clientes del dueño cuyo nombre se parece al dictado (NombreParecidoIaHelper), como opciones
+     * `{cliente_id, nombre, parecido: true}`, hasta 5.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $nombre
+     * @return array<int, array<string, mixed>>
+     */
+    protected static function clientes_parecidos(ContextoDeCargaIa $contexto, $nombre)
+    {
+        if (!count(NombreParecidoIaHelper::palabras_que_cuentan($nombre))) {
+
+            return [];
+        }
+
+        $encontrados = [];
+        $leidos = 0;
+
+        Client::where('user_id', $contexto->owner_id)
+            ->select(['id', 'name'])
+            ->orderBy('id')
+            ->chunk(self::CHUNK_CLIENTES, function ($clientes) use ($nombre, &$encontrados, &$leidos) {
+
+                $encontrados = array_merge($encontrados, NombreParecidoIaHelper::candidatos($nombre, $clientes->pluck('name', 'id')->all(), 5));
+
+                $leidos += count($clientes);
+
+                return $leidos < self::TOPE_CLIENTES_PARECIDOS;
+            });
+
+        // Re-ordenado entre chunks: el más parecido primero.
+        $nombres = [];
+
+        foreach ($encontrados as $fila) {
+            $nombres[$fila['id']] = $fila['nombre'];
+        }
+
+        $opciones = [];
+
+        foreach (NombreParecidoIaHelper::candidatos($nombre, $nombres, 5) as $fila) {
+            $opciones[] = ['cliente_id' => (int) $fila['id'], 'nombre' => (string) $fila['nombre'], 'parecido' => true];
+        }
+
+        return $opciones;
     }
 
     /**
