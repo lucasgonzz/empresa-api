@@ -264,6 +264,62 @@ class T161_Gasto_con_categoria_nueva_y_caja_Test extends EmpresaTestCase
     }
 
     /**
+     * Revisión de la rama B: una caja abierta que NO acepta el método de la fila (tiene otros métodos
+     * cargados) no cuenta. Con dos abiertas pero una sola que acepta Efectivo, se usa ésa sola, como filtra
+     * get_caja_options() de la pantalla.
+     *
+     * @test
+     */
+    public function la_unica_caja_que_acepta_el_metodo_se_usa_aunque_haya_otras_abiertas()
+    {
+        $otro_metodo = CurrentAcountPaymentMethod::where('id', '!=', $this->efectivo()->id)->orderBy('id')->first();
+
+        $solo_otro = $this->caja('Caja solo otro metodo T161', true);
+        $solo_otro->current_acount_payment_methods()->attach($otro_metodo->id);
+
+        $acepta_todo = $this->caja('Caja general T161', true);
+
+        $categoria = ExpenseCategory::create(['name' => 'Varios T161', 'user_id' => $this->dueno->id]);
+        $concepto = ExpenseConcept::create(['name' => 'Cafeteria T161', 'user_id' => $this->dueno->id, 'expense_category_id' => $categoria->id, 'num' => 1]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->gasto($conversation, $assistant, [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 1200,
+            'pagos'           => [['metodo_de_pago_id' => $this->efectivo()->id]],
+        ]);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame((int) $acepta_todo->id, (int) AiMessageAction::find($respuesta['tarjeta_id'])->datos['payment_methods'][0]['caja_id']);
+    }
+
+    /**
+     * Con dos cajas abiertas que aceptan el método, sigue preguntando a cuál va (no elige al azar).
+     *
+     * @test
+     */
+    public function con_dos_cajas_que_aceptan_el_metodo_pregunta()
+    {
+        $this->caja('Caja uno T161', true);
+        $this->caja('Caja dos T161', true);
+
+        $categoria = ExpenseCategory::create(['name' => 'Varios T161', 'user_id' => $this->dueno->id]);
+        $concepto = ExpenseConcept::create(['name' => 'Papeleria T161', 'user_id' => $this->dueno->id, 'expense_category_id' => $categoria->id, 'num' => 1]);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $respuesta = $this->gasto($conversation, $assistant, [
+            'subcategoria_id' => $concepto->id,
+            'monto'           => 500,
+            'pagos'           => [['metodo_de_pago_id' => $this->efectivo()->id]],
+        ]);
+
+        $this->assertFalse($respuesta['ok']);
+        $this->assertNotEmpty($respuesta['opciones']['cajas']);
+    }
+
+    /**
      * Con cajas pero NINGUNA abierta, el gasto va sin caja (como en la pantalla de Gastos) y la tarjeta lo dice.
      *
      * @test

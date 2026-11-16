@@ -52,11 +52,16 @@ class PagosIaHelper {
      * @param  bool  $criterio_de_gastos  true para el GASTO (misión asistente-diario-20261116, rama B, 30/10
      *                                    #3): la pantalla de Gastos NO exige caja (su modal solo valida que
      *                                    cada fila tenga método: expenses/modals/payment-methods/Index.vue
-     *                                    no llama a hay_metodo_de_pago_sin_caja). Por eso, sin caja en la
-     *                                    fila y sin caja por defecto: con UNA sola caja ofrecible se usa
-     *                                    ésa y la tarjeta la nombra, y con cajas pero NINGUNA ofrecible
-     *                                    (todas cerradas) la fila va sin caja con el aviso, en vez de
-     *                                    cortar con «abrila en Tesorería». Con varias cajas se sigue
+     *                                    no llama a hay_metodo_de_pago_sin_caja), así que la caja vacía
+     *                                    es válida en un gasto. Sobre eso, el asistente decide así (es
+     *                                    criterio del asistente, NO lo que hace la pantalla, que nunca
+     *                                    elige sola): sin caja en la fila y sin caja por defecto, si UNA
+     *                                    sola caja ofrecible acepta el método de la fila (mismo filtro
+     *                                    que get_caja_options() de empresa-spa mixins/expense/cajas.js:
+     *                                    una caja con métodos cargados acepta solo ésos, sin métodos
+     *                                    acepta todos) se usa ésa y la tarjeta la nombra; con cajas pero
+     *                                    NINGUNA ofrecible la fila va sin caja con el aviso, en vez de
+     *                                    cortar con «abrila en Tesorería». Con varias se sigue
      *                                    preguntando: elegir una al azar movería la plata de otra caja.
      *                                    El pago y la tarea con gasto siguen como siempre.
      * @return array  ['ok' => true, 'filas' => [...], 'renglones' => [...], 'resumen' => string,
@@ -257,12 +262,19 @@ class PagosIaHelper {
                     $caja = OpcionesDeCargaIaHelper::caja_por_defecto($contexto, $fila['metodo']->id, $moneda_id, $ofrecibles, $cajas);
 
                     /*
-                     * 30/10 #3: en un gasto, con UNA sola caja que se puede usar no hay nada que
-                     * preguntar. Se usa ésa y el renglón de la tarjeta la nombra (" → Caja X").
+                     * 30/10 #3: en un gasto, con UNA sola caja que se puede usar PARA ESTE MÉTODO no
+                     * hay nada que preguntar. Se usa ésa y el renglón de la tarjeta la nombra
+                     * (" → Caja X"). Las cajas que no aceptan el método de la fila no cuentan (ver
+                     * cajas_que_aceptan_el_metodo()).
                      */
-                    if (is_null($caja) && $criterio_de_gastos && count($ofrecibles) === 1) {
+                    if (is_null($caja) && $criterio_de_gastos) {
 
-                        $caja = $ofrecibles[0];
+                        $para_el_metodo = self::cajas_que_aceptan_el_metodo($ofrecibles, (int) $fila['metodo']->id);
+
+                        if (count($para_el_metodo) === 1) {
+
+                            $caja = $para_el_metodo[0];
+                        }
                     }
 
                     if (is_null($caja)) {
@@ -811,6 +823,33 @@ class PagosIaHelper {
      * @param  mixed  $valor
      * @return bool
      */
+    /**
+     * Las cajas que aceptan un método de pago, con el mismo filtro que get_caja_options() de empresa-spa
+     * (mixins/expense/cajas.js): una caja con métodos cargados (`current_acount_payment_methods`) acepta
+     * solo ésos; una sin ninguno cargado acepta todos (revisión de la rama B, misión
+     * asistente-diario-20261116).
+     *
+     * @param  array  $cajas  Cajas ya ofrecibles (abiertas, de la sucursal, de la moneda, con acceso).
+     * @param  int  $metodo_id
+     * @return array
+     */
+    protected static function cajas_que_aceptan_el_metodo(array $cajas, $metodo_id) {
+
+        $aceptan = [];
+
+        foreach ($cajas as $caja) {
+
+            $metodos = $caja->current_acount_payment_methods()->pluck('current_acount_payment_methods.id')->all();
+
+            if (!count($metodos) || in_array((int) $metodo_id, array_map('intval', $metodos), true)) {
+
+                $aceptan[] = $caja;
+            }
+        }
+
+        return $aceptan;
+    }
+
     protected static function vacio($valor) {
 
         return is_null($valor) || $valor === '';
