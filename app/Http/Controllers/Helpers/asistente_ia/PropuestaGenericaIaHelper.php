@@ -989,8 +989,10 @@ class PropuestaGenericaIaHelper
 
         return [
             $validado,
-            'El CUIT '.$cuit.' es nuevo pero la razón social y la condición de IVA '.$como_quedan.': no las consulto en ARCA. '
-                .'Preguntale a la persona la razón social de ese CUIT, o sugerile completarla con el botón de AFIP de la pantalla de Clientes.',
+            // Texto escrito para el dueño (se ve en la tarjeta) y que también le sirve al modelo para preguntar.
+            'Con el CUIT '.$cuit.' la razón social y la condición de IVA '.$como_quedan.' (no se consultan en ARCA). '
+                .'Decime la razón social o completala con el botón de AFIP de la pantalla de '
+                .($declaracion['entidad'] === 'provider' ? 'Proveedores' : 'Clientes').'.',
             true,
         ];
     }
