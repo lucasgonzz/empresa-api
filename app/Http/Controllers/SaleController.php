@@ -309,6 +309,11 @@ class SaleController extends Controller
 
     public function store(Request $request) {
 
+        $error_fecha = SaleHelper::error_fecha_de_venta($request);
+        if ($error_fecha !== null) {
+            return response()->json($error_fecha, 422);
+        }
+
         /*
          * Moneda y cotización (misión corregir-ventas-en-dolares, 30/9/2026).
          *
@@ -869,6 +874,10 @@ class SaleController extends Controller
     }
 
     function update(Request $request, $id) {
+        $error_fecha = SaleHelper::error_fecha_de_venta($request);
+        if ($error_fecha !== null) {
+            return response()->json($error_fecha, 422);
+        }
         return \App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper::ventas([$id], function () use ($request, $id) {
 
         $sale_a_actualizar = Sale::find($id);

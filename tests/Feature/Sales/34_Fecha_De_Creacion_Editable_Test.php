@@ -396,8 +396,7 @@ class Fecha_De_Creacion_Editable_Test extends TestCase
     }
 
     /**
-     * 🔴 Caso 6: un `created_at` que no es exactamente `YYYY-MM-DD` cae a `now()`, y no se corre
-     * tres horas.
+     * Ticket 134: una fecha explícita inválida se rechaza antes de escribir, con una acción concreta.
      *
      * El ISO con `Z` es el caso medido el 21/9/2026: `toArray()` serializa la fecha en UTC y
      * reasignarla la reinterpreta en la zona local, corriéndola +3 horas. Por eso el resolvedor es
@@ -407,7 +406,7 @@ class Fecha_De_Creacion_Editable_Test extends TestCase
      * @test
      * @return void
      */
-    public function un_created_at_que_no_es_y_m_d_cae_a_ahora_sin_correrse_tres_horas()
+    public function una_fecha_explicita_invalida_se_rechaza_sin_cambiarla_en_silencio()
     {
         $valores = [
             1106 => Carbon::now()->format('Y-m-d').'T00:00:00.000Z',
@@ -415,19 +414,30 @@ class Fecha_De_Creacion_Editable_Test extends TestCase
             1108 => '2026-13-45',
             1109 => '',
             1110 => '2026-9-1',
+            1135 => null,
+            1136 => ['2026-11-16'],
+            1137 => '2026-02-30',
         ];
 
         foreach ($valores as $total => $valor) {
 
-            $ahora = Carbon::now();
+            $cantidad = Sale::where('user_id', self::USER_ID)->count();
+            $respuesta = $this->postJson('api/sale', $this->payload_venta($total, ['created_at' => $valor]));
+            $respuesta->assertStatus(422)->assertJsonValidationErrors('created_at');
+            $this->assertStringContainsString('Elegí una fecha válida', $respuesta->json('message'));
+            $this->assertSame($cantidad, Sale::where('user_id', self::USER_ID)->count());
+        }
+    }
 
-            $venta = $this->crear_venta_por_api($total, ['created_at' => $valor]);
-
-            $this->assertLessThanOrEqual(
-                self::TOLERANCIA,
-                $this->distancia_en_segundos($ahora, $venta->created_at),
-                'El valor "'.$valor.'" no cayó a now(): la venta quedó en '.$venta->created_at->format('Y-m-d H:i:s').'.'
-            );
+    public function test_update_con_fecha_invalida_no_toca_la_venta_y_explica_como_corregirla()
+    {
+        $venta = $this->venta_guardada(1134, '2026-11-15 10:27:13');
+        $antes = $venta->fresh()->getRawOriginal();
+        foreach ([null, '', '2026-02-30', ['2026-11-16'], '2026-11-16T00:00:00Z'] as $valor) {
+            $respuesta = $this->putJson('api/sale/'.$venta->id, $this->payload_update($venta, ['created_at' => $valor]));
+            $respuesta->assertStatus(422)->assertJsonValidationErrors('created_at');
+            $this->assertStringContainsString('volvé a guardar', $respuesta->json('message'));
+            $this->assertSame($antes, $venta->fresh()->getRawOriginal());
         }
     }
 
@@ -518,8 +528,7 @@ class Fecha_De_Creacion_Editable_Test extends TestCase
     }
 
     /**
-     * Caso 8 bis: y un PUT que manda basura en la clave tampoco pisa nada. La lista blanca vale
-     * también para el update: lo que no es `YYYY-MM-DD` no es una fecha pedida.
+     * Caso 8 bis, ticket 134: el PUT inválido conserva la fecha y rechaza con una explicación.
      *
      * @group sales
      * @test
@@ -535,7 +544,7 @@ class Fecha_De_Creacion_Editable_Test extends TestCase
             'created_at' => $original->toIso8601ZuluString(),
         ]));
 
-        $respuesta->assertStatus(200);
+        $respuesta->assertStatus(422)->assertJsonValidationErrors('created_at');
 
         $this->assertSame(
             $original->format('Y-m-d H:i:s'),

@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\combo\ComboAltaHelper;
+use App\Http\Controllers\Helpers\MedidasEnvioHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Helpers\combo\ComboSinPrecioParaPublicarException;
@@ -30,8 +31,8 @@ class ComboController extends Controller
      * Acá queda lo que es del HTTP: leer el request y armar la respuesta. El payload y las
      * respuestas de `POST api/combo` no cambiaron, y este camino sigue SIN validar nada — la
      * validación del helper (ComboAltaHelper::validar()) la llama el asistente, no la pantalla:
-     * ver el docblock del helper. (La única excepción es el descuento del combo calculado, que se
-     * rechaza con 422: ver más abajo.)
+     * ver el docblock del helper. Las excepciones son el descuento del combo calculado y las
+     * medidas opcionales de envío, que se rechazan con 422 si no son válidos.
      *
      * 🔴 `online` VA EN EL only(), Y NO ES UN CAMPO MÁS (misión combos-y-rangos-de-precio,
      * 16/9/2026). Lo que el only() no nombra no llega al helper, y olvidarlo acá no rompe nada a
@@ -48,7 +49,7 @@ class ComboController extends Controller
      * una de las dos puntas (el endpoint y el helper).
      *
      * @param Request $request name, cost, price, articles, online, calcular_desde_articulos,
-     *                         descuento_tipo, descuento_valor, childrens
+     *                         descuento_tipo, descuento_valor, peso, alto, ancho, profundidad, childrens
      * @return \Illuminate\Http\JsonResponse
      */
     public function store(Request $request) {
@@ -84,7 +85,7 @@ class ComboController extends Controller
         // y su lockForUpdate se sostenga hasta el commit (ver el docblock de ComboAltaHelper::crear()).
         try {
 
-            $model = ComboAltaHelper::crear($request->only(['name', 'cost', 'price', 'articles', 'online', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor']), $this->userId(), function () {
+            $model = ComboAltaHelper::crear($request->only(['name', 'cost', 'price', 'articles', 'online', 'calcular_desde_articulos', 'descuento_tipo', 'descuento_valor', 'peso', 'alto', 'ancho', 'profundidad']), $this->userId(), function () {
                 return $this->num('combos');
             });
 
@@ -120,6 +121,7 @@ class ComboController extends Controller
      */
     public function update(Request $request, $id) {
 
+        $medidas = MedidasEnvioHelper::datos($request->all());
         $model = Combo::find($id);
 
         $disponible = ComboCalculadoEsquemaHelper::disponible();
@@ -157,8 +159,9 @@ class ComboController extends Controller
 
         try {
 
-        DB::transaction(function () use ($request, $model, $disponible, $calculado) {
+        DB::transaction(function () use ($request, $model, $disponible, $calculado, $medidas) {
 
+            $model->fill($medidas);
             $model->name                = $request->name;
 
             if (!$calculado) {
@@ -278,7 +281,7 @@ class ComboController extends Controller
      * la base todavía no tiene las columnas: en la ventana de un deploy el descuento no existe y no
      * hay nada que rechazar).
      *
-     * Es la única validación de este controlador, y a propósito: un descuento inválido que se
+     * Un descuento inválido que se
      * guardara "arreglado" (un 150 % que pasa a "sin descuento") dejaría a la persona creyendo que
      * el combo tiene un descuento que el cálculo no aplica.
      *

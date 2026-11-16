@@ -3,6 +3,7 @@
 namespace App\Services\Zipnova;
 
 use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
+use App\Http\Controllers\Helpers\Order\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Envio;
 use App\Models\Order;
@@ -11,6 +12,7 @@ use App\Models\Sale;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * El ciclo de vida de un envío en Zipnova a partir de un pedido de la tienda (misión
@@ -219,6 +221,24 @@ class ZipnovaEnvioService
         $lineas = [];
         foreach ($order->articles as $article) {
             $lineas[] = ['article' => $article, 'amount' => $article->pivot->amount];
+        }
+        // Se cargan las medidas por lote: cuatro accessors no provocan consultas por campo.
+        $promociones = $order->promocion_vinotecas;
+        $combos = ComboEsquemaHelper::combos_del_pedido($order);
+        if (Schema::hasTable('medidas_envio_paquetes')) {
+            if ($promociones->count()) {
+                $promociones->loadMissing('medidas_envio');
+            }
+            if ($combos->count()) {
+                $combos->loadMissing('medidas_envio');
+            }
+        }
+        // Cada promo/combo ya es un paquete: no se vuelven a sumar sus componentes.
+        foreach ($promociones as $promo) {
+            $lineas[] = ['article' => $promo, 'amount' => $promo->pivot->amount];
+        }
+        foreach ($combos as $combo) {
+            $lineas[] = ['article' => $combo, 'amount' => $combo->pivot->amount];
         }
         $items = ZipnovaPaquetesHelper::items_desde_lineas($lineas, $config['bulto_default']);
         if (count($items) === 0) {
