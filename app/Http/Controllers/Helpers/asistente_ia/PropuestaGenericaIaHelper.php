@@ -255,6 +255,12 @@ class PropuestaGenericaIaHelper
             $aviso_de_la_categoria = $con_categoria['aviso'];
         }
 
+        /*
+         * Misión asistente-diario-20261116 (rama C, 30/10 #9): el alta de un cliente o proveedor con CUIT
+         * trae la razón social del padrón de ARCA si la persona no la dictó. Va antes de armar el payload.
+         */
+        list($validado, $aviso_del_padron, $padron_sin_respuesta) = self::con_el_padron_de_arca($declaracion, $validado, null);
+
         $bebida = [];
         $renglones_bebida = [];
         $bebida_pedida = $es_articulo ? AltaBebidasIaHelper::heredar($contexto, $reemplaza_a, isset($extras[AltaBebidasIaHelper::CLAVE]) ? $extras[AltaBebidasIaHelper::CLAVE] : []) : [];
@@ -330,6 +336,11 @@ class PropuestaGenericaIaHelper
         if (!is_null($aviso_de_la_categoria)) {
 
             $aviso = is_null($aviso) ? $aviso_de_la_categoria : $aviso.' '.$aviso_de_la_categoria;
+        }
+
+        if (!is_null($aviso_del_padron)) {
+
+            $aviso = is_null($aviso) ? $aviso_del_padron : $aviso.' '.$aviso_del_padron;
         }
 
         $renglones = self::renglones($declaracion, $validado['pedidos'], $validado['nombres']);
@@ -462,9 +473,15 @@ class PropuestaGenericaIaHelper
         $resumen = Catalogo::titulo($declaracion['entidad'], Catalogo::OP_ALTA).(is_null($nombre) ? '' : ' '.$nombre).self::resumen_de_renglones($renglones, $nombre);
 
         // El aviso viaja también al modelo cuando habla de listas, de algo que se descartó o de la subcategoría que se sacó.
-        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria);
+        $avisa_al_modelo = !is_null($aviso_de_las_listas) || !is_null($aviso_de_lo_heredado) || !is_null($aviso_de_la_categoria) || !is_null($aviso_del_padron);
 
         $extra_de_la_respuesta = $avisa_al_modelo ? ['aviso' => $aviso] : [];
+
+        // Rama C, 30/10 #9: si el padrón no contestó, la persona ve el aviso antes de que se cree (ni en "directo").
+        if ($padron_sin_respuesta) {
+
+            $extra_de_la_respuesta['requiere_confirmacion'] = true;
+        }
         if (count($bebida)) $extra_de_la_respuesta['requiere_confirmacion'] = true;
         // P6 (16/11/2026, V13): la foto de internet va aparte (AltaBebidasIaHelper::preparar), con su imagen_id para después.
         if (!empty($bebida['foto_web_aparte'])) {
@@ -923,6 +940,80 @@ class PropuestaGenericaIaHelper
     }
 
     /**
+     * Completa lo validado de un CLIENTE o PROVEEDOR con la razón social y la condición de IVA del padrón de
+     * ARCA cuando el CUIT es NUEVO (misión asistente-diario-20261116, rama C, 30/10 #9). Devuelve
+     * [$validado, $aviso]: el aviso (o null) va a la tarjeta y a la respuesta del modelo.
+     *
+     * 🔴 EL CASO REAL: Ferre Total, 30/10, el agente cambió el CUIT de un cliente y dejó la razón social
+     * vieja; la factura habría salido con el CUIT de uno y el nombre de otro. Las reglas:
+     *
+     *   - solo si en lo validado hay un `cuit` y es distinto del que tenía el registro (en el alta, el que
+     *     tenía es null);
+     *   - lo que la persona DICTÓ gana: si la carga ya trae `razon_social` (o `iva_condition_id`), no se
+     *     pisa —ni sus mayúsculas: lo cosmético que pide el dueño se respeta—;
+     *   - si el padrón contesta, la razón social (y la condición, si el padrón la sabe) entran como campos de
+     *     la tarjeta y el aviso dice de dónde salieron;
+     *   - si el padrón falla, la tarjeta lo dice y la razón social queda como estaba: el modelo se la
+     *     pregunta a la persona, no la inventa;
+     *   - si no se consultó (tests sin doble), nada cambia.
+     *
+     * @param  array  $declaracion
+     * @param  array  $validado  Lo que devolvió validar_campos() (payload, pedidos, nombres).
+     * @param  mixed  $cuit_anterior  El CUIT que tenía el registro (null en un alta).
+     * @return array{0: array, 1: string|null, 2: bool}  [lo validado, el aviso, true si el padrón se consultó y no contestó]
+     */
+    protected static function con_el_padron_de_arca(array $declaracion, array $validado, $cuit_anterior): array
+    {
+        if (!in_array($declaracion['entidad'], PadronDeArcaIaHelper::ENTIDADES, true)
+            || !isset($validado['payload']['cuit'])
+            || CuitIaHelper::es_vacio($validado['payload']['cuit'])
+            || CuitIaHelper::es_el_mismo($validado['payload']['cuit'], $cuit_anterior)) {
+
+            return [$validado, null, false];
+        }
+
+        $tiene_razon_social = isset($declaracion['campos']['razon_social']);
+        $tiene_condicion = isset($declaracion['campos']['iva_condition_id']);
+
+        // Lo que la persona dictó no se toca: si ya vino la razón social, no hay nada que completar.
+        if (!$tiene_razon_social || array_key_exists('razon_social', $validado['payload'])) {
+
+            return [$validado, null, false];
+        }
+
+        $cuit = trim((string) $validado['payload']['cuit']);
+
+        $padron = PadronDeArcaIaHelper::datos_del_cuit($cuit);
+
+        if (!$padron['consultado']) {
+
+            return [$validado, null, false];
+        }
+
+        if (!is_null($padron['error'])) {
+
+            return [
+                $validado,
+                'No pude traer la razón social del padrón de ARCA para el CUIT '.$cuit.' ('.$padron['error'].'): la razón social queda como está. Si cambia, decímela.',
+                true,
+            ];
+        }
+
+        $validado = self::con_campo($validado, 'razon_social', $padron['razon_social'], null);
+
+        $aviso = 'La razón social sale del padrón de ARCA para el CUIT '.$cuit;
+
+        if ($tiene_condicion && !is_null($padron['iva_condition_id']) && !array_key_exists('iva_condition_id', $validado['payload'])) {
+
+            $validado = self::con_campo($validado, 'iva_condition_id', (int) $padron['iva_condition_id'], $padron['condicion_iva']);
+
+            $aviso .= ', igual que la condición de IVA ('.$padron['condicion_iva'].')';
+        }
+
+        return [$validado, $aviso.'.', false];
+    }
+
+    /**
      * Saca un campo de lo validado.
      *
      * @param  array  $validado
@@ -1092,6 +1183,15 @@ class PropuestaGenericaIaHelper
             $aviso_de_la_categoria = $coherente['aviso'];
         }
 
+        /*
+         * Misión asistente-diario-20261116 (rama C, 30/10 #9): un CUIT NUEVO en un cliente o proveedor trae
+         * la razón social (y la condición de IVA) del padrón de ARCA en la MISMA tarjeta, como la pantalla.
+         * Ver con_el_padron_de_arca().
+         */
+        $cuit_anterior = isset($fila->cuit) ? $fila->cuit : null;
+
+        list($validado, $aviso_del_padron, $padron_sin_respuesta) = self::con_el_padron_de_arca($declaracion, $validado, $cuit_anterior);
+
         $nombre_actual = Catalogo::nombre_de_fila($declaracion['entidad'], $fila);
 
         $renglones = [];
@@ -1194,6 +1294,21 @@ class PropuestaGenericaIaHelper
         if (!is_null($aviso_de_la_categoria)) {
 
             $aviso_de_la_edicion = is_null($aviso_de_la_edicion) ? $aviso_de_la_categoria : $aviso_de_la_edicion.' '.$aviso_de_la_categoria;
+        }
+
+        // Lo que trajo (o no pudo traer) el padrón de ARCA para el CUIT nuevo: la tarjeta y el modelo lo dicen.
+        if (!is_null($aviso_del_padron)) {
+
+            $aviso_de_la_edicion = is_null($aviso_de_la_edicion) ? $aviso_del_padron : $aviso_de_la_edicion.' '.$aviso_del_padron;
+        }
+
+        /*
+         * Y si el padrón NO contestó, la tarjeta la confirma la persona, también en "directo": cambiar el CUIT
+         * dejando la razón social vieja es justo el caso de Ferre Total, y el modelo tiene que preguntarla.
+         */
+        if ($padron_sin_respuesta) {
+
+            $requiere_confirmacion = true;
         }
 
         // El updated_at del registro al armar la tarjeta: si alguien lo edita en el medio, confirmar da 409 (vencida).
