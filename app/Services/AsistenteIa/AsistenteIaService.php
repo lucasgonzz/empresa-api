@@ -642,7 +642,8 @@ class AsistenteIaService
         $this->imagen_por_whatsapp = $es_whatsapp && ImagenPorWhatsappIaHelper::disponible($conversation, $owner);
 
         $system   = $this->build_system_payload($conversation, $owner, $con_acciones, $es_whatsapp, $es_app);
-        $messages = $this->build_messages_payload($conversation);
+        /* P7 de la misión asistente-mejoras-4-dias: el historial termina en el mensaje que este turno contesta. */
+        $messages = $this->build_messages_payload($conversation, (int) $assistant_message->id);
         $tools    = $this->build_tools($con_acciones, $es_whatsapp, $owner, $es_app, $conversation);
 
         /*
@@ -3639,10 +3640,22 @@ CONFIRMACION;
      * foto no la necesita el modelo para cargar la compra: la engancha
      * proponer_compra_con_factura leyendo las que todavía no se gestionaron.
      *
+     * 🔴 P7 DE LA MISIÓN asistente-mejoras-4-dias (16/11/2026): CON `$hasta_id`, SOLO LO ANTERIOR AL TURNO.
+     * Cada mensaje del dueño tiene su assistant y su job, y cuando escribe dos seguidos (un audio y un texto,
+     * o un texto mientras el anterior todavía se contesta) el job del PRIMERO arrancaba con el SEGUNDO ya
+     * guardado: la consulta traía los últimos N `listo` de la conversación sin tope de id. El modelo
+     * contestaba los dos juntos, y el job del segundo, que ve esa respuesta y su propio mensaje, volvía a
+     * contestar lo mismo. Truvari, 13/11: «*La Linda Malbec*… la botella sale $7.833,33» (281, a las
+     * 09:08:39) contesta el audio 282, que es de las 09:08:50, y 283 lo repite; lo mismo 285/287 (Angélica) y
+     * la venta 3098 con los $1.000 que pedía un audio posterior. Con `$hasta_id` (el assistant que se
+     * genera) entra solo lo que el dueño ya había dicho ANTES de este turno: cada mensaje se contesta en su
+     * turno y una sola vez. Sin el parámetro, lo de siempre (lo usan los tests y otros lectores).
+     *
      * @param AiConversation $conversation
+     * @param int|null $hasta_id  El id del assistant que se está generando: entra solo lo anterior.
      * @return array<int, array{role: string, content: string|array}>
      */
-    public function build_messages_payload(AiConversation $conversation): array
+    public function build_messages_payload(AiConversation $conversation, $hasta_id = null): array
     {
         $this->fotos_del_payload = [];
 
@@ -3665,6 +3678,9 @@ CONFIRMACION;
 
         $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
             ->where('estado', 'listo')
+            ->when(! is_null($hasta_id), function ($query) use ($hasta_id) {
+                $query->where('id', '<', (int) $hasta_id);
+            })
             ->where(function ($query) use ($con_archivos) {
                 $query->where(function ($con_texto) {
                     $con_texto->whereNotNull('contenido')->where('contenido', '!=', '');
