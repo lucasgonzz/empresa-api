@@ -89,6 +89,9 @@ class Acciones_service_y_job_Test extends TestCase
         'buscar_ficha_de_articulo',
         // Alta optativa de bebidas (e175e3ee, ticket 117): la búsqueda de la foto de una bebida, al final.
         'buscar_imagen_de_bebida',
+        // asistente-mejoras-4-dias (P5, 16/11/2026), al final de las de lectura.
+        'valorizar_stock',
+        'exportar_articulos_excel',
     ];
 
     /**

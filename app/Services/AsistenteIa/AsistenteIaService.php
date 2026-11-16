@@ -6594,6 +6594,45 @@ CONFIRMACION;
                     );
                 },
             ],
+            [
+                'name' => 'exportar_articulos_excel',
+                'description' => 'Arma un EXCEL (.xlsx) con los ARTÍCULOS que cumplen un filtro y devuelve un LINK para bajarlo. Las filas las lee el SISTEMA (todas las que cumplen el filtro, hasta ' . \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::MAX_FILAS_DEL_EXCEL . '): vos mandás solo filtros y columnas, nunca las filas. 🔴 Para "pasame los artículos / el stock / la lista de precios en un Excel" va ESTA, no exportar_excel (que es para tablas chicas que ya consultaste). Mismos filtros que contar_articulos_por_filtro; solo recorta: con_stock, sin_stock, stock_negativo, sin_precio, sin_costo o precio_menor_o_igual_al_costo (la revisión de precios). Columnas: nombre, codigo, codigo_de_proveedor, rubro, proveedor, marca, stock, costo, precio, valor_a_costo, valor_a_precio, en_tienda (sin columnas van las de siempre; las de costo solo si quien pregunta puede ver costos). La respuesta trae el link: pasáselo TAL CUAL, sin acortarlo; vence a los 7 días. Si trae "error", contá el motivo tal cual (si son demasiados, preguntá por qué filtrar). Nunca digas que no podés armar un Excel.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'filtros' => HerramientasDeCarga::esquema_de_filtros(),
+                        'deposito' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el depósito o sucursal por su nombre; el stock (y los valores) son los de ese depósito.',
+                        ],
+                        'solo' => [
+                            'type'  => 'array',
+                            'items' => ['type' => 'string', 'enum' => \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::SOLO],
+                        ],
+                        'columnas' => [
+                            'type'  => 'array',
+                            'items' => ['type' => 'string', 'enum' => array_keys(\App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::COLUMNAS_EXCEL)],
+                        ],
+                        'titulo' => [
+                            'type'        => 'string',
+                            'description' => 'Título de la hoja ("Stock de Albatros"). Sin esto, "Artículos".',
+                        ],
+                        'nombre_archivo' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: el nombre del archivo, sin la extensión.',
+                        ],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null, $assistant_message = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::exportar_excel(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                        $input
+                    );
+                },
+            ],
         ];
     }
 
@@ -6640,7 +6679,7 @@ CONFIRMACION;
     protected function es_lectura_sin_efectos(string $herramienta): bool
     {
         // Aunque se ofrecen con las consultas, estas herramientas guardan archivos, tokens o contexto.
-        if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'], true)) {
+        if (in_array($herramienta, ['exportar_excel', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras', 'exportar_articulos_excel'], true)) {
             return false;
         }
         if ($herramienta === 'buscar_ficha_de_articulo') {
