@@ -2497,9 +2497,10 @@ class PlanillaIaHelper
 
             $antes = isset($definiciones[$clave]) ? (string) $definiciones[$clave] : null;
 
+            $caja_canonica = null;
             if ($clave === 'caja' && $valor !== '' && !empty($definiciones['caja_pendiente_de_elegir'])) {
                 $rechazo = self::validar_caja_que_levanta_veto($contexto, $planilla, $definiciones, $valor,
-                    $ultimo, Anclas::anterior_del_asistente($contexto, $assistant_message));
+                    $ultimo, Anclas::anterior_del_asistente($contexto, $assistant_message), $caja_canonica);
                 if (!is_null($rechazo)) {
                     return $rechazo;
                 }
@@ -2521,7 +2522,7 @@ class PlanillaIaHelper
                 $definiciones['cambios'][] = $nombre . ' es ' . $valor . ' y no ' . $antes;
             }
 
-            $definiciones[$clave] = $valor;
+            $definiciones[$clave] = $clave === 'caja' && !is_null($caja_canonica) ? $caja_canonica : $valor;
         }
 
         $planilla->definiciones = count($definiciones) ? $definiciones : null;
@@ -4270,15 +4271,21 @@ class PlanillaIaHelper
         if (count($acto['afirmadas']) === 1) {
             $id = $acto['afirmadas'][0];
             if (!empty($candidatas[$id]['ofrecible'])) {
-                $definida = self::definir($contexto, $mensaje, ['caja' => $candidatas[$id]['nombre']]);
+                $para_definir = $candidatas[$id]['nombre'];
+                $guardada = isset($definiciones['caja']) ? (string) $definiciones['caja'] : '';
+                if (self::ids_nominales_de_caja($guardada, $candidatas) === [$id]) {
+                    $para_definir = $guardada;
+                }
+                $definida = self::definir($contexto, $mensaje, ['caja' => $para_definir]);
                 if (RespuestaDeCargaIa::es_negativa($definida)) {
                     return $definida;
                 }
                 $planilla->refresh();
                 $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
-                if (isset($definiciones['caja_pendiente_de_elegir'])) {
-                    unset($definiciones['caja_pendiente_de_elegir']);
-                    $planilla->definiciones = $definiciones;
+                $definiciones['caja'] = $candidatas[$id]['nombre'];
+                unset($definiciones['caja_pendiente_de_elegir']);
+                $planilla->definiciones = $definiciones;
+                if ($planilla->isDirty()) {
                     $planilla->save();
                     self::reemplazar_tarjetas_de($planilla);
                 }
@@ -4317,20 +4324,86 @@ class PlanillaIaHelper
         }
         $guardada = isset($definiciones['caja']) ? (string) $definiciones['caja'] : '';
         if ($guardada !== '') {
-            $ya_incluida = false;
-            foreach ($candidatas as $candidata) {
-                $ya_incluida = $ya_incluida || in_array($guardada, $candidata['alias'], true);
-            }
-            if (!$ya_incluida) {
+            $ids = self::ids_nominales_de_caja($guardada, $candidatas);
+            if (count($ids) === 1) {
+                // La abreviación es evidencia del mismo ID; no crea una caja fantasma.
+                $candidatas[$ids[0]]['alias'][] = $guardada;
+            } else {
                 $candidatas[-1] = ['nombre' => $guardada, 'alias' => [$guardada], 'ofrecible' => false];
             }
         }
         return $candidatas;
     }
 
-    /** Levantar un veto exige una elección nueva del dueño y la misma validación del cobro. */
-    protected static function validar_caja_que_levanta_veto(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array $definiciones, $valor, $ultimo, $pregunta)
+    /** Identidad nominal sobre TODAS las cajas; exactas primero y parciales por ID real. */
+    protected static function ids_nominales_de_caja($nombre, array $candidatas): array
     {
+        $buscado = RolesDePlanillaIaHelper::normalizar_texto((string) $nombre);
+        if ($buscado === '') {
+            return [];
+        }
+        $exactas = [];
+        $parciales = [];
+        foreach ($candidatas as $id => $candidata) {
+            if ((int) $id <= 0) {
+                continue; // Un sentinel nunca representa una identidad del catálogo.
+            }
+            foreach ($candidata['alias'] as $alias) {
+                $normal = RolesDePlanillaIaHelper::normalizar_texto((string) $alias);
+                if ($normal === $buscado) {
+                    $exactas[(int) $id] = true;
+                } elseif (mb_strpos($normal, $buscado) !== false) {
+                    $parciales[(int) $id] = true;
+                }
+            }
+        }
+        return array_keys(count($exactas) ? $exactas : $parciales);
+    }
+
+    /** El resolver compartido recibe el canónico y debe devolver el MISMO ID nominal. */
+    protected static function resolver_caja_nominal(ContextoDeCargaIa $contexto, $metodo, $nombre, array &$faltan, array &$opciones)
+    {
+        if (trim((string) $nombre) === '') {
+            return PropuestaVentaIaHelper::resolver_caja($contexto, $metodo, '', $faltan, $opciones);
+        }
+        $candidatas = self::candidatas_de_caja($contexto, []);
+        $ids = self::ids_nominales_de_caja($nombre, $candidatas);
+        if (count($ids) !== 1 || empty($candidatas[$ids[0]]['ofrecible'])) {
+            return RespuestaDeCargaIa::faltan(['una caja propia, unívoca y disponible para el cobro']);
+        }
+        $id = $ids[0];
+        // Un dato pendiente del método no invalida una identidad de caja ya autorizada.
+        $faltan_de_caja = [];
+        $opciones_de_caja = [];
+        $caja = PropuestaVentaIaHelper::resolver_caja($contexto, $metodo, $candidatas[$id]['nombre'], $faltan_de_caja, $opciones_de_caja);
+        $faltan = array_merge($faltan, $faltan_de_caja);
+        $opciones = array_merge($opciones, $opciones_de_caja);
+        if (RespuestaDeCargaIa::es_negativa($caja)) {
+            return $caja;
+        }
+        if (is_null($caja) || (int) $caja->id !== $id || count($faltan_de_caja)) {
+            return RespuestaDeCargaIa::faltan(['la misma caja nominal disponible para el cobro']);
+        }
+        return $caja;
+    }
+
+    /** Una guardada inválida no se transforma en ausencia ni revive una tarjeta previa. */
+    protected static function dejar_caja_pendiente(AiPlanilla $planilla): void
+    {
+        $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
+        unset($definiciones['caja']);
+        $definiciones['caja_pendiente_de_elegir'] = true;
+        $planilla->definiciones = $definiciones;
+        if ($planilla->isDirty()) {
+            $planilla->save();
+            self::reemplazar_tarjetas_de($planilla);
+        }
+    }
+
+    /** Levantar un veto exige una elección nueva del dueño y la misma validación del cobro. */
+    protected static function validar_caja_que_levanta_veto(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array $definiciones, $valor, $ultimo, $pregunta, &$canonico = null)
+    {
+        $definiciones['caja'] = (string) $valor;
         $candidatas = self::candidatas_de_caja($contexto, $definiciones);
         $acto = self::acto_de_caja($ultimo, $pregunta, $candidatas, (string) $planilla->metodo_de_pago);
         $id = count($acto['afirmadas']) === 1 ? $acto['afirmadas'][0] : null;
@@ -4353,14 +4426,54 @@ class PlanillaIaHelper
         if (count($faltan)) {
             return RespuestaDeCargaIa::faltan($faltan, $opciones);
         }
-        $caja = PropuestaVentaIaHelper::resolver_caja($contexto, $metodo, $candidatas[$id]['nombre'], $faltan, $opciones);
+        $caja = self::resolver_caja_nominal($contexto, $metodo, $valor, $faltan, $opciones);
         if (RespuestaDeCargaIa::es_negativa($caja)) {
             return $caja;
         }
         if (is_null($caja) || (int) $caja->id !== (int) $id || count($faltan)) {
             return RespuestaDeCargaIa::faltan(['una caja válida para el cobro'], $opciones);
         }
+        $canonico = $candidatas[$id]['nombre'];
         return null;
+    }
+
+    /** Operandos completos y solapamientos de ESTA ocurrencia; nunca por orden ni disponibilidad. */
+    protected static function coincidencias_nominales_de_caja($texto, array $nombres): array
+    {
+        $encontradas = [];
+        foreach ($nombres as $id => $alias) {
+            foreach (array_unique($alias) as $nombre) {
+                if ($nombre === '') {
+                    continue;
+                }
+                $patron = '/(?<![\pL\pN])' . preg_quote($nombre, '/') . '(?![\pL\pN])/u';
+                preg_match_all($patron, $texto, $matches, PREG_OFFSET_CAPTURE);
+                foreach ($matches[0] as $match) {
+                    $inicio = $match[1];
+                    $largo = strlen($match[0]);
+                    $cola = substr($texto, $inicio + $largo);
+                    // Una coordinación de destinos sigue en el operando; otro campo explícito sí lo delimita.
+                    $completa = (bool) preg_match('/^\s*(?:$|[.;,\n]|(?:y|o)\s+(?:(?:el|la|los|las)\s+)?(?:clientes?|articulos?|cantidades|cantidad|importes?|totales|total|documentos?|fechas?|operaciones|operacion|direcciones|direccion|sucursal|tipo de venta)\s+(?:es|son|sera|seran|va|van)\b)/u', $cola);
+                    $encontradas[] = ['id' => $id, 'alias' => $nombre, 'inicio' => $inicio, 'largo' => $largo, 'completa' => $completa];
+                }
+            }
+        }
+        $por_alias = [];
+        foreach ($encontradas as $actual) {
+            $contenida = false;
+            foreach ($encontradas as $otra) {
+                if ($otra['inicio'] <= $actual['inicio']
+                    && $otra['inicio'] + $otra['largo'] >= $actual['inicio'] + $actual['largo']
+                    && $otra['largo'] > $actual['largo']) {
+                    $contenida = true;
+                    break;
+                }
+            }
+            if (!$contenida) {
+                $por_alias[$actual['id']][$actual['alias']][$actual['inicio']] = ['largo' => $actual['largo'], 'completa' => $actual['completa']];
+            }
+        }
+        return $por_alias;
     }
 
     /** Clasifica exclusivamente nombres de cajas del servidor; conserva los signos hasta separar actos. */
@@ -4391,6 +4504,8 @@ class PlanillaIaHelper
             }
             return $m[0];
         }, $crudo);
+        $coincidencias = self::coincidencias_nominales_de_caja($crudo, $nombres);
+        $incompleta_de_caja = false;
         $marco_vetado = (bool) preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido)\s+que\s+)?(?:hagas|ejecutes|sigas|apliques)\s+(?:lo siguiente|esto|esta orden|este pedido)\b/u', $crudo);
         // Un medio YA resuelto no es una segunda caja. Sólo se quita su mención literal
         // precedida por en/con del control de destinos; no se modifica el texto de los actos.
@@ -4418,46 +4533,67 @@ class PlanillaIaHelper
                 if ($nombre === '') {
                     continue;
                 }
-                $patron = '/(?<![\pL\pN])' . preg_quote($nombre, '/') . '(?![\pL\pN])/u';
-                if (!preg_match($patron, $crudo)) {
+                $spans = $coincidencias[$id][$nombre] ?? [];
+                if (!count($spans)) {
                     continue;
                 }
-                $con_marca = (string) preg_replace($patron, ' __CAJA__ ', $crudo);
-                $partes = preg_split('/[.;,\n]+/u', $con_marca);
-                foreach ($partes as $indice => $parte) {
-                    if (strpos($parte, '__CAJA__') === false) {
-                        continue;
-                    }
-                    $normal = trim((string) preg_replace('/\s+/u', ' ', $parte));
-                    $prefijo = explode('__CAJA__', $normal, 2)[0];
-                    $siguiente = isset($partes[$indice + 1]) ? trim($partes[$indice + 1]) : '';
-                    // Una duda pospuesta sobre esta elección sigue perteneciendo al mismo acto.
-                    // No alcanza una duda acerca de otro dato, como el cliente o el artículo.
-                    $duda_pospuesta = preg_match('/^(?:pero\s+)?(?:no estoy segur[oa]|tengo dudas)(?:\s+(?:todavia|aun))?$/u', $siguiente)
-                        || preg_match('/^(?:pero\s+)?(?:no estoy segur[oa]|tengo dudas)\b.*\b(?:esa|esta|la)\s+caja\b/u', $siguiente);
-                    $duda = $marco_vetado || $destinos_multiples || preg_match('/[?¿]/u', $parte)
-                        || $duda_pospuesta
-                        || preg_match('/\b(?:quizas|tal vez|supongamos|hipotesis|hipoteticamente|por ejemplo|como ejemplo|no se|no estoy segur[oa]|no creo que|no confirmo que|me dijeron|dijo que)\b/u', $normal)
-                        || preg_match('/\bsi\b/u', $prefijo) || preg_match('/\bo\b/u', $normal);
-                    $niega = preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido|dije|afirme|deseo|necesito)\s+que\s+)?(?:(?:la caja|el cobro)\s+)?(?:(?:se|la|lo)\s+)?(?:uses|use|utilices|elijas|cobres|cobre|cobren|pagues|pague|sea|es|va|vaya|sera)\b/u', $prefijo)
-                        || preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido|dije|afirme|deseo|necesito)\s+(?:que\s+)?)?(?:(?:se|la|lo)\s+)?(?:cobr[a-z]*|pag[a-z]*)\b/u', $prefijo)
-                        || preg_match('/\b(?:no|nunca|tampoco)\s+(?:quiero|uso|elijo|acepto|prefiero)\b/u', $prefijo)
-                        || preg_match('/\b(?:no|nunca|tampoco)\s+(?:la\s+)?$/u', $prefijo);
-                    $campo = preg_match('/\bcaja\s+(?:(?:elegida|indicada|del cobro)\s+)?(?:(?:es|sera|va a ser)\s+|[:=]\s*)?__CAJA__/u', $normal);
-                    $cobro = preg_match('/\b(?:cobr[a-z]*|pag[a-z]*)\b/u', $normal)
-                        && preg_match('/\b(?:en|a|con|usando|usa|utiliza|elegi)\s+(?:la\s+)?__CAJA__/u', $normal);
-                    $respuesta = $pregunto_caja && preg_match('/^(?:la\s+)?__CAJA__$/u', $normal);
-                    if ($duda || $niega) {
-                        $veta = true;
-                        $no_autorizante = true;
-                    } elseif ($campo || $cobro || $respuesta) {
-                        $afirma = true;
+                // Una sola ocurrencia marcada por vez: no comparte el rol de otra en la misma parte.
+                foreach ($spans as $inicio => $span) {
+                    $marca = $span['completa'] ? ' __CAJA__ ' : ' __CAJA_INCOMPLETA__ ';
+                    $con_marca = substr_replace($crudo, $marca, $inicio, $span['largo']);
+                    $partes = preg_split('/[.;,\n]+/u', $con_marca);
+                    foreach ($partes as $indice => $parte) {
+                        $es_incompleta = strpos($parte, '__CAJA_INCOMPLETA__') !== false;
+                        $parte = str_replace('__CAJA_INCOMPLETA__', '__CAJA__', $parte);
+                        if (strpos($parte, '__CAJA__') === false) {
+                            continue;
+                        }
+                        $normal = trim((string) preg_replace('/\s+/u', ' ', $parte));
+                        $prefijo = explode('__CAJA__', $normal, 2)[0];
+                        $siguiente = isset($partes[$indice + 1]) ? trim($partes[$indice + 1]) : '';
+                        // Una duda pospuesta sobre esta elección sigue perteneciendo al mismo acto.
+                        // No alcanza una duda acerca de otro dato, como el cliente o el artículo.
+                        $duda_pospuesta = preg_match('/^(?:pero\s+)?(?:no estoy segur[oa]|tengo dudas)(?:\s+(?:todavia|aun))?$/u', $siguiente)
+                            || preg_match('/^(?:pero\s+)?(?:no estoy segur[oa]|tengo dudas)\b.*\b(?:esa|esta|la)\s+caja\b/u', $siguiente);
+                        $duda = $marco_vetado || $destinos_multiples || preg_match('/[?¿]/u', $parte)
+                            || $duda_pospuesta
+                            || preg_match('/\b(?:quizas|tal vez|supongamos|hipotesis|hipoteticamente|por ejemplo|como ejemplo|no se|no estoy segur[oa]|no creo que|no confirmo que|me dijeron|dijo que)\b/u', $normal)
+                            || preg_match('/\bsi\b/u', $prefijo) || preg_match('/\bo\b/u', $normal);
+                        $niega = preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido|dije|afirme|deseo|necesito)\s+que\s+)?(?:(?:la caja|el cobro)\s+)?(?:(?:se|la|lo)\s+)?(?:uses|use|utilices|elijas|cobres|cobre|cobren|pagues|pague|sea|es|va|vaya|sera)\b/u', $prefijo)
+                            || preg_match('/\b(?:no|nunca|tampoco)\s+(?:(?:quiero|pido|dije|afirme|deseo|necesito)\s+(?:que\s+)?)?(?:(?:se|la|lo)\s+)?(?:cobr[a-z]*|pag[a-z]*)\b/u', $prefijo)
+                            || preg_match('/\b(?:no|nunca|tampoco)\s+(?:quiero|uso|elijo|acepto|prefiero)\b/u', $prefijo)
+                            || preg_match('/\b(?:no|nunca|tampoco)\s+(?:la\s+)?$/u', $prefijo);
+                        $campo = preg_match('/\bcaja\s+(?:(?:elegida|indicada|del cobro)\s+)?(?:(?:es|sera|va a ser)\s+|[:=]\s*)?__CAJA__/u', $normal);
+                        $cobro = preg_match('/\b(?:cobr[a-z]*|pag[a-z]*)\b/u', $normal)
+                            && preg_match('/\b(?:en|a|con|usando|usa|utiliza|elegi)\s+(?:la\s+)?__CAJA__/u', $normal);
+                        $respuesta = $pregunto_caja && preg_match('/^(?:la\s+)?__CAJA__$/u', $normal);
+                        if ($es_incompleta) {
+                            // El sufijo pertenece a este operando, no a cualquier mención de otro campo.
+                            $respuesta_incompleta = $pregunto_caja && preg_match('/^(?:la\s+)?__CAJA__\b/u', $normal);
+                            if ($campo || $cobro || $respuesta_incompleta) {
+                                $no_autorizante = true;
+                                if (!$niega) {
+                                    $incompleta_de_caja = true;
+                                }
+                            }
+                            continue;
+                        }
+                        if ($duda || $niega) {
+                            $veta = true;
+                            $no_autorizante = true;
+                        } elseif ($campo || $cobro || $respuesta) {
+                            $afirma = true;
+                        }
                     }
                 }
             }
             if ($afirma && !$veta) {
                 $afirmadas[] = $id;
             }
+        }
+        if ($incompleta_de_caja) {
+            $afirmadas = []; // Otra nominación incompleta no desaparece por una completa independiente.
+            $no_autorizante = true;
         }
         $campo_sin_nombre_elegible = preg_match('/\bcaja\s+(?:es|elegida|indicada|del cobro)\b|\b(?:en|a|usando|usa|utiliza)\s+(?:la\s+)?caja\b/u', $crudo);
         $duda_de_la_eleccion = preg_match('/\b(?:no estoy segur[oa]|tengo dudas|todavia no elegi)\b[^.;\n]*\bcaja\b/u', $crudo)
@@ -4515,10 +4651,13 @@ class PlanillaIaHelper
                 return RespuestaDeCargaIa::faltan(['qué caja elegís para el cobro; la anterior no quedó autorizada']);
             }
 
-            $caja = PropuestaVentaIaHelper::resolver_caja($contexto, $metodo, isset($definiciones['caja']) ? (string) $definiciones['caja'] : '', $faltan, $opciones);
+            $nombre_guardado = isset($definiciones['caja']) ? (string) $definiciones['caja'] : '';
+            $caja = self::resolver_caja_nominal($contexto, $metodo, $nombre_guardado, $faltan, $opciones);
 
             if (RespuestaDeCargaIa::es_negativa($caja)) {
-
+                if ($nombre_guardado !== '') {
+                    self::dejar_caja_pendiente($planilla);
+                }
                 return $caja;
             }
         }

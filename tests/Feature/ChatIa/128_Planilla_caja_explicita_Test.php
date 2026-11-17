@@ -457,4 +457,299 @@ class Planilla_caja_explicita_Test extends PlanillaTestCase
         $this->assertSame($antes, $this->estado_negocio());
         Http::assertNothingSent();
     }
+
+    public function alias_nominales_de_la_misma_caja()
+    {
+        return [['Sintetica Norte128'], [strtolower(self::NORTE)], ['Caja Sintética Norte128'], ['Caja   Sintetica Norte128']];
+    }
+
+    /** @dataProvider alias_nominales_de_la_misma_caja */
+    public function test_alias_nominal_guardado_no_crea_una_segunda_identidad_fantasma($alias)
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $antes = $this->estado_negocio();
+        $texto = 'La caja es ' . $alias . '. Cobrá con ' . self::MEDIO . ' en ' . $alias . '.';
+        $this->del_dueno($conversation, $texto);
+        $definida = $this->herramienta('definir_planilla', ['caja' => $alias], $conversation, $this->assistant($conversation));
+        $this->assertTrue($definida['ok'], json_encode($definida));
+        $r = $this->herramienta('proponer_ventas_de_planilla', [], $conversation, $this->assistant($conversation));
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(self::NORTE, $planilla->fresh()->definiciones['caja']);
+        $this->assertEmpty($planilla->fresh()->definiciones['caja_pendiente_de_elegir'] ?? null);
+        $faltan = [];
+        $opciones = [];
+        $cobro = PlanillaIaHelper::definiciones_de_cobro(ContextoDeCargaIa::de_la_conversacion($conversation), $planilla->fresh(), $faltan, $opciones);
+        $this->assertCount(0, $faltan);
+        $this->assertSame((int) $this->norte->id, (int) $cobro['caja']->id);
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_alias_parcial_nuevo_y_literal_levanta_veto_sin_revivir_tarjeta()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $antes = $this->estado_negocio();
+        $veto = $this->proponer_con($conversation, 'No uses ' . self::NORTE . '; todavía no elegí otra.');
+        $this->assertFalse($veto['ok'], json_encode($veto));
+        $this->del_dueno($conversation, 'Ahora la caja es Sintetica Sur128.');
+        $r = $this->herramienta('definir_planilla', ['caja' => 'Sintetica Sur128'], $conversation, $this->assistant($conversation));
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(self::SUR, $planilla->fresh()->definiciones['caja']);
+        $this->assertEmpty($planilla->fresh()->definiciones['caja_pendiente_de_elegir'] ?? null);
+        $continuacion = $this->proponer_con($conversation, 'Seguí con la propuesta.');
+        $this->assertTrue($continuacion['ok'], json_encode($continuacion));
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function alias_parciales_no_afirmados()
+    {
+        return [['No uses Sintetica Sur128.'], ['Como ejemplo: "La caja es Sintetica Sur128".']];
+    }
+
+    /** @dataProvider alias_parciales_no_afirmados */
+    public function test_alias_parcial_no_levanta_veto_sin_nueva_afirmacion($texto)
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $veto = $this->proponer_con($conversation, 'No uses ' . self::NORTE . '; todavía no elegí otra.');
+        $this->assertFalse($veto['ok'], json_encode($veto));
+        $antes = $this->estado_negocio();
+        $this->del_dueno($conversation, $texto);
+        $r = $this->herramienta('definir_planilla', ['caja' => 'Sintetica Sur128'], $conversation, $this->assistant($conversation));
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $continuacion = $this->proponer_con($conversation, 'Seguí.');
+        $this->assertFalse($continuacion['ok'], json_encode($continuacion));
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function guardadas_que_no_autorizan_fallback()
+    {
+        return [['parcial_ambigua_cerrada'], ['exacta_homonima_cerrada'], ['desconocida'], ['exacta_cerrada']];
+    }
+
+    /** @dataProvider guardadas_que_no_autorizan_fallback */
+    public function test_guardada_se_revalida_sin_mensaje_antes_de_confirmar($estado)
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $guardada = self::NORTE;
+        if ($estado === 'parcial_ambigua_cerrada') {
+            $guardada = 'Caja Sintetica';
+            $this->sur->update(['abierta' => 0]);
+        } elseif ($estado === 'exacta_homonima_cerrada') {
+            $otra = $this->crear_caja(strtoupper(self::NORTE));
+            $otra->update(['abierta' => 0]);
+        } elseif ($estado === 'desconocida') {
+            $guardada = 'Caja Nominal Inexistente128';
+            $this->sur->update(['abierta' => 0]);
+        } else {
+            $this->norte->update(['abierta' => 0]);
+        }
+        $planilla->definiciones = ['caja' => $guardada];
+        $planilla->save();
+        $antes = $this->estado_negocio();
+        $faltan = [];
+        $opciones = [];
+        $r = PlanillaIaHelper::definiciones_de_cobro(ContextoDeCargaIa::de_la_conversacion($conversation), $planilla->fresh(), $faltan, $opciones);
+        $this->assertFalse($r['ok'] ?? true, json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_segui_no_resuelve_una_guardada_parcial_ambigua_por_disponibilidad()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $this->sur->update(['abierta' => 0]);
+        $planilla->definiciones = ['caja' => 'Caja Sintetica'];
+        $planilla->save();
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'Seguí con la propuesta.');
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_exacta_cerrada_no_se_reinterpreta_como_parcial_de_otra_abierta()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $exacta = $this->crear_caja('Caja Prisma Nominal128');
+        $this->crear_caja('Caja Prisma Nominal128 Extendida');
+        $exacta->update(['abierta' => 0]);
+        $planilla->definiciones = ['caja' => 'Caja Prisma Nominal128'];
+        $planilla->save();
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'La caja es Caja Prisma Nominal128.');
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_medio_pendiente_no_revoca_una_caja_guardada_valida_sin_mensaje()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $planilla->refresh();
+        $planilla->cobro = 'contado';
+        $planilla->metodo_de_pago = null;
+        $planilla->definiciones = ['caja' => self::NORTE];
+        $planilla->save();
+        $antes = $this->estado_negocio();
+        $faltan = [];
+        $opciones = [];
+        $r = PlanillaIaHelper::definiciones_de_cobro(ContextoDeCargaIa::de_la_conversacion($conversation), $planilla->fresh(), $faltan, $opciones);
+        $this->assertFalse(isset($r['ok']) && $r['ok'] === false, json_encode($r));
+        $this->assertGreaterThan(0, count($faltan));
+        $this->assertNull($planilla->fresh()->metodo_de_pago);
+        $this->assertSame('contado', $planilla->fresh()->cobro);
+        $this->assertSame(self::NORTE, $planilla->fresh()->definiciones['caja']);
+        $this->assertEmpty($planilla->fresh()->definiciones['caja_pendiente_de_elegir'] ?? null);
+        $this->assertSame((int) $this->norte->id, (int) $r['caja']->id);
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_argumento_recortado_no_autoriza_prefijo_de_otro_destino_completo()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $antes = $this->estado_negocio();
+        $this->del_dueno($conversation, 'La caja es Sintetica Norte128 Extendida Inexistente.');
+        $this->herramienta('definir_planilla', ['caja' => 'Sintetica Norte128'], $conversation, $this->assistant($conversation));
+        $r = $this->herramienta('proponer_ventas_de_planilla', [], $conversation, $this->assistant($conversation));
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_argumento_recortado_no_levanta_veto_sobre_destino_completo_desconocido()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $veto = $this->proponer_con($conversation, 'No uses ' . self::NORTE . '; todavía no elegí otra.');
+        $this->assertFalse($veto['ok'], json_encode($veto));
+        $antes = $this->estado_negocio();
+        $this->del_dueno($conversation, 'La caja es Sintetica Sur128 Extendida Inexistente.');
+        $r = $this->herramienta('definir_planilla', ['caja' => 'Sintetica Sur128'], $conversation, $this->assistant($conversation));
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $continuacion = $this->proponer_con($conversation, 'Seguí.');
+        $this->assertFalse($continuacion['ok'], json_encode($continuacion));
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_fullname_nuevo_no_compite_con_el_prefijo_phantom_de_una_guardada_ambigua()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $planilla->definiciones = ['caja' => 'Caja Sintetica'];
+        $planilla->save();
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . '.');
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(self::NORTE, $planilla->fresh()->definiciones['caja']);
+        $this->assertEmpty($planilla->fresh()->definiciones['caja_pendiente_de_elegir'] ?? null);
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_fullname_real_no_autoriza_un_destino_con_sufijo_desconocido()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $antes = $this->estado_negocio();
+        $this->del_dueno($conversation, 'La caja es ' . self::NORTE . ' Extendida Inexistente.');
+        $this->herramienta('definir_planilla', ['caja' => self::NORTE], $conversation, $this->assistant($conversation));
+        $r = $this->herramienta('proponer_ventas_de_planilla', [], $conversation, $this->assistant($conversation));
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_nombre_de_cliente_con_prefijo_de_caja_no_revoca_la_guardada()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $primera = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . '.');
+        $this->assertTrue($primera['ok'], json_encode($primera));
+        $this->assertSame(self::NORTE, $planilla->fresh()->definiciones['caja']);
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'El cliente es ' . self::NORTE . ' Extendida.');
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(self::NORTE, $planilla->fresh()->definiciones['caja']);
+        $this->assertEmpty($planilla->fresh()->definiciones['caja_pendiente_de_elegir'] ?? null);
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_otra_nominacion_de_caja_incompleta_no_desaparece_ante_una_completa()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $primera = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . '.');
+        $this->assertTrue($primera['ok'], json_encode($primera));
+        $vigentes = AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->get();
+        $this->assertCount(1, $vigentes);
+        $vieja = $vigentes[0];
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . '. La caja es ' . self::SUR . ' Extendida Inexistente.');
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, $vieja->fresh()->estado);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $continuacion = $this->proponer_con($conversation, 'Seguí.');
+        $this->assertFalse($continuacion['ok'], json_encode($continuacion));
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_dos_ocurrencias_en_la_misma_parte_conservan_el_rol_cliente_separado()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $primera = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . '.');
+        $this->assertTrue($primera['ok'], json_encode($primera));
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . ' y el cliente es ' . self::NORTE . ' Extendida.');
+        $this->assertTrue($r['ok'], json_encode($r));
+        $this->assertSame(self::NORTE, $planilla->fresh()->definiciones['caja']);
+        $this->assertEmpty($planilla->fresh()->definiciones['caja_pendiente_de_elegir'] ?? null);
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
+
+    public function test_coordinada_incompleta_sin_repetir_caja_no_se_omite()
+    {
+        list($conversation, $planilla) = $this->preparada();
+        $primera = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . '.');
+        $this->assertTrue($primera['ok'], json_encode($primera));
+        $vigentes = AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->get();
+        $this->assertCount(1, $vigentes);
+        $vieja = $vigentes[0];
+        $antes = $this->estado_negocio();
+        $r = $this->proponer_con($conversation, 'La caja es ' . self::NORTE . ' y ' . self::SUR . ' Extendida Inexistente.');
+        $this->assertFalse($r['ok'], json_encode($r));
+        $this->assertEmpty($planilla->fresh()->definiciones['caja'] ?? null);
+        $this->assertTrue($planilla->fresh()->definiciones['caja_pendiente_de_elegir']);
+        $this->assertSame(AiMessageAction::ESTADO_REEMPLAZADA, $vieja->fresh()->estado);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $conversation->id)->where('estado', AiMessageAction::ESTADO_PROPUESTA)->count());
+        $continuacion = $this->proponer_con($conversation, 'Seguí.');
+        $this->assertFalse($continuacion['ok'], json_encode($continuacion));
+        $this->assertSame($antes, $this->estado_negocio());
+        Http::assertNothingSent();
+    }
 }
