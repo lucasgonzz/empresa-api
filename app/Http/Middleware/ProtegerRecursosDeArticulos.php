@@ -118,12 +118,26 @@ class ProtegerRecursosDeArticulos
             foreach (['persona:' . $persona => 'persona', 'negocio' => 'negocio'] as $identidad => $clase) {
                 foreach (['minuto' => 60, 'hora' => 3600] as $ventana => $segundos) {
                     $cupo = max(1, (int) config('recursos_articulos.' . $tipo . '.' . $clase . '_' . $ventana));
-                    $clave = $prefijo . ':' . $identidad . ':' . $tipo . ':' . $ventana . ':' . intdiv($ahora, $segundos);
-                    $contador = (int) $store->get($clave, 0);
+                    // FileStore solo borra un vencido cuando se vuelve a leer SU clave. Poner
+                    // el bucket en el nombre dejaría archivos de cada minuto/hora para siempre.
+                    // La clave es estable; el bucket vive en el valor y se renueva bajo admisión.
+                    $clave = $prefijo . ':' . $identidad . ':' . $tipo . ':' . $ventana;
+                    $bucket = intdiv($ahora, $segundos);
+                    $guardado = $store->get($clave);
+                    $contador = 0;
+                    if ($guardado !== null) {
+                        if (!is_array($guardado) || !isset($guardado['bucket'], $guardado['cantidad'])
+                            || !is_int($guardado['bucket']) || !is_int($guardado['cantidad']) || $guardado['cantidad'] < 0) {
+                            throw new \RuntimeException('El contador de recursos no tiene un formato válido.');
+                        }
+                        if ($guardado['bucket'] === $bucket) {
+                            $contador = $guardado['cantidad'];
+                        }
+                    }
                     if ($contador >= $cupo) {
                         return $this->demasiados($segundos - ($ahora % $segundos));
                     }
-                    $contadores[] = [$clave, $contador + 1, $segundos * 2];
+                    $contadores[] = [$clave, ['bucket' => $bucket, 'cantidad' => $contador + 1], $segundos * 2];
                 }
             }
             // El lock de admisión serializa comprobar + incrementar todas las ventanas del dueño.

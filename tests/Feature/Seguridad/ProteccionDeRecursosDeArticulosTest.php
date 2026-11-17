@@ -7,6 +7,7 @@ use App\Models\User;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Mockery;
@@ -107,6 +108,24 @@ class ProteccionDeRecursosDeArticulosTest extends TestCase
         $this->pedido()->assertStatus(429);
         Carbon::setTestNow(now()->addMinute());
         $this->pedido()->assertStatus(200);
+    }
+
+    public function test_las_mismas_personas_no_acumulan_archivos_por_cada_ventana_de_tiempo()
+    {
+        $personas = [$this->dueno, $this->persona($this->dueno->id)];
+        $directorio = config('cache.stores.recursos_articulos_testing.path');
+        foreach (range(0, 11) as $ventana) {
+            Carbon::setTestNow(Carbon::parse('2026-11-16 10:01:00')->addMinutes($ventana * 61));
+            foreach ($personas as $persona) {
+                $this->cambiar_persona($persona);
+                $this->pedido()->assertStatus(200);
+                $this->pedido('PUT', 'api/article-update-addresses')->assertStatus(200);
+            }
+            // Dos personas + un negocio, dos tipos y dos ventanas: doce contadores estables.
+            // Las reservas se liberan al terminar cada petición. Con bucket en clave crecía
+            // en doce archivos por vuelta aunque los anteriores hubieran vencido.
+            $this->assertCount(12, File::allFiles($directorio));
+        }
     }
 
     public function test_los_empleados_comparten_el_cupo_del_negocio_sin_gastar_el_ajeno()
