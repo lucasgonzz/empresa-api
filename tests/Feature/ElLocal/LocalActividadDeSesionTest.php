@@ -443,7 +443,10 @@ class LocalActividadDeSesionTest extends TestCase
      */
     public function un_bearer_no_cuenta_como_actividad()
     {
-        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'agentes_ia'], ['name' => 'Agentes de IA']);
+        $extension = ExtencionEmpresa::where('slug', 'agentes_ia')->first();
+        if (is_null($extension)) {
+            $extension = ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Agentes de IA']);
+        }
         $this->user->extencions()->syncWithoutDetaching([$extension->id]);
         $token = IaAppHelper::emitir_token($this->user, 'actividad-el-local');
 
