@@ -20,6 +20,30 @@ use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 class VenderSearchHelper
 {
     /**
+     * Sin la extensión, match_descriptors es una correspondencia uno a uno sin postfiltro.
+     * Recién en ese caso COUNT + LIMIT/OFFSET equivale a paginar sus descriptores en PHP.
+     * Con variantes activas ni siquiera una tabla vacía basta: el matching PHP puede descartar
+     * artículos que SQL encontró por descripción/relaciones o por su collation. No inferirlo
+     * del número de variantes ni convertir ese caso en un fast path por aproximación.
+     */
+    public static function pagina_sql_si_no_expande($query, $per_page, $page)
+    {
+        if (UserHelper::hasExtencion('article_variants')) {
+            return null;
+        }
+
+        $pagina = clone $query;
+        // La ruta nativa no declaraba orden: LIMIT puede cambiar el plan de MySQL y repetir
+        // artículos entre páginas. Normalizar solo ese caso; el orden elegido en globalSearch
+        // y el builder original se conservan, y la rama de variantes ni siquiera llega acá.
+        if (empty($pagina->getQuery()->orders)) {
+            $pagina->orderBy($pagina->getModel()->getQualifiedKeyName(), 'ASC');
+        }
+
+        return $pagina->paginate($per_page, ['*'], 'page', $page);
+    }
+
+    /**
      * Whitelist estricta de contextos soportados por el buscador general para activar la logica
      * de Vender.
      */
