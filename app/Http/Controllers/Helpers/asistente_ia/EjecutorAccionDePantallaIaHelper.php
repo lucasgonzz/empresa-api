@@ -268,7 +268,44 @@ class EjecutorAccionDePantallaIaHelper
         $venta_de_la_factura = $es_factura && isset($cuerpo['sale_id']) && is_numeric($cuerpo['sale_id']) ? (int) $cuerpo['sale_id'] : null;
         $ultimo_ticket_antes = $venta_de_la_factura ? (int) AfipTicket::where('sale_id', $venta_de_la_factura)->max('id') : 0;
 
-        $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo, $referencia_promo);
+        try {
+
+            $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo, $referencia_promo);
+
+        } catch (\Throwable $e) {
+
+            /*
+             * A1 (revisión independiente): si la facturación tiró DESPUÉS de crear el ticket (por ejemplo al armar
+             * la venta entera para la respuesta), ARCA pudo haber dado CAE. Antes de relanzar se mira el ticket
+             * nuevo de la venta: si existe, se informa su estado real (emitida, rechazada o pendiente) en vez de un
+             * error, que haría pensar que no se facturó y podría llevar a facturar dos veces. Sin ticket nuevo, el
+             * error sigue su camino como siempre.
+             */
+            if (!$es_factura) {
+
+                throw $e;
+            }
+
+            $fiscal = self::resultado_fiscal($contexto, [], $venta_de_la_factura, $ultimo_ticket_antes);
+
+            if (is_null($fiscal['afip_ticket_id'])) {
+
+                throw $e;
+            }
+
+            Log::warning('EjecutorAccionDePantallaIaHelper: la facturación tiró después de crear el ticket; se informa su estado.', [
+                'afip_ticket_id' => $fiscal['afip_ticket_id'],
+                'estado'         => $fiscal['estado'],
+                'error'          => $e->getMessage(),
+            ]);
+
+            $llamada = [
+                'status'    => 200,
+                'cuerpo'    => ['estado' => $fiscal['estado'], 'message' => $fiscal['message'], 'afip_ticket_id' => $fiscal['afip_ticket_id']],
+                'recortado' => false,
+                'uri'       => $ruta,
+            ];
+        }
 
         $estado_fiscal = null;
         if ($es_factura) {
@@ -310,11 +347,15 @@ class EjecutorAccionDePantallaIaHelper
      *     cualquier otra cosa → pendiente_verificacion. Los textos son los mismos de MakeAfipTicket.
      *  3. Sin ticket que leer: pendiente_verificacion, con el texto de siempre.
      *
+     * Con `afip_ticket_id` y una venta conocida, el ticket además tiene que ser de ESA venta (revisión
+     * independiente). `afip_ticket_id` en la respuesta es el ticket leído (null si no se leyó ninguno): ejecutar()
+     * lo usa para decidir si una facturación que tiró igual dejó un ticket que informar.
+     *
      * @param  ContextoDeCargaIa  $contexto
      * @param  array  $cuerpo  Lo que devolvió la ruta (ya sin claves sensibles y quizás recortado).
      * @param  int|null  $sale_id  La venta que se mandó a facturar (el sale_id del cuerpo de la tarjeta).
      * @param  int  $ultimo_ticket_antes  El id del último ticket de esa venta antes de llamar (0 si no tenía).
-     * @return array{estado: string, message: string}
+     * @return array{estado: string, message: string, afip_ticket_id: int|null}
      */
     protected static function resultado_fiscal(ContextoDeCargaIa $contexto, array $cuerpo, $sale_id, int $ultimo_ticket_antes): array
     {
@@ -324,7 +365,9 @@ class EjecutorAccionDePantallaIaHelper
                 ? $cuerpo['message']
                 : self::mensaje_fiscal($cuerpo['estado']);
 
-            return ['estado' => $cuerpo['estado'], 'message' => $mensaje];
+            $id_del_cuerpo = isset($cuerpo['afip_ticket_id']) && is_numeric($cuerpo['afip_ticket_id']) ? (int) $cuerpo['afip_ticket_id'] : null;
+
+            return ['estado' => $cuerpo['estado'], 'message' => $mensaje, 'afip_ticket_id' => $id_del_cuerpo];
         }
 
         // Solo tickets de ventas de este negocio: un id que no es del negocio no se lee.
@@ -336,7 +379,15 @@ class EjecutorAccionDePantallaIaHelper
 
         if (isset($cuerpo['afip_ticket_id']) && is_numeric($cuerpo['afip_ticket_id'])) {
 
-            $ticket = (clone $consulta)->whereKey((int) $cuerpo['afip_ticket_id'])->first();
+            $por_id = (clone $consulta)->whereKey((int) $cuerpo['afip_ticket_id']);
+
+            // Si se sabe qué venta se facturó, el ticket tiene que ser de esa venta.
+            if (!is_null($sale_id)) {
+
+                $por_id->where('sale_id', (int) $sale_id);
+            }
+
+            $ticket = $por_id->first();
 
         } elseif (!is_null($sale_id)) {
 
@@ -346,7 +397,7 @@ class EjecutorAccionDePantallaIaHelper
         if (!$ticket) {
 
             // Sin ticket que leer: lo mismo que se decía antes de esta misión.
-            return ['estado' => 'pendiente_verificacion', 'message' => 'No se pudo confirmar el resultado de la facturación.'];
+            return ['estado' => 'pendiente_verificacion', 'message' => 'No se pudo confirmar el resultado de la facturación.', 'afip_ticket_id' => null];
         }
 
         $estado = 'pendiente_verificacion';
@@ -360,7 +411,7 @@ class EjecutorAccionDePantallaIaHelper
             $estado = 'rechazada';
         }
 
-        return ['estado' => $estado, 'message' => self::mensaje_fiscal($estado)];
+        return ['estado' => $estado, 'message' => self::mensaje_fiscal($estado), 'afip_ticket_id' => (int) $ticket->id];
     }
 
     /**

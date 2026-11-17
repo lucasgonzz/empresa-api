@@ -20,6 +20,7 @@ use App\Models\IvaCondition;
 use App\Models\Sale;
 use App\Services\AsistenteIa\AsistenteIaService;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Event;
 use Tests\EmpresaTestCase;
 
 /**
@@ -37,7 +38,10 @@ use Tests\EmpresaTestCase;
  *  - los casos rechazada y pendiente siguen diciendo lo mismo que antes;
  *  - si el cuerpo llegó sin `estado` (respuesta que no se pudo leer), el ejecutor consulta el ticket nuevo de la
  *    venta antes de decir «pendiente»: con CAE es emitida, con resultado R es rechazada;
- *  - un ticket viejo de la misma venta (anterior a la llamada) no cuenta como resultado de esta emisión.
+ *  - un ticket viejo de la misma venta (anterior a la llamada) no cuenta como resultado de esta emisión;
+ *  - (revisión independiente) si la facturación tira DESPUÉS de que ARCA dio CAE, se informa emitida en vez de un
+ *    error; si tira antes de crear el ticket, el error sigue como siempre; y un afip_ticket_id de otra venta del
+ *    mismo negocio no se lee cuando se sabe qué venta se facturó.
  *
  * El borde con ARCA se reemplaza por un transporte falso, sin red.
  */
@@ -88,9 +92,10 @@ class Factura_de_venta_grande_informa_su_estado_real_Test extends EmpresaTestCas
      * Propone la factura por WhatsApp, confirma con un «Sí» y devuelve lo que contestó la confirmación.
      *
      * @param  \App\Models\Sale  $venta
+     * @param  callable|null  $antes_de_confirmar  Se corre después de la propuesta y antes del «Sí».
      * @return array
      */
-    protected function facturar_por_whatsapp($venta): array
+    protected function facturar_por_whatsapp($venta, callable $antes_de_confirmar = null): array
     {
         $conversacion = AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]);
         AiMessage::create(['ai_conversation_id' => $conversacion->id, 'rol' => 'user', 'contenido' => 'Facturá esta venta', 'estado' => 'listo', 'canal' => 'whatsapp']);
@@ -108,6 +113,9 @@ class Factura_de_venta_grande_informa_su_estado_real_Test extends EmpresaTestCas
         $mensaje->update(['estado' => 'listo', 'contenido' => 'Revisá los datos de la factura y confirmá.']);
         AiMessage::create(['ai_conversation_id' => $conversacion->id, 'rol' => 'user', 'contenido' => 'Sí', 'estado' => 'listo', 'canal' => 'whatsapp']);
         $siguiente = AiMessage::create(['ai_conversation_id' => $conversacion->id, 'rol' => 'assistant', 'estado' => 'pendiente', 'acciones_habilitadas' => true, 'canal' => 'whatsapp']);
+        if (!is_null($antes_de_confirmar)) {
+            $antes_de_confirmar();
+        }
 
         return ConfirmacionPorTextoIaHelper::confirmar($conversacion, $siguiente, $propuesta['tarjeta_id']);
     }
@@ -188,6 +196,75 @@ class Factura_de_venta_grande_informa_su_estado_real_Test extends EmpresaTestCas
 
         $this->assertSame('pendiente_verificacion', $metodo->invoke(null, $contexto, ['afip_ticket_id' => $ticket->id], null, 0)['estado']);
         $this->assertSame('pendiente_verificacion', $metodo->invoke(null, $contexto, [], $ajena->id, 0)['estado']);
+    }
+    /**
+     * Hace tirar una excepción la PRIMERA vez que se lee una venta después de que la condición se cumple: simula
+     * una falla del controller al armar la respuesta (fullModel), con el ticket ya guardado.
+     *
+     * @param  callable  $condicion  Recibe la venta leída; true = tirar.
+     * @return void
+     */
+    protected function tirar_al_leer_la_venta(callable $condicion): void
+    {
+        $tiro = false;
+        Event::listen('eloquent.retrieved: '.Sale::class, function ($venta) use ($condicion, &$tiro) {
+            if (!$tiro && $condicion($venta)) {
+                $tiro = true;
+                throw new \RuntimeException('Falla simulada al armar la respuesta');
+            }
+        });
+    }
+
+    public function test_si_la_facturacion_tira_despues_del_cae_se_informa_emitida()
+    {
+        $venta = $this->venta_grande();
+        $this->tirar_al_leer_la_venta(function ($leida) use ($venta) {
+            return (int) $leida->id === (int) $venta->id && AfipTicket::where('sale_id', $venta->id)->whereNotNull('cae')->exists();
+        });
+
+        $respuesta = $this->facturar_por_whatsapp($venta);
+
+        $this->assertTrue($respuesta['ok'], json_encode($respuesta));
+        $this->assertSame('emitida', $respuesta['estado_fiscal']);
+        $this->assertStringContainsString('Factura emitida y autorizada por ARCA.', $respuesta['resultado']);
+        $this->assertSame(1, $this->transporte->emisiones);
+    }
+
+    public function test_si_la_facturacion_tira_antes_de_crear_el_ticket_el_error_sigue()
+    {
+        $venta = $this->venta_grande();
+        $contexto = ContextoDeCargaIa::de_la_conversacion(AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]), $this->dueno);
+        $metodo = new \ReflectionMethod(EjecutorAccionDePantallaIaHelper::class, 'resultado_fiscal');
+        $metodo->setAccessible(true);
+
+        // Sin ticket nuevo no hay nada que informar: resultado_fiscal no devuelve ticket y ejecutar() relanza.
+        $this->assertNull($metodo->invoke(null, $contexto, [], $venta->id, 0)['afip_ticket_id']);
+
+        // La falla se arma recién al confirmar: la propuesta también lee la venta.
+        $respuesta = $this->facturar_por_whatsapp($venta, function () use ($venta) {
+            $this->tirar_al_leer_la_venta(function ($leida) use ($venta) {
+                return (int) $leida->id === (int) $venta->id;
+            });
+        });
+
+        $this->assertFalse($respuesta['ok'], json_encode($respuesta));
+        $this->assertNotSame('emitida', isset($respuesta['estado_fiscal']) ? $respuesta['estado_fiscal'] : null);
+        $this->assertSame(0, $venta->afip_tickets()->count());
+        $this->assertSame(0, $this->transporte->emisiones);
+    }
+
+    public function test_un_afip_ticket_id_de_otra_venta_del_negocio_no_se_lee()
+    {
+        $venta = $this->venta_grande();
+        $otra = Sale::create(['user_id' => $this->dueno->id, 'num' => 3106, 'total' => 10, 'sub_total' => 10, 'moneda_id' => 1, 'descuento' => 0, 'terminada' => 1]);
+        $ticket_de_otra = AfipTicket::create(['sale_id' => $otra->id, 'cae' => 'cae-otra', 'resultado' => 'A', 'importe_total' => 10, 'moneda_id' => 'PES']);
+        $contexto = ContextoDeCargaIa::de_la_conversacion(AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]), $this->dueno);
+        $metodo = new \ReflectionMethod(EjecutorAccionDePantallaIaHelper::class, 'resultado_fiscal');
+        $metodo->setAccessible(true);
+
+        $this->assertSame('pendiente_verificacion', $metodo->invoke(null, $contexto, ['afip_ticket_id' => $ticket_de_otra->id], $venta->id, 0)['estado']);
+        // Sin venta conocida, el mismo id se lee (es del negocio).
+        $this->assertSame('emitida', $metodo->invoke(null, $contexto, ['afip_ticket_id' => $ticket_de_otra->id], null, 0)['estado']);
     }
 }
 
