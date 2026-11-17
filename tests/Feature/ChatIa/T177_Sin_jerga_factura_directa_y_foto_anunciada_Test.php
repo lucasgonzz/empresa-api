@@ -1,0 +1,134 @@
+<?php
+
+namespace Tests\Feature\ChatIa;
+
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
+use App\Models\AiConversation;
+use App\Models\ExtencionEmpresa;
+use App\Models\User;
+use App\Services\AsistenteIa\AsistenteIaService;
+use Database\Seeders\testing\TestingFerreteriaSeeder;
+use Tests\EmpresaTestCase;
+
+/**
+ * Misión asistente-diario-20261117 (charlas de Truvari del 16/11/2026), B1 y B2: dos reglas del bloque de carga del
+ * system prompt.
+ *
+ *  - B1: nunca nombrar rutas, ids internos, controllers ni campos; y «confirmalo y facturalo» es un solo pedido:
+ *    después de confirmar el presupuesto se arma directo la tarjeta de la factura, sin preguntar «¿querés que
+ *    busque la venta?».
+ *  - B2: si la persona anuncia la foto y no llegó ninguna imagen, se la espera y no se busca una en internet.
+ *
+ * Las dos van en el bloque de carga: están por WhatsApp y en el sistema, y no en el modo solo lectura (sin cargas).
+ */
+class T177_Sin_jerga_factura_directa_y_foto_anunciada_Test extends EmpresaTestCase
+{
+    protected $dueno;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        // 🔴 Nunca la clave real del .env.testing: este archivo no sale a la red.
+        config(['services.anthropic.api_key' => 'clave-de-prueba']);
+
+        $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->firstOrFail();
+        $extencion = ExtencionEmpresa::where('slug', 'agentes_ia')->first()
+            ?: ExtencionEmpresa::forceCreate(['slug' => 'agentes_ia', 'name' => 'Agentes de IA']);
+        $this->dueno->extencions()->syncWithoutDetaching([$extencion->id]);
+        $this->dueno->load('extencions');
+    }
+
+    /**
+     * Los tres prompts: WhatsApp y sistema con cargas, y el de solo lectura.
+     *
+     * @return array{0: string, 1: string, 2: string}
+     */
+    protected function prompts(): array
+    {
+        $conversacion = AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id]);
+        $servicio = new AsistenteIaService();
+
+        return [
+            $servicio->build_system_prompt($conversacion, $this->dueno->fresh(), true, true),
+            $servicio->build_system_prompt($conversacion, $this->dueno->fresh(), true, false),
+            $servicio->build_system_prompt($conversacion, $this->dueno->fresh(), false, false),
+        ];
+    }
+
+    public function test_la_regla_de_no_nombrar_rutas_ni_ids_esta_en_el_bloque_de_carga()
+    {
+        list($whatsapp, $sistema, $solo_lectura) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('Las rutas, los ids y los nombres de campo son para las herramientas, NO para la persona', $prompt);
+            $this->assertStringContainsString('que le escribís nunca nombres una ruta («api/...»), un id interno (sale_id, el id de una', $prompt);
+        }
+
+        $this->assertStringNotContainsString('Las rutas, los ids y los nombres de campo son para las herramientas', $solo_lectura);
+    }
+
+    public function test_confirmar_y_facturar_es_un_solo_pedido()
+    {
+        list($whatsapp, $sistema) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('Si la persona pidió confirmar un presupuesto Y facturarlo («confirmalo y facturalo»), es un', $prompt);
+            $this->assertStringContainsString('no se deduce— y nunca le preguntes «¿querés que busque la venta?» ni si querés seguir con la', $prompt);
+            $this->assertStringContainsString('solo pedido: después de la tarjeta de confirmación del presupuesto, armá directo la tarjeta de', $prompt);
+        }
+    }
+
+    /**
+     * Revisión independiente: el renglón del presupuesto decía que confirmarlo «no lo hacés vos», contra la regla de
+     * las ACCIONES DE PANTALLA (POST api/budget/{id}/confirmar está en el catálogo). Ahora lo propone el asistente
+     * cuando se lo piden, y nunca por su cuenta.
+     */
+    public function test_confirmar_un_presupuesto_lo_propone_el_asistente_sin_contradiccion()
+    {
+        list($whatsapp, $sistema) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('corriente; eso pasa recién cuando se CONFIRMA. Confirmarlo lo proponés vos con', $prompt);
+            $this->assertStringContainsString('proponer_accion_de_pantalla cuando la persona te lo pide; nunca lo confirmes por tu cuenta.', $prompt);
+            $this->assertStringNotContainsString('Presupuestos, y eso no lo hacés vos', $prompt);
+        }
+
+        $this->assertNotNull(CatalogoDeAccionesDePantallaIaHelper::declaracion('POST', 'api/budget/{id}/confirmar'));
+    }
+
+    public function test_la_foto_anunciada_que_no_llego_se_espera_sin_buscar_en_internet()
+    {
+        list($whatsapp, $sistema, $solo_lectura) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('foto») y en ESTE mensaje no llegó ninguna imagen, esperala: decile en una línea que todavía no', $prompt);
+            $this->assertStringContainsString('te llegó y que la esperás para seguir. En ese turno no busques una foto en internet ni armes el', $prompt);
+        }
+
+        $this->assertStringNotContainsString('y en ESTE mensaje no llegó ninguna imagen, esperala', $solo_lectura);
+    }
+    /**
+     * B2 (revisión independiente): en un negocio de bebidas las instrucciones del alta de bebidas van DESPUÉS del
+     * bloque de carga y dicen «Buscá automáticamente la foto»: tienen que traer la misma excepción, o le ganan a la
+     * regla de la foto anunciada.
+     */
+    public function test_en_un_negocio_de_bebidas_la_busqueda_automatica_espera_la_foto_anunciada()
+    {
+        $vinoteca = ExtencionEmpresa::where('slug', 'vinoteca')->first()
+            ?: ExtencionEmpresa::forceCreate(['slug' => 'vinoteca', 'name' => 'vinoteca']);
+        $this->dueno->extencions()->syncWithoutDetaching([$vinoteca->id]);
+        $this->dueno->agente_alta_bebidas = true;
+        $this->dueno->save();
+        $this->dueno->load('extencions');
+
+        list($whatsapp, $sistema) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras, salvo que la persona te haya dicho que te manda la foto', $prompt);
+            $this->assertStringContainsString('y todavía no llegó ninguna imagen: esperala, decile en una línea que la esperás y en ese turno no busques en internet.', $prompt);
+            // La excepción va en la misma oración: no queda una orden de buscar sin la salvedad.
+            $this->assertStringNotContainsString('sin inventar código de barras. ', $prompt);
+        }
+    }
+}

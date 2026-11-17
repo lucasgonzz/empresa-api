@@ -25,6 +25,10 @@ class AltaBebidasIaHelper
          * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B7): este bloque viaja con las
          * instrucciones de carga y su «cajas × botellas» se filtró a un presupuesto («una caja» salió
          * como 6 botellas). La primera oración lo acota: solo el alta y su stock inicial.
+         *
+         * Misión asistente-diario-20261117 (B2, revisión independiente): este bloque va DESPUÉS del bloque de
+         * carga y su «Buscá automáticamente la foto» le ganaba a la regla de la foto anunciada que no llegó. La
+         * excepción va acá, en la misma oración.
          */
         return 'Esto aplica SOLO al alta de bebidas (proponer_alta) y a su stock inicial; NUNCA a ventas, presupuestos ni pedidos: ahí la cantidad son unidades de venta del artículo y "una caja" es 1 (con presentación, el precio ya es el de la caja). '
             .'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
@@ -34,7 +38,8 @@ class AltaBebidasIaHelper
             .'Botellas por caja logística va en bebida.botellas_por_caja y no implica presentación de venta. '
             .'Si el stock se dio en cajas, mandá bebida.cajas y bebida.cajas_confirmadas=true solo después de que el dueño haya dicho que son cajas; '
             .'el sistema convierte una sola vez. No mandes además stock_inicial. Si el negocio tiene más de una sucursal, elegí explícitamente el depósito para ese ingreso; con una sola, no lo mandes ni lo preguntes. '
-            .'Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras. '
+            .'Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras, '
+            .'salvo que la persona te haya dicho que te manda la foto («te paso la foto», «esta es la foto») y todavía no llegó ninguna imagen: esperala, decile en una línea que la esperás y en ese turno no busques en internet. '
             .'Si no hay coincidencia verificada, informalo y mandá bebida.sin_imagen=true para mostrar ese límite. '
             .'Una única propuesta muestra datos, conversión y depósito; SIEMPRE requiere confirmación, incluso en modo directo. '
             .'La foto encontrada en INTERNET nunca va dentro del alta (el artículo se crea sin ella): cuando la persona confirme el alta, proponé la foto APARTE con proponer_foto_articulo (articulo_id del alta e imagen_id de foto_aparte), que la muestra y espera su propio sí. Nunca la pongas sin preguntar.';
@@ -111,10 +116,21 @@ class AltaBebidasIaHelper
         }
         if (count($faltan)) return RespuestaDeCargaIa::faltan($faltan, ['instrucciones' => self::instrucciones()]);
 
+        /*
+         * M3 (misión asistente-diario-20261117): el renglón «Caja logística» decía siempre que la caja «se usa
+         * para convertir este ingreso de stock», también en un alta sin cajas, donde no hay ingreso. Con cajas
+         * queda ese texto; sin cajas, que se vende por botella (texto_sin_cajas()). El resultado del alta
+         * (EjecutorGenericoIaHelper) sigue el mismo criterio. Con la propiedad de distribuidora las botellas
+         * por caja SÍ se guardan, como unidades por bulto (PropuestaGenericaIaHelper las pone en el payload con
+         * la misma condición): el texto lo dice, para no contradecir el renglón «Unidades por bulto guardadas».
+         */
+        $texto_de_la_caja = isset($bebida['cajas'])
+            ? 'Se usa para convertir este ingreso de stock; no modifica la presentación de venta.'
+            : self::texto_sin_cajas((int) $botellas, false, PermisosIaHelper::tiene_extencion($contexto->owner, 'articulos_con_propiedades_de_distribuidora'));
         $renglones = [
             ['etiqueta' => 'Tipo de bebida', 'valor' => $bebida['es_vino'] ? 'Vino' : 'Otra bebida (sin cepa)'],
             ['etiqueta' => 'Botellas por caja logística', 'valor' => (string) (int) $botellas],
-            ['etiqueta' => 'Caja logística', 'valor' => 'Se usa para convertir este ingreso de stock; no modifica la presentación de venta.'],
+            ['etiqueta' => 'Caja logística', 'valor' => $texto_de_la_caja],
             ['etiqueta' => 'Precio por presentación', 'valor' => 'La presentación de venta es '.(float) $p['presentacion'].' y puede cambiar el precio según la configuración; se usa el mismo cálculo de Crear.'],
         ];
         if (isset($bebida['cajas'])) {
@@ -156,6 +172,33 @@ class AltaBebidasIaHelper
         }
         $bebida['botellas_por_caja'] = (int) $botellas;
         return ['extras' => $extras, 'bebida' => $bebida, 'renglones' => $renglones];
+    }
+
+    /**
+     * Lo que se le dice a la persona de la caja logística en un alta SIN cajas (sin ingreso de stock): el
+     * artículo se vende por botella y las botellas por caja no son la presentación de venta. Lo usan la
+     * tarjeta (antes de confirmar, en presente) y el resultado del alta (ya hecho, en pasado).
+     *
+     * Con la propiedad de distribuidora las botellas por caja se guardan como unidades por bulto: el texto
+     * lo dice («quedan como unidades por bulto, no como presentación de venta») en vez de decir que no se
+     * guardan, que contradiría el renglón «Unidades por bulto guardadas» de la misma tarjeta.
+     *
+     * @param  int  $botellas  Las botellas por caja logística que dio la persona.
+     * @param  bool  $ya_hecho  true para el resultado (en pasado), false para la tarjeta (en presente).
+     * @param  bool  $como_unidades_por_bulto  true si se guardan como unidades_por_bulto (propiedad de distribuidora).
+     * @return string
+     */
+    public static function texto_sin_cajas(int $botellas, bool $ya_hecho, bool $como_unidades_por_bulto = false): string
+    {
+        if ($como_unidades_por_bulto) {
+            return 'Se vende por botella; las '.$botellas.' botellas por caja '
+                .($ya_hecho ? 'quedaron' : 'quedan')
+                .' como unidades por bulto, no como presentación de venta.';
+        }
+
+        return 'Se vende por botella: las '.$botellas.' botellas por caja '
+            .($ya_hecho ? 'no quedaron guardadas' : 'no se guardan')
+            .' como presentación de venta.';
     }
 
     public static function verificar(ContextoDeCargaIa $contexto, array $datos): void
