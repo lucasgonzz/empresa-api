@@ -140,6 +140,9 @@ class Tools_de_lectura_Test extends TestCase
             // Misión asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, sobre el
             // comercio de prueba (el cálculo lo cubre T154).
             'consultar_rendimiento_de_compras'         => ['limite' => 5],
+            // Misión asistente-diario-20261117 (parte B, A2): lo que el asistente ejecutó, sobre el comercio de
+            // prueba (el alcance por negocio y por persona lo cubre T155).
+            'consultar_lo_que_hizo_el_asistente'       => ['limite' => 5],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

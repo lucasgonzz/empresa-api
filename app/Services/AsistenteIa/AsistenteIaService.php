@@ -2758,6 +2758,10 @@ APP;
   contexto: los datos del negocio (saldos, stock, cheques, precios) volvé a consultarlos con las
   herramientas antes de afirmarlos, y lo que ahí ya se pidió o se cargó no lo repitas salvo que
   te lo pidan ahora.
+- «Qué cargaste / facturaste / hiciste / me hiciste»: 🔴 se contesta con
+  consultar_lo_que_hizo_el_asistente (lo que de verdad se ejecutó, con la venta y su factura como
+  están hoy), nunca de memoria ni con los resúmenes de charlas viejas. Y un dato que ya diste en
+  esta conversación no lo contradigas sin volver a consultarlo.
 REGLA;
     }
 
@@ -6912,6 +6916,37 @@ CONFIRMACION;
                 ],
                 'handler' => function (array $input, $owner_id, $conversation = null) {
                     return \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        $input
+                    );
+                },
+            ],
+            /*
+             * Misión asistente-diario-20261117 (parte B, A2), AL FINAL del registro por el prefijo del caché.
+             * Truvari (16/11, conv. 40): «¿qué me cargaste / facturaste?» se contestaba de memoria y de los
+             * resúmenes de charlas viejas, con listas contradictorias. Lo que el asistente ejecutó vive en
+             * `ai_message_actions`; AccionesHechasPorElAsistenteIaHelper lo lee acotado al negocio y a la
+             * persona, sin `datos` ni `presentacion`, y completa cada venta con cómo está hoy.
+             */
+            [
+                'name' => 'consultar_lo_que_hizo_el_asistente',
+                'description' => 'LO QUE EL ASISTENTE HIZO DE VERDAD en el sistema: las cargas confirmadas (ventas, altas, ediciones, bajas, pagos, gastos, facturas, presupuestos…), de la más nueva a la más vieja, con fecha, tipo, qué hizo y, si tocó una venta, cómo está HOY esa venta (número, cliente, total, si está anulada y si tiene factura emitida con CAE). 🔴 Es LA herramienta de «¿qué me cargaste?», «¿qué facturaste?», «¿qué hiciste hoy?», «¿qué ventas me hiciste?»: contestá con esto y con los datos actuales que trae, NUNCA de memoria ni con los resúmenes de conversaciones anteriores, y no nombres ids internos ni rutas. Si en esta misma charla ya diste una lista o un dato y te repreguntan, volvé a llamar antes de cambiarlo: no lo contradigas sin consultar. Un empleado ve solo lo que el asistente hizo para él (alcance lo dice). Sin desde ni hasta: los últimos 30 días. Si trae "error", contá eso tal cual.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día, AAAA-MM-DD. Para «hoy», hoy en desde y en hasta.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día, AAAA-MM-DD. Sin hasta: hoy.'],
+                        'tipo' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: solo un tipo de carga. venta (ventas del asistente), accion_pantalla (facturar, editar o anular desde una pantalla), alta, edicion, baja, pago, gasto, presupuesto, etc.',
+                        ],
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántas acciones listar (default 50, hasta 200). acciones_en_total siempre es de todo el período.'],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\AccionesHechasPorElAsistenteIaHelper::consultar(
                         (int) $owner_id,
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         $input

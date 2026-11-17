@@ -55,6 +55,8 @@ class ProgresoIaHelper
         'consultar_resumen_de_ventas'               => 'Buscando las ventas…',
         // Misión asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock.
         'consultar_rendimiento_de_compras'          => 'Cruzando compras, ventas y stock…',
+        // Misión asistente-diario-20261117 (parte B, A2): lo que el asistente ejecutó de verdad.
+        'consultar_lo_que_hizo_el_asistente'        => 'Revisando lo que hice…',
         'consultar_reporte_contable'                => 'Armando el reporte…',
         'consultar_datos'                           => 'Consultando los datos…',
         'resumir_datos'                             => 'Haciendo las cuentas…',
