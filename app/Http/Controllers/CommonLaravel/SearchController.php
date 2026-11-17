@@ -850,7 +850,8 @@ class SearchController extends Controller
                 }]);
             }
 
-            $light_articles = $light_query->get();
+            $pagina_sql = VenderSearchHelper::pagina_sql_si_no_expande($light_query, $per_page, $page_actual);
+            $light_articles = $pagina_sql ? $pagina_sql->getCollection() : $light_query->get();
             if ($es_compra) {
                 foreach ($light_articles as $article) {
                     $article->provider_code = $provider_id_compra
@@ -865,7 +866,8 @@ class SearchController extends Controller
             // resolveCurrentPage() (ver la nota larga donde se calcula $page_actual).
             $current_page = $page_actual;
 
-            $page_descriptors = $descriptors->forPage($current_page, $per_page)->values();
+            $page_descriptors = $pagina_sql ? $descriptors : $descriptors->forPage($current_page, $per_page)->values();
+            $total_descriptores = $pagina_sql ? $pagina_sql->total() : $descriptors->count();
 
             // Fase 2: recién acá se cargan las relaciones completas (withAllSinAcopio()), y SOLO
             // para los artículos de la página pedida.
@@ -897,7 +899,7 @@ class SearchController extends Controller
 
             $models = new LengthAwarePaginator(
                 $results,
-                $descriptors->count(),
+                $total_descriptores,
                 $per_page,
                 $current_page
             );

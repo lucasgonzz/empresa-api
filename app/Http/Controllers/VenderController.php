@@ -515,13 +515,15 @@ class VenderController extends Controller
             }]);
         }
 
-        $light_articles = $articles_query->get();
+        $pagina_sql = VenderSearchHelper::pagina_sql_si_no_expande($articles_query, $per_page, $current_page);
+        $light_articles = $pagina_sql ? $pagina_sql->getCollection() : $articles_query->get();
 
         Log::info(count($light_articles). ' articulos');
 
         $descriptors = VenderSearchHelper::match_descriptors($light_articles, $request->query_value);
 
-        $page_descriptors = $descriptors->forPage($current_page, $per_page)->values();
+        $page_descriptors = $pagina_sql ? $descriptors : $descriptors->forPage($current_page, $per_page)->values();
+        $total_descriptores = $pagina_sql ? $pagina_sql->total() : $descriptors->count();
 
         // Fase 2: recien aca se cargan las 27 relaciones de withAllSinAcopio(), y SOLO para los
         // articulos de la pagina pedida (como mucho $per_page, nunca para los que matchean pero no
@@ -552,7 +554,7 @@ class VenderController extends Controller
         // Paginar manualmente, con el total real (Fase 1) y los resultados ya armados (Fase 2).
         $paginated = new LengthAwarePaginator(
             $results,
-            $descriptors->count(),
+            $total_descriptores,
             $per_page,
             $current_page
         );
