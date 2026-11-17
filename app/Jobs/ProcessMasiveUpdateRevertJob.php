@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\MasiveUpdateHelper;
 use App\Models\MasiveUpdate;
+use App\Http\Controllers\Helpers\masivas\EjecucionPorTandasHelper;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -30,12 +31,21 @@ class ProcessMasiveUpdateRevertJob implements ShouldQueue
      */
     protected $revert_masive_update_id;
 
+    protected $cursor_esperado = null;
+    protected $generacion_esperada = null;
+
     /**
      * @param int $revert_masive_update_id
      */
-    public function __construct($revert_masive_update_id)
+    public function __construct($revert_masive_update_id, $cursor_esperado = null, $generacion_esperada = null)
     {
         $this->revert_masive_update_id = (int) $revert_masive_update_id;
+        $this->cursor_esperado = $cursor_esperado;
+        $this->generacion_esperada = $generacion_esperada;
+        $masiva = MasiveUpdate::find($this->revert_masive_update_id);
+        if ($masiva && EjecucionPorTandasHelper::es_de_articulos($masiva)) {
+            $this->timeout = 120;
+        }
     }
 
     /**
@@ -59,6 +69,11 @@ class ProcessMasiveUpdateRevertJob implements ShouldQueue
         if (!$parent_masive_update) {
             MasiveUpdateHelper::mark_failed($revert_masive_update, 'Actualización original no encontrada');
             MasiveUpdateHelper::notify_result($revert_masive_update, false, 'Actualización original no encontrada');
+            return;
+        }
+
+        if (EjecucionPorTandasHelper::es_de_articulos($revert_masive_update)) {
+            EjecucionPorTandasHelper::ejecutar($this->revert_masive_update_id, $this->cursor_esperado, $this->generacion_esperada);
             return;
         }
 
@@ -91,6 +106,12 @@ class ProcessMasiveUpdateRevertJob implements ShouldQueue
         $revert_masive_update = MasiveUpdate::find($this->revert_masive_update_id);
 
         if (!$revert_masive_update || in_array($revert_masive_update->status, ['completed', 'failed', 'reverted'])) {
+            return;
+        }
+
+        if (EjecucionPorTandasHelper::es_de_articulos($revert_masive_update)) {
+            EjecucionPorTandasHelper::fallar_si_vigente($this->revert_masive_update_id, $this->cursor_esperado, $this->generacion_esperada,
+                $e ? $e->getMessage() : 'La tanda se interrumpió antes de confirmar sus cambios.');
             return;
         }
 

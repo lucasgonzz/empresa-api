@@ -184,6 +184,16 @@ class EjecutorAccionesIaHelper {
      * @return array  ['status' => int, 'body' => array]
      */
     protected static function ejecutar_confirmacion(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
+        $accion = AiMessageAction::where('ai_conversation_id', $conversation->id)->find((int) $accion_id);
+        if (!$accion || $accion->estado !== AiMessageAction::ESTADO_PROPUESTA) {
+            return self::ejecutar_confirmacion_admitida($conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo);
+        }
+        return PresupuestoDeOperacionesIaHelper::escritura($conversation, $accion, function () use ($conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
+            return self::ejecutar_confirmacion_admitida($conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo);
+        });
+    }
+
+    protected static function ejecutar_confirmacion_admitida(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
 
         if (!self::es_de_la_conversacion($conversation, $accion_id)) {
 

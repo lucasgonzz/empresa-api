@@ -27,8 +27,7 @@ use Tests\EmpresaTestCase;
  * 🔴 Los números son la especificación: está prohibido ajustar un valor esperado para que coincida
  * con lo que devuelve el sistema. Si un test queda en rojo, se corrige el código.
  *
- * QUEUE sync: ProcessMasiveUpdateJob corre inline dentro del request (mismo criterio que
- * 4_Masiva_de_costo_recalcula_y_revierte_Test).
+ * El fixture ejecuta tandas asíncronas reales y avanza el reloj; los valores esperados no cambian.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union
  * types, promoción de constructor, readonly, enum ni #[...].
@@ -37,6 +36,7 @@ use Tests\EmpresaTestCase;
  */
 class Masiva_de_costo_neto_o_bruto_Test extends EmpresaTestCase
 {
+    use \Tests\Support\EjecutaMasivasAsincronas;
     /** Tolerancia para comparaciones de plata (nunca comparación exacta sobre floats). */
     const DELTA = 0.01;
 

@@ -17,6 +17,7 @@ use Illuminate\Support\Facades\Log;
 
 class ProcessSendAdviseMail implements ShouldQueue
 {
+
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     public $advise;
@@ -39,6 +40,9 @@ class ProcessSendAdviseMail implements ShouldQueue
      */
     public function __construct($advise, $article)
     {
+        // Nunca publicar efectos de una tanda cuya transacción todavía puede revertirse.
+        $this->afterCommit = true;
+
         $this->advise = $advise;
         $this->article = $article;
     }

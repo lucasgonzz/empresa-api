@@ -29,6 +29,8 @@ use Illuminate\Support\Facades\Log;
  */
 class Masiva_visible_en_tienda_Test extends CatalogoPorListaTestCase
 {
+    use \Tests\Support\EjecutaMasivasAsincronas;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -418,7 +420,7 @@ class Masiva_visible_en_tienda_Test extends CatalogoPorListaTestCase
 
         Log::shouldHaveReceived('warning')
             ->withArgs(function ($mensaje) {
-                return strpos((string) $mensaje, 'CatalogoPorListaHelper') !== false
+                return strpos((string) $mensaje, 'MasiveUpdateHelper') !== false
                     && strpos((string) $mensaje, 'otro dueño') !== false;
             })
             ->once();

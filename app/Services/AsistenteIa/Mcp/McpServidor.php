@@ -238,7 +238,18 @@ class McpServidor
         ];
 
         $servicio = new AsistenteIaService();
+        // Cobrar antes del historial: una ráfaga rechazada no crea dos mensajes por intento.
+        if ((int) $conversation->auth_user_id !== (int) $persona->id || (int) $conversation->user_id !== (int) $dueno->id) {
+            throw new McpError(-32602, 'La sesión no es de la persona autenticada.');
+        }
+        $rechazo = $servicio->reservar_herramienta($conversation, $name);
+        if ($rechazo !== null) {
+            return self::resultado_de_tool([['type' => 'tool_result', 'tool_use_id' => $bloque['id'],
+                'is_error' => true, 'content' => json_encode($rechazo['body'])]]);
+        }
 
+
+        try {
         if (!HerramientasDeCarga::maneja($name)) {
 
             // Una lectura del registro de AsistenteIaService: sin mensaje, y no escribe nada.
@@ -323,6 +334,10 @@ class McpServidor
         $conversation->save();
 
         return self::resultado_de_tool($resultados);
+        } finally {
+            // También si el historial falla ANTES de llegar al servicio.
+            $servicio->liberar_reservas();
+        }
     }
 
     /**

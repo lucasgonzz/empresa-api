@@ -25,6 +25,8 @@ use App\Events\BackgroundProcessUpdated;
  */
 class OperacionesMasivasEnSilencioTest extends AuditoriaTestCase
 {
+    use \Tests\Support\EjecutaMasivasAsincronas;
+
     /**
      * El job masivo no deja filas por artículo, pero sí la de su BackgroundProcess (solo creación).
      *

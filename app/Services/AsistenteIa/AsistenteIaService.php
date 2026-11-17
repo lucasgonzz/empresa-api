@@ -7170,6 +7170,30 @@ CONFIRMACION;
      * @param AiMessage|null $assistant_message El assistant que se está generando (opcional).
      * @return array<int, array<string, mixed>>
      */
+    /** Reservas internas del transporte MCP: no son parámetros ni datos de una tool del cliente. */
+    private $presupuestos_reservados = [];
+
+    public function reservar_herramienta(AiConversation $conversation, string $nombre)
+    {
+        $reserva = [];
+        $rechazo = \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::herramienta($conversation, $reserva);
+        if ($rechazo === null) {
+            $clave = $conversation->id . ':' . $nombre;
+            $this->presupuestos_reservados[$clave][] = $reserva;
+        }
+        return $rechazo;
+    }
+
+    public function liberar_reservas()
+    {
+        foreach ($this->presupuestos_reservados as $reservas) {
+            foreach ($reservas as $reserva) {
+                \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::liberar_herramienta($reserva);
+            }
+        }
+        $this->presupuestos_reservados = [];
+    }
+
     public function execute_tool_calls(array $content_blocks, AiConversation $conversation, $assistant_message = null): array
     {
         $owner_id = (int) $conversation->user_id;
@@ -7183,6 +7207,16 @@ CONFIRMACION;
             $tool_id    = (string) ($block['id'] ?? '');
             $tool_name  = (string) ($block['name'] ?? '');
             $tool_input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
+
+            $clave_presupuesto = $conversation->id . ':' . $tool_name;
+            $reservado = !empty($this->presupuestos_reservados[$clave_presupuesto]);
+            $reserva_herramienta = $reservado ? array_shift($this->presupuestos_reservados[$clave_presupuesto]) : [];
+            $rechazo = $reservado ? null : \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::herramienta($conversation, $reserva_herramienta);
+            if ($rechazo !== null) {
+                $tool_results[] = ['type' => 'tool_result', 'tool_use_id' => $tool_id, 'is_error' => true,
+                    'content' => json_encode($rechazo['body'])];
+                continue;
+            }
 
             /*
              * Misión app-ia-y-memoria (§4 E1.5): la línea de progreso, antes de cada herramienta y solo
@@ -7337,6 +7371,8 @@ CONFIRMACION;
                     'is_error'    => true,
                     'content'     => 'Error al ejecutar ' . $tool_name . ': ' . $exception->getMessage(),
                 ];
+            } finally {
+                \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::liberar_herramienta($reserva_herramienta);
             }
         }
 

@@ -938,7 +938,22 @@ class Masiva_de_precio_segun_como_se_calcula_Test extends TestCase
 
         Notification::fake();
 
+        // El fixture conserva su transacción de aislamiento. Simular sólo los callbacks NUEVOS
+        // del commit de esta tanda; EfectosDeTandasTest verifica commit/rollback con PDO real.
+        $anteriores = [];
+        foreach (app('db.transactions')->getTransactions() as $registro) {
+            foreach ($registro->getCallbacks() as $callback) {
+                $anteriores[] = $callback;
+            }
+        }
         (new ProcessMasiveUpdateJob($masiva->id))->handle();
+        foreach (app('db.transactions')->getTransactions() as $registro) {
+            foreach ($registro->getCallbacks() as $callback) {
+                if (!in_array($callback, $anteriores, true)) {
+                    $callback();
+                }
+            }
+        }
 
         $masiva = $masiva->fresh();
         $this->assertSame('completed', $masiva->status);

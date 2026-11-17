@@ -38,6 +38,7 @@ use Tests\TestCase;
 class Masiva_de_costo_recalcula_y_revierte_Test extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Support\EjecutaMasivasAsincronas;
 
     /**
      * @return \App\Models\User

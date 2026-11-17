@@ -38,6 +38,7 @@ use Illuminate\Support\Facades\Log;
  */
 class GenerateArticleEmbeddingJob implements ShouldQueue
 {
+
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
 
     /**
@@ -84,6 +85,9 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
      */
     public function __construct(int $article_id, ?int $embedding_run_id = null)
     {
+        // Nunca publicar efectos de una tanda cuya transacción todavía puede revertirse.
+        $this->afterCommit = true;
+
         $this->article_id       = $article_id;
         $this->embedding_run_id = $embedding_run_id;
     }
