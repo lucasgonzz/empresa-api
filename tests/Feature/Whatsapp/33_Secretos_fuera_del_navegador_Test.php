@@ -184,6 +184,33 @@ class Secretos_fuera_del_navegador_Test extends AgentesIaTestCase
      * @group whatsapp
      * @test
      */
+    public function un_campo_tecnico_con_forma_de_array_es_422_y_no_un_500_ni_guarda_nada()
+    {
+        $this->config_provisionada();
+
+        foreach (['kapso_api_key', 'webhook_secret', 'phone_number_id'] as $campo) {
+            $respuesta = $this->putJson('api/whatsapp-bot/config', [
+                $campo              => ['x'],
+                'agent_personality' => 'No tiene que guardarse',
+            ]);
+
+            $respuesta->assertStatus(422);
+            // El error de validación nombra el campo (es lo que corresponde); lo que no puede aparecer son los VALORES guardados.
+            $this->assertStringNotContainsString(self::CLAVE_KAPSO, $respuesta->getContent());
+            $this->assertStringNotContainsString(self::SECRETO, $respuesta->getContent());
+        }
+
+        $fila = $this->fila();
+        $this->assertSame(self::CLAVE_KAPSO, $fila->kapso_api_key);
+        $this->assertSame(self::SECRETO, $fila->webhook_secret);
+        $this->assertSame(self::NUMERO, $fila->phone_number_id);
+        $this->assertNull($fila->agent_personality);
+    }
+
+    /**
+     * @group whatsapp
+     * @test
+     */
     public function el_dueno_que_cambia_el_numero_recibe_403_y_con_el_mismo_numero_se_ignora()
     {
         $this->config_provisionada();

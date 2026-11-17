@@ -257,6 +257,15 @@ class WhatsappBotController extends Controller
 
         $config_previa = WhatsappBotConfig::where('user_id', $this->userId())->first();
 
+        // Primero el TIPO de los tres campos técnicos: un array (`kapso_api_key[]=x`) llegaría al `trim((string) ...)` de
+        // abajo y en PHP 7.4 eso es un 500 por "Array to string conversion" en vez de un 422. La regla es la misma que
+        // la validación completa de más abajo; no guarda nada.
+        $request->validate([
+            'kapso_api_key'   => 'sometimes|nullable|string|max:191',
+            'phone_number_id' => 'sometimes|nullable|string|max:191',
+            'webhook_secret'  => 'sometimes|nullable|string|max:191',
+        ]);
+
         // Credenciales: solo las carga el equipo de ComercioCity. Se corta ANTES de validar y de guardar
         // cualquier cosa, para que un request con una credencial no deje a medias el resto de los campos.
         foreach (['kapso_api_key', 'webhook_secret'] as $secreto) {

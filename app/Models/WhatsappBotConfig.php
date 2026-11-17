@@ -69,14 +69,6 @@ class WhatsappBotConfig extends Model
         'envio_simulado' => 'boolean',
     ];
 
-    /**
-     * Viaja siempre en la serialización: la SPA lo lee para mostrar el cartel «Modo
-     * demostración: los mensajes no se envían» en la pantalla de Conexión. Es un valor derivado
-     * y de solo lectura (no existe como columna ni se puede escribir por la API), y opcional
-     * para el front: una SPA vieja no lo mira.
-     *
-     * @var array
-     */
     /*
      * 🔴 Misión kapso-secretos-fuera-del-navegador (17/11/2026): `kapso_api_key` y `webhook_secret` NUNCA
      * viajan en una serialización de este modelo (ni por la API del dueño, ni por una relación cargada, ni
@@ -86,6 +78,14 @@ class WhatsappBotConfig extends Model
      */
     protected $hidden = ['kapso_api_key', 'webhook_secret'];
 
+    /**
+     * Viaja siempre en la serialización: la SPA lo lee para mostrar el cartel «Modo
+     * demostración: los mensajes no se envían» en la pantalla de Conexión. Es un valor derivado
+     * y de solo lectura (no existe como columna ni se puede escribir por la API), y opcional
+     * para el front: una SPA vieja no lo mira.
+     *
+     * @var array
+     */
     protected $appends = [
         'modo_demostracion',
         // Derivados de solo lectura: le dicen a la pantalla QUÉ está cargado sin mostrar los valores.
