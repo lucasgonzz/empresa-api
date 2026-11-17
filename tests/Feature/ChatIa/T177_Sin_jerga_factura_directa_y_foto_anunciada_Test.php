@@ -88,4 +88,27 @@ class T177_Sin_jerga_factura_directa_y_foto_anunciada_Test extends EmpresaTestCa
 
         $this->assertStringNotContainsString('y en ESTE mensaje no llegó ninguna imagen, esperala', $solo_lectura);
     }
+    /**
+     * B2 (revisión independiente): en un negocio de bebidas las instrucciones del alta de bebidas van DESPUÉS del
+     * bloque de carga y dicen «Buscá automáticamente la foto»: tienen que traer la misma excepción, o le ganan a la
+     * regla de la foto anunciada.
+     */
+    public function test_en_un_negocio_de_bebidas_la_busqueda_automatica_espera_la_foto_anunciada()
+    {
+        $vinoteca = ExtencionEmpresa::where('slug', 'vinoteca')->first()
+            ?: ExtencionEmpresa::forceCreate(['slug' => 'vinoteca', 'name' => 'vinoteca']);
+        $this->dueno->extencions()->syncWithoutDetaching([$vinoteca->id]);
+        $this->dueno->agente_alta_bebidas = true;
+        $this->dueno->save();
+        $this->dueno->load('extencions');
+
+        list($whatsapp, $sistema) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras, salvo que la persona te haya dicho que te manda la foto', $prompt);
+            $this->assertStringContainsString('y todavía no llegó ninguna imagen: esperala, decile en una línea que la esperás y en ese turno no busques en internet.', $prompt);
+            // La excepción va en la misma oración: no queda una orden de buscar sin la salvedad.
+            $this->assertStringNotContainsString('sin inventar código de barras. ', $prompt);
+        }
+    }
 }

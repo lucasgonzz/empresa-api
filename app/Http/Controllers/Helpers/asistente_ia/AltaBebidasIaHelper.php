@@ -25,6 +25,10 @@ class AltaBebidasIaHelper
          * Misión asistente-truvari-pedidos-fallidos (13/11/2026, B7): este bloque viaja con las
          * instrucciones de carga y su «cajas × botellas» se filtró a un presupuesto («una caja» salió
          * como 6 botellas). La primera oración lo acota: solo el alta y su stock inicial.
+         *
+         * Misión asistente-diario-20261117 (B2, revisión independiente): este bloque va DESPUÉS del bloque de
+         * carga y su «Buscá automáticamente la foto» le ganaba a la regla de la foto anunciada que no llegó. La
+         * excepción va acá, en la misma oración.
          */
         return 'Esto aplica SOLO al alta de bebidas (proponer_alta) y a su stock inicial; NUNCA a ventas, presupuestos ni pedidos: ahí la cantidad son unidades de venta del artículo y "una caja" es 1 (con presentación, el precio ya es el de la caja). '
             .'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
@@ -34,7 +38,8 @@ class AltaBebidasIaHelper
             .'Botellas por caja logística va en bebida.botellas_por_caja y no implica presentación de venta. '
             .'Si el stock se dio en cajas, mandá bebida.cajas y bebida.cajas_confirmadas=true solo después de que el dueño haya dicho que son cajas; '
             .'el sistema convierte una sola vez. No mandes además stock_inicial. Si el negocio tiene más de una sucursal, elegí explícitamente el depósito para ese ingreso; con una sola, no lo mandes ni lo preguntes. '
-            .'Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras. '
+            .'Buscá automáticamente la foto con buscar_imagen_de_bebida por la identificación real, sin inventar código de barras, '
+            .'salvo que la persona te haya dicho que te manda la foto («te paso la foto», «esta es la foto») y todavía no llegó ninguna imagen: esperala, decile en una línea que la esperás y en ese turno no busques en internet. '
             .'Si no hay coincidencia verificada, informalo y mandá bebida.sin_imagen=true para mostrar ese límite. '
             .'Una única propuesta muestra datos, conversión y depósito; SIEMPRE requiere confirmación, incluso en modo directo. '
             .'La foto encontrada en INTERNET nunca va dentro del alta (el artículo se crea sin ella): cuando la persona confirme el alta, proponé la foto APARTE con proponer_foto_articulo (articulo_id del alta e imagen_id de foto_aparte), que la muestra y espera su propio sí. Nunca la pongas sin preguntar.';
