@@ -111,10 +111,19 @@ class AltaBebidasIaHelper
         }
         if (count($faltan)) return RespuestaDeCargaIa::faltan($faltan, ['instrucciones' => self::instrucciones()]);
 
+        /*
+         * M3 (misión asistente-diario-20261117): el renglón «Caja logística» decía siempre que la caja «se usa
+         * para convertir este ingreso de stock», también en un alta sin cajas, donde no hay ingreso. Con cajas
+         * queda ese texto; sin cajas, que se vende por botella (texto_sin_cajas()). El resultado del alta
+         * (EjecutorGenericoIaHelper) sigue el mismo criterio.
+         */
+        $texto_de_la_caja = isset($bebida['cajas'])
+            ? 'Se usa para convertir este ingreso de stock; no modifica la presentación de venta.'
+            : self::texto_sin_cajas((int) $botellas, false);
         $renglones = [
             ['etiqueta' => 'Tipo de bebida', 'valor' => $bebida['es_vino'] ? 'Vino' : 'Otra bebida (sin cepa)'],
             ['etiqueta' => 'Botellas por caja logística', 'valor' => (string) (int) $botellas],
-            ['etiqueta' => 'Caja logística', 'valor' => 'Se usa para convertir este ingreso de stock; no modifica la presentación de venta.'],
+            ['etiqueta' => 'Caja logística', 'valor' => $texto_de_la_caja],
             ['etiqueta' => 'Precio por presentación', 'valor' => 'La presentación de venta es '.(float) $p['presentacion'].' y puede cambiar el precio según la configuración; se usa el mismo cálculo de Crear.'],
         ];
         if (isset($bebida['cajas'])) {
@@ -156,6 +165,22 @@ class AltaBebidasIaHelper
         }
         $bebida['botellas_por_caja'] = (int) $botellas;
         return ['extras' => $extras, 'bebida' => $bebida, 'renglones' => $renglones];
+    }
+
+    /**
+     * Lo que se le dice a la persona de la caja logística en un alta SIN cajas (sin ingreso de stock): el
+     * artículo se vende por botella y las botellas por caja no son la presentación de venta. Lo usan la
+     * tarjeta (antes de confirmar, en presente) y el resultado del alta (ya hecho, en pasado).
+     *
+     * @param  int  $botellas  Las botellas por caja logística que dio la persona.
+     * @param  bool  $ya_hecho  true para el resultado («no quedaron guardadas»), false para la tarjeta.
+     * @return string
+     */
+    public static function texto_sin_cajas(int $botellas, bool $ya_hecho): string
+    {
+        return 'Se vende por botella: las '.$botellas.' botellas por caja '
+            .($ya_hecho ? 'no quedaron guardadas' : 'no se guardan')
+            .' como presentación de venta.';
     }
 
     public static function verificar(ContextoDeCargaIa $contexto, array $datos): void
