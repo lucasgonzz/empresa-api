@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper;
 use App\Models\AiConversation;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
@@ -74,7 +75,26 @@ class T177_Sin_jerga_factura_directa_y_foto_anunciada_Test extends EmpresaTestCa
         foreach ([$whatsapp, $sistema] as $prompt) {
             $this->assertStringContainsString('Si la persona pidió confirmar un presupuesto Y facturarlo («confirmalo y facturalo»), es un', $prompt);
             $this->assertStringContainsString('no se deduce— y nunca le preguntes «¿querés que busque la venta?» ni si querés seguir con la', $prompt);
+            $this->assertStringContainsString('solo pedido: después de la tarjeta de confirmación del presupuesto, armá directo la tarjeta de', $prompt);
         }
+    }
+
+    /**
+     * Revisión independiente: el renglón del presupuesto decía que confirmarlo «no lo hacés vos», contra la regla de
+     * las ACCIONES DE PANTALLA (POST api/budget/{id}/confirmar está en el catálogo). Ahora lo propone el asistente
+     * cuando se lo piden, y nunca por su cuenta.
+     */
+    public function test_confirmar_un_presupuesto_lo_propone_el_asistente_sin_contradiccion()
+    {
+        list($whatsapp, $sistema) = $this->prompts();
+
+        foreach ([$whatsapp, $sistema] as $prompt) {
+            $this->assertStringContainsString('corriente; eso pasa recién cuando se CONFIRMA. Confirmarlo lo proponés vos con', $prompt);
+            $this->assertStringContainsString('proponer_accion_de_pantalla cuando la persona te lo pide; nunca lo confirmes por tu cuenta.', $prompt);
+            $this->assertStringNotContainsString('Presupuestos, y eso no lo hacés vos', $prompt);
+        }
+
+        $this->assertNotNull(CatalogoDeAccionesDePantallaIaHelper::declaracion('POST', 'api/budget/{id}/confirmar'));
     }
 
     public function test_la_foto_anunciada_que_no_llego_se_espera_sin_buscar_en_internet()

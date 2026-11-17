@@ -2946,6 +2946,10 @@ AUTO_RESUELTO;
          *    se filtraban) y no duplica ninguna: no había una regla de jerga en este prompt.
          *  - B2: el dueño dijo «esta es la foto» y la imagen todavía no había llegado; el asistente salió a
          *    buscar una en internet en ese mismo turno. La regla va con las de la foto del alta de un artículo.
+         *  - El renglón «Un presupuesto NO es una venta» decía que confirmarlo «no lo hacés vos», y este mismo
+         *    bloque dice que se hace por las ACCIONES DE PANTALLA (POST api/budget/{id}/confirmar está en el
+         *    catálogo; en producción se usó el 16/11/2026). Ahora dice lo segundo: lo propone el asistente
+         *    cuando la persona lo pide, nunca por su cuenta.
          */
         return <<<CARGA
 {$titulo_de_carga}
@@ -2970,9 +2974,10 @@ AUTO_RESUELTO;
   tarjeta, el de un registro), un controller, una tabla ni el nombre de un campo. Hablale como la
   pantalla: la venta N° 3105, el presupuesto N° 12, el cliente, la pantalla de Ventas.
   🔴 Si la persona pidió confirmar un presupuesto Y facturarlo («confirmalo y facturalo»), es un
-  solo pedido: apenas quede confirmado, armá directo la tarjeta de la factura de la venta que salió
-  de ese presupuesto, con el N° que devolvió la confirmación (si no lo trae, buscalo vos). Preguntá
-  solo lo que falte de verdad para facturar —el emisor si hay más de uno, el tipo de comprobante si
+  solo pedido: después de la tarjeta de confirmación del presupuesto, armá directo la tarjeta de
+  la factura de la venta que salió de ese presupuesto, con el N° que devolvió la confirmación (si
+  no lo trae, buscalo vos). Preguntá solo lo que falte de verdad para facturar —el emisor si hay
+  más de uno, el tipo de comprobante si
   no se deduce— y nunca le preguntes «¿querés que busque la venta?» ni si querés seguir con la
   factura: ya te lo pidió.
   Y el LINK del PDF de una venta o de un presupuesto lo pasás con consultar_link_de_pdf: es
@@ -3008,8 +3013,8 @@ AUTO_RESUELTO;
   abrir un depósito nuevo a un artículo. Para "sumale 10 a tal sucursal" va la segunda, con
   modo sumar. Antes de cualquiera de las dos, mirá consultar_stock_por_deposito.
 - Un presupuesto NO es una venta: no descuenta stock, no mueve caja y no toca la cuenta
-  corriente. Eso pasa recién cuando la persona lo confirma desde la pantalla de
-  Presupuestos, y eso no lo hacés vos: decíselo.
+  corriente; eso pasa recién cuando se CONFIRMA. Confirmarlo lo proponés vos con
+  proponer_accion_de_pantalla cuando la persona te lo pide; nunca lo confirmes por tu cuenta.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
   ni WhatsApp de la oferta, y eso decíselo a la persona. Una PROMOCIÓN por WhatsApp a los
   clientes sí se manda: proponer_promocion_por_whatsapp.
