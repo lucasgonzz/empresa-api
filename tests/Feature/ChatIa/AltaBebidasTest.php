@@ -486,4 +486,26 @@ class AltaBebidasTest extends EmpresaTestCase
         $texto = (string) AiMessageAction::findOrFail($accion->id)->resultado->texto;
         $this->assertStringContainsString('La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.', $texto);
     }
+    /**
+     * M3 (revisión independiente): con la propiedad de distribuidora las botellas por caja SÍ se guardan, como
+     * unidades por bulto. Sin cajas, la tarjeta y el resultado lo dicen así y no «no se guardan», que contradecía
+     * el renglón «Unidades por bulto guardadas» de la misma tarjeta.
+     */
+    public function test_alta_sin_cajas_con_propiedad_de_distribuidora_dice_que_quedan_como_bulto()
+    {
+        $e = ExtencionEmpresa::firstOrCreate(['slug' => 'articulos_con_propiedades_de_distribuidora'], ['name' => 'Distribuidora']);
+        $this->dueno->extencions()->syncWithoutDetaching([$e->id]);
+        $this->proponer();
+        $accion = $this->accion();
+        $renglones = array_column($accion->presentacion['renglones'], 'valor', 'etiqueta');
+        $this->assertSame('Se vende por botella; las 6 botellas por caja quedan como unidades por bulto, no como presentación de venta.', $renglones['Caja logística']);
+        $this->assertSame('6', $renglones['Unidades por bulto guardadas']);
+        $this->assertStringNotContainsString('no se guardan', json_encode($accion->presentacion, JSON_UNESCAPED_UNICODE));
+
+        $this->confirmar($accion->id)->assertStatus(200);
+        $texto = (string) AiMessageAction::findOrFail($accion->id)->resultado->texto;
+        $this->assertStringContainsString('Se vende por botella; las 6 botellas por caja quedaron como unidades por bulto, no como presentación de venta.', $texto);
+        $this->assertStringNotContainsString('no quedaron guardadas', $texto);
+        $this->assertEquals(6, Article::where('name', $this->datos['name'])->firstOrFail()->unidades_por_bulto);
+    }
 }

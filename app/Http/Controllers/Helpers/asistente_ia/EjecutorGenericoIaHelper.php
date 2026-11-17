@@ -186,8 +186,11 @@ class EjecutorGenericoIaHelper
              * Mismo criterio que el renglón «Caja logística» de la tarjeta (AltaBebidasIaHelper::preparar()).
              */
             $bebida_del_alta = $datos[AltaBebidasIaHelper::CLAVE];
-            if (isset($payload['unidades_por_bulto'])) {
+            if (isset($payload['unidades_por_bulto']) && !empty($bebida_del_alta['cajas'])) {
                 $resultado['texto'] .= ' Botellas por caja guardadas: '.$guardado->unidades_por_bulto.'.';
+            } elseif (isset($payload['unidades_por_bulto'])) {
+                // Sin cajas y con la propiedad de distribuidora: se vende por botella y la caja quedó como bulto.
+                $resultado['texto'] .= ' '.AltaBebidasIaHelper::texto_sin_cajas((int) $guardado->unidades_por_bulto, true, true);
             } elseif (!empty($bebida_del_alta['cajas'])) {
                 $resultado['texto'] .= ' La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.';
             } else {

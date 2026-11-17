@@ -115,11 +115,13 @@ class AltaBebidasIaHelper
          * M3 (misión asistente-diario-20261117): el renglón «Caja logística» decía siempre que la caja «se usa
          * para convertir este ingreso de stock», también en un alta sin cajas, donde no hay ingreso. Con cajas
          * queda ese texto; sin cajas, que se vende por botella (texto_sin_cajas()). El resultado del alta
-         * (EjecutorGenericoIaHelper) sigue el mismo criterio.
+         * (EjecutorGenericoIaHelper) sigue el mismo criterio. Con la propiedad de distribuidora las botellas
+         * por caja SÍ se guardan, como unidades por bulto (PropuestaGenericaIaHelper las pone en el payload con
+         * la misma condición): el texto lo dice, para no contradecir el renglón «Unidades por bulto guardadas».
          */
         $texto_de_la_caja = isset($bebida['cajas'])
             ? 'Se usa para convertir este ingreso de stock; no modifica la presentación de venta.'
-            : self::texto_sin_cajas((int) $botellas, false);
+            : self::texto_sin_cajas((int) $botellas, false, PermisosIaHelper::tiene_extencion($contexto->owner, 'articulos_con_propiedades_de_distribuidora'));
         $renglones = [
             ['etiqueta' => 'Tipo de bebida', 'valor' => $bebida['es_vino'] ? 'Vino' : 'Otra bebida (sin cepa)'],
             ['etiqueta' => 'Botellas por caja logística', 'valor' => (string) (int) $botellas],
@@ -172,12 +174,23 @@ class AltaBebidasIaHelper
      * artículo se vende por botella y las botellas por caja no son la presentación de venta. Lo usan la
      * tarjeta (antes de confirmar, en presente) y el resultado del alta (ya hecho, en pasado).
      *
+     * Con la propiedad de distribuidora las botellas por caja se guardan como unidades por bulto: el texto
+     * lo dice («quedan como unidades por bulto, no como presentación de venta») en vez de decir que no se
+     * guardan, que contradiría el renglón «Unidades por bulto guardadas» de la misma tarjeta.
+     *
      * @param  int  $botellas  Las botellas por caja logística que dio la persona.
-     * @param  bool  $ya_hecho  true para el resultado («no quedaron guardadas»), false para la tarjeta.
+     * @param  bool  $ya_hecho  true para el resultado (en pasado), false para la tarjeta (en presente).
+     * @param  bool  $como_unidades_por_bulto  true si se guardan como unidades_por_bulto (propiedad de distribuidora).
      * @return string
      */
-    public static function texto_sin_cajas(int $botellas, bool $ya_hecho): string
+    public static function texto_sin_cajas(int $botellas, bool $ya_hecho, bool $como_unidades_por_bulto = false): string
     {
+        if ($como_unidades_por_bulto) {
+            return 'Se vende por botella; las '.$botellas.' botellas por caja '
+                .($ya_hecho ? 'quedaron' : 'quedan')
+                .' como unidades por bulto, no como presentación de venta.';
+        }
+
         return 'Se vende por botella: las '.$botellas.' botellas por caja '
             .($ya_hecho ? 'no quedaron guardadas' : 'no se guardan')
             .' como presentación de venta.';
