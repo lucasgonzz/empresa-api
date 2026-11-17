@@ -164,7 +164,77 @@ class T156_Margen_en_el_excel_de_articulos_Test extends EmpresaTestCase
         $this->assertSame([null, null], ValorizacionDeStockIaHelper::columnas_de_margen(80.0, 121.0, null));
     }
 
+    /**
+     * 🔴 Revisión independiente de M1: el margen coincide con el % de ganancia de la ficha. Tres artículos de costo
+     * 13.140 cargados al 25 % por el camino REAL (setFinalPrice): sin descuento, con un descuento del 10 % y en una
+     * cuenta con «aplicar IVA al costo». Medido contra el costo pelado daban 25 %, 12,5 % y 51,25 %.
+     *
+     * @test
+     */
+    public function el_margen_coincide_con_el_porcentaje_de_ganancia_de_la_ficha()
+    {
+        $this->assertSame(['25%', '25%'], $this->margen_de_la_ficha(false, false), 'Sin descuento.');
+        $this->assertSame(['25%', '25%'], $this->margen_de_la_ficha(true, false), 'Con un descuento del 10 % en el costo.');
+        $this->assertSame(['25%', '25%'], $this->margen_de_la_ficha(false, true), 'Con el IVA al costo.');
+    }
+
     // ---------------------------------------------------------------------
+
+    /**
+     * Arma UN artículo de costo 13.140 y 25 % de ganancia por setFinalPrice, exporta el Excel con el margen y
+     * devuelve [margen del Excel, % de ganancia del artículo], los dos como texto «N%».
+     *
+     * @param  bool  $con_descuento  Un descuento del 10 % en el artículo.
+     * @param  bool  $iva_al_costo  La cuenta con la configuración vieja «aplicar IVA al costo».
+     * @return array{0: string, 1: string}
+     */
+    protected function margen_de_la_ficha($con_descuento, $iva_al_costo)
+    {
+        if ($iva_al_costo) {
+            $this->dueno->update(['usar_condicion_fiscal_en_costeo' => 0, 'aplicar_iva_al_costo' => 1]);
+        } else {
+            $this->dueno->update(['usar_condicion_fiscal_en_costeo' => 1, 'aplicar_iva_al_costo' => 0]);
+        }
+
+        $nombre_proveedor = 'Ficha ZZM ' . uniqid();
+        $proveedor = Provider::create(['name' => $nombre_proveedor, 'user_id' => $this->dueno->id]);
+
+        $iva = DB::table('ivas')->where('percentage', '21')->first();
+
+        $articulo = Article::create([
+            'name'            => 'Cabernet ficha ZZM',
+            'user_id'         => $this->dueno->id,
+            'status'          => 'active',
+            'stock'           => 1,
+            'cost'            => 13140,
+            'percentage_gain' => 25,
+            'aplicar_iva'     => 1,
+            'iva_id'          => (int) $iva->id,
+            'provider_id'     => $proveedor->id,
+        ]);
+
+        if ($con_descuento) {
+            \App\Models\ArticleDiscount::create(['article_id' => $articulo->id, 'percentage' => 10]);
+        }
+
+        \App\Http\Controllers\Helpers\ArticleHelper::setFinalPrice(Article::find($articulo->id), null, User::find($this->dueno->id), null, true);
+
+        $r = $this->exportar([
+            'filtros'  => [['campo' => 'proveedor', 'operador' => 'igual', 'valor' => $nombre_proveedor]],
+            'columnas' => ['nombre', 'margen'],
+        ]);
+
+        $this->assertTrue($r['ok'], json_encode($r));
+
+        $hoja = $this->hoja_del_link($r['link']);
+
+        $this->assertSame('Cabernet ficha ZZM', $hoja->getCell('A2')->getValue());
+
+        return [
+            round((float) $hoja->getCell('B2')->getValue() * 100, 2) . '%',
+            round((float) Article::find($articulo->id)->percentage_gain, 2) . '%',
+        ];
+    }
 
     /**
      * Ejecuta exportar_articulos_excel por el despacho real.

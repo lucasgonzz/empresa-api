@@ -939,6 +939,12 @@ class ValorizacionDeStockIaHelper
     {
         $stock = self::expresion_stock($preparado);
 
+        // La base del margen (base_del_margen()): viaja en la misma fila, sin consultas por artículo.
+        $de_la_base = self::hay_columnas_de_base_del_margen()
+            ? ', articles.base_margen as base_margen, articles.costo_real as costo_real,'
+                . ' articles.cost_in_dollars as costo_en_dolares, articles.unidades_individuales as unidades_individuales'
+            : '';
+
         return (clone $preparado['base'])
             ->leftJoin('categories as fila_categoria', 'fila_categoria.id', '=', 'articles.category_id')
             ->leftJoin('brands as fila_marca', 'fila_marca.id', '=', 'articles.brand_id')
@@ -946,7 +952,8 @@ class ValorizacionDeStockIaHelper
                 'articles.id as id, articles.name as nombre, articles.bar_code as codigo, articles.provider_code as codigo_de_proveedor,'
                 . ' fila_categoria.name as rubro, providers.name as proveedor, fila_marca.name as marca, articles.online as en_tienda,'
                 . ' ' . $stock . ' as stock, ' . self::expresion_precio($preparado) . ' as precio,'
-                . ' CASE WHEN articles.cost IS NULL OR articles.cost <= 0 THEN NULL ELSE ' . self::expresion_costo_unitario($preparado) . ' END as costo',
+                . ' CASE WHEN articles.cost IS NULL OR articles.cost <= 0 THEN NULL ELSE ' . self::expresion_costo_unitario($preparado) . ' END as costo'
+                . $de_la_base,
                 self::bindings_del_costo($preparado)
             );
     }
@@ -1007,26 +1014,87 @@ class ValorizacionDeStockIaHelper
 
     /**
      * El margen y la ganancia de UNA unidad, con el criterio de factores_netos():
-     *  - ganancia por unidad = precio de venta neto de IVA e impuestos − costo (el de la columna Costo: el
-     *    normalizado en pesos de valorizar_stock);
-     *  - margen % sobre costo = ganancia / costo × 100.
-     * Sin costo, sin precio o sin factor: null (celda vacía), nunca 0.
+     *  - ganancia por unidad = precio de venta neto de IVA e impuestos − la BASE del margen (ver base_del_margen());
+     *  - margen % = ganancia / base × 100.
+     * Es la misma cuenta que el «margen implícito» de ArticleHelper::setFinalPrice_sin_historial()
+     * ((precio neto − base_margen) / base_margen), así que coincide con el % de ganancia de la ficha.
+     * Sin base, sin precio o sin factor: null (celda vacía), nunca 0.
      *
-     * @param  float|null  $costo
+     * @param  float|null  $base  La base del margen (base_del_margen()).
      * @param  float|null  $precio
      * @param  float|null  $factor_neto
      * @return array  [margen en puntos (15 = 15 %) o null, ganancia por unidad o null]
      */
-    public static function columnas_de_margen($costo, $precio, $factor_neto)
+    public static function columnas_de_margen($base, $precio, $factor_neto)
     {
-        if (is_null($costo) || $costo <= 0 || is_null($precio) || $precio <= 0 || is_null($factor_neto) || $factor_neto <= 0) {
+        if (is_null($base) || $base <= 0 || is_null($precio) || $precio <= 0 || is_null($factor_neto) || $factor_neto <= 0) {
 
             return [null, null];
         }
 
-        $ganancia = ((float) $precio * (float) $factor_neto) - (float) $costo;
+        $ganancia = ((float) $precio * (float) $factor_neto) - (float) $base;
 
-        return [round($ganancia / (float) $costo * 100, 2), round($ganancia, 2)];
+        return [round($ganancia / (float) $base * 100, 2), round($ganancia, 2)];
+    }
+
+    /**
+     * LA BASE DEL MARGEN de una fila: contra qué se mide la ganancia (revisión independiente de M1,
+     * 17/11/2026). El sistema aplica `percentage_gain` sobre la base de ArticleHelper::calcular_base_antes_de_listas()
+     * más los márgenes de proveedor y categoría, y la guarda en `articles.base_margen` cada vez que calcula el
+     * precio. Esa base parte del `costo_real` (con los descuentos y recargos del artículo y, en cuentas con
+     * «aplicar IVA al costo», con el IVA adentro), ya dividido por unidades individuales y cotizado. Medir contra
+     * `articles.cost` daba 12,5 % con un descuento de proveedor del 10 % y 51,25 % con IVA al costo, sobre un
+     * artículo cargado al 25 %.
+     *
+     * La cascada, de la más fiel a la menos:
+     *  1. `base_margen` si es mayor que cero;
+     *  2. `costo_real` ÷ unidades individuales, si es mayor que cero y el costo NO está en dólares (costo_real no
+     *     está cotizado: en dólares se cae al paso 3, que sí cotiza);
+     *  3. el costo de la columna Costo (normalizado en pesos de valorizar_stock).
+     * La columna Costo del Excel no cambia: esto es solo para el margen y la ganancia.
+     *
+     * @param  \stdClass  $fila  Fila de consulta_de_filas().
+     * @param  float|null  $costo  El de la columna Costo.
+     * @return float|null
+     */
+    protected static function base_del_margen($fila, $costo)
+    {
+        if (isset($fila->base_margen) && !is_null($fila->base_margen) && (float) $fila->base_margen > 0) {
+
+            return (float) $fila->base_margen;
+        }
+
+        if (isset($fila->costo_real) && !is_null($fila->costo_real) && (float) $fila->costo_real > 0
+            && empty($fila->costo_en_dolares)) {
+
+            $unidades = isset($fila->unidades_individuales) && (float) $fila->unidades_individuales > 0
+                ? (float) $fila->unidades_individuales
+                : 1.0;
+
+            return (float) $fila->costo_real / $unidades;
+        }
+
+        return $costo;
+    }
+
+    /**
+     * true si las columnas de la base del margen (`base_margen`, `costo_real`) existen en esta instalación.
+     *
+     * @return bool
+     */
+    protected static function hay_columnas_de_base_del_margen()
+    {
+        static $hay = null;
+
+        if (is_null($hay)) {
+            try {
+                $hay = Schema::hasColumn('articles', 'base_margen') && Schema::hasColumn('articles', 'costo_real');
+            } catch (\Throwable $e) {
+                $hay = false;
+            }
+        }
+
+        return $hay;
     }
 
     /**
@@ -1045,7 +1113,7 @@ class ValorizacionDeStockIaHelper
         $costo = is_null($fila->costo) ? null : round((float) $fila->costo, 2);
         $positivo = !is_null($stock) && $stock > 0;
 
-        list($margen, $ganancia) = self::columnas_de_margen($costo, $precio, $factor_neto);
+        list($margen, $ganancia) = self::columnas_de_margen(self::base_del_margen($fila, $costo), $precio, $factor_neto);
 
         $valores = [
             'nombre'              => (string) $fila->nombre,
