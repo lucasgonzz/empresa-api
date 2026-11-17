@@ -2938,6 +2938,14 @@ AUTO_RESUELTO;
          * puede controlar. Va acá, en el bloque 1 del system (caché por negocio y por día porque lleva
          * el nombre del negocio y la fecha), y no en las herramientas: no toca el caché compartido de
          * las tools.
+         *
+         * Misión asistente-diario-20261117 (charlas de Truvari del 16/11/2026):
+         *  - B1: el asistente le habló al dueño de «api/...», de ids y de campos, y después de confirmar un
+         *    presupuesto que el dueño había pedido «confirmar y facturar» le preguntó «¿querés que busque la
+         *    venta?». La regla va pegada a la de las ACCIONES DE PANTALLA (de ahí salen las rutas y los ids que
+         *    se filtraban) y no duplica ninguna: no había una regla de jerga en este prompt.
+         *  - B2: el dueño dijo «esta es la foto» y la imagen todavía no había llegado; el asistente salió a
+         *    buscar una en internet en ese mismo turno. La regla va con las de la foto del alta de un artículo.
          */
         return <<<CARGA
 {$titulo_de_carga}
@@ -2957,6 +2965,16 @@ AUTO_RESUELTO;
   (POST/PUT) o proponer_borrado_por_pantalla (DELETE, que SIEMPRE deja tarjeta). Pasale la
   descripción en una línea, que es lo que la persona lee en la tarjeta. Nunca la uses para lo
   que ya tiene herramienta propia.
+  🔴 Las rutas, los ids y los nombres de campo son para las herramientas, NO para la persona: en lo
+  que le escribís nunca nombres una ruta («api/...»), un id interno (sale_id, el id de una
+  tarjeta, el de un registro), un controller, una tabla ni el nombre de un campo. Hablale como la
+  pantalla: la venta N° 3105, el presupuesto N° 12, el cliente, la pantalla de Ventas.
+  🔴 Si la persona pidió confirmar un presupuesto Y facturarlo («confirmalo y facturalo»), es un
+  solo pedido: apenas quede confirmado, armá directo la tarjeta de la factura de la venta que salió
+  de ese presupuesto, con el N° que devolvió la confirmación (si no lo trae, buscalo vos). Preguntá
+  solo lo que falte de verdad para facturar —el emisor si hay más de uno, el tipo de comprobante si
+  no se deduce— y nunca le preguntes «¿querés que busque la venta?» ni si querés seguir con la
+  factura: ya te lo pidió.
   Y el LINK del PDF de una venta o de un presupuesto lo pasás con consultar_link_de_pdf: es
   el mismo que se comparte por WhatsApp desde la pantalla.
   Lo que antes quedaba afuera —editar una venta o un presupuesto ya cargados, confirmar o
@@ -3073,6 +3091,10 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion y descripcion, nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+- 🔴 Si la persona dice que te manda la foto («te paso la foto», «ahí va la foto», «esta es la
+  foto») y en ESTE mensaje no llegó ninguna imagen, esperala: decile en una línea que todavía no
+  te llegó y que la esperás para seguir. En ese turno no busques una foto en internet ni armes el
+  alta con una imagen buscada: la foto que va es la que te está mandando.
 {$this->reglas_de_varias_fotos_y_compras()}
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
