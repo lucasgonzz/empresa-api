@@ -192,12 +192,19 @@ class AccionesHechasPorElAsistenteIaHelper
                 'quien.name as quien_nombre',
             ]);
 
+        // La venta de cada acción de pantalla, leída de `datos` del lado del servidor (nunca viaja).
+        $ventas_de_pantalla = self::ventas_de_las_acciones_de_pantalla($filas);
+
         $acciones = [];
         $ventas_pedidas = [];
 
         foreach ($filas as $fila) {
 
             $accion = self::accion($fila, $conversation, $ve_todo);
+
+            if (is_null($accion['venta_id']) && isset($ventas_de_pantalla[(int) $fila->id])) {
+                $accion['venta_id'] = $ventas_de_pantalla[(int) $fila->id];
+            }
 
             if (!is_null($accion['venta_id'])) {
                 $ventas_pedidas[] = $accion['venta_id'];
@@ -232,6 +239,77 @@ class AccionesHechasPorElAsistenteIaHelper
             'acciones'           => $acciones,
             'nota'               => self::nota($total, count($acciones)),
         ];
+    }
+
+    /**
+     * La venta que tocó cada ACCIÓN DE PANTALLA de la lista, leída de `datos` del lado del servidor (revisión
+     * independiente de A2, 17/11/2026). Facturar (`POST afip-ticket`) solo dejaba la venta en `respuesta.sale.id`,
+     * y esa respuesta se recorta a 30.000 caracteres con una venta grande: la venta se perdía. En `datos` la
+     * tarjeta guardó el pedido que mandó (`cuerpo.sale_id`) o los parámetros de la ruta (`sale/{sale_id}`), que no
+     * se recortan. Se lee una sola vez para todas las filas y no se devuelve nada de `datos` salvo el id.
+     *
+     * @param  \Illuminate\Support\Collection  $filas
+     * @return array<int, int>  ai_message_action_id => sale_id.
+     */
+    protected static function ventas_de_las_acciones_de_pantalla($filas)
+    {
+        $ids = [];
+
+        foreach ($filas as $fila) {
+            if ((string) $fila->tipo === AiMessageAction::TIPO_ACCION_PANTALLA) {
+                $ids[] = (int) $fila->id;
+            }
+        }
+
+        if (!count($ids)) {
+
+            return [];
+        }
+
+        $crudos = DB::table('ai_message_actions')->whereIn('id', $ids)->pluck('datos', 'id');
+
+        $ventas = [];
+
+        foreach ($crudos as $id => $crudo) {
+
+            $datos = json_decode((string) $crudo, true);
+
+            if (!is_array($datos)) {
+                continue;
+            }
+
+            $venta_id = self::venta_de_los_datos($datos);
+
+            if (!is_null($venta_id)) {
+                $ventas[(int) $id] = $venta_id;
+            }
+        }
+
+        return $ventas;
+    }
+
+    /**
+     * El id de la venta en los `datos` de una acción de pantalla: `cuerpo.sale_id`, o el parámetro de una ruta
+     * `sale/{nombre}` en `parametros`. Null si no hay. (Se valida contra el dueño en ventas_de_hoy().)
+     *
+     * @param  array  $datos
+     * @return int|null
+     */
+    protected static function venta_de_los_datos(array $datos)
+    {
+        if (isset($datos['cuerpo']['sale_id']) && is_numeric($datos['cuerpo']['sale_id']) && (int) $datos['cuerpo']['sale_id'] > 0) {
+
+            return (int) $datos['cuerpo']['sale_id'];
+        }
+
+        if (isset($datos['ruta']) && is_string($datos['ruta'])
+            && preg_match('/(?:^|\/)sale\/\{(\w+)\}/', $datos['ruta'], $coincidencia)
+            && isset($datos['parametros'][$coincidencia[1]]) && is_numeric($datos['parametros'][$coincidencia[1]])) {
+
+            return (int) $datos['parametros'][$coincidencia[1]];
+        }
+
+        return null;
     }
 
     /**

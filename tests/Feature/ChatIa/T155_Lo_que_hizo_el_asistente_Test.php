@@ -241,6 +241,51 @@ class T155_Lo_que_hizo_el_asistente_Test extends TestCase
         $this->assertFalse($sin_persona['ok']);
     }
 
+    /**
+     * Revisión independiente (punto 2): una factura hecha por acción de pantalla (POST afip-ticket) cuya respuesta
+     * quedó recortada igual se vincula a su venta, leyendo el sale_id de `datos` del lado del servidor, sin que
+     * `datos` viaje.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function la_factura_por_pantalla_con_respuesta_recortada_se_vincula_a_su_venta()
+    {
+        $venta = Sale::create(['user_id' => $this->comercio->id, 'num' => 3106, 'total' => 900, 'terminada' => 1, 'moneda_id' => 1]);
+
+        DB::table('afip_tickets')->insert([
+            'sale_id' => $venta->id, 'cae' => '76999999999999', 'resultado' => 'A', 'cbte_letra' => 'A',
+            'punto_venta' => 3, 'cbte_numero' => 1111, 'created_at' => now(), 'updated_at' => now(),
+        ]);
+
+        $this->accion($this->comercio, $this->comercio, AiMessageAction::TIPO_ACCION_PANTALLA, [
+            'texto'         => 'Factura T155 por pantalla',
+            'uri'           => 'api/afip-ticket',
+            'status'        => 200,
+            'respuesta'     => ['texto' => str_repeat('x', 200), 'recortado' => true],
+            'recortado'     => true,
+            'estado_fiscal' => 'pendiente_verificacion',
+        ], [
+            'metodo'          => 'POST',
+            'ruta'            => 'afip-ticket',
+            'parametros'      => [],
+            'cuerpo'          => ['sale_id' => $venta->id, 'afip_tipo_comprobante_id' => 1],
+            'firma_fiscal_ia' => 'FIRMA-PANTALLA-T155',
+        ]);
+
+        $respuesta = $this->consultar($this->comercio, $this->comercio);
+
+        $factura = $this->buscar($respuesta, 'Factura T155 por pantalla');
+
+        $this->assertSame(3106, $factura['venta']['numero'], 'La venta sale de datos.cuerpo.sale_id aunque la respuesta se recortó.');
+        $this->assertSame('emitida', $factura['venta']['factura']['estado']);
+
+        $json = json_encode($respuesta, JSON_UNESCAPED_UNICODE);
+        $this->assertStringNotContainsString('FIRMA-PANTALLA-T155', $json);
+        $this->assertStringNotContainsString('afip_tipo_comprobante_id', $json);
+        $this->assertStringNotContainsString('"cuerpo"', $json);
+    }
+
     // ---------------------------------------------------------------------
 
     /**
