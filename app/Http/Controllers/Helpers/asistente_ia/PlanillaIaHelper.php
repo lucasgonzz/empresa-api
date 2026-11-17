@@ -4475,7 +4475,7 @@ class PlanillaIaHelper
      * @param  array  $opciones  Se llena por referencia.
      * @return array  ['cobro', 'metodo', 'caja', 'sucursal', 'tipo_de_venta'] o la respuesta negativa.
      */
-    public static function definiciones_de_cobro(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array &$faltan, array &$opciones, AiMessage $mensaje = null): array
+    public static function definiciones_de_cobro(ContextoDeCargaIa $contexto, AiPlanilla $planilla, array &$faltan, array &$opciones, ?AiMessage $mensaje = null): array
     {
         $definiciones = is_array($planilla->definiciones) ? $planilla->definiciones : [];
 

@@ -2,6 +2,7 @@
 
 namespace Tests\Feature\ChatIa;
 
+use App\Http\Controllers\Helpers\asistente_ia\ConfianzaDelAgenteIaHelper;
 use App\Http\Controllers\Helpers\combo\ComboAltaHelper;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
@@ -53,6 +54,10 @@ class Acciones_combo_Test extends EmpresaTestCase
         config(['services.anthropic.api_key' => 'clave-de-prueba']);
 
         $this->dueno = User::where('email', TestingFerreteriaSeeder::USER_EMAIL)->first();
+
+        // Estos escenarios proponen una tarjeta pendiente y la confirman expresamente.
+        $this->dueno->agente_confianza = ConfianzaDelAgenteIaHelper::CAUTELOSO;
+        $this->dueno->save();
 
         $this->extencion('agentes_ia', 'Asistente IA');
         $this->extencion('combos', 'Combos');
