@@ -353,12 +353,14 @@ class Token_y_rutas_de_la_app_Test extends IaAppTestCase
         $this->getJson('api/ai-conversations', $this->de_la_app())->assertStatus(200);
     }
 
-    public function test_la_clave_mcp_no_cambia_y_la_cookie_tampoco()
+    public function test_la_clave_mcp_ya_no_abre_las_rutas_del_chat()
     {
         $mcp = $this->dueno->createToken('mcp', ['mcp'])->plainTextToken;
 
-        // La clave MCP sigue entrando al chat (no es de la app: el middleware no la mira).
-        $this->getJson('api/ai-conversations', $this->de_la_app($mcp))->assertStatus(200);
+        // Política de acceso externo (16/11/2026): el MCP solo usa su transporte; el chat de la
+        // app conserva su propio token. La antigua expectativa de acceso general dejó de valer.
+        $this->getJson('api/ai-conversations', $this->de_la_app($mcp))
+            ->assertStatus(403)->assertJsonPath('code', 'fuera_del_mcp');
     }
 
     public function test_la_cookie_del_sistema_no_pasa_por_la_lista_blanca()

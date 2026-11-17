@@ -57,6 +57,37 @@ abstract class TestCase extends BaseTestCase
         config(['services.openai.embeddings_generacion_pausada' => true]);
 
         $this->guardBaseDeTesting();
+
+        $this->aislar_la_proteccion_de_recursos_de_articulos();
+    }
+
+    /**
+     * La cache general de tests sigue en memoria, pero un límite de concurrencia debe probarse
+     * con locks persistentes reales. Cada test tiene su carpeta: no hereda cupos de otro test ni
+     * puede aprobar por usar ArrayStore (que en FPM sería un contador diferente por proceso).
+     */
+    private function aislar_la_proteccion_de_recursos_de_articulos(): void
+    {
+        $raiz = storage_path('framework/testing');
+        $directorio = $raiz . DIRECTORY_SEPARATOR . 'recursos-articulos-' . bin2hex(random_bytes(12));
+        config([
+            'cache.stores.recursos_articulos_testing' => ['driver' => 'file', 'path' => $directorio, 'lock_path' => $directorio],
+            'recursos_articulos.store' => 'recursos_articulos_testing',
+        ]);
+
+        $this->beforeApplicationDestroyed(function () use ($raiz, $directorio) {
+            if (!is_dir($directorio)) {
+                return;
+            }
+            $resuelto = realpath($directorio);
+            $raiz_resuelta = realpath($raiz);
+            // Comprobar el destino absoluto antes de cualquier borrado recursivo en Windows.
+            if ($resuelto === false || $raiz_resuelta === false || dirname($resuelto) !== $raiz_resuelta
+                || strpos(basename($resuelto), 'recursos-articulos-') !== 0) {
+                throw new \RuntimeException('La carpeta de cache de la prueba salió de su raíz aislada.');
+            }
+            (new \Illuminate\Filesystem\Filesystem())->deleteDirectory($resuelto);
+        });
     }
 
     /**

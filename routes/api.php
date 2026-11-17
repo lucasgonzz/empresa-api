@@ -390,7 +390,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::put('article/change-provider', 'ArticleController@change_provider');
     Route::get('article/change-provider/preview/{id}/{provider_id}', 'ArticleController@change_provider_preview');
 
-    Route::resource('article', 'ArticleController')->except(['index']);
+    Route::resource('article', 'ArticleController')->except(['index'])->middleware('recursos.articulos');
     Route::get('article/index/from-status', 'ArticleController@index');
     Route::get('article/index/eliminados', 'ArticleController@index_deleted');
     Route::get('/article/deleted-models/{last_updated}', 'ArticleController@deletedModels');
@@ -406,9 +406,9 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
 
     Route::get('/article-ticket-info', 'ArticleTicketInfoController@index');
 
-    Route::put('/article-update-addresses', 'ArticleController@update_addresses_stock');
+    Route::put('/article-update-addresses', 'ArticleController@update_addresses_stock')->middleware('recursos.articulos');
 
-    Route::put('/article-update-varians-stock', 'ArticleController@update_variants_stock');
+    Route::put('/article-update-varians-stock', 'ArticleController@update_variants_stock')->middleware('recursos.articulos');
 
     
     // Ultimos articulos actualizados
