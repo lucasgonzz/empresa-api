@@ -3,7 +3,9 @@
 namespace Tests\Feature\ElLocal;
 
 use App\Http\Controllers\Helpers\VersionSessionTransferHelper;
+use App\Http\Controllers\Helpers\asistente_ia\IaAppHelper;
 use App\Models\DemoIngresoToken;
+use App\Models\ExtencionEmpresa;
 use App\Models\LocalActividadEvento;
 use App\Models\User;
 use Carbon\Carbon;
@@ -441,9 +443,13 @@ class LocalActividadDeSesionTest extends TestCase
      */
     public function un_bearer_no_cuenta_como_actividad()
     {
-        $this->actingAs($this->user, 'sanctum')
-            ->withHeader('Authorization', 'Bearer token-que-no-es-de-la-app')
-            ->getJson('/api/user')
+        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'agentes_ia'], ['name' => 'Agentes de IA']);
+        $this->user->extencions()->syncWithoutDetaching([$extension->id]);
+        $token = IaAppHelper::emitir_token($this->user, 'actividad-el-local');
+
+        // Una clave real entra por su canal autorizado y se autentica con Sanctum sin actingAs.
+        $this->withHeader('Authorization', 'Bearer '.$token)
+            ->getJson('/api/user/asistente-config')
             ->assertStatus(200);
 
         $this->assertCount(0, $this->eventos('actividad'));
