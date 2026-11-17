@@ -77,7 +77,55 @@ class WhatsappBotConfig extends Model
      *
      * @var array
      */
-    protected $appends = ['modo_demostracion'];
+    /*
+     * 🔴 Misión kapso-secretos-fuera-del-navegador (17/11/2026): `kapso_api_key` y `webhook_secret` NUNCA
+     * viajan en una serialización de este modelo (ni por la API del dueño, ni por una relación cargada, ni
+     * por un broadcast). Los servicios los siguen leyendo como atributo (`$config->kapso_api_key`): `$hidden`
+     * solo afecta `toArray()`/`toJson()`, no el acceso. Las ven únicamente el servidor y la puerta de
+     * provisión del admin (`admin-sync/whatsapp-bot/conexion`), que además NO las devuelve.
+     */
+    protected $hidden = ['kapso_api_key', 'webhook_secret'];
+
+    protected $appends = [
+        'modo_demostracion',
+        // Derivados de solo lectura: le dicen a la pantalla QUÉ está cargado sin mostrar los valores.
+        'kapso_api_key_configurada',
+        'webhook_secret_configurado',
+        'conexion_configurada',
+    ];
+
+    /**
+     * ¿Hay clave de Kapso cargada? (sin exponer cuál es).
+     *
+     * @return bool
+     */
+    public function getKapsoApiKeyConfiguradaAttribute(): bool
+    {
+        return trim((string) $this->getAttributeFromArray('kapso_api_key')) !== '';
+    }
+
+    /**
+     * ¿Hay secreto de webhook cargado? (sin exponer cuál es).
+     *
+     * @return bool
+     */
+    public function getWebhookSecretConfiguradoAttribute(): bool
+    {
+        return trim((string) $this->getAttributeFromArray('webhook_secret')) !== '';
+    }
+
+    /**
+     * ¿Están las tres credenciales finales (número, clave y secreto)? Es lo que exige el guard para
+     * poder activar el bot.
+     *
+     * @return bool
+     */
+    public function getConexionConfiguradaAttribute(): bool
+    {
+        return trim((string) $this->getAttributeFromArray('phone_number_id')) !== ''
+            && $this->kapso_api_key_configurada
+            && $this->webhook_secret_configurado;
+    }
 
     /**
      * ¿Este negocio está en modo demostración, o sea los mensajes de WhatsApp NO se mandan a
