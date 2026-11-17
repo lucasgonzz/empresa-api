@@ -165,10 +165,19 @@ class AccionesHechasPorElAsistenteIaHelper
 
         $tipo = isset($input['tipo']) ? trim((string) $input['tipo']) : '';
 
-        if ($tipo !== '') {
+        if ($tipo === AiMessageAction::TIPO_VENTA) {
+
+            self::filtrar_por_ventas($base);
+
+        } elseif ($tipo !== '') {
 
             $base->where('ai_message_actions.tipo', $tipo);
         }
+
+        // Sin desde ni hasta se usó el período por defecto: la nota lo dice (ver nota()).
+        $desde_pedido = isset($input['desde']) ? trim((string) $input['desde']) : '';
+        $hasta_pedido = isset($input['hasta']) ? trim((string) $input['hasta']) : '';
+        $por_defecto = $desde_pedido === '' && $hasta_pedido === '';
 
         $total = (int) (clone $base)->count();
 
@@ -237,8 +246,40 @@ class AccionesHechasPorElAsistenteIaHelper
             'acciones_en_total'  => $total,
             'acciones_en_lista'  => count($acciones),
             'acciones'           => $acciones,
-            'nota'               => self::nota($total, count($acciones)),
+            'nota'               => self::nota($total, count($acciones), $por_defecto),
         ];
+    }
+
+    /**
+     * El filtro de tipo «venta» (revisión independiente de A2, 17/11/2026): no solo las ventas del asistente
+     * (tipo `venta`), también las que hizo por el ABM genérico sobre la entidad `sale` (alta, edición, baja) y las
+     * acciones de pantalla sobre una venta (facturarla, editarla, mandarla). Las de pantalla se reconocen por lo
+     * que guardó la tarjeta en `datos` —el `sale_id` del cuerpo o una ruta `sale/{param}`—, leído acá adentro, en
+     * SQL: `datos` no sale nunca de la base hacia el modelo.
+     *
+     * Los JSON se guardan con json_encode y la barra puede quedar escapada (`sale\/{sale_id}`): se buscan las dos
+     * formas.
+     *
+     * @param  \Illuminate\Database\Query\Builder  $base
+     * @return void
+     */
+    protected static function filtrar_por_ventas($base)
+    {
+        $base->where(function ($q) {
+            $q->where('ai_message_actions.tipo', AiMessageAction::TIPO_VENTA)
+                ->orWhere(function ($abm) {
+                    $abm->whereIn('ai_message_actions.tipo', [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION, AiMessageAction::TIPO_BAJA])
+                        ->where('ai_message_actions.resultado', 'like', '%"entidad":"sale"%');
+                })
+                ->orWhere(function ($pantalla) {
+                    $pantalla->where('ai_message_actions.tipo', AiMessageAction::TIPO_ACCION_PANTALLA)
+                        ->where(function ($datos) {
+                            $datos->where('ai_message_actions.datos', 'like', '%"sale_id"%')
+                                ->orWhere('ai_message_actions.datos', 'like', '%sale/{%')
+                                ->orWhere('ai_message_actions.datos', 'like', '%sale\\\\/{%');
+                        });
+                });
+        });
     }
 
     /**
@@ -641,10 +682,22 @@ class AccionesHechasPorElAsistenteIaHelper
      *
      * @param  int  $total
      * @param  int  $en_lista
+     * @param  bool  $por_defecto  true si no vino desde ni hasta y se usó el período por defecto.
      * @return string
      */
-    protected static function nota($total, $en_lista)
+    protected static function nota($total, $en_lista, $por_defecto = false)
     {
+        $periodo = '';
+
+        /*
+         * Revisión independiente de A2: sin desde ni hasta se miran los últimos DIAS_POR_DEFECTO días, y el modelo
+         * no lo sabía; contestaba «todo lo que hice» con un mes.
+         */
+        if ($por_defecto) {
+            $periodo = 'Como no se mandó desde ni hasta, se usó el período por defecto: los últimos ' . self::DIAS_POR_DEFECTO . ' días. '
+                . 'Decilo así; si piden «todas» o algo más viejo, volvé a llamar con un rango más amplio (desde/hasta, hasta ' . self::TOPE_DIAS . ' días). ';
+        }
+
         $nota = 'Es lo que el asistente EJECUTÓ de verdad (tarjetas confirmadas), leído del sistema, de la más nueva a la más vieja. '
             . 'Contestá «qué cargaste / facturaste / hiciste» con ESTA lista y no con la memoria ni con resúmenes de charlas viejas. '
             . 'En una venta, `venta` trae cómo está HOY: número, cliente, total, si está anulada y factura.estado (emitida con su comprobante y CAE, rechazada, pendiente o sin_factura). ';
@@ -657,6 +710,6 @@ class AccionesHechasPorElAsistenteIaHelper
             $nota .= 'No hay acciones confirmadas en el período: decilo así, sin inventar. ';
         }
 
-        return trim($nota);
+        return trim($periodo . $nota);
     }
 }

@@ -6939,7 +6939,7 @@ CONFIRMACION;
                         'hasta' => ['type' => 'string', 'description' => 'Último día, AAAA-MM-DD. Sin hasta: hoy.'],
                         'tipo' => [
                             'type'        => 'string',
-                            'description' => 'Opcional: solo un tipo de carga. venta (ventas del asistente), accion_pantalla (facturar, editar o anular desde una pantalla), alta, edicion, baja, pago, gasto, presupuesto, etc.',
+                            'description' => 'Opcional: solo un tipo de carga. venta (todo lo que tocó una venta: las que creó el asistente, las del alta o edición de ventas y lo hecho por pantalla sobre una venta, como facturarla), accion_pantalla (facturar, editar o anular desde una pantalla), alta, edicion, baja, pago, gasto, presupuesto, etc.',
                         ],
                         'limite' => ['type' => 'integer', 'description' => 'Cuántas acciones listar (default 50, hasta 200). acciones_en_total siempre es de todo el período.'],
                     ],

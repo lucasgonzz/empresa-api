@@ -286,6 +286,55 @@ class T155_Lo_que_hizo_el_asistente_Test extends TestCase
         $this->assertStringNotContainsString('"cuerpo"', $json);
     }
 
+    /**
+     * Revisión independiente (punto 3): sin período, la nota dice que se usó el de por defecto; y filtrar por ventas
+     * trae también la venta hecha por el ABM (alta de la entidad sale) y la acción de pantalla sobre una venta.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function el_periodo_por_defecto_se_dice_y_el_filtro_de_ventas_trae_las_tres_formas()
+    {
+        $conversation = AiConversation::create(['user_id' => $this->comercio->id, 'auth_user_id' => $this->comercio->id]);
+
+        $sin_periodo = AccionesHechasPorElAsistenteIaHelper::consultar($this->comercio->id, $conversation, []);
+        $this->assertStringContainsString('período por defecto', $sin_periodo['nota']);
+        $this->assertStringContainsString('«todas»', $sin_periodo['nota']);
+
+        $con_periodo = $this->consultar($this->comercio, $this->comercio);
+        $this->assertStringNotContainsString('período por defecto', $con_periodo['nota']);
+
+        // Una venta por el ABM genérico y una edición de venta por pantalla (ruta sale/{sale_id}).
+        $por_abm = Sale::create(['user_id' => $this->comercio->id, 'num' => 3107, 'total' => 50, 'terminada' => 1, 'moneda_id' => 1]);
+        $this->accion($this->comercio, $this->comercio, AiMessageAction::TIPO_ALTA, [
+            'texto' => 'Venta N° 3107 creada', 'entidad' => 'sale', 'id' => $por_abm->id, 'nombre' => 'Venta 3107',
+        ]);
+
+        $por_pantalla = Sale::create(['user_id' => $this->comercio->id, 'num' => 3108, 'total' => 60, 'terminada' => 1, 'moneda_id' => 1]);
+        $this->accion($this->comercio, $this->comercio, AiMessageAction::TIPO_ACCION_PANTALLA, [
+            'texto' => 'Hecho por pantalla T155', 'uri' => 'api/sale/' . $por_pantalla->id . '/delivery-info',
+        ], [
+            'metodo' => 'PUT', 'ruta' => 'sale/{sale_id}/delivery-info', 'parametros' => ['sale_id' => $por_pantalla->id], 'cuerpo' => [],
+        ]);
+
+        $ventas = AccionesHechasPorElAsistenteIaHelper::consultar($this->comercio->id, $conversation, [
+            'desde' => now()->subDays(2)->format('Y-m-d'),
+            'hasta' => now()->format('Y-m-d'),
+            'tipo'  => 'venta',
+        ]);
+
+        $this->assertTrue($ventas['ok'], json_encode($ventas));
+        $this->assertSame(3, $ventas['acciones_en_total'], json_encode($ventas, JSON_UNESCAPED_UNICODE));
+
+        $numeros = [];
+        foreach ($ventas['acciones'] as $accion) {
+            $numeros[] = $accion['venta']['numero'];
+        }
+        sort($numeros);
+
+        $this->assertSame([3105, 3107, 3108], $numeros, 'La del asistente, la del ABM y la de pantalla; ni el gasto ni el alta de cliente.');
+    }
+
     // ---------------------------------------------------------------------
 
     /**
