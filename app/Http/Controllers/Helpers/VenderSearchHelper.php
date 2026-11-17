@@ -104,9 +104,17 @@ class VenderSearchHelper
             $keyword = $keywords[0];
 
             $sub->orWhere('bar_code', $keyword);
-            $sub->orWhereHas('article_variants', function ($variant_query) use ($keyword) {
-                $variant_query->where('bar_code', $keyword);
+            // El EXISTS bajo un OR quedaba correlacionado y repetía la búsqueda de variantes
+            // por cada artículo candidato. IN permite materializar la subconsulta en SQL sin
+            // traer IDs a PHP. Derivar la relación conserva sus filtros y scopes; solo se quita
+            // la correlación automática. Las variantes ocultas siguen participando, como antes.
+            $relacion = \Illuminate\Database\Eloquent\Relations\Relation::noConstraints(function () use ($sub) {
+                return $sub->getModel()->article_variants();
             });
+            $articulos_con_codigo = $relacion->getQuery()
+                ->select($relacion->getQualifiedForeignKeyName())
+                ->where($relacion->getRelated()->qualifyColumn('bar_code'), $keyword);
+            $sub->orWhereIn($relacion->getQualifiedParentKeyName(), $articulos_con_codigo);
         };
     }
 
