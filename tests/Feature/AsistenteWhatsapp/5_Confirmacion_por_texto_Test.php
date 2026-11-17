@@ -141,9 +141,12 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
          * al final de las comunes. El censo crece una; el foreach sigue verificando TODOS los dispatch.
          * Los avisos del dueño (asistente-truvari-pedidos-fallidos, C2, 13/11/2026) agregan
          * proponer_avisos_por_whatsapp al final de las comunes: el censo crece una más. Quitar fotos
-         * (asistente-mejoras-4-dias, P6, 16/11/2026) agrega quitar_foto_articulo al final: una más.
+         * (asistente-mejoras-4-dias, P6, 16/11/2026) agrega quitar_foto_articulo al final: una más. El
+         * ajuste de stock por lote (asistente-diario-20261116, rama B, 30/10 #2) agrega
+         * proponer_ajuste_de_stock_por_lote al final: una más.
          */
-        $this->assertCount(51, $nombres, 'Cuarenta y ocho comunes más las tres del canal de WhatsApp.');
+        $this->assertCount(52, $nombres, 'Cuarenta y nueve comunes más las tres del canal de WhatsApp.');
+        $this->assertContains('proponer_ajuste_de_stock_por_lote', $nombres);
         $this->assertContains('quitar_foto_articulo', $nombres);
         $this->assertContains('proponer_avisos_por_whatsapp', $nombres);
         $this->assertContains('proponer_cuotas_tienda', $nombres);

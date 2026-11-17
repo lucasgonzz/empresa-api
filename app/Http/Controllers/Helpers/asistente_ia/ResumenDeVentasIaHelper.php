@@ -59,7 +59,13 @@ class ResumenDeVentasIaHelper
      * `enum` de la definición de la tool, que es el prefijo que cachea AsistenteIaService::
      * con_cache_control(). Reordenarlo tira el caché de todas las conversaciones.
      */
-    const AGRUPACIONES = ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor', 'facturada'];
+    const AGRUPACIONES = ['dia', 'semana', 'mes', 'sucursal', 'vendedor', 'metodo_de_pago', 'cliente', 'articulo', 'rubro', 'proveedor', 'facturada', 'caja'];
+
+    /** Etiqueta del grupo de lo cobrado sin caja asignada (ver por_caja()). */
+    const ETIQUETA_SIN_CAJA = 'Sin caja';
+
+    /** Etiqueta del grupo de lo vendido a cuenta corriente, que no entra a ninguna caja (ver por_caja()). */
+    const ETIQUETA_CAJA_CUENTA_CORRIENTE = 'Cuenta corriente (no entra a caja)';
 
     /** Etiqueta del grupo de las ventas con comprobante de ARCA (ver expresion_facturada()). */
     const ETIQUETA_FACTURADA = 'Facturada ante ARCA';
@@ -93,9 +99,12 @@ class ResumenDeVentasIaHelper
      *         Con artículo, rubro o proveedor, pedir un orden suma además costo, ganancia y el id de
      *         cada grupo (ver por_articulo()).
      * @param  string|null  $direccion  desc (default) | asc ("los que MENOS").
+     * @param  string|null  $hasta_hora  Misión asistente-diario-20261116 (A9): HH:MM. Deja solo las ventas
+     *         cargadas hasta esa hora (inclusive) de CADA día del rango, para comparar «hoy hasta ahora»
+     *         contra «ayer hasta la misma hora». null = el día entero, como siempre. Ver corte_por_hora().
      * @return array<string, mixed>  Con la clave `error` cuando el pedido no se puede atender
      */
-    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null, $orden = null, $direccion = null): array
+    public static function resumen(int $owner_id, $desde, $hasta, $agrupar_por = null, $moneda = 'pesos', $metodo_de_pago = null, $orden = null, $direccion = null, $hasta_hora = null): array
     {
         $owner = User::find($owner_id);
 
@@ -183,6 +192,23 @@ class ResumenDeVentasIaHelper
             $otra = self::acotar_por_metodo_de_pago($otra, $filtro);
         }
 
+        /*
+         * A9 (misión asistente-diario-20261116): el corte por hora va sobre los DOS conjuntos y antes
+         * de los totales, por el mismo motivo que el filtro de método: todo lo que viaja en la
+         * respuesta habla del mismo recorte.
+         */
+        $hora = self::hora_de_corte($hasta_hora);
+
+        if (isset($hora['error'])) {
+
+            return ['error' => $hora['error']];
+        }
+
+        if (! is_null($hora['hora'])) {
+            $ventas = self::corte_por_hora($ventas, $hora['hora']);
+            $otra = self::corte_por_hora($otra, $hora['hora']);
+        }
+
         $totales = self::totales($owner, $ventas, $inicio, $fin, $moneda);
 
         $respuesta = [
@@ -221,6 +247,27 @@ class ResumenDeVentasIaHelper
             $respuesta['aviso_de_devoluciones'] = 'Con el filtro por metodo de pago las devoluciones no se pueden acotar: van en null.';
         }
 
+        /*
+         * A9: con corte por hora, las devoluciones de UN día se cortan a la misma hora (las notas de
+         * crédito tienen hora: current_acounts.created_at). En un rango de varios días la franja
+         * diaria no tiene forma honesta de aplicarse a ese cálculo, y va en null con el porqué.
+         */
+        if (! is_null($hora['hora'])) {
+            $respuesta['hasta_hora'] = substr($hora['hora'], 0, 5);
+            $respuesta['aviso_de_hora'] = 'Solo las ventas cargadas hasta las ' . substr($hora['hora'], 0, 5) . ' (inclusive) de cada dia del rango, por la hora en que se cargaron.';
+
+            if ($moneda === 'pesos' && is_null($filtro['metodo'])) {
+                if ($dia_desde === $dia_hasta) {
+                    $corte = Carbon::parse($dia_hasta . ' ' . $hora['hora']);
+                    $devoluciones = self::recolector_expuesto()->devoluciones_del_periodo($owner, $inicio, $corte);
+                    $respuesta['devoluciones'] = round((float) $devoluciones['total'], 2);
+                } else {
+                    $respuesta['devoluciones'] = null;
+                    $respuesta['aviso_de_devoluciones'] = 'Con hasta_hora en un rango de varios dias las devoluciones no se pueden cortar por hora: van en null.';
+                }
+            }
+        }
+
         if ($agrupar_por !== '') {
             $grupos = self::agrupar($owner, $ventas, $agrupar_por, $totales, $orden, $direccion);
 
@@ -250,7 +297,58 @@ class ResumenDeVentasIaHelper
             }
         }
 
+        /*
+         * A9 (Ferre Total, 5/11/2026): el asistente repitió «70 ventas / $1.202.047» tres veces cuando
+         * ya eran 88. Cada respuesta dice a qué hora se consultó, así el modelo (y el dueño) saben que
+         * el número es de ese momento y que «cómo van» es otra consulta.
+         */
+        $respuesta['consultado_a_las'] = Carbon::now()->format('Y-m-d H:i');
+
         return $respuesta;
+    }
+
+    /**
+     * VALIDA EL `hasta_hora` QUE PIDIÓ EL MODELO (A9, misión asistente-diario-20261116).
+     *
+     * Acepta HH:MM o H:MM (24 h). Vacío o null = sin corte. Devuelve la hora lista para comparar
+     * contra TIME(), con los segundos en 59 para que «hasta las 15:30» incluya la venta de las
+     * 15:30:40.
+     *
+     * @param  string|null  $hasta_hora
+     * @return array<string, mixed>  ['hora' => 'HH:MM:59'|null] o ['error' => ...]
+     */
+    protected static function hora_de_corte($hasta_hora): array
+    {
+        $texto = is_null($hasta_hora) ? '' : trim((string) $hasta_hora);
+
+        if ($texto === '') {
+
+            return ['hora' => null];
+        }
+
+        if (! preg_match('/^(\d{1,2}):(\d{2})$/', $texto, $partes) || (int) $partes[1] > 23 || (int) $partes[2] > 59) {
+
+            return ['error' => '`hasta_hora` va en formato HH:MM de 24 horas (por ejemplo 15:30).'];
+        }
+
+        return ['hora' => sprintf('%02d:%02d:59', (int) $partes[1], (int) $partes[2])];
+    }
+
+    /**
+     * ACOTA EL CONJUNTO A LAS VENTAS CARGADAS HASTA ESA HORA DE CADA DÍA (A9).
+     *
+     * 🔴 LA HORA ES LA DE CARGA (`sales.created_at`), aun con el criterio "por fecha de pedido": la
+     * fecha de entrega no tiene hora útil (es un día), y la pregunta del dueño —«cómo vamos hoy
+     * contra ayer a esta hora»— es sobre cuándo se vendió. El día de cada venta lo sigue decidiendo
+     * el conjunto de Rendimiento; esto solo recorta la franja.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @param  string  $hora  HH:MM:SS
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected static function corte_por_hora($ventas, string $hora)
+    {
+        return (clone $ventas)->whereRaw('TIME(sales.created_at) <= ?', [$hora]);
     }
 
     /**
@@ -624,6 +722,11 @@ class ResumenDeVentasIaHelper
     {
         if ($agrupar_por === 'metodo_de_pago') {
             return self::por_metodo_de_pago($ventas, $totales);
+        }
+
+        // M6-caja (misión asistente-diario-20261116): lo que entró a cada caja.
+        if ($agrupar_por === 'caja') {
+            return self::por_caja($owner, $ventas, $totales);
         }
 
         if ($agrupar_por === 'facturada') {
@@ -1008,6 +1111,106 @@ class ResumenDeVentasIaHelper
          * otro grupo.
          */
         $resultado['nota'] = 'el grupo "' . self::METODO_CUENTA_CORRIENTE . '" es lo VENDIDO a cuenta corriente y no se desglosa por como se cobro despues: en el momento de la venta no hay metodo de pago, hay una deuda. Y una venta pagada con dos metodos cuenta en los dos grupos, con la parte que le toca a cada uno.';
+
+        return $resultado;
+    }
+
+    /**
+     * POR CAJA: LO QUE LAS VENTAS DEL CONJUNTO HICIERON ENTRAR A CADA CAJA (M6-caja, misión
+     * asistente-diario-20261116; pedido de Ferre Total del 14/11/2026: «ventas por caja»).
+     *
+     * Espeja por_metodo_de_pago() con la caja en lugar del método, para que las dos agrupaciones
+     * sumen lo mismo y cuadren con el total:
+     *  - las ventas de mostrador con pivot `current_acount_payment_method_sale` reparten su plata por
+     *    `caja_id` del pivot, con `amount - discount_amount` (el mismo importe que el reparto por
+     *    método y que Rendimiento; decisión de la misión, 16/11/2026);
+     *  - las de mostrador sin pivot van enteras a `sales.caja_id`;
+     *  - lo que no tiene caja (null o 0) va a "Sin caja";
+     *  - lo vendido a cuenta corriente es un grupo aparte que NO entró a ninguna caja.
+     *
+     * 🔴 LO QUE ESTO NO ES: el saldo ni los movimientos de la caja. Los cobros de cuenta corriente que
+     * entran a caja, los gastos y los movimientos manuales no son ventas y no están: para eso va
+     * consultar_reporte_contable con flujo_caja. Va dicho en la nota.
+     *
+     * @param  User    $owner
+     * @param  \Illuminate\Database\Eloquent\Builder  $ventas
+     * @param  array   $totales
+     * @return array<string, mixed>
+     */
+    protected static function por_caja(User $owner, $ventas, array $totales): array
+    {
+        $mostrador = self::ventas_de_mostrador($ventas);
+
+        $con_pivot = DB::table('current_acount_payment_method_sale')
+            ->whereIn('sale_id', (clone $mostrador)->select('sales.id'))
+            ->groupByRaw('COALESCE(caja_id, 0)')
+            ->selectRaw('COALESCE(caja_id, 0) as caja_id, COUNT(DISTINCT sale_id) as cantidad, COALESCE(SUM(amount - COALESCE(discount_amount, 0)), 0) as total')
+            ->get();
+
+        $sin_pivot = (clone $mostrador)
+            ->whereNotExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('current_acount_payment_method_sale')
+                    ->whereColumn('current_acount_payment_method_sale.sale_id', 'sales.id');
+            })
+            ->toBase()
+            ->selectRaw('COALESCE(sales.caja_id, 0) as caja_id, COUNT(*) as cantidad, COALESCE(SUM(sales.total), 0) as total')
+            ->groupByRaw('COALESCE(sales.caja_id, 0)')
+            ->get();
+
+        $por_caja = [];
+
+        foreach ([$con_pivot, $sin_pivot] as $lote) {
+            foreach ($lote as $fila) {
+                $caja_id = (int) $fila->caja_id;
+
+                if (! isset($por_caja[$caja_id])) {
+                    $por_caja[$caja_id] = ['cantidad' => 0, 'total' => 0.0];
+                }
+
+                $por_caja[$caja_id]['cantidad'] += (int) $fila->cantidad;
+                $por_caja[$caja_id]['total'] += (float) $fila->total;
+            }
+        }
+
+        // Los nombres, solo de las cajas del comercio: un id ajeno o borrado cae en "Caja #id".
+        $ids = array_values(array_filter(array_keys($por_caja)));
+        $nombres = empty($ids) ? [] : DB::table('cajas')
+            ->where('user_id', $owner->id)
+            ->whereIn('id', $ids)
+            ->pluck('name', 'id')
+            ->map(function ($v) {
+                return (string) $v;
+            })
+            ->all();
+
+        $grupos = [];
+
+        foreach ($por_caja as $caja_id => $suma) {
+            if ($caja_id <= 0) {
+                $etiqueta = self::ETIQUETA_SIN_CAJA;
+            } else {
+                $etiqueta = isset($nombres[$caja_id]) && $nombres[$caja_id] !== '' ? $nombres[$caja_id] : 'Caja #' . $caja_id;
+            }
+
+            $grupos[] = [
+                'etiqueta' => $etiqueta,
+                'cantidad' => $suma['cantidad'],
+                'total'    => round($suma['total'], 2),
+            ];
+        }
+
+        if (! is_null($totales['a_cuenta_corriente']) && $totales['a_cuenta_corriente'] > 0) {
+            $grupos[] = [
+                'etiqueta' => self::ETIQUETA_CAJA_CUENTA_CORRIENTE,
+                'cantidad' => (int) self::ventas_a_cuenta_corriente($ventas)->count(),
+                'total'    => (float) $totales['a_cuenta_corriente'],
+            ];
+        }
+
+        $resultado = self::ordenar_y_topear($grupos);
+
+        $resultado['nota'] = 'por caja es lo que las VENTAS del periodo hicieron entrar a cada caja (una venta cobrada con dos metodos reparte su plata entre sus cajas). "' . self::ETIQUETA_SIN_CAJA . '" es lo cobrado sin caja asignada, y "' . self::ETIQUETA_CAJA_CUENTA_CORRIENTE . '" lo vendido fiado, que no entro a ninguna caja. No es el saldo de la caja: los cobros de cuenta corriente, los gastos y los movimientos manuales no estan; para eso va consultar_reporte_contable con flujo_caja.';
 
         return $resultado;
     }

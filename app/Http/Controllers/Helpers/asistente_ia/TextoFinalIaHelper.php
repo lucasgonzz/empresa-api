@@ -93,6 +93,114 @@ class TextoFinalIaHelper
     }
 
     /**
+     * Palabras que solo existen en portugués (minúsculas, con sus tildes). Con una sola alcanza: el caso real
+     * fue una respuesta con «$228 milhões» (Ferre Total, 30/10, mensaje 202). Misión asistente-diario-20261116,
+     * rama C, 30/10 #14.
+     */
+    const PALABRAS_PORTUGUESAS = [
+        'não', 'você', 'vocês', 'também', 'então', 'obrigado', 'obrigada', 'milhões', 'milhão', 'estão',
+        'isso', 'aqui está', 'está bem', 'até', 'já está', 'nós', 'muito obrigado', 'vendas de hoje',
+    ];
+
+    /**
+     * Palabras funcionales del inglés. Una oración en inglés de verdad trae varias (CUATRO o más, ver
+     * contiene_prosa_en_portugues_o_ingles()); un nombre de producto, a lo sumo una o dos.
+     */
+    const PALABRAS_INGLESAS = [
+        'the', 'and', 'you', 'your', 'is', 'are', 'was', 'were', 'have', 'has', 'will', 'with', 'this', 'that',
+        'for', 'of', 'to', 'it', 'today', 'sales', 'sold', 'here', 'there', 'can', 'not', 'what', 'which',
+    ];
+
+    /**
+     * true si la respuesta tiene prosa en PORTUGUÉS o en INGLÉS (misión asistente-diario-20261116, rama C,
+     * 30/10 #14), para reintentarla en español como ya se hace con el chino (contiene_prosa_cjk()).
+     *
+     * Se mira renglón por renglón y 🔴 NUNCA un renglón de lista: ahí están los nombres de los productos, que
+     * pueden estar en otro idioma («Pão de queijo», «Let's Go Naranja»). En el resto:
+     *   (antes se saca lo que está entre comillas: son nombres)
+     *   - portugués: alguna palabra de PALABRAS_PORTUGUESAS escrita en minúscula, o una palabra en minúscula que termina en
+     *     «ção», «ções», «ões» o «ão» (los nombres propios van con mayúscula y se dejan);
+     *   - inglés: cuatro o más palabras de PALABRAS_INGLESAS (y la mitad o más del renglón), ninguna palabra funcional del castellano y ningún
+     *     carácter con tilde, ñ, ¿ ni ¡.
+     * Un falso positivo cuesta una llamada más al modelo (el reintento pide la misma respuesta en español);
+     * el texto nunca se descarta por esto.
+     *
+     * @param  string  $texto
+     * @return bool
+     */
+    public static function contiene_prosa_en_portugues_o_ingles($texto)
+    {
+        foreach (preg_split('/\R/u', (string) $texto) ?: [] as $renglon) {
+
+            if (trim($renglon) === '' || self::es_de_lista($renglon)) {
+
+                continue;
+            }
+
+            /*
+             * Revisión de la rama C (B1): lo que está ENTRE COMILLAS es un nombre (un vino «Até o fim», un modelo
+             * "for gaming"), no la voz del asistente: se saca antes de mirar.
+             */
+            $renglon = self::sin_lo_citado($renglon);
+
+            // Las palabras portuguesas, solo EN MINÚSCULA en el texto original: «Tenis Não Pare» o «Isso Store» son marcas.
+            $palabras = ' ' . preg_replace('/[^\p{L}\p{N}]+/u', ' ', $renglon) . ' ';
+
+            foreach (self::PALABRAS_PORTUGUESAS as $palabra) {
+
+                if (mb_strpos($palabras, ' ' . $palabra . ' ') !== false) {
+
+                    return true;
+                }
+            }
+
+            // Una palabra en minúscula con terminación portuguesa.
+            if (preg_match('/(?<![\p{L}])\p{Ll}+(ção|ções|ões|ão)(?![\p{L}])/u', $renglon)) {
+
+                return true;
+            }
+
+            /*
+             * Inglés: cuatro o más palabras funcionales inglesas que además sean la MITAD o más de las palabras del
+             * renglón (números incluidos), sin ninguna palabra funcional del castellano ni tildes. Un nombre de
+             * producto largo en inglés («Monitor LG 24 for gaming with HDMI and the stand: $300.000») no llega.
+             */
+            $todas = preg_split('/\s+/u', trim(mb_strtolower($palabras))) ?: [];
+            $inglesas = 0;
+
+            foreach ($todas as $palabra) {
+
+                if (in_array($palabra, self::PALABRAS_INGLESAS, true)) {
+
+                    $inglesas++;
+                }
+            }
+
+            if ($inglesas >= 4
+                && $inglesas * 2 >= count($todas)
+                && self::palabras_espanolas($renglon) === 0
+                && !preg_match('/[áéíóúüñÁÉÍÓÚÜÑ¿¡]/u', $renglon)) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * El renglón sin lo que está entre comillas ("…", «…», “…”), que son nombres y no prosa del asistente
+     * (revisión de la rama C, B1). Una comilla suelta (las pulgadas de «24"») no se toca.
+     *
+     * @param  string  $renglon
+     * @return string
+     */
+    protected static function sin_lo_citado($renglon)
+    {
+        return (string) preg_replace(['/"[^"\r\n]*"/u', '/«[^»\r\n]*»/u', '/“[^”\r\n]*”/u'], ' ', (string) $renglon);
+    }
+
+    /**
      * El texto sin las oraciones filtradas, AUNQUE quede vacío. Si no hubo nada que sacar, vuelve el
      * texto tal cual, byte por byte.
      *

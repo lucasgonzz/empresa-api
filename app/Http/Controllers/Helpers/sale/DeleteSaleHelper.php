@@ -225,6 +225,10 @@ class DeleteSaleHelper {
 		*/
 		return DB::transaction(function () use ($model, $instance, $compensar_caja, $payment_methods, $helper_caja) {
 
+            if ($model->order_id) {
+                \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::bloquear_configuracion($model->user_id);
+            }
+
 			$viva = Sale::where('id', $model->id)
 						->lockForUpdate()
 						->first();
@@ -384,6 +388,13 @@ class DeleteSaleHelper {
 		PuntosCanjeHelper::deshacer($model, true);
 
 		PuntosAcumulacionHelper::revertir_venta($model);
+
+        if ($model->order_id) {
+            \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::liberar($model->order_id);
+            if (\App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::hay_esquema()) {
+                \App\Models\Order::where('id', $model->order_id)->where('reserva_stock_web_consumida', false)->update(['reserva_stock_web_liberada' => true]);
+            }
+        }
 
 		$model->delete();
 

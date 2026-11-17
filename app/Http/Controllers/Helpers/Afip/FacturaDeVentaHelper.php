@@ -134,9 +134,7 @@ class FacturaDeVentaHelper
             'facturar_importe_personalizado', 'importe_personalizado_ivas', 'forma_de_pago', 'permiso_existente', 'incoterms',
         ])) + ['importe_personalizado_ivas' => null, 'forma_de_pago' => null, 'permiso_existente' => null, 'incoterms' => null];
         foreach (['forma_de_pago', 'permiso_existente', 'incoterms'] as $campo) {
-            if ($data[$campo] !== null && (!is_string($data[$campo]) || mb_strlen($data[$campo]) > 255)) {
-                self::rechazar('Los datos opcionales de la factura tienen que ser textos válidos: revisá '.$campo.'.');
-            }
+            $data[$campo] = self::normalizar_opcional($campo, $data[$campo]);
         }
         if ($data['permiso_existente'] !== null && $data['permiso_existente'] !== '' && !in_array($data['permiso_existente'], ['S', 'N'], true)) {
             self::rechazar('Indicá S o N en el permiso de exportación.');
@@ -155,7 +153,10 @@ class FacturaDeVentaHelper
             self::rechazar('La fecha de emisión no es válida.');
         }
         $codigo = (int) $tipo->codigo;
-        $data['incoterms'] = $data['incoterms'] ?: ($venta->incoterms ?: ($codigo === 19 ? 'FOB' : null));
+        // Las SPA anteriores guardaban 0 como ausencia. También se valida el dato persistido:
+        // recuperarlo de la venta no puede saltear las guardas del pedido.
+        $data['incoterms'] = $data['incoterms'] ?? self::normalizar_opcional('incoterms', $venta->incoterms, true);
+        $data['incoterms'] = $data['incoterms'] ?? ($codigo === 19 ? 'FOB' : null);
         $cliente = $venta->client;
         if ($venta->client_id && (!$cliente || (int) $cliente->user_id !== (int) $owner_id)) {
             self::rechazar('El cliente de la venta ya no está disponible para este negocio.');
@@ -356,6 +357,25 @@ class FacturaDeVentaHelper
         if (!is_string($firma) || !hash_equals($preparada['huella'], $firma)) {
             self::rechazar('Los datos de la factura cambiaron desde la propuesta. Pedí una nueva tarjeta, revisá el emisor, fecha e importe y volvé a confirmar.');
         }
+    }
+
+    private static function normalizar_opcional($campo, $valor, $guardado = false)
+    {
+        if ($valor === null || $valor === '' || ($campo === 'incoterms' && ($valor === 0 || $valor === '0'))) {
+            return null;
+        }
+        $nombres = [
+            'incoterms' => 'la condición de venta de exportación (incoterms)',
+            'forma_de_pago' => 'la forma de pago de la factura',
+            'permiso_existente' => 'el permiso de exportación',
+        ];
+        if (!is_string($valor) || mb_strlen($valor) > 255) {
+            if ($guardado) {
+                self::rechazar('La condición de venta de exportación (incoterms) guardada en la venta es inválida. Elegí una condición válida al facturar; si no aparece ese campo, pedí su revisión a soporte antes de emitir.');
+            }
+            self::rechazar('Revisá '.$nombres[$campo].': debe ser un texto de hasta 255 caracteres. Corregí ese dato en la facturación antes de confirmar; si no corresponde, dejalo vacío.');
+        }
+        return $valor;
     }
 
     public static function rechazar($mensaje): void

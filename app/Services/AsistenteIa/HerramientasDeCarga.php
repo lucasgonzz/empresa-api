@@ -35,6 +35,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaPresupuestoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaPromocionWhatsappIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaAjusteDeStockPorLoteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReintentoDeEscaneoIaHelper;
@@ -281,6 +282,12 @@ class HerramientasDeCarga
          * de más: la persona ve el total, el IVA y la cuenta corriente, y confirma ella.
          */
         AiMessageAction::TIPO_COMPRA_SIN_ARTICULOS,
+        /*
+         * 🔴 El ajuste de stock por lote (misión asistente-diario-20261116, rama B, 30/10 #2): deja el stock
+         * de muchos artículos en un número de un saque, como la actualización masiva. La persona mira la
+         * lista (y lo que quedó afuera) y confirma ella.
+         */
+        AiMessageAction::TIPO_AJUSTE_STOCK_LOTE,
     ];
 
     /**
@@ -397,7 +404,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_gasto',
-                'description'  => 'Arma la tarjeta de un gasto para que la persona la confirme: NO registra nada. Con fecha futura no arma un gasto sino una tarea en la agenda con el gasto asociado (la respuesta lo dice en convertido_desde): en ese caso NO mandes pagos ni preguntes cómo se paga, eso se pregunta el día que la tarea se marca como hecha. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de un gasto para que la persona la confirme: NO registra nada. Con fecha futura no arma un gasto sino una tarea en la agenda con el gasto asociado (la respuesta lo dice en convertido_desde): en ese caso NO mandes pagos ni preguntes cómo se paga, eso se pregunta el día que la tarea se marca como hecha. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Si la subcategoría (o su categoría) no existe, mandá subcategoria_nueva y categoria: la categoría, la subcategoría y el gasto van en UNA sola tarjeta y se crean juntos con el sí; nunca digas que el gasto queda «en espera». La caja: si la persona no la dijo no la preguntes de entrada; si hay una sola abierta la uso y la nombro, y si no hay ninguna abierta el gasto va sin caja (como en la pantalla de Gastos).',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -426,8 +433,21 @@ class HerramientasDeCarga
                             'description' => 'IVA del gasto, en pesos. Solo si la persona lo dice.',
                         ],
                         'reemplaza_a'     => self::esquema_de_reemplazo(),
+                        /*
+                         * Misión asistente-diario-20261116 (rama B, 30/10 #3), al FINAL por el prefijo del caché:
+                         * la subcategoría y la categoría NUEVAS por nombre, en la misma tarjeta del gasto. Por eso
+                         * subcategoria_id dejó de ser obligatorio (va una de las dos).
+                         */
+                        'subcategoria_nueva' => [
+                            'type'        => 'string',
+                            'description' => 'En vez de subcategoria_id: el NOMBRE de una subcategoría que no está en consultar_subcategorias_de_gasto. La creo en la misma tarjeta del gasto (si ya existe con ese nombre, uso ésa). No la crees antes con proponer_alta.',
+                        ],
+                        'categoria'          => [
+                            'type'        => 'string',
+                            'description' => 'Con subcategoria_nueva: el nombre de la categoría de gasto donde va (una que ya tiene o una nueva, que también creo en la misma tarjeta).',
+                        ],
                     ],
-                    'required'   => ['subcategoria_id', 'monto'],
+                    'required'   => ['monto'],
                 ],
             ],
             [
@@ -1030,7 +1050,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_edicion',
-                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme (con la confianza en "directo" se cambia en el acto y te devuelve el resultado). Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`; la tarjeta muestra el precio de cada lista hoy → el que queda, y si la respuesta trae "aviso" (una lista con precio fijo que pasa a calcularse, o un precio que baja), decíselo a la persona ANTES de que confirme: el sistema no guarda margen y precio fijo a la vez en la misma lista, así que para conservar un precio fijo no se le cambia el margen a esa lista. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta para CAMBIAR campos de un registro existente de una entidad de que_puedo_cargar, para que la persona la confirme (con la confianza en "directo" se cambia en el acto y te devuelve el resultado). Primero se ubica el registro por su nombre (o por el id si otra herramienta lo devolvió; las ventas y los gastos, por su número): si hay varios que encajan, la respuesta trae "faltan" con las opciones y preguntás cuál. Mandá en `cambios` SOLO lo que cambia; la tarjeta muestra cada campo como "antes → después". El margen de un artículo en un negocio con listas de precio va por lista, en margenes_por_lista, no en `cambios`; la tarjeta muestra el precio de cada lista hoy → el que queda, y si la respuesta trae "aviso" (una lista con precio fijo que pasa a calcularse, o un precio que baja), decíselo a la persona ANTES de que confirme: el sistema no guarda margen y precio fijo a la vez en la misma lista, así que para conservar un precio fijo no se le cambia el margen a esa lista. Si nada cambia, la respuesta lo dice. NUNCA se aplica sola, ni con la confianza en "resuelto". Para tareas está proponer_cambios_en_tarea; para el resto de lo que se edita desde ABM, Clientes, Proveedores, Artículos y Gastos, esta. Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual. Si cambia el CUIT de un cliente o proveedor y la persona no dijo la razón social, la tarjeta avisa que la razón social y la condición de IVA quedan como estaban: preguntale la razón social de ese CUIT (no la inventes ni la consultes vos) o sugerile completarla con el botón de AFIP de la pantalla de Clientes. Lo cosmético que pide la persona (todo en mayúsculas, minúsculas, una abreviatura) se respeta tal cual: no inventes restricciones de ARCA para negarte.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1077,7 +1097,7 @@ class HerramientasDeCarga
             ],
             [
                 'name'         => 'proponer_venta',
-                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; una promo de vinoteca va como renglón con promo (o promo_id), igual que en Vender, y descuenta su stock; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+                'description'  => 'Arma la tarjeta de una VENTA por el mismo camino que la pantalla de Vender, para que la persona la confirme: NO vende nada. Cada artículo va por su nombre o código (o por su id si otra herramienta lo devolvió) con su cantidad; una promo de vinoteca va como renglón con promo (o promo_id), igual que en Vender, y descuenta su stock; el precio sale de la lista de precios del cliente (o de la que pidan), salvo que la persona dicte otro. Sin cliente es una venta al contado; con cobro contado hay que decir el método de pago (y la caja si hace falta); a cuenta corriente necesita un cliente con cuenta. La tarjeta muestra los renglones, el cliente, el cobro, el descuento y el total, y avisa si descuenta stock. 🔴 El total que le decís a la persona es el `total` de la respuesta (el de la tarjeta, con la cuenta de Vender): nunca tu propia cuenta; si no es lo que esperabas, decí por qué (descuento o recargo del método de pago, la lista, el descuento de cada artículo o el de la venta). NUNCA se vende sola, ni con la confianza en "resuelto". Si la respuesta trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1113,6 +1133,11 @@ class HerramientasDeCarga
                                     'promo_id'        => [
                                         'type'        => 'integer',
                                         'description' => 'Id de la promo de vinoteca, solo si otra herramienta o un "faltan" lo devolvió.',
+                                    ],
+                                    // Misión asistente-diario-20261116 (M6-descuento), al final: el descuento de ESTE renglón.
+                                    'descuento_porcentaje' => [
+                                        'type'        => 'number',
+                                        'description' => 'Descuento de ESTE artículo, en porcentaje (0 a 100), como la columna de descuento del remito de Vender: "a este hacele 15 %". El total de la tarjeta ya lo descuenta. Es distinto del descuento_porcentaje de la venta entera.',
                                     ],
                                 ],
                                 'required'   => ['cantidad'],
@@ -1550,9 +1575,19 @@ class HerramientasDeCarga
                     'required'   => ['tipo'],
                 ],
             ],
+            /*
+             * Misión asistente-deudores-saldos-iniciales (16/11/2026, ticket 131): desde esa misión
+             * consultar_ventas_sin_cobrar contesta "quién me debe" con el saldo de cuenta corriente,
+             * que incluye a clientes sin ninguna venta. El recordatorio NO cambió de destinatarios (es
+             * el del módulo Alertas: lista las ventas impagas de cada uno), así que la descripción lo
+             * dice para que el modelo no le prometa un recordatorio a quien debe solo un saldo inicial.
+             * En la revisión de la misión se sacó "EL MISMO filtro de consultar_ventas_sin_cobrar": ya
+             * no es cierto que le llegue a los mismos clientes que el asistente listó por cuenta
+             * corriente; la tarjeta muestra los destinatarios reales antes del sí.
+             */
             [
                 'name'         => 'proponer_recordatorios_de_cobro',
-                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es EL MISMO de consultar_ventas_sin_cobrar: monto_minimo es la deuda TOTAL del cliente y dias es que tenga alguna venta impaga de esa antigüedad o más. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Si la respuesta trae "error", contá ese motivo tal cual.',
+                'description'  => 'Prepara el RECORDATORIO DE COBRO por WhatsApp (el mismo del módulo de Alertas) para los clientes que le deben al negocio: "mandales un recordatorio a los que me deben más de 50 mil hace más de 30 días". El filtro es el del ranking de VENTAS de consultar_ventas_sin_cobrar: monto_minimo se compara contra lo que el cliente debe en ventas sin cobrar y dias es que tenga alguna venta impaga de esa antigüedad o más. Puede no coincidir con los clientes que listaste con cuenta_corriente: no le llega a quien debe solo un saldo que no es venta (saldo inicial importado o cargado a mano) ni a quien no alcanza el monto con sus ventas. No prometas a quiénes le llega: los destinatarios reales los muestra la tarjeta antes del sí, y eso es lo que le contás a la persona. También sirve para clientes puntuales ("mandale un recordatorio a Pérez") con client_ids. A cada cliente le llega su propio mensaje con SUS ventas y sus montos. 🔴 SIEMPRE espera el sí explícito de la persona, en cualquier modo. A quiénes, cuántos, a quiénes no y el texto exacto los muestra el sistema solo: vos decí en una frase qué vas a mandar. Si la respuesta trae "error", contá ese motivo tal cual.',
                 'input_schema' => [
                     'type'       => 'object',
                     'properties' => [
@@ -1671,6 +1706,8 @@ class HerramientasDeCarga
                             'description' => 'false solo si la persona pidió que NO vaya a la cuenta corriente del proveedor. Por defecto va.',
                         ],
                         'reemplaza_a'        => self::esquema_de_reemplazo(),
+                        // A7 (misión asistente-diario-20261116), al final: ver ProveedorDeLaFacturaIaHelper::parecidos().
+                        'proveedor_nuevo'    => self::esquema_de_proveedor_nuevo(),
                     ],
                     'required'   => ['proveedor', 'total'],
                 ],
@@ -1690,6 +1727,8 @@ class HerramientasDeCarga
                             'description' => 'El N° de la compra a corregir (el de "Creé la Compra N° X"). Si es la que acabás de crear en esta conversación, podés no mandarlo.',
                         ],
                         'reemplaza_a' => self::esquema_de_reemplazo(),
+                        // A7 (misión asistente-diario-20261116), al final: ver ProveedorDeLaFacturaIaHelper::parecidos().
+                        'proveedor_nuevo' => self::esquema_de_proveedor_nuevo(),
                     ],
                     'required'   => ['proveedor'],
                 ],
@@ -1857,6 +1896,34 @@ class HerramientasDeCarga
             ], 'required' => []],
         ];
 
+        /*
+         * Misión asistente-diario-20261116 (rama B, 30/10 #2), al final por el prefijo del caché: el ajuste de
+         * stock POR LOTE. En Ferre Total la foto de un conteo terminó en error renglón por renglón y no se
+         * ajustó nada. Ver PropuestaAjusteDeStockPorLoteIaHelper.
+         */
+        $definiciones[] = [
+            'name' => 'proponer_ajuste_de_stock_por_lote',
+            'description' => 'Arma UNA tarjeta para dejar el stock de VARIOS artículos en la cantidad que contó la persona (un conteo, un inventario, la foto de una lista: "ajustá el stock de estos", "esto es lo que hay"). Mandá TODOS los renglones en UNA sola llamada (hasta 60; si son más, una llamada por tanda), cada uno con el artículo como lo escribió la persona (o su id si otra herramienta lo devolvió) y la cantidad FINAL contada: no es sumar ni restar, es dejarlo en ese número. Nunca armes una tarjeta por artículo ni uses una acción de pantalla para esto. Sin depósitos o con una sola sucursal va al total del artículo; con varios depósitos mandá deposito si la persona lo dijo (si no, uso el suyo o te digo que preguntes, una sola vez para todo el lote). Lo que no pude ubicar (no existe, o el nombre encaja con varios) NO frena al resto: viene en quedaron_afuera con el motivo y los candidatos; contale a la persona cuáles quedaron afuera, preguntá por esos y armá otra tarjeta con ellos. Siempre espera el sí de la persona. Al confirmar, el resultado trae hechos y no_hechos: contá cuántos se ajustaron y cuáles NO, con el motivo; nunca digas que quedó todo si quedó alguno sin hacer. Para sumar o restar a un solo artículo va proponer_stock_en_deposito. Si trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual: un error NO es un ajuste hecho.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'renglones' => [
+                    'type'     => 'array',
+                    'minItems' => 1,
+                    'maxItems' => 60,
+                    'items'    => [
+                        'type'       => 'object',
+                        'properties' => [
+                            'articulo'    => ['type' => 'string', 'description' => 'Nombre o código del artículo, como lo escribió la persona o como figura en la foto.'],
+                            'articulo_id' => ['type' => 'integer', 'description' => 'Id del artículo, solo si otra herramienta lo devolvió.'],
+                            'cantidad'    => ['type' => 'number', 'description' => 'La cantidad FINAL contada (en unidades del Listado). 0 si no hay ninguno.'],
+                        ],
+                        'required'   => ['cantidad'],
+                    ],
+                ],
+                'deposito'    => ['type' => 'string', 'description' => 'Depósito o sucursal del conteo, solo si la persona lo dijo y el negocio tiene varios. Vale para todo el lote.'],
+                'reemplaza_a' => ['type' => 'integer'],
+            ], 'required' => ['renglones']],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -1929,6 +1996,8 @@ class HerramientasDeCarga
                             'type'        => 'boolean',
                             'description' => 'Opcional: true solo si la persona pidió una compra NUEVA para esta factura (por ejemplo, cuando le preguntaste si la sumabas a la compra vacía de opciones.compra_vacia y te dijo que no, que es otra). Con true no te vuelvo a preguntar y no la sumo a ninguna compra existente. Nunca junto con compra_num: mandá uno solo. Si no lo dijo, no lo mandes.',
                         ],
+                        // A7 (misión asistente-diario-20261116), al final: ver ProveedorDeLaFacturaIaHelper::parecidos().
+                        'proveedor_nuevo' => self::esquema_de_proveedor_nuevo(),
                     ],
                     'required'   => ['proveedor'],
                 ],
@@ -2525,6 +2594,13 @@ class HerramientasDeCarga
             case 'armar_texto_de_promocion':
                 return self::resultado(PropuestaPromocionWhatsappIaHelper::texto_para_reenviar($contexto, $input));
 
+            /*
+             * Misión asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock por lote. 🔴 SIN la puerta
+             * de la auto-confirmación, a propósito: siempre espera el sí (ver NUNCA_AUTO_CONFIRMABLES).
+             */
+            case 'proponer_ajuste_de_stock_por_lote':
+                return self::resultado(PropuestaAjusteDeStockPorLoteIaHelper::proponer($contexto, $assistant_message, $input));
+
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
 
@@ -2900,6 +2976,22 @@ class HerramientasDeCarga
         return [
             'type'        => 'integer',
             'description' => 'tarjeta_id de una tarjeta anterior que esta corrige, si la corrección cambia la subcategoría, la cuenta o la tarea.',
+        ];
+    }
+
+    /**
+     * Esquema de `proveedor_nuevo` (misión asistente-diario-20261116, rama B, A7), común a las tres cargas
+     * que resuelven el proveedor por nombre: la compra con factura, la compra sin artículos y el cambio de
+     * proveedor. Solo vale en un turno POSTERIOR al que ofreció los parecidos (ver
+     * ProveedorDeLaFacturaIaHelper::nuevo_ya_confirmado()).
+     *
+     * @return array
+     */
+    protected static function esquema_de_proveedor_nuevo(): array
+    {
+        return [
+            'type'        => 'boolean',
+            'description' => 'Opcional: true SOLO si te contesté con proveedores parecidos (opciones.proveedores con parecido) y la persona te dijo que no es ninguno de esos, que es un proveedor nuevo. Nunca lo mandes de entrada: si hay parecidos sin preguntar, no doy de alta ninguno.',
         ];
     }
 

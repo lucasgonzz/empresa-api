@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\combo;
 use App\Http\Controllers\CommonLaravel\Helpers\GeneralHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
+use App\Http\Controllers\Helpers\MedidasEnvioHelper;
 use App\Models\Article;
 use App\Models\Combo;
 use Illuminate\Support\Facades\DB;
@@ -25,6 +26,8 @@ use Illuminate\Support\Facades\DB;
  * hacer. Entonces: `crear()` escribe exactamente lo que escribía el controller, y `validar()` —las
  * reglas que un combo dictado en palabras SÍ necesita— la llama el asistente antes de proponer y
  * antes de confirmar. La pantalla queda igual; el camino nuevo, protegido.
+ * Las medidas opcionales de envío sí se validan también en crear(): son campos nuevos y una
+ * entrada inválida tiene que rechazarse antes de escribir. Los campos históricos no cambian.
  */
 class ComboAltaHelper {
 
@@ -131,7 +134,8 @@ class ComboAltaHelper {
      *                       la pantalla: cada ítem con `id` y `pivot.amount`; puede ser `[]`),
      *                       `online` (opcional; ver el comentario sobre la columna, más abajo) y
      *                       `calcular_desde_articulos`, `descuento_tipo`, `descuento_valor`
-     *                       (opcionales; misión combos-calculados, ver más abajo).
+     *                       (opcionales; misión combos-calculados, ver más abajo), y las medidas
+     *                       opcionales `peso` (kg), `alto`, `ancho`, `profundidad` (cm).
      * @param  int  $user_id  Dueño de la cuenta (Controller::userId()).
      * @param  int|callable  $num  Correlativo del combo. Puede venir resuelto (int) o como callable
      *                             que se ejecuta ADENTRO de la transacción, por el mismo motivo que
@@ -141,6 +145,7 @@ class ComboAltaHelper {
      */
     static function crear(array $data, $user_id, $num) {
 
+        $medidas = MedidasEnvioHelper::datos($data);
         /*
          * Una clave que no vino vale null, igual que `$request->clave` en el controller de origen: un
          * "Undefined index" acá sería un 500 nuevo donde antes había un combo con ese campo en null.
@@ -151,7 +156,7 @@ class ComboAltaHelper {
 
         $articles = is_array($valor('articles')) ? $valor('articles') : [];
 
-        return DB::transaction(function () use ($valor, $user_id, $num, $articles) {
+        return DB::transaction(function () use ($valor, $user_id, $num, $articles, $medidas) {
 
             /*
              * `online` — el interruptor que publica el combo en el ecommerce (misión
@@ -225,7 +230,7 @@ class ComboAltaHelper {
                 }
             }
 
-            $model = Combo::create($datos);
+            $model = Combo::create(array_merge($datos, $medidas));
 
             GeneralHelper::attachModels($model, 'articles', $articles, ['amount']);
 

@@ -1139,7 +1139,8 @@ class Compra_con_factura_no_se_pega_a_otra_Test extends AsistenteWhatsappTestCas
 
         $claves = array_keys($definicion['input_schema']['properties']);
 
-        $this->assertSame(['proveedor', 'sucursal', 'reemplaza_a', 'cuit', 'compra_num', 'compra_nueva'], $claves);
+        // asistente-diario-20261116 (rama B, A7) suma proveedor_nuevo AL FINAL, por la misma regla del caché.
+        $this->assertSame(['proveedor', 'sucursal', 'reemplaza_a', 'cuit', 'compra_num', 'compra_nueva', 'proveedor_nuevo'], $claves);
         $this->assertSame('boolean', $definicion['input_schema']['properties']['compra_nueva']['type']);
         $this->assertStringContainsString('compra_nueva', $definicion['description']);
         $this->assertStringContainsString('de hoy', $definicion['description']);

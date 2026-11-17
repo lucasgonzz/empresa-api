@@ -3,6 +3,9 @@
 namespace Tests\Feature\Envios;
 
 use App\Models\DeliveryZone;
+use App\Models\Article;
+use App\Models\Combo;
+use App\Models\PromocionVinoteca;
 use App\Models\Envio;
 use App\Models\Order;
 use App\Models\Platform;
@@ -1845,4 +1848,31 @@ class GenerarEnvioZipnovaTest extends EmpresaTestCase
 
         Http::assertNothingSent();
     }
+    public function test_despachar_promos_y_combos_usa_paquete_completo_por_cantidad_sin_duplicar_componentes()
+    {
+        $this->conectar_zipnova();
+        $this->fakear_creacion_ok();
+        $pedido = $this->pedido_confirmado_con_envio();
+        $pedido->articles()->detach();
+        $articulo = Article::create(['name' => 'Componente que no viaja suelto', 'user_id' => $this->user_id(), 'peso' => 99]);
+        $promo = PromocionVinoteca::create(['name' => 'Mix de vinos', 'stock' => 4, 'user_id' => $this->user_id(),
+            'peso' => 7.125, 'alto' => 35.25, 'ancho' => 20.5, 'profundidad' => 25.75]);
+        $combo = Combo::create(['name' => 'Caja regalo', 'num' => 999142, 'user_id' => $this->user_id(),
+            'peso' => 2.5, 'alto' => null, 'ancho' => 0, 'profundidad' => 15]);
+        $promo->articles()->attach($articulo->id, ['amount' => 24, 'unidades_por_promo' => 6]);
+        $combo->articles()->attach($articulo->id, ['amount' => 8]);
+        $pedido->promocion_vinotecas()->attach($promo->id, ['amount' => 2, 'price' => 100, 'cost' => 50]);
+        $pedido->combos()->attach($combo->id, ['amount' => 3, 'price' => 100, 'cost' => 50]);
+        $envio = app(ZipnovaEnvioService::class)->crear_desde_pedido($pedido->fresh());
+        $this->assertCount(5, $envio->bultos);
+        Http::assertSent(function ($request) {
+            $items = $request->data()['items'];
+            return count($items) === 5
+                && $this->cantidad_por_descripcion($items, 'Mix de vinos') === 2
+                && $this->cantidad_por_descripcion($items, 'Caja regalo') === 3
+                && $this->item_por_descripcion($items, 'Mix de vinos') === ['weight' => 7125, 'height' => 36, 'width' => 21, 'length' => 26, 'description' => 'Mix de vinos']
+                && $this->item_por_descripcion($items, 'Caja regalo') === ['weight' => 2500, 'height' => 10, 'width' => 10, 'length' => 15, 'description' => 'Caja regalo'];
+        });
+    }
+
 }

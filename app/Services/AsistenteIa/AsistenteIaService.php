@@ -656,6 +656,25 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-diario-20261116 (rama C, 31/10 #5): «poné el stock de esos en 0» se resuelve contra
+         * los artículos nombrados en la ÚLTIMA respuesta; la nota viaja pegada al mensaje. Ver
+         * ReferenciaALoAnteriorIaHelper.
+         */
+        $nota_de_referencia = \App\Http\Controllers\Helpers\asistente_ia\ReferenciaALoAnteriorIaHelper::nota($conversation, $assistant_message);
+
+        if (! is_null($nota_de_referencia)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, $nota_de_referencia);
+        }
+
+        /*
+         * Rama C, B2: un mensaje que no se entiende (audio sin transcribir o en otra escritura) lleva la nota de
+         * pedir que lo repita; la guarda dura está en ConfirmacionPorTextoIaHelper::rechazo().
+         */
+        if (\App\Http\Controllers\Helpers\asistente_ia\EntradaIninteligibleIaHelper::es_ininteligible($this->pedido_de_la_persona($conversation, $assistant_message))) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\EntradaIninteligibleIaHelper::NOTA);
+        }
+
+        /*
          * Misión proveedores-ia-deepseek: el proveedor, el modelo y el bloque `thinking` salen de la
          * elección del DUEÑO (ProveedorIaHelper). El cliente HTTP y la URL son del proveedor
          * efectivo, que es también el que se registra en ai_token_usages: es con el que se llamó.
@@ -893,6 +912,9 @@ class AsistenteIaService
          */
         $cerrando = false;
 
+        /* Rama C (M2): true solo para la vuelta del reintento por portugués o inglés (sale sin herramientas). */
+        $reintento_de_idioma = false;
+
         /* Por qué cerró el turno ('techo', 'presupuesto' o 'ventana'), para el log y el detalle técnico. */
         $motivo_del_cierre = '';
 
@@ -1083,6 +1105,15 @@ class AsistenteIaService
              */
             if ($cerrando) {
                 $body['tool_choice'] = ['type' => 'none'];
+            }
+
+            /*
+             * Rama C (M2): la vuelta del reintento por idioma tampoco puede pedir herramientas: es reescribir
+             * en español lo que ya se contestó. Una sola vuelta: después se apaga.
+             */
+            if ($reintento_de_idioma) {
+                $body['tool_choice'] = ['type' => 'none'];
+                $reintento_de_idioma = false;
             }
 
             try {
@@ -1632,6 +1663,31 @@ class AsistenteIaService
 
                     continue;
                 }
+            }
+
+            /*
+             * Misión asistente-diario-20261116 (rama C, 30/10 #14): una respuesta en PORTUGUÉS o en INGLÉS
+             * («$228 milhões», Ferre Total 30/10) se reintenta UNA vez pidiendo la MISMA respuesta en español.
+             * A diferencia del chino, vale también después de herramientas (el caso real fue así): el pedido
+             * es reescribir, no rehacer. Si el reintento vuelve igual, queda ese texto (no se descarta).
+             *
+             * Revisión de la rama C (M2): va DESPUÉS de las guardas de veracidad (imagen, tarjeta, carga,
+             * envío, veracidad) y solo si ninguna disparó —si disparó una, su reintento es el único del turno—,
+             * y la vuelta del reintento sale con `tool_choice: none` ($reintento_de_idioma): solo puede
+             * escribir, así no duplica tarjetas ni cargas.
+             */
+            if (TextoFinalIaHelper::contiene_prosa_en_portugues_o_ingles($final_text)
+                && ! $cerrando && is_null($texto_antes_del_reintento) && $iterations < $max_iterations
+                && ($this->ahora() - $inicio_del_loop) <= self::PRESUPUESTO_SEGUNDOS) {
+                $texto_antes_del_reintento = $final_text;
+                $reintento_de_idioma       = true;
+                $messages[] = ['role' => 'assistant', 'content' => $final_text];
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => '[El sistema detectó una respuesta en portugués o en inglés. Reescribí esa misma respuesta en español rioplatense, con los mismos datos y números. No vuelvas a llamar herramientas por lo que ya hiciste.]',
+                ];
+                $final_text = '';
+                continue;
             }
 
             break;
@@ -2410,15 +2466,22 @@ Qué podés afirmar:
 - Sumas, totales, promedios y rankings salen de resumir_datos, y "cuánto vendí" de
   consultar_resumen_de_ventas (es el mismo número que el reporte de Rendimiento). Nunca sumes
   a mano las filas de una lista paginada: es una página, no el total.
+- 🔴 «Cómo van las ventas», «actualizá», «revisalo», «de nuevo», «fijate otra vez»: SIEMPRE volvé a
+  llamar a consultar_resumen_de_ventas; nunca repitas un número de una respuesta anterior de la charla.
 - Leé el pedido como lo diría un comerciante (misión asistente-altas-y-conversacion, 16/10/2026):
   "lo que más vendo de [proveedor]" es una pregunta de VENTAS: consultar_articulos_mas_vendidos
   con proveedor = el nombre como lo dijo la persona (y desde/hasta si dice un período). "Lo que le
   compro a [proveedor]" es consultar_compras_a_un_proveedor. Que una frase nombre a un proveedor
   no la vuelve una pregunta de compras.
-- "Los que me deben más de X hace más de N días" son los clientes con deuda TOTAL de X o más que
-  además tienen alguna deuda de más de N días: consultar_ventas_sin_cobrar con dias = N y
-  monto_minimo = X, y contestá con deuda_total_en_pesos y dias_de_la_venta_mas_vieja de cada uno.
-  Nunca compares X contra lo atrasado solo.
+- «Esos», «estos», «los dos» se refieren a lo que nombraste en tu última respuesta, no a una foto
+  ni a un pedido viejo: armá la carga con esos, sin preguntar cuáles.
+- "Los que me deben más de X": consultar_ventas_sin_cobrar con monto_minimo = X y contestá con
+  cuenta_corriente.clientes (saldo_en_pesos). Si cuenta_corriente viene null, seguí como_contestar
+  de la respuesta y contá el motivo.
+- "Los que me deben más de X hace más de N días" (deben X o más en total y tienen alguna venta
+  impaga de N días o más): consultar_ventas_sin_cobrar con dias = N y monto_minimo = X, y contestá
+  con las filas de cuenta_corriente.clientes que traen tiene_ventas_impagas_de_esos_dias = true
+  (saldo_en_pesos y dias_de_la_venta_impaga_mas_vieja). Nunca compares X contra lo atrasado solo.
 - Si una herramienta devuelve error con opciones porque el nombre no encajó y una opción es
   claramente lo que dijo la persona (otra letra, sin tilde, abreviado), volvé a llamar con ese
   nombre exacto y decile cuál usaste; si no es obvio, preguntá cuál.
@@ -2445,11 +2508,44 @@ Qué podés afirmar:
 {$regla_de_solo_lectura}- Los importes son en pesos argentinos, salvo los de una cuenta corriente o una carga en
   dólares, que se escriben con US$.
 
-{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}{$reglas_del_manual}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
+{$bloque_de_carga}{$bloque_de_quien_escribe}{$bloque_de_whatsapp}{$bloque_de_la_app}{$bloque_de_la_imagen}{$reglas_de_memoria}{$reglas_del_manual}{$this->bloque_de_la_direccion_del_sistema($owner)}Hoy es {$fecha}. Es {$dia_de_hoy}. Usalo para interpretar "este mes", "la semana
 pasada" y similares.
 Los próximos 7 días son: {$proximos_dias}.
 Los 7 días anteriores fueron: {$dias_anteriores}.
 SYSTEM;
+    }
+
+    /**
+     * La dirección del sistema del negocio, para que el asistente la pueda dar (misión
+     * asistente-diario-20261116, rama C, M6-url).
+     *
+     * 🔴 EL CASO REAL (Ferre Total, 14/11/2026, mensajes 488-493): el dueño le pidió la dirección del
+     * sistema y el asistente contestó «no la tengo». La sabe el sistema: es la `spa_url` que el admin anuncia
+     * en cada mensaje de WhatsApp (o la `SPA_URL` del `.env`), la misma base de los links de los avisos
+     * (AvisosDelAsistenteHelper::base_del_link()). 🔴 Nunca `app.url`: es la de la API y daría 404.
+     *
+     * Sin una dirección conocida, la regla dice que no la invente. Va al final del bloque fijo, antes de la
+     * fecha: cambia por dueño (como el nombre del negocio), no por turno.
+     *
+     * @param  mixed  $owner
+     * @return string
+     */
+    protected function bloque_de_la_direccion_del_sistema($owner): string
+    {
+        $url = null;
+
+        try {
+            $url = is_null($owner) ? null : \App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper::base_del_link((int) $owner->id);
+        } catch (\Throwable $e) {
+            $url = null;
+        }
+
+        if (is_null($url) || trim((string) $url) === '') {
+            return "Si te piden la dirección (el link) del sistema, no la inventes: decí que es la misma con la que entran desde la computadora y que la pueden copiar de la barra del navegador.\n\n";
+        }
+
+        return 'La dirección del sistema de este negocio es ' . $url . ' . Si te la piden (para entrar desde otra '
+            . "computadora o el celular, o para pasársela a un empleado), dala tal cual.\n\n";
     }
 
     /**
@@ -2903,9 +2999,11 @@ AUTO_RESUELTO;
   presupuesto o un pago = proponer_envio_de_comprobante con su número. NO le pases el link a la
   persona para que lo mande ella: el envío lo hacés vos, con su sí.
 - "Mandales un recordatorio a los que me deben más de X hace más de N días" =
-  proponer_recordatorios_de_cobro con monto_minimo = X y dias = N: el MISMO filtro de
-  consultar_ventas_sin_cobrar (deuda TOTAL de X o más y alguna venta impaga de N días o más), así
-  le llega a los mismos clientes que le listaste.
+  proponer_recordatorios_de_cobro con monto_minimo = X y dias = N. Le llega solo a los clientes
+  cuyas VENTAS sin cobrar cumplen el filtro (X contra lo que deben en ventas): puede no coincidir
+  con los que listaste con cuenta_corriente, y no le llega a quien debe solo un saldo que no es
+  venta ni a quien no alcanza X con sus ventas. No prometas a quiénes: los destinatarios reales los muestra
+  la tarjeta antes del sí, y eso es lo que le contás.
 - "Armá un combo y mandales una promo" = primero proponer_combo (si el negocio tiene Combos) y,
   ya creado, proponer_promocion_por_whatsapp con el nombre del combo. El texto de la promo lo
   redactás VOS (qué se ofrece y a qué precio, con el precio de cada artículo como lo devolvió
@@ -4282,7 +4380,8 @@ CONFIRMACION;
             }
 
             return VentaConDatosInventadosIaHelper::afirma_otra_fecha($saneado)
-                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message);
+                || VentaConDatosInventadosIaHelper::afirma_otro_cobro($saneado, $assistant_message)
+                || VentaConDatosInventadosIaHelper::afirma_otro_total($saneado, $assistant_message);
         }
 
         return false;
@@ -6330,7 +6429,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_resumen_de_ventas',
-                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total.',
+                'description' => 'Cuánto vendió el negocio en un rango de fechas: cantidad de ventas, total, ticket promedio, unidades, lo que fue a cuenta corriente y las devoluciones, y opcionalmente agrupado por dia, semana, mes, sucursal, vendedor, metodo_de_pago, cliente, articulo, rubro, proveedor o facturada. 🔴 Es EL MISMO NÚMERO que el reporte de Rendimiento del sistema: para "cuánto vendí" va esta, no consultar_datos ni resumir_datos. Por defecto en pesos; ventas_en_otra_moneda dice cuántas quedaron afuera por estar en dólares (podés volver a llamar con moneda dolares). Tope 400 días. Qué significa cada agrupación cuando no es obvia: "vendedor" es el USUARIO QUE CARGÓ la venta, no el vendedor comisionista (si carga siempre la misma persona vas a ver un solo grupo, y eso no significa que venda una sola persona); "sucursal" es opcional en cada venta, así que todo lo que se cargó sin sucursal cae en "Sin sucursal" y en un negocio de una sola sucursal eso puede ser el 100%; "facturada" es si la venta tiene comprobante de ARCA con CAE (no si se cobró), y una venta incluida en una consolidación AFIP cuenta como facturada aunque el comprobante lo tenga la venta que la agrupa; "metodo_de_pago" reparte la plata de las ventas de mostrador y mete TODO lo vendido a cuenta corriente en un grupo único llamado "Cuenta corriente", que NO se desglosa por cómo se cobró después — en el momento de la venta no hay método de pago, hay una deuda. Cuando la respuesta trae "nota", decí lo que dice antes de que te lo pregunten. 🔴 Margen o ganancia por artículo ("cuál me dejó más margen hoy", "hay ventas con margen negativo", "los que menos vendí") = agrupar_por articulo (o rubro o proveedor) con orden ganancia (o total, o cantidad) y direccion desc o asc: cada grupo trae su total con los descuentos de la venta repartidos, costo, ganancia y article_id, y "sobre cuánto vendido" es total_del_periodo, que cuadra con el total del día. Un grupo con sin_costo true tiene renglones vendidos SIN costo cargado: su ganancia es solo la de la parte con costo (null si no tiene ninguno); no lo presentes como el de más margen: decí que a esos artículos les falta el costo. Un ranking pedido "en unidades y en pesos" son DOS rankings: uno con orden cantidad y otro con orden total. 🔴 Las ventas cambian minuto a minuto: cada "cómo van", "actualizá", "revisalo" o "de nuevo" es una llamada NUEVA, nunca el número de una respuesta anterior; decí la hora de consultado_a_las. "caja" (ventas por caja) reparte lo que las ventas hicieron entrar a cada caja, con un grupo aparte para lo vendido a cuenta corriente, que no entra a ninguna: no es el saldo de la caja (eso es flujo_caja de consultar_reporte_contable).',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6362,6 +6461,11 @@ CONFIRMACION;
                             'description' => 'desc (default: de mayor a menor) o asc (de menor a mayor: "los que menos", "margen negativo").',
                             'enum'        => ['desc', 'asc'],
                         ],
+                        // Misión asistente-diario-20261116 (A9), al final por el prefijo del caché.
+                        'hasta_hora' => [
+                            'type'        => 'string',
+                            'description' => 'HH:MM (24 h). Solo las ventas cargadas hasta esa hora de cada día. Para "cómo vamos hoy contra ayer": una llamada de hoy y otra de ayer, las dos con hasta_hora = la hora de consultado_a_las de la de hoy.',
+                        ],
                     ],
                     'required' => ['desde', 'hasta'],
                 ],
@@ -6374,7 +6478,8 @@ CONFIRMACION;
                         isset($input['moneda']) ? (string) $input['moneda'] : 'pesos',
                         isset($input['metodo_de_pago']) ? (string) $input['metodo_de_pago'] : null,
                         isset($input['orden']) ? (string) $input['orden'] : null,
-                        isset($input['direccion']) ? (string) $input['direccion'] : null
+                        isset($input['direccion']) ? (string) $input['direccion'] : null,
+                        isset($input['hasta_hora']) ? (string) $input['hasta_hora'] : null
                     );
                 },
             ],
@@ -6428,20 +6533,27 @@ CONFIRMACION;
              * 🔴 DE ACÁ PARA ABAJO, LO DE LA MISIÓN asistente-ventas-y-fotos (21/9/2026), Y VA AL
              * FINAL POR EL MISMO MOTIVO DE SIEMPRE: el orden de este array es el prefijo que cachea
              * con_cache_control().
+             *
+             * 🔴 Misión asistente-deudores-saldos-iniciales (16/11/2026, ticket 131): la descripción
+             * dejaba de prometer que el ranking de VENTAS era "quién me debe más". Un saldo inicial
+             * importado no es una venta y el asistente le contestó a un dueño que tenía un solo
+             * deudor teniendo nueve. Ahora "cuánto me deben / quién me debe" se lee en
+             * `cuenta_corriente` (VentasSinCobrarIaHelper::bloque_de_cuenta_corriente()) y los
+             * números de ventas quedan para ventas sin cobrar, antigüedad y la venta más vieja.
              */
             [
                 'name' => 'consultar_ventas_sin_cobrar',
-                'description' => 'Cuánta plata tiene el negocio SIN COBRAR, en total: cuántas ventas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes que más deben. Es la herramienta de "cuánto me deben", "cuánta plata tengo en la calle" y "quién me debe más". Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLA ESTE NÚMERO, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. Cada cliente trae deuda_total_en_pesos (TODO lo que debe), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda total. 🔴 "Los que me deben más de X hace más de N días" = deuda TOTAL de X o más Y alguna deuda de más de N días: mandá dias = N y monto_minimo = X, y contestá con deuda_total_en_pesos de cada cliente. NUNCA compares X contra lo atrasado solo.',
+                'description' => 'Cuánto le deben al negocio y qué ventas quedaron sin cobrar, en una sola llamada. 🔴 "Cuánto me deben", "quién me debe", "quién me debe más" y "cuánta plata tengo en la calle" se contestan con cuenta_corriente: el saldo de cuenta corriente de TODOS los clientes en pesos, que incluye los saldos iniciales importados o cargados a mano (que no son ventas): total_que_te_deben_en_pesos y clientes, de mayor a menor saldo_en_pesos. Los saldos a favor y las otras monedas vienen aparte (clientes_con_saldo_a_favor, en_otras_monedas): nunca los restes ni los sumes a los pesos. Si cuenta_corriente viene null, contá el motivo (cuenta_corriente_no_incluida o cuenta_corriente_error) y no presentes las ventas como toda la deuda. El resto de la respuesta son las VENTAS sin cobrar, para "ventas sin cobrar", lo atrasado y la venta más vieja: cuántas quedaron impagas, el total pendiente en pesos, la venta más vieja (con el cliente y hace cuántos días) y el ranking de clientes por esas ventas. Para lo que debe UN cliente puntual va consultar_ventas_impagas_de_un_cliente. 🔴 DE QUÉ HABLAN LOS NÚMEROS DE VENTAS, Y NO ES OBVIO: son las ventas que generaron cuenta corriente y todavía tienen deuda — el MISMO conjunto que la pantalla "Ventas sin cobrar" del sistema, con el MISMO alcance: si la persona que te escribe en esa pantalla ve solo sus propias ventas, acá también recibe solo las suyas, y la respuesta lo dice en alcance. Una venta de mostrador en efectivo no está acá porque no generó deuda, no porque exista un dato que diga que se cobró: NUNCA contestes cuántas ventas están cobradas ni qué porcentaje se cobró, porque eso no se puede saber con esto. total_pendiente_en_pesos suma solo lo que está en pesos y ventas_en_otra_moneda dice cuántas quedaron afuera. clientes_con_deuda es cuántos hay en total y clientes_en_esta_lista cuántos viajan: si difieren, el ranking está recortado y el total no. En el ranking de ventas cada cliente trae deuda_total_en_pesos (todo lo que debe EN VENTAS sin cobrar, sin saldos iniciales), deuda_atrasada_en_pesos (lo de dias o más) y dias_de_la_venta_mas_vieja, y la lista va de mayor a menor deuda en ventas. 🔴 "Los que me deben más de X": mandá monto_minimo = X y contestá con cuenta_corriente.clientes (la lista de ventas puede venir vacía y eso no quiere decir que nadie deba). "Los que me deben más de X hace más de N días" (deben X o más en total y tienen alguna venta impaga de N días o más): mandá dias = N y monto_minimo = X, y contestá con las filas de cuenta_corriente.clientes que traen tiene_ventas_impagas_de_esos_dias = true, con saldo_en_pesos y dias_de_la_venta_impaga_mas_vieja. NUNCA compares X contra lo atrasado solo. La respuesta trae como_contestar para el caso que pediste: seguilo.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
                         'dias' => [
                             'type' => 'integer',
-                            'description' => 'Antigüedad mínima de la venta, en días. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy: eso es "cuánto me deben". Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Con dias cuentan esos días tal cual, aunque la venta tenga su propio umbral de alerta cargado. Con dias, un cliente entra si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en deuda_total_en_pesos.',
+                            'description' => 'Antigüedad mínima de la venta, en días. No saca a nadie de cuenta_corriente (el saldo no tiene antigüedad): ahí marca con tiene_ventas_impagas_de_esos_dias a quien tiene una venta impaga de esa antigüedad. Si no lo mandás son TODAS las ventas sin cobrar, incluida la de hoy. Mandalo solo cuando la pregunta es por lo atrasado o vencido ("lo que me deben hace más de 30 días"). Con dias cuentan esos días tal cual, aunque la venta tenga su propio umbral de alerta cargado. Con dias, un cliente entra al ranking de ventas si tiene ALGUNA venta impaga de esa antigüedad, y igual trae todo lo que debe en ventas en deuda_total_en_pesos.',
                         ],
                         'monto_minimo' => [
                             'type' => 'number',
-                            'description' => 'Deuda TOTAL mínima del cliente, en pesos, para "los que me deben más de X". Se compara contra todo lo que debe el cliente (deuda_total_en_pesos), no contra lo atrasado. Va junto con dias cuando la pregunta dice además "hace más de N días".',
+                            'description' => 'Deuda mínima del cliente, en pesos, para "los que me deben más de X". En cuenta_corriente se compara contra su saldo_en_pesos (todo lo que debe); en el ranking de ventas, contra deuda_total_en_pesos (lo que debe en ventas sin cobrar), nunca contra lo atrasado. Va junto con dias cuando la pregunta dice además "hace más de N días".',
                         ],
                     ],
                     'required' => [],
@@ -6769,6 +6881,39 @@ CONFIRMACION;
                         (int) $owner_id,
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                        $input
+                    );
+                },
+            ],
+            /*
+             * Misión asistente-diario-20261116 (rama A, 30/10 #11), AL FINAL del registro por el prefijo del
+             * caché. Ferre Total: «de lo que compré este mes, ¿cuánto quedó en stock?», «¿qué compré mal?», y
+             * el agente dijo que el sistema no guarda qué se compró. El cruce lo hace el SERVIDOR:
+             * RendimientoDeComprasIaHelper. De lectura, en los tres canales.
+             */
+            [
+                'name' => 'consultar_rendimiento_de_compras',
+                'description' => 'CÓMO RINDIÓ LO QUE SE COMPRÓ: por cada artículo comprado en el período (por defecto, el mes en curso), cuánto se compró, cuánto se vendió desde la compra, el stock de hoy y lo que no rotó (sin_rotar, y su valor a costo si quien pregunta puede ver costos), ordenado por la plata que quedó parada. Con totales de todo el período. Es LA herramienta de "de lo que compré este mes, ¿cuánto quedó en stock?", "¿qué compré mal?", "¿qué compra no se vendió?": nunca digas que el sistema no guarda qué se compró. Opcional: proveedor (por nombre) y deposito (sucursal). Contestá con los números que trae, sin recalcular; si trae "nota", decí lo que dice. Si trae "error" o "faltan", contá eso.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día de las compras, AAAA-MM-DD. Sin desde ni hasta: el mes en curso.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día de las compras, AAAA-MM-DD. Sin hasta: hoy.'],
+                        'proveedor' => ['type' => 'string', 'description' => 'Opcional: solo las compras a ese proveedor, por su nombre.'],
+                        'deposito' => ['type' => 'string', 'description' => 'Opcional: la sucursal o depósito por su nombre (sus compras, sus ventas y su stock).'],
+                        'orden' => [
+                            'type'        => 'string',
+                            'enum'        => \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::ORDENES,
+                            'description' => 'valor_sin_rotar (default: la plata parada primero), sin_rotar, comprado o vendido.',
+                        ],
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántos artículos listar (default 20, hasta 100). Los totales son siempre de todos.'],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
                         $input
                     );
                 },

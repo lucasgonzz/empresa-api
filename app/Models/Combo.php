@@ -6,10 +6,13 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoEsquemaHelper;
 use App\Http\Controllers\Helpers\combo\ComboStockHelper;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use App\Models\Concerns\TieneMedidasDeEnvio;
+use Illuminate\Support\Facades\Schema;
 
 class Combo extends Model
 {
     use SoftDeletes;
+    use TieneMedidasDeEnvio;
 
     protected $guarded = [];
 
@@ -20,7 +23,8 @@ class Combo extends Model
      *
      * @var array
      */
-    protected $appends = ['stock_disponible'];
+    protected $appends = ['stock_disponible', 'peso', 'alto', 'ancho', 'profundidad'];
+    protected $hidden = ['medidas_envio'];
 
     /**
      * 🔴 `price_types` va detrás de la guarda de esquema: la tabla `combo_price_type` la crea una
@@ -32,6 +36,9 @@ class Combo extends Model
     function scopeWithAll($query) {
 
         $relaciones = ['articles', 'images'];
+        if (Schema::hasTable('medidas_envio_paquetes')) {
+            $relaciones[] = 'medidas_envio';
+        }
 
         if (ComboCalculadoEsquemaHelper::disponible()) {
             $relaciones[] = 'price_types';

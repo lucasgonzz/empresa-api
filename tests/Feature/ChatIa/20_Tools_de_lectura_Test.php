@@ -137,6 +137,9 @@ class Tools_de_lectura_Test extends TestCase
             // contesta sin escribir un archivo (el camino entero lo cubren T130 y T131).
             'valorizar_stock'                          => ['agrupar_por' => 'rubro'],
             'exportar_articulos_excel'                 => ['filtros' => [['campo' => 'proveedor', 'operador' => 'igual', 'valor' => 'Proveedor inexistente tools B']]],
+            // Misión asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, sobre el
+            // comercio de prueba (el cálculo lo cubre T154).
+            'consultar_rendimiento_de_compras'         => ['limite' => 5],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

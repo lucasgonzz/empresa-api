@@ -106,7 +106,14 @@ class CambioDeProveedorDeCompraIaHelper
         $nombre_anterior = is_null($anterior) ? 'sin proveedor' : (string) $anterior->name;
 
         /* El proveedor nuevo, con el reconocimiento de siempre (ProveedorDeLaFacturaIaHelper). */
-        $proveedor = ProveedorDeLaFacturaIaHelper::resolver($contexto, EntradaDeCargaIa::texto($input, 'proveedor'), '', $mensaje);
+        $proveedor = ProveedorDeLaFacturaIaHelper::resolver(
+            $contexto,
+            EntradaDeCargaIa::texto($input, 'proveedor'),
+            '',
+            $mensaje,
+            /* A7 (misión asistente-diario-20261116): el «es otro» de la persona después de ver los parecidos. */
+            ProveedorDeLaFacturaIaHelper::pidio_proveedor_nuevo($input)
+        );
 
         if (RespuestaDeCargaIa::es_negativa($proveedor)) {
 

@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Http\Controllers\Helpers\AjustesDeClienteEsquemaHelper;
 use App\Http\Controllers\Helpers\Order\ComboEsquemaHelper;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Schema;
 
 class Order extends Model
 {
@@ -34,6 +35,10 @@ class Order extends Model
         'envio_opcion'     => 'array',
         'envio_destino'    => 'array',
         'envio_direccion'  => 'array',
+        'reserva_stock_web' => 'boolean',
+        'reserva_stock_web_consumida' => 'boolean',
+        'reserva_stock_web_liberada' => 'boolean',
+        'reserva_stock_web_egreso' => 'array',
     ];
 
     /**
@@ -54,6 +59,12 @@ class Order extends Model
         // `ProcessArchivoDeIntercambioPedidos` lee `->num` y `->price_type_id` de ese cliente. Un
         // cliente borrado (SoftDeletes) llega como null, igual que en `CreateSaleOrderHelper`.
         $relaciones = ['order_status', 'articles.images', 'articles.colors', 'articles.sizes', 'cupon', 'buyer', 'buyer.comercio_city_client', 'payment_method.payment_method_type', 'delivery_zone', 'payment_card_info', 'promocion_vinotecas.images', 'envio'];
+        if (Schema::hasTable('medidas_envio_paquetes')) {
+            $relaciones[] = 'promocion_vinotecas.medidas_envio';
+            if (ComboEsquemaHelper::hay_tabla()) {
+                $relaciones[] = 'combos.medidas_envio';
+            }
+        }
 
         $query->with(array_merge(
             $relaciones,

@@ -92,6 +92,8 @@ class Acciones_service_y_job_Test extends TestCase
         // asistente-mejoras-4-dias (P5, 16/11/2026), al final de las de lectura.
         'valorizar_stock',
         'exportar_articulos_excel',
+        // asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, al final.
+        'consultar_rendimiento_de_compras',
     ];
 
     /**
@@ -793,7 +795,8 @@ class Acciones_service_y_job_Test extends TestCase
         // Fichas verificadas agrega UNA propuesta al final; se conserva cada prefijo y su despacho.
         // asistente-truvari-pedidos-fallidos (C2, 13/11/2026) agrega proponer_avisos_por_whatsapp al final.
         // asistente-mejoras-4-dias (P6, 16/11/2026) agrega quitar_foto_articulo al final.
-        $this->assertCount(48, HerramientasDeCarga::definiciones());
+        // asistente-diario-20261116 (rama B, 30/10 #2) agrega proponer_ajuste_de_stock_por_lote al final.
+        $this->assertCount(49, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -885,6 +888,8 @@ class Acciones_service_y_job_Test extends TestCase
                 'proponer_avisos_por_whatsapp',
                 // asistente-mejoras-4-dias (P6, 16/11/2026), al final de todo.
                 'quitar_foto_articulo',
+                // asistente-diario-20261116 (rama B, 30/10 #2), al final de todo.
+                'proponer_ajuste_de_stock_por_lote',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
         );

@@ -309,6 +309,11 @@ class SaleController extends Controller
 
     public function store(Request $request) {
 
+        $error_fecha = SaleHelper::error_fecha_de_venta($request);
+        if ($error_fecha !== null) {
+            return response()->json($error_fecha, 422);
+        }
+
         /*
          * Moneda y cotización (misión corregir-ventas-en-dolares, 30/9/2026).
          *
@@ -869,6 +874,10 @@ class SaleController extends Controller
     }
 
     function update(Request $request, $id) {
+        $error_fecha = SaleHelper::error_fecha_de_venta($request);
+        if ($error_fecha !== null) {
+            return response()->json($error_fecha, 422);
+        }
         return \App\Http\Controllers\Helpers\Afip\CandadoDeFacturaHelper::ventas([$id], function () use ($request, $id) {
 
         $sale_a_actualizar = Sale::find($id);
@@ -1052,6 +1061,10 @@ class SaleController extends Controller
              * igual descontaría de nuevo. Una lectura con candado siempre devuelve lo último
              * commiteado. Es la primera lectura de esta transacción a propósito.
              */
+            if ($sale_a_actualizar->order_id) {
+                \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::bloquear_configuracion($sale_a_actualizar->user_id);
+            }
+
             $model = Sale::where('id', $id)
                             ->lockForUpdate()
                             ->first();
@@ -2656,7 +2669,7 @@ class SaleController extends Controller
 
         } catch (\Throwable $e) {
             $mensaje = $e instanceof \Illuminate\Validation\ValidationException
-                ? ($e->errors()['message'][0] ?? $e->getMessage())
+                ? ($e->errors()['facturacion'][0] ?? $e->errors()['message'][0] ?? $e->getMessage())
                 : $e->getMessage();
             Log::error('consolidarFacturacion error: ' . $mensaje);
             return response()->json(['error' => true, 'message' => $mensaje], 422);
