@@ -115,4 +115,32 @@ class PaginacionSqlSinVariantesTest extends TestCase
         $this->extension('article_variants', true);
         $this->assertNull(VenderSearchHelper::pagina_sql_si_no_expande(Article::where('user_id', $this->dueno->id), 5, 1));
     }
+
+    public function test_la_ruta_nativa_sin_orden_definido_pagina_por_id_sin_repetir_con_filtros()
+    {
+        $this->catalogo(90);
+        $payload = ['query_value' => 'tornillo', 'stock_option' => 'con_stock'];
+        DB::enableQueryLog();
+        $uno = $this->postJson('api/vender/buscar-articulo-por-nombre/0?page=1', $payload)
+            ->assertStatus(200)->assertJsonPath('total', 60)->json('data');
+        $consultas = collect(DB::getQueryLog())->pluck('query');
+        DB::disableQueryLog();
+        $dos = $this->postJson('api/vender/buscar-articulo-por-nombre/0?page=2', $payload)
+            ->assertStatus(200)->assertJsonPath('total', 60)->json('data');
+        $ids_uno = array_column($uno, 'id');
+        $ids_dos = array_column($dos, 'id');
+        $this->assertCount(50, $ids_uno);
+        $this->assertCount(10, $ids_dos);
+        $this->assertEmpty(array_intersect($ids_uno, $ids_dos));
+        $todos = array_merge($ids_uno, $ids_dos);
+        $ordenados = $todos;
+        sort($ordenados, SORT_NUMERIC);
+        $this->assertSame($ordenados, $todos);
+        // Sin ORDER explícito, un plan diferente para LIMIT puede cambiar páginas aunque el
+        // fixture de hoy devuelva casualmente IDs ascendentes. Exigir también la garantía SQL.
+        $this->assertTrue($consultas->contains(function ($query) {
+            return stripos($query, 'order by `articles`.`id` asc') !== false
+                && stripos($query, 'limit 50') !== false;
+        }));
+    }
 }

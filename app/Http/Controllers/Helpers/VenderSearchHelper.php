@@ -32,7 +32,15 @@ class VenderSearchHelper
             return null;
         }
 
-        return (clone $query)->paginate($per_page, ['*'], 'page', $page);
+        $pagina = clone $query;
+        // La ruta nativa no declaraba orden: LIMIT puede cambiar el plan de MySQL y repetir
+        // artículos entre páginas. Normalizar solo ese caso; el orden elegido en globalSearch
+        // y el builder original se conservan, y la rama de variantes ni siquiera llega acá.
+        if (empty($pagina->getQuery()->orders)) {
+            $pagina->orderBy($pagina->getModel()->getQualifiedKeyName(), 'ASC');
+        }
+
+        return $pagina->paginate($per_page, ['*'], 'page', $page);
     }
 
     /**
