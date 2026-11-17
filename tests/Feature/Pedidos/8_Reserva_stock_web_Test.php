@@ -214,7 +214,9 @@ class Reserva_stock_web_Test extends EmpresaTestCase
 
     private function payload_venta_reservada($venta, $articulo, $cantidad, $confirmar)
     {
-        return array_merge($venta->fresh()->toArray(), ['items' => [[
+        $venta = $venta->fresh();
+        // Vender convierte la fecha al día elegido antes de enviar la edición; reproducimos ese contrato.
+        return array_merge($venta->toArray(), ['created_at' => $venta->created_at->format('Y-m-d'), 'items' => [[
             'is_article' => true, 'id' => $articulo->id, 'amount' => $cantidad, 'price_vender' => 100,
             'checked_amount' => $confirmar ? $cantidad : null,
         ]], 'to_check' => $confirmar ? 0 : 1, 'checked' => 0, 'confirmed' => $confirmar ? 1 : 0,
