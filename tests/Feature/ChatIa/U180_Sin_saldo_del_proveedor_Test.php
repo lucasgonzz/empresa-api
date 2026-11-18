@@ -172,7 +172,7 @@ class Sin_saldo_del_proveedor_Test extends TestCase
                 'stop_reason' => 'max_tokens',
                 'content'     => [['type' => 'text', 'text' => "Primer renglon completo.
 Segundo renglon completo.
-Tercero que se corto a la mit"]],
+Tercero que se corto en una pal"]],
                 'usage'       => ['input_tokens' => 100, 'output_tokens' => 1500],
             ], 200),
         ]);
@@ -181,7 +181,7 @@ Tercero que se corto a la mit"]],
 
         $this->assertEquals('listo', $assistant->estado, (string) $assistant->error_mensaje);
         $this->assertStringContainsString('Segundo renglon completo.', $assistant->contenido);
-        $this->assertStringNotContainsString('a la mit', $assistant->contenido);
+        $this->assertStringNotContainsString('en una pal', $assistant->contenido);
         $this->assertStringContainsString('«seguí»', $assistant->contenido);
     }
 
