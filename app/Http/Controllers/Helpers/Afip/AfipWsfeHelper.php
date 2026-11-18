@@ -110,20 +110,8 @@ class AfipWsfeHelper extends Controller
             
             Log::info('consultar_comprobante:');
 
-            $from_sale = true;
-
-            if (
-                // Nota credito A
-                $this->afip_ticket->cbte_tipo == 3
-                // Nota credito B
-                || $this->afip_ticket->cbte_tipo == 8
-                // Nota credito C
-                || $this->afip_ticket->cbte_tipo == 13
-                // Nota credito E
-                || $this->afip_ticket->cbte_tipo == 21
-            ) {
-                $from_sale = false;
-            }
+            // Las NC de factura de crédito (203/208/213) tampoco tienen sale_id.
+            $from_sale = !in_array((int) $this->afip_ticket->cbte_tipo, TotalFacturadoDeVentaHelper::NOTAS, true);
 
             if (!$result['hubo_un_error']) {
 
@@ -410,13 +398,14 @@ class AfipWsfeHelper extends Controller
     private function guardar_respuesta_de_consulta(array $campos, bool $desde_venta, $importe): void
     {
         $venta_id = $this->afip_ticket->sale_id ?: $this->afip_ticket->sale_nota_credito_id;
-        CandadoDeFacturaHelper::ventas($venta_id ? [$venta_id] : [], function () use ($campos, $desde_venta, $importe, $venta_id) {
-            DB::transaction(function () use ($campos, $desde_venta, $importe, $venta_id) {
+        $analisis = null;
+        CandadoDeFacturaHelper::ventas($venta_id ? [$venta_id] : [], function () use ($campos, $desde_venta, $importe, $venta_id, &$analisis) {
+            DB::transaction(function () use ($campos, $desde_venta, $importe, $venta_id, &$analisis) {
                 $venta = $venta_id ? Sale::where('id', $venta_id)->lockForUpdate()->first() : null;
                 $actual = AfipTicket::withTrashed()->where('id', $this->afip_ticket->id)->lockForUpdate()->first();
                 if (!$actual || (int) $actual->sale_id !== (int) $this->afip_ticket->sale_id
                     || (int) $actual->sale_nota_credito_id !== (int) $this->afip_ticket->sale_nota_credito_id) {
-                    throw new \RuntimeException('El vínculo del comprobante cambió durante la consulta. Volvé a revisarlo.');
+                    FacturaDeVentaHelper::rechazar('El vínculo del comprobante cambió durante la consulta. Volvé a abrir la venta y revisá sus comprobantes antes de consultar.');
                 }
                 $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($actual);
                 // Una respuesta nueva no puede borrar ni reemplazar la autorización ya asentada.
@@ -425,15 +414,20 @@ class AfipWsfeHelper extends Controller
                     FacturaDeVentaHelper::rechazar('El comprobante consultado no coincide con el CAE ya registrado. No se cambió su autorización ni el saldo de la venta.');
                 }
                 $actual->update($campos);
-                if ($desde_venta && $venta) {
+                if ($venta) {
                     $actual->setRelation('sale', $venta);
-                    if (!$ya_tenia_cae && IntentosDeFacturaFallidosHelper::tiene_cae($actual)) {
-                        AfipWsHelper::update_sale_total_facturado($actual, $importe);
+                    if (IntentosDeFacturaFallidosHelper::tiene_cae($actual)) {
+                        IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($actual);
+                        $analisis = AfipWsHelper::update_sale_total_facturado($actual, $importe, !$ya_tenia_cae);
                     }
                 }
                 $this->afip_ticket = $actual;
             });
         });
+        // Después de confirmar el CAE: el mensaje de revisión nunca revierte evidencia fiscal.
+        if ($analisis !== null && !$this->consulto_despues_de_error_en_emision) {
+            TotalFacturadoDeVentaHelper::exigir_verificable($analisis);
+        }
     }
 
     /**
@@ -670,11 +664,13 @@ class AfipWsfeHelper extends Controller
 
             $this->checkErrors($afip_result, $result);
 
+            $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($this->afip_ticket->fresh());
             $this->update_afip_ticket($afip_result, $importes, $moneda_id, $result);
             
             if ($this->afip_ticket->resultado == 'A') {
 
-                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $importes['total']);
+                IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
+                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $importes['total'], !$ya_tenia_cae);
 
                 /**
                  * La venta ya quedo facturada: los intentos anteriores que se puede PROBAR que nunca

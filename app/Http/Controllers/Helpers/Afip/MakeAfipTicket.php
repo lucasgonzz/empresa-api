@@ -152,7 +152,9 @@ class MakeAfipTicket {
         $ticket = $ticket->fresh();
         $this->recalcular_ganancia_facturada($sale);
         if (IntentosDeFacturaFallidosHelper::tiene_cae($ticket)) {
-            return ['estado' => 'emitida', 'message' => 'Factura emitida y autorizada por ARCA.', 'afip_ticket_id' => $ticket->id];
+            $aviso = TotalFacturadoDeVentaHelper::aviso($sale->fresh());
+            return ['estado' => 'emitida', 'message' => 'Factura emitida y autorizada por ARCA.'.($aviso ? ' '.$aviso : ''),
+                'afip_ticket_id' => $ticket->id, 'saldo_facturado_en_revision' => $aviso !== null];
         }
         if ($ticket->resultado === 'R') {
             if (!$ticket->afip_errors()->exists()) {

@@ -49,16 +49,16 @@ class AfipWsHelper {
 
         Log::info('getTipoLetra: '.$cbte_tipo);
 
-        if ($cbte_tipo == 1 || $cbte_tipo == 3 || $cbte_tipo == 201) {
+        if ($cbte_tipo == 1 || $cbte_tipo == 3 || $cbte_tipo == 201 || $cbte_tipo == 203) {
             return 'A';
         }
-        if ($cbte_tipo == 6 || $cbte_tipo == 8 || $cbte_tipo == 206) {
+        if ($cbte_tipo == 6 || $cbte_tipo == 8 || $cbte_tipo == 206 || $cbte_tipo == 208) {
             return 'B';
         }
-        if ($cbte_tipo == 11 || $cbte_tipo == 13 || $cbte_tipo == 211) {
+        if ($cbte_tipo == 11 || $cbte_tipo == 13 || $cbte_tipo == 211 || $cbte_tipo == 213) {
             return 'C';
         }
-        if ($cbte_tipo == 51) {
+        if ($cbte_tipo == 51 || $cbte_tipo == 53) {
             return 'M';
         }
         if (self::es_de_exportacion($cbte_tipo)) {
@@ -67,18 +67,11 @@ class AfipWsHelper {
     }
 
 
-    static function update_sale_total_facturado($afip_ticket, $importe) {
-
-        $total_facturado = $importe;
-
-        if ($afip_ticket->sale->total_facturado) {
-
-            // Log::info('Sumando total_facturado de sale de '.$afip_ticket->sale->total_facturado);
-            $total_facturado += (float)$afip_ticket->sale->total_facturado;
-        }
-        
-        $afip_ticket->sale->total_facturado = $total_facturado;
-        $afip_ticket->sale->save();
+    static function update_sale_total_facturado($afip_ticket, $importe, bool $nueva_autorizacion = true) {
+        // $importe se conserva por compatibilidad: la fuente es el importe fiscal persistido,
+        // no el argumento ni una relación Sale que puede haber quedado precargada.
+        $venta_id = $afip_ticket->sale_id ?: $afip_ticket->sale_nota_credito_id;
+        return TotalFacturadoDeVentaHelper::actualizar($venta_id, $afip_ticket->id, $nueva_autorizacion);
     }
 
 }

@@ -792,6 +792,7 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
             'Punto_vta'    => (int) $consultada->punto_venta,
             'Cbte_nro'     => $numero,
             'Imp_total'    => (float) $venta->total,
+            'Moneda_Id'    => 'PES',
             'Cae'          => $cae,
             'Fch_venc_Cae' => '20261231',
             'Resultado'    => 'A',
@@ -1368,6 +1369,48 @@ class Reintento_Exitoso_Saca_La_Venta_De_Alertas_Test extends EmpresaTestCase
 
         $this->assertNotSoftDeleted('afip_tickets', ['id' => $b->id]);
         $this->assertNotEmpty(AfipTicket::find($b->id)->cae, 'B tiene CAE y tiene que estar vivo: si no, queda fuera del Libro IVA.');
+    }
+
+    /** @test @dataProvider modos_de_respuesta_145 */
+    public function emitir_y_consultar_el_mismo_cae_por_endpoint_no_duplica_el_total($respuesta_incierta)
+    {
+        $this->proximo_precio = 11500;
+        $venta = $this->crear_venta();
+        $cae = $this->cae();
+        $ticket = $this->emitir($this->nuevo_intento($venta, self::FACTURA_B), [
+            'ultimo' => $this->numero_base($venta) - 1, 'cae' => $cae,
+            'fecae' => $respuesta_incierta ? DobleDeWsfeParaReintentos::ERROR_DE_RED : DobleDeWsfeParaReintentos::AUTORIZADA,
+            'consulta' => DobleDeWsfeParaReintentos::AUTORIZADA, 'consulta_imp_total' => 11500,
+        ]);
+        $this->assertNotEmpty($ticket->cae);
+        $this->assertEqualsWithDelta(11500, $venta->fresh()->total_facturado, 0.01);
+        $transporte = new class($cae) extends \App\Http\Controllers\Helpers\Afip\TransporteDeFacturaHelper {
+            private $cae;
+            public function __construct($cae) { $this->cae = $cae; }
+            public function consultar($ticket): void {
+                $helper = (new ReflectionClass(AfipWsfeHelper::class))->newInstanceWithoutConstructor();
+                $helper->afip_ticket = $ticket;
+                $helper->wsfe = new DobleDeWsfeParaReintentos(['cae' => $this->cae,
+                    'consulta' => DobleDeWsfeParaReintentos::AUTORIZADA, 'consulta_imp_total' => 11500]);
+                $helper->consultar_comprobante();
+            }
+        };
+        $this->app->instance(\App\Http\Controllers\Helpers\Afip\TransporteDeFacturaHelper::class, $transporte);
+        $this->getJson('api/afip-ticket/consultar-comprobante/'.$ticket->id)->assertStatus(200);
+        $this->getJson('api/afip-ticket/consultar-comprobante/'.$ticket->id)->assertStatus(200);
+        $this->assertEqualsWithDelta(11500, $venta->fresh()->total_facturado, 0.01);
+        $this->assertSame(1, AfipTicket::where('sale_id', $venta->id)->count());
+        $venta->update(['total_facturado' => 23000]);
+        $error = $this->getJson('api/afip-ticket/consultar-comprobante/'.$ticket->id)->assertStatus(422);
+        $this->assertStringContainsString('No vuelvas a emitir', $error->json('message'));
+        $this->assertStringContainsString('soporte', $error->json('message'));
+        $this->assertEqualsWithDelta(23000, $venta->fresh()->total_facturado, 0.01);
+        $this->assertSame($cae, $ticket->fresh()->cae);
+    }
+
+    public function modos_de_respuesta_145(): array
+    {
+        return ['emisión confirmada' => [false], 'recuperación de respuesta incierta' => [true]];
     }
 
     // =========================================================================================

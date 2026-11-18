@@ -80,13 +80,16 @@ class NotaCreditoController extends Controller
         }
 
         $facturada = !is_null($nota_credito->afip_ticket) && !empty($nota_credito->afip_ticket->cae);
+        $aviso = $facturada && $nota_credito->sale
+            ? \App\Http\Controllers\Helpers\Afip\TotalFacturadoDeVentaHelper::aviso($nota_credito->sale) : null;
 
         return response()->json([
             'model'     => $nota_credito,
             'facturada' => $facturada,
             'message'   => $facturada
-                            ? 'Nota de crédito facturada ante ARCA.'
+                            ? 'Nota de crédito facturada ante ARCA.'.($aviso ? ' '.$aviso : '')
                             : 'ARCA no autorizó la nota de crédito. Revisá los errores del comprobante.',
+            'saldo_facturado_en_revision' => $aviso !== null,
         ], 200);
     }
 
