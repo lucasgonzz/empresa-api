@@ -807,6 +807,13 @@ class ConfirmacionDeterministaIaHelper
      */
     protected static function es_aclaracion_sobre_la_tarjeta(AiConversation $conversation, AiMessageAction $accion, $ultimo_del_asistente, $pedido_id)
     {
+        /* Revisión independiente (18/11/2026): la tolerancia queda acotada a la foto de artículo. Una tarjeta
+         * de plata (gasto, pago, venta) no se confirma con un «sí» que pudo ser a otra pregunta de texto. */
+        if ($accion->tipo !== AiMessageAction::TIPO_FOTO_ARTICULO) {
+
+            return false;
+        }
+
         try {
 
             $en_el_medio = AiMessage::where('ai_conversation_id', $conversation->id)
