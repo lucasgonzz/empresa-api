@@ -2744,7 +2744,18 @@ APP;
             . '  mensaje: cuando están listas le llegan a la persona en otro mensaje por este chat, con el' . "\n"
             . '  link. Decí en una línea «' . ImagenPorWhatsappIaHelper::FRASE_PARA_EL_DUENO . '», sin prometer tiempos.' . "\n"
             . '  🔴 No la mandes a otra app ni digas que no se puede, y nunca digas que la pediste si no' . "\n"
-            . '  llamaste a pedir_imagen en este mensaje.' . "\n";
+            . '  llamaste a pedir_imagen en este mensaje.' . "\n"
+            /*
+             * Misión asistente-diario-20261118 (A1, Truvari conv 42): «¿vos no la podés reemplazar?» → «Sí,
+             * puedo» y, dos mensajes después, «me apuré». La regla estaba solo en la descripción de la
+             * herramienta y el modelo no la tuvo en cuenta cuando la persona preguntó por reemplazar la foto.
+             */
+            . '  🔴 Una imagen GENERADA por IA NO se publica en un artículo desde este chat ni reemplaza su foto:' . "\n"
+            . '  avisalo en el MISMO mensaje en que la pedís («te la mando por acá; para ponerla en la ficha tenés' . "\n"
+            . '  que cargarla desde el sistema o la app, o mandame vos la foto que querés usar y se la pongo»).' . "\n"
+            . '  Si después te pregunta si la podés poner o reemplazar en el artículo, la respuesta es NO para la' . "\n"
+            . '  generada y SÍ para una foto que ella te mande (proponer_foto_articulo). Nunca digas «sí, puedo»' . "\n"
+            . '  ni armes la confirmación de publicar una imagen generada: te vas a tener que desdecir.' . "\n";
     }
 
     /**
@@ -3125,6 +3136,7 @@ AUTO_RESUELTO;
   te llegó y que la esperás para seguir. En ese turno no busques una foto en internet ni armes el
   alta con una imagen buscada: la foto que va es la que te está mandando.
 {$this->reglas_de_varias_fotos_y_compras()}
+{$this->reglas_de_cambiar_la_foto_de_un_articulo()}
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
   la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
@@ -3193,6 +3205,46 @@ AUTO_RESUELTO;
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Las reglas de la misión asistente-diario-20261118 (A1 y A2) para CAMBIAR la foto de un artículo: la
+     * confirmación que no se repregunta, la foto que la persona dice que es la correcta y la foto nueva que
+     * llega después de otra. Van pegadas a las de las fotos de varios artículos, dentro del bloque de carga.
+     *
+     * 🔴 LOS CASOS REALES (17/11/2026).
+     *   - Truvari, conv 42 (Fernando): para reemplazar la foto de un vino el asistente le pidió la confirmación
+     *     cuatro veces. A la tarjeta («¿Lo hago?») le contestó «Sí, hacelo, pero respetá el tamaño»: el
+     *     asistente tomó la aclaración como un pedido nuevo y volvió a preguntar; después rechazó la foto
+     *     porque «la etiqueta era de otro vino» cuando el nombre coincidía, y Fernando tuvo que decirle que
+     *     era la correcta. Escribió: «me preguntaste cuatro veces… es una pérdida de tiempo».
+     *   - Ferre Total, conv 59 (Pablo): le puso una foto a cuatro artículos; llegó una segunda foto («esta es
+     *     la imagen que tenés que ponerle») y el asistente contestó «es la misma imagen que ya quedó
+     *     cargada» sin compararlas. No era la misma.
+     *
+     * @return string
+     */
+    protected function reglas_de_cambiar_la_foto_de_un_articulo(): string
+    {
+        return <<<REGLAS
+- 🔴 Cambiar la foto de un artículo, sin repreguntar. Si ya hay una tarjeta esperando el sí y la persona
+  contesta que sí y agrega una aclaración que NO cambia lo que dice la tarjeta («sí, pero respetá el
+  tamaño», «sí, es la correcta», «dale, la proporción tal cual»), es un sí: llamá a confirmar_carga_pendiente
+  con esa tarjeta en ese mismo turno (el sistema ya respeta la proporción de la foto, no se toca) y contá
+  el resultado. No armes otra confirmación ni vuelvas a preguntar «¿confirmás?». Solo si la aclaración
+  CAMBIA algo (otro artículo, otra foto, «mejor agregala sin sacar la otra») armás la tarjeta nueva, y una
+  sola vez.
+- 🔴 Si la persona te dice que la foto que mandó es la correcta («es esa», «está bien la imagen»), no la
+  rechaces ni la discutas por lo que se lee en la etiqueta: leer una etiqueta se equivoca. Puede ser una
+  duda tuya en UNA línea antes de armar la tarjeta, pero cuando ella insiste, la usás.
+- 🔴 Una foto NUEVA que llega después de proponer o de registrar una foto para los mismos artículos es,
+  casi siempre, la corrección («esta es la que va», «no, pusiste esta»): llamá de nuevo a
+  proponer_foto_articulo con esos mismos artículos y esta foto. Si la anterior ya quedó registrada y la
+  persona la presenta como la correcta, mandá reemplazar_fotos: true (la tarjeta lo muestra y espera su sí);
+  si no aclara, decile en una línea que ya había registrado otra y preguntale si la reemplazás o la sumás.
+  🔴 NUNCA digas «es la misma imagen», «coincide con la que ya está» ni «no cambió nada» si la
+  herramienta no te lo dijo: comparar fotos es cosa de la herramienta, no de lo que ves.
+REGLAS;
     }
 
     /**

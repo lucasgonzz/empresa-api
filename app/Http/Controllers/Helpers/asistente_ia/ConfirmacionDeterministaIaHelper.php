@@ -745,7 +745,13 @@ class ConfirmacionDeterministaIaHelper
                                             ->orderBy('id', 'DESC')
                                             ->value('id');
 
-        if (is_null($ultimo_del_asistente) || (int) $ultimo_del_asistente !== (int) $accion->ai_message_id) {
+        if (is_null($ultimo_del_asistente)) {
+
+            return null;
+        }
+
+        if ((int) $ultimo_del_asistente !== (int) $accion->ai_message_id
+            && !self::es_aclaracion_sobre_la_tarjeta($conversation, $accion, (int) $ultimo_del_asistente, (int) $pedido->id)) {
 
             return null;
         }
@@ -769,6 +775,76 @@ class ConfirmacionDeterministaIaHelper
         $propuso = AiMessage::find($accion->ai_message_id);
 
         return (!is_null($propuso) && $propuso->estado === 'listo') ? $accion : null;
+    }
+
+    /**
+     * Cuántos mensajes del asistente como máximo pueden haber pasado entre la tarjeta y el «sí» para que una
+     * aclaración de la persona no le quite el sí a la tarjeta (ver es_aclaracion_sobre_la_tarjeta()).
+     */
+    const MAXIMO_DE_ACLARACIONES = 2;
+
+    /**
+     * true si, entre el mensaje que propuso la tarjeta y este «sí», lo único que pasó fueron ACLARACIONES: la
+     * persona escribió algo, el asistente contestó sin armar ninguna tarjeta ni acción nueva y volvió a
+     * preguntar, y ahora el «sí» contesta esa pregunta, que sigue siendo la de la tarjeta.
+     *
+     * 🔴 EL CASO REAL (misión asistente-diario-20261118, A1; Truvari conv 42, 17/11/2026). La tarjeta de
+     * reemplazar una foto estaba esperando el sí. Fernando contestó «sí, hacelo, pero respetá el tamaño», el
+     * asistente le volvió a preguntar «¿confirmás?» en texto (sin tarjeta nueva) y el «Si» siguiente ya no
+     * confirmaba nada: la regla de «la tarjeta es del ÚLTIMO mensaje del asistente» la dejaba afuera y
+     * decidía el modelo, que se negó, volvió a preguntar y falló. Tres «sí» y nada hecho.
+     *
+     * Es deliberadamente estrecha: a lo sumo MAXIMO_DE_ACLARACIONES mensajes del asistente en el medio, NINGUNO
+     * con una acción propia (si propuso otra cosa, el sí podría ser de la otra), el último termina preguntando
+     * (es la pregunta a la que el «sí» contesta), y la tarjeta sigue siendo la única pendiente y reciente
+     * (lo exige el que llama).
+     *
+     * @param  \App\Models\AiConversation  $conversation
+     * @param  \App\Models\AiMessageAction  $accion  La única tarjeta pendiente.
+     * @param  int  $ultimo_del_asistente  Id del último mensaje del asistente antes del «sí».
+     * @param  int  $pedido_id  Id del «sí».
+     * @return bool
+     */
+    protected static function es_aclaracion_sobre_la_tarjeta(AiConversation $conversation, AiMessageAction $accion, $ultimo_del_asistente, $pedido_id)
+    {
+        try {
+
+            $en_el_medio = AiMessage::where('ai_conversation_id', $conversation->id)
+                                    ->where('rol', 'assistant')
+                                    ->where('id', '>', (int) $accion->ai_message_id)
+                                    ->where('id', '<', (int) $pedido_id)
+                                    ->orderBy('id')
+                                    ->get();
+
+            if (!count($en_el_medio) || count($en_el_medio) > self::MAXIMO_DE_ACLARACIONES) {
+
+                return false;
+            }
+
+            foreach ($en_el_medio as $mensaje) {
+
+                if ($mensaje->estado !== 'listo'
+                    || AiMessageAction::where('ai_message_id', $mensaje->id)->exists()) {
+
+                    return false;
+                }
+            }
+
+            $ultimo = $en_el_medio->last();
+
+            if ((int) $ultimo->id !== (int) $ultimo_del_asistente) {
+
+                return false;
+            }
+
+            $texto = (string) $ultimo->contenido;
+
+            return mb_strpos($texto, '?') !== false || mb_strpos($texto, '¿') !== false;
+
+        } catch (\Throwable $e) {
+
+            return false;
+        }
     }
 
     // -------------------------------------------------------------------------------------------
