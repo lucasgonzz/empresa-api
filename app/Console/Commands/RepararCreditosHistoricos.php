@@ -118,7 +118,7 @@ class RepararCreditosHistoricos extends Command
             return;
         }
         if ($actual !== $respaldo['despues']) {
-            throw new RuntimeException('Hay cambios posteriores en la cuenta, sus movimientos, imputaciones o dueño. Revisalos antes de revertir; no se modificó nada.');
+            throw new RuntimeException('Hay cambios posteriores en la cuenta, sus movimientos, imputaciones, dueño, puntos o comisiones. Revisalos antes de revertir; no se modificó nada.');
         }
         if (!$aplicar) {
             $this->info('Simulación de reversión verificada: restauraría únicamente estados e imputaciones originales. No se escribieron datos ni archivos.');
@@ -152,8 +152,31 @@ class RepararCreditosHistoricos extends Command
         return ['cuenta' => (array) DB::table('credit_accounts')->where('id', $cuenta->id)->lockForUpdate()->first(),
             // La huella detecta cambios del dueño sin copiar datos de contacto al archivo de operación.
             'duenio_sha256' => $this->hash((array) $duenio), 'movimientos' => $movimientos,
+            'dependencias_sha256' => $this->huella_dependencias($cuenta, $movimientos),
             'imputaciones' => $this->pivots(array_column($movimientos, 'id'))->orderBy('id')->lockForUpdate()->get()
                 ->map(function ($fila) { return (array) $fila; })->all()];
+    }
+
+    private function huella_dependencias($cuenta, array $movimientos): string
+    {
+        $ids = array_column($movimientos, 'id');
+        $ventas = array_values(array_filter(array_column($movimientos, 'sale_id')));
+        $comisiones = DB::table('seller_commissions')->whereIn('sale_id', $ventas)->orderBy('id')->lockForUpdate()->get();
+        $vinculos = DB::table('current_acount_seller_commission')->where(function ($q) use ($ids, $comisiones) {
+            $q->whereIn('current_acount_id', $ids)->orWhereIn('seller_commission_id', $comisiones->pluck('id'));
+        })->orderBy('id')->lockForUpdate()->get();
+        $puntos = DB::table('movimiento_puntos')->where(function ($q) use ($cuenta, $ventas) {
+            $q->whereIn('sale_id', $ventas);
+            if ($cuenta->model_name === 'client') {
+                $q->orWhere('client_id', $cuenta->model_id);
+            }
+        })->orderBy('id')->lockForUpdate()->get();
+        $consumos = DB::table('movimiento_punto_consumos')->where(function ($q) use ($puntos) {
+            $q->whereIn('movimiento_origen_id', $puntos->pluck('id'))->orWhereIn('movimiento_consumo_id', $puntos->pluck('id'));
+        })->orderBy('id')->lockForUpdate()->get();
+        // Son guardas de actividad posterior: no se revierten puntos, comisiones ni sus consumos.
+        return $this->hash(['comisiones' => $comisiones->toArray(), 'vinculos_comision' => $vinculos->toArray(),
+            'puntos' => $puntos->toArray(), 'consumos' => $consumos->toArray()]);
     }
 
     private function pivots(array $ids)
@@ -233,18 +256,64 @@ class RepararCreditosHistoricos extends Command
         }
         foreach (['antes', 'despues'] as $estado) {
             if (($datos[$estado]['cuenta']['id'] ?? null) !== $cuenta_id
-                || !is_array($datos[$estado]['movimientos'] ?? null) || !is_array($datos[$estado]['imputaciones'] ?? null)) {
+                || !is_array($datos[$estado]['movimientos'] ?? null) || !is_array($datos[$estado]['imputaciones'] ?? null)
+                || !is_string($datos[$estado]['dependencias_sha256'] ?? null)
+                || !preg_match('/^[a-f0-9]{64}$/D', $datos[$estado]['dependencias_sha256'])) {
                 throw new RuntimeException('El respaldo no contiene una foto completa de esta cuenta. No se escribió nada.');
             }
+            $ids = [];
             foreach ($datos[$estado]['movimientos'] as $fila) {
                 if (!is_array($fila) || (int) ($fila['credit_account_id'] ?? 0) !== $cuenta_id || !isset($fila['id'])
+                    || !ctype_digit((string) $fila['id']) || (int) $fila['id'] < 1 || isset($ids[(int) $fila['id']])
                     || !array_key_exists('status', $fila) || !array_key_exists('pagandose', $fila)) {
                     throw new RuntimeException('El respaldo contiene movimientos ajenos o incompletos. Revisá su origen.');
                 }
+                $ids[(int) $fila['id']] = true;
             }
+            $this->validar_imputaciones($datos[$estado]['imputaciones'], $ids);
         }
         $this->verificar_alcance($datos['antes'], $datos['despues']);
         return $datos;
+    }
+
+    private function validar_imputaciones(array $imputaciones, array $movimientos): void
+    {
+        $campos = ['id', 'debe_id', 'haber_id', 'pagado', 'total_pago', 'a_cubrir', 'fondos_iniciales',
+            'nuevos_fondos', 'remantente', 'created_at', 'updated_at'];
+        sort($campos);
+        $ids = [];
+        foreach ($imputaciones as $fila) {
+            $claves = is_array($fila) ? array_keys($fila) : [];
+            sort($claves);
+            if ($claves !== $campos) {
+                throw new RuntimeException('El respaldo contiene imputaciones incompletas o campos ajenos. Recuperá el archivo original.');
+            }
+            foreach (['id', 'debe_id', 'haber_id'] as $campo) {
+                if (!ctype_digit((string) $fila[$campo]) || (int) $fila[$campo] < 1) {
+                    throw new RuntimeException('El respaldo contiene IDs de imputación inválidos. Recuperá el archivo original.');
+                }
+            }
+            if (isset($ids[(int) $fila['id']]) || !isset($movimientos[(int) $fila['debe_id']])
+                || !isset($movimientos[(int) $fila['haber_id']])) {
+                throw new RuntimeException('El respaldo contiene imputaciones repetidas o vinculadas con otra cuenta. No se puede revertir con ese archivo.');
+            }
+            $ids[(int) $fila['id']] = true;
+            foreach (['pagado', 'total_pago', 'a_cubrir', 'fondos_iniciales', 'nuevos_fondos', 'remantente'] as $campo) {
+                $nullable = !in_array($campo, ['pagado', 'total_pago'], true);
+                if (($fila[$campo] === null && $nullable) || (is_numeric($fila[$campo]) && is_finite((float) $fila[$campo]))) {
+                    continue;
+                }
+                // No se rechaza el signo histórico: la reversión debe conservar el dato original,
+                // incluso una imputación defectuosa que precisamente se estaba reparando.
+                throw new RuntimeException('El respaldo contiene importes de imputación inválidos. Recuperá el archivo original.');
+            }
+            foreach (['created_at', 'updated_at'] as $campo) {
+                if ($fila[$campo] !== null && (!is_string($fila[$campo])
+                    || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $fila[$campo]))) {
+                    throw new RuntimeException('El respaldo contiene fechas de imputación inválidas. Recuperá el archivo original.');
+                }
+            }
+        }
     }
 
     private function guardar_respaldo(string $ruta, array $datos): void

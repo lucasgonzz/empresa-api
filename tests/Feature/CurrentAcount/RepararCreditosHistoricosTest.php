@@ -5,6 +5,8 @@ namespace Tests\Feature\CurrentAcount;
 use App\Models\Client;
 use App\Models\CreditAccount;
 use App\Models\CurrentAcount;
+use App\Models\Sale;
+use App\Models\Seller;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Tests\EmpresaTestCase;
@@ -162,6 +164,46 @@ class RepararCreditosHistoricosTest extends EmpresaTestCase
     }
 
     /** @test */
+    public function actividad_posterior_de_puntos_impide_revertir_sin_tocar_el_libro()
+    {
+        list($cuenta, $cliente) = $this->escenario();
+        $ruta = $this->carpeta.DIRECTORY_SEPARATOR.'original.json';
+        $this->assertSame(0, $this->correr($cuenta, ['--aplicar' => true, '--respaldo' => $ruta])[0]);
+        $punto_id = DB::table('movimiento_puntos')->insertGetId(['client_id' => $cliente->id,
+            'user_id' => $cliente->user_id, 'tipo' => 'ajuste', 'puntos' => 10, 'detalle' => 'Actividad posterior']);
+        $antes = $this->foto($cuenta);
+        list($codigo, $salida) = $this->correr($cuenta, ['--revertir' => true, '--aplicar' => true, '--respaldo' => $ruta]);
+        $this->assertSame(1, $codigo);
+        $this->assertStringContainsString('cambios posteriores', $salida);
+        $this->assertEquals($antes, $this->foto($cuenta));
+        $this->assertEquals(10, DB::table('movimiento_puntos')->where('id', $punto_id)->value('puntos'));
+    }
+
+    /** @test */
+    public function una_imputacion_de_comision_posterior_impide_revertir_sin_borrarla()
+    {
+        list($cuenta, $cliente, $debito, $pago) = $this->escenario();
+        $venta = Sale::create(['client_id' => $cliente->id, 'user_id' => $cliente->user_id,
+            'moneda_id' => 1, 'total' => 1000, 'terminada' => 1]);
+        DB::table('current_acounts')->where('id', $debito->id)->update(['sale_id' => $venta->id]);
+        $vendedor = Seller::create(['name' => 'Vendedor reparación', 'user_id' => $cliente->user_id,
+            'num' => (int) Seller::where('user_id', $cliente->user_id)->max('num') + 1]);
+        $comision_id = DB::table('seller_commissions')->insertGetId(['sale_id' => $venta->id,
+            'seller_id' => $vendedor->id, 'user_id' => $cliente->user_id, 'debe' => 100, 'status' => 'inactive']);
+        $ruta = $this->carpeta.DIRECTORY_SEPARATOR.'original.json';
+        $this->assertSame(0, $this->correr($cuenta, ['--aplicar' => true, '--respaldo' => $ruta])[0]);
+        $this->assertSame('inactive', DB::table('seller_commissions')->where('id', $comision_id)->value('status'));
+        $vinculo_id = DB::table('current_acount_seller_commission')->insertGetId([
+            'current_acount_id' => $pago->id, 'seller_commission_id' => $comision_id]);
+        $antes = $this->foto($cuenta);
+        list($codigo, $salida) = $this->correr($cuenta, ['--revertir' => true, '--aplicar' => true, '--respaldo' => $ruta]);
+        $this->assertSame(1, $codigo);
+        $this->assertStringContainsString('cambios posteriores', $salida);
+        $this->assertEquals($antes, $this->foto($cuenta));
+        $this->assertTrue(DB::table('current_acount_seller_commission')->where('id', $vinculo_id)->exists());
+    }
+
+    /** @test */
     public function un_respaldo_alterado_o_de_otra_cuenta_no_habilita_escrituras()
     {
         list($cuenta) = $this->escenario();
@@ -179,6 +221,27 @@ class RepararCreditosHistoricosTest extends EmpresaTestCase
         $this->assertSame(1, $codigo);
         $this->assertStringContainsString('alterado', $salida);
         $this->assertEquals($antes, $this->foto($cuenta));
+    }
+
+    /** @test */
+    public function ni_un_sha_recalculado_habilita_insertar_imputaciones_ajenas_desde_el_respaldo()
+    {
+        list($cuenta) = $this->escenario();
+        $ruta = $this->carpeta.DIRECTORY_SEPARATOR.'original.json';
+        $this->assertSame(0, $this->correr($cuenta, ['--aplicar' => true, '--respaldo' => $ruta])[0]);
+        list($otra, $otro_cliente, $otro_debito) = $this->escenario();
+        $datos = json_decode(file_get_contents($ruta), true);
+        $datos['antes']['imputaciones'][0]['debe_id'] = $otro_debito->id;
+        unset($datos['sha256']);
+        $datos['sha256'] = hash('sha256', json_encode($datos, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        file_put_contents($ruta, json_encode($datos, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+        $antes = $this->foto($cuenta);
+        $otra_antes = $this->foto($otra);
+        list($codigo, $salida) = $this->correr($cuenta, ['--revertir' => true, '--aplicar' => true, '--respaldo' => $ruta]);
+        $this->assertSame(1, $codigo);
+        $this->assertStringContainsString('otra cuenta', $salida);
+        $this->assertEquals($antes, $this->foto($cuenta));
+        $this->assertEquals($otra_antes, $this->foto($otra));
     }
 
     /** @test */
