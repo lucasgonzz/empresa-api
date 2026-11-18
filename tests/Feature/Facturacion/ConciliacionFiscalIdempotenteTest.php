@@ -79,8 +79,16 @@ class ConciliacionFiscalIdempotenteTest extends EmpresaTestCase
     public function repetir_la_consulta_de_una_nota_de_credito_no_suma_el_importe_a_la_venta()
     {
         list($venta, $ticket) = $this->escenario(1);
-        $ticket->update(['sale_id' => null, 'sale_nota_credito_id' => $venta->id, 'cbte_tipo' => 3]);
-        $venta->update(['total_facturado' => 121]);
+        // La consulta recupera una NC real: debe tener su factura padre, cuyo neto era 242.
+        // El fixture anterior era huérfano y sólo comprobaba que no sumara; no podía probar el saldo.
+        $padre = $ticket->replicate();
+        $padre->cbte_numero = (string) ((int) $ticket->cbte_numero + 1);
+        $padre->importe_total = 242;
+        $padre->resultado = 'A';
+        $padre->cae = '71450000000001';
+        $padre->save();
+        $ticket->update(['sale_id' => null, 'sale_nota_credito_id' => $venta->id, 'sale_afip_ticket_id' => $padre->id, 'cbte_tipo' => 3]);
+        $venta->update(['total_facturado' => 242, 'total' => 242]);
         $helper = $this->wsfe($ticket->fresh());
         $helper->consultar_comprobante();
         $helper->consultar_comprobante();
@@ -139,8 +147,9 @@ class ConciliacionFiscalIdempotenteTest extends EmpresaTestCase
         }
         $ticket = AfipTicket::create([
             'sale_id' => $venta->id, 'afip_tipo_comprobante_id' => $tipo->id,
-            'cbte_tipo' => $codigo, 'cbte_numero' => '910000'.$venta->id, 'punto_venta' => 4,
+            'cbte_tipo' => $codigo, 'cbte_numero' => (string) (910000 + $venta->id), 'punto_venta' => 4,
             'cuit_negocio' => '20000000000', 'importe_iva' => null, 'imp_total_enviado' => 121,
+            'moneda_id' => 'PES',
             'afip_id' => '121'.$venta->id,
         ]);
         return [$venta, $ticket];

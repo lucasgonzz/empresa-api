@@ -45,7 +45,12 @@ class AfipNotaCreditoHelper
     }
 
     function init() {
-
+        $venta = $this->sale->fresh();
+        $analisis = TotalFacturadoDeVentaHelper::analizar($venta);
+        TotalFacturadoDeVentaHelper::exigir_verificable($analisis);
+        if (abs((float) $analisis['total'] - (float) $venta->total_facturado) > 0.01) {
+            FacturaDeVentaHelper::rechazar('El total facturado de la venta no coincide con sus comprobantes autorizados. Pedí a soporte revisar y reparar el acumulado antes de emitir la nota de crédito.');
+        }
         $this->create_afip_ticket();
 
         $this->notaCredito();
@@ -268,7 +273,9 @@ class AfipNotaCreditoHelper
                     'afip_fecha_emision' => $fecha_emision->format('Y-m-d'),
                 ];
 
+                $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($this->created_afip_ticket->fresh());
                 $this->update_afip_ticket($data);
+                $this->update_sale_total_facturado($data, !$ya_tenia_cae);
 
                 $autorizada = true;
             }
@@ -452,9 +459,10 @@ class AfipNotaCreditoHelper
                 'afip_fecha_emision'=> $fecha_emision->format('Y-m-d'),
             ];
 
+            $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($this->created_afip_ticket->fresh());
             $this->update_afip_ticket($data);
 
-            $this->update_sale_total_facturado($data);
+            $this->update_sale_total_facturado($data, !$ya_tenia_cae);
         }
 
         /*
@@ -665,10 +673,8 @@ class AfipNotaCreditoHelper
                     ->exists();
     }
 
-    function update_sale_total_facturado($data) {
-        Log::info('Restando total_facturado de '.$data['importe_total']);
-        $this->sale->total_facturado -= (float)$data['importe_total'];
-        $this->sale->save();
+    function update_sale_total_facturado($data, bool $nueva_autorizacion = true) {
+        return AfipWsHelper::update_sale_total_facturado($this->created_afip_ticket, $data['importe_total'], $nueva_autorizacion);
     }
 
     function update_afip_ticket($data) {

@@ -170,6 +170,7 @@ class Nota_De_Credito_Observaciones_Utf8_Y_Cae_Primero_Test extends EmpresaTestC
             'punto_venta'         => 3,
             'resultado'           => 'A',
             'importe_total'       => 1000,
+            'moneda_id'           => 'PES',
             'cuit_negocio'        => '20000000000',
             'cae'                 => '86427821922568',
         ]);

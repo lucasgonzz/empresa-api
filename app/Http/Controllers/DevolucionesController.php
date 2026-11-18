@@ -262,7 +262,19 @@ class DevolucionesController extends Controller
             
             DB::commit();
 
+            if ($request->facturar_nota_credito && AfipNotaCreditoHelper::nota_credito_con_cae($nota_credito->id)) {
+                $venta_fiscal = Sale::find($request->sale_id);
+                $aviso = $venta_fiscal ? \App\Http\Controllers\Helpers\Afip\TotalFacturadoDeVentaHelper::aviso($venta_fiscal) : null;
+                if ($aviso) {
+                    return response()->json(['message' => 'Nota de crédito autorizada por ARCA. '.$aviso, 'saldo_facturado_en_revision' => true], 201);
+                }
+            }
             return response(null, 201);
+
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            DB::rollBack();
+            $errores = $e->errors();
+            return response()->json(['message' => $errores['facturacion'][0] ?? $e->getMessage()], 422);
 
         } catch (DevolucionExcedidaException $e) {
 
