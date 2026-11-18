@@ -274,6 +274,9 @@ class DevolucionesController extends Controller
         } catch (\Illuminate\Validation\ValidationException $e) {
             DB::rollBack();
             $errores = $e->errors();
+            if (isset($errores['cuenta_corriente'])) {
+                throw $e;
+            }
             return response()->json(['message' => $errores['facturacion'][0] ?? $e->getMessage()], 422);
 
         } catch (DevolucionExcedidaException $e) {
@@ -287,8 +290,6 @@ class DevolucionesController extends Controller
         } catch(\Throwable $e) {
 
             DB::rollBack();
-
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
 
             Log::info('Error enn nota de credito');
             // El reporter de errores esta enganchado al handler global (Handler::register ->

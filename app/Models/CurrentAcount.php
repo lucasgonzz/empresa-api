@@ -54,6 +54,15 @@ class CurrentAcount extends Model
             // huérfano rompe el próximo recálculo y vuelve imposible la baja legítima del pago.
             $current_acount->pagado_por()->detach();
             $current_acount->pagando_a()->detach();
+            foreach ($current_acount->pagando_las_comisiones as $comision) {
+                if ($comision->status === 'active') {
+                    $comision->status = 'inactive';
+                    $comision->save();
+                }
+            }
+            // El recálculo activa con la fuente vigente o revierte si la venta dejó de estar
+            // saldada. La fuente borrada no puede quedar como respaldo de la liquidación nueva.
+            $current_acount->pagando_las_comisiones()->detach();
 
             $con_lista = \Illuminate\Support\Facades\Schema::hasColumn('current_acounts', 'to_pay_ids');
             $dirigidos = static::where('credit_account_id', $current_acount->credit_account_id)

@@ -320,6 +320,28 @@ class Creditos_Historicos_Test extends TestCase
         }
     }
 
+    public function test_baja_de_fuente_que_liquido_comision_no_deja_pivote_huerfano()
+    {
+        $cuenta = $this->cuenta();
+        $seller = Seller::create(['user_id' => 500, 'num' => 999146, 'name' => 'Comisión reemplazo fuente', 'commission_after_pay_sale' => 1, 'percentage_commission' => 10]);
+        $venta = Sale::create(['user_id' => 500, 'client_id' => $cuenta->model_id, 'moneda_id' => 1, 'total' => 100]);
+        $this->movimiento($cuenta, 100, null, '2026-01-01 10:00:00', ['sale_id' => $venta->id]);
+        $this->movimiento($cuenta, -25, null, '2026-02-01 10:00:00');
+        $viejo = $this->movimiento($cuenta, null, 75, '2026-03-01 10:00:00');
+        $nuevo = $this->movimiento($cuenta, null, 75, '2026-04-01 10:00:00');
+        $comision = SellerCommission::create(['user_id' => 500, 'seller_id' => $seller->id, 'sale_id' => $venta->id,
+            'moneda_id' => 1, 'debe' => 10, 'status' => 'inactive']);
+        CurrentAcountHelper::check_saldos_y_pagos($cuenta->id);
+        $this->assertEquals([$viejo->id], $comision->pagada_por()->pluck('current_acounts.id')->all());
+        $this->deleteJson('api/current-acount/client/'.$viejo->id)->assertSuccessful();
+        $this->assertSame('active', $comision->fresh()->status);
+        $this->assertEquals(10, $comision->fresh()->debe);
+        $this->assertEquals(1, DB::table('current_acount_seller_commission')->where('seller_commission_id', $comision->id)->count());
+        $this->assertEquals([$nuevo->id], $comision->pagada_por()->pluck('current_acounts.id')->all());
+        CurrentAcountHelper::checkPagos($cuenta->id);
+        $this->assertEquals(1, DB::table('current_acount_seller_commission')->where('seller_commission_id', $comision->id)->count());
+    }
+
     public function test_baja_de_un_destino_multiple_conserva_los_otros_destinos()
     {
         $cuenta = $this->cuenta();
