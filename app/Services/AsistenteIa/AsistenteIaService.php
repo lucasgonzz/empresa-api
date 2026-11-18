@@ -1225,7 +1225,27 @@ class AsistenteIaService
                 $error_body = $response->json();
                 $error_type = $error_body['error']['type'] ?? null;
 
-                if (ProveedorIaHelper::es_error_transitorio($response)) {
+                if (ProveedorIaHelper::es_error_de_saldo($response)) {
+                    /*
+                     * 🔴 Misión asistente-diario-20261118 (M1): cuenta del proveedor sin saldo (402 /
+                     * billing_error). Se loguea a nivel ERROR con una marca fija —ASISTENTE_IA_SIN_SALDO— para
+                     * que una alerta o una búsqueda en el log lo encuentre sin adivinar el texto del proveedor.
+                     * Al dueño no se le promete «unos segundos» (ver AsistenteIaException::MOTIVO_SIN_SALDO).
+                     * Sin el body crudo en el log: solo status, tipo y proveedor.
+                     */
+                    Log::error('ASISTENTE_IA_SIN_SALDO: el proveedor de IA rechazó la llamada por falta de saldo; hay que cargar crédito.', [
+                        'proveedor'          => $proveedor,
+                        'http'               => $response->status(),
+                        'type'               => is_null($error_type) ? 'sin type' : (string) $error_type,
+                        'ai_conversation_id' => $conversation->id,
+                        'ai_message_id'      => $assistant_message->id,
+                    ]);
+
+                    $falla = AsistenteIaException::sin_saldo(
+                        'El proveedor ' . ProveedorIaHelper::nombre_de($proveedor) . ' rechazó la llamada por falta de saldo (HTTP '
+                        . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ').'
+                    );
+                } elseif (ProveedorIaHelper::es_error_transitorio($response)) {
                     $falla = AsistenteIaException::sobrecargado(
                         '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
                     );

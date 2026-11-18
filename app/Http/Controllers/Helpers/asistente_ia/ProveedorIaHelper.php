@@ -609,6 +609,37 @@ class ProveedorIaHelper
     }
 
     /**
+     * true si la respuesta fallida es un rechazo por FALTA DE SALDO o de facturación del proveedor
+     * (misión asistente-diario-20261118, M1): HTTP 402 (DeepSeek: «Insufficient Balance»), tipo de error
+     * `billing_error` / `insufficient_*` o `permission_error` con texto de crédito (Anthropic: «credit
+     * balance is too low»). NO es transitorio: reintentar no sirve hasta que alguien cargue saldo, así que
+     * no se le dice a la persona «probá en unos segundos».
+     *
+     * @param  \Illuminate\Http\Client\Response  $response
+     * @return bool
+     */
+    public static function es_error_de_saldo($response): bool
+    {
+        if ((int) $response->status() === 402) {
+
+            return true;
+        }
+
+        $error_body = $response->json();
+        $error      = is_array($error_body) && isset($error_body['error']) ? $error_body['error'] : null;
+        $tipo       = is_array($error) && isset($error['type']) ? strtolower((string) $error['type']) : '';
+        $mensaje    = is_array($error) && isset($error['message']) ? strtolower((string) $error['message']) : '';
+
+        if ($tipo === 'billing_error' || strpos($tipo, 'insufficient') === 0) {
+
+            return true;
+        }
+
+        return strpos($mensaje, 'insufficient balance') !== false
+            || strpos($mensaje, 'credit balance is too low') !== false;
+    }
+
+    /**
      * El id del modelo, o el general del proveedor si el preferido vino vacío (config mal armada):
      * un negocio nunca queda sin modelo.
      *
