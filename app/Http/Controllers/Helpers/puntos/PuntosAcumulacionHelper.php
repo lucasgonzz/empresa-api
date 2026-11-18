@@ -322,6 +322,10 @@ class PuntosAcumulacionHelper {
      */
     private static function hubo_cobro_real($debito) {
 
+        if (!is_null($debito->debe) && (float) $debito->debe <= 0) {
+            return false;
+        }
+
         $plata         = 0;
         $notas_credito = 0;
 
@@ -329,7 +333,7 @@ class PuntosAcumulacionHelper {
 
             $pagado = (float) $haber->pivot->pagado;
 
-            if ($haber->status == self::STATUS_NOTA_CREDITO) {
+            if ($haber->status == self::STATUS_NOTA_CREDITO || (float) $haber->debe < 0) {
                 $notas_credito += $pagado;
             } else {
                 $plata += $pagado;

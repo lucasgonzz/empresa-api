@@ -588,6 +588,21 @@ class EjecutorAccionesIaHelper {
      */
     protected static function ejecutar_por_tipo(ContextoDeCargaIa $contexto, AiMessageAction $accion, $num_expense_resolver) {
 
+        try {
+            return self::ejecutar_tipo_sin_traducir($contexto, $accion, $num_expense_resolver);
+        } catch (\Illuminate\Validation\ValidationException $error) {
+            $errores = $error->errors();
+            if (isset($errores['cuenta_corriente'][0])) {
+                // Tanto pagos como ventas/compras deben explicar qué revisar. AccionIaException
+                // revierte la carga y conserva este motivo en la tarjeta, incluso en dos etapas.
+                throw new AccionIaException(422, $errores['cuenta_corriente'][0]);
+            }
+            throw $error;
+        }
+    }
+
+    protected static function ejecutar_tipo_sin_traducir(ContextoDeCargaIa $contexto, AiMessageAction $accion, $num_expense_resolver) {
+
         switch ($accion->tipo) {
 
             case AiMessageAction::TIPO_GASTO:

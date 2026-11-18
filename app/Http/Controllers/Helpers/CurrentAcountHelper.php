@@ -955,6 +955,24 @@ class CurrentAcountHelper {
 
         CuentaCorrienteLock::bloquear($credit_account->model_name, $credit_account->model_id);
 
+        if (\App\Http\Controllers\Helpers\currentAcount\CreditosHistoricosHelper::tiene_creditos($credit_account_id)) {
+            $plan = \App\Http\Controllers\Helpers\currentAcount\CreditosHistoricosHelper::aplicar($credit_account);
+            // Como las NC, un crédito puede saldar una venta sin cobrar efectivo. Conservamos
+            // el contrato de comisiones al saldar; puntos distingue cobros reales por su fuente.
+            $ultimas = [];
+            foreach ($plan['imputaciones'] as $imputacion) {
+                $ultimas[$imputacion['debe_id']] = $imputacion['haber_id'];
+            }
+            foreach ($plan['estados'] as $estado) {
+                if ($estado['status'] === 'pagado' && isset($ultimas[$estado['id']])) {
+                    SellerCommissionHelper::checkCommissionStatus(CurrentAcount::find($estado['id']), CurrentAcount::find($ultimas[$estado['id']]));
+                }
+            }
+            SellerCommissionHelper::revertirComisionesNoSaldadas($credit_account_id);
+            PuntosAcumulacionHelper::reconciliar_cuenta_corriente($credit_account);
+            return;
+        }
+
         $debitos = CurrentAcount::orderBy('created_at', 'ASC')
                                 ->orderBy('id', 'ASC')
                                 ->where('credit_account_id', $credit_account_id)

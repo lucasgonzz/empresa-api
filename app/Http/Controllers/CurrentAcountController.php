@@ -97,6 +97,8 @@ class CurrentAcountController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);
 
@@ -501,6 +503,8 @@ class CurrentAcountController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);
 
@@ -543,11 +547,17 @@ class CurrentAcountController extends Controller
              */
             CurrentAcountHelper::checkSaldos($request->credit_account_id);
 
+            if (\App\Http\Controllers\Helpers\currentAcount\CreditosHistoricosHelper::tiene_creditos($request->credit_account_id)) {
+                CurrentAcountHelper::checkPagos($request->credit_account_id);
+            }
+
             DB::commit();
 
         } catch (\Throwable $e) {
 
             DB::rollBack();
+
+            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);
@@ -722,6 +732,8 @@ class CurrentAcountController extends Controller
         } catch (\Throwable $e) {
 
             DB::rollBack();
+
+            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);

@@ -276,6 +276,8 @@ class DevolucionesController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+
             Log::info('Error enn nota de credito');
             // El reporter de errores esta enganchado al handler global (Handler::register ->
             // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
