@@ -291,6 +291,44 @@ class RepararCreditosHistoricosTest extends EmpresaTestCase
         }
     }
 
+    public function saldos_discordantes()
+    {
+        return [['cuenta'], ['intermedio'], ['final'], ['nulo']];
+    }
+
+    /**
+     * @test
+     * @dataProvider saldos_discordantes
+     */
+    public function un_saldo_discordante_rechaza_simular_y_aplicar_sin_escrituras_ni_respaldo($caso)
+    {
+        list($cuenta, $cliente, $debito, $pago, $credito) = $this->escenario();
+        if ($caso === 'cuenta') {
+            DB::table('credit_accounts')->where('id', $cuenta->id)->update(['saldo' => 15]);
+        } elseif ($caso === 'intermedio') {
+            DB::table('current_acounts')->where('id', $pago->id)->update(['saldo' => 15]);
+        } else {
+            DB::table('current_acounts')->where('id', $credito->id)->update(['saldo' => $caso === 'nulo' ? null : 15]);
+        }
+        $antes = $this->foto($cuenta);
+        $ruta = $this->carpeta.DIRECTORY_SEPARATOR.'no-creado.json';
+        $escrituras = [];
+        DB::listen(function ($consulta) use (&$escrituras) {
+            if (preg_match('/^\s*(insert|update|delete|replace|create|alter|drop|truncate)\b/i', $consulta->sql)) {
+                $escrituras[] = $consulta->sql;
+            }
+        });
+        foreach ([[], ['--aplicar' => true, '--respaldo' => $ruta]] as $opciones) {
+            list($codigo, $salida) = $this->correr($cuenta, $opciones);
+            $this->assertSame(1, $codigo, $caso);
+            $this->assertStringContainsString('saldo guardado', $salida);
+            $this->assertStringContainsString('soporte', $salida);
+            $this->assertSame([], $escrituras, 'La validación tiene que ocurrir antes de escribir cualquier estado o imputación.');
+            $this->assertEquals($antes, $this->foto($cuenta));
+            $this->assertFileDoesNotExist($ruta);
+        }
+    }
+
     /** @test */
     public function rechaza_escrituras_sin_cuenta_o_sin_respaldo_o_dentro_del_codigo()
     {

@@ -56,6 +56,11 @@ class RepararCreditosHistoricos extends Command
                     $this->revertir($cuenta, $actual, $respaldo, $aplicar);
                     return;
                 }
+                if (!CreditosHistoricosHelper::tiene_creditos($cuenta->id)) {
+                    throw new RuntimeException('Esta cuenta no tiene créditos históricos negativos. Este comando no modifica cuentas sin ese diagnóstico.');
+                }
+                $plan = CreditosHistoricosHelper::plan($cuenta);
+                $this->validar_saldos_guardados($actual, $plan);
                 if ($respaldo) {
                     if ($actual !== $respaldo['despues']) {
                         throw new RuntimeException('La cuenta no coincide con la reparación respaldada. Revisá la actividad posterior; no se sobrescribe el respaldo ni se escribe en la cuenta.');
@@ -63,10 +68,6 @@ class RepararCreditosHistoricos extends Command
                     $this->info('La reparación de este respaldo ya está aplicada. No hay cambios.');
                     return;
                 }
-                if (!CreditosHistoricosHelper::tiene_creditos($cuenta->id)) {
-                    throw new RuntimeException('Esta cuenta no tiene créditos históricos negativos. Este comando no modifica cuentas sin ese diagnóstico.');
-                }
-                $plan = CreditosHistoricosHelper::plan($cuenta);
                 $this->mostrar_plan($cuenta, $plan, $aplicar ? 'aplicar' : 'simulacion');
                 if (!$aplicar) {
                     $this->info('Simulación: no se escribieron datos ni archivos.');
@@ -106,6 +107,29 @@ class RepararCreditosHistoricos extends Command
             'modo' => $modo, 'credito_total' => $plan['credito_total'], 'saldo_economico' => $plan['saldo_economico'],
             'pendiente' => $plan['pendiente'], 'remanente' => $plan['remanente'],
             'estados' => $plan['estados'], 'imputaciones' => $plan['imputaciones']], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR));
+    }
+
+    private function validar_saldos_guardados(array $actual, array $plan): void
+    {
+        $movimientos = $actual['movimientos'];
+        usort($movimientos, function ($a, $b) {
+            $fecha = strcmp((string) $a['created_at'], (string) $b['created_at']);
+            return $fecha !== 0 ? $fecha : ((int) $a['id'] <=> (int) $b['id']);
+        });
+        $saldo = 0;
+        foreach ($movimientos as $movimiento) {
+            if ((int) $movimiento['is_provisorio']) {
+                continue;
+            }
+            $saldo += (int) round((float) $movimiento['debe'] * 100) - (int) round((float) $movimiento['haber'] * 100);
+            if (!is_numeric($movimiento['saldo']) || (int) round((float) $movimiento['saldo'] * 100) !== $saldo) {
+                throw new RuntimeException('El saldo guardado del movimiento #'.$movimiento['id'].' no coincide con su historial. Pedile a soporte que revise la cadena de saldos antes de reparar estados; este comando no recalcula importes ni saldos.');
+            }
+        }
+        if (!is_numeric($actual['cuenta']['saldo']) || (int) round((float) $actual['cuenta']['saldo'] * 100) !== $saldo
+            || (int) round((float) $plan['saldo_economico'] * 100) !== $saldo) {
+            throw new RuntimeException('El saldo guardado de la cuenta no coincide con el saldo económico del historial. Pedile a soporte que revise ese descuadre antes de reparar estados; este comando no modifica el saldo.');
+        }
     }
 
     private function revertir($cuenta, array $actual, $respaldo, bool $aplicar): void
