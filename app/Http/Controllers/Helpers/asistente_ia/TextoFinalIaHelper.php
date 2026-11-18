@@ -76,6 +76,47 @@ class TextoFinalIaHelper
         return trim($limpio) === '' ? (string) $texto : $limpio;
     }
 
+    /**
+     * Aviso que se agrega cuando una respuesta se recorta porque el modelo llegó al máximo de salida.
+     */
+    const AVISO_DE_RESPUESTA_RECORTADA = 'La respuesta era más larga y la recorté para que no quede cortada a la mitad. Escribime «seguí» y continúo desde acá.';
+
+    /**
+     * El texto de una respuesta que el modelo cortó por el máximo de salida (stop_reason `max_tokens`), sin
+     * dejar una frase a medias: se corta en el último salto de línea (o, si no hay, en el último punto) y se
+     * agrega el aviso de que sigue.
+     *
+     * 🔴 Misión asistente-diario-20261118 (M3, Ferre Total conv 61): la respuesta con el listado de ventas
+     * terminaba en «… la que más plata facturó en pocas unidades (10 unidad» y nada más: el dueño leyó una
+     * frase cortada sin saber que faltaba algo. Si no hay dónde cortar con sentido (texto de una sola línea
+     * sin punto), se deja entero y solo se suma el aviso.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    public static function recortar_sin_cortar_frases($texto)
+    {
+        $texto = rtrim((string) $texto);
+
+        $corte = mb_strrpos($texto, "\n");
+
+        if ($corte === false || $corte < (int) (mb_strlen($texto) * 0.3)) {
+
+            // Sin salto de línea útil: el último fin de oración.
+            $punto = max(
+                (int) mb_strrpos($texto, '. '),
+                (int) mb_strrpos($texto, '! '),
+                (int) mb_strrpos($texto, '? ')
+            );
+
+            $corte = $punto > (int) (mb_strlen($texto) * 0.3) ? $punto + 1 : false;
+        }
+
+        $entero = $corte === false ? $texto : rtrim(mb_substr($texto, 0, $corte));
+
+        return $entero . "\n\n" . self::AVISO_DE_RESPUESTA_RECORTADA;
+    }
+
     /** Una oración en otro idioma, separada de los nombres breves que pueden venir del catálogo. */
     public static function contiene_prosa_cjk(string $texto): bool
     {

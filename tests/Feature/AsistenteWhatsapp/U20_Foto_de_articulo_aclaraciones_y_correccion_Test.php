@@ -297,8 +297,8 @@ class U20_Foto_de_articulo_aclaraciones_y_correccion_Test extends AsistenteWhats
     {
         $prompt = $this->prompt_de_whatsapp();
 
-        $this->assertStringContainsString('Cambiar la foto de un artículo, sin repreguntar', $prompt);
-        $this->assertStringContainsString('llamá a confirmar_carga_pendiente', $prompt);
+        $this->assertStringContainsString('Un sí con una aclaración que NO cambia la tarjeta es un sí', $prompt);
+        $this->assertStringContainsString('llamá a confirmar_carga_pendiente con esa tarjeta en ese mismo turno', $prompt);
         $this->assertStringContainsString('leer una etiqueta se equivoca', $prompt);
         $this->assertStringContainsString('NUNCA digas «es la misma imagen»', $prompt);
         $this->assertStringContainsString('reemplazar_fotos: true', $prompt);

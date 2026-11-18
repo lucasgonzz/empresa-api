@@ -45,6 +45,15 @@ class ConsultasSistemaIaHelper
     const MAX_RESULTS = 20;
 
     /**
+     * Cuántas páginas de `limite` renglones se pueden pedir de los más vendidos (misión asistente-diario-20261118,
+     * M3): con el techo duro de 100 por página son hasta 500 artículos, lo que entra en un Excel (1000 filas) sin
+     * que el JSON de una sola respuesta se coma el presupuesto del loop.
+     *
+     * @var int
+     */
+    const PAGINAS_MAXIMAS_DE_MAS_VENDIDOS = 5;
+
+    /**
      * Techo duro de registros por consulta, para las tools que aceptan un límite por parámetro
      * (misión agente-ia-mano-derecha, bloque B).
      *
@@ -741,11 +750,16 @@ class ConsultasSistemaIaHelper
      * @param  string|null  $hasta      AAAA-MM-DD inclusive; manda sobre `dias`.
      * @param  int          $limite     0 = MAX_RESULTS.
      * @param  string|null  $proveedor  Nombre del proveedor como lo dijo la persona. null/vacío = todos.
+     * @param  int          $pagina     Misión asistente-diario-20261118 (M3): 1 = los primeros `limite`, 2 = los
+     *                                  siguientes, etc. Con `proveedor` la respuesta trae además
+     *                                  `articulos_con_movimiento` (cuántos vendieron algo en el período, en total) y
+     *                                  `hay_mas`, para que nadie entregue «los 20 primeros» como si fuera todo.
      * @return array<int|string, mixed>
      */
-    public static function mas_vendidos(int $owner_id, int $dias = 30, $desde = null, $hasta = null, int $limite = 0, $proveedor = null): array
+    public static function mas_vendidos(int $owner_id, int $dias = 30, $desde = null, $hasta = null, int $limite = 0, $proveedor = null, int $pagina = 1): array
     {
         $limite = self::limite_pedido($limite);
+        $pagina = max(1, min($pagina, self::PAGINAS_MAXIMAS_DE_MAS_VENDIDOS));
 
         $del_proveedor = null;
 
@@ -789,6 +803,14 @@ class ConsultasSistemaIaHelper
             $query->where('articles.provider_id', $del_proveedor['id']);
         }
 
+        /*
+         * 🔴 Misión asistente-diario-20261118 (M3, Ferre Total conv 61): «un listado de lo que vendí de Pinturería
+         * Sudamericana en 60 días, en un Excel» salió con 20 renglones y un «son los primeros 20 de un total de
+         * 500 artículos cargados»: el 500 era el catálogo del proveedor, no los que vendieron. Se cuenta cuántos
+         * artículos TUVIERON movimiento en el período (antes del límite) para decir la verdad sobre lo que falta.
+         */
+        $con_movimiento = (int) (clone $query)->distinct()->count('articles.id');
+
         $top = $query
             ->select(
                 'articles.id as articulo_id',
@@ -804,6 +826,7 @@ class ConsultasSistemaIaHelper
             ->groupBy('articles.id', 'articles.name')
             ->orderByDesc('total_vendido')
             ->orderBy('articles.id')
+            ->offset(($pagina - 1) * $limite)
             ->limit($limite)
             ->get();
 
@@ -835,7 +858,16 @@ class ConsultasSistemaIaHelper
                 ->where('provider_id', $del_proveedor['id'])
                 ->count(),
             'articulos'    => $result,
+            'articulos_con_movimiento' => $con_movimiento,
+            'pagina'       => $pagina,
+            'hay_mas'      => ($pagina * $limite) < $con_movimiento,
         ];
+
+        if ($respuesta['hay_mas']) {
+            $respuesta['nota_de_paginacion'] = 'Esta respuesta trae ' . count($result) . ' de ' . $con_movimiento . ' articulos con movimiento. '
+                . 'Si la persona pidio el listado completo o un Excel, volve a llamar con pagina ' . ($pagina + 1) . ' (y limite 100) hasta cubrirlos '
+                . 'y junta todos en exportar_excel (hasta 1000 filas). Si no vas a incluirlos a todos, deci cuantos incluiste y cuantos faltan.';
+        }
 
         if (empty($result)) {
             $respuesta['nota'] = $respuesta['articulos_con_ese_proveedor'] > 0

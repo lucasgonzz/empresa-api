@@ -158,6 +158,34 @@ class Sin_saldo_del_proveedor_Test extends TestCase
     }
 
     /**
+     * Misión asistente-diario-20261118 (M3): una respuesta que el modelo cortó por el máximo de salida no llega
+     * a la persona terminada a mitad de frase («… (10 unidad»): se recorta en el último salto de línea y avisa.
+     *
+     * @group chat-ia
+     * @test
+     */
+    public function una_respuesta_cortada_por_max_tokens_sale_recortada_con_aviso()
+    {
+        Http::fake([
+            'api.deepseek.com/*' => Http::response([
+                'model'       => 'deepseek-modelo-fake',
+                'stop_reason' => 'max_tokens',
+                'content'     => [['type' => 'text', 'text' => "Primer renglon completo.
+Segundo renglon completo.
+Tercero que se corto a la mit"]],
+                'usage'       => ['input_tokens' => 100, 'output_tokens' => 1500],
+            ], 200),
+        ]);
+
+        $assistant = $this->correr_el_job();
+
+        $this->assertEquals('listo', $assistant->estado, (string) $assistant->error_mensaje);
+        $this->assertStringContainsString('Segundo renglon completo.', $assistant->contenido);
+        $this->assertStringNotContainsString('a la mit', $assistant->contenido);
+        $this->assertStringContainsString('«seguí»', $assistant->contenido);
+    }
+
+    /**
      * El detector solo mira el saldo: un 400 cualquiera o un 500 no se confunden con falta de saldo.
      *
      * @group chat-ia

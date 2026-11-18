@@ -1762,6 +1762,21 @@ class AsistenteIaService
             $final_text = is_null($respaldo) ? ($cerrando ? '' : $crudo) : $respaldo;
         }
 
+        /*
+         * Misión asistente-diario-20261118 (M3): si el modelo se quedó sin salida (`max_tokens`), el texto termina
+         * a mitad de frase. Se corta en el último salto de línea y se avisa que sigue. Va antes del chequeo de
+         * «sin texto» para no tocar nada vacío.
+         */
+        if ($final_text !== '' && $stop_reason === 'max_tokens') {
+            Log::warning('AsistenteIaService: la respuesta final llegó cortada por max_tokens; se recorta en un salto de línea.', [
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $assistant_message->id,
+                'modelo'             => $model,
+            ]);
+
+            $final_text = TextoFinalIaHelper::recortar_sin_cortar_frases($final_text);
+        }
+
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [
                 'ai_conversation_id' => $conversation->id,
@@ -3209,8 +3224,9 @@ CARGA;
 
     /**
      * Las reglas de la misión asistente-diario-20261118 (A1 y A2) para CAMBIAR la foto de un artículo: la
-     * confirmación que no se repregunta, la foto que la persona dice que es la correcta y la foto nueva que
-     * llega después de otra. Van pegadas a las de las fotos de varios artículos, dentro del bloque de carga.
+     * foto que la persona dice que es la correcta y la foto nueva que llega después de otra. Van pegadas a las
+     * de las fotos de varios artículos, dentro del bloque de carga (todos los canales). La del «sí con una
+     * aclaración» nombra confirmar_carga_pendiente y por eso vive en bloque_de_confirmacion_por_texto().
      *
      * 🔴 LOS CASOS REALES (17/11/2026).
      *   - Truvari, conv 42 (Fernando): para reemplazar la foto de un vino el asistente le pidió la confirmación
@@ -3227,13 +3243,6 @@ CARGA;
     protected function reglas_de_cambiar_la_foto_de_un_articulo(): string
     {
         return <<<REGLAS
-- 🔴 Cambiar la foto de un artículo, sin repreguntar. Si ya hay una tarjeta esperando el sí y la persona
-  contesta que sí y agrega una aclaración que NO cambia lo que dice la tarjeta («sí, pero respetá el
-  tamaño», «sí, es la correcta», «dale, la proporción tal cual»), es un sí: llamá a confirmar_carga_pendiente
-  con esa tarjeta en ese mismo turno (el sistema ya respeta la proporción de la foto, no se toca) y contá
-  el resultado. No armes otra confirmación ni vuelvas a preguntar «¿confirmás?». Solo si la aclaración
-  CAMBIA algo (otro artículo, otra foto, «mejor agregala sin sacar la otra») armás la tarjeta nueva, y una
-  sola vez.
 - 🔴 Si la persona te dice que la foto que mandó es la correcta («es esa», «está bien la imagen»), no la
   rechaces ni la discutas por lo que se lee en la etiqueta: leer una etiqueta se equivoca. Puede ser una
   duda tuya en UNA línea antes de armar la tarjeta, pero cuando ella insiste, la usás.
@@ -3730,6 +3739,13 @@ PRIMERA;
 {$primera}
 - Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
   tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
+- 🔴 Un sí con una aclaración que NO cambia la tarjeta es un sí (misión asistente-diario-20261118, A1:
+  Truvari te dijo «sí, pero respetá el tamaño» y le preguntaste cuatro veces). Si hay una tarjeta esperando el
+  sí y la persona contesta «sí, hacelo, pero respetá el tamaño de la foto», «sí, es la correcta», «dale, tal
+  cual»: llamá a confirmar_carga_pendiente con esa tarjeta en ese mismo turno y contá el resultado; el sistema
+  ya respeta la proporción de la foto. No armes otra confirmación ni vuelvas a preguntar «¿confirmás?». Solo si
+  la aclaración CAMBIA algo (otro artículo, otra foto, «mejor sumala sin sacar la otra») armás la tarjeta
+  nueva, y una sola vez.
 - Antes de preguntar «¿lo registro?», tiene que existir una propuesta real de esa carga.
   Si la persona corrigió datos, usá los corregidos. Si dijo que sí pero la propuesta anterior
   no existe, armala con los datos disponibles y seguí el estado que devuelva la herramienta.
@@ -6111,7 +6127,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál. 🔴 Si la persona pide el ranking "en unidades y en pesos" (o "por cantidad y por plata", "separámelos en unidades y en precio"), dale DOS rankings, uno ordenado por unidades y otro por plata (el de plata: consultar_resumen_de_ventas con agrupar_por articulo y orden total), no uno solo con las dos columnas.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál. 🔴 Si la persona pide el ranking "en unidades y en pesos" (o "por cantidad y por plata", "separámelos en unidades y en precio"), dale DOS rankings, uno ordenado por unidades y otro por plata (el de plata: consultar_resumen_de_ventas con agrupar_por articulo y orden total), no uno solo con las dos columnas. 🔴 Por defecto trae los 20 primeros: si la persona pidió el LISTADO COMPLETO, «todos los artículos que vendí» o un Excel, mandá limite 100 y, mientras la respuesta traiga hay_mas: true, volvé a llamar con la pagina siguiente (hasta 5 páginas); con proveedor la respuesta trae articulos_con_movimiento (cuántos vendieron algo en el período) y nunca lo confundas con los artículos que el proveedor tiene cargados. Armá el Excel con TODOS los que juntaste; si no entran, decí cuántos incluiste y cuántos faltan.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6132,6 +6148,18 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre del proveedor tal como lo dijo la persona, para "lo que más vendo de [proveedor]": acota a los artículos cuyo proveedor es ese. Sin esto, todos los artículos.',
                         ],
+                        /*
+                         * Misión asistente-diario-20261118 (M3), AL FINAL por la regla del prefijo del caché: el
+                         * listado completo / el Excel de lo vendido ya no se corta en 20 renglones.
+                         */
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos artículos por página (por defecto 20, hasta 100). Para un listado completo o un Excel mandá 100.',
+                        ],
+                        'pagina' => [
+                            'type' => 'integer',
+                            'description' => 'Página de resultados (1 = los primeros, 2 = los siguientes…), hasta 5. Pedí la siguiente mientras la respuesta traiga hay_mas: true.',
+                        ],
                     ],
                     'required' => [],
                 ],
@@ -6141,8 +6169,9 @@ CONFIRMACION;
                         self::dias_del_enum($input),
                         isset($input['desde']) ? $input['desde'] : null,
                         isset($input['hasta']) ? $input['hasta'] : null,
-                        0,
-                        isset($input['proveedor']) ? (string) $input['proveedor'] : null
+                        isset($input['limite']) ? (int) $input['limite'] : 0,
+                        isset($input['proveedor']) ? (string) $input['proveedor'] : null,
+                        isset($input['pagina']) ? (int) $input['pagina'] : 1
                     );
                 },
             ],
