@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\MasiveUpdateHelper;
 use App\Jobs\ProcessMasiveUpdateRevertJob;
+use App\Http\Controllers\Helpers\masivas\EjecucionPorTandasHelper;
 use App\Models\MasiveUpdate;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -91,12 +92,25 @@ class MasiveUpdateController extends Controller
             ], 422);
         }
 
-        $revert_masive_update = MasiveUpdateHelper::create_pending_revert(
-            $parent_masive_update,
-            $this->userId(false)
-        );
-
-        ProcessMasiveUpdateRevertJob::dispatch($revert_masive_update->id);
+        $crear = function () use ($parent_masive_update) {
+            // Revalidar bajo la admisión del dueño: dos clicks no crean dos reversiones del mismo padre.
+            $padre = MasiveUpdate::whereKey($parent_masive_update->id)->lockForUpdate()->first();
+            if (!MasiveUpdateHelper::can_revert($padre)) {
+                throw new \RuntimeException('La actualización ya tiene una reversión en curso.');
+            }
+            $reversion = MasiveUpdateHelper::create_pending_revert($padre, $this->userId(false));
+            ProcessMasiveUpdateRevertJob::dispatch($reversion->id)->afterCommit();
+            return $reversion;
+        };
+        if (EjecucionPorTandasHelper::es_de_articulos($parent_masive_update)) {
+            $admision = EjecucionPorTandasHelper::encolar($this->userId(), $crear);
+            if ($admision['status'] !== 200) {
+                return response()->json($admision['body'], $admision['status']);
+            }
+            $revert_masive_update = $admision['masiva'];
+        } else {
+            $revert_masive_update = $crear();
+        }
 
         Log::info('MasiveUpdateController: reversión encolada', [
             'parent_id' => $parent_masive_update->id,

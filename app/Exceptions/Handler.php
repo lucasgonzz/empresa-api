@@ -85,9 +85,11 @@ class Handler extends ExceptionHandler
      */
     protected function invalidJson($request, ValidationException $exception)
     {
+        $errores = $exception->errors();
         return response()->json([
-            'message' => __('validation.invalid_data'),
-            'errors' => $exception->errors(),
+            // La conciliación debe explicar qué movimiento revisar, también a las SPA que sólo leen message.
+            'message' => isset($errores['cuenta_corriente'][0]) ? $errores['cuenta_corriente'][0] : __('validation.invalid_data'),
+            'errors' => $errores,
         ], $exception->status);
     }
 }

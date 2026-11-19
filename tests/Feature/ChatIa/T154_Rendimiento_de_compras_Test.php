@@ -261,7 +261,9 @@ class T154_Rendimiento_de_compras_Test extends TestCase
         $this->assertSame('Tornillo T154', $contenido['articulos'][0]['nombre']);
 
         $nombres = $service->nombres_de_lectura();
-        $this->assertSame('consultar_rendimiento_de_compras', end($nombres), 'Al final del registro (prefijo del caché).');
+        // La misión asistente-diario-20261117 (parte B, A2) sumó consultar_lo_que_hizo_el_asistente detrás: lo que
+        // se cuida es lo mismo (que esta se agregó al final y no se movió), ahora con la nueva atrás.
+        $this->assertSame(['consultar_rendimiento_de_compras', 'consultar_lo_que_hizo_el_asistente'], array_slice($nombres, -2), 'Al final del registro (prefijo del caché).');
     }
 
     // ---------------------------------------------------------------------

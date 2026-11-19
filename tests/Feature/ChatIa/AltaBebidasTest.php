@@ -453,4 +453,59 @@ class AltaBebidasTest extends EmpresaTestCase
         $this->assertFalse($r['is_error'], $r['content']);
         $this->assertSame(1, DB::table('providers')->where('user_id', $this->dueno->id)->where('name', $nombre)->count());
     }
+    /**
+     * Misión asistente-diario-20261117, M3: un alta SIN cajas (sin ingreso de stock) no puede decir que la caja
+     * logística «se usó para convertir este ingreso»: no hubo ingreso. La tarjeta y el resultado dicen que se
+     * vende por botella y que las N botellas por caja no quedaron como presentación de venta.
+     */
+    public function test_alta_sin_cajas_dice_que_se_vende_por_botella_en_la_tarjeta_y_en_el_resultado()
+    {
+        $this->proponer();
+        $accion = $this->accion();
+        $renglones = array_column($accion->presentacion['renglones'], 'valor', 'etiqueta');
+        $this->assertSame('Se vende por botella: las 6 botellas por caja no se guardan como presentación de venta.', $renglones['Caja logística']);
+        $this->assertStringNotContainsString('convertir este ingreso', json_encode($accion->presentacion, JSON_UNESCAPED_UNICODE));
+
+        $this->confirmar($accion->id)->assertStatus(200);
+        $texto = (string) AiMessageAction::findOrFail($accion->id)->resultado->texto;
+        $this->assertStringContainsString('Se vende por botella: las 6 botellas por caja no quedaron guardadas como presentación de venta.', $texto);
+        $this->assertStringNotContainsString('convertir este ingreso', $texto);
+    }
+
+    /** M3: con cajas, la tarjeta y el resultado siguen diciendo que la caja convirtió el ingreso de stock. */
+    public function test_alta_con_cajas_conserva_el_texto_de_la_conversion()
+    {
+        $deposito = DB::table('addresses')->where('user_id', $this->dueno->id)->first();
+        $extras = $deposito ? ['deposito' => $deposito->street] : [];
+        $this->proponer([], ['cajas' => 2, 'cajas_confirmadas' => true], $extras);
+        $accion = $this->accion();
+        $renglones = array_column($accion->presentacion['renglones'], 'valor', 'etiqueta');
+        $this->assertSame('Se usa para convertir este ingreso de stock; no modifica la presentación de venta.', $renglones['Caja logística']);
+
+        $this->confirmar($accion->id)->assertStatus(200);
+        $texto = (string) AiMessageAction::findOrFail($accion->id)->resultado->texto;
+        $this->assertStringContainsString('La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.', $texto);
+    }
+    /**
+     * M3 (revisión independiente): con la propiedad de distribuidora las botellas por caja SÍ se guardan, como
+     * unidades por bulto. Sin cajas, la tarjeta y el resultado lo dicen así y no «no se guardan», que contradecía
+     * el renglón «Unidades por bulto guardadas» de la misma tarjeta.
+     */
+    public function test_alta_sin_cajas_con_propiedad_de_distribuidora_dice_que_quedan_como_bulto()
+    {
+        $e = ExtencionEmpresa::firstOrCreate(['slug' => 'articulos_con_propiedades_de_distribuidora'], ['name' => 'Distribuidora']);
+        $this->dueno->extencions()->syncWithoutDetaching([$e->id]);
+        $this->proponer();
+        $accion = $this->accion();
+        $renglones = array_column($accion->presentacion['renglones'], 'valor', 'etiqueta');
+        $this->assertSame('Se vende por botella; las 6 botellas por caja quedan como unidades por bulto, no como presentación de venta.', $renglones['Caja logística']);
+        $this->assertSame('6', $renglones['Unidades por bulto guardadas']);
+        $this->assertStringNotContainsString('no se guardan', json_encode($accion->presentacion, JSON_UNESCAPED_UNICODE));
+
+        $this->confirmar($accion->id)->assertStatus(200);
+        $texto = (string) AiMessageAction::findOrFail($accion->id)->resultado->texto;
+        $this->assertStringContainsString('Se vende por botella; las 6 botellas por caja quedaron como unidades por bulto, no como presentación de venta.', $texto);
+        $this->assertStringNotContainsString('no quedaron guardadas', $texto);
+        $this->assertEquals(6, Article::where('name', $this->datos['name'])->firstOrFail()->unidades_por_bulto);
+    }
 }

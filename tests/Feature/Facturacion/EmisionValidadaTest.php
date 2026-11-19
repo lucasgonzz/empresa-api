@@ -209,7 +209,9 @@ class EmisionValidadaTest extends EmpresaTestCase
         $facturas = $venta->afip_tickets()->get();
         foreach ($facturas as $factura) {
             AfipTicket::create(['sale_nota_credito_id' => $venta->id, 'sale_afip_ticket_id' => $factura->id,
-                'cae' => 'nc-'.$factura->id, 'importe_total' => $factura->importe_total, 'moneda_id' => 'PES']);
+                'cae' => 'nc-'.$factura->id, 'importe_total' => $factura->importe_total, 'moneda_id' => 'PES',
+                'resultado' => 'A', 'cbte_tipo' => 13, 'cuit_negocio' => $this->emisor->cuit,
+                'punto_venta' => 7, 'cbte_numero' => 1000000 + $factura->id]);
         }
         $venta->update(['total_facturado' => 0]);
         $this->postear($venta)->assertStatus(201)->assertJsonPath('estado', 'emitida');
@@ -222,7 +224,9 @@ class EmisionValidadaTest extends EmpresaTestCase
         $this->postear($venta)->assertStatus(201);
         $factura = $venta->afip_tickets()->firstOrFail();
         AfipTicket::create(['sale_nota_credito_id' => $venta->id, 'sale_afip_ticket_id' => $factura->id,
-            'cae' => 'nc-parcial', 'importe_total' => 200, 'moneda_id' => 'PES']);
+            'cae' => 'nc-parcial', 'importe_total' => 200, 'moneda_id' => 'PES',
+            'resultado' => 'A', 'cbte_tipo' => 13, 'cuit_negocio' => $this->emisor->cuit,
+            'punto_venta' => 7, 'cbte_numero' => 1000000 + $factura->id]);
         $venta->update(['total_facturado' => 800]);
         $this->postear($venta)->assertStatus(422);
         $this->postear($venta, ['monto_a_facturar' => 201])->assertStatus(422);
@@ -596,10 +600,12 @@ class EmisionValidadaTest extends EmpresaTestCase
         $venta->update(['moneda_id' => 2, 'valor_dolar' => 1200, 'total_facturado' => 1000]);
         $tipo_e = AfipTipoComprobante::where('codigo', 19)->firstOrFail();
         $factura = AfipTicket::create(['sale_id' => $venta->id, 'afip_information_id' => $this->emisor->id,
-            'afip_tipo_comprobante_id' => $tipo_e->id, 'cae' => 'e-121', 'importe_total' => 1000, 'moneda' => 'DOL']);
+            'afip_tipo_comprobante_id' => $tipo_e->id, 'cae' => 'e-121', 'importe_total' => 1000, 'moneda' => 'DOL',
+            'resultado' => 'A', 'cbte_tipo' => 19, 'cuit_negocio' => $this->emisor->cuit, 'punto_venta' => 7, 'cbte_numero' => 121]);
         $this->postear($venta, ['monto_a_facturar' => 100])->assertStatus(422);
         AfipTicket::create(['sale_afip_ticket_id' => $factura->id, 'sale_nota_credito_id' => $venta->id,
-            'cae' => 'nc-e-121', 'importe_total' => 1000, 'moneda' => 'DOL']);
+            'cae' => 'nc-e-121', 'importe_total' => 1000, 'moneda' => 'DOL',
+            'resultado' => 'A', 'cbte_tipo' => 21, 'cuit_negocio' => $this->emisor->cuit, 'punto_venta' => 7, 'cbte_numero' => 121]);
         $venta->update(['total_facturado' => 0]);
         $this->postear($venta, ['afip_tipo_comprobante_id' => $tipo_e->id])->assertStatus(201);
         $this->assertSame(1, $this->transporte->emisiones);
@@ -891,13 +897,35 @@ class EmisionValidadaTest extends EmpresaTestCase
         $this->app->instance(TransporteDeFacturaHelper::class, $transporte);
         $this->getJson('api/afip-ticket/consultar-comprobante/'.$ticket->id)->assertStatus(200);
         AfipTicket::create(['sale_afip_ticket_id' => $ticket->id, 'sale_nota_credito_id' => $venta->id,
-            'cae' => 'nc-manual-fex-121', 'importe_total' => 1000, 'moneda' => 'PES']);
+            'cae' => 'nc-manual-fex-121', 'importe_total' => 1000, 'moneda' => 'PES',
+            'resultado' => 'A', 'cbte_tipo' => 21, 'cuit_negocio' => $this->emisor->cuit, 'punto_venta' => 7, 'cbte_numero' => 121]);
         $venta->update(['total_facturado' => 0, 'total' => 800, 'sub_total' => 800, 'moneda_id' => 2, 'valor_dolar' => 1200]);
         $this->getJson('api/afip-ticket/consultar-comprobante/'.$ticket->id)->assertStatus(200);
         $this->assertSame(2, $transporte->consultas);
         $this->assertEqualsWithDelta(0, (float) $venta->fresh()->total_facturado, 0.01);
         $this->assertEqualsWithDelta(1000, (float) $ticket->fresh()->importe_total, 0.01);
         $this->assertSame('PES', $ticket->fresh()->moneda);
+    }
+
+    public function test_emision_autorizada_informa_revision_del_acumulado_sin_perder_el_cae_ni_reemitir()
+    {
+        $venta = $this->venta();
+        $transporte = new class extends TransporteFiscalSimulado {
+            public function emitir($ticket): void {
+                parent::emitir($ticket);
+                Sale::where('id', $ticket->sale_id)->update(['total_facturado' => 2000]);
+            }
+        };
+        $this->app->instance(TransporteDeFacturaHelper::class, $transporte);
+        $respuesta = $this->postear($venta)->assertStatus(201)->assertJsonPath('estado', 'emitida')
+            ->assertJsonPath('saldo_facturado_en_revision', true);
+        $this->assertStringContainsString('No vuelvas a emitir', $respuesta->json('message'));
+        $this->assertStringContainsString('soporte', $respuesta->json('message'));
+        $this->assertSame(1, $venta->afip_tickets()->count());
+        $this->assertNotEmpty($venta->afip_tickets()->firstOrFail()->cae);
+        $this->assertSame('2000.00', $venta->fresh()->total_facturado);
+        $this->postear($venta)->assertStatus(422);
+        $this->assertSame(1, $transporte->emisiones);
     }
 }
 

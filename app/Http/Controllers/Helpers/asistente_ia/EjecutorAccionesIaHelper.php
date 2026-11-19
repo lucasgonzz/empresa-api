@@ -184,6 +184,16 @@ class EjecutorAccionesIaHelper {
      * @return array  ['status' => int, 'body' => array]
      */
     protected static function ejecutar_confirmacion(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
+        $accion = AiMessageAction::where('ai_conversation_id', $conversation->id)->find((int) $accion_id);
+        if (!$accion || $accion->estado !== AiMessageAction::ESTADO_PROPUESTA) {
+            return self::ejecutar_confirmacion_admitida($conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo);
+        }
+        return PresupuestoDeOperacionesIaHelper::escritura($conversation, $accion, function () use ($conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
+            return self::ejecutar_confirmacion_admitida($conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo);
+        });
+    }
+
+    protected static function ejecutar_confirmacion_admitida(AiConversation $conversation, $accion_id, $persona, $num_expense_resolver, $exige_mensaje_listo) {
 
         if (!self::es_de_la_conversacion($conversation, $accion_id)) {
 
@@ -577,6 +587,21 @@ class EjecutorAccionesIaHelper {
      * @throws AccionIaException
      */
     protected static function ejecutar_por_tipo(ContextoDeCargaIa $contexto, AiMessageAction $accion, $num_expense_resolver) {
+
+        try {
+            return self::ejecutar_tipo_sin_traducir($contexto, $accion, $num_expense_resolver);
+        } catch (\Illuminate\Validation\ValidationException $error) {
+            $errores = $error->errors();
+            if (isset($errores['cuenta_corriente'][0])) {
+                // Tanto pagos como ventas/compras deben explicar qué revisar. AccionIaException
+                // revierte la carga y conserva este motivo en la tarjeta, incluso en dos etapas.
+                throw new AccionIaException(422, $errores['cuenta_corriente'][0]);
+            }
+            throw $error;
+        }
+    }
+
+    protected static function ejecutar_tipo_sin_traducir(ContextoDeCargaIa $contexto, AiMessageAction $accion, $num_expense_resolver) {
 
         switch ($accion->tipo) {
 

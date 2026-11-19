@@ -7,7 +7,7 @@ use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use fpdf;
 
-require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
+require_once(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 
 /**
  * PDF de compra a proveedor (ProviderOrder): cabecera con datos del proveedor
@@ -16,11 +16,11 @@ require(__DIR__.'/../CommonLaravel/fpdf/fpdf.php');
 class ProviderOrderPdf extends fpdf {
 
 	/**
-	 * Genera el PDF de la compra y lo envía al navegador.
+	 * Construye el PDF; el controlador entrega la respuesta HTTP.
 	 *
 	 * @param \App\Models\ProviderOrder $model Compra con relaciones cargadas (withAll)
 	 */
-	function __construct($model) {
+	function __construct($model, array $resumen) {
 		parent::__construct();
 		$this->SetAutoPageBreak(true, 1);
 		$this->b = 0;
@@ -28,16 +28,12 @@ class ProviderOrderPdf extends fpdf {
 
 		$this->user = UserHelper::getFullModel();
 		$this->model = $model;
-		$this->total_order = 0;
-		$this->subtotal_articles = 0;
+		$this->resumen = $resumen;
 
 		$this->AddPage();
 		$this->print();
-		$this->printExtraCosts();
-		$this->printDiscounts();
+		$this->printResumen();
 		$this->total();
-		$this->Output();
-		exit;
 	}
 
 	/**
@@ -49,11 +45,11 @@ class ProviderOrderPdf extends fpdf {
 		return [
 			'C. Barras'  => 30,
 			'Cód. Prov'  => 25,
-			'Nombre'     => 45,
+			'Nombre'     => 40,
 			'Costo'      => 25,
 			'Cantidad'   => 20,
 			'Notas'      => 25,
-			'Total'      => 30,
+			'Total'      => 35,
 		];
 	}
 
@@ -105,6 +101,7 @@ class ProviderOrderPdf extends fpdf {
 	function print() {
 		$this->SetFont('Arial', '', 10);
 		$this->x = 5;
+		$this->MultiCell(200, 6, 'Detalle de lo pedido (informativo). Los importes de este detalle no reemplazan el resumen registrado de la compra. Moneda de la compra: '.$this->resumen['moneda'].'.', 0, 'L');
 
 		foreach ($this->model->articles as $article) {
 			if ($this->y < 260) {
@@ -176,6 +173,25 @@ class ProviderOrderPdf extends fpdf {
 	 * @param \App\Models\Article $article
 	 */
 	function printArticle($article) {
+		$cantidad = 'Ped: '.$article->pivot->amount;
+		if (!is_null($article->pivot->received) && $article->pivot->received !== '') {
+			$cantidad .= ' / Rec: '.$article->pivot->received;
+		}
+		$alto = $this->line_height * max(
+			$this->lineCount($this->getFields()['Nombre'], $article->name),
+			$this->lineCount($this->getFields()['Notas'], $article->pivot->notes),
+			$this->lineCount($this->getFields()['Cantidad'], $cantidad)
+		);
+		// No permitir que una columna cambie de página y después restaurar una Y de la anterior.
+		if ($this->y + $alto > 265) {
+			$this->AddPage();
+			$this->SetFont('Arial', '', 10);
+		}
+		if ($alto > 200) {
+			$this->x = 5;
+			$this->MultiCell(200, 7, 'C. Barras: '.$article->bar_code.' | Cód. Prov: '.$article->provider_code.' | '.$article->name.' | '.$cantidad.' | Costo: '.$this->getArticleCostText($article).' | Importe pedido: '.Numbers::price($this->getArticleLineTotal($article)).($article->pivot->cost_in_dollars ? ' USD' : ' '.$this->resumen['moneda']).' | Notas: '.$article->pivot->notes, 0, 'L');
+			return;
+		}
 		$this->x = 5;
 		$y_1 = $this->y;
 
@@ -190,7 +206,12 @@ class ProviderOrderPdf extends fpdf {
 		$this->y = $y_1;
 
 		$this->Cell($this->getFields()['Costo'], $this->line_height, $this->getArticleCostText($article), $this->b, 0, 'L');
-		$this->Cell($this->getFields()['Cantidad'], $this->line_height, $article->pivot->amount, $this->b, 0, 'L');
+		$this->SetFont('Arial', '', 8);
+		$this->MultiCell($this->getFields()['Cantidad'], $this->line_height, $cantidad, $this->b, 'L');
+		$y_cantidad = $this->y;
+		$this->SetFont('Arial', '', 10);
+		$this->x = 5 + $this->getFields()['C. Barras'] + $this->getFields()['Cód. Prov'] + $this->getFields()['Nombre'] + $this->getFields()['Costo'] + $this->getFields()['Cantidad'];
+		$this->y = $y_1;
 
 		$this->MultiCell($this->getFields()['Notas'], $this->line_height, $article->pivot->notes, $this->b, 'L', false);
 		$y_3 = $this->y;
@@ -205,73 +226,49 @@ class ProviderOrderPdf extends fpdf {
 		$this->y = $y_1;
 
 		$line_total = $this->getArticleLineTotal($article);
-		$this->Cell($this->getFields()['Total'], $this->line_height, '$'.Numbers::price($line_total), $this->b, 0, 'L');
-
-		$this->subtotal_articles += $line_total;
-		$this->total_order += $line_total;
+		$moneda_linea = $article->pivot->cost_in_dollars ? ' USD' : ' '.$this->resumen['moneda'];
+		$this->SetFont('Arial', '', 8);
+		$this->Cell($this->getFields()['Total'], $this->line_height, Numbers::price($line_total).$moneda_linea, $this->b, 0, 'L');
+		$this->SetFont('Arial', '', 10);
 
 		if ($y_3 > $y_2) {
 			$this->y = $y_3;
 		} else {
 			$this->y = $y_2;
 		}
+		$this->y = max($this->y, $y_cantidad);
 
 		$this->Line(5, $this->y, 205, $this->y);
 	}
 
-	/**
-	 * Lista costos extra sumados al total.
-	 */
-	function printExtraCosts() {
-		if (count($this->model->provider_order_extra_costs) < 1) {
-			return;
-		}
-
-		$this->y += 5;
-		$this->x = 5;
-		$this->SetFont('Arial', 'B', 11);
-		$this->Cell(200, $this->line_height, 'Costos extra:', $this->b, 1, 'L');
-
-		$this->SetFont('Arial', '', 10);
-
-		foreach ($this->model->provider_order_extra_costs as $extra_cost) {
-			$this->x = 5;
-			$text = '- '.$extra_cost->description.': $'.Numbers::price($extra_cost->value);
-			$this->Cell(200, $this->line_height, $text, $this->b, 1, 'R');
-			$this->total_order += (float) $extra_cost->value;
-		}
-	}
-
-	/**
-	 * Lista descuentos aplicados (informativo; el monto fijo se resta del total).
-	 */
-	function printDiscounts() {
-		if (count($this->model->provider_order_discounts) < 1) {
-			return;
-		}
-
-		$this->y += 5;
-		$this->x = 5;
-		$this->SetFont('Arial', 'B', 11);
-		$this->Cell(200, $this->line_height, 'Descuentos:', $this->b, 1, 'L');
-
-		$this->SetFont('Arial', '', 10);
-
-		foreach ($this->model->provider_order_discounts as $discount) {
-			$this->x = 5;
-			$text = '- '.$discount->description;
-
-			if (!is_null($discount->percentage) && (float) $discount->percentage > 0) {
-				$discount_amount = $this->subtotal_articles * (float) $discount->percentage / 100;
-				$text .= ' ('.Numbers::price($discount->percentage).'%) -$'.Numbers::price($discount_amount);
-				$this->total_order -= $discount_amount;
-			} elseif (!is_null($discount->monto) && (float) $discount->monto > 0) {
-				$text .= ' -$'.Numbers::price($discount->monto);
-				$this->total_order -= (float) $discount->monto;
+	private function lineCount($ancho, $texto) {
+		$texto = str_replace("\r", '', (string) $texto);
+		$limite = ($ancho - 2 * $this->cMargin) * 1000 / $this->FontSize;
+		$inicio = 0;
+		$separador = -1;
+		$largo = 0;
+		$lineas = 1;
+		for ($i = 0; $i < strlen($texto); $i++) {
+			$caracter = $texto[$i];
+			if ($caracter === "\n") {
+				$lineas++;
+				$inicio = $i + 1;
+				$separador = -1;
+				$largo = 0;
+				continue;
 			}
-
-			$this->Cell(200, $this->line_height, $text, $this->b, 1, 'R');
+			if ($caracter === ' ') { $separador = $i; }
+			$largo += $this->CurrentFont['cw'][$caracter] ?? 0;
+			if ($largo > $limite) {
+				if ($separador >= $inicio) { $i = $separador; }
+				elseif ($i > $inicio) { $i--; }
+				$inicio = $i + 1;
+				$separador = -1;
+				$largo = 0;
+				$lineas++;
+			}
 		}
+		return $lineas;
 	}
 
 	/**
@@ -281,7 +278,29 @@ class ProviderOrderPdf extends fpdf {
 		$this->x = 5;
 		$this->y += 5;
 		$this->SetFont('Arial', 'B', 14);
-		$this->Cell(200, $this->line_height, 'Total: $'.Numbers::price($this->total_order), $this->b, 1, 'R');
+		$this->Cell(200, $this->line_height, 'Total compra: '.Numbers::price($this->resumen['total']).' '.$this->resumen['moneda'], $this->b, 1, 'R');
+	}
+
+	function printResumen() {
+		$this->y += 6;
+		$this->SetFont('Arial', 'B', 11);
+		$this->x = 5;
+		$this->MultiCell(200, 7, 'Resumen registrado de la compra', 0, 'L');
+		$this->SetFont('Arial', '', 10);
+		if ($this->resumen['de_facturas']) {
+			$this->x = 5;
+			$this->MultiCell(200, 6, 'El total se toma de los comprobantes, que pueden diferir del detalle pedido. Los descuentos de los artículos y de la compra no se vuelven a restar de las facturas.', 0, 'L');
+		}
+		foreach ($this->resumen['filas'] as $fila) {
+			$this->x = 5;
+			$texto = $fila[0];
+			if (is_numeric($fila[1])) {
+				$texto .= ': '.Numbers::price($fila[1]).' '.$this->resumen['moneda'];
+			} elseif (!is_null($fila[1])) {
+				$texto .= ': '.$fila[1];
+			}
+			$this->MultiCell(200, 6, $texto, 0, 'L');
+		}
 	}
 
 }

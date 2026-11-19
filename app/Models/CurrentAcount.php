@@ -49,6 +49,48 @@ class CurrentAcount extends Model
         static::deleting(function ($current_acount) {
 
             RetencionSufrida::where('current_acount_id', $current_acount->id)->delete();
+
+            // Un movimiento puede ser deuda o fuente de crédito. Dejar uno de los dos lados
+            // huérfano rompe el próximo recálculo y vuelve imposible la baja legítima del pago.
+            $current_acount->pagado_por()->detach();
+            $current_acount->pagando_a()->detach();
+            foreach ($current_acount->pagando_las_comisiones as $comision) {
+                if ($comision->status === 'active') {
+                    $comision->status = 'inactive';
+                    $comision->save();
+                }
+            }
+            // El recálculo activa con la fuente vigente o revierte si la venta dejó de estar
+            // saldada. La fuente borrada no puede quedar como respaldo de la liquidación nueva.
+            $current_acount->pagando_las_comisiones()->detach();
+
+            $con_lista = \Illuminate\Support\Facades\Schema::hasColumn('current_acounts', 'to_pay_ids');
+            $dirigidos = static::where('credit_account_id', $current_acount->credit_account_id)
+                ->where(function ($query) use ($current_acount, $con_lista) {
+                    $query->where('to_pay_id', $current_acount->id);
+                    if ($con_lista) {
+                        $query->orWhereNotNull('to_pay_ids');
+                    }
+                })->get();
+            foreach ($dirigidos as $dirigido) {
+                $ids = $dirigido->to_pay_ids;
+                $cambios = [];
+                if ((int) $dirigido->to_pay_id === (int) $current_acount->id) {
+                    $cambios['to_pay_id'] = null;
+                }
+                if (is_array($ids) && in_array((int) $current_acount->id, array_map('intval', $ids), true)) {
+                    $restantes = array_values(array_filter($ids, function ($id) use ($current_acount) {
+                        return (int) $id !== (int) $current_acount->id;
+                    }));
+                    $cambios['to_pay_ids'] = count($restantes) >= 2 ? $restantes : null;
+                    if (count($restantes) === 1) {
+                        $cambios['to_pay_id'] = $restantes[0];
+                    }
+                }
+                if (count($cambios)) {
+                    $dirigido->update($cambios);
+                }
+            }
         });
     }
 

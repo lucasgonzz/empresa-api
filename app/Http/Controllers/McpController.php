@@ -78,6 +78,11 @@ class McpController extends Controller
             return response()->json(['message' => 'No se pudo resolver la persona o el dueño de la cuenta.'], 409);
         }
 
+        // Antes de abrir sesiones o ejecutar el primer mensaje, incluso si todos son notifications.
+        if (strlen((string) $request->getContent()) > (int) config('proteccion_asistente.mcp_bytes', 262144)) {
+            return $this->respuesta_json($this->error_json_rpc(null, new McpError(-32600, 'El cuerpo MCP supera el tamaño permitido.')), 413);
+        }
+
         $cuerpo = json_decode((string) $request->getContent(), true);
 
         if (!is_array($cuerpo)) {
@@ -88,6 +93,10 @@ class McpController extends Controller
         $es_batch = self::es_lista($cuerpo);
 
         $mensajes = $es_batch ? $cuerpo : [$cuerpo];
+
+        if (count($mensajes) > (int) config('proteccion_asistente.mcp_batch', 20)) {
+            return $this->respuesta_json($this->error_json_rpc(null, new McpError(-32600, 'El batch MCP supera el máximo de mensajes permitido.')), 413);
+        }
 
         if (count($mensajes) === 0) {
 

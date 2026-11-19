@@ -55,10 +55,8 @@ class FacturarNotaCreditoExistenteHelper {
         $venta_fiscal_id = CurrentAcount::where('id', $nota_credito_id)->where('user_id', $user_id)
             ->where('status', 'nota_credito')->value('sale_id');
         $ventas_fiscales = $venta_fiscal_id ? [$venta_fiscal_id] : [];
-        $candado_adquirido = false;
         try {
-        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($nota_credito_id, $user_id, $afip_ticket_id, $venta_fiscal_id, &$candado_adquirido) {
-        $candado_adquirido = true;
+        return CandadoDeFacturaHelper::ventas($ventas_fiscales, function () use ($nota_credito_id, $user_id, $afip_ticket_id, $venta_fiscal_id) {
 
         DB::beginTransaction();
 
@@ -155,9 +153,6 @@ class FacturarNotaCreditoExistenteHelper {
                     ->first();
         });
         } catch (\Illuminate\Validation\ValidationException $e) {
-            if ($candado_adquirido) {
-                throw $e;
-            }
             // El controller de NC conoce esta excepción de negocio y conserva su 422 útil.
             $errores = $e->errors();
             throw new NotaCreditoNoFacturableException($errores['facturacion'][0] ?? 'Hay una facturación en curso. Esperá a que termine antes de facturar la nota de crédito.');

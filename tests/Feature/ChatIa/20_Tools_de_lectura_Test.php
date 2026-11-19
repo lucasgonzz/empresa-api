@@ -69,6 +69,21 @@ class Tools_de_lectura_Test extends TestCase
      */
     public function todas_las_tools_de_lectura_declaradas_se_ejecutan_sin_error()
     {
+        /*
+         * Misión gate-4-3-68-rojos (19/11/2026): este test recorre TODAS las tools de lectura (más de 30) en
+         * el mismo minuto y por la misma persona; con el cupo de fbc900da (`herramientas.persona_minuto` = 30)
+         * las últimas contestan `asistente_ocupado`, que es justo lo que el cupo tiene que hacer. Acá se mide
+         * otra cosa (que cada tool declarada se ejecuta sin error), así que el cupo se aísla para este test.
+         * Que el cupo frena está probado en Tests\Feature\Mcp\PresupuestoCompartidoTest (persona_minuto 1 y
+         * 2 → asistente_ocupado, ventanas minuto/hora y negocio compartido).
+         */
+        config([
+            'proteccion_asistente.herramientas.persona_minuto' => 1000,
+            'proteccion_asistente.herramientas.persona_hora'   => 1000,
+            'proteccion_asistente.herramientas.negocio_minuto' => 1000,
+            'proteccion_asistente.herramientas.negocio_hora'   => 1000,
+        ]);
+
         $cliente = Client::create(['name' => 'Cliente tools B', 'user_id' => $this->comercio->id]);
         $articulo = Article::create(['name' => 'Articulo tools B', 'user_id' => $this->comercio->id]);
         Provider::create(['name' => 'Proveedor tools B', 'user_id' => $this->comercio->id]);
@@ -140,6 +155,9 @@ class Tools_de_lectura_Test extends TestCase
             // Misión asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, sobre el
             // comercio de prueba (el cálculo lo cubre T154).
             'consultar_rendimiento_de_compras'         => ['limite' => 5],
+            // Misión asistente-diario-20261117 (parte B, A2): lo que el asistente ejecutó, sobre el comercio de
+            // prueba (el alcance por negocio y por persona lo cubre T155).
+            'consultar_lo_que_hizo_el_asistente'       => ['limite' => 5],
         ];
 
         $nombres = $this->service->nombres_de_lectura();

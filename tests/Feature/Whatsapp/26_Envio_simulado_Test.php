@@ -854,12 +854,20 @@ class Envio_simulado_Test extends TestCase
 
         $this->actuar_como($otro);
 
-        $alta = $this->putJson(self::RUTA_CONFIG, [
+        // Misión kapso-secretos-fuera-del-navegador: el dueño ya no carga credenciales (403 y no se crea nada);
+        // el alta por la API es solo con campos funcionales, y el envío simulado sigue sin poder prenderse.
+        $this->putJson(self::RUTA_CONFIG, [
             'kapso_api_key'   => 'kapso-real',
             'phone_number_id' => '5491100000099',
             'webhook_secret'  => 'secreto-real',
             'is_active'       => true,
             'envio_simulado'  => true,
+        ])->assertStatus(403);
+        $this->assertNull(WhatsappBotConfig::where('user_id', $otro->id)->first(), 'El 403 no puede haber creado la fila.');
+
+        $alta = $this->putJson(self::RUTA_CONFIG, [
+            'agent_personality' => 'Comercio real',
+            'envio_simulado'    => true,
         ]);
 
         $alta->assertStatus(200);

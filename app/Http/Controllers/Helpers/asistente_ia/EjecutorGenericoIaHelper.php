@@ -179,9 +179,24 @@ class EjecutorGenericoIaHelper
                 'botellas_por_caja' => isset($payload['unidades_por_bulto']) ? $guardado->unidades_por_bulto : null,
                 'caja_solo_para_conversion' => !isset($payload['unidades_por_bulto']),
             ];
-            $resultado['texto'] .= isset($payload['unidades_por_bulto'])
-                ? ' Botellas por caja guardadas: '.$guardado->unidades_por_bulto.'.'
-                : ' La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.';
+            /*
+             * M3 (misión asistente-diario-20261117): «la caja logística se usó para convertir este ingreso» solo
+             * es cierto si hubo cajas (bebida.cajas). En un alta sin ingreso de stock no se convirtió nada: el
+             * artículo se vende por botella y las N botellas por caja no quedaron como presentación de venta.
+             * Mismo criterio que el renglón «Caja logística» de la tarjeta (AltaBebidasIaHelper::preparar()).
+             */
+            $bebida_del_alta = $datos[AltaBebidasIaHelper::CLAVE];
+            if (isset($payload['unidades_por_bulto']) && !empty($bebida_del_alta['cajas'])) {
+                $resultado['texto'] .= ' Botellas por caja guardadas: '.$guardado->unidades_por_bulto.'.';
+            } elseif (isset($payload['unidades_por_bulto'])) {
+                // Sin cajas y con la propiedad de distribuidora: se vende por botella y la caja quedó como bulto.
+                $resultado['texto'] .= ' '.AltaBebidasIaHelper::texto_sin_cajas((int) $guardado->unidades_por_bulto, true, true);
+            } elseif (!empty($bebida_del_alta['cajas'])) {
+                $resultado['texto'] .= ' La caja logística se usó solo para convertir este ingreso, no quedó configurada como presentación de venta.';
+            } else {
+                $botellas = isset($bebida_del_alta['botellas_por_caja']) ? (int) $bebida_del_alta['botellas_por_caja'] : 0;
+                $resultado['texto'] .= ' '.AltaBebidasIaHelper::texto_sin_cajas($botellas, true);
+            }
             // P6 (16/11/2026, V13): la foto de internet no va en el alta; queda para su propia tarjeta.
             if (!empty($datos[AltaBebidasIaHelper::CLAVE]['foto_web_aparte'])) {
                 $resultado['foto_aparte'] = ['articulo_id' => (int) $id, 'imagen_id' => (int) $datos[AltaBebidasIaHelper::CLAVE]['foto_web_aparte']];

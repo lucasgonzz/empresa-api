@@ -44,6 +44,14 @@ class Kernel extends ConsoleKernel
      */
     protected function schedule(Schedule $schedule)
     {
+        // Sin masivas pendientes no arranca otro PHP por negocio y minuto.
+        $schedule->command('masivas:reanudar-pendientes')->everyMinute()->withoutOverlapping(5)->runInBackground()
+            ->when(function () {
+                return $this->gate_de_datos(function () {
+                    return \App\Http\Controllers\Helpers\masivas\EjecucionPorTandasHelper::hay_pendientes();
+                });
+            });
+
         $schedule->command('serper:sincronizar-consumo')->everyMinute()->withoutOverlapping(5)->runInBackground()
             ->when(function () {
                 try {

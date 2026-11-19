@@ -100,7 +100,10 @@ class CurrentAcountFromSaleHelper extends Controller {
 
         CurrentAcountHelper::checkSaldos($this->credit_account->id);
 
-        if ($this->tiene_movimientos_posteriores() || $this->saldo_actual < 0) {
+        // Al editar se borra/recrea el débito; el saldo previo puede incluir el débito borrado.
+        // Buscar créditos evita depender de esa foto para decidir si hay que volver a imputar.
+        if ($this->tiene_movimientos_posteriores() || $this->saldo_actual < 0
+            || \App\Http\Controllers\Helpers\currentAcount\CreditosHistoricosHelper::tiene_creditos($this->credit_account->id)) {
 
             CurrentAcountHelper::checkPagos($this->credit_account->id, true);
         }

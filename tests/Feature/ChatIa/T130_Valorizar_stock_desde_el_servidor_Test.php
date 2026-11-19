@@ -366,9 +366,33 @@ class T130_Valorizar_stock_desde_el_servidor_Test extends EmpresaTestCase
      */
     public function sin_persona_comprobada_no_hay_costos()
     {
-        $r = $this->valorizar([], AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => 0]));
+        $sin_persona = AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => 0]);
 
-        $this->assertTrue($r['ok']);
+        /*
+         * Misión gate-4-3-68-rojos (19/11/2026): desde fbc900da el despacho real pasa primero por el
+         * presupuesto de operaciones (PresupuestoDeOperacionesIaHelper), que cuenta por persona y negocio y
+         * FALLA CERRADO si la conversación no identifica a la persona: la tool no corre y no devuelve ningún
+         * dato (ni costos ni nada). Es más estricto que antes, no menos. `ai_conversations.auth_user_id` es
+         * NOT NULL y todos los caminos que crean conversaciones ponen una persona real, así que esto solo se
+         * alcanza con datos armados a mano.
+         */
+        list($conversation, $assistant) = $this->vuelta('cuánta plata hay de venta con todo el stock', $sin_persona);
+        $resultados = (new AsistenteIaService())->execute_tool_calls([[
+            'type'  => 'tool_use',
+            'id'    => 'toolu_valorizar_' . uniqid(),
+            'name'  => 'valorizar_stock',
+            'input' => [],
+        ]], $conversation, $assistant);
+        $this->assertCount(1, $resultados);
+        $this->assertTrue($resultados[0]['is_error'] ?? false, $resultados[0]['content']);
+        $rechazo = json_decode($resultados[0]['content'], true);
+        $this->assertSame('proteccion_asistente_no_disponible', $rechazo['code']);
+        $this->assertArrayNotHasKey('valor_a_costo', $rechazo);
+
+        // La guarda propia del cálculo sigue valiendo sola (la aserción original, sin el presupuesto delante).
+        $r = ValorizacionDeStockIaHelper::valorizar($this->dueno->id, $sin_persona, []);
+
+        $this->assertTrue($r['ok'], json_encode($r));
         $this->assertArrayNotHasKey('valor_a_costo', $r);
         $this->assertFalse(ValorizacionDeStockIaHelper::puede_ver_costo(null));
         $this->assertTrue(ValorizacionDeStockIaHelper::puede_ver_costo(AiConversation::create(['user_id' => $this->dueno->id, 'auth_user_id' => $this->dueno->id])));

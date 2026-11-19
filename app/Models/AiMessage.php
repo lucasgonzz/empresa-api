@@ -361,6 +361,7 @@ class AiMessage extends Model
             AsistenteIaException::MOTIVO_TIEMPO_AGOTADO => 'Se agotó el tiempo para completar la respuesta.',
             AsistenteIaException::MOTIVO_SOBRECARGADO => 'El proveedor de IA estaba sobrecargado o no estaba disponible.',
             AsistenteIaException::MOTIVO_SIN_RESPUESTA => 'El proveedor de IA terminó sin devolver un texto de respuesta.',
+            AsistenteIaException::MOTIVO_SIN_SALDO => 'El proveedor de IA rechazó la llamada por falta de saldo de la cuenta.',
         ];
         foreach ($motivos as $motivo => $detalle) {
             if (strpos((string) $this->contenido, AsistenteIaException::MENSAJES[$motivo]) === 0) {

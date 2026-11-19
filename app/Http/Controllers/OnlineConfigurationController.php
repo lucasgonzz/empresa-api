@@ -41,6 +41,7 @@ class OnlineConfigurationController extends Controller
         }
 
         $model = OnlineConfiguration::where('id', $id)->lockForUpdate()->first();
+        $this->guardar_contactos_whatsapp($model, $request);
         if ($request->has('reservar_stock_pedidos_web') && Schema::hasColumn('online_configurations', 'reservar_stock_pedidos_web')) {
             $nuevo = $request->boolean('reservar_stock_pedidos_web');
             if ($nuevo !== (bool) $model->reservar_stock_pedidos_web) {
@@ -234,6 +235,39 @@ class OnlineConfigurationController extends Controller
         // $this->fullModel() ya devuelve el modelo con mail_password oculto por el $hidden del
         // modelo (Eloquent lo excluye al serializar a JSON), asi que nunca se filtra por esta via.
         return response()->json(['model' => $this->fullModel('OnlineConfiguration', $model->id)], 200);
+    }
+
+    protected function guardar_contactos_whatsapp($model, Request $request) {
+        foreach (['whatsapp_consultations_phone', 'whatsapp_seller_phone'] as $campo) {
+            // Una pantalla anterior omite estos destinos; un despliegue parcial puede no tener
+            // las columnas todavía. Ninguno de los dos casos debe cambiar el contacto guardado.
+            if (!$request->has($campo) || !Schema::hasColumn('online_configurations', $campo)) {
+                continue;
+            }
+            $valor = $request->input($campo);
+            if (is_null($valor) || (is_string($valor) && trim($valor) === '')) {
+                $model->{$campo} = null;
+                continue;
+            }
+            if (!is_string($valor) || !preg_match('/^\+?[0-9 ().-]+$/D', trim($valor))) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    $campo => 'Ingresá un número internacional de WhatsApp, con código de país y sin extensiones.',
+                ]);
+            }
+            $numero = preg_replace('/[ ().-]/', '', trim($valor));
+            if (substr($numero, 0, 1) === '+') {
+                $numero = substr($numero, 1);
+            } elseif (substr($numero, 0, 2) === '00') {
+                $numero = substr($numero, 2);
+            }
+            if (!preg_match('/^[1-9][0-9]{7,14}$/D', $numero)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    $campo => 'Ingresá entre 8 y 15 dígitos, incluyendo el código de país y sin el cero local.',
+                ]);
+            }
+            // Son contactos adicionales: no reemplazan el teléfono general ni el de pedidos.
+            $model->{$campo} = $numero;
+        }
     }
 
     /**

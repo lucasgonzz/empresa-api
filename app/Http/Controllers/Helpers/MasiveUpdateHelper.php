@@ -15,6 +15,7 @@ use App\Http\Controllers\Helpers\article\precios\RecalculoDePreciosEnLote;
 use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Http\Controllers\Stock\StockMovementController;
 use App\Jobs\ProcessMasiveUpdateJob;
+use App\Http\Controllers\Helpers\masivas\EjecucionPorTandasHelper;
 use App\Models\Address;
 use App\Models\Article;
 use App\Models\MasiveUpdate;
@@ -41,6 +42,10 @@ class MasiveUpdateHelper
      */
     public static function create_pending_update($owner_user_id, $auth_user_id, $model_name, $from_filter, $criteria)
     {
+        if (EjecucionPorTandasHelper::es_de_articulos($model_name)) {
+            $model_name = 'article';
+            $criteria = EjecucionPorTandasHelper::inicializar($criteria);
+        }
         $masive_update = MasiveUpdate::create([
             'user_id' => (int) $owner_user_id,
             'employee_id' => (int) $auth_user_id,
@@ -111,6 +116,9 @@ class MasiveUpdateHelper
     {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
+        if (strtolower($formated_model_name) === strtolower(Article::class)) {
+            $model_name = 'article';
+        }
 
         /*
          * 🔴 Los cheques NO se actualizan en forma masiva (misión cheque-edicion-acotada, 8/10/2026).
@@ -171,8 +179,19 @@ class MasiveUpdateHelper
             return self::respuesta_de_encolado(422, ['message' => 'Los chats de WhatsApp se administran desde su conversación.']);
         }
 
+        if ($model_name === 'article') {
+            $rechazo_temprano = EjecucionPorTandasHelper::prechequear($owner_id);
+            if ($rechazo_temprano !== null) {
+                return $rechazo_temprano;
+            }
+        }
+
         $from_filter = (boolean) $from_filter;
         $models_id = is_array($models_id) ? $models_id : [];
+        if ($model_name === 'article') {
+            // Una selección es un conjunto: un ID repetido no puede duplicar un incremento/stock.
+            $models_id = array_values(array_unique(array_map('intval', $models_id)));
+        }
         // Un filter_form ausente entra al search como lista vacía (sin filtros efectivos → 422),
         // no como null: con null search() devolvería un JsonResponse en vez del array.
         $filter_form = is_array($filter_form) ? $filter_form : [];
@@ -182,11 +201,59 @@ class MasiveUpdateHelper
                 'filter_form' => $filter_form,
             ]);
             $search_ct = new SearchController();
-            $res = $search_ct->search($request, $model_name, $filter_form, 0, true);
-            $models = $res['models'];
-            $used_filters = $res['used_filters'];
+            if ($model_name === 'article') {
+                $res = $search_ct->search($request, $model_name, $filter_form, 0, true, false, true);
+                $used_filters = $res['used_filters'];
+                $query = clone $res['query'];
+                if (is_callable($filtro_extra)) {
+                    $declarado = call_user_func($filtro_extra, collect());
+                    $extra = $declarado['used_filter'] ?? null;
+                    // Único callback actual: la misma relación images que usa el filtro del asistente.
+                    if (!is_array($extra) || ($extra['key'] ?? null) !== 'imagen'
+                        || !in_array($extra['operator'] ?? null, ['en_blanco', 'no_en_blanco'], true)) {
+                        return self::respuesta_de_encolado(422, ['message' => 'Este filtro adicional requiere una selección acotada de artículos.']);
+                    }
+                    $query = $extra['operator'] === 'en_blanco' ? $query->whereDoesntHave('images') : $query->whereHas('images');
+                    $used_filters[] = $extra;
+                }
+                $efectivos = array_filter($used_filters, function ($filter) {
+                    return isset($filter['operator']) && $filter['operator'] !== 'order_by';
+                });
+                if (count($efectivos) === 0) {
+                    return self::respuesta_de_encolado(422, ['message' => 'No se permite actualizar por filtro si no hay criterios de filtrado.']);
+                }
+                // Una sola lectura de IDs congela la selección; ni OFFSET ni relaciones de 30000 modelos.
+                $seleccionados = $query->setEagerLoads([])->limit(3000)->pluck('articles.id')->all();
+                $models = collect();
+                if (count($seleccionados) >= 3000) {
+                    return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar 3000 registros']);
+                }
+                if (is_callable($filtro_extra)) {
+                    // El callback sólo usa id/images; no cargar embeddings, precios ni withAll.
+                    $por_id = Article::select('articles.id')->where('user_id', $owner_id)->whereIn('id', $seleccionados)
+                        ->with('images')->get()->keyBy('id');
+                    foreach ($seleccionados as $id) {
+                        if ($por_id->has($id)) {
+                            $models->push($por_id->get($id));
+                        }
+                    }
+                    $filtrado = call_user_func($filtro_extra, $models);
+                    $models = collect($filtrado['models'] ?? []);
+                } else {
+                    foreach ($seleccionados as $id) {
+                        $models->push((object) ['id' => $id]);
+                    }
+                }
+                FilterHistoryService::log_action(['user_id' => $owner_id, 'auth_user_id' => $auth_user_id,
+                    'action' => 'busqueda', 'model_name' => 'article', 'filtrados_count' => count($models),
+                    'afectados_count' => 0, 'used_filters' => $used_filters]);
+            } else {
+                $res = $search_ct->search($request, $model_name, $filter_form, 0, true);
+                $models = $res['models'];
+                $used_filters = $res['used_filters'];
+            }
 
-            if (is_callable($filtro_extra)) {
+            if ($model_name !== 'article' && is_callable($filtro_extra)) {
                 $filtrado = call_user_func($filtro_extra, $models);
                 $models = isset($filtrado['models']) ? $filtrado['models'] : [];
                 if (!empty($filtrado['used_filter']) && is_array($filtrado['used_filter'])) {
@@ -210,8 +277,24 @@ class MasiveUpdateHelper
                     'message' => 'No se permite actualizar sin selección de registros.',
                 ]);
             }
-            foreach ($models_id as $id) {
-                $models[] = $formated_model_name::find($id);
+            if ($model_name === 'article') {
+                if (count($models_id) >= 3000) {
+                    return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar ' . count($models_id) . ' registros']);
+                }
+                $propios = array_fill_keys(Article::where('user_id', $owner_id)->whereIn('id', $models_id)->pluck('id')->all(), true);
+                if (count($propios) < count($models_id)) {
+                    // Conservar el diagnóstico al excluir temprano, sin hidratar ni revelar artículos ajenos.
+                    Log::warning('MasiveUpdateHelper: se omitieron artículos de otro dueño o inexistentes de la selección masiva.', [
+                        'owner_id' => (int) $owner_id, 'cantidad' => count($models_id) - count($propios),
+                    ]);
+                }
+                foreach ($models_id as $id) {
+                    $models[] = isset($propios[$id]) ? (object) ['id' => $id] : null;
+                }
+            } else {
+                foreach ($models_id as $id) {
+                    $models[] = $formated_model_name::find($id);
+                }
             }
             // Una selección que resolvió el asistente por un criterio que no es una columna
             // (los artículos sin imagen) deja ese criterio legible en el historial en vez de
@@ -252,25 +335,20 @@ class MasiveUpdateHelper
             'filter_form' => $from_filter ? $filter_form : [],
         ];
 
-        $masive_update = self::create_pending_update(
-            $owner_id,
-            $auth_user_id,
-            $model_name,
-            $from_filter,
-            $criteria
-        );
-
-        /*
-         * 🔴 `afterCommit()` EXPLÍCITO, mismo criterio que RunProviderOrderScanJob en
-         * ProviderOrderScanAltaHelper. Desde la pantalla esto corre sin transacción y despacha de
-         * inmediato, igual que siempre. Desde el asistente la cadena es EjecutorAccionesIaHelper →
-         * DB::transaction → PropuestaActualizacionMasivaIaHelper::ejecutar → acá: sin esto, un
-         * worker libre (redis, en el VPS) puede tomar el job ANTES del commit, no encontrar la
-         * masiva (ProcessMasiveUpdateJob: "registro no encontrado") y la actualización que la
-         * persona confirmó no corre nunca, sin ningún error que lo delate. El default de config
-         * no alcanza: `after_commit` es true solo en la conexión `database`, en `redis` es false.
-         */
-        ProcessMasiveUpdateJob::dispatch($masive_update->id)->afterCommit();
+        $crear = function () use ($owner_id, $auth_user_id, $model_name, $from_filter, $criteria) {
+            $masiva = self::create_pending_update($owner_id, $auth_user_id, $model_name, $from_filter, $criteria);
+            ProcessMasiveUpdateJob::dispatch($masiva->id)->afterCommit();
+            return $masiva;
+        };
+        if ($model_name === 'article') {
+            $admision = EjecucionPorTandasHelper::encolar($owner_id, $crear);
+            if ($admision['status'] !== 200) {
+                return $admision;
+            }
+            $masive_update = $admision['masiva'];
+        } else {
+            $masive_update = $crear();
+        }
 
         Log::info('UpdateController: actualizacion masiva encolada', [
             'masive_update_id' => $masive_update->id,
@@ -307,17 +385,24 @@ class MasiveUpdateHelper
      */
     public static function create_pending_revert(MasiveUpdate $parent_masive_update, $auth_user_id)
     {
+        $criteria = ['revert_of_masive_update_id' => $parent_masive_update->id];
+        if (EjecucionPorTandasHelper::es_de_articulos($parent_masive_update)) {
+            $criteria['resolved_models_id'] = DB::table('masive_update_article')->where('masive_update_id', $parent_masive_update->id)
+                ->orderBy('id')->limit(3000)->pluck('id')->all();
+            if (count($criteria['resolved_models_id']) >= 3000) {
+                throw new \RuntimeException('La reversión supera el límite de registros.');
+            }
+            $criteria = EjecucionPorTandasHelper::inicializar($criteria);
+        }
         $revert_masive_update = MasiveUpdate::create([
             'user_id' => (int) $parent_masive_update->user_id,
             'employee_id' => (int) $auth_user_id,
-            'model_name' => $parent_masive_update->model_name,
+            'model_name' => EjecucionPorTandasHelper::es_de_articulos($parent_masive_update) ? 'article' : $parent_masive_update->model_name,
             'action' => 'revert',
             'status' => 'pending',
             'from_filter' => false,
             'parent_masive_update_id' => $parent_masive_update->id,
-            'criteria_json' => json_encode([
-                'revert_of_masive_update_id' => $parent_masive_update->id,
-            ]),
+            'criteria_json' => json_encode($criteria),
         ]);
 
         // Mismo motivo que en create_pending_update: que se vea desde que se pidió.
@@ -469,6 +554,55 @@ class MasiveUpdateHelper
             throw new Exception('No se permitio actualizar ' . count($models) . ' registros');
         }
 
+        $aplicado = self::aplicar_modelos($masive_update, $models, $proceso);
+        $affected_count = $aplicado['afectados'];
+        $changes_count = $aplicado['cambios'];
+        $non_article_items = $aplicado['otros'];
+
+        $criteria['used_filters_resolved'] = $used_filters;
+        $masive_update->criteria_json = json_encode($criteria);
+        $masive_update->non_article_items_json = count($non_article_items)
+            ? json_encode($non_article_items)
+            : null;
+        $masive_update->affected_count = $affected_count;
+        $masive_update->changes_count = $changes_count;
+        $masive_update->status = 'completed';
+        $masive_update->error_message = null;
+        $masive_update->save();
+
+        // Los mismos números que acaba de guardar la masiva: el detalle del modal y el
+        // historial dicen lo mismo.
+        BackgroundProcessHelper::completar($proceso, [
+            'afectados' => $affected_count,
+            'cambios'   => $changes_count,
+        ]);
+
+        if ($model_name == 'article') {
+            FilterHistoryService::log_action([
+                'user_id' => $masive_update->user_id,
+                'auth_user_id' => $masive_update->employee_id,
+                'action' => 'actualizacion',
+                'model_name' => 'article',
+                'filtrados_count' => count($models),
+                'afectados_count' => $changes_count,
+                'used_filters' => $used_filters,
+            ]);
+        }
+
+        Log::info('MasiveUpdateHelper: actualizacion masiva completada', [
+            'masive_update_id' => $masive_update->id,
+            'affected_count' => $affected_count,
+            'changes_count' => $changes_count,
+        ]);
+        });
+    }
+
+    /** Motor compartido: el llamador por tandas provee una transacción y como máximo 50 modelos. */
+    public static function aplicar_modelos(MasiveUpdate $masive_update, $models, $proceso = null)
+    {
+        $model_name = $masive_update->model_name;
+        $criteria = json_decode($masive_update->criteria_json, true);
+        $update_form = self::ordenar_formulario_para_costo_bruto($criteria['update_form'] ?? []);
         $affected_count = 0;
         $changes_count = 0;
         $non_article_items = [];
@@ -621,7 +755,7 @@ class MasiveUpdateHelper
              * más. El broadcast lo regula el helper. Los números parciales viajan para que el
              * detalle del modal ya muestre algo mientras corre.
              */
-            if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
+            if ($proceso !== null && $recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
                 BackgroundProcessHelper::avanzar($proceso, $recorridos, [
                     'resultado' => ['afectados' => $affected_count, 'cambios' => $changes_count],
                 ]);
@@ -636,42 +770,7 @@ class MasiveUpdateHelper
             $masive_update->employee_id
         );
 
-        $criteria['used_filters_resolved'] = $used_filters;
-        $masive_update->criteria_json = json_encode($criteria);
-        $masive_update->non_article_items_json = count($non_article_items)
-            ? json_encode($non_article_items)
-            : null;
-        $masive_update->affected_count = $affected_count;
-        $masive_update->changes_count = $changes_count;
-        $masive_update->status = 'completed';
-        $masive_update->error_message = null;
-        $masive_update->save();
-
-        // Los mismos números que acaba de guardar la masiva: el detalle del modal y el
-        // historial dicen lo mismo.
-        BackgroundProcessHelper::completar($proceso, [
-            'afectados' => $affected_count,
-            'cambios'   => $changes_count,
-        ]);
-
-        if ($model_name == 'article') {
-            FilterHistoryService::log_action([
-                'user_id' => $masive_update->user_id,
-                'auth_user_id' => $masive_update->employee_id,
-                'action' => 'actualizacion',
-                'model_name' => 'article',
-                'filtrados_count' => count($models),
-                'afectados_count' => $changes_count,
-                'used_filters' => $used_filters,
-            ]);
-        }
-
-        Log::info('MasiveUpdateHelper: actualizacion masiva completada', [
-            'masive_update_id' => $masive_update->id,
-            'affected_count' => $affected_count,
-            'changes_count' => $changes_count,
-        ]);
-        });
+        return ['afectados' => $affected_count, 'cambios' => $changes_count, 'otros' => $non_article_items];
     }
 
     /**
@@ -1388,9 +1487,13 @@ class MasiveUpdateHelper
      * @param \App\Models\MasiveUpdate $parent_masive_update
      * @return void
      */
-    protected static function revert_article_pivot_changes(MasiveUpdate $revert_masive_update, MasiveUpdate $parent_masive_update)
+    public static function revert_article_pivot_changes(MasiveUpdate $revert_masive_update, MasiveUpdate $parent_masive_update, array $pivots = null)
     {
-        $parent_masive_update->load('articles');
+        if ($pivots === null) {
+            $parent_masive_update->load('articles');
+        } else {
+            $parent_masive_update->setRelation('articles', $parent_masive_update->articles()->wherePivotIn('id', $pivots)->get());
+        }
 
         /* Mismo motivo que en process_update(): resuelto una vez, cero queries por articulo. */
         $user_del_comercio = User::find($parent_masive_update->user_id);
@@ -1399,7 +1502,7 @@ class MasiveUpdateHelper
         $memoria_de_la_corrida = CatalogoPorListaHelper::nueva_memoria_de_corrida();
 
         /* El registro visible de la reversión, buscado una vez; el avance va cada CADA_CUANTAS_UNIDADES. */
-        $proceso = BackgroundProcessHelper::por_referencia($revert_masive_update);
+        $proceso = $pivots === null ? BackgroundProcessHelper::por_referencia($revert_masive_update) : null;
         $recorridos = 0;
 
         /*
@@ -1415,7 +1518,7 @@ class MasiveUpdateHelper
             // también son registros recorridos para la barra.
             $recorridos++;
 
-            if ($recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
+            if ($proceso !== null && $recorridos % BackgroundProcessHelper::CADA_CUANTAS_UNIDADES === 0) {
                 BackgroundProcessHelper::avanzar($proceso, $recorridos);
             }
 
@@ -1819,17 +1922,28 @@ class MasiveUpdateHelper
         if ($masive_update->action != 'update') {
             return false;
         }
-        if ($masive_update->status != 'completed') {
+        $estado_por_tandas = EjecucionPorTandasHelper::estado($masive_update);
+        $fallo_parcial = EjecucionPorTandasHelper::es_de_articulos($masive_update) && $masive_update->status === 'failed'
+            && $estado_por_tandas !== null && (int) $masive_update->affected_count > 0;
+        if ($masive_update->status != 'completed' && !$fallo_parcial) {
             return false;
         }
         if (!is_null($masive_update->reverted_at)) {
             return false;
         }
 
+        if (EjecucionPorTandasHelper::es_de_articulos($masive_update) && !$masive_update->articles()->exists()) {
+            return false;
+        }
+
         $has_completed_revert = $masive_update->child_reverts()
             ->where('action', 'revert')
-            ->whereIn('status', ['pending', 'processing', 'completed'])
-            ->exists();
+            ->where(function ($q) {
+                $q->whereIn('status', ['pending', 'processing', 'completed'])
+                    ->orWhere(function ($parcial) {
+                        $parcial->where('status', 'failed')->whereHas('articles');
+                    });
+            })->exists();
 
         return !$has_completed_revert;
     }

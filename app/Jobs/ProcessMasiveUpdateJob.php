@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\MasiveUpdateHelper;
 use App\Models\MasiveUpdate;
+use App\Http\Controllers\Helpers\masivas\EjecucionPorTandasHelper;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -32,12 +33,21 @@ class ProcessMasiveUpdateJob implements ShouldQueue
      */
     protected $masive_update_id;
 
+    protected $cursor_esperado = null;
+    protected $generacion_esperada = null;
+
     /**
      * @param int $masive_update_id
      */
-    public function __construct($masive_update_id)
+    public function __construct($masive_update_id, $cursor_esperado = null, $generacion_esperada = null)
     {
         $this->masive_update_id = (int) $masive_update_id;
+        $this->cursor_esperado = $cursor_esperado;
+        $this->generacion_esperada = $generacion_esperada;
+        $masiva = MasiveUpdate::find($this->masive_update_id);
+        if ($masiva && EjecucionPorTandasHelper::es_de_articulos($masiva)) {
+            $this->timeout = 120;
+        }
     }
 
     /**
@@ -53,6 +63,11 @@ class ProcessMasiveUpdateJob implements ShouldQueue
             Log::warning('ProcessMasiveUpdateJob: registro no encontrado', [
                 'masive_update_id' => $this->masive_update_id,
             ]);
+            return;
+        }
+
+        if (EjecucionPorTandasHelper::es_de_articulos($masive_update)) {
+            EjecucionPorTandasHelper::ejecutar($this->masive_update_id, $this->cursor_esperado, $this->generacion_esperada);
             return;
         }
 
@@ -85,6 +100,12 @@ class ProcessMasiveUpdateJob implements ShouldQueue
         $masive_update = MasiveUpdate::find($this->masive_update_id);
 
         if (!$masive_update || in_array($masive_update->status, ['completed', 'failed', 'reverted'])) {
+            return;
+        }
+
+        if (EjecucionPorTandasHelper::es_de_articulos($masive_update)) {
+            EjecucionPorTandasHelper::fallar_si_vigente($this->masive_update_id, $this->cursor_esperado, $this->generacion_esperada,
+                $e ? $e->getMessage() : 'La tanda se interrumpió antes de confirmar sus cambios.');
             return;
         }
 

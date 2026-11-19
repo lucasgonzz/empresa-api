@@ -297,17 +297,21 @@ class Objetivo_del_agente_Test extends TestCase
      * @group whatsapp
      * @test
      */
-    public function un_guardado_de_credenciales_no_borra_el_objetivo()
+    public function un_guardado_de_la_conexion_no_borra_el_objetivo()
     {
         Http::fake(['*' => Http::response([], 200)]);
         $this->actingAs($this->comercio, 'web');
         $this->poner_objetivo('buy_online', 'Recordale que paga con Mercado Pago.');
 
+        // Misión kapso-secretos-fuera-del-navegador: el dueño ya no guarda credenciales (403); lo que guarda
+        // la pantalla Conexión es solo `is_active`.
         $this->putJson('api/whatsapp-bot/config', [
             'kapso_api_key'   => 'kapso-nueva',
             'phone_number_id' => '5491100099928',
             'webhook_secret'  => 'secreto-nuevo',
-        ])->assertStatus(200);
+        ])->assertStatus(403);
+
+        $this->putJson('api/whatsapp-bot/config', ['is_active' => true])->assertStatus(200);
 
         $guardada = $this->config->fresh();
         $this->assertEquals('buy_online', $guardada->agent_objective);

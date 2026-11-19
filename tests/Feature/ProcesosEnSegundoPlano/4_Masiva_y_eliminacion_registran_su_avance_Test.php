@@ -32,6 +32,8 @@ use Tests\EmpresaTestCase;
  */
 class Masiva_y_eliminacion_registran_su_avance_Test extends EmpresaTestCase
 {
+    use \Tests\Support\EjecutaMasivasAsincronas;
+
     /** @var int */
     protected $user_id;
 

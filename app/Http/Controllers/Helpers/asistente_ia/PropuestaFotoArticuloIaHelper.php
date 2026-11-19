@@ -361,6 +361,27 @@ class PropuestaFotoArticuloIaHelper
             $aviso = $reemplazo['aviso'];
         }
 
+        /*
+         * Misión asistente-diario-20261118 (A2): ¿ya se registró OTRA foto en estos mismos artículos en esta
+         * charla? Si es el mismo archivo no hay nada que hacer (y se dice con certeza); si es otra, la tarjeta
+         * espera el sí aunque sea «directo» y el modelo recibe el dato para tratarla como corrección.
+         */
+        $anterior = self::foto_ya_registrada_en_estos_articulos($contexto, $ids, $foto);
+
+        if (!is_null($anterior) && $anterior['misma_imagen']) {
+
+            return self::con_el_resumen(RespuestaDeCargaIa::error(
+                'Esa foto es EXACTAMENTE la misma que ya registraste en ' . ($uno_solo ? 'este artículo' : 'estos artículos')
+                . ' ' . $anterior['cuando'] . ' en esta conversación (se comparó el archivo): no hay nada nuevo para cargar. '
+                . 'Decíselo así a la persona; si quiere otra foto, que la mande.'
+            ), $resumen);
+        }
+
+        if (!is_null($anterior)) {
+
+            $renglones[] = ['etiqueta' => 'Ojo', 'valor' => 'Ya registraste otra foto en ' . ($uno_solo ? 'este artículo' : 'estos artículos') . ' ' . $anterior['cuando'] . ' en esta charla'];
+        }
+
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
@@ -399,7 +420,100 @@ class PropuestaFotoArticuloIaHelper
             $resumen['requiere_confirmacion'] = true;
         }
 
+        /*
+         * A2: otra foto distinta ya registrada en los mismos artículos. Nunca se pone sola (la tarjeta espera el
+         * sí) y el modelo recibe el hecho comparado por el código, no por lo que «ve».
+         */
+        if (!is_null($anterior)) {
+
+            $resumen['requiere_confirmacion'] = true;
+            $resumen['foto_ya_registrada_antes'] = 'En esta conversación ya registraste OTRA foto (distinta, comparada archivo contra archivo) en '
+                . ($uno_solo ? 'este artículo' : 'estos artículos') . ' ' . $anterior['cuando'] . '. '
+                . ($reemplaza
+                    ? 'La tarjeta reemplaza las fotos de hoy por esta.'
+                    : 'Si la persona presenta esta foto como la CORRECTA (una corrección), volvé a llamar con reemplazar_fotos: true; si no aclaró, preguntale en una línea si reemplazás la anterior o la sumás.');
+        }
+
         return AccionesIaHelper::respuesta_de_propuesta($creada, $texto_del_resumen, $resumen);
+    }
+
+    /**
+     * La última foto que ESTA conversación ya registró (tarjeta confirmada, de las últimas HORAS horas) en
+     * TODOS los artículos de la nueva propuesta, comparada con la nueva por su contenido, o null si no hay.
+     *
+     * 🔴 Misión asistente-diario-20261118 (A2, Ferre Total conv 59): Pablo registró una foto en cuatro
+     * artículos y mandó otra («esta es la que tenés que ponerle»); el asistente contestó «es la misma imagen»
+     * sin compararlas. Acá se compara de verdad (sha1 de los bytes que guardó el chat) y el resultado viaja
+     * a la respuesta de la herramienta. Es protegido: si algo falla (el archivo ya no está), null y la
+     * propuesta sigue como siempre.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array<int, int>  $ids  Los artículos de la propuesta nueva.
+     * @param  \App\Models\AiMessageImagen  $foto  La foto nueva.
+     * @return array|null  ['misma_imagen' => bool, 'cuando' => string, 'imagen_id' => int]
+     */
+    protected static function foto_ya_registrada_en_estos_articulos(ContextoDeCargaIa $contexto, array $ids, AiMessageImagen $foto)
+    {
+        try {
+
+            $registradas = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+                ->where('tipo', AiMessageAction::TIPO_FOTO_ARTICULO)
+                ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+                ->where('created_at', '>=', \Carbon\Carbon::now()->subHours(FotosDeLaConversacionIaHelper::HORAS))
+                ->orderBy('id', 'DESC')
+                ->get();
+
+            foreach ($registradas as $registrada) {
+
+                $datos = is_array($registrada->datos) ? $registrada->datos : [];
+
+                // Solo las tarjetas de «una foto del chat a estos artículos»: ni quitar, ni generada, ni la de otro artículo.
+                if (empty($datos['imagen_id']) || isset($datos['operacion']) || isset($datos['origen'])) {
+
+                    continue;
+                }
+
+                $de_esa = isset($datos['article_ids']) && is_array($datos['article_ids'])
+                    ? array_map('intval', $datos['article_ids'])
+                    : (isset($datos['article_id']) ? [(int) $datos['article_id']] : []);
+
+                if (count(array_diff($ids, $de_esa))) {
+
+                    continue;
+                }
+
+                $anterior = AiMessageImagen::where('user_id', $contexto->owner_id)->find((int) $datos['imagen_id']);
+
+                if (is_null($anterior)) {
+
+                    continue;
+                }
+
+                $bytes_nueva = AsistenteImagenHelper::binario($foto);
+                $bytes_anterior = AsistenteImagenHelper::binario($anterior);
+
+                if (is_null($bytes_nueva) || is_null($bytes_anterior)) {
+
+                    return null;
+                }
+
+                $cuando = !is_null($registrada->created_at)
+                    ? 'hace ' . max(1, (int) round($registrada->created_at->diffInMinutes(\Carbon\Carbon::now()))) . ' min'
+                    : 'hace un rato';
+
+                return [
+                    'misma_imagen' => ((int) $anterior->id === (int) $foto->id) || sha1($bytes_nueva) === sha1($bytes_anterior),
+                    'cuando'       => $cuando,
+                    'imagen_id'    => (int) $anterior->id,
+                ];
+            }
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+
+        return null;
     }
 
     public static function proponer_generada(ContextoDeCargaIa $contexto, AiMessage $mensaje, array $input)

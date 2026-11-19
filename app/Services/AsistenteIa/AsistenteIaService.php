@@ -1225,7 +1225,27 @@ class AsistenteIaService
                 $error_body = $response->json();
                 $error_type = $error_body['error']['type'] ?? null;
 
-                if (ProveedorIaHelper::es_error_transitorio($response)) {
+                if (ProveedorIaHelper::es_error_de_saldo($response)) {
+                    /*
+                     * 🔴 Misión asistente-diario-20261118 (M1): cuenta del proveedor sin saldo (402 /
+                     * billing_error). Se loguea a nivel ERROR con una marca fija —ASISTENTE_IA_SIN_SALDO— para
+                     * que una alerta o una búsqueda en el log lo encuentre sin adivinar el texto del proveedor.
+                     * Al dueño no se le promete «unos segundos» (ver AsistenteIaException::MOTIVO_SIN_SALDO).
+                     * Sin el body crudo en el log: solo status, tipo y proveedor.
+                     */
+                    Log::error('ASISTENTE_IA_SIN_SALDO: el proveedor de IA rechazó la llamada por falta de saldo; hay que cargar crédito.', [
+                        'proveedor'          => $proveedor,
+                        'http'               => $response->status(),
+                        'type'               => is_null($error_type) ? 'sin type' : (string) $error_type,
+                        'ai_conversation_id' => $conversation->id,
+                        'ai_message_id'      => $assistant_message->id,
+                    ]);
+
+                    $falla = AsistenteIaException::sin_saldo(
+                        'El proveedor ' . ProveedorIaHelper::nombre_de($proveedor) . ' rechazó la llamada por falta de saldo (HTTP '
+                        . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ').'
+                    );
+                } elseif (ProveedorIaHelper::es_error_transitorio($response)) {
                     $falla = AsistenteIaException::sobrecargado(
                         '(HTTP ' . $response->status() . ', type ' . (is_null($error_type) ? 'sin type' : (string) $error_type) . ')'
                     );
@@ -1740,6 +1760,21 @@ class AsistenteIaService
                 : ConfirmacionDeterministaIaHelper::texto_de_respaldo($confirmacion_determinista);
 
             $final_text = is_null($respaldo) ? ($cerrando ? '' : $crudo) : $respaldo;
+        }
+
+        /*
+         * Misión asistente-diario-20261118 (M3): si el modelo se quedó sin salida (`max_tokens`), el texto termina
+         * a mitad de frase. Se corta en el último salto de línea y se avisa que sigue. Va antes del chequeo de
+         * «sin texto» para no tocar nada vacío.
+         */
+        if ($final_text !== '' && $stop_reason === 'max_tokens') {
+            Log::warning('AsistenteIaService: la respuesta final llegó cortada por max_tokens; se recorta en un salto de línea.', [
+                'ai_conversation_id' => $conversation->id,
+                'ai_message_id'      => $assistant_message->id,
+                'modelo'             => $model,
+            ]);
+
+            $final_text = TextoFinalIaHelper::recortar_sin_cortar_frases($final_text);
         }
 
         if ($final_text === '') {
@@ -2724,7 +2759,18 @@ APP;
             . '  mensaje: cuando están listas le llegan a la persona en otro mensaje por este chat, con el' . "\n"
             . '  link. Decí en una línea «' . ImagenPorWhatsappIaHelper::FRASE_PARA_EL_DUENO . '», sin prometer tiempos.' . "\n"
             . '  🔴 No la mandes a otra app ni digas que no se puede, y nunca digas que la pediste si no' . "\n"
-            . '  llamaste a pedir_imagen en este mensaje.' . "\n";
+            . '  llamaste a pedir_imagen en este mensaje.' . "\n"
+            /*
+             * Misión asistente-diario-20261118 (A1, Truvari conv 42): «¿vos no la podés reemplazar?» → «Sí,
+             * puedo» y, dos mensajes después, «me apuré». La regla estaba solo en la descripción de la
+             * herramienta y el modelo no la tuvo en cuenta cuando la persona preguntó por reemplazar la foto.
+             */
+            . '  🔴 Una imagen GENERADA por IA NO se publica en un artículo desde este chat ni reemplaza su foto:' . "\n"
+            . '  avisalo en el MISMO mensaje en que la pedís («te la mando por acá; para ponerla en la ficha tenés' . "\n"
+            . '  que cargarla desde el sistema o la app, o mandame vos la foto que querés usar y se la pongo»).' . "\n"
+            . '  Si después te pregunta si la podés poner o reemplazar en el artículo, la respuesta es NO para la' . "\n"
+            . '  generada y SÍ para una foto que ella te mande (proponer_foto_articulo). Nunca digas «sí, puedo»' . "\n"
+            . '  ni armes la confirmación de publicar una imagen generada: te vas a tener que desdecir.' . "\n";
     }
 
     /**
@@ -2758,6 +2804,10 @@ APP;
   contexto: los datos del negocio (saldos, stock, cheques, precios) volvé a consultarlos con las
   herramientas antes de afirmarlos, y lo que ahí ya se pidió o se cargó no lo repitas salvo que
   te lo pidan ahora.
+- «Qué cargaste / facturaste / hiciste / me hiciste»: 🔴 se contesta con
+  consultar_lo_que_hizo_el_asistente (lo que de verdad se ejecutó, con la venta y su factura como
+  están hoy), nunca de memoria ni con los resúmenes de charlas viejas. Y un dato que ya diste en
+  esta conversación no lo contradigas sin volver a consultarlo.
 REGLA;
     }
 
@@ -2938,6 +2988,18 @@ AUTO_RESUELTO;
          * puede controlar. Va acá, en el bloque 1 del system (caché por negocio y por día porque lleva
          * el nombre del negocio y la fecha), y no en las herramientas: no toca el caché compartido de
          * las tools.
+         *
+         * Misión asistente-diario-20261117 (charlas de Truvari del 16/11/2026):
+         *  - B1: el asistente le habló al dueño de «api/...», de ids y de campos, y después de confirmar un
+         *    presupuesto que el dueño había pedido «confirmar y facturar» le preguntó «¿querés que busque la
+         *    venta?». La regla va pegada a la de las ACCIONES DE PANTALLA (de ahí salen las rutas y los ids que
+         *    se filtraban) y no duplica ninguna: no había una regla de jerga en este prompt.
+         *  - B2: el dueño dijo «esta es la foto» y la imagen todavía no había llegado; el asistente salió a
+         *    buscar una en internet en ese mismo turno. La regla va con las de la foto del alta de un artículo.
+         *  - El renglón «Un presupuesto NO es una venta» decía que confirmarlo «no lo hacés vos», y este mismo
+         *    bloque dice que se hace por las ACCIONES DE PANTALLA (POST api/budget/{id}/confirmar está en el
+         *    catálogo; en producción se usó el 16/11/2026). Ahora dice lo segundo: lo propone el asistente
+         *    cuando la persona lo pide, nunca por su cuenta.
          */
         return <<<CARGA
 {$titulo_de_carga}
@@ -2957,6 +3019,17 @@ AUTO_RESUELTO;
   (POST/PUT) o proponer_borrado_por_pantalla (DELETE, que SIEMPRE deja tarjeta). Pasale la
   descripción en una línea, que es lo que la persona lee en la tarjeta. Nunca la uses para lo
   que ya tiene herramienta propia.
+  🔴 Las rutas, los ids y los nombres de campo son para las herramientas, NO para la persona: en lo
+  que le escribís nunca nombres una ruta («api/...»), un id interno (sale_id, el id de una
+  tarjeta, el de un registro), un controller, una tabla ni el nombre de un campo. Hablale como la
+  pantalla: la venta N° 3105, el presupuesto N° 12, el cliente, la pantalla de Ventas.
+  🔴 Si la persona pidió confirmar un presupuesto Y facturarlo («confirmalo y facturalo»), es un
+  solo pedido: después de la tarjeta de confirmación del presupuesto, armá directo la tarjeta de
+  la factura de la venta que salió de ese presupuesto, con el N° que devolvió la confirmación (si
+  no lo trae, buscalo vos). Preguntá solo lo que falte de verdad para facturar —el emisor si hay
+  más de uno, el tipo de comprobante si
+  no se deduce— y nunca le preguntes «¿querés que busque la venta?» ni si querés seguir con la
+  factura: ya te lo pidió.
   Y el LINK del PDF de una venta o de un presupuesto lo pasás con consultar_link_de_pdf: es
   el mismo que se comparte por WhatsApp desde la pantalla.
   Lo que antes quedaba afuera —editar una venta o un presupuesto ya cargados, confirmar o
@@ -2990,8 +3063,8 @@ AUTO_RESUELTO;
   abrir un depósito nuevo a un artículo. Para "sumale 10 a tal sucursal" va la segunda, con
   modo sumar. Antes de cualquiera de las dos, mirá consultar_stock_por_deposito.
 - Un presupuesto NO es una venta: no descuenta stock, no mueve caja y no toca la cuenta
-  corriente. Eso pasa recién cuando la persona lo confirma desde la pantalla de
-  Presupuestos, y eso no lo hacés vos: decíselo.
+  corriente; eso pasa recién cuando se CONFIRMA. Confirmarlo lo proponés vos con
+  proponer_accion_de_pantalla cuando la persona te lo pide; nunca lo confirmes por tu cuenta.
 - Una oferta se le muestra al cliente en la tienda; desde el chat no se le manda ningún mail
   ni WhatsApp de la oferta, y eso decíselo a la persona. Una PROMOCIÓN por WhatsApp a los
   clientes sí se manda: proponer_promocion_por_whatsapp.
@@ -3073,7 +3146,12 @@ AUTO_RESUELTO;
 - Si la persona pide dar de alta un artículo con la foto que mandó, va en la MISMA tarjeta del alta:
   proponer_alta de article con con_foto_de_la_conversacion y descripcion, nunca un alta y
   después una foto aparte. proponer_foto_articulo es para un artículo que ya existe.
+- 🔴 Si la persona dice que te manda la foto («te paso la foto», «ahí va la foto», «esta es la
+  foto») y en ESTE mensaje no llegó ninguna imagen, esperala: decile en una línea que todavía no
+  te llegó y que la esperás para seguir. En ese turno no busques una foto en internet ni armes el
+  alta con una imagen buscada: la foto que va es la que te está mandando.
 {$this->reglas_de_varias_fotos_y_compras()}
+{$this->reglas_de_cambiar_la_foto_de_un_articulo()}
 - 🔴 Todo alta de un artículo lleva descripcion. Si no te la trajo hecha la búsqueda por código de
   barras, escribila vos: una o dos oraciones en español con lo que dijo la persona y lo que se ve en
   la foto. No inventes medidas, materiales, potencias ni otros datos técnicos que no estén en lo que
@@ -3142,6 +3220,40 @@ AUTO_RESUELTO;
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
 CARGA;
+    }
+
+    /**
+     * Las reglas de la misión asistente-diario-20261118 (A1 y A2) para CAMBIAR la foto de un artículo: la
+     * foto que la persona dice que es la correcta y la foto nueva que llega después de otra. Van pegadas a las
+     * de las fotos de varios artículos, dentro del bloque de carga (todos los canales). La del «sí con una
+     * aclaración» nombra confirmar_carga_pendiente y por eso vive en bloque_de_confirmacion_por_texto().
+     *
+     * 🔴 LOS CASOS REALES (17/11/2026).
+     *   - Truvari, conv 42 (Fernando): para reemplazar la foto de un vino el asistente le pidió la confirmación
+     *     cuatro veces. A la tarjeta («¿Lo hago?») le contestó «Sí, hacelo, pero respetá el tamaño»: el
+     *     asistente tomó la aclaración como un pedido nuevo y volvió a preguntar; después rechazó la foto
+     *     porque «la etiqueta era de otro vino» cuando el nombre coincidía, y Fernando tuvo que decirle que
+     *     era la correcta. Escribió: «me preguntaste cuatro veces… es una pérdida de tiempo».
+     *   - Ferre Total, conv 59 (Pablo): le puso una foto a cuatro artículos; llegó una segunda foto («esta es
+     *     la imagen que tenés que ponerle») y el asistente contestó «es la misma imagen que ya quedó
+     *     cargada» sin compararlas. No era la misma.
+     *
+     * @return string
+     */
+    protected function reglas_de_cambiar_la_foto_de_un_articulo(): string
+    {
+        return <<<REGLAS
+- 🔴 Si la persona te dice que la foto que mandó es la correcta («es esa», «está bien la imagen»), no la
+  rechaces ni la discutas por lo que se lee en la etiqueta: leer una etiqueta se equivoca. Puede ser una
+  duda tuya en UNA línea antes de armar la tarjeta, pero cuando ella insiste, la usás.
+- 🔴 Una foto NUEVA que llega después de proponer o de registrar una foto para los mismos artículos es,
+  casi siempre, la corrección («esta es la que va», «no, pusiste esta»): llamá de nuevo a
+  proponer_foto_articulo con esos mismos artículos y esta foto. Si la anterior ya quedó registrada y la
+  persona la presenta como la correcta, mandá reemplazar_fotos: true (la tarjeta lo muestra y espera su sí);
+  si no aclara, decile en una línea que ya había registrado otra y preguntale si la reemplazás o la sumás.
+  🔴 NUNCA digas «es la misma imagen», «coincide con la que ya está» ni «no cambió nada» si la
+  herramienta no te lo dijo: comparar fotos es cosa de la herramienta, no de lo que ves.
+REGLAS;
     }
 
     /**
@@ -3627,6 +3739,13 @@ PRIMERA;
 {$primera}
 - Recién cuando la persona te contesta que sí, llamás a confirmar_carga_pendiente con el
   tarjeta_id que te devolvió la propuesta. Si te dice que no, cancelar_carga_pendiente.
+- 🔴 Un sí con una aclaración que NO cambia la tarjeta es un sí (misión asistente-diario-20261118, A1:
+  Truvari te dijo «sí, pero respetá el tamaño» y le preguntaste cuatro veces). Si hay una tarjeta esperando el
+  sí y la persona contesta «sí, hacelo, pero respetá el tamaño de la foto», «sí, es la correcta», «dale, tal
+  cual»: llamá a confirmar_carga_pendiente con esa tarjeta en ese mismo turno y contá el resultado; el sistema
+  ya respeta la proporción de la foto. No armes otra confirmación ni vuelvas a preguntar «¿confirmás?». Solo si
+  la aclaración CAMBIA algo (otro artículo, otra foto, «mejor sumala sin sacar la otra») armás la tarjeta
+  nueva, y una sola vez.
 - Antes de preguntar «¿lo registro?», tiene que existir una propuesta real de esa carga.
   Si la persona corrigió datos, usá los corregidos. Si dijo que sí pero la propuesta anterior
   no existe, armala con los datos disponibles y seguí el estado que devuelva la herramienta.
@@ -6008,7 +6127,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'consultar_articulos_mas_vendidos',
-                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál. 🔴 Si la persona pide el ranking "en unidades y en pesos" (o "por cantidad y por plata", "separámelos en unidades y en precio"), dale DOS rankings, uno ordenado por unidades y otro por plata (el de plata: consultar_resumen_de_ventas con agrupar_por articulo y orden total), no uno solo con las dos columnas.',
+                'description' => 'Devuelve los artículos más vendidos del negocio en una ventana, con las unidades vendidas (total_vendido), el monto en pesos (total_en_pesos), su articulo_id y si tienen foto (tiene_imagen), según las VENTAS DEL ERP. Usala para qué se vende más. ⚠️ total_en_pesos suma solo las unidades con precio en pesos guardado; unidades_sin_precio dice cuántas quedaron afuera (ventas en dólares o viejas): si es mayor a cero, el monto es incompleto y hay que decirlo. Para el total vendido del negocio va consultar_resumen_de_ventas. Agrupa por artículo y no sabe QUIÉN compró: para eso está consultar_quien_compro_un_articulo. 🔴 "Lo que más vendo de [proveedor]" (ej. "qué es lo que más vendo de Ferretera del Sur") = ESTA herramienta con proveedor: los artículos cuyo proveedor es ese, vendidos a MIS clientes. Lo que le COMPRO a un proveedor va por consultar_compras_a_un_proveedor. Con proveedor la respuesta trae el proveedor que se usó (decíselo a la persona) y la lista en articulos; si vuelve error con opciones, el nombre no encajó: si una opción es evidente (la persona lo escribió con otra letra), volvé a llamar con ese nombre exacto; si no, preguntá cuál. 🔴 Si la persona pide el ranking "en unidades y en pesos" (o "por cantidad y por plata", "separámelos en unidades y en precio"), dale DOS rankings, uno ordenado por unidades y otro por plata (el de plata: consultar_resumen_de_ventas con agrupar_por articulo y orden total), no uno solo con las dos columnas. 🔴 Por defecto trae los 20 primeros: si la persona pidió el LISTADO COMPLETO, «todos los artículos que vendí» o un Excel, mandá limite 100 y, mientras la respuesta traiga hay_mas: true, volvé a llamar con la pagina siguiente (hasta 5 páginas); con proveedor la respuesta trae articulos_con_movimiento (cuántos vendieron algo en el período) y nunca lo confundas con los artículos que el proveedor tiene cargados. Armá el Excel con TODOS los que juntaste; si no entran, decí cuántos incluiste y cuántos faltan.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6029,6 +6148,18 @@ CONFIRMACION;
                             'type' => 'string',
                             'description' => 'Nombre del proveedor tal como lo dijo la persona, para "lo que más vendo de [proveedor]": acota a los artículos cuyo proveedor es ese. Sin esto, todos los artículos.',
                         ],
+                        /*
+                         * Misión asistente-diario-20261118 (M3), AL FINAL por la regla del prefijo del caché: el
+                         * listado completo / el Excel de lo vendido ya no se corta en 20 renglones.
+                         */
+                        'limite' => [
+                            'type' => 'integer',
+                            'description' => 'Cuántos artículos por página (por defecto 20, hasta 100). Para un listado completo o un Excel mandá 100.',
+                        ],
+                        'pagina' => [
+                            'type' => 'integer',
+                            'description' => 'Página de resultados (1 = los primeros, 2 = los siguientes…), hasta 5. Pedí la siguiente mientras la respuesta traiga hay_mas: true.',
+                        ],
                     ],
                     'required' => [],
                 ],
@@ -6038,8 +6169,9 @@ CONFIRMACION;
                         self::dias_del_enum($input),
                         isset($input['desde']) ? $input['desde'] : null,
                         isset($input['hasta']) ? $input['hasta'] : null,
-                        0,
-                        isset($input['proveedor']) ? (string) $input['proveedor'] : null
+                        isset($input['limite']) ? (int) $input['limite'] : 0,
+                        isset($input['proveedor']) ? (string) $input['proveedor'] : null,
+                        isset($input['pagina']) ? (int) $input['pagina'] : 1
                     );
                 },
             ],
@@ -6848,7 +6980,7 @@ CONFIRMACION;
             ],
             [
                 'name' => 'exportar_articulos_excel',
-                'description' => 'Arma un EXCEL (.xlsx) con los ARTÍCULOS que cumplen un filtro y devuelve un LINK para bajarlo. Las filas las lee el SISTEMA (todas las que cumplen el filtro, hasta ' . \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::MAX_FILAS_DEL_EXCEL . '): vos mandás solo filtros y columnas, nunca las filas. 🔴 Para "pasame los artículos / el stock / la lista de precios en un Excel" va ESTA, no exportar_excel (que es para tablas chicas que ya consultaste). Mismos filtros que contar_articulos_por_filtro; solo recorta: con_stock, sin_stock, stock_negativo, sin_precio, sin_costo o precio_menor_o_igual_al_costo (la revisión de precios). Columnas: nombre, codigo, codigo_de_proveedor, rubro, proveedor, marca, stock, costo, precio, valor_a_costo, valor_a_precio, en_tienda (sin columnas van las de siempre; las de costo solo si quien pregunta puede ver costos). La respuesta trae el link: pasáselo TAL CUAL, sin acortarlo; vence a los 7 días. Si trae "error", contá el motivo tal cual (si son demasiados, preguntá por qué filtrar). Nunca digas que no podés armar un Excel.',
+                'description' => 'Arma un EXCEL (.xlsx) con los ARTÍCULOS que cumplen un filtro y devuelve un LINK para bajarlo. Las filas las lee el SISTEMA (todas las que cumplen el filtro, hasta ' . \App\Http\Controllers\Helpers\asistente_ia\ValorizacionDeStockIaHelper::MAX_FILAS_DEL_EXCEL . '): vos mandás solo filtros y columnas, nunca las filas. 🔴 Para "pasame los artículos / el stock / la lista de precios en un Excel" va ESTA, no exportar_excel (que es para tablas chicas que ya consultaste). Mismos filtros que contar_articulos_por_filtro; solo recorta: con_stock, sin_stock, stock_negativo, sin_precio, sin_costo o precio_menor_o_igual_al_costo (la revisión de precios). Columnas: nombre, codigo, codigo_de_proveedor, rubro, proveedor, marca, stock, costo, precio, valor_a_costo, valor_a_precio, en_tienda, margen (el mismo % de ganancia que muestra la ficha del artículo, con el precio neto de IVA) y ganancia_por_unidad (sin columnas van las de siempre, margen y ganancia incluidos; las de costo, margen y ganancia solo si quien pregunta puede ver costos). Si piden el margen o la ganancia y mandás columnas, sumá margen y ganancia_por_unidad. La respuesta trae el link: pasáselo TAL CUAL, sin acortarlo; vence a los 7 días. Si trae "error", contá el motivo tal cual (si son demasiados, preguntá por qué filtrar). Nunca digas que no podés armar un Excel.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6912,6 +7044,37 @@ CONFIRMACION;
                 ],
                 'handler' => function (array $input, $owner_id, $conversation = null) {
                     return \App\Http\Controllers\Helpers\asistente_ia\RendimientoDeComprasIaHelper::consultar(
+                        (int) $owner_id,
+                        ($conversation instanceof AiConversation) ? $conversation : null,
+                        $input
+                    );
+                },
+            ],
+            /*
+             * Misión asistente-diario-20261117 (parte B, A2), AL FINAL del registro por el prefijo del caché.
+             * Truvari (16/11, conv. 40): «¿qué me cargaste / facturaste?» se contestaba de memoria y de los
+             * resúmenes de charlas viejas, con listas contradictorias. Lo que el asistente ejecutó vive en
+             * `ai_message_actions`; AccionesHechasPorElAsistenteIaHelper lo lee acotado al negocio y a la
+             * persona, sin `datos` ni `presentacion`, y completa cada venta con cómo está hoy.
+             */
+            [
+                'name' => 'consultar_lo_que_hizo_el_asistente',
+                'description' => 'LO QUE EL ASISTENTE HIZO DE VERDAD en el sistema: las cargas confirmadas (ventas, altas, ediciones, bajas, pagos, gastos, facturas, presupuestos…), de la más nueva a la más vieja, con fecha, tipo, qué hizo y, si tocó una venta, cómo está HOY esa venta (número, cliente, total, si está anulada y si tiene factura emitida con CAE). 🔴 Es LA herramienta de «¿qué me cargaste?», «¿qué facturaste?», «¿qué hiciste hoy?», «¿qué ventas me hiciste?»: contestá con esto y con los datos actuales que trae, NUNCA de memoria ni con los resúmenes de conversaciones anteriores, y no nombres ids internos ni rutas. Si en esta misma charla ya diste una lista o un dato y te repreguntan, volvé a llamar antes de cambiarlo: no lo contradigas sin consultar. Un empleado ve solo lo que el asistente hizo para él (alcance lo dice). Sin desde ni hasta: los últimos 30 días. Si trae "error", contá eso tal cual.',
+                'input_schema' => [
+                    'type' => 'object',
+                    'properties' => [
+                        'desde' => ['type' => 'string', 'description' => 'Primer día, AAAA-MM-DD. Para «hoy», hoy en desde y en hasta.'],
+                        'hasta' => ['type' => 'string', 'description' => 'Último día, AAAA-MM-DD. Sin hasta: hoy.'],
+                        'tipo' => [
+                            'type'        => 'string',
+                            'description' => 'Opcional: solo un tipo de carga. venta (todo lo que tocó una venta: las que creó el asistente, las del alta o edición de ventas y lo hecho por pantalla sobre una venta, como facturarla), accion_pantalla (facturar, editar o anular desde una pantalla), alta, edicion, baja, pago, gasto, presupuesto, etc.',
+                        ],
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántas acciones listar (default 50, hasta 200). acciones_en_total siempre es de todo el período.'],
+                    ],
+                    'required' => [],
+                ],
+                'handler' => function (array $input, $owner_id, $conversation = null) {
+                    return \App\Http\Controllers\Helpers\asistente_ia\AccionesHechasPorElAsistenteIaHelper::consultar(
                         (int) $owner_id,
                         ($conversation instanceof AiConversation) ? $conversation : null,
                         $input
@@ -7108,6 +7271,30 @@ CONFIRMACION;
      * @param AiMessage|null $assistant_message El assistant que se está generando (opcional).
      * @return array<int, array<string, mixed>>
      */
+    /** Reservas internas del transporte MCP: no son parámetros ni datos de una tool del cliente. */
+    private $presupuestos_reservados = [];
+
+    public function reservar_herramienta(AiConversation $conversation, string $nombre)
+    {
+        $reserva = [];
+        $rechazo = \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::herramienta($conversation, $reserva);
+        if ($rechazo === null) {
+            $clave = $conversation->id . ':' . $nombre;
+            $this->presupuestos_reservados[$clave][] = $reserva;
+        }
+        return $rechazo;
+    }
+
+    public function liberar_reservas()
+    {
+        foreach ($this->presupuestos_reservados as $reservas) {
+            foreach ($reservas as $reserva) {
+                \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::liberar_herramienta($reserva);
+            }
+        }
+        $this->presupuestos_reservados = [];
+    }
+
     public function execute_tool_calls(array $content_blocks, AiConversation $conversation, $assistant_message = null): array
     {
         $owner_id = (int) $conversation->user_id;
@@ -7121,6 +7308,16 @@ CONFIRMACION;
             $tool_id    = (string) ($block['id'] ?? '');
             $tool_name  = (string) ($block['name'] ?? '');
             $tool_input = isset($block['input']) && is_array($block['input']) ? $block['input'] : [];
+
+            $clave_presupuesto = $conversation->id . ':' . $tool_name;
+            $reservado = !empty($this->presupuestos_reservados[$clave_presupuesto]);
+            $reserva_herramienta = $reservado ? array_shift($this->presupuestos_reservados[$clave_presupuesto]) : [];
+            $rechazo = $reservado ? null : \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::herramienta($conversation, $reserva_herramienta);
+            if ($rechazo !== null) {
+                $tool_results[] = ['type' => 'tool_result', 'tool_use_id' => $tool_id, 'is_error' => true,
+                    'content' => json_encode($rechazo['body'])];
+                continue;
+            }
 
             /*
              * Misión app-ia-y-memoria (§4 E1.5): la línea de progreso, antes de cada herramienta y solo
@@ -7275,6 +7472,8 @@ CONFIRMACION;
                     'is_error'    => true,
                     'content'     => 'Error al ejecutar ' . $tool_name . ': ' . $exception->getMessage(),
                 ];
+            } finally {
+                \App\Http\Controllers\Helpers\asistente_ia\PresupuestoDeOperacionesIaHelper::liberar_herramienta($reserva_herramienta);
             }
         }
 

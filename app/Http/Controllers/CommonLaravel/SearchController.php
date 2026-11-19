@@ -82,7 +82,7 @@ class SearchController extends Controller
         return $model_name::where('user_id', $this->userId());
     }
 
-    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false, $return_raw_models = false) {
+    function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false, $return_raw_models = false, $return_query = false) {
         $model_name = GeneralHelper::getModelName($model_name_param);
         $models = $this->query_base_del_modelo($model_name);
 
@@ -151,6 +151,11 @@ class SearchController extends Controller
 
         if ($model_name_param === 'sale') {
             SaleArticlesEagerLoadHelper::apply_images_if_preferred($models, $this->userId());
+        }
+
+        // Uso interno de la masiva: el mismo WHERE/orden, antes de hidratar el catálogo entero.
+        if ($return_query) {
+            return ['query' => $models, 'used_filters' => $used_filters];
         }
 
         if ($paginate) {

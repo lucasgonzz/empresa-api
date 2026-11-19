@@ -50,6 +50,8 @@ class CurrentAcountPagoHelper {
      */
     public $dirigido_a_varios = false;
 
+    public $tiene_creditos_historicos = false;
+
     /**
      * Constructor del helper de imputación de pagos.
      *
@@ -81,7 +83,9 @@ class CurrentAcountPagoHelper {
         // la foto de la transacción y podía imputar contra débitos que otro request ya había cambiado.
         // Y se desempata por id, el mismo orden de la cadena de saldos.
         $debitos_pendientes = CurrentAcount::where('credit_account_id', $this->credit_account->id)
-                                                 ->whereIn('status', ['sin_pagar', 'pagandose'])
+                                                 ->where(function ($query) {
+                                                     $query->whereIn('status', ['sin_pagar', 'pagandose'])->orWhere('debe', '<', 0);
+                                                 })
                                                  ->orderBy('created_at', 'ASC')
                                                  ->orderBy('id', 'ASC');
 
@@ -90,6 +94,9 @@ class CurrentAcountPagoHelper {
         }
 
         $this->debitos_pendientes = $debitos_pendientes->get();
+        $this->tiene_creditos_historicos = $this->debitos_pendientes->contains(function ($movimiento) {
+            return (float) $movimiento->debe < 0;
+        });
 
         /*
          * Pago a varios movimientos: los débitos elegidos que SIGAN pendientes se ponen al frente de
@@ -192,6 +199,12 @@ class CurrentAcountPagoHelper {
     }
 
     function init() {
+        // Un crédito histórico puede quedar después de agotar el efectivo en FIFO. Reconciliar
+        // todas las fuentes evita perderlo tanto en el alta actual como al repetir el cálculo.
+        if ($this->tiene_creditos_historicos) {
+            CurrentAcountHelper::checkPagos($this->credit_account->id);
+            return;
+        }
         while (!is_null($this->sin_pagar) && $this->fondos > 0) {
             $this->fondos_iniciales = $this->fondos;
             $this->procesarPago();
@@ -295,7 +308,7 @@ class CurrentAcountPagoHelper {
             'fondos_iniciales'  => $this->fondos_iniciales,
             'nuevos_fondos'     => $this->fondos,
             'remantente'        => $this->debe - $pagado,
-            'created_at'        => $this->pago->created_at->addSeconds($this->sin_pagar_index),
+            'created_at'        => $this->pago->created_at->copy()->addSeconds($this->sin_pagar_index),
         ]);
     }
 

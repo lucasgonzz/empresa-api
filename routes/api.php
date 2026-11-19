@@ -1696,6 +1696,11 @@ Route::middleware('admin.api.key:siempre')
         // esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
         Route::get('agentes-ia', 'AdminSync\\AgentesIaController@show');
         Route::put('agentes-ia', 'AdminSync\\AgentesIaController@update');
+        // Conexión de WhatsApp (Kapso) del cliente (misión kapso-secretos-fuera-del-navegador, 17/11/2026): único camino que
+        // escribe phone_number_id / kapso_api_key / webhook_secret (el dueño ya no puede). `siempre`: el PUT ESCRIBE secretos.
+        // La respuesta nunca incluye los secretos. 409 sin dueño resoluble; un cliente viejo sin la ruta responde 404/405.
+        Route::get('whatsapp-bot/conexion', 'AdminSync\\WhatsappBotConexionController@show');
+        Route::put('whatsapp-bot/conexion', 'AdminSync\\WhatsappBotConexionController@update');
         // Acceso de soporte de un solo uso (misión acceso-soporte-firmado, 30/10/2026): el admin pide un token que
         // se canjea por una sesión del dueño en `acceso-soporte/canjear` (pública, más arriba). `siempre` es lo
         // que firma el pedido: esta ruta ABRE LA PUERTA de un comercio, así que una instancia sin

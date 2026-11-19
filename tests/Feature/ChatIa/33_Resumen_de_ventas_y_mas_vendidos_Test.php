@@ -339,17 +339,19 @@ class Resumen_de_ventas_y_mas_vendidos_Test extends TestCase
          * no cambiaron).
          * La misión asistente-diario-20261116 (30/10 #11) sumó `consultar_rendimiento_de_compras` AL FINAL:
          * -15 y -11 (los nombres esperados no cambiaron).
+         * La misión asistente-diario-20261117 (parte B, A2) sumó `consultar_lo_que_hizo_el_asistente` AL
+         * FINAL: -16 y -12 (los nombres esperados no cambiaron).
          */
         $nombres = $service->nombres_de_lectura();
 
         $this->assertEquals(
             ['resumir_datos', 'consultar_resumen_de_ventas', 'consultar_reporte_contable', 'mostrar_imagenes_de_articulos'],
-            array_slice($nombres, -15, 4)
+            array_slice($nombres, -16, 4)
         );
 
         $this->assertEquals(
             ['consultar_ventas_sin_cobrar', 'consultar_link_de_pdf', 'buscar_producto_por_codigo_de_barras'],
-            array_slice($nombres, -11, 3)
+            array_slice($nombres, -12, 3)
         );
 
         // Y el handler deja la imagen en adjuntos(), sin cruzarla contra ningún texto.

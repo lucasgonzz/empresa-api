@@ -104,26 +104,30 @@ class Config_conexion_Test extends TestCase
      * @group whatsapp
      * @test
      */
-    public function el_dueno_guarda_los_cuatro_campos_tecnicos_y_los_recupera()
+    public function el_dueno_activa_y_la_respuesta_no_trae_los_secretos()
     {
+        // Misión kapso-secretos-fuera-del-navegador: antes este test afirmaba que `kapso_api_key` y
+        // `webhook_secret` VIAJABAN en el JSON; ahora se afirma que NO viajan (y que sí viajan los derivados).
+        $this->config_existente(['is_active' => false]);
         $this->actingAs($this->comercio, 'web');
 
-        $response = $this->putJson('api/whatsapp-bot/config', [
-            'kapso_api_key'   => 'kapso-nueva',
-            'phone_number_id' => '5493410000000',
-            'webhook_secret'  => 'secreto-nuevo',
-            'is_active'       => true,
-        ]);
+        $response = $this->putJson('api/whatsapp-bot/config', ['is_active' => true]);
 
         $response->assertStatus(200);
-        $this->assertEquals('kapso-nueva', $response->json('model.kapso_api_key'));
-        $this->assertEquals('5493410000000', $response->json('model.phone_number_id'));
-        $this->assertEquals('secreto-nuevo', $response->json('model.webhook_secret'));
+        $this->assertArrayNotHasKey('kapso_api_key', $response->json('model'));
+        $this->assertArrayNotHasKey('webhook_secret', $response->json('model'));
+        $this->assertEquals('5491100000000', $response->json('model.phone_number_id'));
         $this->assertTrue((bool) $response->json('model.is_active'));
+        $this->assertTrue($response->json('model.kapso_api_key_configurada'));
+        $this->assertTrue($response->json('model.webhook_secret_configurado'));
+        $this->assertTrue($response->json('model.conexion_configurada'));
 
         $leido = $this->getJson('api/whatsapp-bot/config');
         $leido->assertStatus(200);
-        $this->assertEquals('kapso-nueva', $leido->json('model.kapso_api_key'));
+        $this->assertArrayNotHasKey('kapso_api_key', $leido->json('model'));
+        $this->assertArrayNotHasKey('webhook_secret', $leido->json('model'));
+        $this->assertStringNotContainsString('kapso-original', $leido->getContent());
+        $this->assertStringNotContainsString('secreto-original', $leido->getContent());
     }
 
     /**
@@ -163,9 +167,12 @@ class Config_conexion_Test extends TestCase
      * @group whatsapp
      * @test
      */
-    public function un_guardado_solo_de_credenciales_no_pisa_la_personalidad_ni_los_toggles()
+    public function un_guardado_solo_de_is_active_no_pisa_la_personalidad_ni_los_toggles()
     {
+        // Misión kapso-secretos-fuera-del-navegador: el dueño ya no manda credenciales; la contracara que
+        // importa (un guardado parcial no pisa lo funcional) se prueba con el único campo técnico que sí edita.
         $this->config_existente([
+            'is_active'                => false,
             'agent_personality'        => 'Personalidad ya cargada.',
             'ai_enabled_default'       => false,
             'auto_send_sale_pdf'       => true,
@@ -175,15 +182,12 @@ class Config_conexion_Test extends TestCase
 
         $this->actingAs($this->comercio, 'web');
 
-        $this->putJson('api/whatsapp-bot/config', [
-            'kapso_api_key'   => 'kapso-rotada',
-            'phone_number_id' => '5493419999999',
-            'webhook_secret'  => 'secreto-rotado',
-        ])->assertStatus(200);
+        $this->putJson('api/whatsapp-bot/config', ['is_active' => true])->assertStatus(200);
 
         $config = WhatsappBotConfig::where('user_id', $this->comercio->id)->first();
 
-        $this->assertEquals('kapso-rotada', $config->kapso_api_key);
+        $this->assertTrue((bool) $config->is_active);
+        $this->assertEquals('kapso-original', $config->kapso_api_key);
         $this->assertEquals('Personalidad ya cargada.', $config->agent_personality);
         $this->assertFalse((bool) $config->ai_enabled_default);
         $this->assertTrue((bool) $config->auto_send_sale_pdf);
@@ -212,13 +216,10 @@ class Config_conexion_Test extends TestCase
             'El 422 no puede haber creado la fila.'
         );
 
-        // Con las credenciales en el mismo payload, sí se activa.
-        $this->putJson('api/whatsapp-bot/config', [
-            'is_active'       => true,
-            'kapso_api_key'   => 'kapso-ok',
-            'phone_number_id' => '5493411111111',
-            'webhook_secret'  => 'secreto-ok',
-        ])->assertStatus(200);
+        // Con las credenciales ya provisionadas por el equipo (no por el dueño), sí se activa.
+        $this->config_existente(['is_active' => false]);
+
+        $this->putJson('api/whatsapp-bot/config', ['is_active' => true])->assertStatus(200);
 
         $config = WhatsappBotConfig::where('user_id', $this->comercio->id)->first();
         $this->assertTrue((bool) $config->is_active);
@@ -272,23 +273,26 @@ class Config_conexion_Test extends TestCase
     }
 
     /**
-     * `sometimes|required`: si el campo viene, no puede venir vacío. Mandar cadena vacía
-     * era el camino silencioso a un bot activo sin credenciales.
+     * Misión kapso-secretos-fuera-del-navegador: antes una credencial vacía daba 422 (`required`); ahora
+     * las credenciales las ignora el endpoint del dueño, así que un vacío (lo que manda una SPA vieja al
+     * guardar sus inputs en blanco) no rompe ni BORRA nada.
      *
      * @group whatsapp
      * @test
      */
-    public function una_credencial_vacia_se_rechaza()
+    public function una_credencial_vacia_se_ignora_y_no_borra_nada()
     {
         $this->config_existente();
         $this->actingAs($this->comercio, 'web');
 
-        $this->putJson('api/whatsapp-bot/config', ['kapso_api_key' => ''])->assertStatus(422);
-        $this->putJson('api/whatsapp-bot/config', ['phone_number_id' => ''])->assertStatus(422);
-        $this->putJson('api/whatsapp-bot/config', ['webhook_secret' => ''])->assertStatus(422);
+        $this->putJson('api/whatsapp-bot/config', ['kapso_api_key' => ''])->assertStatus(200);
+        $this->putJson('api/whatsapp-bot/config', ['phone_number_id' => ''])->assertStatus(200);
+        $this->putJson('api/whatsapp-bot/config', ['webhook_secret' => ''])->assertStatus(200);
 
         $config = WhatsappBotConfig::where('user_id', $this->comercio->id)->first();
         $this->assertEquals('kapso-original', $config->kapso_api_key);
+        $this->assertEquals('5491100000000', $config->phone_number_id);
+        $this->assertEquals('secreto-original', $config->webhook_secret);
     }
 
     /**

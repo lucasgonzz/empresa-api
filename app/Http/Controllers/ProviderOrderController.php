@@ -796,6 +796,17 @@ class ProviderOrderController extends Controller
             abort(404);
         }
 
-        new ProviderOrderPdf($model);
+        try {
+            $resumen = \App\Services\Compras\ResumenDeCompraPdf::crear($model);
+        } catch (\Illuminate\Validation\ValidationException $error) {
+            $mensaje = $error->validator->errors()->first('compra');
+            if (request()->expectsJson()) {
+                return response()->json(['message' => $mensaje, 'errors' => ['compra' => [$mensaje]]], 422);
+            }
+            return response()->view('errors.compra-pdf', ['mensaje' => $mensaje], 422);
+        }
+
+        $pdf = new ProviderOrderPdf($model, $resumen);
+        return response($pdf->Output('S'), 200)->header('Content-Type', 'application/pdf');
     }
 }

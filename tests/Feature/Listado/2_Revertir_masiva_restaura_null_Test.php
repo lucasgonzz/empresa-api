@@ -23,6 +23,7 @@ use Tests\TestCase;
 class Revertir_masiva_restaura_null_Test extends TestCase
 {
     use DatabaseTransactions;
+    use \Tests\Support\EjecutaMasivasAsincronas;
 
     /**
      * @return \App\Models\User|null

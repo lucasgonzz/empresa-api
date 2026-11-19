@@ -280,6 +280,8 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
+
             // El reporter de errores esta enganchado al handler global (Handler::register ->
             // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
             // capturamos nosotros para poder hacer rollback y responder 500, hay que empujarla a
@@ -338,6 +340,8 @@ class BudgetController extends Controller
         } catch (\Throwable $e) {
 
             DB::rollBack();
+
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // El reporter de errores esta enganchado al handler global (Handler::register ->
             // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
@@ -817,6 +821,8 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
+
             // report() a mano por el mismo motivo que en store(): el reporter global solo corre
             // para excepciones NO manejadas, y esta la capturamos nosotros.
             report($e);
@@ -936,6 +942,8 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
+
             /*
                 Sin transaccion, un fallo a mitad de saveSale() dejaba la venta creada, el stock ya
                 descontado y el presupuesto en estado 2, con un 500 en la cara del usuario. El caso
@@ -1051,6 +1059,8 @@ class BudgetController extends Controller
         } catch(\Throwable $e) {
 
             DB::rollBack();
+
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             /*
                 Sin transaccion, si deleteSale() reventaba a mitad quedaba el presupuesto todavia

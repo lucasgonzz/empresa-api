@@ -18,7 +18,7 @@ class AfipFexHelper
 
     public function __construct($afip_ticket) {
         $this->afip_ticket = $afip_ticket;
-        $this->sale = $afip_ticket->sale;
+        $this->sale = $afip_ticket->sale ?: $afip_ticket->sale_nota_credito;
         $this->testing = !$this->afip_ticket->afip_information->afip_ticket_production;
 
         $this->numero_comprobante = 0;
@@ -217,6 +217,7 @@ class AfipFexHelper
         ) {
             $autorizacion = $result_afip->FEXAuthorizeResult->FEXResultAuth;
             $autorizada = ($autorizacion->Resultado ?? null) === 'A' && !empty($autorizacion->Cae);
+            $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($this->afip_ticket->fresh());
 
             $this->afip_ticket->update([
                 'cbte_letra'        => AfipWsHelper::getTipoLetra($autorizacion->Cbte_tipo ?? 19),
@@ -231,7 +232,8 @@ class AfipFexHelper
 
             // Un rechazo o una respuesta incompleta no consumen saldo facturable.
             if ($autorizada) {
-                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $this->sale->total);
+                IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($this->afip_ticket);
+                AfipWsHelper::update_sale_total_facturado($this->afip_ticket, $this->sale->total, !$ya_tenia_cae);
             }
 
             /**
@@ -612,6 +614,11 @@ class AfipFexHelper
                             // 'request'         => $this->wsfex->getLastRequest(),
                             // 'response'        => $this->wsfex->getLastResponse(),
                         ];
+                        // Una NC recuperada puede no haber guardado todavía la moneda. Se toma
+                        // de la respuesta fiscal, nunca de la moneda actual de la venta.
+                        if (!$this->afip_ticket->moneda_id && !$this->afip_ticket->moneda && isset($data->Moneda_Id)) {
+                            $campos_consultados['moneda'] = $data->Moneda_Id;
+                        }
                         if ($this->exigir_identidad_de_intento) {
                             if (IntentosDeFacturaFallidosHelper::tiene_cae($this->afip_ticket)) {
                                 // Después de una NC la venta puede tener otros importes/moneda;
@@ -672,14 +679,15 @@ class AfipFexHelper
     private function guardar_respuesta_de_consulta(array $campos, bool $sumar_saldo, $importe): void
     {
         $venta_id = $this->afip_ticket->sale_id ?: $this->afip_ticket->sale_nota_credito_id;
-        CandadoDeFacturaHelper::ventas($venta_id ? [$venta_id] : [], function () use ($campos, $sumar_saldo, $importe, $venta_id) {
+        $analisis = null;
+        CandadoDeFacturaHelper::ventas($venta_id ? [$venta_id] : [], function () use ($campos, $sumar_saldo, $importe, $venta_id, &$analisis) {
             // Transacción corta después de SOAP: un rollback nunca borra evidencia de una emisión nueva.
-            DB::transaction(function () use ($campos, $sumar_saldo, $importe, $venta_id) {
+            DB::transaction(function () use ($campos, $sumar_saldo, $importe, $venta_id, &$analisis) {
                 $venta = $venta_id ? Sale::where('id', $venta_id)->lockForUpdate()->first() : null;
                 $actual = AfipTicket::withTrashed()->where('id', $this->afip_ticket->id)->lockForUpdate()->first();
                 if (!$actual || (int) $actual->sale_id !== (int) $this->afip_ticket->sale_id
                     || (int) $actual->sale_nota_credito_id !== (int) $this->afip_ticket->sale_nota_credito_id) {
-                    throw new \RuntimeException('El vínculo del comprobante cambió durante la consulta. Volvé a revisarlo.');
+                    FacturaDeVentaHelper::rechazar('El vínculo del comprobante cambió durante la consulta. Volvé a abrir la venta y revisá sus comprobantes antes de consultar.');
                 }
                 $ya_tenia_cae = IntentosDeFacturaFallidosHelper::tiene_cae($actual);
                 // Una respuesta nueva no puede borrar ni reemplazar la autorización ya asentada.
@@ -688,10 +696,11 @@ class AfipFexHelper
                     FacturaDeVentaHelper::rechazar('El comprobante consultado no coincide con el CAE ya registrado. No se cambió su autorización ni el saldo de la venta.');
                 }
                 $actual->update($campos);
-                if ($sumar_saldo && $venta) {
+                if ($venta) {
                     $actual->setRelation('sale', $venta);
-                    if (!$ya_tenia_cae && IntentosDeFacturaFallidosHelper::tiene_cae($actual)) {
-                        AfipWsHelper::update_sale_total_facturado($actual, $importe);
+                    if (IntentosDeFacturaFallidosHelper::tiene_cae($actual)) {
+                        IntentosDeFacturaFallidosHelper::restaurar_si_quedo_borrado($actual);
+                        $analisis = AfipWsHelper::update_sale_total_facturado($actual, $importe, !$ya_tenia_cae);
                     }
                 }
                 $this->afip_ticket = $actual;
@@ -700,6 +709,9 @@ class AfipFexHelper
                 }
             });
         });
+        if ($analisis !== null) {
+            TotalFacturadoDeVentaHelper::exigir_verificable($analisis);
+        }
     }
 
     private function es_el_comprobante_del_intento($data): bool

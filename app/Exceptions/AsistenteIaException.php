@@ -51,6 +51,15 @@ class AsistenteIaException extends RuntimeException
     /** El loop cerró sin texto sin haber agotado ni el tiempo ni las vueltas. */
     const MOTIVO_SIN_RESPUESTA = 'sin_respuesta';
 
+    /**
+     * El proveedor de IA rechazó la llamada por falta de saldo o de cuota de facturación (HTTP 402,
+     * `billing_error`, «Insufficient Balance» de DeepSeek). Misión asistente-diario-20261118 (M1): en Truvari
+     * y Ferre Total el dueño recibió siete veces seguidas «Se me cortó la conexión… probá en unos segundos»
+     * por una cuenta sin saldo; insistió tres o cuatro veces sin saber que el corte no era suyo ni pasajero.
+     * NO es transitorio: reintentar no sirve hasta que alguien cargue saldo.
+     */
+    const MOTIVO_SIN_SALDO = 'sin_saldo';
+
     /** Cualquier otra falla de la llamada: el llamador usa su texto genérico. */
     const MOTIVO_FALLA_TECNICA = 'falla_tecnica';
 
@@ -78,6 +87,12 @@ class AsistenteIaException extends RuntimeException
         self::MOTIVO_TIEMPO_AGOTADO => 'No llegué a terminar esta respuesta. Escribime «seguí» y lo intento de nuevo.',
         self::MOTIVO_SOBRECARGADO   => 'El servicio de IA está sobrecargado. Probá de nuevo en unos segundos.',
         self::MOTIVO_SIN_RESPUESTA  => 'La IA no llegó a generar una respuesta. Probá mandar el mensaje de nuevo.',
+        /*
+         * 🔴 Sin «unos segundos» ni «conexión»: el corte no es de la conexión del dueño ni se arregla
+         * reintentando. Es honesto sobre qué pasa y qué hacer (avisar al equipo de soporte), sin datos de la
+         * cuenta del proveedor.
+         */
+        self::MOTIVO_SIN_SALDO      => 'El asistente no está disponible por un problema con el servicio de IA de la cuenta, no con tu conexión. Reintentar ahora no lo arregla; ya quedó registrado para que el equipo lo resuelva. Si lo necesitás con urgencia, avisale a soporte.',
     ];
 
     /**
@@ -147,6 +162,17 @@ class AsistenteIaException extends RuntimeException
     public static function sobrecargado($detalle): self
     {
         return new self(self::DETALLE_TRANSITORIO . ' ' . (string) $detalle, self::MOTIVO_SOBRECARGADO);
+    }
+
+    /**
+     * El proveedor de IA rechazó la llamada por falta de saldo (402 / billing_error).
+     *
+     * @param string $detalle
+     * @return self
+     */
+    public static function sin_saldo($detalle): self
+    {
+        return new self((string) $detalle, self::MOTIVO_SIN_SALDO);
     }
 
     /**

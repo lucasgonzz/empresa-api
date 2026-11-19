@@ -37,6 +37,8 @@ use Tests\EmpresaTestCase;
  */
 class Descuentos_Proveedor_Al_Asignar_Test extends EmpresaTestCase
 {
+    use \Tests\Support\EjecutaMasivasAsincronas;
+
     /**
      * Delta de tolerancia para comparaciones de plata (nunca comparacion exacta sobre floats).
      */

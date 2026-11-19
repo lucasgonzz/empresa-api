@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeAccionesDePantallaIaHelper as Catalogo;
 use App\Http\Controllers\Helpers\asistente_ia\CatalogoDeEscrituraIaHelper as Escritura;
+use App\Models\AfipTicket;
 use App\Models\AiMessageAction;
 use App\Http\Controllers\Helpers\Afip\FacturaDeVentaHelper;
 use App\Http\Controllers\Helpers\EdicionPromocionVinotecaHelper as EdicionPromo;
@@ -158,6 +159,19 @@ class EjecutorAccionDePantallaIaHelper
     const LARGO_MAXIMO = 30000;
 
     /**
+     * Cuántos caracteres puede tener un texto de primer nivel para viajar entero aunque el resto del cuerpo
+     * se recorte (ver recortar()). `message` de MakeAfipTicket mide ~140; un texto más largo que esto ya no
+     * es un dato corto y queda dentro del recorte.
+     */
+    const LARGO_MAXIMO_DE_UN_ESCALAR = 500;
+
+    /** Hasta cuántas claves escalares de primer nivel se conservan al recortar (un tope, por si acaso). */
+    const ESCALARES_AL_RECORTAR = 40;
+
+    /** Los estados que devuelve MakeAfipTicket: lo único que el ejecutor repite como estado fiscal. */
+    const ESTADOS_FISCALES = ['emitida', 'rechazada', 'pendiente_verificacion'];
+
+    /**
      * Hasta cuántos niveles de anidamiento se buscan ids en el cuerpo (cada array cuenta, también
      * una lista): `cheque_id` es nivel 1, `sale.client_id` nivel 2, `articles[0].id` nivel 3. Es
      * lo que arma la SPA para un renglón de una venta o de un pedido; más hondo no lee ningún
@@ -245,8 +259,62 @@ class EjecutorAccionDePantallaIaHelper
             // La ruta vuelve a validar la firma bajo los candados de venta/emisor, antes de emitir.
             $cuerpo['_firma_fiscal_ia'] = $datos['firma_fiscal_ia'];
         }
-        $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo, $referencia_promo);
-        $texto = $es_factura ? ($llamada['cuerpo']['message'] ?? 'No se pudo confirmar el resultado de la facturación.') : 'Hecho: '.$metodo.' '.$llamada['uri'];
+
+        /*
+         * A1 (misión asistente-diario-20261117): el último ticket que la venta tenía ANTES de llamar. Si la
+         * respuesta vuelve sin `estado` legible, resultado_fiscal() mira solo los tickets posteriores a este:
+         * una factura vieja de la misma venta (facturación parcial, refacturación) no es el resultado de esta.
+         */
+        $venta_de_la_factura = $es_factura && isset($cuerpo['sale_id']) && is_numeric($cuerpo['sale_id']) ? (int) $cuerpo['sale_id'] : null;
+        $ultimo_ticket_antes = $venta_de_la_factura ? (int) AfipTicket::where('sale_id', $venta_de_la_factura)->max('id') : 0;
+
+        try {
+
+            $llamada = self::llamar($contexto, $metodo, $ruta, $parametros, $cuerpo, $referencia_promo);
+
+        } catch (\Throwable $e) {
+
+            /*
+             * A1 (revisión independiente): si la facturación tiró DESPUÉS de crear el ticket (por ejemplo al armar
+             * la venta entera para la respuesta), ARCA pudo haber dado CAE. Antes de relanzar se mira el ticket
+             * nuevo de la venta: si existe, se informa su estado real (emitida, rechazada o pendiente) en vez de un
+             * error, que haría pensar que no se facturó y podría llevar a facturar dos veces. Sin ticket nuevo, el
+             * error sigue su camino como siempre.
+             */
+            if (!$es_factura) {
+
+                throw $e;
+            }
+
+            $fiscal = self::resultado_fiscal($contexto, [], $venta_de_la_factura, $ultimo_ticket_antes);
+
+            if (is_null($fiscal['afip_ticket_id'])) {
+
+                throw $e;
+            }
+
+            Log::warning('EjecutorAccionDePantallaIaHelper: la facturación tiró después de crear el ticket; se informa su estado.', [
+                'afip_ticket_id' => $fiscal['afip_ticket_id'],
+                'estado'         => $fiscal['estado'],
+                'error'          => $e->getMessage(),
+            ]);
+
+            $llamada = [
+                'status'    => 200,
+                'cuerpo'    => ['estado' => $fiscal['estado'], 'message' => $fiscal['message'], 'afip_ticket_id' => $fiscal['afip_ticket_id']],
+                'recortado' => false,
+                'uri'       => $ruta,
+            ];
+        }
+
+        $estado_fiscal = null;
+        if ($es_factura) {
+            $fiscal = self::resultado_fiscal($contexto, $llamada['cuerpo'], $venta_de_la_factura, $ultimo_ticket_antes);
+            $texto = $fiscal['message'];
+            $estado_fiscal = $fiscal['estado'];
+        } else {
+            $texto = 'Hecho: '.$metodo.' '.$llamada['uri'];
+        }
 
         return [
             'texto'     => $texto,
@@ -257,8 +325,115 @@ class EjecutorAccionDePantallaIaHelper
             'status'    => $llamada['status'],
             'respuesta' => $llamada['cuerpo'],
             'recortado' => $llamada['recortado'],
-            'estado_fiscal' => $es_factura ? ($llamada['cuerpo']['estado'] ?? 'pendiente_verificacion') : null,
+            'estado_fiscal' => $estado_fiscal,
         ];
+    }
+
+    /**
+     * El resultado fiscal de una facturación ({estado, message}) para contarle a la persona.
+     *
+     * 🔴 POR QUÉ EXISTE (misión asistente-diario-20261117, A1). Truvari, venta 3105, 16/11/2026: ARCA dio CAE y
+     * el asistente dijo «pendiente de verificación». SaleController@makeAfipTicket responde con la venta entera
+     * (fullModel) más `estado`, `message` y `afip_ticket_id`; con una venta grande el JSON pasaba LARGO_MAXIMO,
+     * recortar() lo dejaba en {texto, recortado} y el `estado` se perdía. Desde esta misión recortar() conserva
+     * los escalares cortos de primer nivel, y esto es la segunda red: si igual no hay un `estado` válido, se
+     * mira el ticket ANTES de decir «pendiente».
+     *
+     * Orden:
+     *  1. `estado` del cuerpo, si es uno de los de MakeAfipTicket: se repite tal cual, con su `message`.
+     *  2. Si no, el ticket: el `afip_ticket_id` del cuerpo, o el último ticket de la venta creado DESPUÉS de
+     *     `$ultimo_ticket_antes` (el más nuevo antes de llamar). Siempre de una venta del negocio
+     *     (`sales.user_id` = owner): un id ajeno no se lee. Con CAE → emitida; con resultado R → rechazada;
+     *     cualquier otra cosa → pendiente_verificacion. Los textos son los mismos de MakeAfipTicket.
+     *  3. Sin ticket que leer: pendiente_verificacion, con el texto de siempre.
+     *
+     * Con `afip_ticket_id` y una venta conocida, el ticket además tiene que ser de ESA venta (revisión
+     * independiente). `afip_ticket_id` en la respuesta es el ticket leído (null si no se leyó ninguno): ejecutar()
+     * lo usa para decidir si una facturación que tiró igual dejó un ticket que informar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $cuerpo  Lo que devolvió la ruta (ya sin claves sensibles y quizás recortado).
+     * @param  int|null  $sale_id  La venta que se mandó a facturar (el sale_id del cuerpo de la tarjeta).
+     * @param  int  $ultimo_ticket_antes  El id del último ticket de esa venta antes de llamar (0 si no tenía).
+     * @return array{estado: string, message: string, afip_ticket_id: int|null}
+     */
+    protected static function resultado_fiscal(ContextoDeCargaIa $contexto, array $cuerpo, $sale_id, int $ultimo_ticket_antes): array
+    {
+        if (isset($cuerpo['estado']) && in_array($cuerpo['estado'], self::ESTADOS_FISCALES, true)) {
+
+            $mensaje = isset($cuerpo['message']) && is_string($cuerpo['message']) && $cuerpo['message'] !== ''
+                ? $cuerpo['message']
+                : self::mensaje_fiscal($cuerpo['estado']);
+
+            $id_del_cuerpo = isset($cuerpo['afip_ticket_id']) && is_numeric($cuerpo['afip_ticket_id']) ? (int) $cuerpo['afip_ticket_id'] : null;
+
+            return ['estado' => $cuerpo['estado'], 'message' => $mensaje, 'afip_ticket_id' => $id_del_cuerpo];
+        }
+
+        // Solo tickets de ventas de este negocio: un id que no es del negocio no se lee.
+        $consulta = AfipTicket::query()->whereHas('sale', function ($ventas) use ($contexto) {
+            $ventas->where('user_id', $contexto->owner_id);
+        });
+
+        $ticket = null;
+
+        if (isset($cuerpo['afip_ticket_id']) && is_numeric($cuerpo['afip_ticket_id'])) {
+
+            $por_id = (clone $consulta)->whereKey((int) $cuerpo['afip_ticket_id']);
+
+            // Si se sabe qué venta se facturó, el ticket tiene que ser de esa venta.
+            if (!is_null($sale_id)) {
+
+                $por_id->where('sale_id', (int) $sale_id);
+            }
+
+            $ticket = $por_id->first();
+
+        } elseif (!is_null($sale_id)) {
+
+            $ticket = (clone $consulta)->where('sale_id', (int) $sale_id)->where('id', '>', $ultimo_ticket_antes)->orderByDesc('id')->first();
+        }
+
+        if (!$ticket) {
+
+            // Sin ticket que leer: lo mismo que se decía antes de esta misión.
+            return ['estado' => 'pendiente_verificacion', 'message' => 'No se pudo confirmar el resultado de la facturación.', 'afip_ticket_id' => null];
+        }
+
+        $estado = 'pendiente_verificacion';
+
+        if (!is_null($ticket->cae) && (string) $ticket->cae !== '') {
+
+            $estado = 'emitida';
+
+        } elseif ($ticket->resultado === 'R') {
+
+            $estado = 'rechazada';
+        }
+
+        return ['estado' => $estado, 'message' => self::mensaje_fiscal($estado), 'afip_ticket_id' => (int) $ticket->id];
+    }
+
+    /**
+     * El texto de cada estado fiscal, igual al que devuelve MakeAfipTicket (Helpers/Afip/MakeAfipTicket.php):
+     * si el texto de allá cambia, este también.
+     *
+     * @param  string  $estado  emitida | rechazada | pendiente_verificacion
+     * @return string
+     */
+    protected static function mensaje_fiscal(string $estado): string
+    {
+        if ($estado === 'emitida') {
+
+            return 'Factura emitida y autorizada por ARCA.';
+        }
+
+        if ($estado === 'rechazada') {
+
+            return 'ARCA rechazó el comprobante. Revisá los errores de facturación de la venta; no se confirmó una factura emitida.';
+        }
+
+        return 'No se pudo confirmar la emisión ante ARCA. El intento quedó guardado para consultar su resultado antes de emitir otro comprobante.';
     }
 
     /**
@@ -1396,8 +1571,15 @@ class EjecutorAccionDePantallaIaHelper
     }
 
     /**
-     * El cuerpo tal cual si su JSON entra en LARGO_MAXIMO; si no, el JSON cortado como texto y la
-     * marca `recortado`.
+     * El cuerpo tal cual si su JSON entra en LARGO_MAXIMO; si no, el JSON cortado como texto, la
+     * marca `recortado` y, al lado, las claves ESCALARES CORTAS de primer nivel tal cual vinieron.
+     *
+     * 🔴 Las claves escalares (misión asistente-diario-20261117, A1): `estado`, `message` y
+     * `afip_ticket_id` de una facturación viajan al lado de la venta entera; cortar el JSON como texto
+     * las perdía justo cuando la venta era grande, y el ejecutor informaba «pendiente de verificación»
+     * una factura con CAE. Se conservan los null, booleanos, números y textos de hasta
+     * LARGO_MAXIMO_DE_UN_ESCALAR caracteres, hasta ESCALARES_AL_RECORTAR claves; `texto` y `recortado`
+     * no se pisan. Los objetos y las listas siguen solo dentro del texto cortado.
      *
      * @param  array  $cuerpo
      * @return array{0: array, 1: bool}
@@ -1416,7 +1598,34 @@ class EjecutorAccionDePantallaIaHelper
             return [$cuerpo, false];
         }
 
-        return [['texto' => mb_substr($json, 0, self::LARGO_MAXIMO), 'recortado' => true], true];
+        $recortado = ['texto' => mb_substr($json, 0, self::LARGO_MAXIMO)];
+        $conservadas = 0;
+
+        foreach ($cuerpo as $clave => $valor) {
+
+            if ($conservadas >= self::ESCALARES_AL_RECORTAR) {
+
+                break;
+            }
+
+            if (!is_string($clave) || $clave === 'texto' || $clave === 'recortado') {
+
+                continue;
+            }
+
+            $es_escalar_corto = is_null($valor) || is_bool($valor) || is_int($valor) || is_float($valor)
+                || (is_string($valor) && mb_strlen($valor) <= self::LARGO_MAXIMO_DE_UN_ESCALAR);
+
+            if ($es_escalar_corto) {
+
+                $recortado[$clave] = $valor;
+                $conservadas++;
+            }
+        }
+
+        $recortado['recortado'] = true;
+
+        return [$recortado, true];
     }
 
     /**

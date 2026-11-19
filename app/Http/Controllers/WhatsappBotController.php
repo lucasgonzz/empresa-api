@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
+use App\Http\Controllers\Helpers\WhatsappBotConexionHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Models\User;
@@ -189,8 +190,10 @@ class WhatsappBotController extends Controller
     /**
      * Devuelve la configuración del bot para el usuario autenticado.
      *
-     * Solo el dueño: el modelo trae `kapso_api_key` y `webhook_secret` en texto plano, y hasta
-     * la misión whatsapp-agente cualquier empleado con token Sanctum los podía leer.
+     * Solo el dueño. 🔴 Misión kapso-secretos-fuera-del-navegador (17/11/2026): el modelo NO serializa
+     * `kapso_api_key` ni `webhook_secret` (`$hidden`); viajan solo los derivados `kapso_api_key_configurada`,
+     * `webhook_secret_configurado` y `conexion_configurada`. Esos valores los carga el equipo de ComercioCity
+     * por `admin-sync/whatsapp-bot/conexion`.
      */
     public function get_config(): JsonResponse
     {
@@ -232,8 +235,11 @@ class WhatsappBotController extends Controller
     /**
      * Crea o actualiza la configuración del bot para el usuario autenticado.
      *
-     * Los campos técnicos (kapso_api_key, phone_number_id, webhook_secret, is_active) se
-     * cargan desde ABM → Integraciones (equipo de ComercioCity). Los campos de
+     * 🔴 Misión kapso-secretos-fuera-del-navegador (17/11/2026): `kapso_api_key`, `webhook_secret` y
+     * `phone_number_id` ya NO los escribe el dueño: los provisiona el admin por
+     * `admin-sync/whatsapp-bot/conexion`. Si el dueño manda una clave o un secreto con valor, o un
+     * `phone_number_id` distinto del guardado, se contesta 403 y NO se guarda nada del request; vacíos u
+     * omitidos se ignoran (nunca se borra ni se persiste una máscara). `is_active` sí lo edita el dueño. Los campos de
      * configuración funcional del agente (agent_personality, agent_skills,
      * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled, chat_simulation_enabled,
      * agent_objective, agent_objective_detail; grupo 137, Prompt 07, más las misiones
@@ -249,13 +255,41 @@ class WhatsappBotController extends Controller
             return response()->json(['message' => 'Solo el dueño puede editar la configuración de WhatsApp.'], 403);
         }
 
+        $config_previa = WhatsappBotConfig::where('user_id', $this->userId())->first();
+
+        // Primero el TIPO de los tres campos técnicos: un array (`kapso_api_key[]=x`) llegaría al `trim((string) ...)` de
+        // abajo y en PHP 7.4 eso es un 500 por "Array to string conversion" en vez de un 422. La regla es la misma que
+        // la validación completa de más abajo; no guarda nada.
+        $request->validate([
+            'kapso_api_key'   => 'sometimes|nullable|string|max:191',
+            'phone_number_id' => 'sometimes|nullable|string|max:191',
+            'webhook_secret'  => 'sometimes|nullable|string|max:191',
+        ]);
+
+        // Credenciales: solo las carga el equipo de ComercioCity. Se corta ANTES de validar y de guardar
+        // cualquier cosa, para que un request con una credencial no deje a medias el resto de los campos.
+        foreach (['kapso_api_key', 'webhook_secret'] as $secreto) {
+            if (trim((string) $request->input($secreto)) !== '') {
+                return response()->json(['message' => WhatsappBotConexionHelper::MENSAJE_SOLO_COMERCIOCITY], 403);
+            }
+        }
+
+        // El número se puede reenviar igual al guardado (una SPA vieja manda lo que leyó); uno distinto no.
+        $numero_enviado  = trim((string) $request->input('phone_number_id'));
+        $numero_guardado = is_null($config_previa) ? '' : trim((string) $config_previa->phone_number_id);
+
+        if ($numero_enviado !== '' && $numero_enviado !== $numero_guardado) {
+            return response()->json(['message' => WhatsappBotConexionHelper::MENSAJE_SOLO_COMERCIOCITY], 403);
+        }
+
         // `sometimes` en todas las reglas es la clave de que las dos pantallas (ABM →
         // Integraciones y el modal del módulo) puedan seguir mandando payloads parciales sin
         // pisarse: si el campo no vino, no se valida ni se toca.
         $request->validate([
-            'kapso_api_key'            => 'sometimes|required|string|max:191',
-            'phone_number_id'          => 'sometimes|required|string|max:191',
-            'webhook_secret'           => 'sometimes|required|string|max:191',
+            // Credenciales: ya no se escriben desde acá (ver arriba); se aceptan vacías para no romper una SPA vieja.
+            'kapso_api_key'            => 'sometimes|nullable|string|max:191',
+            'phone_number_id'          => 'sometimes|nullable|string|max:191',
+            'webhook_secret'           => 'sometimes|nullable|string|max:191',
             'is_active'                => 'sometimes|boolean',
             'agent_personality'        => 'sometimes|nullable|string|max:5000',
             'agent_personality_template' => 'sometimes|nullable|string|in:amigable,profesional,cordial',
@@ -283,15 +317,7 @@ class WhatsappBotController extends Controller
         // Se arranca vacío y se agrega cada campo solo si vino en el request.
         $data = [];
 
-        if ($request->has('kapso_api_key')) {
-            $data['kapso_api_key'] = $request->kapso_api_key;
-        }
-        if ($request->has('phone_number_id')) {
-            $data['phone_number_id'] = $request->phone_number_id;
-        }
-        if ($request->has('webhook_secret')) {
-            $data['webhook_secret'] = $request->webhook_secret;
-        }
+        // 🔴 Las credenciales NO entran a `$data`: nunca se persiste lo que manda el dueño (ni un vacío ni una máscara).
         if ($request->has('is_active')) {
             $data['is_active'] = (bool) $request->is_active;
         }
@@ -377,45 +403,18 @@ class WhatsappBotController extends Controller
         // campo más de este formulario.
 
         $user_id = $this->userId();
-        $current_config = WhatsappBotConfig::where('user_id', $user_id)->first();
 
-        // Guard de coherencia: el bot no se puede dejar activo sin las tres credenciales. Se
-        // mira el valor FINAL de cada campo (el que vino en el request o, si no vino, el ya
-        // persistido), porque cada pantalla manda solo sus campos.
-        $will_be_active = array_key_exists('is_active', $data)
-            ? (bool) $data['is_active']
-            : (! is_null($current_config) ? (bool) $current_config->is_active : false);
+        // Guard de coherencia (compartido con la puerta del admin): el bot no se puede dejar activo sin
+        // las tres credenciales finales. Como el dueño no las cambia, son las ya guardadas.
+        $rechazo = WhatsappBotConexionHelper::error_de_activacion($config_previa, $data);
 
-        if ($will_be_active) {
-            foreach (['phone_number_id', 'kapso_api_key', 'webhook_secret'] as $campo_tecnico) {
-                $valor_final = array_key_exists($campo_tecnico, $data)
-                    ? $data[$campo_tecnico]
-                    : (! is_null($current_config) ? $current_config->{$campo_tecnico} : null);
-
-                if (trim((string) $valor_final) === '') {
-                    return response()->json([
-                        'message' => 'No se puede activar el bot sin phone_number_id, kapso_api_key y webhook_secret.',
-                    ], 422);
-                }
-            }
+        if (! is_null($rechazo)) {
+            return response()->json(['message' => $rechazo], 422);
         }
 
-        // Las tres columnas técnicas son NOT NULL sin default: si todavía no existe la fila y
-        // el modal del agente guarda solo sus campos (personalidad, toggles, esperas), el
-        // updateOrCreate revienta en MySQL estricto. Se rellenan con '' las que no vinieron
-        // — solo en el alta, para no pisar nunca lo que ya está guardado.
-        if (is_null($current_config)) {
-            foreach (['kapso_api_key', 'phone_number_id', 'webhook_secret'] as $campo_tecnico) {
-                if (! array_key_exists($campo_tecnico, $data)) {
-                    $data[$campo_tecnico] = '';
-                }
-            }
-        }
-
-        $config = WhatsappBotConfig::updateOrCreate(
-            ['user_id' => $user_id],
-            $data
-        );
+        // En el alta, el helper rellena con '' las tres columnas técnicas (NOT NULL sin default); solo
+        // en el alta, para no pisar nunca lo ya guardado.
+        $config = WhatsappBotConexionHelper::guardar((int) $user_id, $config_previa, $data);
 
         return response()->json([
             'model'             => $config,

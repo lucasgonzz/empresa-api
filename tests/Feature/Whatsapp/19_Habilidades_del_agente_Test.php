@@ -220,7 +220,7 @@ class Habilidades_del_agente_Test extends TestCase
      * @group whatsapp
      * @test
      */
-    public function un_guardado_de_credenciales_no_borra_las_habilidades()
+    public function un_guardado_de_la_conexion_no_borra_las_habilidades()
     {
         Http::fake(['*' => Http::response([], 200)]);
         $this->actingAs($this->comercio, 'web');
@@ -228,15 +228,18 @@ class Habilidades_del_agente_Test extends TestCase
         $this->config->agent_skills = self::HABILIDADES;
         $this->config->save();
 
+        // Misión kapso-secretos-fuera-del-navegador: el dueño ya no guarda credenciales (403); lo que guarda
+        // la pantalla Conexión es solo `is_active`.
         $this->putJson('api/whatsapp-bot/config', [
             'kapso_api_key'   => 'kapso-nueva',
-            'phone_number_id' => '5491100099999',
             'webhook_secret'  => 'secreto-nuevo',
-        ])->assertStatus(200);
+        ])->assertStatus(403);
+
+        $this->putJson('api/whatsapp-bot/config', ['is_active' => true])->assertStatus(200);
 
         $guardada = $this->config->fresh();
-        $this->assertEquals('kapso-nueva', $guardada->kapso_api_key);
-        $this->assertEquals(self::HABILIDADES, $guardada->agent_skills, 'Guardar las credenciales NO puede borrar las habilidades.');
+        $this->assertNotEquals('kapso-nueva', $guardada->kapso_api_key);
+        $this->assertEquals(self::HABILIDADES, $guardada->agent_skills, 'Guardar la conexión NO puede borrar las habilidades.');
     }
 
     /**

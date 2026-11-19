@@ -3,6 +3,8 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use App\Models\Article;
 use App\Models\AiConversation;
 use App\Models\User;
 use Illuminate\Support\Facades\DB;
@@ -88,10 +90,23 @@ class ValorizacionDeStockIaHelper
         'valor_a_costo'       => ['Valor a costo', 'moneda', true],
         'valor_a_precio'      => ['Valor a precio', 'moneda', false],
         'en_tienda'           => ['En tienda', 'texto', false],
+        /*
+         * Misión asistente-diario-20261117 (parte B, M1). Truvari (conv. 36) pidió «costo, precio de venta y
+         * qué margen de ganancia tiene cada artículo» y el Excel salió sin margen: no había columna. Las dos
+         * son DE COSTO (sin el permiso `article.cost` no salen) y se calculan en columnas_de_margen().
+         */
+        'margen'              => ['Margen % sobre costo', 'porcentaje', true],
+        'ganancia_por_unidad' => ['Ganancia por unidad', 'moneda', true],
     ];
 
-    /** Las columnas si el modelo no pide otras. */
-    const COLUMNAS_POR_DEFECTO = ['nombre', 'codigo', 'rubro', 'proveedor', 'stock', 'costo', 'precio', 'valor_a_costo', 'valor_a_precio'];
+    /**
+     * Las columnas si el modelo no pide otras. El margen y la ganancia van AL FINAL (M1, 17/11/2026) para
+     * no correr de lugar las columnas que ya conocían quienes usaban este Excel.
+     */
+    const COLUMNAS_POR_DEFECTO = ['nombre', 'codigo', 'rubro', 'proveedor', 'stock', 'costo', 'precio', 'valor_a_costo', 'valor_a_precio', 'margen', 'ganancia_por_unidad'];
+
+    /** Las columnas que necesitan el precio NETO de cada artículo (ver columnas_de_margen()). */
+    const COLUMNAS_DE_MARGEN = ['margen', 'ganancia_por_unidad'];
 
     /**
      * Herramienta valorizar_stock.
@@ -219,11 +234,18 @@ class ValorizacionDeStockIaHelper
 
         $consulta = self::consulta_de_filas($preparado);
 
-        $consulta->chunkById(self::LOTE, function ($lote) use (&$filas, $columnas) {
+        // El margen necesita el IVA y los impuestos de cada artículo: solo se cargan si se pidió (y se ve el costo).
+        $con_margen = count(array_intersect(self::COLUMNAS_DE_MARGEN, $columnas)) > 0;
+
+        $consulta->chunkById(self::LOTE, function ($lote) use (&$filas, $columnas, $con_margen, $preparado) {
+
+            $factores = $con_margen ? self::factores_netos($lote, $preparado['owner']) : [];
 
             foreach ($lote as $fila) {
 
-                $filas[] = self::fila_del_excel($fila, $columnas);
+                $factor = isset($factores[(int) $fila->id]) ? $factores[(int) $fila->id] : null;
+
+                $filas[] = self::fila_del_excel($fila, $columnas, $factor);
             }
 
         }, 'articles.id', 'id');
@@ -917,6 +939,12 @@ class ValorizacionDeStockIaHelper
     {
         $stock = self::expresion_stock($preparado);
 
+        // La base del margen (base_del_margen()): viaja en la misma fila, sin consultas por artículo.
+        $de_la_base = self::hay_columnas_de_base_del_margen()
+            ? ', articles.base_margen as base_margen, articles.costo_real as costo_real,'
+                . ' articles.cost_in_dollars as costo_en_dolares, articles.unidades_individuales as unidades_individuales'
+            : '';
+
         return (clone $preparado['base'])
             ->leftJoin('categories as fila_categoria', 'fila_categoria.id', '=', 'articles.category_id')
             ->leftJoin('brands as fila_marca', 'fila_marca.id', '=', 'articles.brand_id')
@@ -924,9 +952,149 @@ class ValorizacionDeStockIaHelper
                 'articles.id as id, articles.name as nombre, articles.bar_code as codigo, articles.provider_code as codigo_de_proveedor,'
                 . ' fila_categoria.name as rubro, providers.name as proveedor, fila_marca.name as marca, articles.online as en_tienda,'
                 . ' ' . $stock . ' as stock, ' . self::expresion_precio($preparado) . ' as precio,'
-                . ' CASE WHEN articles.cost IS NULL OR articles.cost <= 0 THEN NULL ELSE ' . self::expresion_costo_unitario($preparado) . ' END as costo',
+                . ' CASE WHEN articles.cost IS NULL OR articles.cost <= 0 THEN NULL ELSE ' . self::expresion_costo_unitario($preparado) . ' END as costo'
+                . $de_la_base,
                 self::bindings_del_costo($preparado)
             );
+    }
+
+    /**
+     * El factor que lleva el precio de venta de cada artículo del lote a su precio NETO de IVA y de impuestos
+     * sobre ventas: ArticlePricesHelper::quitar_iva_y_sale_taxes() aplicado sobre 1 (es un producto de
+     * escalares, igual que lo usa ArticleHelper::base_margen_en_precio_de_venta()).
+     *
+     * 🔴 POR QUÉ NETO (misión asistente-diario-20261117, M1): es el criterio del sistema para la ganancia de un
+     * artículo. ArticlePricesHelper::aplicar_price_type_surchages() guarda `monto_ganancia` contra el precio
+     * neto de IVA y de impuestos (tarea 9, aprobado por Lucas el 10/8/2026: una lista al 40 % sobre un costo
+     * de 1000 mostraba $694 de ganancia cuando la real es $400), y la ficha (PercentageGainInput.vue) mide el
+     * margen implícito de un precio contra una base del mismo lado del IVA. Comparar el precio final con el
+     * costo tal cual inflaría el margen en el IVA entero.
+     *
+     * Tres consultas por lote (artículos, su IVA y sus impuestos), nunca una por artículo.
+     *
+     * @param  \Illuminate\Support\Collection  $lote  Filas de consulta_de_filas() (traen `id`).
+     * @param  User  $owner
+     * @return array<int, float>  article_id => factor (precio neto = precio × factor).
+     */
+    protected static function factores_netos($lote, User $owner)
+    {
+        $ids = [];
+
+        foreach ($lote as $fila) {
+            $ids[] = (int) $fila->id;
+        }
+
+        if (!count($ids)) {
+
+            return [];
+        }
+
+        $articulos = Article::whereIn('id', $ids)
+            ->where('user_id', (int) $owner->id)
+            ->with(['iva', 'sale_taxes'])
+            ->get(['id', 'user_id', 'iva_id', 'aplicar_iva']);
+
+        $factores = [];
+
+        foreach ($articulos as $articulo) {
+
+            try {
+
+                $factores[(int) $articulo->id] = (float) ArticlePricesHelper::quitar_iva_y_sale_taxes($articulo, 1, $owner);
+
+            } catch (\Throwable $e) {
+
+                // Sin factor el artículo va sin margen (celdas vacías): nunca un margen inventado.
+                continue;
+            }
+        }
+
+        return $factores;
+    }
+
+    /**
+     * El margen y la ganancia de UNA unidad, con el criterio de factores_netos():
+     *  - ganancia por unidad = precio de venta neto de IVA e impuestos − la BASE del margen (ver base_del_margen());
+     *  - margen % = ganancia / base × 100.
+     * Es la misma cuenta que el «margen implícito» de ArticleHelper::setFinalPrice_sin_historial()
+     * ((precio neto − base_margen) / base_margen), así que coincide con el % de ganancia de la ficha.
+     * Sin base, sin precio o sin factor: null (celda vacía), nunca 0.
+     *
+     * @param  float|null  $base  La base del margen (base_del_margen()).
+     * @param  float|null  $precio
+     * @param  float|null  $factor_neto
+     * @return array  [margen en puntos (15 = 15 %) o null, ganancia por unidad o null]
+     */
+    public static function columnas_de_margen($base, $precio, $factor_neto)
+    {
+        if (is_null($base) || $base <= 0 || is_null($precio) || $precio <= 0 || is_null($factor_neto) || $factor_neto <= 0) {
+
+            return [null, null];
+        }
+
+        $ganancia = ((float) $precio * (float) $factor_neto) - (float) $base;
+
+        return [round($ganancia / (float) $base * 100, 2), round($ganancia, 2)];
+    }
+
+    /**
+     * LA BASE DEL MARGEN de una fila: contra qué se mide la ganancia (revisión independiente de M1,
+     * 17/11/2026). El sistema aplica `percentage_gain` sobre la base de ArticleHelper::calcular_base_antes_de_listas()
+     * más los márgenes de proveedor y categoría, y la guarda en `articles.base_margen` cada vez que calcula el
+     * precio. Esa base parte del `costo_real` (con los descuentos y recargos del artículo y, en cuentas con
+     * «aplicar IVA al costo», con el IVA adentro), ya dividido por unidades individuales y cotizado. Medir contra
+     * `articles.cost` daba 12,5 % con un descuento de proveedor del 10 % y 51,25 % con IVA al costo, sobre un
+     * artículo cargado al 25 %.
+     *
+     * La cascada, de la más fiel a la menos:
+     *  1. `base_margen` si es mayor que cero;
+     *  2. `costo_real` ÷ unidades individuales, si es mayor que cero y el costo NO está en dólares (costo_real no
+     *     está cotizado: en dólares se cae al paso 3, que sí cotiza);
+     *  3. el costo de la columna Costo (normalizado en pesos de valorizar_stock).
+     * La columna Costo del Excel no cambia: esto es solo para el margen y la ganancia.
+     *
+     * @param  \stdClass  $fila  Fila de consulta_de_filas().
+     * @param  float|null  $costo  El de la columna Costo.
+     * @return float|null
+     */
+    protected static function base_del_margen($fila, $costo)
+    {
+        if (isset($fila->base_margen) && !is_null($fila->base_margen) && (float) $fila->base_margen > 0) {
+
+            return (float) $fila->base_margen;
+        }
+
+        if (isset($fila->costo_real) && !is_null($fila->costo_real) && (float) $fila->costo_real > 0
+            && empty($fila->costo_en_dolares)) {
+
+            $unidades = isset($fila->unidades_individuales) && (float) $fila->unidades_individuales > 0
+                ? (float) $fila->unidades_individuales
+                : 1.0;
+
+            return (float) $fila->costo_real / $unidades;
+        }
+
+        return $costo;
+    }
+
+    /**
+     * true si las columnas de la base del margen (`base_margen`, `costo_real`) existen en esta instalación.
+     *
+     * @return bool
+     */
+    protected static function hay_columnas_de_base_del_margen()
+    {
+        static $hay = null;
+
+        if (is_null($hay)) {
+            try {
+                $hay = Schema::hasColumn('articles', 'base_margen') && Schema::hasColumn('articles', 'costo_real');
+            } catch (\Throwable $e) {
+                $hay = false;
+            }
+        }
+
+        return $hay;
     }
 
     /**
@@ -935,14 +1103,17 @@ class ValorizacionDeStockIaHelper
      *
      * @param  \stdClass  $fila
      * @param  array<int, string>  $columnas
+     * @param  float|null  $factor_neto  El de factores_netos(), o null si no se pidió margen.
      * @return array<string, mixed>
      */
-    protected static function fila_del_excel($fila, array $columnas)
+    protected static function fila_del_excel($fila, array $columnas, $factor_neto = null)
     {
         $stock = is_null($fila->stock) ? null : (float) $fila->stock;
         $precio = is_null($fila->precio) ? null : round((float) $fila->precio, 2);
         $costo = is_null($fila->costo) ? null : round((float) $fila->costo, 2);
         $positivo = !is_null($stock) && $stock > 0;
+
+        list($margen, $ganancia) = self::columnas_de_margen(self::base_del_margen($fila, $costo), $precio, $factor_neto);
 
         $valores = [
             'nombre'              => (string) $fila->nombre,
@@ -956,6 +1127,8 @@ class ValorizacionDeStockIaHelper
             'precio'              => $precio,
             'valor_a_costo'       => ($positivo && !is_null($costo)) ? round($stock * $costo, 2) : null,
             'valor_a_precio'      => ($positivo && !is_null($precio)) ? round($stock * $precio, 2) : null,
+            'margen'              => $margen,
+            'ganancia_por_unidad' => $ganancia,
             'en_tienda'           => (bool) $fila->en_tienda ? 'Sí' : 'No',
         ];
 

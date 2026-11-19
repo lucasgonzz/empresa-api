@@ -726,6 +726,9 @@ class Masiva_en_lote_Test extends DescuentosYMasivasEnLoteTestCase
         $como_develop = $leer();
         DB::rollBack();
 
+        // Referencia de cálculo consumida: no es una operación pendiente de la cola real.
+        DB::table('background_processes')->where('referencia_type', MasiveUpdate::class)->where('referencia_id', $referencia->id)->delete();
+        $referencia->delete();
         $this->limpiar_estado_del_proceso();
 
         $masiva = $this->masiva_pendiente($dueno, $empleado, $ids, $update_form);
@@ -792,7 +795,13 @@ class Masiva_en_lote_Test extends DescuentosYMasivasEnLoteTestCase
 
         $ids = $e['ids'];
 
-        (new \App\Jobs\ProcessMasiveUpdateJob($e['masiva_id']))->handle();
+        // Cobertura del fallback del motor compartido. El job durable tiene otra garantía:
+        // rollback completo de su tanda, ver los casos nuevos al final (política 17/11/2026).
+        try {
+            MasiveUpdateHelper::process_update(MasiveUpdate::find($e['masiva_id']));
+        } catch (\Throwable $error_del_motor) {
+            MasiveUpdateHelper::mark_failed(MasiveUpdate::find($e['masiva_id']), $error_del_motor->getMessage());
+        }
 
         $masiva = MasiveUpdate::find($e['masiva_id']);
 
@@ -850,7 +859,13 @@ class Masiva_en_lote_Test extends DescuentosYMasivasEnLoteTestCase
 
         $ids = $e['ids'];
 
-        (new \App\Jobs\ProcessMasiveUpdateJob($e['masiva_id']))->handle();
+        // Cobertura del fallback del motor compartido. El job durable tiene otra garantía:
+        // rollback completo de su tanda, ver los casos nuevos al final (política 17/11/2026).
+        try {
+            MasiveUpdateHelper::process_update(MasiveUpdate::find($e['masiva_id']));
+        } catch (\Throwable $error_del_motor) {
+            MasiveUpdateHelper::mark_failed(MasiveUpdate::find($e['masiva_id']), $error_del_motor->getMessage());
+        }
 
         $masiva = MasiveUpdate::find($e['masiva_id']);
 
@@ -870,6 +885,44 @@ class Masiva_en_lote_Test extends DescuentosYMasivasEnLoteTestCase
         }
 
         $this->assertEquals($e['antes'][$ids[4]], $despues[$ids[4]]);
+    }
+
+    public function test_el_job_revierte_la_tanda_si_falla_el_motor_aunque_su_fallback_pueda_calcular()
+    {
+        $this->exigir_rollback_de_tanda(false);
+    }
+
+    public function test_el_job_revierte_la_tanda_si_fallan_motor_y_un_articulo_del_fallback()
+    {
+        $this->exigir_rollback_de_tanda(true);
+    }
+
+    private function exigir_rollback_de_tanda($tambien_falla_por_articulo)
+    {
+        $e = $this->masiva_con_un_motor_que_tira($tambien_falla_por_articulo);
+        \Illuminate\Support\Facades\Queue::fake();
+        config(['proteccion_asistente.masivas.tamanio' => 2]);
+        $reloj = \Carbon\Carbon::getTestNow();
+        try {
+            (new \App\Jobs\ProcessMasiveUpdateJob($e['masiva_id'], 0, 0))->handle();
+            $this->assertSame('processing', MasiveUpdate::find($e['masiva_id'])->status);
+            \Carbon\Carbon::setTestNow(now()->addSeconds(5));
+            (new \App\Jobs\ProcessMasiveUpdateJob($e['masiva_id'], 2, 1))->handle();
+            $masiva = MasiveUpdate::find($e['masiva_id']);
+            $this->assertSame('failed', $masiva->status);
+            $this->assertSame('Deadlock simulado contra una venta', $masiva->error_message);
+            $despues = call_user_func($e['leer']);
+            foreach ([$e['ids'][0], $e['ids'][1]] as $id) {
+                $this->assertEquals($e['como_develop'][$id], $despues[$id], 'La primera tanda confirmada se conserva.');
+            }
+            foreach ([$e['ids'][2], $e['ids'][3], $e['ids'][4]] as $id) {
+                $this->assertEquals($e['antes'][$id], $despues[$id], 'La tanda fallida y la siguiente conservan el estado anterior.');
+            }
+            $this->assertSame(2, $masiva->articles()->count());
+            $this->assertTrue(MasiveUpdateHelper::can_revert($masiva));
+        } finally {
+            \Carbon\Carbon::setTestNow($reloj);
+        }
     }
 
 }

@@ -740,7 +740,23 @@ class BackgroundProcessHelper
                 ->update(['broadcast_at' => Carbon::now()]);
             $proceso->broadcast_at = Carbon::now();
 
-            broadcast(new BackgroundProcessUpdated(self::payload($proceso), $proceso->user_id));
+            $payload = self::payload($proceso);
+            $dueno = $proceso->user_id;
+            $emitir = function () use ($payload, $dueno) {
+                try {
+                    broadcast(new BackgroundProcessUpdated($payload, $dueno));
+                } catch (\Throwable $e) {
+                    try {
+                        Log::warning('BackgroundProcessHelper: falló el broadcast posterior al commit.', ['clase' => get_class($e)]);
+                    } catch (\Throwable $ignorado) {
+                    }
+                }
+            };
+            if (DB::transactionLevel() > 0) {
+                DB::afterCommit($emitir);
+            } else {
+                $emitir();
+            }
         } catch (\Throwable $e) {
             // Un aviso perdido es aceptable; el job que lo emite no se entera. La SPA lo
             // recupera al reconectar o por el polling de respaldo.

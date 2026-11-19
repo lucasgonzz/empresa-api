@@ -269,52 +269,20 @@ class FacturaDeVentaHelper
 
     private static function total_facturado_verificado($venta, $codigo_nuevo): float
     {
-        $facturas = self::facturas_autorizadas($venta->id)->with('nota_credito_afip')->get();
-        $neto = 0;
-        foreach ($facturas as $factura) {
-            $moneda = self::moneda_del_comprobante($factura);
-            if (!is_numeric($factura->importe_total) || (float) $factura->importe_total <= 0) {
-                self::rechazar('La venta tiene un comprobante autorizado cuyo saldo fiscal necesita revisión antes de volver a emitir.');
-            }
-            $importe = (float) $factura->importe_total;
-            foreach ($factura->nota_credito_afip as $nota) {
-                if (!IntentosDeFacturaFallidosHelper::tiene_cae($nota)) {
-                    continue;
-                }
-                if (!is_numeric($nota->importe_total) || (float) $nota->importe_total <= 0
-                    || self::moneda_del_comprobante($nota) !== $moneda
-                    || ($nota->sale_nota_credito_id && (int) $nota->sale_nota_credito_id !== (int) $venta->id)) {
-                    self::rechazar('La venta tiene una nota de crédito cuyo vínculo o importe fiscal necesita revisión.');
-                }
-                $importe -= (float) $nota->importe_total;
-            }
-            $tipo_anterior = $factura->afip_tipo_comprobante;
-            if (!$tipo_anterior || ((int) $tipo_anterior->codigo !== 19 && $moneda !== 'PES')
-                || ((int) $tipo_anterior->codigo === 19 && $moneda !== ((int) $venta->moneda_id === 2 ? 'DOL' : 'PES'))
-                || $importe < -0.01) {
-                self::rechazar('El saldo de los comprobantes de la venta necesita revisión antes de volver a emitir.');
-            }
-            $moneda_nueva = (int) $codigo_nuevo === 19 && (int) $venta->moneda_id === 2 ? 'DOL' : 'PES';
-            if ($importe > 0.01 && $moneda !== $moneda_nueva) {
-                self::rechazar('La venta tiene saldo facturado en otra moneda fiscal. Revisá los comprobantes antes de cambiar el tipo de factura.');
-            }
-            $neto += $importe;
-        }
+        // El único intento que se conciliará se valida luego con su firma y datos fiscales.
+        // No bloquearlo acá: impediría recuperar un CAE tras una respuesta incierta.
+        $pendiente = self::intento_incierto($venta->id);
+        $analisis = TotalFacturadoDeVentaHelper::analizar($venta, $pendiente ? $pendiente->id : null);
+        TotalFacturadoDeVentaHelper::exigir_verificable($analisis);
+        $neto = (float) $analisis['total'];
         if (abs($neto - (float) $venta->total_facturado) > 0.01) {
-            self::rechazar('El saldo fiscal de la venta no coincide con sus comprobantes autorizados. Revisalos antes de volver a emitir.');
+            self::rechazar('El total facturado guardado no coincide con sus comprobantes autorizados. No emitas otra factura para corregirlo: pedí a soporte revisar y reparar ese acumulado.');
         }
-        return max(0, $neto);
-    }
-
-    private static function moneda_del_comprobante($ticket): string
-    {
-        $id = trim((string) $ticket->moneda_id);
-        $legacy = trim((string) $ticket->moneda);
-        if (($id !== '' && $legacy !== '' && $id !== $legacy)
-            || !in_array($id !== '' ? $id : $legacy, ['PES', 'DOL'], true)) {
-            self::rechazar('La moneda fiscal de un comprobante necesita revisión antes de volver a emitir.');
+        $moneda_nueva = (int) $codigo_nuevo === 19 && (int) $venta->moneda_id === 2 ? 'DOL' : 'PES';
+        if ($neto > 0 && $analisis['moneda'] !== $moneda_nueva) {
+            self::rechazar('La venta tiene saldo facturado en otra moneda fiscal. Revisá los comprobantes antes de cambiar el tipo de factura.');
         }
-        return $id !== '' ? $id : $legacy;
+        return $neto;
     }
 
     private static function firma($venta, $emisor, $tipo, array $data, $importe, $metodos_fiscales, bool $solo_contenido = false): string

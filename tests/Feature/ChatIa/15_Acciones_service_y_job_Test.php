@@ -94,6 +94,8 @@ class Acciones_service_y_job_Test extends TestCase
         'exportar_articulos_excel',
         // asistente-diario-20261116 (30/10 #11): el cruce de compras con ventas y stock, al final.
         'consultar_rendimiento_de_compras',
+        // asistente-diario-20261117 (parte B, A2): lo que el asistente ejecutó de verdad, al final.
+        'consultar_lo_que_hizo_el_asistente',
     ];
 
     /**
