@@ -5999,7 +5999,7 @@ CONFIRMACION;
         return [
             [
                 'name' => 'consultar_stock_de_articulos',
-                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado. presentacion es cuántas unidades trae la caja; si precio_es_por dice «caja de N», precio es el de la CAJA y precio_por_unidad el de una unidad (una botella). costo (si viene) es por lo que dice costo_es_por. Nunca completes una presentación, un precio por unidad ni un costo que no venga acá.',
+                'description' => 'Devuelve artículos activos del negocio con su precio y su stock actual. Filtrá por nombre, código de barras o código de proveedor. Usala cuando te pregunten cuánto stock hay de algo, o el precio de un artículo. Si stock viene null con stock_sin_cargar true, el artículo no tiene stock cargado: decilo así, nunca "stock 0" (si trae stock_en_depositos, ese es el stock repartido por depósito). link_tienda es el link de su ficha en la tienda online: pasalo tal cual, nunca lo armes; null con publicado_en_tienda false quiere decir que no está publicado. presentacion es cuántas unidades trae la caja; si precio_es_por dice «caja de N», precio es el de la CAJA y precio_por_unidad el de una unidad (una botella). costo (si viene) es por lo que dice costo_es_por. Nunca completes una presentación, un precio por unidad ni un costo que no venga acá. 🔴 Si no entraron todos, la respuesta viene con articulos_encontrados (el total), hay_mas y la lista en articulos: la cantidad es articulos_encontrados, y con hay_mas: true nunca digas que algo no existe; pedí la pagina siguiente o subí limite. Para un Excel de artículos va exportar_articulos_excel con el filtro, nunca esta lista.',
                 'input_schema' => [
                     'type' => 'object',
                     'properties' => [
@@ -6009,6 +6009,9 @@ CONFIRMACION;
                         ],
                         // Misión agente-mejoras-uso-real (E2): al final de las propiedades.
                         'articulo_id' => self::esquema_de_articulo_id(),
+                        // Misión asistente-diario-20261119 (rama A, A3): al final de las propiedades.
+                        'limite' => ['type' => 'integer', 'description' => 'Cuántos artículos traer (default 20, hasta 100).'],
+                        'pagina' => ['type' => 'integer', 'description' => 'La página, desde 1, cuando la respuesta anterior trajo hay_mas: true.'],
                     ],
                     'required' => ['busqueda'],
                 ],
@@ -6016,7 +6019,19 @@ CONFIRMACION;
                     // Misión asistente-mejoras-4-dias (P2): el costo, solo a quien lo ve en la pantalla (`articles.cost`).
                     $persona = $conversation instanceof AiConversation ? User::find($conversation->auth_user_id) : null;
 
-                    $resultado = ConsultasSistemaIaHelper::stock_de_articulos($owner_id, (string) ($input['busqueda'] ?? ''), self::articulo_id_del_input($input), PermisosIaHelper::puede($persona, 'articles.cost'));
+                    /*
+                     * Misión asistente-diario-20261119 (rama A, A3): con total, hay_mas, limite y pagina. Ferre Total
+                     * (18/11, conv. 72) recibió 20 remaches de un listado topeado y el asistente dijo que no había de
+                     * medida 6 (había 9). Si entró todo, la lista de siempre; si no, envuelta con el total.
+                     */
+                    $resultado = ConsultasSistemaIaHelper::stock_de_articulos_con_total(
+                        (int) $owner_id,
+                        (string) ($input['busqueda'] ?? ''),
+                        self::articulo_id_del_input($input),
+                        PermisosIaHelper::puede($persona, 'articles.cost'),
+                        isset($input['limite']) ? (int) $input['limite'] : null,
+                        isset($input['pagina']) ? (int) $input['pagina'] : 1
+                    );
 
                     // P8 (16/11/2026, V14): sin resultados por el nombre, los PARECIDOS (artículos y promos) para preguntar.
                     if ($resultado === [] && trim((string) ($input['busqueda'] ?? '')) !== '' && is_null(self::articulo_id_del_input($input))) {
