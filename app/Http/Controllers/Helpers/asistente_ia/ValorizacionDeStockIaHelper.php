@@ -97,6 +97,18 @@ class ValorizacionDeStockIaHelper
          */
         'margen'              => ['Margen % sobre costo', 'porcentaje', true],
         'ganancia_por_unidad' => ['Ganancia por unidad', 'moneda', true],
+        /*
+         * Misión asistente-diario-20261119 (rama A, M2), AL FINAL para no mover las de antes. Ferre Total
+         * (18/11, conv. 72, msgs 693-699) pidió el Excel de 145 artículos «y agregá categoría y subcategoría y
+         * margen de ganancia»: este exportador no tenía subrubro, el asistente armó el archivo a mano con
+         * exportar_excel leyendo `price` (el precio MANUAL, vacío en los 145: el de venta es `final_price`) y
+         * el Excel salió con el precio en 0. Con estas dos ya no hace falta armarlo a mano:
+         *  - `subrubro`: la subcategoría (sub_categories.name); `rubro` es la categoría.
+         *  - `margen_cargado`: el % de ganancia CARGADO en el artículo (articles.percentage_gain), el número
+         *    que el dueño ve en la ficha y llama «margen de ganancia». De costo, como las otras de margen.
+         */
+        'subrubro'            => ['Subrubro', 'texto', false],
+        'margen_cargado'      => ['Margen de ganancia cargado %', 'porcentaje', true],
     ];
 
     /**
@@ -948,9 +960,12 @@ class ValorizacionDeStockIaHelper
         return (clone $preparado['base'])
             ->leftJoin('categories as fila_categoria', 'fila_categoria.id', '=', 'articles.category_id')
             ->leftJoin('brands as fila_marca', 'fila_marca.id', '=', 'articles.brand_id')
+            // M2 (asistente-diario-20261119): la subcategoría, en la misma fila.
+            ->leftJoin('sub_categories as fila_subcategoria', 'fila_subcategoria.id', '=', 'articles.sub_category_id')
             ->selectRaw(
                 'articles.id as id, articles.name as nombre, articles.bar_code as codigo, articles.provider_code as codigo_de_proveedor,'
-                . ' fila_categoria.name as rubro, providers.name as proveedor, fila_marca.name as marca, articles.online as en_tienda,'
+                . ' fila_categoria.name as rubro, fila_subcategoria.name as subrubro, articles.percentage_gain as margen_cargado,'
+                . ' providers.name as proveedor, fila_marca.name as marca, articles.online as en_tienda,'
                 . ' ' . $stock . ' as stock, ' . self::expresion_precio($preparado) . ' as precio,'
                 . ' CASE WHEN articles.cost IS NULL OR articles.cost <= 0 THEN NULL ELSE ' . self::expresion_costo_unitario($preparado) . ' END as costo'
                 . $de_la_base,
@@ -1130,6 +1145,9 @@ class ValorizacionDeStockIaHelper
             'margen'              => $margen,
             'ganancia_por_unidad' => $ganancia,
             'en_tienda'           => (bool) $fila->en_tienda ? 'Sí' : 'No',
+            // M2 (asistente-diario-20261119): sin dato, celda vacía (nunca 0).
+            'subrubro'            => (isset($fila->subrubro) && !is_null($fila->subrubro)) ? (string) $fila->subrubro : null,
+            'margen_cargado'      => (isset($fila->margen_cargado) && !is_null($fila->margen_cargado)) ? round((float) $fila->margen_cargado, 2) : null,
         ];
 
         $salida = ['__orden' => (string) $fila->nombre];
