@@ -424,6 +424,27 @@ class ImportacionesPendientesTest extends EmpresaTestCase
     }
 
     /**
+     * Con revisión IGUAL a la guardada el borrador entrante sobrescribe: sólo se ignora si la
+     * guardada es estrictamente mayor (ExcelAnalysisRun::guardar_borrador). Así el reintento
+     * idempotente de un mismo envío es inocuo. (PHP no ejecutado en esta máquina.)
+     *
+     * @test
+     * @return void
+     */
+    public function un_borrador_con_la_misma_revision_sobrescribe()
+    {
+        $run = $this->corrida();
+
+        $this->postJson('api/ai-excel-import/analysis/' . $run->uuid . '/borrador', ['borrador' => ['paso' => 2, 'start_row' => 3, 'revision' => 300]])->assertStatus(204);
+        $this->postJson('api/ai-excel-import/analysis/' . $run->uuid . '/borrador', ['borrador' => ['paso' => 2, 'start_row' => 7, 'revision' => 300]])->assertStatus(204);
+
+        $borrador = $this->getJson('api/ai-excel-import/analysis/' . $run->uuid)->json('borrador');
+
+        $this->assertEquals(300, $borrador['revision']);
+        $this->assertEquals(7, $borrador['start_row']);
+    }
+
+    /**
      * Una corrida todavía trabajando se lista (el modal la sigue en vivo).
      *
      * @test
