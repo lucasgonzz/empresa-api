@@ -337,6 +337,14 @@ class Hilo_por_tema_Test extends AsistenteWhatsappTestCase
 
         Http::assertNothingSent();
 
+        /*
+         * Misión asistente-diario-20261119 (rama B, A6): un mensaje a segundos del anterior es parte de la misma
+         * ráfaga y no se corta (AsistenteCanalHelper::SEGUNDOS_DE_LA_RAFAGA). Este test mide el UMBRAL DE LARGO, no
+         * la ráfaga: el segundo mensaje se manda como si el dueño hubiera hecho una pausa, igual que el primero
+         * (la conversación del fixture habló hace 4 minutos).
+         */
+        AiConversation::where('id', $vigente->id)->update(['last_message_at' => Carbon::now()->subMinutes(4)]);
+
         $quince = 'Hacé una compra';
 
         $this->assertEquals(15, mb_strlen($quince));

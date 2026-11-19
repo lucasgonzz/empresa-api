@@ -252,6 +252,17 @@ class AsistenteController extends Controller
             if ($conversation && $conversation->sistema_exclusivo_at !== null && $cita === (int) $conversation->id) {
                 return $this->conversacion_solo_sistema();
             }
+
+            /*
+             * 🔴 Misión asistente-diario-20261119 (rama B, A6): la elección de afuera corre SIN el candado, así que
+             * dos mensajes del dueño que entran casi juntos podían decidir «nueva» los dos (ninguno veía todavía la
+             * conversación del otro) y quedar en dos hilos. Acá, con el dueño ya bloqueado, si la elección dio
+             * «nueva» pero hay una conversación vigente donde el dueño escribió hace segundos, el mensaje entra ahí
+             * (AsistenteCanalHelper::SEGUNDOS_DE_LA_RAFAGA). Una cita del admin nunca pasa por acá: ya eligió.
+             */
+            if (!$conversation) {
+                $conversation = AsistenteCanalHelper::conversacion_de_la_rafaga($dueno);
+            }
             if (!$conversation || $conversation->sistema_exclusivo_at !== null) {
                 $conversation = AsistenteCanalHelper::nueva_conversacion($dueno);
             }
