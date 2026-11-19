@@ -347,8 +347,15 @@ class EnvioSinPropuestaIaHelper
      * ver (fotos y tienda de 145 esmaltes) y costó una vuelta. También «mandarina» o «mandato». La lista de formas
      * acota la guarda y TEXTO_HONESTO a los envíos de verdad (comprobante, recordatorios de cobro, promoción).
      */
-    const PALABRAS_DE_ENVIO = '(?:envio|envios|envi(?:a|as|o|e|en|es|amos|emos|ar|ara|are|aria|ado|ada|ados|adas|ando)(?:le|les|lo|la|los|las|selo|sela|selos|selas|melo|mela)?'
-        . '|mand(?:a|as|o|e|en|es|amos|emos|ar|ara|are|aria|ado|ada|ados|adas|ando)(?:le|les|lo|la|los|las|selo|sela|selos|selas|melo|mela)?)';
+    /**
+     * Los pronombres que van pegados a mandar/enviar («mandale», «enviáselo», «mandame», «mandanos», «mandarte»,
+     * «enviártelo»). Revisión independiente (19/11/2026), punto 4: faltaban los de me/te/nos. Ninguno vuelve a
+     * agarrar «envase» (la raíz sigue siendo una forma del verbo, no una palabra que empieza igual).
+     */
+    const PRONOMBRES_PEGADOS = 'le|les|lo|la|los|las|me|te|nos|selo|sela|selos|selas|melo|mela|melos|melas|telo|tela|telos|telas|noslo|nosla|noslos|noslas';
+
+    const PALABRAS_DE_ENVIO = '(?:envio|envios|envi(?:a|as|o|e|en|es|amos|emos|ar|ara|are|aria|ado|ada|ados|adas|ando)(?:' . self::PRONOMBRES_PEGADOS . ')?'
+        . '|mand(?:a|as|o|e|en|es|amos|emos|ar|ara|are|aria|ado|ada|ados|adas|ando)(?:' . self::PRONOMBRES_PEGADOS . ')?)';
 
     /**
      * true si el texto (normalizado) dice que se va a mandar algo a alguien («Lo mando por WhatsApp…»).

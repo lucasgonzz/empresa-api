@@ -66,6 +66,23 @@ class U194_Envio_solo_si_es_envio_y_advertir_una_vez_Test extends TestCase
     }
 
     /**
+     * Revisión independiente (19/11/2026), punto 4: las formas con me/te/nos pegados también son mandar, y
+     * «envase» sigue sin serlo.
+     *
+     * @test
+     */
+    public function las_formas_con_me_te_nos_tambien_son_mandar()
+    {
+        foreach (['Mandame el presupuesto por mail', 'Enviame el PDF', 'Mandanos la factura', 'Quiero mandarte el detalle', 'Podés enviármelo hoy', 'Voy a enviártelo'] as $texto) {
+            $this->assertTrue(EnvioSinPropuestaIaHelper::el_dueno_pidio_mandar($texto), $texto);
+        }
+
+        foreach (['El envase es de 4 litros', 'Los envases vienen de a 12', 'Una mandarina'] as $texto) {
+            $this->assertFalse(EnvioSinPropuestaIaHelper::el_dueno_pidio_mandar($texto), $texto);
+        }
+    }
+
+    /**
      * B2: el prompt dice que una advertencia va una sola vez.
      *
      * @test

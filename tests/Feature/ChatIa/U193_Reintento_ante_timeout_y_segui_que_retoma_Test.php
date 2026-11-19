@@ -244,6 +244,7 @@ class U193_Reintento_ante_timeout_y_segui_que_retoma_Test extends TestCase
         $this->assertStringContainsString('se CORTÓ antes de terminar', $nota);
         $this->assertStringContainsString('la paleta como secundaria en los 145', $nota);
         $this->assertStringContainsString('[Tarjeta …]', $nota);
+        $this->assertStringContainsString('Un «seguí» NO confirma ninguna tarjeta', $nota, 'Revisión independiente (19/11), punto 5.');
     }
 
     /**

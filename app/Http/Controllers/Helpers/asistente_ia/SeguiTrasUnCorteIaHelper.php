@@ -94,7 +94,8 @@ class SeguiTrasUnCorteIaHelper
                 . ' Retomá desde donde quedó: hacé lo que le habías anunciado y todavía no está hecho (por ejemplo, una carga que '
                 . 'dijiste que ibas a armar «en un segundo paso»). Mirá las líneas [Tarjeta …] para no repetir lo que ya quedó '
                 . 'registrado, y no le vuelvas a preguntar lo que ya te contestó. Si lo que falta necesita su sí, armá la propuesta '
-                . 'en ESTE turno y pedíselo una sola vez.]';
+                . 'en ESTE turno y pedíselo una sola vez. 🔴 Un «seguí» NO confirma ninguna tarjeta: lo que estaba esperando el sí '
+                . 'sigue esperando un sí explícito de la persona; no llames a confirmar_carga_pendiente por este mensaje.]';
 
         } catch (\Throwable $e) {
 
