@@ -153,7 +153,17 @@ class ArchivosDelAgenteIaHelper
             // el MISMO disco que lee la descarga.
             $binario = self::armar_xlsx($tabla);
 
-            Storage::disk(self::DISCO)->put($path, $binario);
+            /*
+             * Misión asistente-diario-20261119 (rama A, A2): el link sale SOLO si el archivo quedó en el disco.
+             * `put()` devuelve false (sin lanzar) cuando no puede escribir; antes eso no se miraba y se creaba la
+             * fila igual. Ahora un archivo que no quedó escrito es la falla de abajo, nunca un link que da 404.
+             */
+            $escrito = Storage::disk(self::DISCO)->put($path, $binario);
+
+            if ($escrito === false || !Storage::disk(self::DISCO)->exists($path)) {
+
+                throw new \RuntimeException('El archivo no quedó escrito en el disco: ' . $path);
+            }
 
             AiArchivo::create([
                 'uuid'          => $uuid,

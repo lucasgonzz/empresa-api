@@ -255,6 +255,14 @@ class AiMessageAction extends Model
      */
     const TIPO_AJUSTE_STOCK_LOTE = 'ajuste_stock_lote';
 
+    /**
+     * Misión asistente-diario-20261119 (rama C, A4): el RENOMBRE MASIVO, reemplazar un texto por otro en
+     * el nombre de muchos artículos («ESMALTE AC. MULT.» → «ESMALTE ACCIÓN MÚLTIPLE»). Se encola por el
+     * camino de la actualización masiva y se revierte desde su historial
+     * (PropuestaRenombreMasivoIaHelper). 🔴 Nunca se auto-confirma.
+     */
+    const TIPO_RENOMBRE_MASIVO = 'renombre_masivo';
+
     protected $guarded = [];
 
     /**

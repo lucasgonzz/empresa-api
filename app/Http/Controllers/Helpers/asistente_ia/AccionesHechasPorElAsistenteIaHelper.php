@@ -105,6 +105,8 @@ class AccionesHechasPorElAsistenteIaHelper
         AiMessageAction::TIPO_FOTO_ARTICULO        => 'foto de artículo',
         AiMessageAction::TIPO_FOTO_SUCURSAL        => 'foto de sucursal',
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA => 'actualización masiva',
+        // Misión asistente-diario-20261119 (rama C, A4).
+        AiMessageAction::TIPO_RENOMBRE_MASIVO      => 'renombre masivo',
     ];
 
     /**

@@ -46,7 +46,8 @@ class ArchivoDelAgenteController extends Controller
             Storage::disk(ArchivosDelAgenteIaHelper::DISCO)->path($archivo->path),
             $archivo->nombre,
             [
-                'Content-Type'  => ArchivosDelAgenteIaHelper::MIME_XLSX,
+                // El Excel o, desde la misión asistente-diario-20261119 (M3), la foto a medida: por el tipo de la fila.
+                'Content-Type'  => $archivo->content_type(),
                 // Datos del negocio: que ningún intermediario lo guarde ni un buscador lo indexe.
                 'Cache-Control' => 'private, no-store',
                 'X-Robots-Tag'  => 'noindex, nofollow',
