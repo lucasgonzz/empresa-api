@@ -1397,6 +1397,15 @@ class HerramientasDeCarga
                             'type'        => 'string',
                             'description' => 'Nombre de la sucursal. Solo hace falta si el negocio tiene más de una. Si la persona ya la dijo en esta conversación, mandala; si no la dijo, no la mandes: la herramienta usa la de la persona o la de la última venta o presupuesto de la charla, y recién si no hay ninguna te la pide.',
                         ],
+                        /*
+                         * Misión asistente-diario-20261119 (rama B, A6; Ferre Total conv 62): una lista larga con
+                         * «poné lo que interpretes» no se podía armar porque el primer renglón sin artículo cortaba
+                         * todo. Ver PropuestaPresupuestoIaHelper::interpretar_items().
+                         */
+                        'con_lo_que_encuentres' => [
+                            'type'        => 'boolean',
+                            'description' => 'true SOLO cuando la persona te autorizó a armarlo con lo que encuentres ("poné lo que interpretes", "armalo con lo que haya", "buscalo por nombre y después lo reviso"), típico de una lista larga. Cada renglón ambiguo va con su mejor coincidencia y los que no existen quedan afuera: la respuesta trae interpretados y no_encontrados, y los contás. No vuelvas a pedir códigos. Sin esa autorización, no lo mandes.',
+                        ],
                         'reemplaza_a'          => self::esquema_de_reemplazo(),
                     ],
                     'required'   => ['items', 'cliente'],

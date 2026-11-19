@@ -3236,7 +3236,29 @@ AUTO_RESUELTO;
   dejaste una tarjeta y seguí con lo que haya quedado pendiente. Si la nota dice que no se pudo,
   contá ese motivo tal cual.
 {$this->bloques_de_prompt_de_b_y_c($confianza)}
+{$this->reglas_de_listas_largas_y_referencias()}
 CARGA;
+    }
+
+    /**
+     * Las reglas de la misión asistente-diario-20261119 (rama B) que valen en todos los canales: la lista larga
+     * con «poné lo que interpretes» (A6). Bloque propio, interpolado al final del bloque de carga, para que las
+     * ramas que corren en paralelo sobre este archivo no choquen con párrafos ajenos.
+     *
+     * 🔴 EL CASO REAL (Ferre Total, conv 62, 18/11/2026): 37 renglones para un presupuesto, «Buscalo por nombre»,
+     * «Poné lo que interpretes y yo después lo reviso»; el asistente pidió los códigos dos veces y no armó nada.
+     *
+     * @return string
+     */
+    protected function reglas_de_listas_largas_y_referencias(): string
+    {
+        return <<<LISTAS
+- 🔴 Lista larga para un presupuesto (o una venta) y la persona te dice «poné lo que interpretes»,
+  «buscalo por nombre», «armalo con lo que haya y después lo reviso»: llamá a proponer_presupuesto
+  con TODOS los renglones y con_lo_que_encuentres: true. No le pidas los códigos ni le preguntes
+  renglón por renglón. Contale cuántos entraron, los interpretados (lo que pidió → lo que pusiste)
+  y los que no encontraste, por su texto, para que los revise.
+LISTAS;
     }
 
     /**
