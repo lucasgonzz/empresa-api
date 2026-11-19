@@ -97,7 +97,7 @@ class CurrentAcountController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);
@@ -503,7 +503,7 @@ class CurrentAcountController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);
@@ -557,7 +557,7 @@ class CurrentAcountController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);
@@ -733,7 +733,7 @@ class CurrentAcountController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llega al reporter de errores.
             report($e);

@@ -280,7 +280,7 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // El reporter de errores esta enganchado al handler global (Handler::register ->
             // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
@@ -341,7 +341,7 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // El reporter de errores esta enganchado al handler global (Handler::register ->
             // reportable), que Laravel solo invoca para excepciones NO manejadas. Como esta la
@@ -821,7 +821,7 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // report() a mano por el mismo motivo que en store(): el reporter global solo corre
             // para excepciones NO manejadas, y esta la capturamos nosotros.
@@ -942,7 +942,7 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             /*
                 Sin transaccion, un fallo a mitad de saveSale() dejaba la venta creada, el stock ya
@@ -1060,7 +1060,7 @@ class BudgetController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             /*
                 Sin transaccion, si deleteSale() reventaba a mitad quedaba el presupuesto todavia

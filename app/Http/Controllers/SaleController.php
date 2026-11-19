@@ -1890,7 +1890,7 @@ class SaleController extends Controller
 
             DB::rollBack();
 
-            if ($e instanceof \Illuminate\Validation\ValidationException) { throw $e; }
+            if ($e instanceof \Illuminate\Validation\ValidationException && isset($e->errors()['cuenta_corriente'])) { throw $e; }
 
             // Capturada para poder hacer rollback: sin report() no llegaría al reporter de errores
             // (APRENDER_NO_PARCHEAR: "excepción capturada que nunca llega al reporter").
