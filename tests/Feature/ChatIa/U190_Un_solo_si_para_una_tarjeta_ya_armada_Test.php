@@ -320,6 +320,8 @@ class U190_Un_solo_si_para_una_tarjeta_ya_armada_Test extends TestCase
     // La pregunta sin propuesta («¿Los publico?») ahora se ve
     // ---------------------------------------------------------------------
 
+    // (los tests de la revisión independiente del 19/11 están al final del archivo)
+
     /**
      * 🔴 687 y 721 de Ferre Total: «¿Los publico…?» y «¿Confirmás los 145…?» piden confirmar una carga. Con la
      * guarda de CargaSinPropuestaIaHelper, el turno que pregunta sin haber armado la propuesta se reintenta para
@@ -359,5 +361,144 @@ class U190_Un_solo_si_para_una_tarjeta_ya_armada_Test extends TestCase
 
         $sin_acciones = (new AsistenteIaService())->build_system_prompt($conversation, $this->comercio->fresh(), false, true);
         $this->assertStringNotContainsString('Un solo sí por carga', $sin_acciones);
+    }
+
+    // ---------------------------------------------------------------------
+    // Revisión independiente (19/11/2026): lista blanca, canal y varias tarjetas
+    // ---------------------------------------------------------------------
+
+    /**
+     * 🔴 BLOQUEANTE de la revisión: una VENTA con una aclaración en el medio («hacela con 5» → «Perfecto, 5. ¿La
+     * registro?» sin tarjeta nueva) NO lleva la nota: confirmar la tarjeta vieja registraría 3 martillos, no 5.
+     *
+     * @test
+     */
+    public function una_venta_con_aclaracion_en_el_medio_no_tiene_nota()
+    {
+        $conversation = $this->conversacion();
+
+        $this->mensaje($conversation, 'user', 'Vendele 3 martillos a Juan');
+        $propuso = $this->mensaje($conversation, 'assistant', 'Venta de 3 martillos a Juan por $ 30.000. ¿La registro?');
+        $this->tarjeta($conversation, $propuso, AiMessageAction::TIPO_VENTA, AiMessageAction::ESTADO_PROPUESTA, 'Venta');
+        $this->mensaje($conversation, 'user', 'hacela con 5');
+        $this->mensaje($conversation, 'assistant', 'Perfecto, 5 martillos. ¿La registro?');
+        $this->mensaje($conversation, 'user', 'Sí');
+        $contestando = $this->mensaje($conversation, 'assistant', null, 'pendiente');
+
+        $this->assertSame([], SiATarjetaPendienteIaHelper::tarjetas($conversation, $contestando));
+        $this->assertNull(ConfirmacionDeterministaIaHelper::quizas_confirmar($conversation, $contestando), 'Tampoco la confirma el código.');
+    }
+
+    /**
+     * La lista blanca con aclaraciones es cerrada y sin plata; un gasto corregido en la charla tampoco lleva nota.
+     *
+     * @test
+     */
+    public function la_lista_blanca_con_aclaraciones_no_tiene_plata()
+    {
+        $tipos = SiATarjetaPendienteIaHelper::tipos_con_aclaraciones();
+
+        $this->assertSame([
+            AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
+            AiMessageAction::TIPO_FOTO_ARTICULO,
+            AiMessageAction::TIPO_RENOMBRE_MASIVO,
+        ], $tipos);
+
+        foreach ([AiMessageAction::TIPO_VENTA, AiMessageAction::TIPO_PAGO, AiMessageAction::TIPO_GASTO, AiMessageAction::TIPO_PRESUPUESTO] as $plata) {
+            $this->assertNotContains($plata, $tipos);
+        }
+
+        $conversation = $this->conversacion();
+        $this->mensaje($conversation, 'user', 'Anotá el gasto de nafta, 5000');
+        $propuso = $this->mensaje($conversation, 'assistant', 'Gasto de nafta por $ 5.000. ¿Lo registro?');
+        $this->tarjeta($conversation, $propuso, AiMessageAction::TIPO_GASTO, AiMessageAction::ESTADO_PROPUESTA, 'Gasto');
+        $this->mensaje($conversation, 'user', 'eran 6000');
+        $this->mensaje($conversation, 'assistant', 'Entonces $ 6.000. ¿Lo registro?');
+        $this->mensaje($conversation, 'user', 'Si');
+        $contestando = $this->mensaje($conversation, 'assistant', null, 'pendiente');
+
+        $this->assertSame([], SiATarjetaPendienteIaHelper::tarjetas($conversation, $contestando));
+    }
+
+    /**
+     * Un renombre masivo con aclaración en el medio sí lleva la nota (está en la lista blanca).
+     *
+     * @test
+     */
+    public function un_renombre_masivo_con_aclaracion_tiene_nota()
+    {
+        $conversation = $this->conversacion();
+        $this->mensaje($conversation, 'user', 'Cambiá ESMALTE AC. MULT. por ESMALTE ACCIÓN MÚLTIPLE');
+        $propuso = $this->mensaje($conversation, 'assistant', 'Son 145 artículos. ¿Los renombro?');
+        $renombre = $this->tarjeta($conversation, $propuso, AiMessageAction::TIPO_RENOMBRE_MASIVO, AiMessageAction::ESTADO_PROPUESTA, 'Renombre masivo');
+        $this->mensaje($conversation, 'user', 'son todos de Sudamericana?');
+        $this->mensaje($conversation, 'assistant', 'Sí, los 145 son de PINTURAS SUDAMERICANAS SRL. ¿Los renombro?');
+        $this->mensaje($conversation, 'user', 'Si');
+        $contestando = $this->mensaje($conversation, 'assistant', null, 'pendiente');
+
+        $tarjetas = SiATarjetaPendienteIaHelper::tarjetas($conversation, $contestando);
+
+        $this->assertCount(1, $tarjetas);
+        $this->assertSame((int) $renombre->id, (int) $tarjetas[0]->id);
+    }
+
+    /**
+     * Revisión, punto 3: una tarjeta propuesta en la PANTALLA no recibe nota por un sí de WhatsApp (se confirma con
+     * el botón).
+     *
+     * @test
+     */
+    public function una_tarjeta_propuesta_en_la_pantalla_no_tiene_nota()
+    {
+        $conversation = $this->conversacion();
+        $this->mensaje($conversation, 'user', 'Cambiá la subcategoría', 'listo', AiMessage::CANAL_SISTEMA);
+        $propuso = $this->mensaje($conversation, 'assistant', 'Los 30 pasan a Trompeta. ¿La registro?', 'listo', AiMessage::CANAL_SISTEMA);
+        $this->tarjeta($conversation, $propuso, AiMessageAction::TIPO_ACTUALIZACION_MASIVA);
+        $this->mensaje($conversation, 'user', 'Si');
+        $contestando = $this->mensaje($conversation, 'assistant', null, 'pendiente');
+
+        $this->assertSame([], SiATarjetaPendienteIaHelper::tarjetas($conversation, $contestando));
+    }
+
+    /**
+     * Revisión, punto 1: con varias tarjetas la nota las lista y NO ordena confirmarlas todas.
+     *
+     * @test
+     */
+    public function con_varias_tarjetas_la_nota_no_ordena_confirmar_todas()
+    {
+        $conversation = $this->conversacion();
+        $this->mensaje($conversation, 'user', 'Ponele la foto y publicalos');
+        $propuso = $this->mensaje($conversation, 'assistant', 'Dejo la foto y la publicación. ¿Registro las dos?');
+        $foto = $this->tarjeta($conversation, $propuso, AiMessageAction::TIPO_FOTO_ARTICULO, AiMessageAction::ESTADO_PROPUESTA, 'Foto de artículo');
+        $masiva = $this->tarjeta($conversation, $propuso, AiMessageAction::TIPO_ACTUALIZACION_MASIVA, AiMessageAction::ESTADO_PROPUESTA, 'Publicar');
+        $this->mensaje($conversation, 'user', 'la foto no, solo publicalos');
+        $this->mensaje($conversation, 'assistant', 'Entonces solo la publicación. ¿La registro?');
+        $this->mensaje($conversation, 'user', 'Si');
+        $contestando = $this->mensaje($conversation, 'assistant', null, 'pendiente');
+
+        $tarjetas = SiATarjetaPendienteIaHelper::tarjetas($conversation, $contestando);
+        $this->assertCount(2, $tarjetas);
+
+        $nota = SiATarjetaPendienteIaHelper::nota($tarjetas);
+
+        $this->assertStringContainsString('#' . $foto->id, $nota);
+        $this->assertStringContainsString('#' . $masiva->id, $nota);
+        $this->assertStringContainsString('SOLO las que tu última pregunta incluía', $nota);
+        $this->assertStringContainsString('preguntale cuál', $nota);
+        $this->assertStringNotContainsString('con cada una', $nota);
+    }
+
+    /**
+     * La regla del prompt dice que la tarjeta vieja no vale si la carga cambió.
+     *
+     * @test
+     */
+    public function el_prompt_dice_que_la_tarjeta_vieja_no_vale_si_cambio_la_carga()
+    {
+        $prompt = (new AsistenteIaService())->build_system_prompt($this->conversacion(), $this->comercio->fresh(), true, true);
+
+        $this->assertStringContainsString('si en la charla la carga CAMBIÓ', $prompt);
+        $this->assertStringContainsString('Nunca confirmes la vieja con', $prompt);
     }
 }

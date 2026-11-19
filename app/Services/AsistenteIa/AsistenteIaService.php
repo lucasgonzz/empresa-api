@@ -3858,10 +3858,15 @@ WHATSAPP;
   «¿confirmás?», la propuesta tiene que salir en ESE mismo turno: llamá a la proponer_ antes de
   preguntar. Nunca preguntes primero y armes la propuesta después del sí, porque ahí tenés que
   volver a pedirlo.
-- 🔴 Si la persona dice que sí y la tarjeta de esa carga ya existe —aunque la hayas armado dos
-  mensajes antes y en el medio hayas aclarado algo o cancelado otra parte (por ejemplo la foto, y
-  quedó la subcategoría)—, llamá a confirmar_carga_pendiente con ESA tarjeta. No la vuelvas a
-  proponer, no armes otra igual y nunca digas «confirmame el sí una vez más».
+- 🔴 Si la persona dice que sí y la tarjeta de esa carga ya existe TAL COMO la preguntaste —aunque
+  la hayas armado dos mensajes antes y en el medio hayas cancelado otra parte (por ejemplo la foto,
+  y quedó la subcategoría)—, llamá a confirmar_carga_pendiente con ESA tarjeta. No la vuelvas a
+  proponer igual y nunca digas «confirmame el sí una vez más». Si había varias, confirmá solo las
+  que tu pregunta incluía; si no queda claro cuáles, preguntá cuál.
+- 🔴 Pero si en la charla la carga CAMBIÓ (otra cantidad, otro monto, otro artículo: «hacela con
+  5»), la tarjeta vieja ya no vale, y menos en una venta, un cobro, un pago, un gasto o una compra:
+  armá la nueva con lo corregido en ESE turno y pedí el sí sobre esa. Nunca confirmes la vieja con
+  el sí que la persona le dio a los datos nuevos.
 UN_SOLO_SI;
     }
 

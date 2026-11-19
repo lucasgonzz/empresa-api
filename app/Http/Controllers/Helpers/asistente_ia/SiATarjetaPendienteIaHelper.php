@@ -49,6 +49,12 @@ use Illuminate\Support\Facades\Log;
  * pregunta (revisión independiente del 18/11, ConfirmacionDeterministaIaHelper::es_aclaracion_sobre_la_tarjeta).
  * Lo único que cambia es que el modelo ya no recibe la orden equivocada de rearmar lo que ya estaba armado.
  *
+ * 🔴 Y CON ACLARACIONES EN EL MEDIO, SOLO TIPOS SIN PLATA (revisión independiente del 19/11/2026): si entre la
+ * propuesta y el «sí» hubo aclaraciones, la nota sale solo para tipos_con_aclaraciones() (masiva, renombre masivo,
+ * foto de artículo). Una venta que el dueño corrigió en la charla («hacela con 5») sin tarjeta nueva NO puede
+ * terminar confirmada con la cantidad vieja por una nota nuestra. Y la tarjeta tiene que haberse propuesto en un
+ * canal que confirma por texto.
+ *
  * Los ENVÍOS A CLIENTES quedan afuera: su sí tiene que contestar el bloque recién mostrado
  * (ConfirmacionPorTextoIaHelper::envio_no_visto()), y para eso está su propio circuito.
  *
@@ -63,6 +69,27 @@ class SiATarjetaPendienteIaHelper
      * ConfirmacionDeterministaIaHelper::MAXIMO_DE_ACLARACIONES: más atrás ya es otra charla.
      */
     const MAXIMO_DE_ACLARACIONES = 2;
+
+    /**
+     * Los tipos de tarjeta que la nota puede señalar cuando entre la propuesta y el «sí» hubo ACLARACIONES (revisión
+     * independiente del 19/11/2026, punto 1): ninguno toca plata ni stock, y en los tres la aclaración típica es
+     * sacar una parte (la foto) o confirmar algo que no cambia la tarjeta. La lista es CERRADA: una venta, un cobro,
+     * un pago, un gasto, una compra, un movimiento de stock, una baja o una edición de una venta o un gasto NUNCA
+     * entran, porque la aclaración puede haber cambiado la cantidad o el monto sin tarjeta nueva.
+     *
+     * Es un método y no una constante porque el renombre masivo (rama C de la misma misión) llegó a develop con su
+     * propia constante en AiMessageAction.
+     *
+     * @return array<int, string>
+     */
+    public static function tipos_con_aclaraciones(): array
+    {
+        return [
+            AiMessageAction::TIPO_ACTUALIZACION_MASIVA,
+            AiMessageAction::TIPO_FOTO_ARTICULO,
+            AiMessageAction::TIPO_RENOMBRE_MASIVO,
+        ];
+    }
 
     /** Antigüedad máxima de la tarjeta, la misma ventana que la confirmación determinista. */
     const MINUTOS_MAXIMOS = ConfirmacionDeterministaIaHelper::MINUTOS_MAXIMOS;
@@ -129,7 +156,7 @@ class SiATarjetaPendienteIaHelper
 
             $desde = Carbon::parse($pedido->created_at)->subMinutes(self::MINUTOS_MAXIMOS);
 
-            foreach ($anteriores as $mensaje) {
+            foreach ($anteriores as $indice => $mensaje) {
 
                 if ($mensaje->estado !== 'listo') {
 
@@ -153,6 +180,37 @@ class SiATarjetaPendienteIaHelper
                         if (in_array((string) $accion->tipo, HerramientasDeCarga::TIPOS_DE_ENVIO, true)) {
 
                             return [];
+                        }
+                    }
+
+                    /*
+                     * 🔴 Revisión independiente (19/11/2026), punto 3: una tarjeta propuesta en la PANTALLA se confirma
+                     * ahí, con el botón (ConfirmacionPorTextoIaHelper::rechazo(), MENSAJE_OTRO_CANAL). Si la propuso un
+                     * mensaje que no confirma por texto, no hay nota.
+                     */
+                    if (!$mensaje->confirma_por_texto()) {
+
+                        return [];
+                    }
+
+                    /*
+                     * 🔴 Revisión independiente (19/11/2026), punto 1 — BLOQUEANTE. Con aclaraciones en el medio
+                     * ($indice > 0), la carga pudo haber CAMBIADO en la charla sin tarjeta nueva: «propone venta de 3
+                     * martillos» → «hacela con 5» → «Perfecto, 5. ¿La registro?» (sin tarjeta) → «Sí». Mandar «confirmá
+                     * la #10» ahí registraría 3 martillos, no 5. Por eso, con aclaraciones, solo entran los tipos de
+                     * TIPOS_CON_ACLARACIONES (sin plata ni stock); si alguna de las que esperan no es de esa lista, no hay
+                     * nota y decide el modelo como siempre. Es el mismo criterio que la revisión del 18/11 le puso a
+                     * ConfirmacionDeterministaIaHelper::es_aclaracion_sobre_la_tarjeta(), un poco más ancho (las masivas
+                     * no se confirman en código, solo se señalan).
+                     */
+                    if ($indice > 0) {
+
+                        foreach ($esperando as $accion) {
+
+                            if (!in_array((string) $accion->tipo, self::tipos_con_aclaraciones(), true)) {
+
+                                return [];
+                            }
                         }
                     }
 
@@ -211,14 +269,26 @@ class SiATarjetaPendienteIaHelper
 
         $una = count($tarjetas) === 1;
 
-        return '[El sistema: la persona te contestó que SÍ a tu última pregunta, y '
-            . ($una
-                ? 'la tarjeta ' . $nombradas[0] . ' que armaste antes sigue esperando ese sí: es la carga sobre la que preguntaste. '
-                    . 'Llamá AHORA a confirmar_carga_pendiente con tarjeta_id ' . $ids[0] . ' y contá lo que devuelva.'
-                : 'las tarjetas ' . implode(' y ', $nombradas) . ' que armaste antes siguen esperando ese sí: son las cargas sobre las que preguntaste. '
-                    . 'Llamá AHORA a confirmar_carga_pendiente con cada una (tarjeta_id ' . implode(', ', $ids) . ') y contá lo que devuelvan.')
-            . ' 🔴 No la vuelvas a proponer, no armes otra igual y no le pidas que confirme otra vez: ese sí ya es la confirmación. '
-            . 'Solo si tu última pregunta era sobre OTRA cosa (no sobre esa carga), no la confirmes y seguí con lo que te contestó.]';
+        if ($una) {
+
+            return '[El sistema: la persona te contestó que SÍ a tu última pregunta, y la tarjeta ' . $nombradas[0]
+                . ' que armaste antes sigue esperando ese sí: si tu pregunta era sobre esa carga, tal como está en la tarjeta, '
+                . 'llamá a confirmar_carga_pendiente con tarjeta_id ' . $ids[0] . ' y contá lo que devuelva. '
+                . '🔴 No la vuelvas a proponer igual, no armes otra idéntica y no le pidas que confirme otra vez. '
+                . 'Si en la charla la carga CAMBIÓ (otra cantidad, otro artículo, otra foto), esa tarjeta ya no vale: armá la nueva con lo '
+                . 'corregido y pedí el sí sobre esa. Si tu última pregunta era sobre OTRA cosa, no la confirmes.]';
+        }
+
+        /*
+         * Revisión independiente (19/11/2026), punto 1: con varias tarjetas la nota NO ordena confirmarlas todas. Las
+         * lista y el modelo confirma solo las que su última pregunta incluía; si la aclaración dejó alguna afuera y no
+         * se sabe cuál, pregunta.
+         */
+        return '[El sistema: la persona te contestó que SÍ a tu última pregunta. Siguen esperando el sí estas tarjetas que armaste antes: '
+            . implode('; ', $nombradas) . '. Confirmá con confirmar_carga_pendiente SOLO las que tu última pregunta incluía, tal como están '
+            . 'en la tarjeta (tarjeta_id ' . implode(', ', $ids) . '); las que la persona dejó afuera, cancelalas con cancelar_carga_pendiente. '
+            . 'Si no está claro cuáles alcanza ese sí, preguntale cuál en una línea, nombrando cada una. '
+            . '🔴 No las vuelvas a proponer iguales ni le pidas que confirme otra vez lo que ya contestó.]';
     }
 
     /**
