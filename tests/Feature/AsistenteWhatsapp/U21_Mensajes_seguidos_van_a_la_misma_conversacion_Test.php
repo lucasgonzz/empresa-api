@@ -28,6 +28,9 @@ class U21_Mensajes_seguidos_van_a_la_misma_conversacion_Test extends AsistenteWh
     /** @var string Lo que contesta el modelo de la decisión de tema. */
     protected $texto_del_modelo = 'nueva';
 
+    /** @var callable|null Algo que pasa MIENTRAS se decide el tema afuera del candado (la carrera). */
+    public $mientras_decide = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -42,6 +45,11 @@ class U21_Mensajes_seguidos_van_a_la_misma_conversacion_Test extends AsistenteWh
 
         Http::fake([
             'api.deepseek.com/*' => function () use ($test) {
+                if (is_callable($test->mientras_decide)) {
+                    call_user_func($test->mientras_decide);
+                    $test->mientras_decide = null;
+                }
+
                 return Http::response([
                     'model'       => 'modelo-fake-u21',
                     'stop_reason' => 'end_turn',
@@ -170,5 +178,51 @@ class U21_Mensajes_seguidos_van_a_la_misma_conversacion_Test extends AsistenteWh
 
         $this->assertSame((int) $primero->json('ai_conversation_id'), (int) $segundo->json('ai_conversation_id'));
         $this->assertSame(1, AiConversation::where('user_id', $this->comercio->id)->count());
+    }
+
+    /**
+     * 🔴 Revisión independiente (19/11/2026), punto 2: la carrera en el OTRO sentido. Afuera del candado el mensaje 2
+     * eligió A («sigue»); mientras tanto el mensaje 1 abrió B. Adentro del candado gana la de la ráfaga (B), y los dos
+     * mensajes quedan juntos.
+     *
+     * @group asistente-hilos
+     * @test
+     */
+    public function la_rafaga_gana_tambien_si_afuera_se_eligio_otra_conversacion()
+    {
+        $a = $this->la_lista(Carbon::now()->subMinutes(4));
+        $this->texto_del_modelo = 'sigue';
+
+        $b = null;
+        $test = $this;
+
+        /* Mientras se decide el tema del mensaje 2, el mensaje 1 abre B y queda guardado. */
+        $this->mientras_decide = function () use (&$b, $test) {
+            $b = $test->conversacion_whatsapp(Carbon::now());
+            $test->mensaje($b, 'user', 'listo', ['contenido' => 'Hacé un presupuesto para Fideicomiso El Cantón']);
+        };
+
+        $respuesta = $this->mandar(['texto' => 'Con estos productos de la lista que te pasé recién'])->assertStatus(202);
+
+        $this->assertNotNull($b, 'La carrera se simuló durante la decisión de tema.');
+        $this->assertSame((int) $b->id, (int) $respuesta->json('ai_conversation_id'), 'La conversación de la ráfaga gana.');
+        $this->assertNotSame((int) $a->id, (int) $respuesta->json('ai_conversation_id'));
+    }
+
+    /**
+     * Una cita del admin manda siempre: aunque haya otra conversación con actividad recién, el mensaje entra en la
+     * citada.
+     *
+     * @group asistente-hilos
+     * @test
+     */
+    public function la_cita_del_admin_gana_sobre_la_rafaga()
+    {
+        $citada = $this->la_lista(Carbon::now()->subHours(2));
+        $this->conversacion_whatsapp(Carbon::now()->subSeconds(10));
+
+        $respuesta = $this->mandar(['texto' => 'Sobre esto que me mandaste', 'ai_conversation_id' => $citada->id])->assertStatus(202);
+
+        $this->assertSame((int) $citada->id, (int) $respuesta->json('ai_conversation_id'));
     }
 }
