@@ -120,6 +120,24 @@ class T181_Links_de_archivos_que_no_abren_Test extends TestCase
     }
 
     /**
+     * Revisión independiente (19/11/2026): un link real en cursiva de WhatsApp (`_link_`) no se toma por roto
+     * aunque el patrón se lleve el `_` de cierre como parte del token.
+     *
+     * @test
+     */
+    public function el_link_real_en_cursiva_de_whatsapp_queda()
+    {
+        $real = $this->excel($this->comercio);
+
+        $texto = 'Bajalo acá: _' . $real . '_ y avisame.';
+
+        $r = LinksDeArchivosIaHelper::sin_links_que_no_abren($this->comercio->id, $texto);
+
+        $this->assertSame($texto, $r['texto']);
+        $this->assertCount(0, $r['quitados']);
+    }
+
+    /**
      * Sin dominio ni token (como lo escribe a veces el modelo) tampoco pasa; un texto sin links sale igual.
      *
      * @test

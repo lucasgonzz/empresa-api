@@ -81,6 +81,19 @@ class LinksDeArchivosIaHelper
                 return $coincidencia[0];
             }
 
+            /*
+             * Revisión independiente (19/11/2026): el patrón toma `_` y `-` en el token para sacar entero un
+             * token inventado, pero un link REAL pegado a la cursiva de WhatsApp (`_https://…?t=TOKEN_`) se
+             * lleva el `_` de cierre y deja de abrir. El token real es solo letras y números: si sin los signos
+             * del final abre, el link es bueno y el texto queda como estaba (con su `_` de formato).
+             */
+            $token_sin_cola = is_null($token) ? null : rtrim($token, '_-');
+
+            if (!is_null($token_sin_cola) && $token_sin_cola !== $token && self::abre((int) $owner_id, $uuid, $token_sin_cola)) {
+
+                return $coincidencia[0];
+            }
+
             $quitados[] = $uuid;
 
             return self::AVISO;
