@@ -84,7 +84,12 @@ class TotalFacturadoDeVentaHelper
                 $motivos[] = 'La identidad fiscal del comprobante '.$id.' está incompleta.';
             } else {
                 // Un CAE puede corresponder a un lote; la identidad fiscal incluye emisor y número.
-                $duplicado = AfipTicket::withTrashed()->where('id', '<>', $id)
+                // Misión gate-4-3-68-rojos (19/11/2026): el duplicado se busca solo entre tickets VIVOS,
+                // igual que la adopción por consulta (AfipWsfeHelper, misión afip-recuperar-comprobante-
+                // validado): un ticket borrado no es dueño del número ni suma en ningún saldo. Un borrado
+                // de ESTA venta ya marca revisión arriba ("eliminado localmente"); uno de otra venta no
+                // vuelve ambiguo este saldo.
+                $duplicado = AfipTicket::where('id', '<>', $id)
                     ->whereNotNull('cae')->where('cae', '<>', '')
                     ->whereRaw('CAST(punto_venta AS UNSIGNED) = ?', [(int) $ticket->punto_venta])
                     ->whereRaw('CAST(cbte_tipo AS UNSIGNED) = ?', [$codigo])

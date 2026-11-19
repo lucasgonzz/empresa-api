@@ -159,6 +159,33 @@ class TotalFacturadoIdempotenteTest extends EmpresaTestCase
             'nc_huerfana', 'nc_tipo', 'nc_excesiva', 'pendiente']);
     }
 
+    /**
+     * Misión gate-4-3-68-rojos (19/11/2026): un ticket BORRADO de otra venta con la misma identidad
+     * fiscal no vuelve ambiguo el saldo de esta venta (no es dueño del número ni suma en ningún saldo,
+     * igual que en la adopción por consulta). Si la copia está VIVA, sigue siendo revisión ('duplicado'
+     * en anomalias()), y si el borrado es de la propia venta también ('eliminado').
+     *
+     * @test
+     */
+    public function un_ticket_borrado_de_otra_venta_con_la_misma_identidad_no_vuelve_ambiguo_el_saldo()
+    {
+        $venta = $this->venta(['total_facturado' => 11500]);
+        $ticket = $this->factura($venta);
+        // Copia exacta (mismo emisor, punto de venta, tipo, número y CAE) en otra venta, borrada.
+        $copia = $ticket->replicate();
+        $copia->sale_id = $this->venta()->id;
+        $copia->save();
+        $copia->delete();
+
+        $analisis = Saldo::analizar($venta);
+        $this->assertSame('verificable', $analisis['estado'], implode(' ', $analisis['motivos']));
+        $this->assertSame('11500.00', $analisis['total']);
+
+        // Si la copia vuelve a estar viva, el saldo vuelve a revisión.
+        $copia->restore();
+        $this->assertSame('revision', Saldo::analizar($venta)['estado']);
+    }
+
     /** @test */
     public function dos_respuestas_precargadas_de_una_nc_fce_no_restan_dos_veces_ni_exigen_sale_id()
     {
