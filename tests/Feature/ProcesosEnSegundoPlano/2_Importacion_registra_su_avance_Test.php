@@ -51,6 +51,9 @@ use Tests\Import\ImportTestCase;
  */
 class Importacion_registra_su_avance_Test extends EmpresaTestCase
 {
+    // Misión gate-4-3-68-rojos: afterCommit como en producción (ver el trait).
+    use \Tests\Support\AfterCommitComoEnProduccion;
+
     /** Fixture de tests/Import: 7 filas de datos, todas con código de proveedor. */
     const FIXTURE = '01_codigos_de_proveedor.xlsx';
 
@@ -66,6 +69,7 @@ class Importacion_registra_su_avance_Test extends EmpresaTestCase
     protected function setUp(): void
     {
         parent::setUp();
+        $this->ejecutar_after_commit_como_en_produccion();
 
         $this->user_id = (int) auth()->id();
 

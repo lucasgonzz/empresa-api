@@ -39,12 +39,16 @@ use Tests\EmpresaTestCase;
  */
 class Recalculo_de_precios_registra_su_avance_Test extends EmpresaTestCase
 {
+    // Misión gate-4-3-68-rojos: afterCommit como en producción (ver el trait).
+    use \Tests\Support\AfterCommitComoEnProduccion;
+
     /** @var int */
     protected $user_id;
 
     protected function setUp(): void
     {
         parent::setUp();
+        $this->ejecutar_after_commit_como_en_produccion();
 
         $this->user_id = (int) auth()->id();
 
