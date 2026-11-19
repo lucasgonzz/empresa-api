@@ -37,7 +37,20 @@ class ReferenciaALoAnteriorIaHelper
     const REFERENCIAS = [
         'esos', 'esas', 'estos', 'estas', 'los dos', 'las dos', 'los tres', 'las tres', 'ambos', 'ambas',
         'los mismos', 'las mismas', 'aquellos', 'aquellas',
+        /*
+         * Misión asistente-diario-20261119 (rama B, A7; Truvari conv 43): «Ponele 4 unidades de stock a cada uno»
+         * después del aviso de sin stock. «Cada uno» con un verbo de carga es una referencia a la lista anterior.
+         */
+        'cada uno', 'cada una',
     ];
+
+    /**
+     * Cuántos mensajes del asistente seguidos (los que mandó desde el último mensaje de la persona) se miran para
+     * encontrar la lista a la que se refiere (A7 de la misión asistente-diario-20261119). Un aviso automático de sin
+     * stock seguido de un recordatorio de la Agenda son dos mensajes del asistente sin que la persona hable en el
+     * medio: «cada uno» es de la lista del aviso, aunque el último sea el recordatorio.
+     */
+    const MENSAJES_DEL_ASISTENTE_A_MIRAR = 3;
 
     /** Cuántos artículos nombrados se le pasan al modelo como mucho. */
     const MAX_ARTICULOS = 10;
@@ -71,12 +84,43 @@ class ReferenciaALoAnteriorIaHelper
                 return null;
             }
 
-            $anterior = AiMessage::where('ai_conversation_id', $conversation->id)
+            /*
+             * Los mensajes del asistente que la persona tiene delante: los que mandó desde el mensaje ANTERIOR de la
+             * persona (la última respuesta y, si después llegaron avisos automáticos o recordatorios, ésos también),
+             * del más nuevo al más viejo. Misión asistente-diario-20261119 (rama B, A7): antes se miraba solo el
+             * último; en Truvari (conv 43) el último era el recordatorio de las 08:00 y la lista estaba en el aviso
+             * de sin stock que llegó un segundo antes.
+             */
+            $anterior_de_la_persona = AiMessage::where('ai_conversation_id', $conversation->id)
+                                                ->where('rol', 'user')
+                                                ->where('id', '<', $pedido->id)
+                                                ->orderBy('id', 'DESC')
+                                                ->value('id');
+
+            $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
                                     ->where('rol', 'assistant')
                                     ->where('estado', 'listo')
                                     ->where('id', '<', $pedido->id)
+                                    ->when(!is_null($anterior_de_la_persona), function ($query) use ($anterior_de_la_persona) {
+                                        $query->where('id', '>', (int) $anterior_de_la_persona);
+                                    })
                                     ->orderBy('id', 'DESC')
-                                    ->first();
+                                    ->limit(self::MENSAJES_DEL_ASISTENTE_A_MIRAR)
+                                    ->get();
+
+            /* Si la persona habló y el asistente no le contestó nada todavía, la última respuesta de antes, como siempre. */
+            if (!count($recientes)) {
+
+                $recientes = AiMessage::where('ai_conversation_id', $conversation->id)
+                                        ->where('rol', 'assistant')
+                                        ->where('estado', 'listo')
+                                        ->where('id', '<', $pedido->id)
+                                        ->orderBy('id', 'DESC')
+                                        ->limit(1)
+                                        ->get();
+            }
+
+            $anterior = $recientes->first();
 
             $texto = is_null($anterior) ? '' : trim((string) $anterior->contenido);
 
@@ -87,7 +131,19 @@ class ReferenciaALoAnteriorIaHelper
 
             $referencia = self::referencia_usada($pedido->contenido);
 
-            $articulos = self::articulos_nombrados((int) $conversation->user_id, $texto);
+            $articulos = [];
+            $de_un_mensaje_anterior = false;
+
+            foreach ($recientes as $indice => $mensaje) {
+
+                $articulos = self::articulos_nombrados((int) $conversation->user_id, trim((string) $mensaje->contenido));
+
+                if (count($articulos)) {
+
+                    $de_un_mensaje_anterior = $indice > 0;
+                    break;
+                }
+            }
 
             if (count($articulos)) {
 
@@ -98,8 +154,12 @@ class ReferenciaALoAnteriorIaHelper
                     $lista[] = $articulo['nombre'].' (articulo_id '.$articulo['id'].')';
                 }
 
-                return '[Referencia del sistema: «'.$referencia.'» en este mensaje son los que nombraste en tu ÚLTIMA respuesta, '
-                    .'no los de una foto ni de un pedido anterior. Artículos de esa respuesta: '.implode('; ', $lista).'. '
+                $donde = $de_un_mensaje_anterior
+                    ? 'son los que nombraste en tus mensajes más recientes (incluidos los avisos automáticos, aunque después haya llegado un recordatorio u otro aviso), '
+                    : 'son los que nombraste en tu ÚLTIMA respuesta, ';
+
+                return '[Referencia del sistema: «'.$referencia.'» en este mensaje '.$donde
+                    .'no los de una foto ni de un pedido anterior. Artículos de ese mensaje: '.implode('; ', $lista).'. '
                     .'Si el pedido es claro (poner el stock en 0, cambiar un precio), armá la carga directo con esos, sin preguntar cuáles. '
                     .'Si nombraste más de los que encajan con el pedido, usá los que encajan; preguntá solo si de verdad no se puede saber.]';
             }

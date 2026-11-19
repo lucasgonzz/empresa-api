@@ -162,6 +162,14 @@ class AsistenteIaService
      */
     const MINUTOS_HASTA_LA_TANDA = 30;
 
+    /**
+     * El turno 'user' del sistema que va delante de los avisos con los que ARRANCA una conversación (misión
+     * asistente-diario-20261119, rama B, A7): la API exige que el historial empiece por 'user', y sin este turno los
+     * avisos se tiraban (ver build_messages_payload()).
+     */
+    const NOTA_DE_AVISOS_AL_ARRANQUE = '[El sistema: esta conversación arrancó con mensajes que le mandaste vos a la persona por tu cuenta '
+        . '(avisos automáticos, recordatorios). Son los que siguen; lo que la persona escribe después puede estar contestando a cualquiera de ellos.]';
+
     /** Techo de tokens de la respuesta. */
     const MAX_TOKENS = 1500;
 
@@ -3258,6 +3266,10 @@ CARGA;
   con TODOS los renglones y con_lo_que_encuentres: true. No le pidas los códigos ni le preguntes
   renglón por renglón. Contale cuántos entraron, los interpretados (lo que pidió → lo que pusiste)
   y los que no encontraste, por su texto, para que los revise.
+- 🔴 «A cada uno», «a ambos», «a esos», «a los dos» se resuelven contra la ÚLTIMA lista de
+  artículos de tus mensajes recientes, incluidos los avisos automáticos que mandaste vos («Se
+  quedaron sin stock: X e Y»). Un recordatorio o un aviso de otra cosa en el medio no la tapa.
+  Armá la carga con esos sin preguntar cuáles; preguntá solo si de verdad hay dos listas posibles.
 LISTAS;
     }
 
@@ -4063,6 +4075,28 @@ CONFIRMACION;
          * Anthropic; si el recorte dejó un turno assistant al principio,
          * se descarta para no romper la alternancia.
          */
+        /*
+         * 🔴 SALVO QUE LA CONVERSACIÓN ARRANQUE CON UN AVISO DEL ASISTENTE (misión asistente-diario-20261119, rama
+         * B, A7; Truvari conv 43, 18/11/2026). El aviso automático «📦 Se quedaron sin stock: Escorihuela Gascon
+         * Chardonnay y LAGARDE CHARDONNAY» (646) y el recordatorio de las 08:00 (647) ABREN la conversación: no hay
+         * ningún mensaje del dueño antes. Con el descarte de arriba esos dos se tiraban y el modelo veía solo
+         * «Ponele 4 unidades de stock a cada uno» (648): contestó «No tengo en esta conversación una lista de
+         * artículos» y Fernando tuvo que repetirlos. Si el primer turno es del asistente y en la conversación no hay
+         * ningún mensaje del dueño antes de él (no es un recorte del historial: es el arranque), en vez de tirarlos se
+         * les antepone un turno 'user' del sistema que dice qué son. El recorte de una conversación larga sigue
+         * descartando como siempre.
+         *
+         * Solo en las conversaciones de WhatsApp, que son las que abren los avisos y los recordatorios
+         * (AvisosDelDuenoIaHelper, RecordatoriosDelAsistenteHelper). En el panel, un assistant inicial es el resumen
+         * de bienvenida de una sugerencia (con su contexto de fondo aparte) y se sigue descartando como siempre
+         * (4_Asistente_service_Test::el_historial_funde_turnos_del_mismo_rol_y_descarta_assistant_inicial).
+         */
+        if (! empty($turns) && $turns[0]['role'] !== 'user' && count($seleccionados)
+            && (string) $conversation->origen === AiConversation::ORIGEN_WHATSAPP
+            && $this->la_conversacion_arranca_con_avisos($conversation, (int) $seleccionados[0]->id)) {
+            array_unshift($turns, ['role' => 'user', 'texto' => self::NOTA_DE_AVISOS_AL_ARRANQUE, 'imagenes' => []]);
+        }
+
         while (! empty($turns) && $turns[0]['role'] !== 'user') {
             array_shift($turns);
         }
@@ -4070,6 +4104,24 @@ CONFIRMACION;
         $turns = $this->con_las_fotos_de_la_ultima_tanda($conversation, $turns, $id_ultimo_user);
 
         return $this->turnos_para_la_api($turns);
+    }
+
+    /**
+     * true si en la conversación no hay ningún mensaje del DUEÑO antes del mensaje dado: el historial arranca con
+     * mensajes del asistente porque la conversación ARRANCÓ así (un aviso automático o un recordatorio la abrió), no
+     * porque el recorte del historial haya cortado una charla más larga. Ver build_messages_payload() (A7 de la
+     * misión asistente-diario-20261119).
+     *
+     * @param  AiConversation  $conversation
+     * @param  int  $primer_id  El id del primer mensaje que viaja.
+     * @return bool
+     */
+    protected function la_conversacion_arranca_con_avisos(AiConversation $conversation, $primer_id): bool
+    {
+        return ! AiMessage::where('ai_conversation_id', $conversation->id)
+            ->where('rol', 'user')
+            ->where('id', '<', (int) $primer_id)
+            ->exists();
     }
 
     /**
