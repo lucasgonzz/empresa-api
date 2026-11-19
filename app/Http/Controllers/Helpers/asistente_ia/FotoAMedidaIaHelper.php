@@ -67,9 +67,24 @@ class FotoAMedidaIaHelper
     const FORMATO_PNG = 'png';
     const FORMATOS = [self::FORMATO_JPG, self::FORMATO_PNG];
 
-    /** El lado mínimo y máximo que se acepta, en píxeles. */
+    /**
+     * El lado mínimo y máximo que se acepta, en píxeles.
+     *
+     * 🔴 2000 Y NO 4000 (revisión independiente, 19/11/2026). GD guarda cada píxel sin comprimir: medido en
+     * el slot con memory_limit = 128M, un lienzo de 2000² con la foto adentro pidió ~76 MB, 2500² ~122 MB y
+     * 4000² ~252 MB. Por encima del límite PHP corta con un fatal (`imagefill`) que NINGÚN catch agarra y se
+     * cae el turno entero del asistente. 2000 px alcanza de sobra para una tienda o un marketplace (lo
+     * habitual es 500 a 1200). Además, antes de decodificar se mira la memoria libre (alcanza_la_memoria()).
+     */
     const LADO_MINIMO = 16;
-    const LADO_MAXIMO = 4000;
+    const LADO_MAXIMO = 2000;
+
+    /**
+     * Bytes por píxel que se calculan para GD truecolor (4 del píxel más el sobrecosto de la estructura),
+     * y cuántas copias del tamaño de salida conviven en el peor caso (la foto escalada y el lienzo).
+     */
+    const BYTES_POR_PIXEL = 5;
+    const MARGEN_DE_MEMORIA = 1.5;
 
     /** El color del relleno al encuadrar. */
     const FONDO = '#ffffff';
@@ -129,6 +144,15 @@ class FotoAMedidaIaHelper
         if (is_null($binario)) {
 
             return RespuestaDeCargaIa::error('La foto ya no está guardada en el sistema: pedile a la persona que la mande de nuevo.');
+        }
+
+        // Antes de decodificar nada: un fatal por memoria no lo agarra ningún catch y se cae el turno.
+        if (!self::alcanza_la_memoria($binario, $ancho, $alto)) {
+
+            return RespuestaDeCargaIa::error(
+                'Esa foto en ' . $ancho . ' × ' . $alto . ' px es más de lo que el sistema puede procesar ahora. '
+                . 'Proponele a la persona un tamaño más chico (por ejemplo 1000 × 1000) y volvé a llamar.'
+            );
         }
 
         $ajustada = self::ajustar_binario($binario, $ancho, $alto, $modo);
@@ -232,6 +256,10 @@ class FotoAMedidaIaHelper
             $lienzo = $manager->canvas($ancho, $alto, self::FONDO);
             $lienzo->insert($foto, 'center');
 
+            // La foto escalada ya está pegada en el lienzo: se libera su memoria antes de codificar.
+            $foto->destroy();
+            $foto = null;
+
             if ((int) $lienzo->width() !== (int) $ancho || (int) $lienzo->height() !== (int) $alto) {
 
                 return null;
@@ -320,7 +348,8 @@ class FotoAMedidaIaHelper
 
         try {
 
-            $webp = (string) (clone $imagen)->encode('webp', self::CALIDAD);
+            // Sin clone (revisión, 19/11): encode() no toca los píxeles, solo deja el binario codificado.
+            $webp = (string) $imagen->encode('webp', self::CALIDAD);
 
             $orden = (int) AiMessageImagen::where('ai_message_id', $mensaje->id)->max('orden') + 1;
             $path = 'asistente_imagenes/' . (int) $owner_id . '/' . (int) $mensaje->id . '/' . $orden . '.webp';
@@ -392,7 +421,7 @@ class FotoAMedidaIaHelper
 
         try {
 
-            $binario = (string) (clone $imagen)->encode($formato, self::CALIDAD);
+            $binario = (string) $imagen->encode($formato, self::CALIDAD);
 
             Storage::disk(ArchivosDelAgenteIaHelper::DISCO)->put($path, $binario);
 
@@ -466,6 +495,70 @@ class FotoAMedidaIaHelper
         }
 
         return $nota . 'Nunca digas que no podés cambiar el tamaño de una foto: con esta herramienta podés.';
+    }
+
+    /**
+     * true si hay memoria libre para decodificar la foto y armar el lienzo de ancho × alto (revisión
+     * independiente, 19/11/2026). Se estima ANTES de tocar GD, porque pasarse del memory_limit es un fatal
+     * que no agarra ningún catch: la foto de origen decodificada más dos copias del tamaño de salida (la
+     * foto escalada y el lienzo), a BYTES_POR_PIXEL, con MARGEN_DE_MEMORIA. Mismo criterio de lectura del
+     * límite que ImageCropHelper::memory_limit_bytes(). Sin límite (-1), siempre alcanza.
+     *
+     * @param  string  $binario
+     * @param  int  $ancho
+     * @param  int  $alto
+     * @return bool
+     */
+    public static function alcanza_la_memoria($binario, $ancho, $alto)
+    {
+        $limite = self::memory_limit_bytes();
+
+        if ($limite < 0) {
+
+            return true;
+        }
+
+        $info = @getimagesizefromstring((string) $binario);
+
+        $pixeles_origen = ($info !== false && isset($info[0], $info[1])) ? (int) $info[0] * (int) $info[1] : 0;
+
+        $necesarios = ($pixeles_origen + 2 * (int) $ancho * (int) $alto) * self::BYTES_POR_PIXEL * self::MARGEN_DE_MEMORIA;
+
+        return (memory_get_usage(true) + $necesarios) < $limite;
+    }
+
+    /**
+     * El memory_limit de PHP en bytes, o -1 si no hay límite. Copia del criterio de
+     * ImageCropHelper::memory_limit_bytes(), que es privado.
+     *
+     * @return int
+     */
+    protected static function memory_limit_bytes()
+    {
+        $raw = trim((string) ini_get('memory_limit'));
+
+        if ($raw === '' || $raw === '-1') {
+
+            return -1;
+        }
+
+        $numero = (float) $raw;
+        $unidad = strtolower(substr($raw, -1));
+
+        if ($unidad === 'g') {
+
+            $numero *= 1024 * 1024 * 1024;
+
+        } elseif ($unidad === 'm') {
+
+            $numero *= 1024 * 1024;
+
+        } elseif ($unidad === 'k') {
+
+            $numero *= 1024;
+        }
+
+        return $numero > 0 ? (int) $numero : -1;
     }
 
     /**

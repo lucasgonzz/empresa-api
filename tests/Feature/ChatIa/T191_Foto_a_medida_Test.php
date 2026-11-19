@@ -290,7 +290,56 @@ class T191_Foto_a_medida_Test extends TestCase
         $this->assertFalse($grande['ok']);
         $this->assertStringContainsString('entre', $grande['error']);
 
+        /*
+         * Revisión independiente (19/11/2026): 3000 × 3000 daba un fatal de memoria en GD (no lo agarra ningún
+         * catch y se caía el turno). Ahora el tope es 2000 y vuelve con un error prolijo, sin tocar GD.
+         */
+        $tres_mil = $this->herramienta($conversation, $assistant, 'ajustar_foto_a_medida', ['ancho' => 3000, 'alto' => 3000]);
+        $this->assertFalse($tres_mil['ok']);
+        $this->assertStringContainsString('2000', $tres_mil['error']);
+        $this->assertSame(2000, \App\Http\Controllers\Helpers\asistente_ia\FotoAMedidaIaHelper::LADO_MAXIMO);
+
         $this->assertSame(0, AiArchivo::where('user_id', $this->comercio->id)->count(), 'Ningún error deja un archivo.');
+    }
+
+    /**
+     * Revisión independiente (19/11/2026): el tope (2000 × 2000) anda con la memoria libre de un worker de 128M, y sin memoria
+     * libre suficiente la herramienta corta ANTES de GD con un error prolijo (nunca un fatal).
+     *
+     * @test
+     */
+    public function el_tope_anda_con_la_memoria_de_un_worker_y_sin_memoria_corta_antes_de_gd()
+    {
+        $limite_antes = ini_get('memory_limit');
+
+        try {
+            /*
+             * Lo libre que deja un worker con memory_limit = 128M (≈ 100 MB después de arrancar Laravel),
+             * sobre lo que ya usa este proceso de PHPUnit: un límite fijo de 128M quedaría por debajo.
+             */
+            ini_set('memory_limit', (string) (memory_get_usage(true) + 100 * 1024 * 1024));
+
+            list($conversation, $assistant) = $this->conversacion();
+            $this->foto_del_dueno($conversation, $this->comercio->id);
+
+            $r = $this->herramienta($conversation, $assistant, 'ajustar_foto_a_medida', ['ancho' => 2000, 'alto' => 2000]);
+            $this->assertTrue($r['ok'], json_encode($r, JSON_UNESCAPED_UNICODE));
+
+            $nueva = getimagesizefromstring(AsistenteImagenHelper::binario(AiMessageImagen::findOrFail($r['imagen_id'])));
+            $this->assertSame([2000, 2000], [$nueva[0], $nueva[1]]);
+
+            // Con un límite apenas por encima de lo que ya se usa, no alcanza: se dice, sin fatal.
+            ini_set('memory_limit', (string) (memory_get_usage(true) + 4 * 1024 * 1024));
+
+            $binario = (string) (new ImageManager())->canvas(300, 200, '#cc0000')->encode('webp', 90);
+            $this->assertFalse(\App\Http\Controllers\Helpers\asistente_ia\FotoAMedidaIaHelper::alcanza_la_memoria($binario, 2000, 2000));
+
+            $sin_memoria = $this->herramienta($conversation, $assistant, 'ajustar_foto_a_medida', ['ancho' => 2000, 'alto' => 2000]);
+            $this->assertFalse($sin_memoria['ok']);
+            $this->assertStringContainsString('más de lo que el sistema puede procesar', $sin_memoria['error']);
+        } finally {
+            ini_set('memory_limit', $limite_antes);
+        }
     }
 
     /**
