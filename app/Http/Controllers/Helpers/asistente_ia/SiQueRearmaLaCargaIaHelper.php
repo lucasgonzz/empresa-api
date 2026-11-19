@@ -129,7 +129,18 @@ class SiQueRearmaLaCargaIaHelper
                 return false;
             }
 
-            return ! self::dejo_una_carga_viva($anterior);
+            if (self::dejo_una_carga_viva($anterior)) {
+                return false;
+            }
+
+            /*
+             * 🔴 Misión asistente-diario-20261119 (rama B, A5; Ferre Total conv 72, 669-675): la respuesta anterior
+             * no tenía tarjeta, pero la que tenía la ANTERIOR a ésa sigue esperando el sí (el asistente aclaró o
+             * canceló otra parte y volvió a preguntar «¿La registro?»). Ahí esta nota —«no habías armado ninguna
+             * propuesta, armala de nuevo»— era falsa: el modelo armó otra masiva y volvió a pedir el sí. Ese sí
+             * lo cubre SiATarjetaPendienteIaHelper, con su propia nota («confirmá la #N»).
+             */
+            return ! count(SiATarjetaPendienteIaHelper::tarjetas($conversation, $assistant_message));
 
         } catch (\Throwable $e) {
             Log::warning('SiQueRearmaLaCargaIaHelper: no se pudo revisar el sí sin propuesta; sigue el turno normal.', [

@@ -738,6 +738,23 @@ class AsistenteIaService
         }
 
         /*
+         * Misión asistente-diario-20261119 (rama B, A5; Ferre Total conv 72, 669-675): el sí que contesta una
+         * tarjeta que ya estaba armada —aunque en el medio el asistente haya aclarado o cancelado otra parte y
+         * vuelto a preguntar— lleva la nota con ESA tarjeta, para que el modelo la confirme en vez de armar otra
+         * y pedir el sí de nuevo. Es una nota: confirma el modelo, con todas las guardas de siempre. Excluye a la
+         * de arriba (SiQueRearmaLaCargaIaHelper::aplica() da false cuando hay tarjeta). Ver
+         * SiATarjetaPendienteIaHelper.
+         */
+        if (is_null($confirmacion_determinista) && $con_acciones) {
+            $tarjetas_del_si = \App\Http\Controllers\Helpers\asistente_ia\SiATarjetaPendienteIaHelper::tarjetas($conversation, $assistant_message);
+
+            if (count($tarjetas_del_si)) {
+                $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\SiATarjetaPendienteIaHelper::nota($tarjetas_del_si));
+                $toco_una_carga = true;
+            }
+        }
+
+        /*
          * Misión asistente-deepseek-pro-razona (24/9/2026): si la persona CORRIGE una tarjeta que el
          * asistente acaba de dejar pendiente ("sí, pero cambiale el nombre"), el turno también
          * arranca escalado. Lo contestaba el modelo rápido sin pensar y en las pruebas reales con
@@ -3683,8 +3700,40 @@ Estás hablando por WhatsApp, no por la pantalla del sistema:
   llega un audio sin transcribir, decilo en una línea y pedile que te lo escriba.
 - Si te manda la foto de un producto con su código de barras, SÍ podés leer los dígitos
   impresos debajo de las barras y buscarlo en internet: usá buscar_producto_por_codigo_de_barras.
-{$confirmacion}
+{$confirmacion}{$this->reglas_de_un_solo_si_por_texto($con_acciones)}
 WHATSAPP;
+    }
+
+    /**
+     * Las reglas de la misión asistente-diario-20261119 (rama B, A5) para que un «sí» alcance: la propuesta sale
+     * en el mismo turno que la pregunta, y el sí a una tarjeta que ya existe la confirma. Solo en los canales que
+     * confirman por texto y con herramientas de carga (sin ellas no hay nada que confirmar). Bloque propio, pegado
+     * al de la confirmación por texto, para no reescribir párrafos ajenos.
+     *
+     * 🔴 LOS CASOS REALES (Ferre Total, conv 72, 18/11/2026). «¿La registro?» → «Si» → «Confirmame el sí una vez
+     * más» (671-675); «¿Los publico?» sin tarjeta → «Si» → «¿Registro las dos?» (687-691); «¿Confirmás los 145…?»
+     * → «Si» → «¿publico los 145?» (721-725). Tres cargas, seis «sí».
+     *
+     * @param  bool  $con_acciones
+     * @return string
+     */
+    protected function reglas_de_un_solo_si_por_texto($con_acciones): string
+    {
+        if (! $con_acciones) {
+            return '';
+        }
+
+        return <<<UN_SOLO_SI
+
+- 🔴 Un solo sí por carga. Si vas a preguntar «¿lo hago?», «¿la registro?», «¿los publico?» o
+  «¿confirmás?», la propuesta tiene que salir en ESE mismo turno: llamá a la proponer_ antes de
+  preguntar. Nunca preguntes primero y armes la propuesta después del sí, porque ahí tenés que
+  volver a pedirlo.
+- 🔴 Si la persona dice que sí y la tarjeta de esa carga ya existe —aunque la hayas armado dos
+  mensajes antes y en el medio hayas aclarado algo o cancelado otra parte (por ejemplo la foto, y
+  quedó la subcategoría)—, llamá a confirmar_carga_pendiente con ESA tarjeta. No la vuelvas a
+  proponer, no armes otra igual y nunca digas «confirmame el sí una vez más».
+UN_SOLO_SI;
     }
 
     /**
