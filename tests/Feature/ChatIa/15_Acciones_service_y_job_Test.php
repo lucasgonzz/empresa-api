@@ -898,7 +898,6 @@ class Acciones_service_y_job_Test extends TestCase
                 'ajustar_foto_a_medida',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
-
         );
 
         foreach (HerramientasDeCarga::nombres() as $nombre) {

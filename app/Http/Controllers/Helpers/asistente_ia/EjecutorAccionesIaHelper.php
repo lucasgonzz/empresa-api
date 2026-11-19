@@ -767,7 +767,6 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_RENOMBRE_MASIVO:
                 return \App\Http\Controllers\Helpers\asistente_ia\PropuestaRenombreMasivoIaHelper::ejecutar($contexto, $accion);
-
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

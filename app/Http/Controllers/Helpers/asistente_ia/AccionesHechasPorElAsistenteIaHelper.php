@@ -109,7 +109,6 @@ class AccionesHechasPorElAsistenteIaHelper
         AiMessageAction::TIPO_RENOMBRE_MASIVO      => 'renombre masivo',
     ];
 
-
     /**
      * LA HERRAMIENTA.
      *

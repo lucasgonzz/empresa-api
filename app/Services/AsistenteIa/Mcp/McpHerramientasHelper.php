@@ -107,7 +107,6 @@ class McpHerramientasHelper
         'proponer_renombre_masivo',
     ];
 
-
     /**
      * Las definiciones en la forma MCP, en el orden de origen: lectura primero, carga después.
      *

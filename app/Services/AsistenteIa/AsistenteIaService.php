@@ -3215,7 +3215,6 @@ AUTO_RESUELTO;
   ESA operación en su descripción; si no lo tiene, decilo en ese mismo mensaje, antes de que la
   persona confirme, y ofrecé lo que sí se puede. Nunca armes ejemplos, ni pidas el sí, de algo que
   después no vas a poder aplicar.
-
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.

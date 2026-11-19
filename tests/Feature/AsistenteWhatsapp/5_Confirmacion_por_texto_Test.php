@@ -149,7 +149,6 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
         $this->assertCount(54, $nombres, 'Cincuenta y una comunes más las tres del canal de WhatsApp.');
         $this->assertContains('proponer_renombre_masivo', $nombres);
         $this->assertContains('ajustar_foto_a_medida', $nombres);
-
         $this->assertContains('proponer_ajuste_de_stock_por_lote', $nombres);
         $this->assertContains('quitar_foto_articulo', $nombres);
         $this->assertContains('proponer_avisos_por_whatsapp', $nombres);

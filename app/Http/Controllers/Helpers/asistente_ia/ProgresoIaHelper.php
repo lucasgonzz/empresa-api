@@ -84,7 +84,6 @@ class ProgresoIaHelper
         // Misión asistente-diario-20261119 (rama C, A4 y M3): el renombre masivo y la foto a medida.
         'proponer_renombre_masivo'                  => 'Armando el renombre…',
         'ajustar_foto_a_medida'                     => 'Ajustando la foto…',
-
     ];
 
     /**

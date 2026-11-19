@@ -78,7 +78,6 @@ class McpServidor
         AiMessageAction::TIPO_PROMOCION_WHATSAPP   => 'una promoción por WhatsApp a los clientes',
         // Misión asistente-diario-20261119 (rama C, A4): el renombre masivo.
         AiMessageAction::TIPO_RENOMBRE_MASIVO      => 'cambiar el nombre de muchos artículos a la vez',
-
     ];
 
     /**
