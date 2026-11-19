@@ -295,10 +295,15 @@ class AiExcelImportController extends Controller
         /*
          * Filtramos también por el usuario autenticado para que nadie pueda
          * consultar (y de paso leer el resultado de) la corrida de otro usuario
-         * adivinando o iterando UUIDs.
+         * adivinando o iterando UUIDs. Es el mismo aislamiento que listar, guardar el borrador y
+         * descartar (comercio + usuario que subió el archivo): la respuesta incluye el resultado
+         * y el borrador, y un compañero del mismo comercio no tiene por qué leerlos.
          */
-        $run = ExcelAnalysisRun::where('uuid', $uuid)
+        $auth_user_id = optional(auth()->user())->id;
+
+        $run = is_null($auth_user_id) ? null : ExcelAnalysisRun::where('uuid', $uuid)
             ->where('user_id', $this->userId())
+            ->where('auth_user_id', $auth_user_id)
             ->first();
 
         if (is_null($run)) {
@@ -318,6 +323,11 @@ class AiExcelImportController extends Controller
              * todavía en curso y necesita saber de qué archivo se trata.
              */
             'contexto' => $run->contexto_para_frontend(),
+            /*
+             * Lo que el usuario dejó editado en el modal (paso 2 en adelante), para
+             * retomar sin repetir el trabajo. Vacío si nunca guardó nada.
+             */
+            'borrador' => $run->borrador_para_frontend(),
             /*
              * El resultado completo solo se devuelve cuando la corrida terminó
              * ("listo"); mientras está pendiente/procesando/error, va null.
@@ -353,10 +363,8 @@ class AiExcelImportController extends Controller
         }
 
         /*
-         * Solo miramos las últimas 48 horas porque es lo que el job conserva:
-         * RunExcelAnalysisJob borra al arrancar las corridas de más de 2 días.
-         * Ofrecer una corrida más vieja que eso sería ofrecer algo cuyo archivo
-         * y cuyo resultado ya pueden no estar.
+         * Esto es sólo el aviso de "terminó" (corridas sin ver): se limita a 48 horas. Las
+         * importaciones a medias no caducan; se retoman desde la lista de pendientes().
          */
         $run = ExcelAnalysisRun::where('auth_user_id', $auth_user_id)
             ->where('created_at', '>=', now()->subDays(2))
@@ -405,6 +413,143 @@ class AiExcelImportController extends Controller
         $run->update(['visto_at' => now()]);
 
         return response(null, 200);
+    }
+
+    /**
+     * Lista las importaciones que el usuario dejó a medias y puede retomar: análisis ya
+     * hecho (o todavía en curso) cuyo archivo sigue en el servidor y cuya importación no
+     * se lanzó ni se descartó.
+     *
+     * Aislamiento: sólo las corridas del propio usuario autenticado dentro de SU comercio
+     * (mismo owner), del módulo pedido. Un empleado no ve las de otro empleado ni las de
+     * otro comercio, aunque conozca el uuid.
+     *
+     * Devuelve sólo metadatos: el resultado completo se pide al retomar, con
+     * GET /ai-excel-import/analysis/{uuid}.
+     *
+     * @param  \Illuminate\Http\Request  $request  ?model=article|client|provider (default article)
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function pendientes(Request $request)
+    {
+        $model        = (string) $request->query('model', 'article');
+        $auth_user_id = optional(auth()->user())->id;
+
+        if (!in_array($model, ['article', 'client', 'provider'], true) || is_null($auth_user_id)) {
+            return response()->json(['pendientes' => []], 200);
+        }
+
+        $pendientes = [];
+
+        foreach (ExcelAnalysisRun::pendientes_de($this->userId(), $auth_user_id, $model) as $run) {
+            $payload   = $run->payload ?? [];
+            $borrador  = $run->borrador_para_frontend();
+            $recomend  = $run->estado === 'listo' ? $run->recomendacion_lista_hija() : null;
+            $contexto  = $run->contexto_para_frontend();
+
+            $pendientes[] = [
+                'uuid'              => $run->uuid,
+                'model'             => $contexto['model'],
+                'original_filename' => $contexto['original_filename'],
+                'estado'            => $run->estado,
+                'progreso'          => $run->progreso,
+                /* Paso en el que dejó el modal: 2 si nunca pasó de ahí o no hay borrador. */
+                'paso'              => isset($borrador['paso']) && is_numeric($borrador['paso'])
+                                        ? max(2, min(4, (int) $borrador['paso']))
+                                        : 2,
+                /* uuid de la recomendación (paso 3) ya lista, para retomar sin pedirla de nuevo. */
+                'recomendacion_uuid' => !is_null($recomend) ? $recomend->uuid : null,
+                'creada_en'         => optional($run->created_at)->toIso8601String(),
+                'actualizada_en'    => $payload['borrador_at'] ?? optional($run->updated_at)->toDateTimeString(),
+            ];
+        }
+
+        return response()->json(['pendientes' => $pendientes], 200);
+    }
+
+    /**
+     * Guarda el estado del paso 2 del modal para poder retomarlo sin volver a subir ni
+     * analizar el archivo (cerrar el modal, cerrar sesión, otra pestaña).
+     *
+     * Sólo acepta corridas de análisis del propio usuario (owner + usuario que subió el
+     * archivo) que no estén finalizadas. Descarta las claves que no son del modal y
+     * rechaza un borrador que supere el tope de tamaño.
+     *
+     * @param  \Illuminate\Http\Request  $request  { borrador: {...} }
+     * @param  string                    $uuid
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function guardarBorrador(Request $request, $uuid)
+    {
+        $run = $this->corrida_propia_retomable($uuid);
+
+        if (is_null($run)) {
+            return response()->json(['message' => 'No se encontro el analisis'], 404);
+        }
+
+        $borrador = $request->input('borrador');
+
+        if (!is_array($borrador)) {
+            return response()->json(['message' => 'El borrador debe ser un objeto.'], 422);
+        }
+
+        $limpio = ExcelAnalysisRun::sanear_borrador($borrador);
+
+        if (is_null($limpio)) {
+            return response()->json(['message' => 'El borrador es demasiado grande.'], 422);
+        }
+
+        $run->guardar_borrador($limpio);
+
+        return response(null, 204);
+    }
+
+    /**
+     * Saca una importación de la lista de pendientes sin importar nada. No borra el
+     * archivo: la limpieza de las corridas viejas ya existe y la hace el job de análisis.
+     *
+     * @param  string  $uuid
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function descartarPendiente($uuid)
+    {
+        $run = $this->corrida_propia_retomable($uuid);
+
+        if (is_null($run)) {
+            return response()->json(['message' => 'No se encontro el analisis'], 404);
+        }
+
+        $run->marcar_finalizada();
+
+        return response(null, 204);
+    }
+
+    /**
+     * Corrida de análisis (no recomendación) del propio usuario dentro de su comercio y
+     * todavía no finalizada, o null. Es el filtro común de guardar borrador y descartar.
+     *
+     * @param  string  $uuid
+     * @return \App\Models\ExcelAnalysisRun|null
+     */
+    protected function corrida_propia_retomable($uuid)
+    {
+        $auth_user_id = optional(auth()->user())->id;
+
+        if (is_null($auth_user_id)) {
+            return null;
+        }
+
+        $run = ExcelAnalysisRun::where('uuid', $uuid)
+            ->where('user_id', $this->userId())
+            ->where('auth_user_id', $auth_user_id)
+            ->where('tipo', 'analisis')
+            ->first();
+
+        if (is_null($run) || !empty(($run->payload ?? [])['finalizada_at'])) {
+            return null;
+        }
+
+        return $run;
     }
 
     /**
@@ -829,6 +974,9 @@ class AiExcelImportController extends Controller
             ], 409);
         }
 
+        /* La importación ya se lanzó: la corrida deja de ser una importación pendiente. */
+        ExcelAnalysisRun::marcar_finalizada_por_archivo($owner->id, $excel_path);
+
         return response(null, 200);
     }
 
@@ -1005,6 +1153,9 @@ class AiExcelImportController extends Controller
                 'hoja_nombre' => $hoja_nombre,
             ]);
 
+            /* La importación ya se lanzó: la corrida deja de ser una importación pendiente. */
+            ExcelAnalysisRun::marcar_finalizada_por_archivo($this->userId(), $request->input('excel_path'));
+
             return response()->json(['message' => 'Importación de clientes iniciada.'], 200);
 
         } catch (\Throwable $e) {
@@ -1087,6 +1238,9 @@ class AiExcelImportController extends Controller
                 'hoja'        => $hoja,
                 'hoja_nombre' => $hoja_nombre,
             ]);
+
+            /* La importación ya se lanzó: la corrida deja de ser una importación pendiente. */
+            ExcelAnalysisRun::marcar_finalizada_por_archivo($this->userId(), $request->input('excel_path'));
 
             return response()->json(['message' => 'Importación de proveedores iniciada.'], 200);
 
