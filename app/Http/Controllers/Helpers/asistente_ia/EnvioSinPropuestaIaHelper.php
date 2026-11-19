@@ -104,7 +104,8 @@ class EnvioSinPropuestaIaHelper
             return false;
         }
 
-        if (preg_match('/\b(?:mand|env[ií]|envi[ae])\w*|\bpasa(?:le|les|selo|sela|selos|selas)\b/', $normalizado) === 1) {
+        /* B3 (misión asistente-diario-20261119): las formas de mandar, no cualquier palabra que empiece igual («envase»). */
+        if (preg_match('/\b' . self::PALABRAS_DE_ENVIO . '\b|\bpasa(?:le|les|selo|sela|selos|selas)\b/', $normalizado) === 1) {
 
             return true;
         }
@@ -332,8 +333,22 @@ class EnvioSinPropuestaIaHelper
      */
     protected static function menciona_un_envio($normalizada)
     {
-        return preg_match('/\b(?:env\w*|mand\w*)\b/', (string) $normalizada) === 1;
+        return preg_match('/\b' . self::PALABRAS_DE_ENVIO . '\b/', (string) $normalizada) === 1;
     }
+
+    /**
+     * Las palabras de MANDAR algo, ya normalizadas (sin tildes): el verbo enviar/mandar en sus formas, con sus
+     * pronombres pegados, y el sustantivo «envío».
+     *
+     * 🔴 POR QUÉ NO `env\w*|mand\w*` (misión asistente-diario-20261119, rama B, B3; Ferre Total conv 72, 717-721). La
+     * raíz suelta agarraba «envase»: el asistente dijo «es una carta de colores, no la foto del ENVASE», Pablo
+     * contestó «Si» y eso contó como «sí a una oferta de mandar»; el turno siguiente, sin ningún envío de por medio,
+     * terminó con «Todavía no armé el envío… (a quién le llega, por dónde y el texto exacto)», que no tenía nada que
+     * ver (fotos y tienda de 145 esmaltes) y costó una vuelta. También «mandarina» o «mandato». La lista de formas
+     * acota la guarda y TEXTO_HONESTO a los envíos de verdad (comprobante, recordatorios de cobro, promoción).
+     */
+    const PALABRAS_DE_ENVIO = '(?:envio|envios|envi(?:a|as|o|e|en|es|amos|emos|ar|ara|are|aria|ado|ada|ados|adas|ando)(?:le|les|lo|la|los|las|selo|sela|selos|selas|melo|mela)?'
+        . '|mand(?:a|as|o|e|en|es|amos|emos|ar|ara|are|aria|ado|ada|ados|adas|ando)(?:le|les|lo|la|los|las|selo|sela|selos|selas|melo|mela)?)';
 
     /**
      * true si el texto (normalizado) dice que se va a mandar algo a alguien («Lo mando por WhatsApp…»).

@@ -3272,11 +3272,16 @@ CARGA;
 
     /**
      * Las reglas de la misión asistente-diario-20261119 (rama B) que valen en todos los canales: la lista larga
-     * con «poné lo que interpretes» (A6). Bloque propio, interpolado al final del bloque de carga, para que las
-     * ramas que corren en paralelo sobre este archivo no choquen con párrafos ajenos.
+     * con «poné lo que interpretes» (A6), «a cada uno» contra el último aviso (A7) y advertir una sola vez (B2).
+     * Bloque propio, interpolado al final del bloque de carga, para que las ramas que corren en paralelo sobre este
+     * archivo no choquen con párrafos ajenos.
      *
-     * 🔴 EL CASO REAL (Ferre Total, conv 62, 18/11/2026): 37 renglones para un presupuesto, «Buscalo por nombre»,
-     * «Poné lo que interpretes y yo después lo reviso»; el asistente pidió los códigos dos veces y no armó nada.
+     * 🔴 LOS CASOS REALES (18/11/2026):
+     *   - Ferre Total, conv 62: 37 renglones para un presupuesto, «Buscalo por nombre», «Poné lo que interpretes y
+     *     yo después lo reviso»; el asistente pidió los códigos dos veces y no armó nada.
+     *   - Truvari, conv 43: «Ponele 4 unidades de stock a cada uno» después del aviso de sin stock y un recordatorio.
+     *   - Ferre Total, conv 72 (661-669): avisó TRES veces que la foto «no es de un drywall» antes de aceptar «Sí, sí,
+     *     usá esa foto».
      *
      * @return string
      */
@@ -3292,6 +3297,9 @@ CARGA;
   artículos de tus mensajes recientes, incluidos los avisos automáticos que mandaste vos («Se
   quedaron sin stock: X e Y»). Un recordatorio o un aviso de otra cosa en el medio no la tapa.
   Armá la carga con esos sin preguntar cuáles; preguntá solo si de verdad hay dos listas posibles.
+- 🔴 Una advertencia se dice UNA sola vez («la foto no parece de un drywall», «ese precio queda
+  por debajo del costo»). Si la persona ya la leyó y sigue con lo suyo, o insiste, o no la
+  contesta, no la repitas en los mensajes siguientes: hacé lo que pidió.
 LISTAS;
     }
 
