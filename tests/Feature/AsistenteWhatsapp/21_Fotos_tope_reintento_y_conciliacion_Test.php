@@ -219,12 +219,18 @@ class Fotos_tope_reintento_y_conciliacion_Test extends AsistenteWhatsappTestCase
             return Http::response($fin, 200);
         });
 
+        /*
+         * Misión asistente-diario-20261119 (rama B, M1): el reintento ya no pide una llamada ENTERA de 60 s; sale con
+         * el tiempo que queda hasta los 165 (si quedan al menos 20 s), así que con 120 s gastados hoy SÍ se reintenta
+         * con 45 (lo cubre U193_Reintento_ante_timeout_y_segui_que_retoma_Test). La paciencia del admin se sigue
+         * respetando, y este test la mide donde ya no entra ningún reintento: 150 s gastados dejan 15.
+         */
         list($conversation, $assistant) = $this->turno();
-        AiMessage::where('id', $assistant->id)->update(['created_at' => now()->subSeconds(120)]);
+        AiMessage::where('id', $assistant->id)->update(['created_at' => now()->subSeconds(150)]);
 
         try {
             (new AsistenteIaService())->responder($conversation, $assistant->fresh());
-            $this->fail('Por WhatsApp, con 120 s ya gastados del lado del admin, no hay reintento.');
+            $this->fail('Por WhatsApp, con 150 s ya gastados del lado del admin, no hay reintento.');
         } catch (ConnectionException $e) {
             $this->assertSame(1, $llamadas);
         }

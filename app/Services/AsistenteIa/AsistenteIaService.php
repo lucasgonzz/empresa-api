@@ -275,6 +275,13 @@ class AsistenteIaService
     const SEGUNDOS_MINIMOS_DEL_CIERRE = 10;
 
     /**
+     * Lo mínimo que tiene que quedar hasta el techo del canal para reintentar una llamada al proveedor que se cortó
+     * por la red (misión asistente-diario-20261119, rama B, M1). Con menos, una vuelta con herramientas no alcanza a
+     * volver y el reintento solo demora el «seguí». Ver segundos_para_el_reintento().
+     */
+    const SEGUNDOS_MINIMOS_DEL_REINTENTO = 20;
+
+    /**
      * Margen que tiene que quedarle a la llamada de cierre por WhatsApp, en segundos (ronda de arreglos de
      * la revisión independiente de la misión agente-memoria-y-sin-techo, R6, 30/10/2026). Antes de cada
      * vuelta normal por WhatsApp se mira si, durando lo que duró la última, terminaría a más de
@@ -753,8 +760,23 @@ class AsistenteIaService
          * de arriba (SiQueRearmaLaCargaIaHelper::aplica() da false cuando hay tarjeta). Ver
          * SiATarjetaPendienteIaHelper.
          */
+        /*
+         * Misión asistente-diario-20261119 (rama B, M1; Ferre Total conv 72, 725): el «seguí» después de un turno que
+         * se cortó (timeout del proveedor, tiempo del turno) lleva la nota con el pedido que se estaba resolviendo,
+         * para que retome lo anunciado y no hecho (las fotos de los 145). Ver SeguiTrasUnCorteIaHelper.
+         */
+        $nota_del_segui = \App\Http\Controllers\Helpers\asistente_ia\SeguiTrasUnCorteIaHelper::nota($conversation, $assistant_message);
+
+        if (! is_null($nota_del_segui)) {
+            $messages = $this->con_nota_en_el_ultimo_user($messages, $nota_del_segui);
+
+            if ($con_acciones) {
+                $toco_una_carga = true;
+            }
+        }
+
         if (is_null($confirmacion_determinista) && $con_acciones) {
-            $tarjetas_del_si = \App\Http\Controllers\Helpers\asistente_ia\SiATarjetaPendienteIaHelper::tarjetas($conversation, $assistant_message);
+            $tarjetas_del_si =\App\Http\Controllers\Helpers\asistente_ia\SiATarjetaPendienteIaHelper::tarjetas($conversation, $assistant_message);
 
             if (count($tarjetas_del_si)) {
                 $messages = $this->con_nota_en_el_ultimo_user($messages, \App\Http\Controllers\Helpers\asistente_ia\SiATarjetaPendienteIaHelper::nota($tarjetas_del_si));
@@ -5628,17 +5650,32 @@ CONFIRMACION;
         try {
             $response = $http->post($url, $body);
         } catch (\Illuminate\Http\Client\ConnectionException $e) {
-            if (! $puede_reintentar || ! $this->queda_tiempo_para_reintentar($inicio_del_loop, $assistant_message)) {
+            /*
+             * 🔴 Misión asistente-diario-20261119 (rama B, M1; Ferre Total conv 72, 715 y 725): tres turnos se cortaron
+             * con «cURL error 28 … 60000 ms» y sin reintento, porque el reintento pedía una llamada ENTERA de
+             * TIMEOUT_SEGUNDOS adentro del techo: por WhatsApp, después de esperar 60 s a una llamada que no volvió,
+             * casi nunca entraba. Ahora el reintento sale con el tiempo que QUEDA hasta el techo del canal (como
+             * mucho TIMEOUT_SEGUNDOS), siempre que sean al menos SEGUNDOS_MINIMOS_DEL_REINTENTO: el tope total del
+             * turno no se estira (ver segundos_para_el_reintento()).
+             */
+            $segundos = $this->segundos_para_el_reintento($inicio_del_loop, $assistant_message);
+
+            if (! $puede_reintentar || $segundos < self::SEGUNDOS_MINIMOS_DEL_REINTENTO) {
                 throw $e;
             }
 
             Log::warning('AsistenteIaService: se cortó la llamada al proveedor de IA; se reintenta una vez.', [
                 'ai_conversation_id' => $conversation_id,
+                'segundos'           => $segundos,
                 'error'              => $e->getMessage(),
             ]);
 
-            return ProgresoIaHelper::durante_reintento($assistant_message, ProgresoIaHelper::REINTENTO_CONEXION, function () use ($http, $url, $body) {
-                return $http->post($url, $body);
+            $http_del_reintento = $segundos < self::TIMEOUT_SEGUNDOS && method_exists($http, 'timeout')
+                ? (clone $http)->timeout($segundos)
+                : $http;
+
+            return ProgresoIaHelper::durante_reintento($assistant_message, ProgresoIaHelper::REINTENTO_CONEXION, function () use ($http_del_reintento, $url, $body) {
+                return $http_del_reintento->post($url, $body);
             });
         }
 
@@ -5665,6 +5702,28 @@ CONFIRMACION;
 
             return $response;
         }
+    }
+
+    /**
+     * Cuántos segundos le quedan al reintento de una llamada que se cortó por la red (misión
+     * asistente-diario-20261119, rama B, M1): lo que falta hasta el techo del canal —el mismo de
+     * queda_tiempo_para_reintentar(): TECHO_DEL_REINTENTO_EN_WHATSAPP por WhatsApp, PRESUPUESTO_SEGUNDOS en el
+     * sistema y la app—, con TIMEOUT_SEGUNDOS como máximo. El reintento sale con ese timeout, así que nunca termina
+     * después del techo: la cadena de techos documentada en PRESUPUESTO_SEGUNDOS no cambia.
+     *
+     * @param  int  $inicio_del_loop
+     * @param  AiMessage|null  $assistant_message
+     * @return int
+     */
+    protected function segundos_para_el_reintento($inicio_del_loop, $assistant_message = null): int
+    {
+        $transcurrido = $this->segundos_del_turno($inicio_del_loop, $assistant_message);
+
+        $techo = $assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp()
+            ? self::TECHO_DEL_REINTENTO_EN_WHATSAPP
+            : self::PRESUPUESTO_SEGUNDOS;
+
+        return (int) max(0, min(self::TIMEOUT_SEGUNDOS, $techo - $transcurrido));
     }
 
     /**
