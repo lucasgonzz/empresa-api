@@ -281,6 +281,40 @@ class T190_Renombre_masivo_de_articulos_Test extends TestCase
     }
 
     /**
+     * Revisión independiente (19/11/2026): el reemplazo es literal y también cambia adentro de otra
+     * palabra. La tarjeta lo avisa y muestra PRIMERO un ejemplo de esos, aunque no esté entre los primeros.
+     *
+     * @test
+     */
+    public function el_texto_pegado_a_otra_palabra_se_avisa_y_su_ejemplo_va_primero()
+    {
+        // Siete esmaltes "normales" antes (los cuatro del setUp y estos tres), para que el de adentro de otra palabra no entre en los 5 primeros.
+        foreach (['ROJO', 'VERDE', 'GRIS'] as $color) {
+            $this->articulo('ESMALTE AC. MULT. 1 L ' . $color, $this->comercio->id, $this->pinturas->id);
+        }
+
+        $multiuso = $this->articulo('PEGAMENTO MULTIUSO 50 G', $this->comercio->id, $this->pinturas->id);
+
+        list($conversation, $assistant) = $this->conversacion();
+
+        $r = $this->proponer($conversation, $assistant, ['buscar' => 'MULT', 'reemplazo' => 'MÚLTIPLE']);
+
+        $this->assertTrue($r['ok'], json_encode($r, JSON_UNESCAPED_UNICODE));
+        $this->assertSame(1, $r['dentro_de_otra_palabra']);
+        $this->assertSame('PEGAMENTO MULTIUSO 50 G → PEGAMENTO MÚLTIPLEIUSO 50 G', $r['ejemplos'][0], 'El ejemplo pegado a otra palabra va primero.');
+        $this->assertCount(5, $r['ejemplos']);
+        $this->assertStringContainsString('pegado a otra palabra', $r['como_contarlo']);
+
+        $tarjeta = AiMessageAction::findOrFail($r['tarjeta_id']);
+        $this->assertStringContainsString('pegado a otra palabra', $tarjeta->presentacion['aviso']);
+        $this->assertContains($multiuso->id, $tarjeta->datos['ids']);
+
+        // Con el texto completo como está escrito, no hay ninguno pegado a otra palabra.
+        $bien = $this->proponer($conversation, $assistant, ['buscar' => 'AC. MULT.', 'reemplazo' => 'ACCIÓN MÚLTIPLE']);
+        $this->assertSame(0, $bien['dentro_de_otra_palabra']);
+    }
+
+    /**
      * Sin artículos con el texto: error para el modelo, sin tarjeta.
      *
      * @test
@@ -308,6 +342,16 @@ class T190_Renombre_masivo_de_articulos_Test extends TestCase
     public function el_reemplazo_es_literal_y_la_rama_de_la_masiva_no_toca_articulos_ajenos()
     {
         $this->assertSame('TORNILLO 6X2', RenombreEnMasivaHelper::reemplazar('TORNILLO OFERTA 6X2', 'oferta', ''));
+
+        // Revisión independiente (19/11/2026): un espacio solo si había espacio de los dos lados.
+        $this->assertSame('SUPERX', RenombreEnMasivaHelper::reemplazar('SUPEROFERTAX', 'OFERTA', ''));
+        $this->assertSame('TORNILLO ()', RenombreEnMasivaHelper::reemplazar('TORNILLO (OFERTA)', 'OFERTA', ''));
+        $this->assertSame('TORNILLO 6X2', RenombreEnMasivaHelper::reemplazar('OFERTA TORNILLO 6X2', 'OFERTA', ''));
+        $this->assertSame('TORNILLO', RenombreEnMasivaHelper::reemplazar('TORNILLO OFERTA', 'OFERTA', ''));
+        $this->assertSame('A B', RenombreEnMasivaHelper::reemplazar('A   OFERTA   B', 'OFERTA', ''), 'Nunca dobles espacios.');
+
+        $this->assertTrue(RenombreEnMasivaHelper::queda_dentro_de_otra_palabra('PEGAMENTO MULTIUSO', 'MULT'));
+        $this->assertFalse(RenombreEnMasivaHelper::queda_dentro_de_otra_palabra('ESMALTE AC. MULT. 1 L', 'AC. MULT.'));
         $this->assertSame('PRECIO $1 \\ OK', RenombreEnMasivaHelper::reemplazar('PRECIO X OK', 'x', '$1 \\'));
         $this->assertSame('CAÑO PVC', RenombreEnMasivaHelper::reemplazar('caño PVC', 'CAÑO', 'CAÑO'));
 

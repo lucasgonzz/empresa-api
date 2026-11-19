@@ -118,6 +118,20 @@ class PropuestaRenombreMasivoIaHelper
             $renglones[] = ['etiqueta' => 'Ejemplo', 'valor' => $ejemplo['antes'] . ' → ' . $ejemplo['despues']];
         }
 
+        /*
+         * Revisión independiente (19/11/2026): si el texto también está pegado a otra palabra, se dice en
+         * la tarjeta y al modelo (el reemplazo es literal y ahí también cambia).
+         */
+        $aviso_dentro = '';
+
+        if ($conjunto['dentro_de_otra_palabra'] > 0) {
+
+            $aviso_dentro = 'Ojo: en ' . $conjunto['dentro_de_otra_palabra'] . ' de ellos «' . $criterio['buscar']
+                . '» está pegado a otra palabra y también cambia (el primer ejemplo es uno de esos).';
+
+            $renglones[] = ['etiqueta' => 'Atención', 'valor' => $aviso_dentro];
+        }
+
         $datos = [
             'buscar'         => $criterio['buscar'],
             'reemplazo'      => $criterio['reemplazo'],
@@ -137,7 +151,7 @@ class PropuestaRenombreMasivoIaHelper
             AiMessageAction::TIPO_RENOMBRE_MASIVO,
             self::clave($criterio),
             $datos,
-            ['titulo' => self::TITULO, 'renglones' => $renglones, 'aviso' => self::AVISO],
+            ['titulo' => self::TITULO, 'renglones' => $renglones, 'aviso' => $aviso_dentro === '' ? self::AVISO : self::AVISO . ' ' . $aviso_dentro],
             EntradaDeCargaIa::valor($input, 'reemplaza_a')
         );
 
@@ -148,7 +162,9 @@ class PropuestaRenombreMasivoIaHelper
                 'articulos_alcanzados' => $total,
                 'filtros_legibles'     => $criterio['legibles'],
                 'ejemplos'             => self::lineas_de_ejemplos($conjunto['ejemplos']),
-                'como_contarlo'        => 'Antes de pedir el sí, decile a la persona cuántos artículos alcanza y mostrale dos o tres ejemplos de «ejemplos» (nombre de antes → nombre de después) TAL CUAL vienen. No inventes otros ejemplos.',
+                'como_contarlo'        => 'Antes de pedir el sí, decile a la persona cuántos artículos alcanza y mostrale dos o tres ejemplos de «ejemplos» (nombre de antes → nombre de después) TAL CUAL vienen. No inventes otros ejemplos.'
+                    . ($aviso_dentro === '' ? '' : ' 🔴 ' . $aviso_dentro . ' Mostrale ese ejemplo primero y preguntale si está bien; si no, acotá el texto (por ejemplo con el espacio o el punto de al lado) y volvé a llamar.'),
+                'dentro_de_otra_palabra' => $conjunto['dentro_de_otra_palabra'],
             ]
         );
     }
@@ -358,6 +374,14 @@ class PropuestaRenombreMasivoIaHelper
         $ids = [];
         $ejemplos = [];
 
+        /*
+         * Revisión independiente (19/11/2026): el reemplazo es literal y también cambia el texto pegado a
+         * otra palabra («MULT» dentro de «MULTIUSO»). Se cuenta cuántos son y el PRIMER ejemplo de esos va
+         * adelante en la tarjeta, para que la persona lo vea antes del sí.
+         */
+        $dentro_de_otra_palabra = 0;
+        $ejemplo_dentro = null;
+
         foreach ($query->orderBy('articles.id')->get(['articles.id', 'articles.name']) as $articulo) {
 
             $antes = (string) $articulo->name;
@@ -370,13 +394,35 @@ class PropuestaRenombreMasivoIaHelper
 
             $ids[] = (int) $articulo->id;
 
+            $ejemplo = ['article_id' => (int) $articulo->id, 'antes' => $antes, 'despues' => $despues];
+
+            if (RenombreEnMasivaHelper::queda_dentro_de_otra_palabra($antes, $criterio['buscar'])) {
+
+                $dentro_de_otra_palabra++;
+
+                if (is_null($ejemplo_dentro)) {
+
+                    $ejemplo_dentro = $ejemplo;
+                }
+            }
+
             if (count($ejemplos) < self::MAX_EJEMPLOS) {
 
-                $ejemplos[] = ['article_id' => (int) $articulo->id, 'antes' => $antes, 'despues' => $despues];
+                $ejemplos[] = $ejemplo;
             }
         }
 
-        return ['ids' => $ids, 'ejemplos' => $ejemplos];
+        // El ejemplo «dentro de otra palabra» primero; si no estaba entre los mostrados, desplaza al último.
+        if (!is_null($ejemplo_dentro)) {
+
+            $resto = array_values(array_filter($ejemplos, function ($ejemplo) use ($ejemplo_dentro) {
+                return $ejemplo['article_id'] !== $ejemplo_dentro['article_id'];
+            }));
+
+            $ejemplos = array_slice(array_merge([$ejemplo_dentro], $resto), 0, self::MAX_EJEMPLOS);
+        }
+
+        return ['ids' => $ids, 'ejemplos' => $ejemplos, 'dentro_de_otra_palabra' => $dentro_de_otra_palabra];
     }
 
     /**

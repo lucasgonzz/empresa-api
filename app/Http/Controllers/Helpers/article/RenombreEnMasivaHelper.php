@@ -121,8 +121,14 @@ class RenombreEnMasivaHelper
 
         if ($reemplazo === '') {
 
-            $nuevo = preg_replace_callback('/\s*' . $patron . '\s*/iu', function () {
-                return ' ';
+            /*
+             * Revisión independiente (19/11/2026): antes `\s*X\s*` dejaba SIEMPRE un espacio, y
+             * «SUPEROFERTAX» quedaba «SUPER X». Ahora queda un espacio solo si había espacio de los DOS lados
+             * («TORNILLO OFERTA 6X2» → «TORNILLO 6X2»); con espacio de un solo lado o de ninguno, el texto se
+             * va con ese espacio y nada más («SUPEROFERTAX» → «SUPERX», «OFERTA TORNILLO» → «TORNILLO»).
+             */
+            $nuevo = preg_replace_callback('/(\s*)' . $patron . '(\s*)/iu', function ($m) {
+                return ($m[1] !== '' && $m[2] !== '') ? ' ' : '';
             }, $nombre);
 
             return is_null($nuevo) ? $nombre : trim($nuevo);
@@ -134,6 +140,29 @@ class RenombreEnMasivaHelper
 
         // null = la expresión falló (UTF-8 inválido en un nombre importado): el nombre queda como estaba.
         return is_null($nuevo) ? $nombre : $nuevo;
+    }
+
+    /**
+     * true si el texto aparece PEGADO a otra letra o número en el nombre: «MULT» dentro de «MULTIUSO».
+     * El reemplazo es literal y ahí también cambia (revisión independiente, 19/11/2026); la tarjeta
+     * prioriza mostrar un ejemplo así para que la persona lo vea antes del sí.
+     *
+     * @param  string  $nombre
+     * @param  string  $buscar
+     * @return bool
+     */
+    public static function queda_dentro_de_otra_palabra($nombre, $buscar)
+    {
+        $buscar = (string) $buscar;
+
+        if ($buscar === '') {
+
+            return false;
+        }
+
+        $patron = preg_quote($buscar, '/');
+
+        return preg_match('/[\p{L}\p{N}]' . $patron . '|' . $patron . '[\p{L}\p{N}]/iu', (string) $nombre) === 1;
     }
 
     /**
