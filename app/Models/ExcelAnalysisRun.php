@@ -160,4 +160,237 @@ class ExcelAnalysisRun extends Model
 
         return $contexto;
     }
+
+    /**
+     * Ventana en la que una corrida sigue siendo retomable. Es la misma que usa
+     * analysisEnCurso() y la que respeta la limpieza de RunExcelAnalysisJob (2 días).
+     */
+    const VENTANA_PENDIENTES_HORAS = 48;
+
+    /**
+     * Tope del borrador serializado. El borrador guarda el mapeo y las opciones del
+     * modal (no filas del Excel), así que unos cientos de KB sobran; el tope evita que
+     * un cliente use el payload de la corrida como almacenamiento.
+     */
+    const BORRADOR_MAX_BYTES = 200000;
+
+    /**
+     * Claves del borrador que se aceptan. Cualquier otra se descarta en silencio:
+     * es el estado del paso 2 del modal, nada más.
+     */
+    const BORRADOR_CLAVES = [
+        'paso',
+        'column_mapping',
+        'selected_provider_id',
+        'provider_code_column_index',
+        'start_row',
+        'finish_row',
+        'has_header_row',
+        'hoja_seleccionada',
+        'precios_incluyen_iva',
+        'vaciar_valores_en_blanco',
+        'actualizar_articulos_de_otro_proveedor',
+        'permitir_provider_code_repetido',
+        'permitir_provider_code_repetido_en_multi_providers',
+        'actualizar_por_provider_code',
+        'actualizar_proveedor',
+        'create_and_edit',
+        'interpretacion_punto',
+        'politica_colision',
+        'politica_otro_proveedor',
+        'politica_intra_archivo',
+        'desempatar_por_nombre',
+    ];
+
+    /**
+     * Corridas de análisis que el usuario puede retomar: las suyas (mismo owner Y mismo
+     * usuario que subió el archivo), del módulo pedido, de las últimas 48 horas, que
+     * no terminaron en error ni fueron finalizadas (importación lanzada o descartada).
+     *
+     * Las que todavía están trabajando se incluyen: el modal las sigue en vivo.
+     *
+     * @param  int         $owner_id      Dueño del comercio (user_id de la corrida).
+     * @param  int|null    $auth_user_id  Usuario autenticado; sin él no se lista nada.
+     * @param  string      $model         article | client | provider.
+     * @return \Illuminate\Support\Collection  De ExcelAnalysisRun, la más nueva primero.
+     */
+    public static function pendientes_de($owner_id, $auth_user_id, $model)
+    {
+        if (empty($owner_id) || empty($auth_user_id)) {
+            return collect();
+        }
+
+        $corridas = self::where('user_id', $owner_id)
+            ->where('auth_user_id', $auth_user_id)
+            ->where('tipo', 'analisis')
+            ->where('estado', '!=', 'error')
+            ->where('created_at', '>=', now()->subHours(self::VENTANA_PENDIENTES_HORAS))
+            ->orderBy('id', 'DESC')
+            ->get();
+
+        return $corridas->filter(function ($run) use ($model) {
+            $payload = $run->payload ?? [];
+
+            if (!empty($payload['finalizada_at'])) {
+                return false;
+            }
+
+            if (!empty($payload['pdf_path'])) {
+                /* Un PDF se borra al terminar el análisis: no hay archivo que retomar. */
+                return false;
+            }
+
+            if ((string) ($payload['model'] ?? 'article') !== (string) $model) {
+                return false;
+            }
+
+            /* Sin el archivo en disco no se puede importar: ofrecerla sería una trampa. */
+            return !empty($run->excel_path)
+                && file_exists(storage_path('app/' . $run->excel_path));
+        })->values();
+    }
+
+    /**
+     * Última recomendación (paso 3) ya terminada que salió de este análisis, o null.
+     * Sirve para retomar en el paso 3 en vez de volver a pedirla a la IA.
+     *
+     * @return \App\Models\ExcelAnalysisRun|null
+     */
+    public function recomendacion_lista_hija()
+    {
+        $candidatas = self::where('user_id', $this->user_id)
+            ->where('auth_user_id', $this->auth_user_id)
+            ->where('tipo', 'recomendacion')
+            ->where('estado', 'listo')
+            ->where('created_at', '>=', now()->subHours(self::VENTANA_PENDIENTES_HORAS))
+            ->orderBy('id', 'DESC')
+            ->get();
+
+        foreach ($candidatas as $candidata) {
+            $payload = $candidata->payload ?? [];
+
+            if (($payload['analysis_uuid'] ?? null) === $this->uuid) {
+                return $candidata;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Deja sólo las claves permitidas del borrador y verifica el tope de tamaño.
+     *
+     * @param  array  $borrador
+     * @return array|null  El borrador saneado, o null si supera BORRADOR_MAX_BYTES.
+     */
+    public static function sanear_borrador(array $borrador)
+    {
+        $limpio = array_intersect_key($borrador, array_flip(self::BORRADOR_CLAVES));
+
+        if (strlen(json_encode($limpio)) > self::BORRADOR_MAX_BYTES) {
+            return null;
+        }
+
+        return $limpio;
+    }
+
+    /**
+     * Guarda el borrador del modal dentro del payload, sin pisar el resto de las claves.
+     * Relee la fila con candado: el job también escribe el payload (limpieza de PDF).
+     *
+     * @param  array  $borrador  Ya saneado con sanear_borrador().
+     * @return void
+     */
+    public function guardar_borrador(array $borrador)
+    {
+        $this->actualizar_payload(function (array $payload) use ($borrador) {
+            $payload['borrador'] = $borrador;
+            $payload['borrador_at'] = now()->toDateTimeString();
+
+            return $payload;
+        });
+    }
+
+    /**
+     * Saca la corrida de la lista de pendientes (importación lanzada o descartada).
+     * No borra la fila ni el archivo: eso lo hace la limpieza de 2 días que ya existe.
+     *
+     * @return void
+     */
+    public function marcar_finalizada()
+    {
+        $this->actualizar_payload(function (array $payload) {
+            if (empty($payload['finalizada_at'])) {
+                $payload['finalizada_at'] = now()->toDateTimeString();
+            }
+
+            return $payload;
+        });
+    }
+
+    /**
+     * Marca como finalizadas las corridas del owner que usaron ese archivo. Se llama
+     * cuando /import lanza la importación: así la lista se limpia aunque la SPA sea
+     * una versión anterior que no avisa nada.
+     *
+     * @param  int     $owner_id
+     * @param  string  $excel_path
+     * @return int  Cuántas corridas se marcaron.
+     */
+    public static function marcar_finalizada_por_archivo($owner_id, $excel_path)
+    {
+        if (empty($owner_id) || empty($excel_path)) {
+            return 0;
+        }
+
+        $marcadas = 0;
+
+        $corridas = self::where('user_id', $owner_id)
+            ->where('excel_path', $excel_path)
+            ->get();
+
+        foreach ($corridas as $corrida) {
+            $corrida->marcar_finalizada();
+            $marcadas++;
+        }
+
+        return $marcadas;
+    }
+
+    /**
+     * Borrador del modal para el frontend (array vacío si no hay).
+     *
+     * @return array
+     */
+    public function borrador_para_frontend()
+    {
+        $payload = $this->payload ?? [];
+
+        return isset($payload['borrador']) && is_array($payload['borrador'])
+            ? $payload['borrador']
+            : [];
+    }
+
+    /**
+     * Modifica el payload con la fila bloqueada, para no perder una escritura concurrente.
+     *
+     * @param  callable  $cambio  Recibe el payload actual y devuelve el nuevo.
+     * @return void
+     */
+    protected function actualizar_payload(callable $cambio)
+    {
+        \Illuminate\Support\Facades\DB::transaction(function () use ($cambio) {
+            $fresca = self::whereKey($this->id)->lockForUpdate()->first();
+
+            if (is_null($fresca)) {
+                return;
+            }
+
+            $nuevo = $cambio($fresca->payload ?? []);
+
+            $fresca->update(['payload' => $nuevo]);
+            $this->payload = $nuevo;
+            $this->syncOriginalAttribute('payload');
+        });
+    }
 }

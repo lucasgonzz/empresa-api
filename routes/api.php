@@ -807,6 +807,9 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
      *  - POST /ai-excel-import/get-recomendacion    : encola la recomendación de configuración con el proveedor real confirmado (grupo 291, prompt 03) y devuelve el uuid de la corrida
      *  - GET  /ai-excel-import/analysis-en-curso    : corrida abierta del usuario (en curso, o terminada y sin ver) para recuperar el hilo tras cerrar la pestaña
      *  - POST /ai-excel-import/analysis/{uuid}/visto : marca la corrida como vista, para dejar de ofrecerla
+     *  - GET  /ai-excel-import/pendientes            : importaciones del usuario que puede retomar (paso 2 en adelante), sin volver a subir el archivo
+     *  - POST /ai-excel-import/analysis/{uuid}/borrador : guarda lo editado en el modal para retomar
+     *  - POST /ai-excel-import/analysis/{uuid}/descartar : saca la corrida de la lista de pendientes
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
     /*
@@ -818,6 +821,9 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::get('/ai-excel-import/analysis-en-curso', 'AiExcelImportController@analysisEnCurso');
     Route::get('/ai-excel-import/analysis/{uuid}', 'AiExcelImportController@analysisStatus');
     Route::post('/ai-excel-import/analysis/{uuid}/visto', 'AiExcelImportController@marcarAnalisisVisto');
+    Route::get('/ai-excel-import/pendientes', 'AiExcelImportController@pendientes');
+    Route::post('/ai-excel-import/analysis/{uuid}/borrador', 'AiExcelImportController@guardarBorrador');
+    Route::post('/ai-excel-import/analysis/{uuid}/descartar', 'AiExcelImportController@descartarPendiente');
     Route::post('/ai-excel-import/import',  'AiExcelImportController@import');
     Route::post('/ai-excel-import/refresh-provider-stats', 'AiExcelImportController@refreshProviderStats');
     Route::post('/ai-excel-import/get-recomendacion', 'AiExcelImportController@getRecomendacion');
