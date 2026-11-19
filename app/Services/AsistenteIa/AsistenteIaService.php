@@ -1777,6 +1777,16 @@ class AsistenteIaService
             $final_text = TextoFinalIaHelper::recortar_sin_cortar_frases($final_text);
         }
 
+        /*
+         * Misión asistente-diario-20261119 (rama A, A2): ningún link a /asistente/archivo/ que no abra. Ferre
+         * Total (18/11, conv. 72) recibió dos links de Excel que daban 404: ninguna herramienta los había
+         * devuelto. Cada link se verifica contra `ai_archivos` (uuid, token, vigencia, archivo en el disco y que
+         * sea de este negocio) y el que no abriría se cambia por un aviso honesto. Ver LinksDeArchivosIaHelper.
+         */
+        if ($final_text !== '') {
+            $final_text = \App\Http\Controllers\Helpers\asistente_ia\LinksDeArchivosIaHelper::sin_links_que_no_abren((int) $conversation->user_id, $final_text)['texto'];
+        }
+
         if ($final_text === '') {
             Log::warning('AsistenteIaService: el loop terminó sin texto final.', [
                 'ai_conversation_id' => $conversation->id,
