@@ -54,6 +54,12 @@ class McpHerramientasHelper
         'proponer_recordatorios_de_cobro',
         'proponer_promocion_por_whatsapp',
         'pedir_ayuda_a_soporte',
+        /*
+         * Misión asistente-diario-20261119 (rama C, M3): la foto a medida trabaja sobre una foto que la
+         * persona mandó en la conversación (WhatsApp o la app). Por MCP no hay fotos de la conversación:
+         * solo podría contestar "no encontré esa foto".
+         */
+        'ajustar_foto_a_medida',
     ];
 
     /** Prefijos de las tools que solo leen: van con readOnlyHint = true. */
@@ -97,7 +103,10 @@ class McpHerramientasHelper
         'proponer_actualizacion_masiva',
         'proponer_unificar_bancos_de_cheques',
         'proponer_borrado_por_pantalla',
+        // Misión asistente-diario-20261119 (rama C, A4): reescribe el nombre de muchos artículos.
+        'proponer_renombre_masivo',
     ];
+
 
     /**
      * Las definiciones en la forma MCP, en el orden de origen: lectura primero, carga después.

@@ -36,6 +36,8 @@ use App\Http\Controllers\Helpers\asistente_ia\PropuestaPromocionWhatsappIaHelper
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaRecordatoriosCobroIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaStockIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaAjusteDeStockPorLoteIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaRenombreMasivoIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\FotoAMedidaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaTareaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaVentaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReintentoDeEscaneoIaHelper;
@@ -288,6 +290,12 @@ class HerramientasDeCarga
          * lista (y lo que quedó afuera) y confirma ella.
          */
         AiMessageAction::TIPO_AJUSTE_STOCK_LOTE,
+        /*
+         * 🔴 El renombre masivo (misión asistente-diario-20261119, rama C, A4): reescribe el nombre de hasta
+         * 2000 artículos de un saque, que es lo que se ve en el ticket, en la tienda y en las búsquedas. La
+         * persona ve la cantidad y los ejemplos «antes → después» y confirma ella.
+         */
+        AiMessageAction::TIPO_RENOMBRE_MASIVO,
     ];
 
     /**
@@ -1924,6 +1932,40 @@ class HerramientasDeCarga
             ], 'required' => ['renglones']],
         ];
 
+        /*
+         * Misión asistente-diario-20261119 (rama C, A4), al final por el prefijo del caché: el RENOMBRE MASIVO.
+         * En Ferre Total (conv. 72) el agente prometió renombrar 145 esmaltes «como actualización masiva», Pablo
+         * confirmó y recién ahí dijo que no había herramienta. Ver PropuestaRenombreMasivoIaHelper.
+         */
+        $definiciones[] = [
+            'name' => 'proponer_renombre_masivo',
+            'description' => 'Arma UNA tarjeta para REEMPLAZAR UN TEXTO POR OTRO EN EL NOMBRE de muchos artículos a la vez ("cambiá en cada artículo ESMALTE AC. MULT. por ESMALTE ACCIÓN MÚLTIPLE", "sacale OFERTA al nombre de los de tal proveedor"): cambia SOLO ese pedazo del nombre y deja el resto igual. No distingue mayúsculas de minúsculas. Alcanza a los artículos activos cuyo nombre tiene el texto, acotados si querés con filtros (los mismos de proponer_actualizacion_masiva: proveedor, categoría, marca...) o con los articulo_ids que devolvió otra herramienta. Hasta ' . PropuestaRenombreMasivoIaHelper::TOPE . ' artículos. La respuesta trae cuántos alcanza y ejemplos «antes → después»: contale a la persona la cantidad y dos o tres ejemplos TAL CUAL antes de pedir el sí. SIEMPRE espera el sí, en cualquier modo. Al confirmar corre en segundo plano (como una actualización masiva) y se puede revertir desde el historial de actualizaciones masivas: nunca digas que ya quedó hecho antes de confirmar. Es LA herramienta para cambiar nombres en masa: proponer_actualizacion_masiva NO cambia el nombre. Para corregir el nombre de UN artículo va proponer_edicion. Si trae "faltan", preguntá eso; si trae "error", contá ese motivo tal cual.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'buscar'       => ['type' => 'string', 'description' => 'El texto del nombre que se reemplaza, TAL CUAL está escrito en los artículos (con sus puntos y espacios): "AC. MULT.".'],
+                'reemplazo'    => ['type' => 'string', 'description' => 'El texto nuevo que va en su lugar: "ACCIÓN MÚLTIPLE". Vacío ("") para sacar el texto del nombre.'],
+                'filtros'      => self::esquema_de_filtros(),
+                'articulo_ids' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'Opcional: solo estos artículos (ids que devolvió otra herramienta).'],
+                'reemplaza_a'  => ['type' => 'integer'],
+            ], 'required' => ['buscar', 'reemplazo']],
+        ];
+
+        /*
+         * Misión asistente-diario-20261119 (rama C, M3), al final por el prefijo del caché: la FOTO A MEDIDA.
+         * Truvari (conv. 42) pidió «esta imagen la podés convertir en 500 px x 500 px?» y el agente dijo que no
+         * tenía herramienta. No crea tarjeta ni toca el negocio: arma la foto y su link. Ver FotoAMedidaIaHelper.
+         */
+        $definiciones[] = [
+            'name' => 'ajustar_foto_a_medida',
+            'description' => 'Deja una FOTO de la conversación en un tamaño EXACTO en píxeles ("pasala a 500 x 500", "la necesito de 800 por 600") y devuelve un LINK para bajarla. Por defecto (modo encuadrar) la foto queda ENTERA y sin deformar, centrada sobre fondo blanco: lo que sobra queda blanco. Con modo recortar llena todo y recorta lo que sobra al centro: usalo solo si la persona lo pide. Sin imagen_id toma la última foto que mandó la persona. Pasale el link TAL CUAL. La respuesta trae también un imagen_id NUEVO (el de la foto ya ajustada): si la persona quiere ponerla en un artículo que ya existe, usá proponer_foto_articulo con ese imagen_id. No cambia nada del negocio ni regenera la foto con IA: es la misma foto, en otro tamaño. 🔴 Nunca digas que no podés cambiar el tamaño de una foto: con esta herramienta podés. Si trae "error", contá ese motivo tal cual.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'ancho'     => ['type' => 'integer', 'description' => 'Ancho en píxeles (' . FotoAMedidaIaHelper::LADO_MINIMO . ' a ' . FotoAMedidaIaHelper::LADO_MAXIMO . ').'],
+                'alto'      => ['type' => 'integer', 'description' => 'Alto en píxeles (' . FotoAMedidaIaHelper::LADO_MINIMO . ' a ' . FotoAMedidaIaHelper::LADO_MAXIMO . ').'],
+                'modo'      => ['type' => 'string', 'enum' => FotoAMedidaIaHelper::MODOS, 'description' => 'encuadrar (default): entera con fondo blanco. recortar: llena todo y recorta al centro, solo si la persona lo pidió.'],
+                'formato'   => ['type' => 'string', 'enum' => FotoAMedidaIaHelper::FORMATOS, 'description' => 'jpg (default) o png, solo si la persona lo pidió.'],
+                'imagen_id' => ['type' => 'integer', 'description' => 'Opcional: el id de la foto, si no es la última que mandó la persona (por ejemplo una de una tanda, o la que devolvió otra herramienta).'],
+            ], 'required' => ['ancho', 'alto']],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2600,6 +2642,25 @@ class HerramientasDeCarga
              */
             case 'proponer_ajuste_de_stock_por_lote':
                 return self::resultado(PropuestaAjusteDeStockPorLoteIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * Misión asistente-diario-20261119 (rama C, A4): el renombre masivo. 🔴 SIN la puerta de la
+             * auto-confirmación, a propósito: siempre espera el sí (ver NUNCA_AUTO_CONFIRMABLES).
+             */
+            case 'proponer_renombre_masivo':
+                return self::resultado(PropuestaRenombreMasivoIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * Misión asistente-diario-20261119 (rama C, M3): la foto a medida. Sin tarjeta: no toca el negocio,
+             * arma la foto, su link y un imagen_id nuevo para proponer_foto_articulo.
+             */
+            case 'ajustar_foto_a_medida':
+                return self::resultado(FotoAMedidaIaHelper::ajustar(
+                    $contexto,
+                    ($assistant_message instanceof AiMessage) ? $assistant_message : null,
+                    $input
+                ));
+
 
             case 'confirmar_carga_pendiente':
                 return self::resultado(ConfirmacionPorTextoIaHelper::confirmar($conversation, $assistant_message, EntradaDeCargaIa::valor($input, 'tarjeta_id')));
