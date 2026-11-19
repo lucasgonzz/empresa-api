@@ -26,6 +26,12 @@ class AiArchivo extends Model
     /** El único tipo que existe hoy. */
     const TIPO_EXCEL = 'excel';
 
+    /**
+     * Una foto que el agente dejó en un tamaño exacto (misión asistente-diario-20261119, rama C, M3:
+     * FotoAMedidaIaHelper). Mismo link con token y vencimiento que el Excel; cambia el Content-Type.
+     */
+    const TIPO_IMAGEN = 'imagen';
+
     protected $table = 'ai_archivos';
 
     protected $guarded = [];
@@ -76,5 +82,22 @@ class AiArchivo extends Model
     public function vencido(): bool
     {
         return is_null($this->expires_at) || $this->expires_at->isPast();
+    }
+
+    /**
+     * El Content-Type con el que se sirve el archivo (misión asistente-diario-20261119, rama C, M3). El
+     * Excel, como siempre; una imagen, por la extensión de SU ruta (la escribe FotoAMedidaIaHelper: .jpg
+     * o .png). Sale de la fila, nunca del pedido.
+     *
+     * @return string
+     */
+    public function content_type(): string
+    {
+        if ($this->tipo === self::TIPO_IMAGEN) {
+
+            return substr(strtolower((string) $this->path), -4) === '.png' ? 'image/png' : 'image/jpeg';
+        }
+
+        return \App\Http\Controllers\Helpers\asistente_ia\ArchivosDelAgenteIaHelper::MIME_XLSX;
     }
 }
