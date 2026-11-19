@@ -209,10 +209,12 @@ class RunExcelAnalysisJob implements ShouldQueue
          * de 2 días de este mismo usuario. Sin esto, excel_analysis_runs crece
          * indefinidamente con JSONs grandes en "resultado" y "payload". Se hace
          * acá (y no en un comando aparte) para no depender de un cron extra.
+         *
+         * Excepción (misión importaciones-pendientes-recuperables): las importaciones ya
+         * analizadas que el usuario no lanzó ni descartó se conservan, con su recomendación;
+         * ver ExcelAnalysisRun::limpiar_antiguas().
          */
-        ExcelAnalysisRun::where('user_id', $run->user_id)
-            ->where('created_at', '<', now()->subDays(2))
-            ->delete();
+        ExcelAnalysisRun::limpiar_antiguas($run->user_id);
 
         /*
          * Registro visible del proceso (misión procesos-en-segundo-plano, 18/9/2026). Se abre

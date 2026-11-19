@@ -283,19 +283,144 @@ class ImportacionesPendientesTest extends EmpresaTestCase
     }
 
     /**
-     * No se ofrecen las corridas con error, las de más de 48 h ni las que perdieron su archivo.
+     * No se ofrecen las corridas con error ni las que perdieron su archivo. (No hay caducidad por
+     * antigüedad: ver pendiente_de_mas_de_48_horas_sigue_listada.)
      *
      * @test
      * @return void
      */
-    public function no_ofrece_corridas_con_error_vencidas_ni_sin_archivo()
+    public function no_ofrece_corridas_con_error_ni_sin_archivo()
     {
         $this->corrida(['estado' => 'error']);
-        $vencida = $this->corrida();
-        $vencida->forceFill(['created_at' => now()->subHours(ExcelAnalysisRun::VENTANA_PENDIENTES_HORAS + 1)])->save();
         $this->corrida([], [], false);
 
         $this->assertCount(0, $this->getJson('api/ai-excel-import/pendientes?model=article')->json('pendientes'));
+    }
+
+    /**
+     * El usuario no pidió caducidad: una pendiente de más de 48 h (y de 30 días) sigue en la lista.
+     *
+     * @test
+     * @return void
+     */
+    public function pendiente_de_mas_de_48_horas_sigue_listada()
+    {
+        $vieja = $this->corrida();
+        $vieja->forceFill(['created_at' => now()->subHours(49)])->save();
+        $mas_vieja = $this->corrida();
+        $mas_vieja->forceFill(['created_at' => now()->subDays(30)])->save();
+
+        $uuids = collect($this->getJson('api/ai-excel-import/pendientes?model=article')->json('pendientes'))->pluck('uuid')->all();
+
+        $this->assertContains($vieja->uuid, $uuids);
+        $this->assertContains($mas_vieja->uuid, $uuids);
+    }
+
+    /**
+     * La limpieza del job conserva las pendientes recuperables (y la recomendación lista que
+     * cuelga de ellas) aunque tengan más de 2 días, y borra el resto de lo viejo.
+     *
+     * @test
+     * @return void
+     */
+    public function la_limpieza_conserva_las_pendientes_viejas_y_borra_lo_demas()
+    {
+        $auth_user = auth()->user();
+        $owner_id  = $auth_user->user_id ?? $auth_user->id;
+        $viejo     = now()->subDays(10);
+
+        $pendiente    = $this->corrida();
+        $recomendacion = $this->corrida(['tipo' => 'recomendacion'], ['analysis_uuid' => $pendiente->uuid]);
+        $finalizada   = $this->corrida([], ['finalizada_at' => now()->toDateTimeString()]);
+        $con_error    = $this->corrida(['estado' => 'error']);
+        $sin_archivo  = $this->corrida([], [], false);
+        $colgada      = $this->corrida(['estado' => 'procesando']);
+        $huerfana     = $this->corrida(['tipo' => 'recomendacion'], ['analysis_uuid' => $finalizada->uuid]);
+        $reciente     = $this->corrida([], ['finalizada_at' => now()->toDateTimeString()]);
+        $de_otro      = $this->corrida(['user_id' => $owner_id + 1000]);
+
+        foreach ([$pendiente, $recomendacion, $finalizada, $con_error, $sin_archivo, $colgada, $huerfana, $de_otro] as $run) {
+            $run->forceFill(['created_at' => $viejo])->save();
+        }
+
+        ExcelAnalysisRun::limpiar_antiguas($owner_id);
+
+        $this->assertNotNull(ExcelAnalysisRun::find($pendiente->id), 'la pendiente se conserva');
+        $this->assertNotNull(ExcelAnalysisRun::find($recomendacion->id), 'su recomendación lista se conserva');
+        $this->assertNotNull(ExcelAnalysisRun::find($reciente->id), 'lo reciente no se toca');
+        $this->assertNotNull(ExcelAnalysisRun::find($de_otro->id), 'no toca a otro comercio');
+        foreach ([$finalizada, $con_error, $sin_archivo, $colgada, $huerfana] as $run) {
+            $this->assertNull(ExcelAnalysisRun::find($run->id), 'se borra: ' . $run->uuid);
+        }
+    }
+
+    /**
+     * analysis/{uuid} aplica el mismo aislamiento que listar/guardar/descartar: ni otro empleado
+     * del comercio ni otro comercio pueden leer el resultado ni el borrador.
+     *
+     * @test
+     * @return void
+     */
+    public function analysis_status_rechaza_la_lectura_de_corridas_ajenas()
+    {
+        $auth_user = auth()->user();
+        $owner_id  = $auth_user->user_id ?? $auth_user->id;
+
+        $propia           = $this->corrida([], ['borrador' => ['paso' => 3]]);
+        $de_otro_empleado = $this->corrida(['auth_user_id' => $auth_user->id + 1000], ['borrador' => ['paso' => 3]]);
+        $de_otro_comercio = $this->corrida(['user_id' => $owner_id + 1000]);
+
+        $this->getJson('api/ai-excel-import/analysis/' . $propia->uuid)->assertStatus(200);
+        $this->getJson('api/ai-excel-import/analysis/' . $de_otro_empleado->uuid)->assertStatus(404);
+        $this->getJson('api/ai-excel-import/analysis/' . $de_otro_comercio->uuid)->assertStatus(404);
+    }
+
+    /**
+     * Las decisiones de nombres parecidos y el paso viajan en el borrador y vuelven por
+     * analysis/{uuid}; lo que no es un índice entero o una clave razonable se descarta.
+     *
+     * @test
+     * @return void
+     */
+    public function guarda_y_devuelve_las_decisiones_de_relaciones_y_el_paso()
+    {
+        $run = $this->corrida();
+
+        $this->postJson('api/ai-excel-import/analysis/' . $run->uuid . '/borrador', ['borrador' => [
+            'paso' => 4,
+            'decisiones_relaciones' => ['categoria|Herramientas' => 1, 'marca|Acme' => '2', 'mala' => 'x', 'negativa' => -1, str_repeat('k', 400) => 0],
+            'revision' => 100,
+            'ajeno' => 'se descarta',
+        ]])->assertStatus(204);
+
+        $borrador = $this->getJson('api/ai-excel-import/analysis/' . $run->uuid)->json('borrador');
+
+        $this->assertEquals(4, $borrador['paso']);
+        $this->assertEquals(['categoria|Herramientas' => 1, 'marca|Acme' => 2], $borrador['decisiones_relaciones']);
+        $this->assertEquals(100, $borrador['revision']);
+        $this->assertArrayNotHasKey('ajeno', $borrador);
+    }
+
+    /**
+     * Un guardado viejo que llega después de uno nuevo (respuestas fuera de orden) no lo pisa.
+     *
+     * @test
+     * @return void
+     */
+    public function un_borrador_con_revision_vieja_no_pisa_a_uno_nuevo()
+    {
+        $run = $this->corrida();
+
+        $this->postJson('api/ai-excel-import/analysis/' . $run->uuid . '/borrador', ['borrador' => ['paso' => 3, 'start_row' => 9, 'revision' => 200]])->assertStatus(204);
+        $this->postJson('api/ai-excel-import/analysis/' . $run->uuid . '/borrador', ['borrador' => ['paso' => 2, 'start_row' => 3, 'revision' => 150]])->assertStatus(204);
+
+        $borrador = $this->getJson('api/ai-excel-import/analysis/' . $run->uuid)->json('borrador');
+
+        $this->assertEquals(3, $borrador['paso']);
+        $this->assertEquals(9, $borrador['start_row']);
+
+        $this->postJson('api/ai-excel-import/analysis/' . $run->uuid . '/borrador', ['borrador' => ['paso' => 4, 'revision' => 201]])->assertStatus(204);
+        $this->assertEquals(4, $this->getJson('api/ai-excel-import/analysis/' . $run->uuid)->json('borrador.paso'));
     }
 
     /**

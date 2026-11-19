@@ -162,10 +162,17 @@ class ExcelAnalysisRun extends Model
     }
 
     /**
-     * Ventana en la que una corrida sigue siendo retomable. Es la misma que usa
-     * analysisEnCurso() y la que respeta la limpieza de RunExcelAnalysisJob (2 días).
+     * Antigüedad a partir de la cual la limpieza de RunExcelAnalysisJob borra una corrida (2 días).
+     * No aplica a las importaciones pendientes recuperables: esas se conservan hasta que se
+     * lanza la importación o el usuario las descarta (ver conservar_al_limpiar()).
      */
-    const VENTANA_PENDIENTES_HORAS = 48;
+    const LIMPIEZA_DIAS = 2;
+
+    /**
+     * Máximo de decisiones de nombres parecidos del borrador y largo máximo de cada clave.
+     */
+    const BORRADOR_MAX_DECISIONES = 5000;
+    const BORRADOR_MAX_CLAVE = 300;
 
     /**
      * Tope del borrador serializado. El borrador guarda el mapeo y las opciones del
@@ -175,8 +182,11 @@ class ExcelAnalysisRun extends Model
     const BORRADOR_MAX_BYTES = 200000;
 
     /**
-     * Claves del borrador que se aceptan. Cualquier otra se descarta en silencio:
-     * es el estado del paso 2 del modal, nada más.
+     * Claves "simples" del borrador que se aceptan. Cualquier otra se descarta en silencio:
+     * es el estado del modal, nada más. Además de estas, el borrador acepta
+     * `decisiones_relaciones` (mapa clave -> índice de opción de los nombres parecidos del
+     * paso 3) y `revision` (marca creciente del cliente para ignorar guardados fuera de orden);
+     * esas dos se validan aparte en sanear_borrador().
      */
     const BORRADOR_CLAVES = [
         'paso',
@@ -204,8 +214,11 @@ class ExcelAnalysisRun extends Model
 
     /**
      * Corridas de análisis que el usuario puede retomar: las suyas (mismo owner Y mismo
-     * usuario que subió el archivo), del módulo pedido, de las últimas 48 horas, que
-     * no terminaron en error ni fueron finalizadas (importación lanzada o descartada).
+     * usuario que subió el archivo), del módulo pedido, que no terminaron en error ni fueron
+     * finalizadas (importación lanzada o descartada) y cuyo archivo sigue en disco.
+     *
+     * No hay caducidad por antigüedad: una importación pendiente se conserva hasta que se
+     * lanza o se descarta (la limpieza del job respeta eso, ver limpiar_antiguas()).
      *
      * Las que todavía están trabajando se incluyen: el modal las sigue en vivo.
      *
@@ -220,34 +233,105 @@ class ExcelAnalysisRun extends Model
             return collect();
         }
 
+        /* Sin "resultado": es grande y la lista sólo necesita metadatos. */
         $corridas = self::where('user_id', $owner_id)
             ->where('auth_user_id', $auth_user_id)
             ->where('tipo', 'analisis')
             ->where('estado', '!=', 'error')
-            ->where('created_at', '>=', now()->subHours(self::VENTANA_PENDIENTES_HORAS))
             ->orderBy('id', 'DESC')
-            ->get();
+            ->get(self::COLUMNAS_LIVIANAS);
 
         return $corridas->filter(function ($run) use ($model) {
             $payload = $run->payload ?? [];
-
-            if (!empty($payload['finalizada_at'])) {
-                return false;
-            }
-
-            if (!empty($payload['pdf_path'])) {
-                /* Un PDF se borra al terminar el análisis: no hay archivo que retomar. */
-                return false;
-            }
 
             if ((string) ($payload['model'] ?? 'article') !== (string) $model) {
                 return false;
             }
 
-            /* Sin el archivo en disco no se puede importar: ofrecerla sería una trampa. */
-            return !empty($run->excel_path)
-                && file_exists(storage_path('app/' . $run->excel_path));
+            return self::es_recuperable($run);
         })->values();
+    }
+
+    /**
+     * Columnas que se leen cuando no hace falta el resultado completo del análisis.
+     */
+    const COLUMNAS_LIVIANAS = [
+        'id', 'uuid', 'user_id', 'auth_user_id', 'tipo', 'estado', 'progreso', 'paso',
+        'excel_path', 'payload', 'created_at', 'updated_at',
+    ];
+
+    /**
+     * True si la corrida de análisis es una importación pendiente recuperable: sin error,
+     * sin finalizar, no es de PDF (el PDF se borra al terminar) y con el archivo en disco.
+     *
+     * @param  \App\Models\ExcelAnalysisRun  $run
+     * @return bool
+     */
+    public static function es_recuperable($run)
+    {
+        $payload = $run->payload ?? [];
+
+        if ($run->tipo !== 'analisis' || $run->estado === 'error') {
+            return false;
+        }
+
+        if (!empty($payload['finalizada_at']) || !empty($payload['pdf_path'])) {
+            return false;
+        }
+
+        /* Sin el archivo en disco no se puede importar: ofrecerla sería una trampa. */
+        return !empty($run->excel_path)
+            && file_exists(storage_path('app/' . $run->excel_path));
+    }
+
+    /**
+     * Limpieza de corridas viejas del comercio (la hace RunExcelAnalysisJob al arrancar).
+     *
+     * Borra todo lo de más de LIMPIEZA_DIAS días EXCEPTO las importaciones pendientes
+     * recuperables ya analizadas (estado "listo") y las recomendaciones "listo" que cuelgan
+     * de ellas: el usuario no pidió que caduquen. Las finalizadas, las con error, las sin
+     * archivo y las que quedaron colgadas sin terminar se borran como siempre.
+     *
+     * @param  int  $owner_id
+     * @return int  Cuántas filas se borraron.
+     */
+    public static function limpiar_antiguas($owner_id)
+    {
+        $viejas = self::where('user_id', $owner_id)
+            ->where('created_at', '<', now()->subDays(self::LIMPIEZA_DIAS))
+            ->get(self::COLUMNAS_LIVIANAS);
+
+        $conservar_analisis = [];
+
+        foreach ($viejas as $run) {
+            if ($run->estado === 'listo' && self::es_recuperable($run)) {
+                $conservar_analisis[$run->uuid] = true;
+            }
+        }
+
+        $a_borrar = [];
+
+        foreach ($viejas as $run) {
+            if ($run->tipo === 'analisis') {
+                if (!isset($conservar_analisis[$run->uuid])) {
+                    $a_borrar[] = $run->id;
+                }
+                continue;
+            }
+
+            /* Recomendación (u otro tipo): se queda sólo si es la lista hija de un análisis que se queda. */
+            $padre = ($run->payload ?? [])['analysis_uuid'] ?? null;
+
+            if (!($run->tipo === 'recomendacion' && $run->estado === 'listo' && $padre && isset($conservar_analisis[$padre]))) {
+                $a_borrar[] = $run->id;
+            }
+        }
+
+        foreach (array_chunk($a_borrar, 500) as $ids) {
+            self::whereIn('id', $ids)->delete();
+        }
+
+        return count($a_borrar);
     }
 
     /**
@@ -262,9 +346,8 @@ class ExcelAnalysisRun extends Model
             ->where('auth_user_id', $this->auth_user_id)
             ->where('tipo', 'recomendacion')
             ->where('estado', 'listo')
-            ->where('created_at', '>=', now()->subHours(self::VENTANA_PENDIENTES_HORAS))
             ->orderBy('id', 'DESC')
-            ->get();
+            ->get(self::COLUMNAS_LIVIANAS);
 
         foreach ($candidatas as $candidata) {
             $payload = $candidata->payload ?? [];
@@ -278,14 +361,49 @@ class ExcelAnalysisRun extends Model
     }
 
     /**
-     * Deja sólo las claves permitidas del borrador y verifica el tope de tamaño.
+     * Deja sólo las claves permitidas del borrador, valida las dos estructuradas y verifica
+     * el tope de tamaño.
+     *
+     * - decisiones_relaciones: mapa { clave(string) => índice(entero 0..99) }; lo que no cumple
+     *   se descarta, y más de BORRADOR_MAX_DECISIONES entradas rechaza el borrador entero.
+     * - revision: entero positivo (se descarta si no lo es).
      *
      * @param  array  $borrador
-     * @return array|null  El borrador saneado, o null si supera BORRADOR_MAX_BYTES.
+     * @return array|null  El borrador saneado, o null si supera los topes.
      */
     public static function sanear_borrador(array $borrador)
     {
         $limpio = array_intersect_key($borrador, array_flip(self::BORRADOR_CLAVES));
+
+        if (isset($borrador['decisiones_relaciones']) && is_array($borrador['decisiones_relaciones'])) {
+            if (count($borrador['decisiones_relaciones']) > self::BORRADOR_MAX_DECISIONES) {
+                return null;
+            }
+
+            $decisiones = [];
+
+            foreach ($borrador['decisiones_relaciones'] as $clave => $indice) {
+                $clave = (string) $clave;
+
+                if ($clave === '' || strlen($clave) > self::BORRADOR_MAX_CLAVE) {
+                    continue;
+                }
+
+                if (is_int($indice) || (is_string($indice) && ctype_digit($indice))) {
+                    $indice = (int) $indice;
+
+                    if ($indice >= 0 && $indice <= 99) {
+                        $decisiones[$clave] = $indice;
+                    }
+                }
+            }
+
+            $limpio['decisiones_relaciones'] = $decisiones;
+        }
+
+        if (isset($borrador['revision']) && is_numeric($borrador['revision']) && $borrador['revision'] > 0) {
+            $limpio['revision'] = (int) $borrador['revision'];
+        }
 
         if (strlen(json_encode($limpio)) > self::BORRADOR_MAX_BYTES) {
             return null;
@@ -298,12 +416,21 @@ class ExcelAnalysisRun extends Model
      * Guarda el borrador del modal dentro del payload, sin pisar el resto de las claves.
      * Relee la fila con candado: el job también escribe el payload (limpieza de PDF).
      *
+     * Con `revision`: si ya hay guardado un borrador con una revisión mayor, este llegó fuera de
+     * orden (un guardado viejo que tardó más que uno nuevo) y se ignora.
+     *
      * @param  array  $borrador  Ya saneado con sanear_borrador().
      * @return void
      */
     public function guardar_borrador(array $borrador)
     {
         $this->actualizar_payload(function (array $payload) use ($borrador) {
+            $guardada = $payload['borrador']['revision'] ?? null;
+
+            if (isset($borrador['revision']) && !is_null($guardada) && (int) $guardada > (int) $borrador['revision']) {
+                return $payload;
+            }
+
             $payload['borrador'] = $borrador;
             $payload['borrador_at'] = now()->toDateTimeString();
 

@@ -295,10 +295,15 @@ class AiExcelImportController extends Controller
         /*
          * Filtramos también por el usuario autenticado para que nadie pueda
          * consultar (y de paso leer el resultado de) la corrida de otro usuario
-         * adivinando o iterando UUIDs.
+         * adivinando o iterando UUIDs. Es el mismo aislamiento que listar, guardar el borrador y
+         * descartar (comercio + usuario que subió el archivo): la respuesta incluye el resultado
+         * y el borrador, y un compañero del mismo comercio no tiene por qué leerlos.
          */
-        $run = ExcelAnalysisRun::where('uuid', $uuid)
+        $auth_user_id = optional(auth()->user())->id;
+
+        $run = is_null($auth_user_id) ? null : ExcelAnalysisRun::where('uuid', $uuid)
             ->where('user_id', $this->userId())
+            ->where('auth_user_id', $auth_user_id)
             ->first();
 
         if (is_null($run)) {
@@ -358,10 +363,8 @@ class AiExcelImportController extends Controller
         }
 
         /*
-         * Solo miramos las últimas 48 horas porque es lo que el job conserva:
-         * RunExcelAnalysisJob borra al arrancar las corridas de más de 2 días.
-         * Ofrecer una corrida más vieja que eso sería ofrecer algo cuyo archivo
-         * y cuyo resultado ya pueden no estar.
+         * Esto es sólo el aviso de "terminó" (corridas sin ver): se limita a 48 horas. Las
+         * importaciones a medias no caducan; se retoman desde la lista de pendientes().
          */
         $run = ExcelAnalysisRun::where('auth_user_id', $auth_user_id)
             ->where('created_at', '>=', now()->subDays(2))
