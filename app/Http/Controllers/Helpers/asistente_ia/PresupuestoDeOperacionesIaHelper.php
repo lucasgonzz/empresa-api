@@ -54,6 +54,11 @@ class PresupuestoDeOperacionesIaHelper
             AiMessageAction::TIPO_IMAGENES_ARTICULOS, AiMessageAction::TIPO_DESCRIPCION_VERIFICADA], true)) {
             return true;
         }
+        // Misión asistente-diario-20261119 (rama C, A4): el renombre masivo escribe artículos como la masiva.
+        if ($accion->tipo === AiMessageAction::TIPO_RENOMBRE_MASIVO) {
+            return true;
+        }
+
         $datos = is_array($accion->datos) ? $accion->datos : [];
         if (in_array($accion->tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION, AiMessageAction::TIPO_BAJA], true)) {
             $declaracion = CatalogoDeEscrituraIaHelper::declaracion((string) ($datos['entidad'] ?? ''));

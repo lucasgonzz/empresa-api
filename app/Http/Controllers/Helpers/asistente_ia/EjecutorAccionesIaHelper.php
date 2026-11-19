@@ -760,6 +760,14 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_AJUSTE_STOCK_LOTE:
                 return PropuestaAjusteDeStockPorLoteIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-diario-20261119 (rama C, A4): el renombre masivo. Se encola por el camino de
+             * la actualización masiva, con los ids que vio la persona. Ver PropuestaRenombreMasivoIaHelper.
+             */
+            case AiMessageAction::TIPO_RENOMBRE_MASIVO:
+                return \App\Http\Controllers\Helpers\asistente_ia\PropuestaRenombreMasivoIaHelper::ejecutar($contexto, $accion);
+
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');
