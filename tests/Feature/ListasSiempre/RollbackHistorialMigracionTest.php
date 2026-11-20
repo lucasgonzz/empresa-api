@@ -364,6 +364,68 @@ class RollbackHistorialMigracionTest extends RollbackIntegracionTestCase
         $this->assertSame($antes, $this->foto_comercial($dueno->id, [$bien->id, $mal->id]));
     }
 
+    public function comandos_rr()
+    {
+        return [['listas:migrar-a-precio-final'], ['sucursales:migrar-a-principal']];
+    }
+
+    /** @dataProvider comandos_rr */
+    public function test_rr_relee_despues_de_esperar_un_escritor_confirmado($comando)
+    {
+        $dueno = $this->nuevo_dueno();
+        $a = $this->nuevo_articulo($dueno, ['stock' => 12]);
+        $sql = $this->migrar_y_leer($comando, $dueno);
+        $bloque = $this->bloques_reversion($sql, true)[0];
+        $archivo = $this->salida.'/rr.sql';
+        file_put_contents($archivo, $bloque);
+        $script = $this->salida.'/rr.php';
+        file_put_contents($script, '<?php
+$p = new PDO("mysql:unix_socket=".getenv("DB_SOCKET").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+$p->exec("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ");
+$p->exec("SET innodb_lock_wait_timeout=30");
+file_put_contents($argv[2], $p->query("SELECT CONNECTION_ID()")->fetchColumn());
+$codigo = 0;
+try { $q = $p->query(file_get_contents($argv[1])); do { $q->fetchAll(); } while ($q->nextRowset()); } catch (PDOException $e) { $codigo = (int) $e->errorInfo[1]; }
+echo json_encode([$codigo, (int) $p->query("SELECT @@in_transaction")->fetchColumn(), $p->query("SELECT @@tx_isolation")->fetchColumn()]);');
+        $pdo = DB::connection()->getPdo();
+        $pdo->exec('SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+        $pdo->beginTransaction();
+        $proceso = null;
+        $espera = [];
+        try {
+            // Primero el escritor: el respaldo debe esperar SU fila, no una barrera artificial.
+            $pdo->exec('UPDATE articles SET price=999 WHERE id='.(int) $a->id);
+            $esperado = $this->foto_comercial($dueno->id, [$a->id]);
+            $auditoria = $this->foto('audit_logs', 'user_id', [$dueno->id]);
+            $observador = new \PDO('mysql:unix_socket='.getenv('DB_SOCKET').';dbname='.getenv('DB_DATABASE'), getenv('DB_USERNAME'), getenv('DB_PASSWORD'), [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+            $escritor_id = (int) $pdo->query('SELECT CONNECTION_ID()')->fetchColumn();
+            $proceso = proc_open([PHP_BINARY, $script, $archivo, $this->salida.'/rr.id'],
+                [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->salida.'/rr.out', 'w'], 2 => ['file', $this->salida.'/rr.err', 'w']], $pipes);
+            $this->assertIsResource($proceso);
+            $limite = microtime(true) + 20;
+            do {
+                clearstatcache();
+                $conexion = is_file($this->salida.'/rr.id') ? (int) file_get_contents($this->salida.'/rr.id') : 0;
+                $espera = $observador->query('SELECT r.trx_mysql_thread_id AS reversor, b.trx_mysql_thread_id AS escritor FROM information_schema.INNODB_LOCK_WAITS w JOIN information_schema.INNODB_TRX r ON r.trx_id=w.requesting_trx_id JOIN information_schema.INNODB_TRX b ON b.trx_id=w.blocking_trx_id WHERE r.trx_mysql_thread_id='.$conexion.' AND b.trx_mysql_thread_id='.$escritor_id)->fetchAll(\PDO::FETCH_ASSOC);
+                if ($espera) break;
+                usleep(250000);
+            } while (microtime(true) < $limite);
+            file_put_contents($this->salida.'/rr-espera.json', json_encode($espera));
+            $this->assertNotEmpty($espera, 'Espera InnoDB real del CONNECTION_ID reversor contra este escritor.');
+            // Confirmar únicamente después de verificar la espera real.
+            $pdo->commit();
+        } finally {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            if (is_resource($proceso)) {
+                $this->assertSame(0, proc_close($proceso), file_get_contents($this->salida.'/rr.err'));
+            }
+        }
+        $this->assertSame(0, (int) $pdo->query('SELECT @@in_transaction')->fetchColumn());
+        $this->assertSame([1242, 0, 'REPEATABLE-READ'], json_decode(file_get_contents($this->salida.'/rr.out'), true), 'Rechazo por estado actual distinto y sin transacción residual.');
+        $this->assertSame($esperado, $this->foto_comercial($dueno->id, [$a->id]), 'No pisar el cambio comercial confirmado.');
+        $this->assertSame($auditoria, $this->foto('audit_logs', 'user_id', [$dueno->id]), 'Sin compensación ni cambios a auditoría.');
+    }
+
     public function test_escritor_comercial_real_no_puede_confirmar_entre_validacion_y_compensacion()
     {
         foreach (['listas:migrar-a-precio-final', 'sucursales:migrar-a-principal'] as $comando) {

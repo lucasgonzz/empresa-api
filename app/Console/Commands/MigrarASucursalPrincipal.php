@@ -634,7 +634,7 @@ class MigrarASucursalPrincipal extends Command
             'articles' => 'id = '.$id,
             'article_variants' => 'article_id = '.$id,
             'address_article' => 'article_id = '.$id,
-            'address_article_variant' => 'article_variant_id IN (SELECT id FROM article_variants WHERE article_id = '.$id.')',
+            'address_article_variant' => 'article_variant_id IN (SELECT id FROM article_variants WHERE article_id = '.$id.' FOR UPDATE)',
             'stock_movements' => 'article_id = '.$id,
         ];
         // Estado previo, leído con candado, y el respaldo ANTES de tocar nada.

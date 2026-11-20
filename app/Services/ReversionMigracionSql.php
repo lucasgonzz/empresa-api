@@ -57,13 +57,14 @@ class ReversionMigracionSql
 
     private function igualdad($tabla, $where, array $filas)
     {
-        $condiciones = ['(SELECT COUNT(*) FROM `'.$tabla.'` WHERE '.$where.') = '.count($filas)];
+        // Cada subconsulta usa current read: un candado previo no actualiza la foto RR.
+        $condiciones = ['(SELECT COUNT(*) FROM `'.$tabla.'` WHERE '.$where.' FOR UPDATE) = '.count($filas)];
         foreach ($filas as $fila) {
             $columnas = [];
             foreach ($fila as $col => $valor) {
                 $columnas[] = 'BINARY `'.$col.'` <=> BINARY '.$this->literal($valor);
             }
-            $condiciones[] = 'EXISTS (SELECT 1 FROM `'.$tabla.'` WHERE '.implode(' AND ', $columnas).')';
+            $condiciones[] = 'EXISTS (SELECT 1 FROM `'.$tabla.'` WHERE '.implode(' AND ', $columnas).' FOR UPDATE)';
         }
         return implode(' AND ', $condiciones);
     }
@@ -74,7 +75,7 @@ class ReversionMigracionSql
         $uuid = $this->literal($this->uuid);
         $sql = $titulo."\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nIF TRUE THEN BEGIN DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;\nSELECT id INTO @rollback_dueno FROM users WHERE id = ".$this->owner." FOR UPDATE;\n";
         $sql .= 'SET @rollback_aplicar = NOT EXISTS (SELECT 1 FROM audit_logs WHERE batch_uuid = '.$uuid
-            ." AND event = 'rollback' AND JSON_UNQUOTE(JSON_EXTRACT(new_values, '$.bloque')) = ".$this->literal($clave).");\n";
+            ." AND event = 'rollback' AND JSON_UNQUOTE(JSON_EXTRACT(new_values, '$.bloque')) = ".$this->literal($clave)." FOR UPDATE);\n";
         // Lecturas bloqueantes ANTES de validar: filas y huecos del predicado completo.
         // RR es explícito: ni un cambio de aislamiento del cliente permite inserts fantasma.
         // Orden común con los productores: dueño, artículo, variantes/historial, hijos.

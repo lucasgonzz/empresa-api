@@ -752,7 +752,7 @@ class MigrarAListaPrecioFinal extends Command
             'article_price_type' => 'article_id = '.$id,
             'article_price_type_monedas' => 'article_id = '.$id,
             'price_changes' => 'article_id = '.$id,
-            'price_change_price_type' => 'price_change_id IN (SELECT id FROM price_changes WHERE article_id = '.$id.')',
+            'price_change_price_type' => 'price_change_id IN (SELECT id FROM price_changes WHERE article_id = '.$id.' FOR UPDATE)',
         ];
         $antes = $this->reversion->foto($ambitos);
         $logs = DB::table('audit_logs')->where('user_id', $owner->id)->where('batch_uuid', \App\Services\AuditLog\AuditContext::marco()->uuid)->where('auditable_type', Article::class)->where('auditable_id', $id)->pluck('id')->all();
