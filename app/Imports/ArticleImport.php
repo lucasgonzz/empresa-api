@@ -94,7 +94,10 @@ class ArticleImport implements ToCollection
          * por la misma razón que los de arriba: el import clásico y AdminSync no lo mandan. Es la
          * ruta del archivo de decisiones o el array (ver ProcessArticleChunk::$equivalencias).
          */
-        $equivalencias = []
+        $equivalencias = [],
+
+        // Misión importacion-formula-precio: opciones de lectura del Excel (ver InitExcelImport::opciones_de_lectura()).
+        $opciones_de_lectura = []
     ) {
 
         $this->log_activado = false;
@@ -183,6 +186,7 @@ class ArticleImport implements ToCollection
             'precios_incluyen_iva'                                  => $this->precios_incluyen_iva,
             'desempatar_por_nombre'                                 => $this->desempatar_por_nombre,
             'equivalencias'                                         => (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [],
+            'opciones_de_lectura'                                   => is_array($opciones_de_lectura) ? $opciones_de_lectura : [],
         ]);
 
         $this->nombres_proveedores = [];

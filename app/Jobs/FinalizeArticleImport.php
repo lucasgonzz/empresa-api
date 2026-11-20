@@ -85,6 +85,8 @@ class FinalizeArticleImport implements ShouldQueue
             $patrones = [
                 storage_path('app/' . $excel_relative_path) . '.hoja*',
                 storage_path('app/imported_files/' . pathinfo($excel_relative_path, PATHINFO_FILENAME) . '_*.csv.claves'),
+                // Misión importacion-formula-precio: mapa de códigos de barras repetidos a omitir.
+                storage_path('app/imported_files/' . pathinfo($excel_relative_path, PATHINFO_FILENAME) . '_*.csv.barras_a_omitir'),
             ];
 
             $borrados = 0;

@@ -61,6 +61,9 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $desempatar_por_nombre = false;
 
+    /** Misión importacion-formula-precio: opciones de lectura del Excel (ver InitExcelImport::opciones_de_lectura()). */
+    protected $opciones_de_lectura = [];
+
     /**
      * Misión `importacion-relaciones-parecidas` (8/10/2026): las decisiones del paso 3 sobre
      * nombres parecidos (`equivalencias` del POST). Viaja hasta ProcessRow, que las lee con
@@ -120,7 +123,14 @@ class ProcessArticleChunk implements ShouldQueue
              * Misión `importacion-relaciones-parecidas` (8/10/2026). Va último y con default, igual
              * que los de arriba. La ruta del archivo de decisiones, o el array (ver la propiedad).
              */
-            $equivalencias = []
+            $equivalencias = [],
+
+            /*
+             * Misión importacion-formula-precio (20/11/2026): opciones de lectura del Excel
+             * (descuentos negativos, códigos de barras repetidos). Va último y con default por la
+             * misma razón que los de arriba: un job ya encolado sin esta clave corre como siempre.
+             */
+            $opciones_de_lectura = []
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -149,6 +159,7 @@ class ProcessArticleChunk implements ShouldQueue
         $this->precios_incluyen_iva                                 = $precios_incluyen_iva;
         $this->desempatar_por_nombre                                = $desempatar_por_nombre;
         $this->equivalencias                                        = (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [];
+        $this->opciones_de_lectura                                  = is_array($opciones_de_lectura) ? $opciones_de_lectura : [];
 
         $this->observations = '';
 
@@ -539,7 +550,9 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->filas_repetidas_del_archivo,
                 $this->precios_incluyen_iva,
                 $this->desempatar_por_nombre,
-                (is_array($this->equivalencias) || is_string($this->equivalencias)) ? $this->equivalencias : []
+                (is_array($this->equivalencias) || is_string($this->equivalencias)) ? $this->equivalencias : [],
+                // Un job serializado antes de esta misión no tiene la propiedad: cae al default.
+                is_array($this->opciones_de_lectura ?? null) ? $this->opciones_de_lectura : []
             );
 
         } catch (\Throwable $e) {
