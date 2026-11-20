@@ -28,6 +28,10 @@ abstract class RollbackIntegracionTestCase extends TestCase
         parent::setUp();
         $this->assertSame('empresa_testing_rollback_20261119', DB::connection()->getDatabaseName());
         $this->assertSame(0, DB::connection()->transactionLevel());
+        // Precondición real del comando; fixture local, sin semillas ni datos externos.
+        DB::table('concepto_stock_movements')->updateOrInsert(
+            ['name' => 'Creacion de deposito'], []
+        );
         AuditContext::reiniciar();
         PriceTypeHelper::olvidar_precio_final();
         $this->salida = storage_path('framework/testing/rollback-'.bin2hex(random_bytes(8)));
@@ -69,9 +73,12 @@ abstract class RollbackIntegracionTestCase extends TestCase
 
     protected function migrar_y_leer($comando, $dueno)
     {
-        $codigo = Artisan::call($comando, [
-            'user_id' => $dueno->id, '--aplicar' => true, '--salida' => $this->salida,
-        ]);
+        $opciones = ['user_id' => $dueno->id, '--aplicar' => true, '--salida' => $this->salida];
+        if ($comando === 'listas:migrar-a-precio-final') {
+            // El fixture conserva una lista histórica: autorización explícita sin tocar aserciones.
+            $opciones['--incluir-listas-existentes'] = true;
+        }
+        $codigo = Artisan::call($comando, $opciones);
         $this->assertSame(0, $codigo, Artisan::output());
         $archivos = glob($this->salida.'/*/reversion.sql');
         $this->assertCount(1, $archivos);
