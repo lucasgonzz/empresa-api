@@ -1388,6 +1388,14 @@ class AiExcelImportController extends Controller
                      * Opcional: la SPA vieja no la manda y recibe las mismas claves de siempre.
                      */
                     'recalcular_identificacion'   => $request->boolean('recalcular_identificacion'),
+
+                    /*
+                     * Misión importacion-formula-precio (20/11/2026): si el paso 3 trae el análisis
+                     * algorítmico del precio, los descuentos y los códigos de barras repetidos
+                     * (`analisis_de_precio`). Opcional: la SPA vieja no la manda, recibe las mismas
+                     * claves de siempre y no espera un recorrido del archivo que no va a mostrar.
+                     */
+                    'analizar_precio'             => $request->boolean('analizar_precio'),
                 ],
             ]);
 

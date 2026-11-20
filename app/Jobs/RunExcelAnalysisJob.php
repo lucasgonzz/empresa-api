@@ -2,6 +2,7 @@
 
 namespace App\Jobs;
 
+use App\Http\Controllers\Helpers\import\article\AnalisisDePrecioDelExcel;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDeImportacionHelper;
 use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
@@ -23,7 +24,6 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
-use App\Http\Controllers\Helpers\import\article\AnalisisDePrecioDelExcel;
 
 
 /**
@@ -670,10 +670,11 @@ class RunExcelAnalysisJob implements ShouldQueue
             /*
              * Misión importacion-formula-precio (20/11/2026): análisis algorítmico, sin IA, de cómo
              * se llega al precio de venta, de cómo están escritos los descuentos y de los códigos de
-             * barras repetidos. Una clave nueva: la SPA vieja la ignora. Si falla devuelve null y el
-             * paso 3 se dibuja como siempre.
+             * barras repetidos. Solo si la SPA lo pide (`analizar_precio`): sin la bandera el
+             * resultado queda con las claves de siempre. Si falla devuelve null y el paso 3 se dibuja
+             * como siempre.
              */
-            if (!empty($column_mapping)) {
+            if (!empty($column_mapping) && !empty($payload['analizar_precio'])) {
                 $run->update([
                     'progreso' => 85,
                     'paso'     => 'Analizando cómo se calcula el precio…',
