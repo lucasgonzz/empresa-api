@@ -125,6 +125,77 @@ class AdviseLocalRenderingTest extends TestCase
         $this->assertSame(0, $spy->calls);
     }
 
+    public function ambiguousNamespaceSources()
+    {
+        return array_map(function ($path) { return ['https://assets.vendor.com'.$path]; }, [
+            '//storage/missing.png', '/%73torage/missing.png',
+            '//storage/ok.jpg', '///storage/ok.jpg', '/%73torage/ok.jpg',
+            '/stor%61ge/ok.jpg', '/%2573torage/ok.jpg', '/storage//ok.jpg',
+            '//storage', '/%73torage', '/storage', '/storage?x=1', '/storage#x',
+            '/%73torage/ok.jpg?x=1', '/%73torage/ok.jpg#x',
+        ]);
+    }
+
+    /** @dataProvider ambiguousNamespaceSources */
+    public function test_namespace_local_ambiguo_no_se_repara_ni_descarga($source)
+    {
+        $this->positive();
+        $spy = new class extends ImagenParaMailHelper {
+            public $calls = 0;
+            public $fixture;
+            protected function download($url, $host, $ip) { $this->calls++; return $this->fixture; }
+        };
+        $spy->fixture = $this->fixture('png');
+        config(['mail.image_public_addresses' => ['assets.vendor.com' => ['8.8.8.8']]]);
+        $this->assertNull($spy->prepare($source, null, ['assets.vendor.com']));
+        $this->assertSame(0, $spy->calls);
+    }
+
+    public function test_namespace_multisegmento_codificado_no_es_remoto()
+    {
+        config(['filesystems.disks.public.url' => 'https://assets.vendor.com/files/media']);
+        $this->assertNotNull($this->prepare('https://assets.vendor.com/files/media/ok.jpg'));
+        $spy = new class extends ImagenParaMailHelper {
+            public $calls = 0;
+            public $fixture;
+            protected function download($url, $host, $ip) { $this->calls++; return $this->fixture; }
+        };
+        $spy->fixture = $this->fixture('png');
+        config(['mail.image_public_addresses' => ['assets.vendor.com' => ['8.8.8.8']]]);
+        foreach (['/files/%6dedia/ok.jpg', '/%66iles/media/missing.png', '//files/media/ok.jpg'] as $path) {
+            $this->assertNull($spy->prepare('https://assets.vendor.com'.$path, null, ['assets.vendor.com']));
+            $this->assertSame(0, $spy->calls);
+        }
+        // Fuera del namespace, el remoto genuino conserva la IP pinneada y allowlist.
+        $remote = 'https://assets.vendor.com/remote/logo.jpg';
+        $this->assertNotNull($spy->prepare($remote, null, ['assets.vendor.com']));
+        $this->assertSame(1, $spy->calls);
+    }
+
+    public function test_base_configurada_ambigua_rechazada_sin_reparar()
+    {
+        $this->positive();
+        $spy = new class extends ImagenParaMailHelper {
+            public $calls = 0;
+            public $fixture;
+            protected function download($url, $host, $ip) { $this->calls++; return $this->fixture; }
+        };
+        $spy->fixture = $this->fixture('png');
+        config(['mail.image_public_addresses' => ['assets.vendor.com' => ['8.8.8.8']]]);
+        foreach (['/%73torage', '//storage', '/storage//', '/storage?x=1', '/storage#x'] as $base) {
+            config(['filesystems.disks.public.url' => 'https://assets.vendor.com'.$base]);
+            $this->assertNull($spy->prepare('https://assets.vendor.com/%73torage/ok.jpg', null, ['assets.vendor.com']));
+            $this->assertSame(0, $spy->calls);
+        }
+    }
+
+    public function test_segmento_codificado_valido_dentro_de_base_canonica()
+    {
+        $this->positive();
+        file_put_contents($this->sandbox.'/public/sub/ok.jpg', $this->fixture('png'));
+        $this->assertNotNull($this->prepare($this->base.'/sub/%6fk.jpg'));
+    }
+
     public function test_subcarpeta_espacio_mas_y_base_no_convencional()
     {
         $this->positive();

@@ -117,15 +117,24 @@ class ImagenParaMailHelper
         if (substr($basePath, -1) === '/') {
             $basePath = substr($basePath, 0, -1);
         }
-        if ($basePath === '' || self::relativePath(substr($basePath, 1)) === null) {
+        // La base configurada debe ser canónica: no interpretar escapes como otro namespace.
+        if ($basePath === '' || self::relativePath(substr($basePath, 1)) !== substr($basePath, 1)) {
             return null;
         }
         $path = isset($input['path']) ? $input['path'] : '';
         // Validar antes de llamar ApiUrlHelper: nunca reparar traversal o escapes ambiguos.
-        if (self::relativePath(ltrim($path, '/')) === null) {
+        // Quitar sólo la barra de raíz: ltrim ocultaría barras iniciales repetidas.
+        $decodedPath = self::relativePath(isset($path[0]) && $path[0] === '/' ? substr($path, 1) : $path);
+        if ($decodedPath === null) {
             return null;
         }
         $prefix = $basePath.'/';
+        $decodedAbsolutePath = '/'.$decodedPath;
+        if ($own && ($decodedAbsolutePath === $basePath || strpos($decodedAbsolutePath, $prefix) === 0)
+            && $path !== $basePath && strpos($path, $prefix) !== 0) {
+            // Se parece al namespace local sólo al decodificar: rechazar, nunca reparar ni descargar.
+            return null;
+        }
         $url = $source;
         if (!$own || strpos($path, $prefix) !== 0) {
             $appPath = $app && isset($app['path']) ? rtrim($app['path'], '/') : '';
