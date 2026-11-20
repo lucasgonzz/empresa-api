@@ -34,6 +34,26 @@ class AfipWsfeHelper extends Controller
     public $afip_fecha_emision;
     public $monto_minimo_para_factura_de_credito = 1357480;
 
+    /**
+     * Código de ARCA `ValidacionDeToken`: la autenticación del pedido falló (token vencido, firma inválida o
+     * el CUIT no figura en la lista de relaciones del certificado). ARCA lo contesta ANTES de procesar el
+     * comprobante, así que un 600 de `FECAESolicitar` sin CAE prueba que ese pedido no autorizó nada.
+     */
+    const ARCA_AUTENTICACION_RECHAZADA = '600';
+
+    /**
+     * Código de ARCA «no existen datos en nuestros registros» de `FECompConsultar`. 🔴 Es AUSENCIA de datos,
+     * no prueba de rechazo: ARCA puede seguir procesando un envío cuya respuesta se perdió. Nunca resuelve
+     * un intento (decisión de Lucas, 20/11/2026).
+     */
+    const ARCA_SIN_DATOS = '602';
+
+    /**
+     * Prefijo de los `AfipError` que nacen de una consulta a ARCA. Permite reemplazar los de la consulta
+     * anterior (no apilarlos) sin tocar jamás los errores de la emisión.
+     */
+    const PREFIJO_DE_CONSULTA = 'Consulta a ARCA: ';
+
     public $consulto_despues_de_error_en_emision = false;
     public $error_al_consultar_comprobante = false;
 
@@ -264,7 +284,7 @@ class AfipWsfeHelper extends Controller
                         Log::info('Entro en errors:');
                         Log::info((array)$afip_result['FECompConsultarResult']->Errors);
                         $this->error_al_consultar_comprobante = true;
-                        $this->resolver_si_arca_no_tiene_el_comprobante($afip_result['FECompConsultarResult']->Errors, $result);
+                        $this->informar_consulta_sin_comprobante($afip_result['FECompConsultarResult']->Errors, $result);
                     }
                 } 
 
@@ -285,32 +305,214 @@ class AfipWsfeHelper extends Controller
     }
 
     /**
-     * Si ARCA contesta 602 ("no existen datos en nuestros registros") al consultar un intento numerado
-     * sin CAE, ese número nunca se autorizó: el intento queda resuelto como rechazado (`resultado = 'R'`).
-     * Así deja de bloquear el borrado y una nueva emisión (caso típico: el punto de venta todavía no
-     * estaba asociado al certificado en ARCA y FECAESolicitar falló). No toca tickets con CAE ni NC.
+     * Informa al usuario lo que ARCA contestó al consultar un intento que no devolvió ningún comprobante
+     * (`Errors` en vez de `ResultGet`): deja un `AfipError` por cada error de ARCA, con el XML de la consulta
+     * como evidencia propia.
+     *
+     * 🔴 NUNCA escribe `resultado`, `request` ni `response` del ticket, ni con un 602 («no existen datos»):
+     * es AUSENCIA de datos, no prueba de rechazo. ARCA puede estar todavía procesando un envío cuya respuesta
+     * se perdió; marcarlo rechazado dejaría borrar o reemitir una factura que después se autoriza (dos
+     * facturas para la misma venta). Un intento incierto sólo sale de ese estado con una respuesta firme de
+     * ARCA (un CAE al consultar, o el 600 de la emisión en `checkErrors()`), nunca por tiempo, por consulta
+     * manual ni por ambiente. Lucas lo aprobó así el 20/11/2026.
+     *
+     * Sólo informa sobre un intento incierto de factura: no toca tickets con CAE, ya resueltos (`A`/`R`) ni
+     * notas de crédito. Reemplaza los mensajes de la consulta anterior para no apilarlos.
+     *
+     * @param  mixed $errores Nodo `FECompConsultarResult->Errors` (un `Err` o varios).
+     * @param  array $result  Envoltorio de `WS::__call()` (request/response de la consulta).
+     * @return void
      */
-    protected function resolver_si_arca_no_tiene_el_comprobante($errores, $result)
+    protected function informar_consulta_sin_comprobante($errores, $result)
     {
-        $t = $this->afip_ticket;
-        if (!empty($t->cae) || $t->resultado === 'R' || !empty($t->nota_credito_id) || !empty($t->sale_nota_credito_id)) {
+        $ticket = AfipTicket::find($this->afip_ticket->id);
+
+        if (is_null($ticket)
+            || !empty($ticket->cae)
+            || in_array($ticket->resultado, ['A', 'R'], true)
+            || !empty($ticket->nota_credito_id)
+            || !empty($ticket->sale_nota_credito_id)
+            || in_array((int) $ticket->cbte_tipo, TotalFacturadoDeVentaHelper::NOTAS, true)
+        ) {
             return;
         }
-        $lista = json_decode(json_encode($errores), true);
-        $lista = isset($lista['Err']) ? $lista['Err'] : $lista;
-        if (isset($lista['Code'])) {
-            $lista = [$lista];
+
+        $lista = $this->errores_de_arca($errores);
+
+        if (count($lista) === 0) {
+            return;
         }
-        foreach ((array) $lista as $err) {
-            if ((int) ($err['Code'] ?? 0) === 602) {
-                $t->update(['resultado' => 'R', 'request' => $result['request'] ?? null, 'response' => $result['response'] ?? null]);
-                AfipError::create([
-                    'sale_id' => $t->sale_id, 'afip_ticket_id' => $t->id, 'code' => 602,
-                    'message' => 'ARCA confirmó que este comprobante no existe: nunca se autorizó. Ya podés eliminarlo o volver a emitir.',
-                ]);
-                return;
+
+        // Sólo los mensajes de consultas anteriores: los errores de la emisión no se tocan.
+        AfipError::where('afip_ticket_id', $ticket->id)
+                    ->where('message', 'like', self::PREFIJO_DE_CONSULTA.'%')
+                    ->delete();
+
+        foreach ($lista as $error) {
+
+            if ((string) $error['Code'] === self::ARCA_SIN_DATOS) {
+
+                $mensaje = 'ARCA todavía no informa este comprobante (código '.$error['Code'].': '.$error['Msg'].'). '
+                    .'Eso no confirma que haya sido rechazado: ARCA puede seguir procesándolo. '
+                    .'No lo elimines ni vuelvas a emitir: volvé a consultarlo más tarde o pedí ayuda a soporte.';
+
+            } else {
+
+                $mensaje = 'ARCA respondió el código '.$error['Code'].': '.$error['Msg'].'. '
+                    .'El intento sigue pendiente de verificación: no lo elimines ni vuelvas a emitir hasta poder consultarlo.';
+            }
+
+            AfipError::create([
+                'sale_id'           => $ticket->sale_id,
+                'afip_ticket_id'    => $ticket->id,
+                'code'              => $error['Code'],
+                'message'           => self::PREFIJO_DE_CONSULTA.$mensaje,
+                'request'           => isset($result['request']) ? $result['request'] : null,
+                'response'          => isset($result['response']) ? $result['response'] : null,
+            ]);
+        }
+    }
+
+    /**
+     * Normaliza los errores de ARCA a una lista de `['Code' => ..., 'Msg' => ...]` en UTF-8.
+     *
+     * El nodo `Errors` trae UN `Err` (objeto) o VARIOS (lista de objetos), y `Utf8Helper::convertir_utf8()`
+     * lo vuelve array: leerlo siempre como un solo error rompía con «Undefined index: Code» apenas ARCA
+     * devolvía dos (el intento quedaba incierto, trabado). `AfipNotaCreditoHelper::lista_de_arca_en_utf8()`
+     * resuelve lo mismo; se replica acá para no tocar el circuito de notas de crédito.
+     *
+     * @param  mixed $nodo Nodo `Errors` (con o sin la clave `Err`), objeto o array; null si no hay.
+     * @return array<int,array> Lista de errores; vacía si no hay ninguno legible.
+     */
+    protected function errores_de_arca($nodo)
+    {
+        if (is_null($nodo)) {
+            return [];
+        }
+
+        $nodo = Utf8Helper::convertir_utf8($nodo);
+
+        if (!is_array($nodo)) {
+            return [];
+        }
+
+        if (isset($nodo['Err'])) {
+            $nodo = $nodo['Err'];
+        }
+
+        // Un solo error: viene como {Code, Msg}. Varios: lista de {Code, Msg}.
+        if (isset($nodo['Code']) || isset($nodo['Msg'])) {
+            $nodo = [$nodo];
+        }
+
+        $lista = [];
+
+        foreach ((array) $nodo as $error) {
+
+            $error = (array) $error;
+
+            if (isset($error['Code']) || isset($error['Msg'])) {
+                $lista[] = [
+                    'Code' => isset($error['Code']) ? $error['Code'] : '',
+                    'Msg'  => isset($error['Msg']) ? $error['Msg'] : '',
+                ];
             }
         }
+
+        return $lista;
+    }
+
+    /**
+     * Marca el intento como rechazado (`R`) cuando ARCA contestó `FECAESolicitar` con un 600 de
+     * autenticación, y sólo si hay prueba firme de que ESE pedido no se procesó:
+     *
+     *  - respuesta real de ARCA (este método sólo corre desde `checkErrors()`, que no se llama ante un
+     *    SoapFault ni un corte de red) con un 600 entre los `Err`;
+     *  - la respuesta NO trae CAE ni `Resultado = 'A'`;
+     *  - es una factura (no nota de crédito: las NC reutilizan el ticket) y el número y tipo que viajaron
+     *    en el pedido de esta corrida son los del ticket;
+     *  - el `UPDATE` repite esas condiciones en la base, así que un CAE, una NC o un cambio concurrente
+     *    del ticket nunca se pisan (mismo patrón que `IntentosDeFacturaFallidosHelper::descartar_con_resultado()`).
+     *
+     * Un intento de factura WSFE se envía una sola vez (reemitir crea un ticket nuevo y la conciliación
+     * sólo consulta), por eso un 600 de autenticación, que ARCA contesta antes de procesar, prueba que ese
+     * número no se autorizó. Guarda el request/response de ESTA emisión en el ticket: es su evidencia.
+     *
+     * @param  mixed $afip_result Respuesta deserializada de `FECAESolicitar`.
+     * @param  array $result      Envoltorio de `WS::__call()` (request/response de la emisión).
+     * @param  array $lista       Errores ya normalizados por `errores_de_arca()`.
+     * @return bool true si el intento quedó rechazado.
+     */
+    protected function rechazar_si_arca_no_proceso_el_pedido($afip_result, $result, $lista)
+    {
+        $hay_600 = false;
+
+        foreach ($lista as $error) {
+            if ((string) $error['Code'] === self::ARCA_AUTENTICACION_RECHAZADA) {
+                $hay_600 = true;
+            }
+        }
+
+        // Sin la prueba de identidad (número y tipo enviados en esta corrida) no se rechaza nada.
+        if (!$hay_600 || !isset($this->comprobante_numero) || !isset($this->comprobante_tipo)) {
+            return false;
+        }
+
+        if (in_array((int) $this->comprobante_tipo, TotalFacturadoDeVentaHelper::NOTAS, true)) {
+            return false;
+        }
+
+        $respuesta = $afip_result->FECAESolicitarResult;
+
+        $cabecera = json_decode(json_encode(isset($respuesta->FeCabResp) ? $respuesta->FeCabResp : null), true);
+
+        if (is_array($cabecera) && isset($cabecera['Resultado']) && $cabecera['Resultado'] === 'A') {
+            return false;
+        }
+
+        $detalle = json_decode(json_encode(isset($respuesta->FeDetResp) ? $respuesta->FeDetResp : null), true);
+
+        $trae_cae = false;
+
+        if (is_array($detalle)) {
+            array_walk_recursive($detalle, function ($valor, $clave) use (&$trae_cae) {
+                if ($clave === 'CAE' && trim((string) $valor) !== '') {
+                    $trae_cae = true;
+                }
+            });
+        }
+
+        if ($trae_cae) {
+            return false;
+        }
+
+        $filas = AfipTicket::where('id', $this->afip_ticket->id)
+                            ->where('cbte_numero', $this->comprobante_numero)
+                            ->where('cbte_tipo', $this->comprobante_tipo)
+                            ->where(function ($q) {
+                                $q->whereNull('cae')
+                                  ->orWhere('cae', '');
+                            })
+                            ->whereNull('nota_credito_id')
+                            ->whereNull('sale_nota_credito_id')
+                            ->where(function ($q) {
+                                $q->whereNull('resultado')
+                                  ->orWhere('resultado', '!=', 'A');
+                            })
+                            ->update([
+                                'resultado' => 'R',
+                                'request'   => $result['request'],
+                                'response'  => $result['response'],
+                            ]);
+
+        if ($filas < 1) {
+            return false;
+        }
+
+        // El ticket en memoria tiene que reflejar lo que quedó en la base.
+        $this->afip_ticket->refresh();
+
+        return true;
     }
 
     /**
@@ -812,6 +1014,15 @@ class AfipWsfeHelper extends Controller
         }
     }
 
+    /**
+     * Guarda como `AfipError` los errores que ARCA contestó en `FECAESolicitar` (uno por error, sean uno o
+     * varios) y, si es un 600 de autenticación sin CAE de este mismo intento, lo deja rechazado (`R`) para que
+     * no quede trabado (ver `rechazar_si_arca_no_proceso_el_pedido()`).
+     *
+     * @param  mixed $afip_result Respuesta deserializada de `FECAESolicitar`.
+     * @param  array $result      Envoltorio de `WS::__call()` (request/response de la emisión).
+     * @return void
+     */
     function checkErrors($afip_result, $result) {
         $errors = null;
         if (isset($afip_result->FECAESolicitarResult->Errors)) {
@@ -819,7 +1030,13 @@ class AfipWsfeHelper extends Controller
             $errors = Utf8Helper::convertir_utf8($errors);
             Log::info('Errores que van a guardarse:');
             Log::info($errors);
-            foreach ($errors as $error) {
+            // Una lista normalizada: ARCA devuelve un solo Err o varios (ver `errores_de_arca()`).
+            $lista = $this->errores_de_arca($errors);
+
+            // 600 sin CAE y con prueba del intento: ARCA rechazó el pedido antes de procesarlo.
+            $rechazado_por_autenticacion = $this->rechazar_si_arca_no_proceso_el_pedido($afip_result, $result, $lista);
+
+            foreach ($lista as $error) {
 
                 $code = $error['Code']; 
                 
@@ -836,22 +1053,23 @@ class AfipWsfeHelper extends Controller
                 ) {
                     $code = 'No se pudo establecer conexion con AFIP. Intente nuevamente en unos minutos';
                 }
+
+                $message = Utf8Helper::convertir_utf8($error['Msg']);
+
+                if ($rechazado_por_autenticacion && (string) $code === self::ARCA_AUTENTICACION_RECHAZADA) {
+                    $message = 'ARCA no aceptó la autenticación del pedido (código 600) y no lo procesó: la factura no se autorizó. '
+                        .'Revisá la vinculación del certificado con el CUIT y el punto de venta (o su vencimiento). '
+                        .'Podés eliminar este intento y volver a emitir. Detalle de ARCA: '.$message;
+                }
+
                 AfipError::create([
-                    'message'           => Utf8Helper::convertir_utf8($error['Msg']),
+                    'message'           => $message,
                     'code'              => $code,
                     'sale_id'           => $this->afip_ticket->id,
                     'afip_ticket_id'    => $this->afip_ticket->id,
                     'request'           => $result['request'],
                     'response'          => $result['response'],
                 ]);
-
-                // 600 (ValidacionDeToken, p. ej. el CUIT no está en la lista de relaciones del
-                // certificado): ARCA rechazó el pedido entero antes de procesarlo, nunca pudo
-                // autorizar el número. Se resuelve como rechazado para no dejar un intento trabado.
-                if ((string) $code === '600' && empty($this->afip_ticket->cae)
-                    && empty($this->afip_ticket->nota_credito_id) && empty($this->afip_ticket->sale_nota_credito_id)) {
-                    $this->afip_ticket->update(['resultado' => 'R', 'request' => $result['request'], 'response' => $result['response']]);
-                }
             }
         }
         $this->errors = $errors;
