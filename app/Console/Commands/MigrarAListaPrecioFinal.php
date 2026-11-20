@@ -110,7 +110,7 @@ class MigrarAListaPrecioFinal extends Command
     const CARPETA = 'respaldos/listas-precio-final';
 
     /** Se imprime en --ver y al terminar --aplicar. */
-    const AVISO_HORARIO = 'Correr --aplicar FUERA del horario del negocio: la reversión solo vale inmediatamente después de migrar (si hubo cambios de precio en el medio, los pisa). Tiempo medido: 17,7 s cada 1.000 artículos (50.000 ≈ 15 min).';
+    const AVISO_HORARIO = 'Correr --aplicar FUERA del horario del negocio: la reversión solo vale inmediatamente después de migrar (si hubo cambios de precio en el medio, se rechaza si hubo cambios posteriores). Tiempo medido: 17,7 s cada 1.000 artículos (50.000 ≈ 15 min).';
 
     /** Segundos medidos de --aplicar por artículo, para la estimación de --ver. */
     const SEGUNDOS_POR_ARTICULO = 0.0177;
@@ -126,6 +126,8 @@ class MigrarAListaPrecioFinal extends Command
 
     /** @var resource|null */
     private $sql = null;
+    private $sql_cuenta = null;
+    private $reversion = null;
 
     /** @var string|null Carpeta de esta corrida. */
     private $carpeta = null;
@@ -589,8 +591,32 @@ class MigrarAListaPrecioFinal extends Command
             'extensiones' => DB::table('extencion_empresa_user')->where('user_id', $dueno->id)->orderBy('extencion_empresa_id')->get()->all(),
         ));
 
-        $lista = DB::transaction(function () use ($dueno, $m) {
-            return $this->asegurar_cuenta($dueno, $m);
+        $lista = $this->con_respaldo(function () use ($dueno, $m) {
+            DB::table('users')->where('id', $dueno->id)->lockForUpdate()->first();
+            $ambitos = ['users' => 'id = '.(int) $dueno->id,
+                'price_types' => 'user_id = '.(int) $dueno->id,
+                'extencion_empresa_user' => 'user_id = '.(int) $dueno->id];
+            $antes = $this->reversion->foto($ambitos);
+            $logs = DB::table('audit_logs')->where('user_id', $dueno->id)->where('batch_uuid', \App\Services\AuditLog\AuditContext::marco()->uuid)->pluck('id')->all();
+            $lista = $this->asegurar_cuenta($dueno, $m);
+            $despues = $this->reversion->foto($ambitos);
+            $logs = array_values(array_diff(DB::table('audit_logs')->where('user_id', $dueno->id)->where('batch_uuid', \App\Services\AuditLog\AuditContext::marco()->uuid)->pluck('id')->all(), $logs));
+            $extra = '1';
+            if ($m['crear']) {
+                $referencias = DB::table('information_schema.COLUMNS')
+                    ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
+                    ->where('COLUMN_NAME', 'price_type_id')->orderBy('TABLE_NAME')->pluck('TABLE_NAME')->all();
+                foreach ($referencias as $tabla) {
+                    $tabla = str_replace('`', '``', $tabla);
+                    $extra .= ' AND NOT EXISTS (SELECT 1 FROM `'.$tabla.'` WHERE price_type_id = '.(int) $lista->id.' FOR UPDATE)';
+                }
+            }
+            $sql = $this->reversion->bloque('-- Cuenta: flag, extensiones y lista', 'cuenta:'.$dueno->id,
+                User::class, $dueno->id, $ambitos, $antes, $despues,
+                ['extencion_empresa_user', 'price_types', 'users'], $logs, $extra);
+            \App\Services\ReversionMigracionSql::escribir($this->sql_cuenta, $sql);
+            $this->escribir_json(['tipo' => 'bloque_cuenta', 'antes' => $antes, 'despues' => $despues]);
+            return $lista;
         });
 
         $this->info('Lista «'.$lista->name.'»: id '.$lista->id.' (position '.$lista->position.').');
@@ -608,7 +634,7 @@ class MigrarAListaPrecioFinal extends Command
             foreach ($tanda as $a) {
 
                 try {
-                    DB::transaction(function () use ($a, $lista, $owner) {
+                    $this->con_respaldo(function () use ($a, $lista, $owner) {
                         $this->migrar_articulo($a, $lista, $owner);
                     });
 
@@ -659,11 +685,8 @@ class MigrarAListaPrecioFinal extends Command
      */
     private function asegurar_cuenta($dueno, array $m)
     {
-        $sql = "-- Cuenta: flag, extensiones y lista «".PriceTypeHelper::NOMBRE_PRECIO_FINAL."» como estaban\n";
-
         if ($m['prender_flag']) {
             DB::table('users')->where('id', $dueno->id)->update(array('listas_de_precio' => 1));
-            $sql .= 'UPDATE users SET listas_de_precio = '.$this->literal($dueno->listas_de_precio).' WHERE id = '.(int) $dueno->id.";\n";
         }
 
         $ids_otorgados = array();
@@ -681,9 +704,7 @@ class MigrarAListaPrecioFinal extends Command
                 }
             }
 
-            if (count($ids_otorgados)) {
-                $sql .= 'DELETE FROM extencion_empresa_user WHERE user_id = '.(int) $dueno->id.' AND extencion_empresa_id IN ('.implode(',', $ids_otorgados).");\n";
-            }
+
         }
 
         if ($m['crear']) {
@@ -691,15 +712,12 @@ class MigrarAListaPrecioFinal extends Command
             // Sin observer: el dueño conserva su diseño de etiquetas genérico, que con una sola lista es el que vale.
             $lista = PriceTypeHelper::crear_lista_precio_final($dueno->id, $m['position'], true);
 
-            $sql .= 'DELETE FROM article_price_type_monedas WHERE price_type_id = '.(int) $lista->id.";\n"
-                .'DELETE FROM article_price_type WHERE price_type_id = '.(int) $lista->id.";\n"
-                .'DELETE FROM price_types WHERE id = '.(int) $lista->id.";\n";
 
         } else {
             $lista = $m['precio_final'];
         }
 
-        $this->escribir_sql($sql."\n");
+
 
         $this->escribir_json(array(
             'tipo'          => 'cuenta',
@@ -726,10 +744,29 @@ class MigrarAListaPrecioFinal extends Command
      */
     private function migrar_articulo(array $a, $lista, $owner)
     {
-        $argumentos = func_get_args();
-        return \App\Services\HistorialPreciosService::ejecutar([(int) $a['id']], null, 'migracion_precio_final', function () use ($argumentos) {
-            return call_user_func_array([$this, 'migrar_articulo_sin_historial'], $argumentos);
+        $id = (int) $a['id'];
+        DB::table('users')->where('id', $owner->id)->lockForUpdate()->first();
+        DB::table('articles')->where('id', $id)->lockForUpdate()->first();
+        $ambitos = [
+            'articles' => 'id = '.$id,
+            'article_price_type' => 'article_id = '.$id,
+            'article_price_type_monedas' => 'article_id = '.$id,
+            'price_changes' => 'article_id = '.$id,
+            'price_change_price_type' => 'price_change_id IN (SELECT id FROM price_changes WHERE article_id = '.$id.' FOR UPDATE)',
+        ];
+        $antes = $this->reversion->foto($ambitos);
+        $logs = DB::table('audit_logs')->where('user_id', $owner->id)->where('batch_uuid', \App\Services\AuditLog\AuditContext::marco()->uuid)->where('auditable_type', Article::class)->where('auditable_id', $id)->pluck('id')->all();
+        \App\Services\HistorialPreciosService::ejecutar([$id], null, 'migracion_precio_final', function () use ($a, $lista, $owner) {
+            $this->migrar_articulo_sin_historial($a, $lista, $owner);
         });
+        // HistorialPreciosService agrega padres y detalles DESPUÉS del callback.
+        $despues = $this->reversion->foto($ambitos);
+        $logs = array_values(array_diff(DB::table('audit_logs')->where('user_id', $owner->id)->where('batch_uuid', \App\Services\AuditLog\AuditContext::marco()->uuid)->where('auditable_type', Article::class)->where('auditable_id', $id)->pluck('id')->all(), $logs));
+        $sql = $this->reversion->bloque('-- Artículo '.$id, 'articulo:'.$id, Article::class, $id,
+            $ambitos, $antes, $despues,
+            ['price_change_price_type', 'price_changes', 'article_price_type_monedas', 'article_price_type', 'articles'], $logs);
+        $this->escribir_json(['tipo' => 'articulo', 'article_id' => $id, 'antes' => $antes, 'despues' => $despues]);
+        $this->escribir_sql($sql);
     }
 
     private function migrar_articulo_sin_historial(array $a, $lista, $owner)
@@ -740,20 +777,6 @@ class MigrarAListaPrecioFinal extends Command
         $antes = DB::table('articles')->where('id', $id)->lockForUpdate()->first(array(
             'id', 'cost', 'costo_real', 'price', 'percentage_gain', 'final_price', 'previus_final_price',
             'final_price_updated_at', 'base_margen', 'base_margen_final', 'deleted_at',
-        ));
-
-        $pivotes_antes = DB::table('article_price_type')->where('article_id', $id)->orderBy('id')->get()->all();
-        $monedas_antes = DB::table('article_price_type_monedas')->where('article_id', $id)->orderBy('id')->get()->all();
-        $max_pivote    = (int) DB::table('article_price_type')->max('id');
-        $max_moneda    = (int) DB::table('article_price_type_monedas')->max('id');
-        $max_cambio    = (int) DB::table('price_changes')->max('id');
-
-        $this->escribir_json(array(
-            'tipo'       => 'articulo',
-            'article_id' => $id,
-            'articulo'   => $antes,
-            'article_price_type'         => $pivotes_antes,
-            'article_price_type_monedas' => $monedas_antes,
         ));
 
         $final_antes = is_null($antes->final_price) ? null : (float) $antes->final_price;
@@ -821,41 +844,6 @@ class MigrarAListaPrecioFinal extends Command
             throw new \RuntimeException('el pivote de la lista iba a quedar en '.var_export($pivote_final, true).' y el precio final es '.var_export($final_despues, true));
         }
 
-        // f. La reversión de este artículo, antes del commit (si no se puede escribir, se revierte).
-        $sql = '-- Artículo '.$id."\nSTART TRANSACTION;\n"
-            .'DELETE FROM price_changes WHERE article_id = '.$id.' AND id > '.$max_cambio.";\n"
-            .'DELETE FROM article_price_type_monedas WHERE article_id = '.$id.' AND id > '.$max_moneda.";\n"
-            .'DELETE FROM article_price_type WHERE article_id = '.$id.' AND id > '.$max_pivote.";\n";
-
-        foreach ($pivotes_antes as $p) {
-            $sql .= 'UPDATE article_price_type SET percentage = '.$this->literal($p->percentage)
-                .', final_price = '.$this->literal($p->final_price)
-                .', previus_final_price = '.$this->literal($p->previus_final_price)
-                .', setear_precio_final = '.$this->literal($p->setear_precio_final)
-                .', precio_luego_de_recargos = '.$this->literal($p->precio_luego_de_recargos)
-                .', monto_ganancia = '.$this->literal($p->monto_ganancia)
-                .' WHERE id = '.(int) $p->id.";\n";
-        }
-
-        foreach ($monedas_antes as $e) {
-            $sql .= 'UPDATE article_price_type_monedas SET percentage = '.$this->literal($e->percentage)
-                .', final_price = '.$this->literal($e->final_price)
-                .', setear_precio_final = '.$this->literal($e->setear_precio_final)
-                .', cotizar_desde_otra_moneda = '.$this->literal($e->cotizar_desde_otra_moneda)
-                .' WHERE id = '.(int) $e->id.";\n";
-        }
-
-        $sql .= 'UPDATE articles SET costo_real = '.$this->literal($antes->costo_real)
-            .', price = '.$this->literal($antes->price)
-            .', percentage_gain = '.$this->literal($antes->percentage_gain)
-            .', final_price = '.$this->literal($antes->final_price)
-            .', previus_final_price = '.$this->literal($antes->previus_final_price)
-            .', final_price_updated_at = '.$this->literal($antes->final_price_updated_at)
-            .', base_margen = '.$this->literal($antes->base_margen)
-            .', base_margen_final = '.$this->literal($antes->base_margen_final)
-            .' WHERE id = '.$id.";\nCOMMIT;\n\n";
-
-        $this->escribir_sql($sql);
     }
 
     /**
@@ -917,19 +905,16 @@ class MigrarAListaPrecioFinal extends Command
 
         $this->carpeta = $carpeta;
 
-        $this->escribir_sql(implode("\n", array(
-            '-- Reversión de listas:migrar-a-precio-final',
-            '-- Base: '.DB::connection()->getDatabaseName().' · dueño '.$user_id.' · '.Carbon::now()->toDateTimeString(),
-            '-- Orden del archivo: primero el bloque de la cuenta (flag, extensiones y la lista creada), después un bloque',
-            '-- por artículo, en el orden en que se migraron.',
-            '-- Para revertir: correr los bloques de artículo y RECIÉN DESPUÉS el de la cuenta (borrar la lista antes dejaría',
-            '-- pivotes apuntando a un id que no existe). Cada bloque de artículo es completo por sí solo.',
-            '-- OJO: vale solo INMEDIATAMENTE después de migrar. Los UPDATE dejan los precios como estaban ANTES de la',
-            '-- migración, así que si hubo cambios de costo o de precio en el medio, los pisa. Por eso se corre fuera del horario.',
-            '-- ESCRIBE: correr con criterio.',
-            '',
-            '',
-        )));
+        $this->reversion = new \App\Services\ReversionMigracionSql($user_id);
+        $this->sql_cuenta = @fopen($carpeta.DIRECTORY_SEPARATOR.'reversion-cuenta.sql', 'x+');
+        if (!is_resource($this->sql_cuenta)) {
+            throw new \RuntimeException('No se pudo abrir el respaldo de cuenta.', 9002);
+        }
+        $this->escribir_sql('-- Reversión de listas:migrar-a-precio-final'."\n"
+            .'-- Respaldo UUID: '.$this->reversion->uuid."\n"
+            .'-- INMEDIATAMENTE después de migrar; cambios posteriores se rechazan.'."\n"
+            .'-- Orden físico: artículos y después cuenta. Cada bloque es transaccional.'."\n"
+            .'-- Si el archivo quedó incompleto: la cuenta está persistida en reversion-cuenta.sql.'."\n\n");
 
         return true;
     }
@@ -943,9 +928,13 @@ class MigrarAListaPrecioFinal extends Command
             fclose($this->respaldo);
         }
 
-        if (is_resource($this->sql)) {
-            fclose($this->sql);
+        if (is_resource($this->sql_cuenta)) {
+            rewind($this->sql_cuenta);
+            $cuenta = stream_get_contents($this->sql_cuenta);
+            if ($cuenta !== false && $cuenta !== '') { $this->escribir_sql($cuenta); }
+            fclose($this->sql_cuenta);
         }
+        if (is_resource($this->sql)) { fclose($this->sql); }
     }
 
     /**
@@ -957,23 +946,29 @@ class MigrarAListaPrecioFinal extends Command
      */
     private function escribir_json(array $datos, $estricto = true)
     {
-        $linea = json_encode($datos, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)."\n";
-
-        if (!is_resource($this->respaldo) || @fwrite($this->respaldo, $linea) === false) {
-            if ($estricto) {
-                throw new \RuntimeException('No se pudo escribir el respaldo ('.$this->carpeta.'): se corta la migración.', 9002);
-            }
-        }
+        $linea = \App\Services\ReversionMigracionSql::json($datos)."\n";
+        \App\Services\ReversionMigracionSql::escribir($this->respaldo, $linea);
     }
 
-    /**
-     * @param  string  $sql
-     * @return void
-     */
     private function escribir_sql($sql)
     {
-        if (!is_resource($this->sql) || @fwrite($this->sql, $sql) === false) {
-            throw new \RuntimeException('No se pudo escribir el SQL de reversión ('.$this->carpeta.'): se corta la migración.', 9002);
+        \App\Services\ReversionMigracionSql::escribir($this->sql, $sql);
+    }
+
+    /** No dejar bloques de una transacción fallida en los archivos de recuperación. */
+    private function con_respaldo(callable $callback)
+    {
+        $streams = [$this->respaldo, $this->sql, $this->sql_cuenta];
+        $offsets = array_map('ftell', $streams);
+        try {
+            return DB::transaction($callback);
+        } catch (\Throwable $error) {
+            foreach ($streams as $n => $stream) {
+                if (!ftruncate($stream, $offsets[$n]) || fseek($stream, $offsets[$n]) !== 0 || !fflush($stream)) {
+                    throw new \RuntimeException('Falló el descarte de respaldo no confirmado.', 9002, $error);
+                }
+            }
+            throw $error;
         }
     }
 

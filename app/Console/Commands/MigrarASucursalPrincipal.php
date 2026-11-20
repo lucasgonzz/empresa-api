@@ -113,6 +113,8 @@ class MigrarASucursalPrincipal extends Command
 
     /** @var string|null Carpeta de esta corrida. */
     private $carpeta = null;
+    private $reversion;
+    private $sql_cuenta;
 
     /**
      * @return int
@@ -516,8 +518,37 @@ class MigrarASucursalPrincipal extends Command
                             })->orderBy('id')->get(['id', 'owner_id', 'address_id'])->all(),
         ]);
 
-        $principal = DB::transaction(function () use ($dueno, $m, $nombre) {
-            return $this->asegurar_sucursal($dueno, $m, $nombre);
+        $principal = $this->con_respaldo(function () use ($dueno, $m, $nombre) {
+            DB::table('users')->where('id', $dueno->id)->lockForUpdate()->first();
+            $ambitos = ['users' => 'id = '.(int) $dueno->id.' OR owner_id = '.(int) $dueno->id,
+                'addresses' => 'user_id = '.(int) $dueno->id];
+            $antes = $this->reversion->foto($ambitos);
+            $logs = $this->logs_operacion();
+            $principal = $this->asegurar_sucursal($dueno, $m, $nombre);
+            $despues = $this->reversion->foto($ambitos);
+            $logs = array_values(array_diff($this->logs_operacion(), $logs));
+            $extra = '1';
+            if ($m['crear']) {
+                // No borrar una dirección con referencias nuevas ajenas a la migración.
+                $referencias = DB::table('information_schema.COLUMNS')
+                    ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
+                    ->whereIn('COLUMN_NAME', ['address_id', 'from_address_id', 'to_address_id'])->orderBy('TABLE_NAME')->orderBy('COLUMN_NAME')->get();
+                foreach ($referencias as $referencia) {
+                    if ($referencia->TABLE_NAME === 'users' && $referencia->COLUMN_NAME === 'address_id') {
+                        $extra .= ' AND NOT EXISTS (SELECT 1 FROM users WHERE address_id = '.(int) $principal->id
+                            .' AND NOT (id = '.(int) $dueno->id.' OR owner_id = '.(int) $dueno->id.') FOR UPDATE)';
+                    } else {
+                        $extra .= ' AND NOT EXISTS (SELECT 1 FROM `'.str_replace('`', '``', $referencia->TABLE_NAME)
+                            .'` WHERE `'.$referencia->COLUMN_NAME.'` = '.(int) $principal->id.' FOR UPDATE)';
+                    }
+                }
+            }
+            $sql = $this->reversion->bloque($m['crear'] ? '-- Sucursal principal creada' : '-- Marca de sucursal principal',
+                'sucursal:'.$principal->id, Address::class, $principal->id, $ambitos, $antes, $despues,
+                ['users', 'addresses'], $logs, $extra);
+            \App\Services\ReversionMigracionSql::escribir($this->sql_cuenta, $sql);
+            $this->escribir_json(['tipo' => 'bloque_sucursal', 'antes' => $antes, 'despues' => $despues]);
+            return $principal;
         });
 
         $this->info('Sucursal principal: '.$principal->id.' "'.$principal->street.'".');
@@ -530,7 +561,7 @@ class MigrarASucursalPrincipal extends Command
         foreach ($m['articulos'] as $a) {
 
             try {
-                DB::transaction(function () use ($a, $principal, $owner) {
+                $this->con_respaldo(function () use ($a, $principal, $owner) {
                     $this->migrar_articulo($a, $principal, $owner);
                 });
 
@@ -573,45 +604,15 @@ class MigrarASucursalPrincipal extends Command
     private function asegurar_sucursal($dueno, array $m, $nombre)
     {
         if (!$m['crear']) {
-
-            $antes = DB::table('addresses')->where('user_id', $dueno->id)->whereNull('buyer_id')->pluck('default_address', 'id')->all();
-
-            $principal = Address::asegurar_principal($dueno->id);
-
-            $sql = "-- Marca de sucursal principal (default_address) como estaba\n";
-
-            foreach ($antes as $id => $valor) {
-                $sql .= 'UPDATE addresses SET default_address = '.$this->literal($valor).' WHERE id = '.(int) $id.";\n";
-            }
-
-            $this->escribir_sql($sql."\n");
-
-            return $principal;
+            return Address::asegurar_principal($dueno->id);
         }
-
         $principal = Address::create([
-            'street'          => $nombre,
-            'street_number'   => $m['domicilio'],
-            'user_id'         => $dueno->id,
-            'default_address' => 1,
+            'street' => $nombre, 'street_number' => $m['domicilio'],
+            'user_id' => $dueno->id, 'default_address' => 1,
         ]);
-
-        $sql = "-- Sucursal principal creada por la migración\n"
-            .'DELETE FROM address_article WHERE address_id = '.(int) $principal->id.";\n"
-            .'DELETE FROM address_article_variant WHERE address_id = '.(int) $principal->id.";\n"
-            .'DELETE FROM addresses WHERE id = '.(int) $principal->id.";\n";
-
         foreach ($m['empleados'] as $usuario) {
-
             DB::table('users')->where('id', $usuario['id'])->update(['address_id' => $principal->id]);
-
-            $sql .= 'UPDATE users SET address_id = '.$this->literal($usuario['address_id']).' WHERE id = '.(int) $usuario['id'].' AND address_id = '.(int) $principal->id.";\n";
         }
-
-        $this->escribir_sql($sql."\n");
-
-        $this->escribir_json(['tipo' => 'sucursal_creada', 'address_id' => $principal->id, 'usuarios' => $m['empleados']]);
-
         return $principal->fresh();
     }
 
@@ -628,21 +629,28 @@ class MigrarASucursalPrincipal extends Command
     {
         $id = (int) $a['id'];
 
+        DB::table('users')->where('id', $owner->id)->lockForUpdate()->first();
+        $ambitos = [
+            'articles' => 'id = '.$id,
+            'article_variants' => 'article_id = '.$id,
+            'address_article' => 'article_id = '.$id,
+            'address_article_variant' => 'article_variant_id IN (SELECT id FROM article_variants WHERE article_id = '.$id.' FOR UPDATE)',
+            'stock_movements' => 'article_id = '.$id,
+        ];
         // Estado previo, leído con candado, y el respaldo ANTES de tocar nada.
-        $articulo_antes = DB::table('articles')->where('id', $id)->lockForUpdate()->first(['id', 'stock', 'stock_updated_at']);
+        $articulo_antes = DB::table('articles')->where('id', $id)->lockForUpdate()->first();
 
         // Las variantes también con candado: el stock que se usa abajo es ESTE, no el de medir().
-        $todas_las_variantes = DB::table('article_variants')->where('article_id', $id)->orderBy('id')->lockForUpdate()->get(['id', 'stock'])->all();
+        $todas_las_variantes = DB::table('article_variants')->where('article_id', $id)->orderBy('id')->lockForUpdate()->get()->all();
+
+        $antes_bloque = $this->reversion->foto($ambitos);
+        $logs = $this->logs_operacion();
 
         $variante_bajo_candado = [];
 
         foreach ($todas_las_variantes as $v) {
             $variante_bajo_candado[(int) $v->id] = $v;
         }
-
-        $max_movimiento = (int) DB::table('stock_movements')->max('id');
-
-        $filas_antes = DB::table('address_article')->where('article_id', $id)->pluck('id')->all();
 
         $filas_variante_antes = count($todas_las_variantes)
             ? DB::table('address_article_variant')->whereIn('article_variant_id', array_map(function ($v) { return $v->id; }, $todas_las_variantes))->pluck('id')->all()
@@ -764,23 +772,15 @@ class MigrarASucursalPrincipal extends Command
             }
         }
 
-        // g. La reversión de este artículo, antes del commit (si no se puede escribir, se revierte).
-        $sql = '-- Artículo '.$id."\nSTART TRANSACTION;\n"
-            .'DELETE FROM stock_movements WHERE article_id = '.$id.' AND id > '.$max_movimiento.' AND observations LIKE '.$this->literal(self::OBSERVACION.'%').";\n"
-            .'DELETE FROM address_article WHERE article_id = '.$id.(count($filas_antes) ? ' AND id NOT IN ('.implode(',', array_map('intval', $filas_antes)).')' : '').";\n";
-
-        if (count($todas_las_variantes)) {
-            $sql .= 'DELETE FROM address_article_variant WHERE article_variant_id IN ('.implode(',', array_map(function ($v) { return (int) $v->id; }, $todas_las_variantes)).')'
-                .(count($filas_variante_antes) ? ' AND id NOT IN ('.implode(',', array_map('intval', $filas_variante_antes)).')' : '').";\n";
-
-            foreach ($todas_las_variantes as $v) {
-                $sql .= 'UPDATE article_variants SET stock = '.$this->literal($v->stock).' WHERE id = '.(int) $v->id.";\n";
-            }
-        }
-
-        $sql .= 'UPDATE articles SET stock = '.$this->literal($articulo_antes->stock).', stock_updated_at = '.$this->literal($articulo_antes->stock_updated_at).' WHERE id = '.$id.";\nCOMMIT;\n\n";
-
+        $despues_bloque = $this->reversion->foto($ambitos);
+        $logs = array_values(array_diff($this->logs_operacion(), $logs));
+        $sql = $this->reversion->bloque('-- Artículo '.$id, 'articulo:'.$id, Article::class, $id,
+            $ambitos, $antes_bloque, $despues_bloque,
+            ['stock_movements', 'address_article_variant', 'address_article', 'article_variants', 'articles'], $logs);
         $this->escribir_sql($sql);
+        $this->escribir_json(['tipo' => 'bloque_articulo', 'article_id' => $id,
+            'antes' => $antes_bloque, 'despues' => $despues_bloque]);
+
     }
 
     /**
@@ -857,19 +857,21 @@ class MigrarASucursalPrincipal extends Command
 
         $this->carpeta = $carpeta;
 
-        $this->escribir_sql(implode("\n", [
-            '-- Reversión de sucursales:migrar-a-principal',
-            '-- Base: '.DB::connection()->getDatabaseName().' · dueño '.$user_id.' · '.Carbon::now()->toDateTimeString(),
-            '-- Orden del archivo: primero el bloque de la sucursal (la marca de principal, o la sucursal creada con los',
-            '-- usuarios), después un bloque por artículo, en el orden en que se migraron.',
-            '-- Para revertir: correr los bloques de artículo y RECIÉN DESPUÉS el de la sucursal (borrar la sucursal antes',
-            '-- dejaría filas apuntando a un id que no existe). Cada bloque de artículo es completo por sí solo.',
-            '-- OJO: vale solo INMEDIATAMENTE después de migrar. Los UPDATE dejan el stock como estaba ANTES de la',
-            '-- migración, así que si hubo ventas, compras o ajustes en el medio, los pisa. Por eso se corre fuera del horario.',
-            '-- ESCRIBE: correr con criterio.',
-            '',
-            '',
-        ]));
+        $this->reversion = new \App\Services\ReversionMigracionSql($user_id, 'sucursales:migrar-a-principal', [
+            'users' => 'usuarios', 'addresses' => 'direcciones', 'articles' => 'articulos',
+            'article_variants' => 'variantes', 'address_article' => 'filas',
+            'address_article_variant' => 'filas_variantes', 'stock_movements' => 'movimientos',
+        ]);
+        $this->sql_cuenta = @fopen($carpeta.DIRECTORY_SEPARATOR.'reversion-sucursal.sql', 'x+');
+        if (!is_resource($this->sql_cuenta)) {
+            throw new \RuntimeException('No se pudo abrir el respaldo de sucursal.', 9002);
+        }
+        $this->escribir_sql('-- Reversión de sucursales:migrar-a-principal'."\n"
+            .'-- Respaldo UUID: '.$this->reversion->uuid."\n"
+            .'-- Orden físico: artículos y después sucursal. Cada bloque es transaccional.'."\n"
+            .'-- Si el archivo quedó incompleto: la sucursal está persistida en reversion-sucursal.sql.'."\n"
+            .'-- Revertir INMEDIATAMENTE después de migrar; se rechazan escrituras comerciales posteriores.'."\n"
+            .'-- Respaldos viejos sin estado crudo y timestamps son insuficientes para reversión exacta.'."\n\n");
 
         return true;
     }
@@ -883,6 +885,12 @@ class MigrarASucursalPrincipal extends Command
             fclose($this->respaldo);
         }
 
+        if (is_resource($this->sql_cuenta)) {
+            rewind($this->sql_cuenta);
+            $cuenta = stream_get_contents($this->sql_cuenta);
+            if ($cuenta !== false && $cuenta !== '') { $this->escribir_sql($cuenta); }
+            fclose($this->sql_cuenta);
+        }
         if (is_resource($this->sql)) {
             fclose($this->sql);
         }
@@ -897,24 +905,39 @@ class MigrarASucursalPrincipal extends Command
      */
     private function escribir_json(array $datos, $estricto = true)
     {
-        $linea = json_encode($datos, JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR)."\n";
+        $datos['respaldo_uuid'] = $this->reversion->uuid;
+        $linea = \App\Services\ReversionMigracionSql::json($datos)."\n";
+        \App\Services\ReversionMigracionSql::escribir($this->respaldo, $linea);
+    }
 
-        if ((!is_resource($this->respaldo) || @fwrite($this->respaldo, $linea) === false) && $estricto) {
-            throw new \RuntimeException('No se pudo escribir el respaldo en '.$this->carpeta.': se corta la corrida.', 9002);
+    private function escribir_sql($sql)
+    {
+        \App\Services\ReversionMigracionSql::escribir($this->sql, $sql);
+    }
+
+    /** No dejar bloques de una transacción fallida en los archivos de recuperación. */
+    private function con_respaldo(callable $callback)
+    {
+        $streams = [$this->respaldo, $this->sql, $this->sql_cuenta];
+        $offsets = array_map('ftell', $streams);
+        try {
+            return DB::transaction($callback);
+        } catch (\Throwable $error) {
+            foreach ($streams as $n => $stream) {
+                if (!ftruncate($stream, $offsets[$n]) || fseek($stream, $offsets[$n]) !== 0 || !fflush($stream)) {
+                    throw new \RuntimeException('Falló el descarte de respaldo no confirmado.', 9002, $error);
+                }
+            }
+            throw $error;
         }
     }
 
-    /**
-     * @param  string  $sql
-     * @return void
-     */
-    private function escribir_sql($sql)
+    private function logs_operacion()
     {
-        if (!is_resource($this->sql) || @fwrite($this->sql, $sql) === false) {
-            throw new \RuntimeException('No se pudo escribir el SQL de reversión en '.$this->carpeta.': se corta la corrida.', 9002);
-        }
-
-        fflush($this->sql);
+        // Las variantes no tienen user_id: el recorder conserva esos logs con dueño NULL.
+        // El delta se toma dentro del callback confirmado de ESTE bloque y su batch real.
+        return DB::table('audit_logs')
+            ->where('batch_uuid', \App\Services\AuditLog\AuditContext::marco()->uuid)->pluck('id')->all();
     }
 
     /**
