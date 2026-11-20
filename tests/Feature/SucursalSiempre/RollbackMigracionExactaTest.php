@@ -137,14 +137,14 @@ class RollbackMigracionExactaTest extends RollbackIntegracionTestCase
         $archivo = $this->salida.'/concurrente.sql';
         file_put_contents($archivo, $sql);
         $script = $this->salida.'/concurrente.php';
-        file_put_contents($script, '<?php $pdo = new PDO("mysql:unix_socket=".getenv("DB_SOCKET").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $pdo->exec("SET innodb_lock_wait_timeout=5"); file_put_contents($argv[2], "listo"); $pdo->exec(file_get_contents($argv[1]));');
+        file_put_contents($script, '<?php $pdo = new PDO(getenv("ROLLBACK_PDO_DSN"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $pdo->exec("SET innodb_lock_wait_timeout=5"); file_put_contents($argv[2], "listo"); $pdo->exec(file_get_contents($argv[1]));');
         $pdo = DB::connection()->getPdo();
         $pdo->beginTransaction();
         $pdo->query('SELECT id FROM users WHERE id = '.(int) $dueno->id.' FOR UPDATE')->fetchAll();
         $procesos = [];
         try {
             foreach ([1, 2] as $n) {
-                $procesos[$n] = proc_open([PHP_BINARY, $script, $archivo, $this->salida.'/listo'.$n],
+                $procesos[$n] = $this->abrir_hijo([PHP_BINARY, $script, $archivo, $this->salida.'/listo'.$n],
                     [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->salida.'/salida'.$n, 'w'], 2 => ['file', $this->salida.'/error'.$n, 'w']], $pipes);
                 $this->assertIsResource($procesos[$n]);
             }

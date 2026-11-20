@@ -11,22 +11,304 @@ use App\Services\AuditLog\AuditContext;
 use App\Services\HistorialPreciosService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Tests\Fakes\EntornoSinCredenciales;
 use Tests\TestCase;
 
-/** Base compartida solamente por las tres regresiones nuevas; sin DatabaseTransactions. */
+/**
+ * Base compartida solamente por las tres regresiones nuevas; sin DatabaseTransactions.
+ *
+ * 🔴 Aislamiento (20/11/2026). Las tres clases escriben datos CONFIRMADOS (hay procesos hijos y candados reales, no se puede envolver
+ * en una transacción) y leen `audit_logs` sin filtro, así que necesitan una base EXCLUSIVA. Antes la exigían por un semáforo de entorno
+ * y un nombre de base fijo del contenedor donde se escribieron, y SALTABAN en cualquier otro lado: el gate del candidato 4.3.69 los contó
+ * como 22 casos saltados. Ahora cada clase clona la base de testing del slot en una temporal `<origen>_test_rev_<8 hex>` (cae dentro del
+ * GRANT `<slot>\_test\_%` de `cc-db`), corre ahí y la borra al terminar. La guarda de "no producción" sigue, pero precisa: FALLA (nunca
+ * saltea) si el origen no es una base de testing de empresa, y sólo borra la temporal que creó este mismo proceso.
+ *
+ * El observador de esperas InnoDB (`INNODB_TRX`, `INNODB_LOCK_WAITS`) pide el privilegio global PROCESS: sin él el caso RR falla con el 1227
+ * del motor (no se saltea). Lo recomendable es otorgárselo SOLO al usuario descartable del slot que corre estas clases.
+ */
 abstract class RollbackIntegracionTestCase extends TestCase
 {
+    /** Origen válido: la base de testing de empresa, de un slot y/o de una partición (`_test_N`, también el token de ParaTest). */
+    const PATRON_ORIGEN = '/^empresa_testing(_s[0-9]+)?(_test_[0-9]+)?\z/';
+
+    /** Sufijo de la temporal: exactamente 8 hexadecimales en minúscula. */
+    const PATRON_SUFIJO = '/^[a-f0-9]{8}\z/';
+
+    /** Una temporal ya armada: origen válido + `_test_rev_` + sufijo. Es lo único que el arnés puede borrar. */
+    const PATRON_TEMPORAL = '/^empresa_testing(_s[0-9]+)?(_test_[0-9]+)?_test_rev_[a-f0-9]{8}\z/';
+
+    /** Largo máximo de un nombre de base en MariaDB. */
+    const LARGO_MAXIMO_BASE = 64;
+
+    /**
+     * Bases temporales vivas de ESTE proceso, por clase concreta (las estáticas de una clase abstracta se comparten entre las hijas).
+     * Cada entrada: ['origen' => ..., 'temporal' => ..., 'conexion' => <nombre>, 'config' => <config de la conexión de origen>].
+     *
+     * @var array<string, array>
+     */
+    private static $bases = [];
+
+    /**
+     * Nombres de las temporales que creó ESTE proceso: la única lista contra la que se autoriza un DROP.
+     *
+     * @var string[]
+     */
+    private static $creadas = [];
+
+    /**
+     * Config (host, puerto, usuario, clave) con la que se habla con el servidor para crear/borrar/consultar temporales sin depender de la app.
+     *
+     * @var array|null
+     */
+    private static $config_servidor = null;
+
     protected $salida;
+
+    /**
+     * Arma el nombre de la base temporal de un origen. Es la guarda de "no producción": lanza si el origen no es una base de testing de
+     * empresa (slot, partición o legado `empresa_testing`) o si el sufijo no son 8 hexadecimales en minúscula.
+     *
+     * @param  string $origen Nombre de la base de origen (la del slot o partición).
+     * @param  string $hex    Sufijo aleatorio de 8 hexadecimales.
+     * @return string `<origen>_test_rev_<hex>`.
+     * @throws \InvalidArgumentException Si el origen o el sufijo no son válidos, o el nombre pasa de 64 caracteres.
+     */
+    public static function nombre_base_temporal($origen, $hex)
+    {
+        if (!is_string($origen) || preg_match(self::PATRON_ORIGEN, $origen) !== 1) {
+            throw new \InvalidArgumentException('La base de origen no es una base de testing de empresa: '.json_encode($origen));
+        }
+        if (!is_string($hex) || preg_match(self::PATRON_SUFIJO, $hex) !== 1) {
+            throw new \InvalidArgumentException('El sufijo de la base temporal debe ser de 8 hexadecimales en minúscula.');
+        }
+        $nombre = $origen.'_test_rev_'.$hex;
+        if (strlen($nombre) > self::LARGO_MAXIMO_BASE) {
+            throw new \InvalidArgumentException('El nombre de la base temporal pasa de '.self::LARGO_MAXIMO_BASE.' caracteres.');
+        }
+        return $nombre;
+    }
+
+    /**
+     * ¿Se puede borrar esta base? Sólo si la creó este proceso (figura en `$creadas`) Y cumple el patrón de una temporal.
+     * Nunca el origen, ni una partición, ni una temporal ajena, ni una de producción.
+     *
+     * @param  string $nombre  Base que se quiere borrar.
+     * @param  array  $creadas Nombres de las temporales creadas por este proceso.
+     * @return bool
+     */
+    public static function puede_borrar_base($nombre, array $creadas)
+    {
+        return is_string($nombre)
+            && strlen($nombre) <= self::LARGO_MAXIMO_BASE
+            && preg_match(self::PATRON_TEMPORAL, $nombre) === 1
+            && in_array($nombre, $creadas, true);
+    }
+
+    /**
+     * ¿Existe la base en el servidor? Consulta `information_schema.SCHEMATA` con la config guardada de la última corrida.
+     *
+     * @param  string $nombre Nombre de la base.
+     * @return bool
+     */
+    public static function base_existe($nombre)
+    {
+        if (self::$config_servidor === null) {
+            throw new \RuntimeException('Todavía no se conectó al servidor: no hay config guardada.');
+        }
+        $consulta = self::pdo_del_servidor(self::$config_servidor)->prepare('SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?');
+        $consulta->execute([(string) $nombre]);
+        return (int) $consulta->fetchColumn() === 1;
+    }
+
+    /**
+     * Arma el DSN de PDO de una conexión de Laravel: por socket si lo tiene, si no por host y puerto (es lo que usa `cc-db`).
+     *
+     * @param  array  $config Config de la conexión (`config('database.connections.x')`).
+     * @param  string $base   Base a la que apunta el DSN.
+     * @return string
+     */
+    protected static function dsn_desde_config(array $config, $base)
+    {
+        $juego = isset($config['charset']) && $config['charset'] !== '' ? ';charset='.$config['charset'] : '';
+        return 'mysql:'.self::destino_desde_config($config).';dbname='.$base.$juego;
+    }
+
+    /**
+     * Destino del servidor para un DSN: `unix_socket=...` si la conexión lo tiene, si no `host=...;port=...`.
+     *
+     * @param  array $config Config de la conexión.
+     * @return string
+     */
+    protected static function destino_desde_config(array $config)
+    {
+        $socket = isset($config['unix_socket']) ? (string) $config['unix_socket'] : '';
+        return $socket !== ''
+            ? 'unix_socket='.$socket
+            : 'host='.(isset($config['host']) ? $config['host'] : '127.0.0.1').';port='.(isset($config['port']) ? $config['port'] : '3306');
+    }
+
+    /**
+     * Abre un PDO contra el servidor con la config de una conexión, sin elegir base (las consultas califican sus tablas).
+     *
+     * @param  array $config Config de la conexión de origen.
+     * @return \PDO
+     */
+    private static function pdo_del_servidor(array $config)
+    {
+        return new \PDO('mysql:'.self::destino_desde_config($config).';charset=utf8mb4', (string) $config['username'], (string) $config['password'], [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+    }
+
+    /**
+     * Clona la base de testing de origen en una temporal propia: mismas tablas (`CREATE TABLE … LIKE`) y mismas filas. Es el mismo fixture
+     * sintético que dejó `migrate:fresh` + `TestingFerreteriaSeeder` en el slot. Si algo falla a mitad, borra lo que creó y relanza.
+     *
+     * @param  string $origen   Base de origen ya validada por `nombre_base_temporal()`.
+     * @param  string $conexion Nombre de la conexión de Laravel.
+     * @param  array  $config   Config de esa conexión.
+     * @return array  Entrada del registro `$bases`.
+     */
+    private static function clonar_base_de_testing($origen, $conexion, array $config)
+    {
+        $temporal = self::nombre_base_temporal($origen, bin2hex(random_bytes(4)));
+        self::$config_servidor = $config;
+        $pdo = self::pdo_del_servidor($config);
+
+        $juego = $pdo->prepare('SELECT DEFAULT_CHARACTER_SET_NAME, DEFAULT_COLLATION_NAME FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = ?');
+        $juego->execute([$origen]);
+        $fila = $juego->fetch(\PDO::FETCH_NUM);
+        if ($fila === false) {
+            throw new \RuntimeException('La base de origen no existe en el servidor: '.$origen);
+        }
+
+        $tablas = $pdo->prepare('SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = ? ORDER BY TABLE_NAME');
+        $tablas->execute([$origen, 'BASE TABLE']);
+        $nombres = $tablas->fetchAll(\PDO::FETCH_COLUMN);
+
+        $pdo->exec('CREATE DATABASE `'.$temporal.'` CHARACTER SET '.preg_replace('/[^a-z0-9_]/i', '', $fila[0]).' COLLATE '.preg_replace('/[^a-z0-9_]/i', '', $fila[1]));
+        self::$creadas[] = $temporal;
+        try {
+            // La copia no valida nada: son las mismas filas que ya aceptó el origen.
+            $pdo->exec("SET SESSION sql_mode = 'NO_AUTO_VALUE_ON_ZERO', FOREIGN_KEY_CHECKS = 0, UNIQUE_CHECKS = 0");
+            foreach ($nombres as $tabla) {
+                $pdo->exec('CREATE TABLE `'.$temporal.'`.`'.$tabla.'` LIKE `'.$origen.'`.`'.$tabla.'`');
+                $pdo->exec('INSERT INTO `'.$temporal.'`.`'.$tabla.'` SELECT * FROM `'.$origen.'`.`'.$tabla.'`');
+            }
+        } catch (\Throwable $error) {
+            self::borrar_base_temporal($temporal);
+            throw $error;
+        }
+
+        return ['origen' => $origen, 'temporal' => $temporal, 'conexion' => $conexion, 'config' => $config];
+    }
+
+    /**
+     * Borra una temporal. Sólo si la creó este proceso y cumple el patrón (`puede_borrar_base()`); si no, lanza y no toca nada.
+     *
+     * @param  string $temporal Nombre de la temporal.
+     * @return void
+     * @throws \RuntimeException Si la guarda no autoriza el borrado.
+     */
+    private static function borrar_base_temporal($temporal)
+    {
+        if (!self::puede_borrar_base($temporal, self::$creadas)) {
+            throw new \RuntimeException('Se rechazó borrar una base que no es una temporal creada por este proceso: '.json_encode($temporal));
+        }
+        self::pdo_del_servidor(self::$config_servidor)->exec('DROP DATABASE IF EXISTS `'.$temporal.'`');
+        self::$creadas = array_values(array_diff(self::$creadas, [$temporal]));
+    }
+
+    /**
+     * Al terminar la clase se borra la temporal que creó.
+     *
+     * @return void
+     */
+    public static function tearDownAfterClass(): void
+    {
+        $clase = static::class;
+        if (isset(self::$bases[$clase])) {
+            $entrada = self::$bases[$clase];
+            unset(self::$bases[$clase]);
+            self::borrar_base_temporal($entrada['temporal']);
+        }
+        parent::tearDownAfterClass();
+    }
+
+    /**
+     * Base de testing del slot/partición de la que se clonó la temporal de esta clase.
+     *
+     * @return string
+     */
+    protected function base_origen()
+    {
+        return self::$bases[static::class]['origen'];
+    }
+
+    /**
+     * Base temporal propia de esta clase.
+     *
+     * @return string
+     */
+    protected function base_temporal()
+    {
+        return self::$bases[static::class]['temporal'];
+    }
+
+    /**
+     * DSN de PDO a la base temporal con el mismo destino (socket o host/puerto) que la conexión de Laravel.
+     *
+     * @return string
+     */
+    protected function dsn_pdo()
+    {
+        return self::dsn_desde_config(self::$bases[static::class]['config'], $this->base_temporal());
+    }
+
+    /**
+     * Entorno de un proceso hijo: el del proceso actual (sólo las variables de texto) + las credenciales de mentira NO vacías
+     * (`proc_open` descarta los valores vacíos de un entorno armado a mano y el hijo volvería a leer la clave real del `.env.testing`),
+     * puestas DESPUÉS para que ganen sobre lo heredado, + la base temporal y su DSN.
+     *
+     * @return array<string, string>
+     */
+    protected function entorno_hijo()
+    {
+        $config = self::$bases[static::class]['config'];
+        return array_merge(array_filter(getenv(), 'is_string'), EntornoSinCredenciales::para_procesos_hijos(), [
+            'ROLLBACK_PDO_DSN' => $this->dsn_pdo(),
+            'DB_DATABASE' => $this->base_temporal(),
+            'DB_USERNAME' => (string) $config['username'],
+            'DB_PASSWORD' => (string) $config['password'],
+        ]);
+    }
+
+    /**
+     * Lanza un proceso hijo con el entorno armado por `entorno_hijo()`. Es el ÚNICO `proc_open` de las tres clases de reversión.
+     *
+     * @param  array    $comando     Comando y argumentos (sin shell).
+     * @param  array    $descriptores Descriptores de archivo del hijo.
+     * @param  array|null $pipes     Recibe las tuberías abiertas.
+     * @return resource|false Proceso, para `proc_close()`.
+     */
+    protected function abrir_hijo(array $comando, array $descriptores, &$pipes)
+    {
+        return proc_open($comando, $descriptores, $pipes, base_path(), $this->entorno_hijo());
+    }
 
     protected function setUp(): void
     {
-        // El productor único habilita esta corrida recién cuando libera lane147.
-        if (getenv('ROLLBACK_SQL_GATE') !== 'lane147-liberado'
-            || getenv('DB_DATABASE') !== 'empresa_testing_rollback_20261119') {
-            $this->markTestSkipped('PENDIENTETESTS: requiere lane147 liberado y DB propia.');
-        }
         parent::setUp();
-        $this->assertSame('empresa_testing_rollback_20261119', DB::connection()->getDatabaseName());
+        $this->assertTrue(app()->environment('testing'), 'Las reversiones sólo corren con APP_ENV=testing.');
+        $conexion = config('database.default');
+        $clase = static::class;
+        if (!isset(self::$bases[$clase])) {
+            // La guarda de origen vive en nombre_base_temporal(): un origen que no sea de testing lanza acá, no saltea.
+            self::$bases[$clase] = self::clonar_base_de_testing(DB::connection()->getDatabaseName(), $conexion, config('database.connections.'.$conexion));
+        }
+        // Laravel recrea la app (y vuelve a la base del .env.testing) en cada test: se apunta de nuevo a la temporal antes de escribir.
+        config(['database.connections.'.$conexion.'.database' => $this->base_temporal()]);
+        DB::purge($conexion);
+        $this->assertSame($this->base_temporal(), DB::connection()->getDatabaseName());
         $this->assertSame(0, DB::connection()->transactionLevel());
         // Precondición real del comando; fixture local, sin semillas ni datos externos.
         DB::table('concepto_stock_movements')->updateOrInsert(
@@ -380,7 +662,7 @@ class RollbackHistorialMigracionTest extends RollbackIntegracionTestCase
         file_put_contents($archivo, $bloque);
         $script = $this->salida.'/rr.php';
         file_put_contents($script, '<?php
-$p = new PDO("mysql:unix_socket=".getenv("DB_SOCKET").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+$p = new PDO(getenv("ROLLBACK_PDO_DSN"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
 $p->exec("SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ");
 $p->exec("SET innodb_lock_wait_timeout=30");
 file_put_contents($argv[2], $p->query("SELECT CONNECTION_ID()")->fetchColumn());
@@ -397,9 +679,9 @@ echo json_encode([$codigo, (int) $p->query("SELECT @@in_transaction")->fetchColu
             $pdo->exec('UPDATE articles SET price=999 WHERE id='.(int) $a->id);
             $esperado = $this->foto_comercial($dueno->id, [$a->id]);
             $auditoria = $this->foto('audit_logs', 'user_id', [$dueno->id]);
-            $observador = new \PDO('mysql:unix_socket='.getenv('DB_SOCKET').';dbname='.getenv('DB_DATABASE'), getenv('DB_USERNAME'), getenv('DB_PASSWORD'), [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
+            $observador = new \PDO($this->dsn_pdo(), getenv('DB_USERNAME'), getenv('DB_PASSWORD'), [\PDO::ATTR_ERRMODE => \PDO::ERRMODE_EXCEPTION]);
             $escritor_id = (int) $pdo->query('SELECT CONNECTION_ID()')->fetchColumn();
-            $proceso = proc_open([PHP_BINARY, $script, $archivo, $this->salida.'/rr.id'],
+            $proceso = $this->abrir_hijo([PHP_BINARY, $script, $archivo, $this->salida.'/rr.id'],
                 [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->salida.'/rr.out', 'w'], 2 => ['file', $this->salida.'/rr.err', 'w']], $pipes);
             $this->assertIsResource($proceso);
             $limite = microtime(true) + 20;
@@ -443,16 +725,16 @@ echo json_encode([$codigo, (int) $p->query("SELECT @@in_transaction")->fetchColu
                 "SELECT GET_LOCK('".$barrera."', 8) INTO @barrera; ", $bloque, 1);
             $archivo = $this->salida.'/intercalado.sql'; file_put_contents($archivo, $bloque);
             $script = $this->salida.'/intercalado.php';
-            file_put_contents($script, '<?php $p = new PDO("mysql:unix_socket=".getenv("DB_SOCKET").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $p->exec("SET innodb_lock_wait_timeout=1"); if ($argv[1] === "rollback") { $p->exec("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED"); $p->exec(file_get_contents($argv[2])); } else { try { $p->beginTransaction(); $p->exec("UPDATE articles SET price=999 WHERE id=".(int)$argv[2]); $p->commit(); echo "confirmado"; } catch (PDOException $e) { if ($p->inTransaction()) $p->rollBack(); echo $e->errorInfo[1].":".$p->query("SELECT @@in_transaction")->fetchColumn(); } }');
+            file_put_contents($script, '<?php $p = new PDO(getenv("ROLLBACK_PDO_DSN"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $p->exec("SET innodb_lock_wait_timeout=1"); if ($argv[1] === "rollback") { $p->exec("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED"); $p->exec(file_get_contents($argv[2])); } else { try { $p->beginTransaction(); $p->exec("UPDATE articles SET price=999 WHERE id=".(int)$argv[2]); $p->commit(); echo "confirmado"; } catch (PDOException $e) { if ($p->inTransaction()) $p->rollBack(); echo $e->errorInfo[1].":".$p->query("SELECT @@in_transaction")->fetchColumn(); } }');
             $abrir = function ($modo, $dato) use ($script) {
-                return proc_open([PHP_BINARY, $script, $modo, (string) $dato],
+                return $this->abrir_hijo([PHP_BINARY, $script, $modo, (string) $dato],
                     [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->salida.'/'.$modo.'.out', 'w'], 2 => ['file', $this->salida.'/'.$modo.'.err', 'w']], $pipes);
             };
             $reversion = $abrir('rollback', $archivo); $escritor = null;
             try {
                 $limite = microtime(true) + 4;
                 do {
-                    $esperando = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE STATE = 'User lock' AND ID <> CONNECTION_ID()")->fetchColumn();
+                    $esperando = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE STATE = 'User lock' AND ID <> CONNECTION_ID() AND DB = DATABASE()")->fetchColumn();
                     if ($esperando) break;
                     usleep(10000);
                 } while (microtime(true) < $limite);
@@ -481,14 +763,14 @@ echo json_encode([$codigo, (int) $p->query("SELECT @@in_transaction")->fetchColu
         $archivo = $this->salida.'/concurrente.sql';
         file_put_contents($archivo, $sql);
         $script = $this->salida.'/concurrente.php';
-        file_put_contents($script, '<?php $pdo = new PDO("mysql:unix_socket=".getenv("DB_SOCKET").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $pdo->exec("SET innodb_lock_wait_timeout=5"); file_put_contents($argv[2], "listo"); $pdo->exec(file_get_contents($argv[1]));');
+        file_put_contents($script, '<?php $pdo = new PDO(getenv("ROLLBACK_PDO_DSN"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $pdo->exec("SET innodb_lock_wait_timeout=5"); file_put_contents($argv[2], "listo"); $pdo->exec(file_get_contents($argv[1]));');
         $pdo = DB::connection()->getPdo();
         $pdo->beginTransaction();
         $pdo->query('SELECT id FROM users WHERE id = '.(int) $dueno->id.' FOR UPDATE')->fetchAll();
         $procesos = [];
         try {
             foreach ([1, 2] as $n) {
-                $procesos[$n] = proc_open([PHP_BINARY, $script, $archivo, $this->salida.'/listo'.$n],
+                $procesos[$n] = $this->abrir_hijo([PHP_BINARY, $script, $archivo, $this->salida.'/listo'.$n],
                     [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->salida.'/salida'.$n, 'w'], 2 => ['file', $this->salida.'/error'.$n, 'w']], $pipes);
                 $this->assertIsResource($procesos[$n]);
             }
