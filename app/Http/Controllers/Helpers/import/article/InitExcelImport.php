@@ -541,6 +541,22 @@ class InitExcelImport
                 throw new \RuntimeException('No se pudieron quitar los encabezados repetidos del CSV.');
             }
 
+            /*
+             * Misión importacion-formula-precio (20/11/2026): las celdas NUMÉRICAS con decimales de
+             * las columnas numéricas mapeadas se reescriben con coma decimal, para que el parseo no
+             * lea un costo 74,984 del Excel como 74984 (ver NumerosDelCsv). Si no se puede, la
+             * importación sigue como antes y queda en el log: no es motivo para no importar.
+             */
+            if (!NumerosDelCsv::reescribir(
+                $this->csv_full_path,
+                CsvDeHoja::ruta_tipos($this->archivo_excel, (int) $meta['indice']),
+                NumerosDelCsv::indices_numericos(is_array($this->columns) ? $this->columns : [])
+            )) {
+                Log::warning('InitExcelImport: no se pudieron reescribir los números con decimales del CSV', [
+                    'csv' => $this->csv_full_path,
+                ]);
+            }
+
             $ultima_fila_con_contenido = (int) $meta['ultima_fila_con_contenido'];
             $nombre_de_hoja            = (string) $meta['nombre_hoja'];
 
