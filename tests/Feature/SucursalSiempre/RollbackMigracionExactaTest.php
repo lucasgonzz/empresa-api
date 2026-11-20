@@ -11,6 +11,15 @@ use Tests\Feature\ListasSiempre\RollbackIntegracionTestCase;
 
 class RollbackMigracionExactaTest extends RollbackIntegracionTestCase
 {
+    public function test_respaldo_nuevo_entrega_orden_fisico_y_transacciones_completas()
+    {
+        $dueno = $this->nuevo_dueno();
+        $this->nuevo_articulo($dueno, ['stock' => 12]);
+        $sql = $this->migrar_y_leer('sucursales:migrar-a-principal', $dueno);
+        // El legado sirve para diagnosticar P1/P2, nunca acredita el contrato nuevo.
+        $this->bloques_reversion($sql, true);
+    }
+
     public function test_restauracion_comercial_incluye_timestamps_crudos_y_stock_de_variantes()
     {
         $dueno = $this->nuevo_dueno();
@@ -38,16 +47,4 @@ class RollbackMigracionExactaTest extends RollbackIntegracionTestCase
         $this->assertSame($antes, $this->foto_comercial($dueno->id, $ids, $variantes), 'P2: igualdad íntegra, incluidos NULL y timestamps exactos.');
     }
 
-    private function foto_comercial($dueno_id, array $ids, array $variantes)
-    {
-        return [
-            'usuarios' => $this->foto('users', 'id', [$dueno_id]),
-            'direcciones' => $this->foto('addresses', 'user_id', [$dueno_id]),
-            'articulos' => $this->foto('articles', 'id', $ids),
-            'variantes' => $this->foto('article_variants', 'id', $variantes),
-            'filas' => $this->foto('address_article', 'article_id', $ids),
-            'filas_variantes' => $this->foto('address_article_variant', 'article_variant_id', $variantes),
-            'movimientos' => $this->foto('stock_movements', 'article_id', $ids),
-        ];
-    }
 }

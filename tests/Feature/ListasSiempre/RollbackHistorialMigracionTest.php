@@ -78,29 +78,59 @@ abstract class RollbackIntegracionTestCase extends TestCase
         return file_get_contents($archivos[0]);
     }
 
-    protected function ejecutar_reversion($sql)
+    // Contrato nuevo propuesto: UUID declarado por el respaldo, no deducido de los logs.
+    protected function uuid_respaldo($sql)
     {
-        $this->assertSame(0, DB::connection()->transactionLevel());
-        $pdo = DB::connection()->getPdo();
-        $this->assertFalse($pdo->inTransaction(), 'No simular COMMIT dentro de DatabaseTransactions.');
-        // Respetar la instrucción ENTREGADA: artículos, recién después cuenta/sucursal.
-        // Se conservan START TRANSACTION/COMMIT reales y no se interpreta SQL por renglón.
+        $cantidad = preg_match_all('/^-- Respaldo UUID: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\r?$/mi', $sql, $m);
+        $this->assertSame(1, $cantidad, 'PENDIENTE contrato nuevo: encabezado Respaldo UUID único.');
+        return $m[1][0];
+    }
+
+    protected function bloques_reversion($sql, $exigir_nuevo = false)
+    {
         $partes = preg_split('/\n(?=-- Artículo |-- Cuenta|-- Marca de sucursal principal|-- Sucursal principal creada)/', $sql);
-        $articulos = []; $cuenta = [];
+        $encabezado = array_shift($partes);
+        $this->assertSame('', trim(preg_replace('/^--[^\n]*$/m', '', $encabezado)), 'SQL fuera de bloques reconocidos.');
+        $legacy = strpos($encabezado, '-- Orden del archivo: primero el bloque de ') !== false
+            && strpos($encabezado, '-- Para revertir: correr los bloques de artículo y RECIÉN DESPUÉS el de ') !== false
+            && strpos($encabezado, '-- Respaldo UUID:') === false;
+        if ($exigir_nuevo || !$legacy) {
+            $this->uuid_respaldo($encabezado);
+            $legacy = false;
+        }
+        $articulos = []; $cuenta = []; $orden = [];
         foreach ($partes as $parte) {
             if (strpos($parte, '-- Artículo ') === 0) {
+                $this->assertSame([], $legacy ? [] : $cuenta, 'Formato nuevo: artículos ANTES de cuenta/sucursal en el archivo físico.');
                 $articulos[] = $parte;
-            } elseif (preg_match('/^-- (Cuenta|Marca de sucursal principal|Sucursal principal creada)/', $parte)) {
-                $cuenta[] = $parte;
             } else {
-                $sin_comentarios = preg_replace('/^--[^\n]*$/m', '', $parte);
-                $this->assertSame('', trim($sin_comentarios), 'No ignorar SQL fuera de bloques reconocidos.');
+                $this->assertSame(1, preg_match('/^-- (Cuenta|Marca de sucursal principal|Sucursal principal creada)/', $parte));
+                $cuenta[] = $parte;
             }
+            if (!$legacy) {
+                $limpio = trim(preg_replace('/^--[^\n]*$/m', '', $parte));
+                $this->assertSame(1, preg_match('/^START TRANSACTION\s*;[\s\S]*\bCOMMIT\s*;$/i', $limpio), 'Cada bloque NUEVO debe traer su transacción completa.');
+                $this->assertSame(1, preg_match_all('/\bSTART\s+TRANSACTION\b/i', $limpio));
+                $this->assertSame(1, preg_match_all('/\bCOMMIT\b/i', $limpio));
+                $this->assertSame(0, preg_match('/^\s*(BEGIN|ROLLBACK|SAVEPOINT|SET\s+AUTOCOMMIT|CREATE|ALTER|DROP|TRUNCATE)\b/im', $limpio), 'Sin commits implícitos ni transacciones alternativas.');
+            }
+            $orden[] = $parte;
         }
         $this->assertNotEmpty($articulos);
-        $this->assertNotEmpty($cuenta);
+        $this->assertCount(1, $cuenta);
+        // Sólo el legado explícitamente identificado se ejecuta siguiendo SU encabezado.
+        // El formato nuevo se ejecuta en orden físico, sin arreglarle el respaldo al producto.
+        return $legacy ? array_merge($articulos, $cuenta) : $orden;
+    }
+
+    protected function ejecutar_reversion($sql, $exigir_nuevo = false)
+    {
+        $bloques = $this->bloques_reversion($sql, $exigir_nuevo);
+        $this->assertSame(0, DB::connection()->transactionLevel());
+        $pdo = DB::connection()->getPdo();
+        $this->assertFalse($pdo->inTransaction(), 'No envolver el respaldo en una transacción del fixture.');
         try {
-            foreach (array_merge($articulos, $cuenta) as $bloque) {
+            foreach ($bloques as $bloque) {
                 $pdo->exec($bloque);
                 $this->assertFalse($pdo->inTransaction(), 'Cada bloque entregado debe terminar confirmado.');
             }
@@ -111,10 +141,37 @@ abstract class RollbackIntegracionTestCase extends TestCase
             throw $error;
         }
     }
+
+    protected function foto_comercial($dueno_id, array $ids, array $variantes = [])
+    {
+        // Recalcular también IDs nuevos: un insert residual no puede quedar fuera de la foto.
+        $ids = array_values(array_unique(array_merge($ids, DB::table('articles')->where('user_id', $dueno_id)->pluck('id')->all())));
+        $variantes = array_values(array_unique(array_merge($variantes, DB::table('article_variants')->whereIn('article_id', $ids)->pluck('id')->all())));
+        $usuarios = DB::table('users')->where('id', $dueno_id)->orWhere('owner_id', $dueno_id)->pluck('id')->all();
+        return [
+            'usuarios' => $this->foto('users', 'id', $usuarios),
+            'direcciones' => $this->foto('addresses', 'user_id', [$dueno_id]),
+            'articulos' => $this->foto('articles', 'id', $ids),
+            'variantes' => $this->foto('article_variants', 'id', $variantes),
+            'filas' => $this->foto('address_article', 'article_id', $ids),
+            'filas_variantes' => $this->foto('address_article_variant', 'article_variant_id', $variantes),
+            'movimientos' => $this->foto('stock_movements', 'article_id', $ids),
+        ];
+    }
+
 }
 
 class RollbackHistorialMigracionTest extends RollbackIntegracionTestCase
 {
+    public function test_respaldo_nuevo_entrega_orden_fisico_y_transacciones_completas()
+    {
+        $dueno = $this->nuevo_dueno();
+        $this->nuevo_articulo($dueno, ['stock' => 12]);
+        $sql = $this->migrar_y_leer('listas:migrar-a-precio-final', $dueno);
+        // El legado sirve para diagnosticar P1/P2, nunca acredita el contrato nuevo.
+        $this->bloques_reversion($sql, true);
+    }
+
     public function test_reversion_no_deja_detalles_huerfanos_ni_borra_historial_ajeno()
     {
         $dueno = $this->nuevo_dueno();
