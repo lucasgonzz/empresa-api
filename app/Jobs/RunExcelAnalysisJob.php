@@ -23,6 +23,8 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use App\Http\Controllers\Helpers\import\article\AnalisisDePrecioDelExcel;
+
 
 /**
  * Job que ejecuta en segundo plano el análisis (y, desde el prompt 03, también la
@@ -664,6 +666,29 @@ class RunExcelAnalysisJob implements ShouldQueue
                 'provider_codes_existentes_otros_proveedores' => $stats['provider_codes_existentes_otros_proveedores'] ?? 0,
                 'formatos_numericos'                          => $formatos_numericos,
             ];
+
+            /*
+             * Misión importacion-formula-precio (20/11/2026): análisis algorítmico, sin IA, de cómo
+             * se llega al precio de venta, de cómo están escritos los descuentos y de los códigos de
+             * barras repetidos. Una clave nueva: la SPA vieja la ignora. Si falla devuelve null y el
+             * paso 3 se dibuja como siempre.
+             */
+            if (!empty($column_mapping)) {
+                $run->update([
+                    'progreso' => 85,
+                    'paso'     => 'Analizando cómo se calcula el precio…',
+                ]);
+                $this->etapa_del_proceso_en_segundo_plano($run, 'Analizando cómo se calcula el precio…', 85);
+
+                $resultado['analisis_de_precio'] = AnalisisDePrecioDelExcel::analizar(
+                    $excel_full_path,
+                    $column_mapping,
+                    [
+                        'hoja'            => $opciones['hoja'],
+                        'fila_encabezado' => $opciones['fila_encabezado'],
+                    ]
+                );
+            }
 
             /*
              * El paso 3 se dibuja con el mapeo que confirmó el usuario, no con el que propuso la
