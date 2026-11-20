@@ -462,34 +462,9 @@ class AfipWsfeHelper extends Controller
             return false;
         }
 
-        $respuesta = $afip_result->FECAESolicitarResult;
-
-        $cabecera = json_decode(json_encode(isset($respuesta->FeCabResp) ? $respuesta->FeCabResp : null), true);
-
-        $detalle = json_decode(json_encode(isset($respuesta->FeDetResp) ? $respuesta->FeDetResp : null), true);
-
         // 🔴 Cualquier señal de autorización en la respuesta (CAE, o `Resultado = 'A'` en la cabecera O en el
-        // detalle) deja el intento incierto. Mirar sólo la cabecera dejaba rechazar una respuesta
-        // contradictoria (600 + `FECAEDetResponse->Resultado = 'A'` sin CAE) y habilitaba borrar/reemitir un
-        // comprobante que ARCA dice haber autorizado. Se recorre todo el árbol porque SoapClient entrega
-        // `FECAEDetResponse` como nodo único o como lista, y `FeDetResp` puede venir como lista. No lo
-        // simplifiques a `->FeCabResp->Resultado`.
-        $trae_autorizacion = false;
-
-        foreach ([$cabecera, $detalle] as $nodo) {
-            if (is_array($nodo)) {
-                array_walk_recursive($nodo, function ($valor, $clave) use (&$trae_autorizacion) {
-                    if ($clave === 'CAE' && trim((string) $valor) !== '') {
-                        $trae_autorizacion = true;
-                    }
-                    if ($clave === 'Resultado' && strtoupper(trim((string) $valor)) === 'A') {
-                        $trae_autorizacion = true;
-                    }
-                });
-            }
-        }
-
-        if ($trae_autorizacion) {
+        // detalle) deja el intento incierto: ver `respuesta_trae_autorizacion()`.
+        if ($this->respuesta_trae_autorizacion($afip_result)) {
             return false;
         }
 
@@ -520,6 +495,74 @@ class AfipWsfeHelper extends Controller
         $this->afip_ticket->refresh();
 
         return true;
+    }
+
+    /**
+     * Indica si la respuesta de `FECAESolicitar` trae ALGUNA señal de que ARCA autorizó el comprobante:
+     * un `CAE` no vacío o un `Resultado = 'A'`, en la cabecera o en el detalle.
+     *
+     * 🔴 Mirar sólo la cabecera dejaba rechazar una respuesta contradictoria (600 +
+     * `FECAEDetResponse->Resultado = 'A'` sin CAE) y habilitaba borrar/reemitir un comprobante que ARCA dice
+     * haber autorizado. Se recorre todo el árbol porque SoapClient entrega `FECAEDetResponse` como nodo único o
+     * como lista, y `FeDetResp` puede venir como lista. No lo simplifiques a `->FeCabResp->Resultado`.
+     *
+     * No tiene estado: decide sólo con la respuesta que recibe, así que `checkErrors()` y
+     * `update_afip_ticket()` llegan a la misma conclusión sobre la misma respuesta.
+     *
+     * @param  mixed $afip_result Respuesta deserializada de `FECAESolicitar` (con `FECAESolicitarResult`).
+     * @return bool true si la respuesta trae CAE o `Resultado = 'A'`.
+     */
+    protected function respuesta_trae_autorizacion($afip_result)
+    {
+        $respuesta = $afip_result->FECAESolicitarResult;
+
+        $cabecera = json_decode(json_encode(isset($respuesta->FeCabResp) ? $respuesta->FeCabResp : null), true);
+
+        $detalle = json_decode(json_encode(isset($respuesta->FeDetResp) ? $respuesta->FeDetResp : null), true);
+
+        $trae_autorizacion = false;
+
+        foreach ([$cabecera, $detalle] as $nodo) {
+            if (is_array($nodo)) {
+                array_walk_recursive($nodo, function ($valor, $clave) use (&$trae_autorizacion) {
+                    if ($clave === 'CAE' && trim((string) $valor) !== '') {
+                        $trae_autorizacion = true;
+                    }
+                    if ($clave === 'Resultado' && strtoupper(trim((string) $valor)) === 'A') {
+                        $trae_autorizacion = true;
+                    }
+                });
+            }
+        }
+
+        return $trae_autorizacion;
+    }
+
+    /**
+     * Indica si la respuesta de `FECAESolicitar` es contradictoria: trae un 600 de autenticación entre los
+     * `Err` Y a la vez una señal de autorización (CAE o `Resultado = 'A'`).
+     *
+     * `checkErrors()` ya no marca `R` en ese caso, pero `update_afip_ticket()` escribe después, con sólo la
+     * cabecera en `R`. Con este método esa segunda escritura se salta y el intento sigue incierto (protegido
+     * contra el borrado y la reemisión) hasta que una consulta posterior informe el CAE. No tiene estado y no
+     * adopta el CAE contradictorio.
+     *
+     * @param  mixed $afip_result Respuesta deserializada de `FECAESolicitar` (con `FECAESolicitarResult`).
+     * @return bool true si hay un 600 y además una señal de autorización.
+     */
+    protected function autorizacion_incierta_con_600($afip_result)
+    {
+        $errores = isset($afip_result->FECAESolicitarResult->Errors) ? $afip_result->FECAESolicitarResult->Errors : null;
+
+        $hay_600 = false;
+
+        foreach ($this->errores_de_arca($errores) as $error) {
+            if ((string) $error['Code'] === self::ARCA_AUTENTICACION_RECHAZADA) {
+                $hay_600 = true;
+            }
+        }
+
+        return $hay_600 && $this->respuesta_trae_autorizacion($afip_result);
     }
 
     /**
@@ -1165,6 +1208,12 @@ class AfipWsfeHelper extends Controller
      * cuando la venta se factura con otro tipo o numero. No se escribe `importe_iva`: un rechazo no
      * declara IVA, y todos los lectores de esa columna filtran `resultado = 'A'`.
      *
+     * 🔴 Excepción (misión arca-facturas-fallidas, 20/11/2026): si la respuesta es contradictoria (un 600 de
+     * autenticación MÁS una señal de autorización, ver `autorizacion_incierta_con_600()`), la rama `R` no
+     * escribe nada. `checkErrors()` ya había dejado ese intento incierto a propósito; escribir `R` acá lo
+     * volvía borrable y reemitible aunque ARCA diga haber autorizado el comprobante (duplicado fiscal). No lo
+     * simplifiques a «cabecera en R ⇒ R».
+     *
      * @param  mixed  $afip_result Respuesta deserializada de `FECAESolicitar`.
      * @param  array  $importes
      * @param  string $moneda_id
@@ -1172,7 +1221,8 @@ class AfipWsfeHelper extends Controller
      * @return void
      */
     function update_afip_ticket($afip_result, $importes, $moneda_id, $result) {
-        if (isset($afip_result->FECAESolicitarResult->FeCabResp) && $afip_result->FECAESolicitarResult->FeCabResp->Resultado == 'R') {
+        if (isset($afip_result->FECAESolicitarResult->FeCabResp) && $afip_result->FECAESolicitarResult->FeCabResp->Resultado == 'R'
+            && !$this->autorizacion_incierta_con_600($afip_result)) {
             $this->afip_ticket->update([
                 'resultado'         => 'R',
                 'request'           => $result['request'],
