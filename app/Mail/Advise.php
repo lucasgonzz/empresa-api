@@ -3,15 +3,15 @@
 namespace App\Mail;
 
 use App\Http\Controllers\Helpers\PriceTypeHelper;
+use App\Http\Controllers\Helpers\ImagenParaMailHelper;
+use App\Http\Controllers\Helpers\ColorDeMailHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Models\Article;
 use App\Models\OnlineConfiguration;
 use App\Models\User;
 use Illuminate\Bus\Queueable;
-use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Mail\Mailable;
 use Illuminate\Queue\SerializesModels;
-use Illuminate\Support\Facades\Log;
 
 class Advise extends Mailable
 {
@@ -44,22 +44,18 @@ class Advise extends Mailable
      */
     public function build()
     {
-        Log::info('Se envio mail advise');
-
         // El $article puede llegar como stdClass parcial desde algunos callers de stock
         // (ver ArticleHelper::checkAdvises). Re-fetch del modelo real con imagenes para
         // garantizar name, slug, final_price e images.
         $article = Article::with('images')->find($this->article->id);
         if (is_null($article)) {
-            $article = $this->article;
+            throw new \RuntimeException('Advise: articulo persistido no disponible');
         }
 
-        // Owner del articulo = el negocio. Primero la sesion (flujo normal desde el ERP);
-        // si no hay (job async a futuro), se resuelve del user_id del articulo.
-        $user = UserHelper::getFullModel();
-        if (is_null($user) && isset($article->user_id)) {
-            $user = User::where('id', $article->user_id)->withAll()->first();
-        }
+        // La sesión puede pertenecer a otro comercio; sólo manda el dueño persistido.
+        $user = isset($article->user_id)
+            ? User::where('id', $article->user_id)->withAll()->first()
+            : null;
         if (is_null($user)) {
             throw new \Exception('Advise::build - no se pudo resolver el usuario para el articulo id '.$this->article->id);
         }
@@ -69,25 +65,31 @@ class Advise extends Mailable
             $configuration = OnlineConfiguration::where('user_id', $user->id)->first();
         }
 
-        // Logo: primero el de la tienda online, si no el del sistema (mismo criterio que los mails de pedido).
-        $logo_url = (!is_null($configuration) && !empty($configuration->logo_url))
-            ? $configuration->logo_url
-            : $user->image_url;
-        if (empty($logo_url)) {
-            $logo_url = null;
+        $origin = config('app.url');
+        $hosts = (array) config('mail.image_allowed_hosts', []);
+        foreach ([$origin, config('filesystems.disks.public.url'), config('filesystems.disks.s3.url')] as $publicOrigin) {
+            $safe = ImagenParaMailHelper::publicUrl($publicOrigin);
+            if ($safe !== null) {
+                $hosts[] = strtolower(parse_url($safe, PHP_URL_HOST));
+            }
         }
+        $hosts = array_values(array_unique(array_filter($hosts, 'is_string')));
+        $helper = app(ImagenParaMailHelper::class);
+        $logo = null;
+        foreach ([$configuration ? $configuration->logo_url : null, $user->image_url] as $source) {
+            if (!empty($source)) {
+                $logo = $helper->prepare($source, $origin, $hosts);
+                if ($logo !== null) {
+                    break;
+                }
+            }
+        }
+        $palette = ColorDeMailHelper::palette($configuration ? $configuration->primary_color : null);
 
-        // Acento = color primario de la tienda del cliente (nunca un color de ComercioCity).
-        $accent_color = (!is_null($configuration) && !empty($configuration->primary_color))
-            ? $configuration->primary_color
-            : '#111827';
-
-        // Imagen del articulo: primera imagen, si no la imagen por defecto de la tienda.
-        $image_url = null;
-        if (isset($article->images) && count($article->images) > 0 && !empty($article->images[0]->image_url)) {
-            $image_url = $article->images[0]->image_url;
-        } else if (!is_null($configuration) && !empty($configuration->default_article_image_url)) {
-            $image_url = $configuration->default_article_image_url;
+        // hosting_url es el contrato real de Image; jamás usar el placeholder como artículo.
+        $image = null;
+        if (isset($article->images) && count($article->images) > 0) {
+            $image = $helper->prepare($article->images[0]->hosting_url, $origin, $hosts);
         }
 
         // Precio solo si el negocio NO trabaja con listas de precio (con listas el precio
@@ -105,16 +107,17 @@ class Advise extends Mailable
         // Link al articulo en la tienda: solo en produccion y si la tienda tiene URL configurada.
         $article_url = null;
         if (config('app.APP_ENV') == 'production' && !empty($user->online) && isset($article->slug)) {
-            $article_url = $user->online.'/articulos/'.$article->slug.'/'.$user->id;
+            $article_url = ImagenParaMailHelper::publicUrl(rtrim($user->online, '/').'/articulos/'.rawurlencode($article->slug).'/'.$user->id);
         }
 
         return $this->subject('Volvió el stock de '.$article->name)
                     ->view('emails.articles.advise', [
                         'company_name'   => $user->company_name,
-                        'logo_url'       => $logo_url,
-                        'accent_color'   => $accent_color,
+                        'logo'           => $logo,
+                        'accent_color'   => $palette['background'],
+                        'cta_text_color' => $palette['text'],
                         'article_name'   => $article->name,
-                        'image_url'      => $image_url,
+                        'image'          => $image,
                         'mostrar_precio' => $mostrar_precio,
                         'precio'         => $precio,
                         'article_url'    => $article_url,
