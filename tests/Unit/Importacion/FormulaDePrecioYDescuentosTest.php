@@ -58,6 +58,8 @@ class FormulaDePrecioYDescuentosTest extends TestCase
         // Un positivo en una columna con signo es un recargo: queda como descuento negativo.
         $this->assertSame('25_-5', DescuentosDelExcel::normalizar_celda('-25+5', true));
         $this->assertSame('0', DescuentosDelExcel::normalizar_celda('0', true));
+        // Un «-» solo es «sin descuento»: no se convierte en una celda vacía.
+        $this->assertSame('-', DescuentosDelExcel::normalizar_celda('-', true));
         $this->assertNull(DescuentosDelExcel::normalizar_celda('', true));
     }
 
@@ -146,18 +148,14 @@ class FormulaDePrecioYDescuentosTest extends TestCase
         $this->assertTrue(CodigosDeBarraRepetidos::se_omite($mapa, '54', '0054_1'));
         $this->assertFalse(CodigosDeBarraRepetidos::se_omite($mapa, '7790001', 'PC-1'), 'Un código único se sigue usando.');
         $this->assertFalse(CodigosDeBarraRepetidos::se_omite($mapa, '68083', 'X'), 'Sin un código de proveedor que distinga, sigue por barras.');
+        // «111111111» no tiene trato especial: es un repetido más, y acá lo distingue el código de proveedor.
+        $this->assertTrue(CodigosDeBarraRepetidos::se_omite($mapa, '111111111', 'A'));
 
         $resumen = $repetidos->resumen();
-        $this->assertSame(2, $resumen['grupos']);
-        $this->assertSame(5, $resumen['filas']);
-        $this->assertSame(2, $resumen['filas_por_codigo_de_proveedor']);
+        $this->assertSame(3, $resumen['grupos'], '«0» es un placeholder: no cuenta como código.');
+        $this->assertSame(7, $resumen['filas']);
+        $this->assertSame(4, $resumen['filas_por_codigo_de_proveedor']);
         $this->assertSame(3, $resumen['filas_que_se_pisan']);
-        $this->assertSame(3, $resumen['codigos_de_relleno']);
-
-        $this->assertNull(CodigosDeBarraRepetidos::normalizar_codigo_de_barras('111111111'));
-        $this->assertNull(CodigosDeBarraRepetidos::normalizar_codigo_de_barras('0'));
-        $this->assertSame('7790001', CodigosDeBarraRepetidos::normalizar_codigo_de_barras('7790001'));
-        $this->assertSame('111', CodigosDeBarraRepetidos::normalizar_codigo_de_barras('111'));
     }
 
     /**
@@ -193,7 +191,7 @@ class FormulaDePrecioYDescuentosTest extends TestCase
 
         $data = ['bar_code' => '111111111', 'provider_code' => 'Z'];
         $this->invocar_por_referencia($procesador, 'aplicar_barras_repetidas_por_codigo_de_proveedor', $data);
-        $this->assertArrayNotHasKey('bar_code', $data, 'Un código de relleno no se carga.');
+        $this->assertSame('111111111', $data['bar_code'], 'Fuera del mapa, el código de barras se carga como siempre.');
 
         @unlink($ruta);
 
@@ -201,6 +199,11 @@ class FormulaDePrecioYDescuentosTest extends TestCase
         $sin_opciones = $this->procesador(['descuentos' => 1], []);
         $fila = $this->invocar($sin_opciones, 'normalizar_celdas_de_descuentos_y_recargos', [['X', '-25+-30']]);
         $this->assertSame('-25_-30', $fila[1]);
+        // Sin «+» ni «;» y sin la opción, la celda llega intacta a los lectores de siempre.
+        foreach (['10 5', '-33', '10%', '1.500', 12.5] as $celda) {
+            $fila = $this->invocar($sin_opciones, 'normalizar_celdas_de_descuentos_y_recargos', [['X', $celda]]);
+            $this->assertSame($celda, $fila[1]);
+        }
         $data = ['bar_code' => '111111111', 'provider_code' => 'Z'];
         $this->invocar_por_referencia($sin_opciones, 'aplicar_barras_repetidas_por_codigo_de_proveedor', $data);
         $this->assertSame('111111111', $data['bar_code']);

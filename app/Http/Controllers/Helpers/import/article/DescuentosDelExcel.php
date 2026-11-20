@@ -46,16 +46,21 @@ class DescuentosDelExcel
             return [self::numero_como_texto($texto)];
         }
 
-        // Comilla de texto de Excel al principio, «%» y espacios no aportan nada al valor.
-        $limpio = str_replace(['%', ' ', "\xC2\xA0"], '', trim((string) $texto));
+        // La comilla de texto de Excel al principio y el «%» no aportan nada al valor.
+        $limpio = str_replace('%', '', trim((string) $texto));
         $limpio = ltrim($limpio, "'´`");
 
         // Partes separadas por cualquiera de los separadores aceptados.
         $partes = preg_split(self::PATRON_SEPARADORES, $limpio);
 
-        // Se descartan las vacías («-25+» o un «+5» inicial dejan una parte vacía).
+        /*
+         * Cada parte se recorta en los bordes («-25 + -30»), pero los espacios de adentro se
+         * dejan: un espacio puede ser separador de miles en un monto y lo interpreta el parseo
+         * de números de siempre. Se descartan las vacías («-25+» o un «+5» inicial).
+         */
         $resultado = [];
         foreach ($partes as $parte) {
+            $parte = trim(str_replace("\xC2\xA0", ' ', $parte));
             if ($parte !== '') {
                 $resultado[] = $parte;
             }
@@ -100,6 +105,11 @@ class DescuentosDelExcel
      */
     public static function invertir_signo($parte)
     {
+        // Un «-» solo no es un número: es la marca de «sin descuento» y se deja como viene.
+        if ($parte === '-') {
+            return $parte;
+        }
+
         if (substr($parte, 0, 1) === '-') {
             return substr($parte, 1);
         }

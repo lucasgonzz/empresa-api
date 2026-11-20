@@ -34,17 +34,6 @@ class CodigosDeBarraRepetidos
      */
     protected $ejemplos = [];
 
-    /**
-     * Cantidad de códigos de barras descartados por ser de relleno («0», «111111111»).
-     * @var int
-     */
-    protected $de_relleno = 0;
-
-    /**
-     * Valores de relleno distintos encontrados, para mostrarlos.
-     * @var array<string, int>
-     */
-    protected $valores_de_relleno = [];
 
     /**
      * Agrega una fila del Excel al análisis.
@@ -57,15 +46,10 @@ class CodigosDeBarraRepetidos
      */
     public function agregar($codigo_de_barras, $codigo_de_proveedor, $fila = null, $nombre = null)
     {
-        $crudo = is_null($codigo_de_barras) ? '' : trim((string) $codigo_de_barras);
-        $barras = self::normalizar_codigo_de_barras($codigo_de_barras);
+        // Misma normalización que ProcessRow aplica a los identificadores (placeholders fuera).
+        $barras = IdentifierNormalizer::normalize($codigo_de_barras);
 
         if (is_null($barras)) {
-            // Distingue «no trae código» de «trae un código de relleno».
-            if ($crudo !== '') {
-                $this->de_relleno++;
-                $this->valores_de_relleno[$crudo] = ($this->valores_de_relleno[$crudo] ?? 0) + 1;
-            }
             return;
         }
 
@@ -81,30 +65,6 @@ class CodigosDeBarraRepetidos
                 'codigo_de_proveedor' => $proveedor,
             ];
         }
-    }
-
-    /**
-     * Normaliza un código de barras: además de los placeholders de IdentifierNormalizer, descarta
-     * los códigos de relleno formados por un mismo dígito repetido («1111», «111111111», «0000»).
-     * Ningún EAN/UPC real es un mismo dígito repetido, y un código así compartido por cientos de
-     * artículos solo sirve para pisarlos entre sí.
-     *
-     * @param  mixed $valor
-     * @return string|null
-     */
-    public static function normalizar_codigo_de_barras($valor)
-    {
-        $limpio = IdentifierNormalizer::normalize($valor);
-
-        if (is_null($limpio)) {
-            return null;
-        }
-
-        if (preg_match('/^(\d)\1{3,}$/', $limpio)) {
-            return null;
-        }
-
-        return $limpio;
     }
 
     /**
@@ -140,7 +100,7 @@ class CodigosDeBarraRepetidos
      *
      * @return array{
      *   grupos: int, filas: int, filas_por_codigo_de_proveedor: int, filas_que_se_pisan: int,
-     *   codigos_de_relleno: int, valores_de_relleno: array, ejemplos: array
+     *   ejemplos: array
      * }
      */
     public function resumen()
@@ -174,16 +134,11 @@ class CodigosDeBarraRepetidos
             }
         }
 
-        // Los rellenos más frecuentes primero.
-        arsort($this->valores_de_relleno);
-
         return [
             'grupos'                        => $grupos,
             'filas'                         => $filas,
             'filas_por_codigo_de_proveedor' => $por_proveedor,
             'filas_que_se_pisan'            => $filas - $por_proveedor,
-            'codigos_de_relleno'            => $this->de_relleno,
-            'valores_de_relleno'            => array_slice($this->valores_de_relleno, 0, 5, true),
             'ejemplos'                      => $ejemplos,
         ];
     }
