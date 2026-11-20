@@ -47,6 +47,25 @@ class AsistenteCanalHelper
      */
     const HORAS_CORTE = 6;
 
+    /**
+     * Segundos dentro de los cuales un mensaje del dueño es parte de la MISMA tanda que el anterior (misión
+     * asistente-diario-20261119, rama B, A6): no abre conversación nueva, ni por el tema ni por la carrera de dos
+     * mensajes que entran casi juntos.
+     *
+     * 🔴 EL CASO REAL (Ferre Total, 18/11/2026, conv 62 y 63). La lista de 37 renglones (11:15:51) y el audio «¿Me
+     * podés preparar un presupuesto… con estos productos?» (11:16:05) quedaron en dos conversaciones: cada una
+     * perdió lo de la otra y el presupuesto nunca se armó.
+     *
+     * POR QUÉ TRES MINUTOS. Por WhatsApp el dueño manda en ráfagas: el texto, la foto, el audio que lo explica;
+     * entre uno y otro pasan segundos o, con un audio largo, uno o dos minutos. Tres minutos cubren la ráfaga
+     * (el caso real fueron 14 segundos) y siguen dejando que un tema nuevo de verdad abra su hilo apenas el dueño
+     * hizo una pausa. El error de este lado es barato (una conversación algo más larga, que es exactamente lo que
+     * HiloPorTemaIaHelper acepta "ante la duda"); el del otro lado —partir una tarea— es el que costó un
+     * presupuesto. El plan de la misión sugería «por ejemplo 10»: se eligió más corto para no tapar los cambios de
+     * tema de un dueño que escribe seguido (dos consultas distintas en cinco minutos son comunes en Ferre Total).
+     */
+    const SEGUNDOS_DE_LA_RAFAGA = 180;
+
     /** Slug de la extensión que gatea el módulo IA, igual que el resto del asistente. */
     const EXTENSION = 'agentes_ia';
 
@@ -213,6 +232,46 @@ class AsistenteCanalHelper
 
         // Si el hilo más reciente se trasladó, no retoma un tema anterior por accidente.
         return $ultima && $ultima->sistema_exclusivo_at === null ? $ultima : null;
+    }
+
+    /**
+     * true si la conversación tuvo actividad hace menos de SEGUNDOS_DE_LA_RAFAGA: el mensaje nuevo es parte de la
+     * misma tanda (ver la constante).
+     *
+     * Se mide con `last_message_at`, que es el mismo reloj del corte por HORAS_CORTE: lo escribe el alta de cada
+     * mensaje del dueño por este canal (AdminSync\AsistenteController::guardar_turno(), ANTES de que el asistente
+     * conteste: por eso también cubre la respuesta que todavía se está escribiendo) y también un aviso o un
+     * recordatorio que el asistente le acaba de mandar. Que un aviso de hace un minuto no deje cortar está bien: lo
+     * más probable es que el dueño le esté contestando a ese aviso («ponele 4 a cada uno»).
+     *
+     * @param  \App\Models\AiConversation  $conversacion
+     * @return bool
+     */
+    public static function es_de_la_rafaga(AiConversation $conversacion): bool
+    {
+        if (is_null($conversacion->last_message_at) || (string) $conversacion->last_message_at === '') {
+
+            return false;
+        }
+
+        return Carbon::parse($conversacion->last_message_at)->gte(Carbon::now()->subSeconds(self::SEGUNDOS_DE_LA_RAFAGA));
+    }
+
+    /**
+     * La conversación de WhatsApp vigente del dueño SI el dueño escribió ahí hace menos de SEGUNDOS_DE_LA_RAFAGA, o
+     * null. La usa AdminSync\AsistenteController ADENTRO de la transacción que bloquea al dueño, cuando la elección
+     * de afuera dio «conversación nueva»: dos mensajes que entran casi juntos (cada uno con su request) eligen la
+     * conversación en paralelo, antes de que el otro haya guardado nada, y los dos terminaban creando una. Con el
+     * dueño bloqueado, el segundo ve la conversación que acaba de crear el primero y entra ahí.
+     *
+     * @param  \App\Models\User  $dueno
+     * @return \App\Models\AiConversation|null
+     */
+    public static function conversacion_de_la_rafaga(User $dueno)
+    {
+        $vigente = self::conversacion_vigente($dueno, true);
+
+        return (!is_null($vigente) && self::es_de_la_rafaga($vigente)) ? $vigente : null;
     }
 
     /**

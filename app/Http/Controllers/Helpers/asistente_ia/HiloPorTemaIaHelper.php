@@ -196,6 +196,22 @@ class HiloPorTemaIaHelper
         }
 
         /*
+         * 🔴 GUARDA DE LA RÁFAGA (misión asistente-diario-20261119, rama B, A6; Ferre Total conv 62 y 63). Pablo
+         * pegó una lista de 37 renglones (11:15:51) y 14 segundos después mandó el audio «¿Me podés preparar un
+         * presupuesto para Fideicomiso El Cantón con estos productos?» (11:16:05). La respuesta a la lista todavía
+         * se estaba escribiendo, el modelo de esta decisión vio solo la lista contra un pedido de presupuesto y
+         * contestó «nueva»: el audio abrió la conv 63, que pidió «los productos» (estaban en la 62), y la 62 pidió el
+         * cliente (estaba en la 63). Nunca se armó el presupuesto.
+         *
+         * Mensajes que llegan a pocos minutos del anterior del dueño son una misma tanda: no se cortan, sin gastar
+         * la llamada. Ver AsistenteCanalHelper::es_de_la_rafaga().
+         */
+        if (AsistenteCanalHelper::es_de_la_rafaga($vigente)) {
+
+            return 'el dueño escribió en esta conversación hace menos de ' . AsistenteCanalHelper::SEGUNDOS_DE_LA_RAFAGA . ' segundos';
+        }
+
+        /*
          * 🔴 GUARDA 1 del plan, LA MÁS IMPORTANTE DE TODAS — hay una tarjeta esperando el "dale".
          *
          * Cortar acá rompe la confirmación por texto: el "dale" caería en un hilo nuevo y

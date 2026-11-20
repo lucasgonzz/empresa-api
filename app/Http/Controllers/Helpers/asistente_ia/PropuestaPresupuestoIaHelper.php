@@ -138,8 +138,29 @@ class PropuestaPresupuestoIaHelper
             return $lista;
         }
 
+        $items = EntradaDeCargaIa::valor($input, 'items');
+
+        /*
+         * Misión asistente-diario-20261119 (rama B, A6): «poné lo que interpretes y yo después lo reviso». Con
+         * `con_lo_que_encuentres`, cada renglón se resuelve por separado: el ambiguo va con su mejor coincidencia y
+         * el que no se encuentra queda afuera y se lista aparte. Ver interpretar_items().
+         */
+        $interpretacion = null;
+
+        if (self::pide_lo_que_encuentres($input)) {
+
+            $interpretacion = self::interpretar_items($contexto, $items, $lista);
+
+            if (RespuestaDeCargaIa::es_negativa($interpretacion)) {
+
+                return $interpretacion;
+            }
+
+            $items = $interpretacion['items'];
+        }
+
         /* Sin cobro no hay descuento de método de pago: el tercer argumento va en null a propósito. */
-        $renglones = PropuestaVentaIaHelper::resolver_renglones($contexto, EntradaDeCargaIa::valor($input, 'items'), $lista, null, $faltan, $opciones);
+        $renglones = PropuestaVentaIaHelper::resolver_renglones($contexto, $items, $lista, null, $faltan, $opciones);
 
         if (RespuestaDeCargaIa::es_negativa($renglones)) {
 
@@ -177,6 +198,12 @@ class PropuestaPresupuestoIaHelper
 
         $extra = [];
 
+        if (!is_null($interpretacion)) {
+
+            $presentacion = self::con_lo_interpretado($presentacion, $interpretacion);
+            $extra = array_merge($extra, self::extra_de_lo_interpretado($interpretacion));
+        }
+
         if (!is_null($anterior)) {
 
             $aviso = 'Este es un presupuesto NUEVO: el N° ' . $anterior['numero'] . ' sigue existiendo. Si querías corregirlo, después podés borrar el anterior.';
@@ -207,6 +234,253 @@ class PropuestaPresupuestoIaHelper
             . ' · ' . FormatoIaHelper::monto($totales['total']);
 
         return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // «Poné lo que interpretes» (misión asistente-diario-20261119, rama B, A6)
+    // -------------------------------------------------------------------------------------------
+
+    /**
+     * Cuántas otras opciones se le cuentan al modelo por renglón interpretado (para que la persona sepa qué más
+     * había).
+     */
+    const OTRAS_OPCIONES_POR_RENGLON = 3;
+
+    /**
+     * true si el modelo pidió armar el presupuesto con lo que se encuentre (`con_lo_que_encuentres`).
+     *
+     * @param  array  $input
+     * @return bool
+     */
+    protected static function pide_lo_que_encuentres(array $input): bool
+    {
+        $valor = EntradaDeCargaIa::valor($input, 'con_lo_que_encuentres');
+
+        return $valor === true || $valor === 1 || $valor === '1' || (is_string($valor) && in_array(mb_strtolower(trim($valor)), ['true', 'si', 'sí'], true));
+    }
+
+    /**
+     * Los renglones de una lista larga resueltos de a uno, con la mejor coincidencia para los ambiguos y los no
+     * encontrados aparte.
+     *
+     * 🔴 EL CASO REAL (Ferre Total, conv 62, 18/11/2026). Pablo mandó 37 renglones para un presupuesto de Fideicomiso
+     * El Cantón, dijo «Buscalo por nombre» y después «Poné lo que interpretes y yo después lo reviso y corrijo lo que
+     * haya que corregir». La herramienta cortaba con el PRIMER renglón que no existía («No encontré ningún artículo
+     * activo que se llame…») y preguntaba cada ambiguo, así que con una lista así no había forma de armar nada: el
+     * asistente pidió los códigos dos veces y el presupuesto nunca se armó, ni con lo que sí había.
+     *
+     * Con esta opción, cada renglón se resuelve por el MISMO camino que siempre (PropuestaVentaIaHelper::
+     * resolver_renglones(), uno por vez):
+     *   - el que se resuelve, queda tal cual;
+     *   - el AMBIGUO (varios artículos encajan) va con la primera opción, que es la mejor coincidencia —la búsqueda
+     *     ya ordena por la frase entera (BusquedaPorPalabrasIaHelper::ordenar_por_frase)— y queda anotado en
+     *     `interpretados` con lo que se eligió y las otras opciones, para que la persona lo revise;
+     *   - el que no se puede poner (no existe, no tiene precio, se vende por variante) queda AFUERA y anotado en
+     *     `no_encontrados` con su texto y el motivo.
+     *
+     * No inventa precios ni artículos: el precio de cada renglón sale de la lista, como siempre, y la tarjeta espera
+     * el sí como cualquier presupuesto (o se hace en el acto en "directo", que es lo de siempre para un presupuesto:
+     * no toca stock, ni caja, ni cuenta corriente). Si no se encuentra NINGUNO, es un error que lo dice.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  mixed  $items
+     * @param  \App\Models\PriceType|null  $lista
+     * @return array{items: array, interpretados: array, no_encontrados: array}|array  O la respuesta negativa.
+     */
+    protected static function interpretar_items(ContextoDeCargaIa $contexto, $items, $lista)
+    {
+        if (!is_array($items) || !count($items)) {
+
+            return RespuestaDeCargaIa::faltan(['qué artículos lleva el presupuesto y cuántos de cada uno']);
+        }
+
+        $quedan = [];
+        $interpretados = [];
+        $no_encontrados = [];
+
+        foreach (array_values($items) as $indice => $item) {
+
+            $item = is_array($item) ? $item : [];
+            $texto = EntradaDeCargaIa::texto($item, 'articulo');
+            $pedido = $texto !== '' ? $texto : 'renglón ' . ($indice + 1);
+
+            $faltan = [];
+            $opciones = [];
+            $resuelto = PropuestaVentaIaHelper::resolver_renglones($contexto, [$item], $lista, null, $faltan, $opciones);
+
+            if (RespuestaDeCargaIa::es_negativa($resuelto)) {
+
+                $no_encontrados[] = ['pedido' => $pedido, 'motivo' => self::motivo_de($resuelto)];
+                continue;
+            }
+
+            if (!count($faltan)) {
+
+                $quedan[] = $item;
+                continue;
+            }
+
+            /* Ambiguo: la primera opción es la mejor coincidencia. Se vuelve a resolver por su id (precio incluido). */
+            $candidatas = self::articulos_de_las_opciones($opciones);
+
+            if (!count($candidatas)) {
+
+                $no_encontrados[] = ['pedido' => $pedido, 'motivo' => 'no se pudo decidir a qué artículo corresponde'];
+                continue;
+            }
+
+            $elegida = $candidatas[0];
+            $con_id = $item;
+            $con_id['articulo_id'] = (int) $elegida['articulo_id'];
+            unset($con_id['articulo']);
+
+            $faltan = [];
+            $opciones = [];
+            $verificado = PropuestaVentaIaHelper::resolver_renglones($contexto, [$con_id], $lista, null, $faltan, $opciones);
+
+            if (RespuestaDeCargaIa::es_negativa($verificado) || count($faltan)) {
+
+                $no_encontrados[] = ['pedido' => $pedido, 'motivo' => self::motivo_de($verificado)];
+                continue;
+            }
+
+            $otras = [];
+
+            foreach (array_slice($candidatas, 1, self::OTRAS_OPCIONES_POR_RENGLON) as $otra) {
+
+                $otras[] = (string) $otra['nombre'];
+            }
+
+            $interpretados[] = ['pedido' => $pedido, 'elegido' => (string) $elegida['nombre'], 'otras_opciones' => $otras];
+            $quedan[] = $con_id;
+        }
+
+        if (!count($quedan)) {
+
+            $lista_de_pedidos = [];
+
+            foreach ($no_encontrados as $no) {
+
+                $lista_de_pedidos[] = '«' . $no['pedido'] . '»';
+            }
+
+            return RespuestaDeCargaIa::error(
+                'No encontré ninguno de los artículos de la lista entre los artículos activos con precio (' . implode(', ', array_slice($lista_de_pedidos, 0, 10))
+                    . (count($lista_de_pedidos) > 10 ? ' y ' . (count($lista_de_pedidos) - 10) . ' más' : '') . '), así que no hay presupuesto para armar. '
+                    . 'Contáselo así y ofrecé buscarlos con otra palabra o que te pase los códigos.'
+            );
+        }
+
+        return ['items' => $quedan, 'interpretados' => $interpretados, 'no_encontrados' => $no_encontrados];
+    }
+
+    /**
+     * Las opciones de artículos que devolvió un renglón ambiguo, en orden (la primera es la mejor coincidencia).
+     *
+     * @param  array|\stdClass  $opciones
+     * @return array<int, array{articulo_id: int, nombre: string}>
+     */
+    protected static function articulos_de_las_opciones($opciones): array
+    {
+        $opciones = is_object($opciones) ? (array) $opciones : $opciones;
+
+        if (!is_array($opciones) || !isset($opciones['articulos']) || !is_array($opciones['articulos'])) {
+
+            return [];
+        }
+
+        $articulos = [];
+
+        foreach ($opciones['articulos'] as $opcion) {
+
+            $opcion = is_object($opcion) ? (array) $opcion : $opcion;
+
+            if (is_array($opcion) && isset($opcion['articulo_id']) && (int) $opcion['articulo_id'] > 0) {
+
+                $articulos[] = ['articulo_id' => (int) $opcion['articulo_id'], 'nombre' => isset($opcion['nombre']) ? (string) $opcion['nombre'] : ''];
+            }
+        }
+
+        return $articulos;
+    }
+
+    /**
+     * El motivo legible de una respuesta negativa (el `error`, o lo primero que `faltan`).
+     *
+     * @param  mixed  $respuesta
+     * @return string
+     */
+    protected static function motivo_de($respuesta): string
+    {
+        if (is_array($respuesta) && !empty($respuesta['error'])) {
+
+            return (string) $respuesta['error'];
+        }
+
+        if (is_array($respuesta) && !empty($respuesta['faltan']) && is_array($respuesta['faltan'])) {
+
+            return 'falta saber ' . (string) $respuesta['faltan'][0];
+        }
+
+        return 'no se encontró';
+    }
+
+    /**
+     * La presentación de la tarjeta con dos renglones más: lo que se interpretó y lo que quedó afuera. Así la
+     * persona lo ve en la tarjeta (o en el texto por WhatsApp) antes de confirmar.
+     *
+     * @param  array  $presentacion
+     * @param  array  $interpretacion
+     * @return array
+     */
+    protected static function con_lo_interpretado(array $presentacion, array $interpretacion): array
+    {
+        $renglones = isset($presentacion['renglones']) && is_array($presentacion['renglones']) ? $presentacion['renglones'] : [];
+
+        if (count($interpretacion['interpretados'])) {
+
+            $partes = [];
+
+            foreach ($interpretacion['interpretados'] as $uno) {
+
+                $partes[] = '«' . $uno['pedido'] . '» → ' . $uno['elegido'];
+            }
+
+            $renglones[] = ['etiqueta' => 'Interpretados (revisar)', 'valor' => implode('; ', $partes)];
+        }
+
+        if (count($interpretacion['no_encontrados'])) {
+
+            $partes = [];
+
+            foreach ($interpretacion['no_encontrados'] as $no) {
+
+                $partes[] = '«' . $no['pedido'] . '»';
+            }
+
+            $renglones[] = ['etiqueta' => 'No encontrados (afuera)', 'valor' => implode('; ', $partes)];
+        }
+
+        $presentacion['renglones'] = $renglones;
+
+        return $presentacion;
+    }
+
+    /**
+     * Lo que viaja en la respuesta de la herramienta para que el modelo lo cuente.
+     *
+     * @param  array  $interpretacion
+     * @return array
+     */
+    protected static function extra_de_lo_interpretado(array $interpretacion): array
+    {
+        return [
+            'interpretados'  => $interpretacion['interpretados'],
+            'no_encontrados' => $interpretacion['no_encontrados'],
+            'nota_de_lo_interpretado' => 'Armaste el presupuesto con lo que encontraste, como pidió la persona. Contale en el mismo mensaje: '
+                . 'cuántos renglones entraron, los interpretados (lo que pidió → lo que pusiste) para que los revise, y los no '
+                . 'encontrados por su texto tal cual, que quedaron afuera. No le vuelvas a pedir los códigos: si quiere, los corrige él.',
+        ];
     }
 
     /**

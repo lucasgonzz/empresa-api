@@ -61,6 +61,11 @@ class ImagenPrometidaIaHelper
         'proponer_venta',
         'proponer_presupuesto',
         'proponer_envio_de_comprobante',
+        /*
+         * Misión asistente-diario-20261119 (rama C, M3): «te dejé la imagen en 500 × 500» habla de la foto que
+         * mandó la persona, ajustada de tamaño, no de una imagen generada que se haya prometido.
+         */
+        'ajustar_foto_a_medida',
     ];
 
     /** Dónde va lo que se genera, en los patrones (se reemplaza por QUE_SE_PIDE / QUE_SE_GENERA y sus pares). */

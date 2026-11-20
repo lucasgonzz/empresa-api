@@ -252,6 +252,29 @@ class AsistenteController extends Controller
             if ($conversation && $conversation->sistema_exclusivo_at !== null && $cita === (int) $conversation->id) {
                 return $this->conversacion_solo_sistema();
             }
+
+            /*
+             * 🔴 Misión asistente-diario-20261119 (rama B, A6): la elección de afuera corre SIN el candado, así que
+             * dos mensajes del dueño que entran casi juntos podían decidir «nueva» los dos (ninguno veía todavía la
+             * conversación del otro) y quedar en dos hilos. Acá, con el dueño ya bloqueado, si la elección dio
+             * «nueva» pero hay una conversación vigente donde el dueño escribió hace segundos, el mensaje entra ahí
+             * (AsistenteCanalHelper::SEGUNDOS_DE_LA_RAFAGA).
+             *
+             * Revisión independiente (19/11/2026), punto 2: EN LOS DOS SENTIDOS. Si el mensaje 1 abrió B («nueva») y el
+             * 2 eligió afuera A («sigue», antes de que B existiera), también quedaban partidos. Con el candado, la
+             * conversación de la ráfaga —la vigente con actividad más reciente del dueño en este canal— gana sobre lo
+             * que se eligió afuera, salvo que lo elegido sea la que CITÓ el admin (la intención explícita del dueño
+             * manda siempre).
+             */
+            $es_la_citada = $conversation && $cita > 0 && $cita === (int) $conversation->id;
+
+            if (!$es_la_citada) {
+                $de_la_rafaga = AsistenteCanalHelper::conversacion_de_la_rafaga($dueno);
+
+                if ($de_la_rafaga && (!$conversation || (int) $de_la_rafaga->id !== (int) $conversation->id)) {
+                    $conversation = $de_la_rafaga;
+                }
+            }
             if (!$conversation || $conversation->sistema_exclusivo_at !== null) {
                 $conversation = AsistenteCanalHelper::nueva_conversacion($dueno);
             }

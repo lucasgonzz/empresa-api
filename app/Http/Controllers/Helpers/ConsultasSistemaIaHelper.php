@@ -79,9 +79,12 @@ class ConsultasSistemaIaHelper
      * @param  int|null  $articulo_id  Opcional: el id del artículo. Manda sobre la búsqueda.
      * @param  bool  $con_costo  Misión asistente-mejoras-4-dias (P2): suma `costo` y `costo_es_por` (solo a
      *                           quien ve costos en la pantalla; el canal «sistema:» del admin no los pide).
+     * @param  int|null  $limite  Misión asistente-diario-20261119 (rama A, A3): cuántos por página (default
+     *                            MAX_RESULTS, techo TOPE_DURO_DE_RESULTADOS). El canal «sistema:» no lo manda.
+     * @param  int  $pagina  A3: la página, desde 1 (con el mismo orden siempre: frase, nombre, id).
      * @return array<int, array<string, mixed>>
      */
-    public static function stock_de_articulos(int $owner_id, string $busqueda, $articulo_id = null, $con_costo = false): array
+    public static function stock_de_articulos(int $owner_id, string $busqueda, $articulo_id = null, $con_costo = false, $limite = null, $pagina = 1): array
     {
         // Por id: ese artículo y nada más (si no es del dueño, lista vacía, como una búsqueda sin nada).
         if (!is_null($articulo_id) && (int) $articulo_id > 0) {
@@ -117,23 +120,23 @@ class ConsultasSistemaIaHelper
 
         $busqueda = trim($busqueda);
 
-        $articles_query = Article::query()
-            ->where('user_id', $owner_id)
-            ->where('status', 'active');
+        $articles_query = self::busqueda_de_articulos($owner_id, $busqueda);
 
-        // Si hay una palabra clave útil, se filtra por nombre / código de barras / código de proveedor.
-        // Por palabras sueltas y no por la frase pegada (misión asistente-altas-y-conversacion, 16/10/2026):
-        // "ducha gloa" tiene que encontrar DUCHA DE MANO METAL GLOA. Ver BusquedaPorPalabrasIaHelper.
+        // Lo que tiene la frase entera primero: con el tope de filas no puede quedar afuera.
         if ($busqueda !== '') {
-            BusquedaPorPalabrasIaHelper::filtrar($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
-
-            // Lo que tiene la frase entera primero: con el tope de filas no puede quedar afuera.
             BusquedaPorPalabrasIaHelper::ordenar_por_frase($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
         }
 
+        // A3 (asistente-diario-20261119): página y límite. Sin límite, MAX_RESULTS como siempre.
+        $limite = (int) $limite > 0 ? min((int) $limite, self::TOPE_DURO_DE_RESULTADOS) : self::MAX_RESULTS;
+        $pagina = max(1, (int) $pagina);
+
         $articles = $articles_query
             ->orderBy('name')
-            ->limit(self::MAX_RESULTS)
+            // A3: desempate por id, para que dos artículos con el mismo nombre no salten de página.
+            ->orderBy('id')
+            ->offset(($pagina - 1) * $limite)
+            ->limit($limite)
             ->get(['id', 'name', 'bar_code', 'provider_code', 'price', 'final_price', 'stock', 'online', 'slug']);
 
         // Misión asistente-omnisciente (21/9/2026): si el artículo tiene foto, en UNA consulta para
@@ -158,6 +161,115 @@ class ConsultasSistemaIaHelper
         }
 
         return $result;
+    }
+
+    /**
+     * La consulta de los artículos activos del dueño que encajan con la búsqueda, SIN orden ni tope: la
+     * comparten stock_de_articulos() (la lista) y contar_stock_de_articulos() (el total), así el total
+     * cuenta exactamente lo mismo que se lista.
+     *
+     * Si hay una palabra clave útil, se filtra por nombre / código de barras / código de proveedor. Por
+     * palabras sueltas y no por la frase pegada (misión asistente-altas-y-conversacion, 16/10/2026): "ducha
+     * gloa" tiene que encontrar DUCHA DE MANO METAL GLOA, y una medida «5X16» encuentra «5 X 16» (ver
+     * BusquedaPorPalabrasIaHelper::sin_simbolos()).
+     *
+     * @param  int  $owner_id
+     * @param  string  $busqueda  Ya recortada.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    protected static function busqueda_de_articulos(int $owner_id, string $busqueda)
+    {
+        $articles_query = Article::query()
+            ->where('user_id', $owner_id)
+            ->where('status', 'active');
+
+        if ($busqueda !== '') {
+            BusquedaPorPalabrasIaHelper::filtrar($articles_query, $busqueda, ['name', 'bar_code', 'provider_code']);
+        }
+
+        return $articles_query;
+    }
+
+    /**
+     * 🔴 CUÁNTOS ARTÍCULOS ENCAJAN CON LA BÚSQUEDA, EN TOTAL (misión asistente-diario-20261119, rama A, A3).
+     *
+     * EL CASO REAL (Ferre Total, 18/11/2026, conv. 72, msgs 676-681): «haceme un listado de los remaches».
+     * consultar_stock_de_articulos trajo 20 (el tope) sin decir cuántos había; el asistente contestó «son 20
+     * los que entran… puede haber más», armó el Excel sobre esa página y afirmó «no hay ningún remache cargado
+     * con medida 6». Había 9. Con el total, la herramienta dice `hay_mas` y el modelo pide la página siguiente
+     * o va al Excel por filtro, en vez de afirmar que algo no existe.
+     *
+     * @param  int  $owner_id
+     * @param  string  $busqueda
+     * @return int
+     */
+    public static function contar_stock_de_articulos(int $owner_id, string $busqueda): int
+    {
+        return (int) self::busqueda_de_articulos($owner_id, trim($busqueda))->count();
+    }
+
+    /**
+     * LA LISTA DE consultar_stock_de_articulos CON SU TOTAL (misión asistente-diario-20261119, rama A, A3).
+     *
+     * Devuelve la lista de stock_de_articulos() tal cual (el mismo array de filas de siempre) cuando entró
+     * TODO lo que encaja con la búsqueda. Si quedó algo afuera (o se pidió una página que no es la primera),
+     * la envuelve con el total:
+     *   {articulos_encontrados, articulos_en_esta_lista, pagina, hay_mas, articulos: [...], nota}
+     * La forma de lista se conserva cuando no hay más porque es la que ya conocen los tests y el modelo; la
+     * envoltura aparece justo cuando el modelo NO tiene todo, que es cuando tiene que saberlo.
+     *
+     * Por id (articulo_id) no hay total que contar: va la lista de un artículo como siempre.
+     *
+     * @param  int  $owner_id
+     * @param  string  $busqueda
+     * @param  int|null  $articulo_id
+     * @param  bool  $con_costo
+     * @param  int|null  $limite
+     * @param  int  $pagina
+     * @return array
+     */
+    public static function stock_de_articulos_con_total(int $owner_id, string $busqueda, $articulo_id = null, $con_costo = false, $limite = null, $pagina = 1): array
+    {
+        $pagina = max(1, (int) $pagina);
+        $limite = (int) $limite > 0 ? min((int) $limite, self::TOPE_DURO_DE_RESULTADOS) : self::MAX_RESULTS;
+
+        $filas = self::stock_de_articulos($owner_id, $busqueda, $articulo_id, $con_costo, $limite, $pagina);
+
+        if (!is_null($articulo_id) && (int) $articulo_id > 0) {
+
+            return $filas;
+        }
+
+        // Si la primera página no llegó al límite, entró todo: no hace falta contar.
+        if ($pagina === 1 && count($filas) < $limite) {
+
+            return $filas;
+        }
+
+        $total = self::contar_stock_de_articulos($owner_id, $busqueda);
+
+        $hasta = ($pagina - 1) * $limite + count($filas);
+
+        if ($pagina === 1 && $total <= count($filas)) {
+
+            return $filas;
+        }
+
+        $hay_mas = $hasta < $total;
+
+        return [
+            'articulos_encontrados'   => $total,
+            'articulos_en_esta_lista' => count($filas),
+            'pagina'                  => $pagina,
+            'hay_mas'                 => $hay_mas,
+            'articulos'               => $filas,
+            'nota'                    => $hay_mas
+                ? 'Encajan ' . $total . ' articulos y aca van ' . count($filas) . ' (del ' . (($pagina - 1) * $limite + 1) . ' al ' . $hasta . '). '
+                    . 'La cantidad es ' . $total . ', nunca la de esta lista. NO digas que algo no existe ni que no hay de una medida: puede estar en la pagina siguiente '
+                    . '(volve a llamar con pagina ' . ($pagina + 1) . ' o subi limite hasta ' . self::TOPE_DURO_DE_RESULTADOS . '). '
+                    . 'Para un Excel de estos articulos va exportar_articulos_excel con el filtro (nombre contiene ...), que trae TODOS: nunca lo armes con esta pagina.'
+                : 'Esta es la ultima pagina: encajan ' . $total . ' articulos en total.',
+        ];
     }
 
     /**

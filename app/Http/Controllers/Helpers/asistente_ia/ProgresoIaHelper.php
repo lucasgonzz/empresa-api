@@ -81,6 +81,9 @@ class ProgresoIaHelper
         'leer_conversacion_anterior'                => 'Leyendo una conversación anterior…',
         // Misión agente-mejoras-diario-30-10 (B2, 31/10/2026): el texto de la promo para que la persona lo reenvíe.
         'armar_texto_de_promocion'                  => 'Armando el texto de la promo…',
+        // Misión asistente-diario-20261119 (rama C, A4 y M3): el renombre masivo y la foto a medida.
+        'proponer_renombre_masivo'                  => 'Armando el renombre…',
+        'ajustar_foto_a_medida'                     => 'Ajustando la foto…',
     ];
 
     /**

@@ -1294,6 +1294,16 @@ class MasiveUpdateHelper
             return PrecioFinalEnMasivaHelper::aplicar($model, $form, $owner, $memoria_de_la_corrida);
         }
 
+        /*
+         * "Reemplazá tal texto por tal otro en el nombre" (misión asistente-diario-20261119, rama C, A4):
+         * `type: reemplazo_de_texto` no lo lee ninguna rama genérica, así que va antes que ellas. Cambia
+         * solo ese pedazo del nombre y devuelve el cambio sobre `name` con el nombre entero de antes, que
+         * es lo que la reversión genérica restaura tal cual. Detalle en RenombreEnMasivaHelper.
+         */
+        if (\App\Http\Controllers\Helpers\article\RenombreEnMasivaHelper::es_de_la_masiva($form)) {
+            return \App\Http\Controllers\Helpers\article\RenombreEnMasivaHelper::aplicar($model, $form, $owner);
+        }
+
         if ($form['type'] == 'number' && strpos($form['key'], 'decrement') !== false && self::form_scalar_value_is_filled($form['value'])) {
             $prop_key = substr($form['key'], 10);
             $old_value = $model->{$prop_key};

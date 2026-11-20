@@ -48,14 +48,21 @@ class CargaSinPropuestaIaHelper
      * confirmación terminaría en una escritura que nadie pidió.
      */
 
-    /** Los verbos de carga en primera persona del presente que no pueden ser otra cosa, normalizados. */
-    const VERBO_DE_CARGA = '(?:cargo|registro|elimino|borro|agendo|anulo|doy de alta|doy de baja)';
+    /**
+     * Los verbos de carga en primera persona del presente que no pueden ser otra cosa, normalizados.
+     *
+     * Misión asistente-diario-20261119 (rama B, A5; Ferre Total conv 72, 687): «¿Los publico en la tienda junto
+     * con la foto?» pasaba sin la guarda porque «publico» no estaba; el «Si» de Pablo no tenía tarjeta que
+     * confirmar y le volvieron a preguntar «¿Registro las dos?». Publicar, despublicar, activar y desactivar en la
+     * tienda son cargas (la actualización masiva) y en primera persona no pueden ser otra cosa.
+     */
+    const VERBO_DE_CARGA = '(?:cargo|registro|elimino|borro|agendo|anulo|doy de alta|doy de baja|publico|despublico|activo|desactivo)';
 
     /** Los que necesitan el pronombre del objeto («lo», «la», «los», «las») para ser una carga. */
     const VERBO_CON_PRONOMBRE = '(?:preparo|guardo|actualizo|cambio|corrijo|confirmo|modifico|ajusto|dejo|aplico|creo|armo|hago|paso|subo|bajo)';
 
     /** Los mismos en subjuntivo, para «¿Querés que lo registre?». */
-    const SUBJUNTIVO_DE_CARGA = '(?:cargue|registre|elimine|borre|agende|anule|de de alta|de de baja)';
+    const SUBJUNTIVO_DE_CARGA = '(?:cargue|registre|elimine|borre|agende|anule|de de alta|de de baja|publique|despublique|active|desactive)';
 
     /** Los infinitivos que anuncian una carga concreta («Voy a prender el aviso…»), normalizados. */
     const VERBO_QUE_ANUNCIA = 'prender|apagar|activar|desactivar|encender|cargar|registrar|crear|dar de alta|dar de baja|cambiar|subir|bajar|poner|sacar|agendar|asignar|borrar|eliminar|anular|mover|corregir|actualizar|modificar|ajustar';
@@ -303,6 +310,15 @@ class CargaSinPropuestaIaHelper
          * detrás: pregunta por un dato).
          */
         if (preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno)\s+)?(?:(?:me|lo|la|los|las|me lo|me la)\s+)?confirmas\b(?!\s+(?:que|si|cual|como|donde|el|la|los|las|su|sus|tu|tus|un|una)\b)/', $n)) {
+            return true;
+        }
+
+        /*
+         * Misión asistente-diario-20261119 (rama B, A5; Ferre Total conv 72, 721): «¿Confirmás los 145 con las dos
+         * fotos y publicados?» confirma una carga con su cantidad, no pregunta por un dato. El artículo seguido de
+         * un NÚMERO es una cantidad («los 145», «las 30»); «¿Me confirmás el nombre?» sigue afuera.
+         */
+        if (preg_match('/^(?:(?:y|entonces|listo|dale|ok|bueno)\s+)?(?:me\s+)?confirmas\s+(?:los|las)\s+\d/', $n)) {
             return true;
         }
 
