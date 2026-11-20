@@ -65,6 +65,9 @@ class ReversionMigracionTrazableTest extends RollbackIntegracionTestCase
             if ($tipo === StockMovement::class) {
                 $this->assertSame((int) $f['articulo']->id, (int) DB::table('stock_movements')->where('id', $log['auditable_id'])->value('article_id'), 'Resolver identidad de movimiento ANTES de eliminarlo.');
                 $tipo = Article::class;
+            } elseif ($tipo === ArticleVariant::class) {
+                $this->assertSame((int) $f['articulo']->id, (int) DB::table('article_variants')->where('id', $log['auditable_id'])->value('article_id'), 'Resolver la variante real del bloque sin omitir su log.');
+                $tipo = Article::class;
             } else {
                 $this->assertArrayHasKey($tipo, $esperados, 'No descartar logs originales sin asignar bloque.');
                 $this->assertSame((int) $esperados[$tipo]['id'], (int) $log['auditable_id']);

@@ -9,10 +9,14 @@ class ReversionMigracionSql
 {
     public $uuid;
     private $owner;
+    private $operacion;
+    private $nombres;
 
-    public function __construct($owner)
+    public function __construct($owner, $operacion = 'listas:migrar-a-precio-final', array $nombres = [])
     {
         $this->owner = (int) $owner;
+        $this->operacion = $operacion;
+        $this->nombres = $nombres;
         $this->uuid = (string) \Illuminate\Support\Str::uuid();
     }
 
@@ -91,21 +95,33 @@ class ReversionMigracionSql
                     throw new \RuntimeException('La migración eliminó una fila previa: no se puede respaldar.', 9002);
                 }
                 if ($fila === $aplicados[$pk] && $tabla !== 'articles') { continue; }
+                // Mantener la fecha de stock como último campo restaurado (contrato SQL legado).
+                if ($tabla === 'articles' && array_key_exists('stock_updated_at', $fila)) {
+                    $fecha_stock = $fila['stock_updated_at'];
+                    unset($fila['stock_updated_at']);
+                    $fila['stock_updated_at'] = $fecha_stock;
+                }
                 $sets = [];
                 foreach ($fila as $col => $valor) {
                     if ($col !== 'id' && ($tabla !== 'users' || $valor !== $aplicados[$pk][$col])) {
-                        $nombre = in_array($col, ['price', 'listas_de_precio'], true) ? $col : '`'.$col.'`';
+                        $nombre = in_array($col, ['price', 'listas_de_precio', 'stock_updated_at'], true) ? $col : '`'.$col.'`';
                         $sets[] = $nombre.' = '.$this->literal($valor);
                     }
                 }
                 $sql .= 'UPDATE '.$tabla.' SET '.implode(', ', $sets).' WHERE id = '.(int) $pk." AND @rollback_aplicar = 1;\n";
             }
         }
-        $old = $this->literal(self::json(['estado' => $despues]));
+        $estado_antes = []; $estado_despues = [];
+        foreach ($antes as $tabla => $filas) {
+            $nombre = $this->nombres[$tabla] ?? $tabla;
+            $estado_antes[$nombre] = $filas;
+            $estado_despues[$nombre] = $despues[$tabla];
+        }
+        $old = $this->literal(self::json(['estado' => $estado_despues]));
         $new = $this->literal(self::json(['respaldo_uuid' => $this->uuid, 'bloque' => $clave,
-            'operacion' => 'listas:migrar-a-precio-final', 'logs_originales' => array_map('intval', $logs), 'estado' => $antes]));
+            'operacion' => $this->operacion, 'logs_originales' => array_map('intval', $logs), 'estado' => $estado_antes]));
         $sql .= 'INSERT INTO audit_logs (user_id, actor_id, auditable_type, auditable_id, event, source, origin, batch_uuid, old_values, new_values, created_at) SELECT '
-            .$this->owner.', NULL, '.$this->literal($tipo).', '.(int) $id.", 'rollback', 'console', 'listas:migrar-a-precio-final / reversion', "
+            .$this->owner.', NULL, '.$this->literal($tipo).', '.(int) $id.", 'rollback', 'console', ".$this->literal($this->operacion.' / reversion').", "
             .$uuid.', '.$old.', '.$new.", CURRENT_TIMESTAMP WHERE @rollback_aplicar = 1;\nEND; END IF;\nCOMMIT;\n\n";
         // El cuerpo compuesto es una única sentencia SQL (también en una sola línea física).
         $inicio = strpos($sql, 'IF TRUE');
