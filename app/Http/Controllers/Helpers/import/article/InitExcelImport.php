@@ -42,6 +42,15 @@ class InitExcelImport
      */
     protected $equivalencias = [];
 
+    /** Misión importacion-formula-precio: «-25» descuenta en vez de sumar. */
+    protected $descuentos_negativos_descuentan = false;
+
+    /** Misión importacion-formula-precio: barras repetidas → identificar por código de proveedor. */
+    protected $barras_repetidas_por_codigo_de_proveedor = false;
+
+    /** Ruta del mapa de códigos de barras a omitir (ver guardar_codigos_de_barra_a_omitir()). */
+    protected $archivo_de_barras_a_omitir = null;
+
     function importar($data)
     {
         $this->import_uuid              = $data['import_uuid'];
@@ -127,6 +136,23 @@ class InitExcelImport
          */
         $this->desempatar_por_nombre = filter_var(
             isset($data['desempatar_por_nombre']) ? $data['desempatar_por_nombre'] : false,
+            FILTER_VALIDATE_BOOLEAN
+        );
+
+        /*
+         * Misión importacion-formula-precio (20/11/2026): dos opciones de lectura del Excel que
+         * ofrece el paso 3 del modal a partir del análisis algorítmico (AnalisisDePrecioDelExcel).
+         * Default false: un llamador que no las manda importa exactamente igual que antes.
+         *  - descuentos_negativos_descuentan: «-25» descuenta 25 % (y un «5» suma 5 %).
+         *  - barras_repetidas_por_codigo_de_proveedor: con código de barras repetido y código de
+         *    proveedor distinto, identificar por código de proveedor y no cargar el de barras.
+         */
+        $this->descuentos_negativos_descuentan = filter_var(
+            isset($data['descuentos_negativos_descuentan']) ? $data['descuentos_negativos_descuentan'] : false,
+            FILTER_VALIDATE_BOOLEAN
+        );
+        $this->barras_repetidas_por_codigo_de_proveedor = filter_var(
+            isset($data['barras_repetidas_por_codigo_de_proveedor']) ? $data['barras_repetidas_por_codigo_de_proveedor'] : false,
             FILTER_VALIDATE_BOOLEAN
         );
 
@@ -244,6 +270,7 @@ class InitExcelImport
             ]);
         }
         $this->guardar_equivalencias_en_archivo();
+        $this->guardar_codigos_de_barra_a_omitir();
         $this->armar_jobs_de_chunks();
 
         /*
@@ -795,6 +822,91 @@ class InitExcelImport
         }
     }
 
+    /**
+     * Opciones de lectura del Excel que viajan a cada lote (misión importacion-formula-precio).
+     * Van juntas en un array para no sumar un parámetro posicional por cada opción nueva en
+     * ProcessArticleChunk y ArticleImport.
+     *
+     * @return array{descuentos_negativos_descuentan: bool, barras_repetidas_por_codigo_de_proveedor: bool, archivo_de_barras_a_omitir: string|null}
+     */
+    protected function opciones_de_lectura()
+    {
+        return [
+            'descuentos_negativos_descuentan'          => (bool) ($this->descuentos_negativos_descuentan ?? false),
+            'barras_repetidas_por_codigo_de_proveedor' => (bool) ($this->barras_repetidas_por_codigo_de_proveedor ?? false),
+            'archivo_de_barras_a_omitir'               => $this->archivo_de_barras_a_omitir ?? null,
+        ];
+    }
+
+    /**
+     * Con la opción «identificar por código de proveedor cuando el código de barras se repite»,
+     * recorre el CSV completo (todas las filas que se importan, no un lote) y escribe al lado el
+     * mapa de las filas que no cargan el código de barras (ver CodigosDeBarraRepetidos).
+     *
+     * Se calcula sobre el archivo entero porque los repetidos pueden caer en lotes distintos, y
+     * cada lote solo ve sus filas. Como con las equivalencias, a cada lote le llega la ruta y no
+     * el mapa: no se encola una copia por lote.
+     *
+     * Si no se puede escribir, la importación sigue sin la opción (identifica por código de
+     * barras, como siempre) y queda en el log.
+     *
+     * @return void
+     */
+    protected function guardar_codigos_de_barra_a_omitir()
+    {
+        $this->archivo_de_barras_a_omitir = null;
+
+        if (
+            !($this->barras_repetidas_por_codigo_de_proveedor ?? false)
+            || ImportHelper::isIgnoredColumn('codigo_de_barras', $this->columns)
+            || ImportHelper::isIgnoredColumn('codigo_de_proveedor', $this->columns)
+        ) {
+            return;
+        }
+
+        $handle = @fopen($this->csv_full_path, 'r');
+        if ($handle === false) {
+            Log::warning('InitExcelImport: no se pudo abrir el CSV para los códigos de barras repetidos', [
+                'csv' => $this->csv_full_path,
+            ]);
+            return;
+        }
+
+        // Mismo BOM y mismo escape vacío que escribir_claves_del_archivo().
+        if (fread($handle, 3) !== "\xEF\xBB\xBF") {
+            rewind($handle);
+        }
+
+        $repetidos = new CodigosDeBarraRepetidos();
+        $fila = 0;
+
+        while (($row = fgetcsv($handle, 0, ',', '"', '')) !== false) {
+            $fila++;
+
+            if ($fila < (int) $this->start_row || $fila > (int) $this->finish_row) {
+                continue;
+            }
+
+            $repetidos->agregar(
+                ImportHelper::getColumnValue($row, 'codigo_de_barras', $this->columns),
+                ImportHelper::getColumnValue($row, 'codigo_de_proveedor', $this->columns)
+            );
+        }
+
+        fclose($handle);
+
+        $ruta = $this->csv_full_path . '.barras_a_omitir';
+
+        if (@file_put_contents($ruta, serialize($repetidos->mapa_de_omision())) === false) {
+            Log::warning('InitExcelImport: no se pudo escribir el archivo de códigos de barras a omitir', [
+                'ruta' => $ruta,
+            ]);
+            return;
+        }
+
+        $this->archivo_de_barras_a_omitir = $ruta;
+    }
+
     function armar_jobs_de_chunks()
     {
         $this->chunk_number = 1;
@@ -828,7 +940,8 @@ class InitExcelImport
                 $this->filas_repetidas_del_archivo,
                 $this->precios_incluyen_iva,
                 $this->desempatar_por_nombre,
-                $this->equivalencias
+                $this->equivalencias,
+                $this->opciones_de_lectura()
             );
 
             $this->chunk_number++;
@@ -1010,6 +1123,16 @@ class InitExcelImport
                  */
                 'name'  => 'Desempatar por nombre',
                 'value' => $this->desempatar_por_nombre ? 'Si' : 'No',
+            ],
+            [
+                // Misión importacion-formula-precio: con qué lectura de descuentos y de códigos
+                // de barras repetidos se corrió la importación.
+                'name'  => 'Descuentos negativos descuentan',
+                'value' => ($this->descuentos_negativos_descuentan ?? false) ? 'Si' : 'No',
+            ],
+            [
+                'name'  => 'Código de barras repetido: identificar por código de proveedor',
+                'value' => ($this->barras_repetidas_por_codigo_de_proveedor ?? false) ? 'Si' : 'No',
             ],
         ];
     }

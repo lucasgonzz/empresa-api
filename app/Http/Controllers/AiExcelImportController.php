@@ -964,6 +964,14 @@ class AiExcelImportController extends Controller
              * sobre nombres parecidos. Opcional: sin el campo, la importación resuelve como hoy.
              */
             'equivalencias'                                      => $equivalencias,
+
+            /*
+             * Misión `importacion-formula-precio` (20/11/2026): opciones de lectura que el paso 3
+             * ofrece a partir del análisis algorítmico del Excel (AnalisisDePrecioDelExcel).
+             * Default false: un modal viejo que no las manda importa igual que hasta hoy.
+             */
+            'descuentos_negativos_descuentan'                    => filter_var($request->input('descuentos_negativos_descuentan', false), FILTER_VALIDATE_BOOLEAN),
+            'barras_repetidas_por_codigo_de_proveedor'           => filter_var($request->input('barras_repetidas_por_codigo_de_proveedor', false), FILTER_VALIDATE_BOOLEAN),
         ]);
 
         if ($result['hubo_un_error']) {
