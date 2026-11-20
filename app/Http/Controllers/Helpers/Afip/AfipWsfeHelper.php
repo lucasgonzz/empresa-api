@@ -466,23 +466,30 @@ class AfipWsfeHelper extends Controller
 
         $cabecera = json_decode(json_encode(isset($respuesta->FeCabResp) ? $respuesta->FeCabResp : null), true);
 
-        if (is_array($cabecera) && isset($cabecera['Resultado']) && $cabecera['Resultado'] === 'A') {
-            return false;
-        }
-
         $detalle = json_decode(json_encode(isset($respuesta->FeDetResp) ? $respuesta->FeDetResp : null), true);
 
-        $trae_cae = false;
+        // 🔴 Cualquier señal de autorización en la respuesta (CAE, o `Resultado = 'A'` en la cabecera O en el
+        // detalle) deja el intento incierto. Mirar sólo la cabecera dejaba rechazar una respuesta
+        // contradictoria (600 + `FECAEDetResponse->Resultado = 'A'` sin CAE) y habilitaba borrar/reemitir un
+        // comprobante que ARCA dice haber autorizado. Se recorre todo el árbol porque SoapClient entrega
+        // `FECAEDetResponse` como nodo único o como lista, y `FeDetResp` puede venir como lista. No lo
+        // simplifiques a `->FeCabResp->Resultado`.
+        $trae_autorizacion = false;
 
-        if (is_array($detalle)) {
-            array_walk_recursive($detalle, function ($valor, $clave) use (&$trae_cae) {
-                if ($clave === 'CAE' && trim((string) $valor) !== '') {
-                    $trae_cae = true;
-                }
-            });
+        foreach ([$cabecera, $detalle] as $nodo) {
+            if (is_array($nodo)) {
+                array_walk_recursive($nodo, function ($valor, $clave) use (&$trae_autorizacion) {
+                    if ($clave === 'CAE' && trim((string) $valor) !== '') {
+                        $trae_autorizacion = true;
+                    }
+                    if ($clave === 'Resultado' && strtoupper(trim((string) $valor)) === 'A') {
+                        $trae_autorizacion = true;
+                    }
+                });
+            }
         }
 
-        if ($trae_cae) {
+        if ($trae_autorizacion) {
             return false;
         }
 
