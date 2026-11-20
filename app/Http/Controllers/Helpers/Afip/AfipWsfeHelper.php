@@ -260,10 +260,11 @@ class AfipWsfeHelper extends Controller
                             Log::info('NO se actualizo la info del comprobante');
                         }
 
-                    } else if (isset($result['FECompConsultarResult']->Errors)) {
+                    } else if (isset($afip_result['FECompConsultarResult']->Errors)) {
                         Log::info('Entro en errors:');
-                        Log::info((array)$result['FECompConsultarResult']->Errors);
+                        Log::info((array)$afip_result['FECompConsultarResult']->Errors);
                         $this->error_al_consultar_comprobante = true;
+                        $this->resolver_si_arca_no_tiene_el_comprobante($afip_result['FECompConsultarResult']->Errors, $result);
                     }
                 } 
 
@@ -279,6 +280,35 @@ class AfipWsfeHelper extends Controller
                 ]);
 
                 $this->save_error($result);
+            }
+        }
+    }
+
+    /**
+     * Si ARCA contesta 602 ("no existen datos en nuestros registros") al consultar un intento numerado
+     * sin CAE, ese número nunca se autorizó: el intento queda resuelto como rechazado (`resultado = 'R'`).
+     * Así deja de bloquear el borrado y una nueva emisión (caso típico: el punto de venta todavía no
+     * estaba asociado al certificado en ARCA y FECAESolicitar falló). No toca tickets con CAE ni NC.
+     */
+    protected function resolver_si_arca_no_tiene_el_comprobante($errores, $result)
+    {
+        $t = $this->afip_ticket;
+        if (!empty($t->cae) || $t->resultado === 'R' || !empty($t->nota_credito_id) || !empty($t->sale_nota_credito_id)) {
+            return;
+        }
+        $lista = json_decode(json_encode($errores), true);
+        $lista = isset($lista['Err']) ? $lista['Err'] : $lista;
+        if (isset($lista['Code'])) {
+            $lista = [$lista];
+        }
+        foreach ((array) $lista as $err) {
+            if ((int) ($err['Code'] ?? 0) === 602) {
+                $t->update(['resultado' => 'R', 'request' => $result['request'] ?? null, 'response' => $result['response'] ?? null]);
+                AfipError::create([
+                    'sale_id' => $t->sale_id, 'afip_ticket_id' => $t->id, 'code' => 602,
+                    'message' => 'ARCA confirmó que este comprobante no existe: nunca se autorizó. Ya podés eliminarlo o volver a emitir.',
+                ]);
+                return;
             }
         }
     }
@@ -814,6 +844,14 @@ class AfipWsfeHelper extends Controller
                     'request'           => $result['request'],
                     'response'          => $result['response'],
                 ]);
+
+                // 600 (ValidacionDeToken, p. ej. el CUIT no está en la lista de relaciones del
+                // certificado): ARCA rechazó el pedido entero antes de procesarlo, nunca pudo
+                // autorizar el número. Se resuelve como rechazado para no dejar un intento trabado.
+                if ((string) $code === '600' && empty($this->afip_ticket->cae)
+                    && empty($this->afip_ticket->nota_credito_id) && empty($this->afip_ticket->sale_nota_credito_id)) {
+                    $this->afip_ticket->update(['resultado' => 'R', 'request' => $result['request'], 'response' => $result['response']]);
+                }
             }
         }
         $this->errors = $errors;
