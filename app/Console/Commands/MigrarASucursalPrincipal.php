@@ -532,14 +532,14 @@ class MigrarASucursalPrincipal extends Command
                 // No borrar una dirección con referencias nuevas ajenas a la migración.
                 $referencias = DB::table('information_schema.COLUMNS')
                     ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
-                    ->whereIn('COLUMN_NAME', ['address_id', 'from_address_id', 'to_address_id'])->get();
+                    ->whereIn('COLUMN_NAME', ['address_id', 'from_address_id', 'to_address_id'])->orderBy('TABLE_NAME')->orderBy('COLUMN_NAME')->get();
                 foreach ($referencias as $referencia) {
                     if ($referencia->TABLE_NAME === 'users' && $referencia->COLUMN_NAME === 'address_id') {
                         $extra .= ' AND NOT EXISTS (SELECT 1 FROM users WHERE address_id = '.(int) $principal->id
-                            .' AND NOT (id = '.(int) $dueno->id.' OR owner_id = '.(int) $dueno->id.'))';
+                            .' AND NOT (id = '.(int) $dueno->id.' OR owner_id = '.(int) $dueno->id.') FOR UPDATE)';
                     } else {
                         $extra .= ' AND NOT EXISTS (SELECT 1 FROM `'.str_replace('`', '``', $referencia->TABLE_NAME)
-                            .'` WHERE `'.$referencia->COLUMN_NAME.'` = '.(int) $principal->id.')';
+                            .'` WHERE `'.$referencia->COLUMN_NAME.'` = '.(int) $principal->id.' FOR UPDATE)';
                     }
                 }
             }

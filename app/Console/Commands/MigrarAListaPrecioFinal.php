@@ -605,10 +605,10 @@ class MigrarAListaPrecioFinal extends Command
             if ($m['crear']) {
                 $referencias = DB::table('information_schema.COLUMNS')
                     ->where('TABLE_SCHEMA', DB::connection()->getDatabaseName())
-                    ->where('COLUMN_NAME', 'price_type_id')->pluck('TABLE_NAME')->all();
+                    ->where('COLUMN_NAME', 'price_type_id')->orderBy('TABLE_NAME')->pluck('TABLE_NAME')->all();
                 foreach ($referencias as $tabla) {
                     $tabla = str_replace('`', '``', $tabla);
-                    $extra .= ' AND NOT EXISTS (SELECT 1 FROM `'.$tabla.'` WHERE price_type_id = '.(int) $lista->id.')';
+                    $extra .= ' AND NOT EXISTS (SELECT 1 FROM `'.$tabla.'` WHERE price_type_id = '.(int) $lista->id.' FOR UPDATE)';
                 }
             }
             $sql = $this->reversion->bloque('-- Cuenta: flag, extensiones y lista', 'cuenta:'.$dueno->id,

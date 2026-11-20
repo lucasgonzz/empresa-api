@@ -72,9 +72,25 @@ class ReversionMigracionSql
     public function bloque($titulo, $clave, $tipo, $id, array $ambitos, array $antes, array $despues, array $orden, array $logs, $extra = '1')
     {
         $uuid = $this->literal($this->uuid);
-        $sql = $titulo."\nSTART TRANSACTION;\nIF TRUE THEN BEGIN DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;\nSELECT id INTO @rollback_dueno FROM users WHERE id = ".$this->owner." FOR UPDATE;\n";
+        $sql = $titulo."\nSET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\nSTART TRANSACTION;\nIF TRUE THEN BEGIN DECLARE EXIT HANDLER FOR SQLEXCEPTION BEGIN ROLLBACK; RESIGNAL; END;\nSELECT id INTO @rollback_dueno FROM users WHERE id = ".$this->owner." FOR UPDATE;\n";
         $sql .= 'SET @rollback_aplicar = NOT EXISTS (SELECT 1 FROM audit_logs WHERE batch_uuid = '.$uuid
             ." AND event = 'rollback' AND JSON_UNQUOTE(JSON_EXTRACT(new_values, '$.bloque')) = ".$this->literal($clave).");\n";
+        // Lecturas bloqueantes ANTES de validar: filas y huecos del predicado completo.
+        // RR es explícito: ni un cambio de aislamiento del cliente permite inserts fantasma.
+        // Orden común con los productores: dueño, artículo, variantes/historial, hijos.
+        $candados = $ambitos;
+        $prioridad = ['users' => 0, 'articles' => 1, 'article_variants' => 2, 'price_changes' => 3];
+        uksort($candados, function ($a, $b) use ($prioridad) {
+            $pa = $prioridad[$a] ?? 4; $pb = $prioridad[$b] ?? 4;
+            return $pa === $pb ? strcmp($a, $b) : $pa <=> $pb;
+        });
+        foreach ($candados as $tabla => $where) {
+            // Cursor sin resultsets adicionales; cada fila se visita bajo FOR UPDATE.
+            // El scan completo conserva también next-key locks de rangos VACÍOS.
+            $sql .= 'BEGIN DECLARE fin INT DEFAULT 0; DECLARE fila BIGINT; DECLARE filas CURSOR FOR SELECT id FROM `'
+                .$tabla.'` WHERE '.$where.' ORDER BY id FOR UPDATE; DECLARE CONTINUE HANDLER FOR NOT FOUND SET fin = 1; '
+                .'OPEN filas; candados: LOOP FETCH filas INTO fila; IF fin = 1 THEN LEAVE candados; END IF; END LOOP; CLOSE filas; END;'."\n";
+        }
         $checks = [$extra];
         foreach ($ambitos as $tabla => $where) {
             $checks[] = $this->igualdad($tabla, $where, $despues[$tabla]);

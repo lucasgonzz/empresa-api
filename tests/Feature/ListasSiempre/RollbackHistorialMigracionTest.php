@@ -116,7 +116,7 @@ abstract class RollbackIntegracionTestCase extends TestCase
             }
             if (!$legacy) {
                 $limpio = trim(preg_replace('/^--[^\n]*$/m', '', $parte));
-                $this->assertSame(1, preg_match('/^START TRANSACTION\s*;[\s\S]*\bCOMMIT\s*;$/i', $limpio), 'Cada bloque NUEVO debe traer su transacción completa.');
+                $this->assertSame(1, preg_match('/^(?:SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;\s*)?START TRANSACTION\s*;[\s\S]*\bCOMMIT\s*;$/i', $limpio), 'Cada bloque NUEVO debe traer su transacción completa.');
                 $this->assertSame(1, preg_match_all('/\bSTART\s+TRANSACTION\b/i', $limpio));
                 $this->assertSame(1, preg_match_all('/\bCOMMIT\b/i', $limpio));
                 $this->assertSame(0, preg_match('/^\s*(BEGIN|ROLLBACK|SAVEPOINT|SET\s+AUTOCOMMIT|CREATE|ALTER|DROP|TRUNCATE)\b/im', $limpio), 'Sin commits implícitos ni transacciones alternativas.');
@@ -140,10 +140,14 @@ abstract class RollbackIntegracionTestCase extends TestCase
             foreach ($bloques as $bloque) {
                 $pdo->exec($bloque);
                 $this->assertFalse($pdo->inTransaction(), 'Cada bloque entregado debe terminar confirmado.');
+                $this->assertSame(0, (int) $pdo->query('SELECT @@in_transaction')->fetchColumn(), 'Servidor sin transacción residual.');
             }
         } catch (\Throwable $error) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
+            try {
+                $this->assertFalse($pdo->inTransaction(), 'El SQL entregado debe cerrar la transacción también al fallar.');
+                $this->assertSame(0, (int) $pdo->query('SELECT @@in_transaction')->fetchColumn(), 'El servidor debe confirmar el ROLLBACK real.');
+            } finally {
+                if ($pdo->inTransaction()) { $pdo->rollBack(); }
             }
             throw $error;
         }
@@ -162,6 +166,12 @@ abstract class RollbackIntegracionTestCase extends TestCase
             'variantes' => $this->foto('article_variants', 'id', $variantes),
             'filas' => $this->foto('address_article', 'article_id', $ids),
             'filas_variantes' => $this->foto('address_article_variant', 'article_variant_id', $variantes),
+            'listas' => $this->foto('price_types', 'user_id', [$dueno_id]),
+            'extensiones' => $this->foto('extencion_empresa_user', 'user_id', [$dueno_id]),
+            'precios' => $this->foto('article_price_type', 'article_id', $ids),
+            'monedas' => $this->foto('article_price_type_monedas', 'article_id', $ids),
+            'historial' => $this->foto('price_changes', 'article_id', $ids),
+            'detalles_historial' => $this->foto('price_change_price_type', 'price_change_id', DB::table('price_changes')->whereIn('article_id', $ids)->pluck('id')->all()),
             'movimientos' => $this->foto('stock_movements', 'article_id', $ids),
         ];
     }
@@ -201,15 +211,19 @@ class RollbackHistorialMigracionTest extends RollbackIntegracionTestCase
         ArticleHelper::setFinalPrice($a, null, $dueno);
         $antes = $this->foto_comercial($dueno->id, [$a->id]);
         $listas = $this->foto('price_types', 'user_id', [$dueno->id]);
+        $previos = $this->foto('audit_logs', 'id', DB::table('audit_logs')->pluck('id')->all());
         $sql = $this->migrar_y_leer('listas:migrar-a-precio-final', $dueno);
+        $aplicado = $this->foto_comercial($dueno->id, [$a->id]);
         $uuid = $this->uuid_respaldo($sql);
-        $originales = $this->foto('audit_logs', 'user_id', [$dueno->id]);
+        $originales = $this->foto('audit_logs', 'id', DB::table('audit_logs')->pluck('id')->all());
         $this->ejecutar_reversion($sql, true);
         $this->assertSame($antes, $this->foto_comercial($dueno->id, [$a->id]));
         $this->assertSame($listas, $this->foto('price_types', 'user_id', [$dueno->id]));
         $this->assertSame($originales, $this->foto('audit_logs', 'id', array_column($originales, 'id')));
         $logs = $this->foto('audit_logs', 'batch_uuid', [$uuid]);
         $this->assertCount(2, $logs);
+        $migracion = array_values(array_filter($originales, function ($log) use ($previos) { return !in_array($log['id'], array_column($previos, 'id'), true); }));
+        $this->assertNotEmpty($migracion);
         foreach ($logs as $log) {
             $this->assertSame('rollback', $log['event']);
             $this->assertSame('console', $log['source']);
@@ -219,6 +233,29 @@ class RollbackHistorialMigracionTest extends RollbackIntegracionTestCase
             foreach (['bloque', 'logs_originales', 'estado'] as $clave) {
                 $this->assertArrayHasKey($clave, $payload);
             }
+            $articulo = $log['auditable_type'] === Article::class;
+            $this->assertSame($articulo ? Article::class : User::class, $log['auditable_type']);
+            $this->assertSame((int) ($articulo ? $a->id : $dueno->id), (int) $log['auditable_id']);
+            $this->assertSame((int) $dueno->id, (int) $log['user_id']);
+            $this->assertSame('listas:migrar-a-precio-final / reversion', $log['origin']);
+            $this->assertSame($uuid, $log['batch_uuid']);
+            $this->assertSame('listas:migrar-a-precio-final', $payload['operacion']);
+            $this->assertSame(($articulo ? 'articulo:' : 'cuenta:').($articulo ? $a->id : $dueno->id), $payload['bloque']);
+            $esperados = [];
+            foreach ($migracion as $original) {
+                if ($original['auditable_type'] === ($articulo ? Article::class : User::class)
+                    && (int) $original['auditable_id'] === (int) ($articulo ? $a->id : $dueno->id)) {
+                    $esperados[] = (int) $original['id'];
+                }
+            }
+            $this->assertSame($esperados, $payload['logs_originales']);
+            $claves = $articulo ? ['articulos', 'precios', 'monedas', 'historial', 'detalles_historial'] : ['usuarios', 'listas', 'extensiones'];
+            $viejos = json_decode($log['old_values'], true);
+            $mapa = ['articulos' => 'articles', 'precios' => 'article_price_type', 'monedas' => 'article_price_type_monedas', 'historial' => 'price_changes', 'detalles_historial' => 'price_change_price_type', 'usuarios' => 'users', 'listas' => 'price_types', 'extensiones' => 'extencion_empresa_user'];
+            $estado_aplicado = []; $estado_restaurado = [];
+            foreach ($claves as $clave) { $estado_aplicado[$mapa[$clave]] = $aplicado[$clave]; $estado_restaurado[$mapa[$clave]] = $antes[$clave]; }
+            $this->assertSame($estado_aplicado, $viejos['estado']);
+            $this->assertSame($estado_restaurado, $payload['estado']);
         }
         $this->ejecutar_reversion($sql, true);
         $this->assertSame($logs, $this->foto('audit_logs', 'batch_uuid', [$uuid]));
@@ -325,6 +362,50 @@ class RollbackHistorialMigracionTest extends RollbackIntegracionTestCase
         $this->assertStringNotContainsString('-- Artículo '.$mal->id."\n", $sql);
         $this->ejecutar_reversion($sql, true);
         $this->assertSame($antes, $this->foto_comercial($dueno->id, [$bien->id, $mal->id]));
+    }
+
+    public function test_escritor_comercial_real_no_puede_confirmar_entre_validacion_y_compensacion()
+    {
+        foreach (['listas:migrar-a-precio-final', 'sucursales:migrar-a-principal'] as $comando) {
+            $dueno = $this->nuevo_dueno();
+            $a = $this->nuevo_articulo($dueno, ['stock' => 12]);
+            $antes = $this->foto_comercial($dueno->id, [$a->id]);
+            $this->salida .= '-carrera';
+            $sql = $this->migrar_y_leer($comando, $dueno);
+            $bloque = $this->bloques_reversion($sql, true)[0];
+            $barrera = 'rollback_'.bin2hex(random_bytes(8));
+            $pdo = DB::connection()->getPdo();
+            $this->assertSame(1, (int) $pdo->query("SELECT GET_LOCK('".$barrera."', 0)")->fetchColumn());
+            // Pausa DESPUÉS de las precondiciones reales, ANTES de la primera compensación.
+            $bloque = preg_replace('/(?=DELETE FROM |UPDATE articles SET |UPDATE article_variants SET )/',
+                "SELECT GET_LOCK('".$barrera."', 8) INTO @barrera; ", $bloque, 1);
+            $archivo = $this->salida.'/intercalado.sql'; file_put_contents($archivo, $bloque);
+            $script = $this->salida.'/intercalado.php';
+            file_put_contents($script, '<?php $p = new PDO("mysql:unix_socket=".getenv("DB_SOCKET").";dbname=".getenv("DB_DATABASE"), getenv("DB_USERNAME"), getenv("DB_PASSWORD"), [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]); $p->exec("SET innodb_lock_wait_timeout=1"); if ($argv[1] === "rollback") { $p->exec("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED"); $p->exec(file_get_contents($argv[2])); } else { try { $p->beginTransaction(); $p->exec("UPDATE articles SET price=999 WHERE id=".(int)$argv[2]); $p->commit(); echo "confirmado"; } catch (PDOException $e) { if ($p->inTransaction()) $p->rollBack(); echo $e->errorInfo[1].":".$p->query("SELECT @@in_transaction")->fetchColumn(); } }');
+            $abrir = function ($modo, $dato) use ($script) {
+                return proc_open([PHP_BINARY, $script, $modo, (string) $dato],
+                    [0 => ['file', '/dev/null', 'r'], 1 => ['file', $this->salida.'/'.$modo.'.out', 'w'], 2 => ['file', $this->salida.'/'.$modo.'.err', 'w']], $pipes);
+            };
+            $reversion = $abrir('rollback', $archivo); $escritor = null;
+            try {
+                $limite = microtime(true) + 4;
+                do {
+                    $esperando = (int) $pdo->query("SELECT COUNT(*) FROM information_schema.PROCESSLIST WHERE STATE = 'User lock' AND ID <> CONNECTION_ID()")->fetchColumn();
+                    if ($esperando) break;
+                    usleep(10000);
+                } while (microtime(true) < $limite);
+                $this->assertSame(1, $esperando, 'La reversión alcanzó la barrera posterior a su validación.');
+                $escritor = $abrir('comercial', $a->id);
+                $this->assertSame(0, proc_close($escritor), file_get_contents($this->salida.'/comercial.err')); $escritor = null;
+                $this->assertSame('1205:0', file_get_contents($this->salida.'/comercial.out'), 'El escritor comercial debe quedar excluido hasta el commit, sin transacción residual.');
+            } finally {
+                $pdo->query("SELECT RELEASE_LOCK('".$barrera."')")->fetchColumn();
+                if (is_resource($escritor)) proc_close($escritor);
+                $this->assertSame(0, proc_close($reversion), file_get_contents($this->salida.'/rollback.err'));
+            }
+            $this->ejecutar_reversion($sql, true);
+            $this->assertSame($antes, $this->foto_comercial($dueno->id, [$a->id]));
+        }
     }
 
     public function test_dos_procesos_revierten_sin_duplicar_bloques_bajo_candado()
