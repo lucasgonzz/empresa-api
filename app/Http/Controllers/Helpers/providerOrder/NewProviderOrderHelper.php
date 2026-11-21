@@ -10,6 +10,7 @@ use App\Http\Controllers\Helpers\combo\ComboCalculadoHelper;
 use App\Models\ArticleDiscount;
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\CurrentAcountHelper;
+use App\Http\Controllers\Helpers\InventoryLinkageHelper;
 use App\Http\Controllers\Helpers\Numbers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
@@ -2492,6 +2493,20 @@ class NewProviderOrderHelper {
     }
 
     function update_cost($article, $new_article) {
+
+        /*
+         * D2-M (R1 del triple QA, 21/11/2026): la copia de una vinculación con marca de costo neto
+         * NO recibe el costo de una compra a su proveedor vinculado. La compra espejo de una venta de
+         * Fénix a Galván trae el precio bruto de Fénix y, con `update_prices` en 1 (default del
+         * esquema), lo escribía en `articles.cost` de la copia neta y la inflaba (cost 4828, final
+         * 6426,07). El costo de esa copia lo manda la vinculación (InventoryLinkageHelper). Con marca
+         * 0 o con otro proveedor devuelve false y todo sigue igual que antes: no simplificar este
+         * return sacándolo.
+         */
+        if (InventoryLinkageHelper::el_costo_lo_manda_la_vinculacion($article, $this->provider_order)) {
+
+            return $article;
+        }
 
         $cost = null;
 
