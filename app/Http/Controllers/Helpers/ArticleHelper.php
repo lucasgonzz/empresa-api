@@ -352,6 +352,16 @@ class ArticleHelper {
 
         $costo_real = null;
 
+        /*
+         * 🔴 Lo que la base tiene ANTES de este cálculo (misión guardar-sin-cambios-derivados-null-20261121).
+         * El request de la ficha no trae `costo_real` ni `base_margen*` (update() asigna campo por campo),
+         * así que esto es lo guardado. Se usa al final para NO completar `base_margen*` vacíos cuando ni
+         * el precio ni el costo real persistibles cambiaron.
+         */
+        $costo_real_guardado        = $article->costo_real;
+        $base_margen_guardado       = $article->base_margen;
+        $base_margen_final_guardado = $article->base_margen_final;
+
         // Prompt 379/01: evita que la rama price_from_cost_mas_iva (mas abajo) reciba el IVA dos
         // veces -- una vez adentro de esa rama y otra en el bloque comun de IVA de venta. Esa rama
         // ya deja el precio final CON IVA adentro por definicion de la modalidad; volver a
@@ -1037,13 +1047,35 @@ class ArticleHelper {
         //     !is_null($current_final_price)
         //     && $current_final_price != $article->final_price
         // ) {
-        if (
-            $current_final_price != $article->final_price
-        ) {
+        // Comparación DESPUÉS de cuantizar y de la preservación legacy: es lo que decide «sin cambio».
+        $cambio_el_precio = $current_final_price != $article->final_price;
+
+        if ($cambio_el_precio) {
 
             $article->previus_final_price = $current_final_price; 
             $article->final_price_updated_at = Carbon::now();
             PriceChangeController::store($article, $auth_user_id);
+        }
+
+        /*
+         * 🔴 NO sacar: un guardado (o recálculo) sin cambios no completa cachés que la importación dejó
+         * vacíos. La importación calcula el precio pero no persiste `base_margen`/`base_margen_final`
+         * (Plazoleta: 44.460 de 44.462 en NULL); sin esto el primer PUT sin tocar nada los llenaba y el
+         * comparador del humo de actualización marcaba DIFERENCIAS. Sólo si NI el precio final
+         * persistible NI el costo real persistible cambiaron, y por columna: la que estaba NULL vuelve a
+         * NULL; la que tenía valor se recalcula como siempre (un valor viejo no se congela). Se compara
+         * lo persistible (nunca la rama de tolerancia: 6.98775 calculado contra 6.99 guardado no entra a
+         * la tolerancia y es «sin cambio» igual). Ver PLAN guardar-sin-cambios-derivados-null.
+         */
+        if (!$cambio_el_precio && Self::costo_real_sin_cambio($costo_real_guardado, $article->costo_real)) {
+
+            if (is_null($base_margen_guardado)) {
+                $article->base_margen = null;
+            }
+
+            if (is_null($base_margen_final_guardado)) {
+                $article->base_margen_final = null;
+            }
         }
 
 
@@ -1176,7 +1208,8 @@ class ArticleHelper {
      *    lista muestra como "Margen de X%" cuando hay dos o más listas.
      *  - `setear_precio_final`: 1 si el artículo tiene precio manual (`articles.price`), que es el
      *    "precio fijado a mano" de esa lista.
-     *  - `previus_final_price`: lo que el pivote tenía.
+     *  - `previus_final_price`: el precio que el pivote tenía, sólo si el precio cambió; si no, su
+     *    `previus` de antes (ArticlePricesHelper::previus_del_pivot()).
      *  - `precio_luego_de_recargos` y `monto_ganancia`: por aplicar_price_type_surchages(), igual
      *    que las demás listas (recargos de la lista, si los tuviera; ganancia neta de IVA e
      *    impuestos contra la misma base que usan las otras listas). Sin costo real, ganancia null.
@@ -1214,7 +1247,8 @@ class ArticleHelper {
                         ? PreciosEnLote::pivot_actual($article, $lista->id)
                         : $article->price_types()->find($lista->id);
 
-        $previus_final_price = (is_null($relacion) || !isset($relacion->pivot)) ? null : $relacion->pivot->final_price;
+        // Sólo se mueve si cambió el precio persistible de la lista (ver previus_del_pivot()).
+        $previus_final_price = ArticlePricesHelper::previus_del_pivot($article, $lista->id, $relacion, $final_price);
 
         /*
          * La base contra la que las demás listas miden su ganancia (la de antes de los márgenes):
@@ -1257,6 +1291,29 @@ class ArticleHelper {
         if (UserHelper::hasExtencion('ventas_en_dolares', $user)) {
             ArticlePriceTypeMonedaHelper::espejar_precio_final_en_monedas($article, $user, $lista, $final_price, $percentage, $manual);
         }
+    }
+
+    /**
+     * ¿El costo real persistible es el mismo que el guardado? Compara lo que la base guardaría, no con
+     * una tolerancia: se redondea a los decimales del valor guardado tal como lo devuelve la base
+     * ('3.850000' -> 6; una columna legacy de 2 decimales -> 2). Los dos NULL cuentan como igual; uno
+     * solo, no.
+     *
+     * @param  string|float|null $guardado  Lo que tenía el artículo antes de calcular.
+     * @param  string|float|null $nuevo     Lo que quedó calculado.
+     * @return bool
+     */
+    static function costo_real_sin_cambio($guardado, $nuevo) {
+
+        if (is_null($guardado) || is_null($nuevo)) {
+            return is_null($guardado) && is_null($nuevo);
+        }
+
+        $texto     = (string) $guardado;
+        $posicion  = strpos($texto, '.');
+        $decimales = $posicion === false ? 0 : strlen($texto) - $posicion - 1;
+
+        return abs(round((float) $nuevo, $decimales) - round((float) $guardado, $decimales)) < 0.0000001;
     }
 
     /**
