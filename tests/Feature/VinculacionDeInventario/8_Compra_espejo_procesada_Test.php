@@ -63,9 +63,11 @@ class Compra_espejo_procesada_Test extends VinculacionDeInventarioTestCase
      * compra y la bandera `update_prices` que tiene guardada.
      *
      * @param  \App\Models\ProviderOrder $orden
+     * @param  float|null $costo_renglon Costo del renglón distinto del de la compra (null = el que tiene).
+     * @param  int|null   $provider_id   Proveedor del PUT distinto del de la compra (null = el que tiene).
      * @return void
      */
-    private function procesar_como_galvan($orden)
+    private function procesar_como_galvan($orden, $costo_renglon = null, $provider_id = null)
     {
         $orden = ProviderOrder::find($orden->id);
 
@@ -79,7 +81,7 @@ class Compra_espejo_procesada_Test extends VinculacionDeInventarioTestCase
                 'bar_code'      => $articulo->bar_code,
                 'provider_code' => $articulo->provider_code,
                 'pivot'         => [
-                    'cost'            => $fila->cost,
+                    'cost'            => is_null($costo_renglon) ? $fila->cost : $costo_renglon,
                     'amount'          => $fila->amount,
                     'received'        => $fila->amount,
                     'price'           => null,
@@ -94,7 +96,7 @@ class Compra_espejo_procesada_Test extends VinculacionDeInventarioTestCase
                 $this->cambiar_de_sesion($this->galvan);
 
         $r = $this->putJson('api/provider-order/' . $orden->id, [
-            'provider_id'                            => $orden->provider_id,
+            'provider_id'                            => is_null($provider_id) ? $orden->provider_id : $provider_id,
             'modo_facturacion'                       => 'manual',
             'update_prices'                          => $orden->update_prices,
             'update_stock'                           => 0,
@@ -178,9 +180,12 @@ class Compra_espejo_procesada_Test extends VinculacionDeInventarioTestCase
     {
         list($copia, $orden) = $this->espejo_con_copia_convertida(1);
 
+        $cambios = DB::table('price_changes')->where('article_id', $copia->id)->count();
+
         $this->procesar_como_galvan($orden);
 
         $this->assert_copia_intacta($copia->id, 'update_prices=1');
+        $this->assertEquals($cambios, DB::table('price_changes')->where('article_id', $copia->id)->count(), 'update_prices=1: delta 0 de price_changes');
     }
 
     /**
@@ -192,15 +197,20 @@ class Compra_espejo_procesada_Test extends VinculacionDeInventarioTestCase
     {
         list($copia, $orden) = $this->espejo_con_copia_convertida(0);
 
+        $cambios = DB::table('price_changes')->where('article_id', $copia->id)->count();
+
         $this->procesar_como_galvan($orden);
 
         $this->assert_copia_intacta($copia->id, 'update_prices=0');
+        $this->assertEquals($cambios, DB::table('price_changes')->where('article_id', $copia->id)->count(), 'update_prices=0: delta 0 de price_changes');
     }
 
     /**
-     * CA11-R1c — marca 0 (copia sin convertir) o interruptor apagado: la compra procesa EXACTAMENTE
-     * como hoy: el costo del renglón pasa a `articles.cost` y el final se recalcula con la cadena de
-     * siempre. D2-M no cambia las compras ajenas ni la de una copia sin marca.
+     * CA11-R1c — marca 0 (copia sin convertir): la compra espejo se procesa por el PUT real EXACTAMENTE
+     * como hoy. El costo del renglón es DISTINTO del cost previo (4000 contra 4828), así que si la
+     * guarda de update_cost() ignorara la marca y bloqueara también las copias sin convertir, `cost`
+     * y `final` no se moverían y este test se pone rojo. (La versión anterior usaba un renglón igual al
+     * cost previo: no escribía nada y no probaba la escritura.)
      *
      * @test
      */
@@ -214,10 +224,61 @@ class Compra_espejo_procesada_Test extends VinculacionDeInventarioTestCase
         $this->assertEquals(0, $this->valores($copia->id)['marca'], 'precondición: marca 0');
         $this->assertEquals(1, ProviderOrder::find($orden->id)->update_prices, 'precondición: default del esquema');
 
-        $this->procesar_como_galvan($orden);
+        $antes = $this->valores($copia->id);
+        $this->assertEqualsWithDelta(self::BRUTO, $antes['cost'], 0.0000005, 'precondición: cost previo');
+
+        $this->procesar_como_galvan($orden, 4000);
 
         $v = $this->valores($copia->id);
         $this->assertEquals(0, $v['marca'], 'la compra no pone la marca');
-        $this->assertEqualsWithDelta(self::BRUTO, $v['cost'], 0.0000005, 'costo del renglón tal cual, como hoy');
+        $this->assertEqualsWithDelta(4000, $v['cost'], 0.0000005, 'el costo del renglón pasa a articles.cost, como hoy');
+        $this->assertNotEquals($antes['cost'], $v['cost'], 'el cost cambió');
+        $this->assertNotEquals($antes['final'], $v['final'], 'el final se recalculó con la cadena de siempre');
+    }
+
+    /**
+     * CA11-R1d — copia con marca 1 comprada a un proveedor que NO es el vinculado (sin
+     * `comercio_city_user_id`, u otro dueño): la compra escribe costo y final como hoy. Un mutante que
+     * ignorara el proveedor y bloqueara toda copia con marca 1 deja la copia intacta y se detecta acá.
+     *
+     * @test
+     * @dataProvider proveedores_no_vinculados
+     */
+    public function ca11_r1d_con_marca_1_y_otro_proveedor_la_compra_procesa_como_hoy($con_otro_dueno)
+    {
+        $this->escenario();
+        $fuente = $this->crear_fuente();
+        $copia = $this->crear_copia($fuente);
+        $orden = $this->vender_a_galvan($fuente);
+
+        $datos = ['name' => 'zz Otro proveedor ' . uniqid(), 'percentage_gain' => 10];
+
+        if ($con_otro_dueno) {
+            $datos['comercio_city_user_id'] = $this->crear_dueno()->id;
+        }
+
+        $otro = $this->crear_proveedor($this->galvan, $datos);
+
+        $this->assertEquals(1, $this->valores($copia->id)['marca'], 'precondición: marca 1');
+
+        $antes = $this->valores($copia->id);
+
+        $this->procesar_como_galvan($orden, 4000, $otro->id);
+
+        $v = $this->valores($copia->id);
+        $this->assertEqualsWithDelta(4000, $v['cost'], 0.0000005, 'otro proveedor: el costo del renglón se escribe como hoy');
+        $this->assertNotEquals($antes['cost'], $v['cost'], 'otro proveedor: el cost cambió');
+        $this->assertNotEquals($antes['final'], $v['final'], 'otro proveedor: el final se recalculó');
+    }
+
+    /**
+     * @return array
+     */
+    public function proveedores_no_vinculados()
+    {
+        return [
+            'sin comercio_city_user_id' => [false],
+            'otro dueño'                => [true],
+        ];
     }
 }
