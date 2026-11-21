@@ -171,4 +171,32 @@ class Conversion_de_copias_existentes_Test extends VinculacionDeInventarioTestCa
         $this->assertStringContainsString('inflada', $salida);
         $this->assertEquals($fila, (array) DB::table('articles')->where('id', $copia->id)->first());
     }
+
+    /**
+     * CA9g — E1 por la CLI corre SIN usuario autenticado y sin sesión (como en el servidor: artisan no
+     * tiene request ni Auth): el comando no depende de UserHelper::user()/Auth y deja la copia en neto
+     * con el mismo final. Se aísla de lo que el escenario deja armado (actingAs de Fénix).
+     *
+     * @test
+     */
+    public function ca9g_e1_corre_por_la_cli_sin_usuario_autenticado()
+    {
+        $copia = $this->fixture_con_salidas();
+        $fila_antes = (array) DB::table('articles')->where('id', $copia->id)->first();
+
+        session()->flush();
+        $this->app['auth']->forgetGuards();
+        $this->assertTrue(\Illuminate\Support\Facades\Auth::guest(), 'precondición: sin usuario autenticado');
+        $this->assertNull(\App\Http\Controllers\Helpers\UserHelper::user(), 'precondición: UserHelper no ve a nadie');
+
+        list($codigo, $salida) = $this->convertir([$copia->id]);
+        $this->assertEquals(0, $codigo, $salida);
+
+        $this->assertTrue(\Illuminate\Support\Facades\Auth::guest(), 'el comando no abre sesión');
+
+        $v = $this->valores($copia->id);
+        $this->assertEqualsWithDelta(self::NETO, $v['cost'], 0.0000005);
+        $this->assertEquals(1, $v['marca']);
+        $this->assertEquals((float) $fila_antes['final_price'], (float) DB::table('articles')->where('id', $copia->id)->value('final_price'), 'mismo final');
+    }
 }
