@@ -8,7 +8,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
- * CA2 (ficha de la copia), CA3 (ficha de Fénix), CA4 (cron idempotente), CA5 (guardas: marca 0 o
+ * CA2 (ficha de la copia), CA3 (ficha de Fénix), CA4 (cron idempotente), CA5 (guardas, marca 0 o
  * interruptor apagado = hoy) y CA11 (compra espejo) del PLAN D2-M R3.1.
  *
  * @group vinculacion-iva-copia

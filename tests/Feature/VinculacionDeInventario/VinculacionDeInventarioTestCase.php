@@ -26,7 +26,7 @@ use Tests\Feature\Precios\RecalculoEnLote\RecalculoEnLoteTestCase;
  * para que coincida con lo que devuelve el sistema.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types,
- * promoción de constructor, readonly, enum ni atributos.
+ * promoción de constructor, propiedades de sólo lectura, enum ni atributos.
  */
 abstract class VinculacionDeInventarioTestCase extends RecalculoEnLoteTestCase
 {

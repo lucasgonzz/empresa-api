@@ -10,7 +10,7 @@ use App\Models\User;
 use Illuminate\Support\Facades\DB;
 
 /**
- * CA15 (concurrencia: modelo leído antes → comando → intento de guardar el modelo viejo) y CA16
+ * CA15 (concurrencia, con el orden modelo leído antes → comando → intento de guardar el modelo viejo) y CA16
  * (universo global de la reversión: clases A, B, C1, C2 y X) del PLAN D2-M R3.1.
  *
  * En CA16, B1 emula `DuplicarRecetaHelper::duplicar_articulo_sin_historial` (`replicate()` y
