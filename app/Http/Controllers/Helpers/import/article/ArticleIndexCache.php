@@ -1562,6 +1562,60 @@ class ArticleIndexCache
         return (int) $index['created_by_import'][(int) $article_id] === $import_history_id_actual;
     }
 
+    /**
+     * Artículo que YA EXISTÍA en la base antes de esta importación con ese código de barras, si es
+     * uno solo (misión importacion-formula-precio, 20/11/2026, decisión de Lucas).
+     *
+     * Lo usa ProcessRow cuando la opción «identificar por código de proveedor cuando el código de
+     * barras se repite» le sacó el código de barras a la fila y el código de proveedor no encontró
+     * ningún artículo: si el código de barras apunta a un único artículo que ya estaba cargado
+     * (por ejemplo, de una importación anterior por código de barras), se actualiza ese en vez de
+     * crear un duplicado. No cuenta lo creado por esta misma importación (ids fake o marcados en
+     * `created_by_import`): esos son justamente las otras filas del grupo repetido.
+     *
+     * @param  string   $bar_code
+     * @param  array    $index
+     * @param  int      $user_id
+     * @param  int|null $import_history_id_actual
+     * @return \App\Models\Article|null
+     */
+    public static function existente_por_codigo_de_barras($bar_code, array $index, int $user_id, ?int $import_history_id_actual)
+    {
+        if (empty($index)) {
+            $index = self::get_index($user_id);
+        }
+
+        $bar_code = (string) $bar_code;
+
+        if ($bar_code === '' || !isset($index['bar_codes'][$bar_code])) {
+            return null;
+        }
+
+        $ids = self::index_entry_to_ids($index['bar_codes'][$bar_code]);
+
+        // Solo artículos reales que existían antes de esta importación.
+        $ids = array_values(array_filter($ids, function ($id) use ($index, $import_history_id_actual) {
+            if (is_string($id) && strncmp($id, 'fake_', strlen('fake_')) === 0) {
+                return false;
+            }
+            return !self::matched_article_created_by_this_import($index, $id, $import_history_id_actual);
+        }));
+
+        if (count($ids) !== 1) {
+            return null;
+        }
+
+        $resuelto = self::resolve_unique($ids, [
+            'price_types',
+            'addresses',
+            'providers' => function ($q) {
+                $q->select('providers.id');
+            },
+        ], $user_id);
+
+        return $resuelto['status'] === 'match' ? $resuelto['article'] : null;
+    }
+
     /** Guarda la fila vigente de un nombre en el índice de ESTA importación, también entre lotes. */
     public static function registrar_fila_por_nombre(int $user_id, int $import_id, string $nombre, int $fila): ?int
     {

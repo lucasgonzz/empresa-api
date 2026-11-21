@@ -2140,7 +2140,23 @@ class LocalImportHelper {
 	static function normalizar_porcentaje_de_iva($iva) {
 		$texto = trim(str_replace('%', '', (string) $iva));
 
-		return preg_replace('/^(\d+),(\d+)$/', '$1.$2', $texto);
+		/*
+		 * Misión importacion-formula-precio (20/11/2026): una celda escrita como texto puede traer
+		 * la comilla de Excel adentro del valor («'21 %»). Sin sacarla se creaba un IVA «'21».
+		 */
+		$texto = trim($texto, " \t\n\r\0\x0B'´`\"");
+
+		$texto = preg_replace('/^(\d+),(\d+)$/', '$1.$2', $texto);
+
+		/*
+		 * Ceros decimales de más: «0.00» es «0», «21.00» es «21» y «10.50» es «10.5». Sin esto
+		 * «0,00%» creaba un IVA «0.00» distinto del «0» que ya existe.
+		 */
+		if (preg_match('/^\d+\.\d+$/', $texto)) {
+			$texto = rtrim(rtrim($texto, '0'), '.');
+		}
+
+		return $texto;
 	}
 
 	static function getIvaId($iva, $article = null) {

@@ -955,6 +955,13 @@ class ArticleController extends Controller
              */
             'desempatar_por_nombre'                                 => filter_var($request->desempatar_por_nombre, FILTER_VALIDATE_BOOLEAN),
 
+            /*
+             * Misión `importacion-formula-precio` (20/11/2026): opciones de lectura del Excel,
+             * las mismas que manda el modal con IA. Default false = comportamiento de siempre.
+             */
+            'descuentos_negativos_descuentan'                       => filter_var($request->descuentos_negativos_descuentan, FILTER_VALIDATE_BOOLEAN),
+            'barras_repetidas_por_codigo_de_proveedor'              => filter_var($request->barras_repetidas_por_codigo_de_proveedor, FILTER_VALIDATE_BOOLEAN),
+
         ]);
         
         if ($result['hubo_un_error']) {

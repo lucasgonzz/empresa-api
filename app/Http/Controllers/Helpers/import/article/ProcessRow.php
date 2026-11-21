@@ -78,6 +78,39 @@ class ProcessRow {
     protected $desempatar_por_nombre = false;
 
     /**
+     * Misión importacion-formula-precio (20/11/2026): opciones de lectura del Excel.
+     *  - descuentos_negativos_descuentan (bool): «-25» descuenta 25 % y «5» suma 5 %.
+     *  - barras_repetidas_por_codigo_de_proveedor (bool): ver CodigosDeBarraRepetidos.
+     *  - archivo_de_barras_a_omitir (string|null): mapa calculado por InitExcelImport.
+     * @var array
+     */
+    protected $opciones_de_lectura = [];
+
+    /**
+     * Mapa [código de barras => [código de proveedor => true]] de las filas que se identifican
+     * por código de proveedor y no cargan el código de barras. null = todavía no se leyó.
+     * @var array|null
+     */
+    protected $barras_a_omitir = null;
+
+    /**
+     * Código de barras que la opción de barras repetidas le sacó a la fila actual (null si no le
+     * sacó nada). Se resetea por fila. Ver procesar(): si el código de proveedor no encuentra
+     * ningún artículo, se busca uno que ya existiera con este código de barras.
+     * @var string|null
+     */
+    protected $bar_code_omitido = null;
+
+    /**
+     * Ids de artículos existentes que ya tomó una fila por ese camino en este lote: dos filas del
+     * mismo grupo repetido no pueden caer sobre el mismo artículo (se pisarían entre sí, que es
+     * justo lo que la opción evita). Entre lotes lo cuida el código de proveedor que la primera
+     * fila le dejó escrito al artículo.
+     * @var array<int, bool>
+     */
+    protected $existentes_tomados_por_barras = [];
+
+    /**
      * Ya se registró, en este chunk, el aviso de "pediste desempatar por nombre pero la
      * columna de nombre no está mapeada". Ver registrar_desempate_sin_resolver().
      *
@@ -422,6 +455,11 @@ class ProcessRow {
             isset($data['desempatar_por_nombre']) ? $data['desempatar_por_nombre'] : false,
             FILTER_VALIDATE_BOOLEAN
         );
+
+        // Misión importacion-formula-precio: opciones de lectura del Excel (ver la propiedad).
+        $this->opciones_de_lectura = isset($data['opciones_de_lectura']) && is_array($data['opciones_de_lectura'])
+            ? $data['opciones_de_lectura']
+            : [];
 
         /*
          * Decisión para filas repetidas dentro del propio archivo (prompt 04, grupo
@@ -1038,6 +1076,9 @@ class ProcessRow {
             ],
         ];
 
+        // Descuentos y recargos al formato del sistema antes de que nadie los lea (ver el método).
+        $row = $this->normalizar_celdas_de_descuentos_y_recargos($row);
+
         $props_to_add = $this->props_de_la_lista_precio_final($props_to_add, $row);
 
         $this->iniciar();
@@ -1161,6 +1202,10 @@ class ProcessRow {
             }
         }
         $this->terminar('normalizar identificadores (IdentifierNormalizer)');
+
+        // Códigos de barras repetidos con código de proveedor distinto (opción del usuario).
+        $this->bar_code_omitido = null;
+        $this->aplicar_barras_repetidas_por_codigo_de_proveedor($data);
 
         /*
          * Si tras normalizar los 4 identificadores la fila quedó sin ninguno utilizable
@@ -1465,6 +1510,33 @@ class ProcessRow {
          * inmediatamente despues de find_with_index().
          */
         $identificadores_pendientes = ArticleIndexCache::ultimos_identificadores_pendientes();
+
+        /*
+         * Misión importacion-formula-precio (decisión de Lucas, 20/11/2026): la fila perdió su
+         * código de barras por la opción de barras repetidas y el código de proveedor no encontró
+         * nada. Si ese código de barras es de un único artículo que ya estaba en la base, cargado
+         * antes por código de barras y SIN código de proveedor, se actualiza ese —y le queda el
+         * código de proveedor de la fila— en vez de crear un duplicado. Un artículo que ya tiene
+         * otro código de proveedor es otro producto: no se toca.
+         */
+        if (is_null($articulo_ya_creado) && !is_null($this->bar_code_omitido)) {
+            $existente = ArticleIndexCache::existente_por_codigo_de_barras(
+                $this->bar_code_omitido,
+                is_array($this->article_index) ? $this->article_index : [],
+                $this->user->id,
+                is_null($this->import_history_id) ? null : (int) $this->import_history_id
+            );
+
+            if (
+                !is_null($existente)
+                && trim((string) $existente->provider_code) === ''
+                && !isset($this->existentes_tomados_por_barras[(int) $existente->id])
+            ) {
+                $this->existentes_tomados_por_barras[(int) $existente->id] = true;
+                $articulo_ya_creado = $existente;
+                $escalon_de_match = 'bar_code';
+            }
+        }
 
         /*
          * Desempate por nombre pedido que NO alcanzó (misión
@@ -3183,6 +3255,12 @@ class ProcessRow {
         return $repetido;
     }
 
+    /**
+     * Campos de texto que get_modified_fields() guarda tal cual vinieron (ver ahí): códigos y
+     * textos que pueden ser numéricos con ceros a la izquierda o con puntos.
+     */
+    const CAMPOS_DE_TEXTO_SIN_NORMALIZAR = ['provider_code', 'sku', 'bar_code', 'name', 'descripcion', 'contenido'];
+
     private function get_modified_fields($existing, array $data): array
     {
         $modified = [];
@@ -3250,8 +3328,17 @@ class ProcessRow {
             // Si son iguales (tras normalizar), no hay cambio
             if ($old == $new || is_null($new)) continue;
 
-            // Si llegaron hasta acá, es porque realmente cambió
-            $modified[$key] = $new;
+            /*
+             * Si llegaron hasta acá, es porque realmente cambió.
+             *
+             * Misión importacion-formula-precio (20/11/2026): en los campos de TEXTO se guarda el
+             * valor tal cual vino, no el normalizado para comparar. normalize_value_for_comparison()
+             * pasa todo lo numérico a float, y un código de proveedor «0054» se guardaba «54» al
+             * actualizar un artículo (al crear no pasaba: el alta usa $data directo).
+             */
+            $modified[$key] = in_array($key, self::CAMPOS_DE_TEXTO_SIN_NORMALIZAR, true)
+                ? trim((string) $value)
+                : $new;
             $modified["__diff__{$key}"] = [
                 'old' => $existing->$key,
                 'new' => $value,
@@ -3432,6 +3519,132 @@ class ProcessRow {
 
         return $resultado['ok'] ? $resultado['value'] : null;
     }
+
+    /**
+     * Reescribe las celdas de descuentos y recargos de la fila al formato del sistema
+     * (misión importacion-formula-precio, 20/11/2026):
+     *  - separador «_»: también se aceptan «+» y «;» («-25+-30+-17» → «-25_-30_-17»);
+     *  - sin «%» ni la comilla de texto de Excel;
+     *  - con la opción «descuentos negativos descuentan», se invierte el signo de cada descuento
+     *    (ver DescuentosDelExcel). Los recargos no se invierten: un recargo siempre suma.
+     *
+     * Se hace sobre la fila y no en cada lector porque la celda se lee en varios lugares
+     * (obtener_descuentos_*, get_discounts_diff, get_provider_discounts_to_tag): así todos ven
+     * el mismo valor. Una celda vacía queda como vino, para no cambiar la semántica de blancos.
+     *
+     * @param  mixed $row  Fila del CSV (array indexado por columna).
+     * @return mixed       La fila con las celdas normalizadas.
+     */
+    protected function normalizar_celdas_de_descuentos_y_recargos($row)
+    {
+        if (!is_array($row)) {
+            return $row;
+        }
+
+        $negativos_descuentan = !empty($this->opciones_de_lectura['descuentos_negativos_descuentan']);
+
+        $columnas = [
+            'descuentos'        => $negativos_descuentan,
+            'descuentos_montos' => $negativos_descuentan,
+            'recargos'          => false,
+            'recargos_montos'   => false,
+        ];
+
+        foreach ($columnas as $columna => $invertir_signo) {
+            if (ImportHelper::isIgnoredColumn($columna, $this->columns)) {
+                continue;
+            }
+
+            $indice = $this->columns[$columna];
+            if (!isset($row[$indice]) || trim((string) $row[$indice]) === '') {
+                continue;
+            }
+
+            /*
+             * Sin la opción de invertir el signo, la celda solo se reescribe si encadena con «+» o
+             * «;». Cualquier otra celda llega como siempre a los lectores de descuentos: una
+             * importación que hoy anda no cambia de resultado.
+             */
+            if (!$invertir_signo && !preg_match('/[+;]/', (string) $row[$indice])) {
+                continue;
+            }
+
+            $normalizada = DescuentosDelExcel::normalizar_celda($row[$indice], $invertir_signo);
+
+            // Solo se reemplaza si quedó algo: una celda con solo «%» se deja como vino.
+            if (!is_null($normalizada)) {
+                $row[$indice] = $normalizada;
+            }
+        }
+
+        return $row;
+    }
+
+    /**
+     * Con la opción «identificar por código de proveedor cuando el código de barras se repite»
+     * (misión importacion-formula-precio), saca el código de barras de la fila cuando está
+     * repetido en el archivo y esta fila tiene un código de proveedor que no se repite en ese
+     * grupo (ver CodigosDeBarraRepetidos::mapa_de_omision()). La fila se identifica entonces por
+     * el siguiente identificador (código de proveedor) y el código de barras no se carga ni se
+     * borra del artículo. Las demás filas siguen identificándose por código de barras, como
+     * siempre: las de código único, y las repetidas sin un código de proveedor que las distinga
+     * (la última pisa a las anteriores). Es la regla de tres casos que fijó Lucas, sin excepciones
+     * para códigos «de relleno» como «111111111».
+     *
+     * @param  array $data  Datos de la fila ya normalizados (se modifica).
+     * @return void
+     */
+    protected function aplicar_barras_repetidas_por_codigo_de_proveedor(array &$data)
+    {
+        if (empty($this->opciones_de_lectura['barras_repetidas_por_codigo_de_proveedor'])) {
+            return;
+        }
+
+        if (!array_key_exists('bar_code', $data) || is_null($data['bar_code'])) {
+            return;
+        }
+
+        $omitir = CodigosDeBarraRepetidos::se_omite(
+            $this->barras_a_omitir(),
+            $data['bar_code'],
+            $data['provider_code'] ?? null
+        );
+
+        if (!$omitir) {
+            return;
+        }
+
+        // Fuera de $data (no null): así get_modified_fields() no toca el código del artículo.
+        $this->bar_code_omitido = (string) $data['bar_code'];
+        unset($data['bar_code']);
+        unset($this->forced_blank_props['bar_code']);
+    }
+
+    /**
+     * Mapa de códigos de barras a omitir, leído una vez por lote del archivo que escribió
+     * InitExcelImport::guardar_codigos_de_barra_a_omitir().
+     *
+     * @return array
+     */
+    protected function barras_a_omitir()
+    {
+        if (!is_null($this->barras_a_omitir)) {
+            return $this->barras_a_omitir;
+        }
+
+        $this->barras_a_omitir = [];
+        $ruta = $this->opciones_de_lectura['archivo_de_barras_a_omitir'] ?? null;
+
+        if ($ruta && is_file($ruta)) {
+            $mapa = @unserialize(file_get_contents($ruta), ['allowed_classes' => false]);
+            if (is_array($mapa)) {
+                $this->barras_a_omitir = $mapa;
+            }
+        }
+
+        return $this->barras_a_omitir;
+    }
+
 
     /**
      * Igual que get_number() pero pensado para chunks individuales de descuentos/recargos
