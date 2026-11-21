@@ -700,6 +700,15 @@ class ArticleController extends Controller
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
+        /*
+         * 🔴 Foto de las filas de `article_price_type` ANTES de que attach_price_types() las pise con el
+         * valor del request: setFinalPrice() la usa para decidir el `previus_final_price` de cada lista
+         * (sólo se mueve si cambió el precio persistible; un precio a mano 9 -> 10 deja 9 como anterior).
+         * Sin foto compararía 10 contra 10. Se descarta en el `finally` de abajo. Ver PLAN
+         * guardar-sin-cambios-derivados-null.
+         */
+        $foto_de_pivots = ArticlePricesHelper::foto_de_pivots($model);
+
         ArticlePriceTypeMonedaHelper::attach_price_type_monedas($model, $request->price_type_monedas);
         
         ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
@@ -721,7 +730,13 @@ class ArticleController extends Controller
          */
         ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor($model, $actual_provider_id);
 
-        $model = ArticleHelper::setFinalPrice($model);
+        ArticlePricesHelper::usar_foto_de_pivots($model->id, $foto_de_pivots);
+
+        try {
+            $model = ArticleHelper::setFinalPrice($model);
+        } finally {
+            ArticlePricesHelper::olvidar_foto_de_pivots();
+        }
 
         $this->attach_provider($model);
 

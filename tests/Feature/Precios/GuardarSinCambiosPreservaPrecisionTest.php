@@ -23,9 +23,10 @@ use Tests\Feature\ListasSiempre\ListasSiempreTestCase;
  * pisados y un evento en el historial. Medido idéntico en v4.3.27 y v4.3.70.
  *
  * 🔴 QUE NO PROTEGE (y se afirma explícito en CA1-bis). El humo de Golden NO deja `articles` intacto:
- * `base_margen`/`base_margen_final` (derivados) pasan de NULL al valor y las pivots de
- * `article_price_type` (NULL en el cliente) reciben el espejo de las monedas en pesos. Son 14 valores
- * y este test los enumera uno por uno: ninguno se omite de la foto ni se da por aceptado.
+ * las pivots de `article_price_type` (NULL en el cliente) reciben el espejo de las monedas en pesos.
+ * Son 12 valores y este test los enumera uno por uno: ninguno se omite de la foto ni se da por
+ * aceptado. `base_margen`/`base_margen_final` NULL ya se preservan (misión
+ * guardar-sin-cambios-derivados-null-20261121): un guardado sin cambios no los completa.
  *
  * Escenario: la columna se ensancha a DECIMAL(22,6) por una conexión PDO aparte (el DDL hace COMMIT
  * implícito y cerraría la transacción del test) y se devuelve a DECIMAL(22,2) en el tearDown pase lo
@@ -460,8 +461,9 @@ class GuardarSinCambiosPreservaPrecisionTest extends ListasSiempreTestCase
     /**
      * CA1-bis. Reproduce el artículo 10 de Golden-Breeze: pivots `article_price_type` en NULL y
      * `base_margen`/`base_margen_final` en NULL. El precio y sus fechas quedan intactos; lo único que
-     * cambia son EXACTAMENTE 14 valores derivados (2 + 12), enumerados acá uno por uno. El comparador
-     * de precios del humo sigue siendo estricto: estos 14 seguirán apareciendo como DIFERENCIAS y no se
+     * cambia son EXACTAMENTE 12 valores de pivots, enumerados acá uno por uno; `base_margen*` siguen
+     * NULL (CA5 del PLAN guardar-sin-cambios-derivados-null). El comparador
+     * de precios del humo sigue siendo estricto: estos 12 seguirán apareciendo como DIFERENCIAS y no se
      * aceptan solos (pregunta P1 del PLAN). Este test no estabiliza el fixture ni elige otro artículo.
      *
      * @return void
@@ -515,11 +517,12 @@ class GuardarSinCambiosPreservaPrecisionTest extends ListasSiempreTestCase
             }
         }
 
-        // Los 14 valores esperados: 2 derivados y 12 de pivots (espejo de las monedas en pesos).
-        $esperadas = [
-            'articles.base_margen'       => [null, '0.266200'],
-            'articles.base_margen_final' => [null, '0.266200'],
-        ];
+        // Derivados vacíos y sin cambio real de precio ni de costo: se quedan NULL.
+        $this->assertNull($fila->base_margen, 'base_margen NULL fue completado por un guardado sin cambios.');
+        $this->assertNull($fila->base_margen_final, 'base_margen_final NULL fue completado por un guardado sin cambios.');
+
+        // Los 12 valores esperados, de pivots (espejo de las monedas en pesos).
+        $esperadas = [];
 
         foreach ($listas as $lista) {
 
@@ -546,14 +549,14 @@ class GuardarSinCambiosPreservaPrecisionTest extends ListasSiempreTestCase
 
         ksort($esperadas);
 
-        $this->assertCount(14, $esperadas);
+        $this->assertCount(12, $esperadas);
 
         $diferencias = $this->diferencias($antes, $despues);
 
         $this->assertEquals(
             $esperadas,
             $diferencias,
-            'La diferencia antes/despues no es exactamente la esperada (14 valores):' . $this->describir($diferencias)
+            'La diferencia antes/despues no es exactamente la esperada (12 valores):' . $this->describir($diferencias)
         );
     }
 
