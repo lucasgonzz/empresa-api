@@ -314,6 +314,38 @@ class InventoryLinkageHelper extends Controller {
 	}
 
 	/**
+	 * ¿El costo de esta copia lo manda la vinculación y una compra de ese mismo proveedor NO debe
+	 * pisarlo? Sí cuando la copia tiene la marca de costo neto (`costo_neto_de_vinculacion` = 1) y
+	 * la compra es al proveedor que representa al dueño de la fuente: el renglón de la compra espejo
+	 * (`SaleProviderOrderHelper`) trae el precio BRUTO de Fénix, y escribirlo en `articles.cost` de
+	 * una copia neta la dejaba en 4828 en vez de 3990,082645 y el final en 6426,07 en vez de 5310,80.
+	 *
+	 * Con marca 0 (interruptor apagado, copia sin convertir) devuelve false SIN consultar nada: la
+	 * compra se procesa exactamente como hoy. Tampoco toca las compras a otros proveedores.
+	 *
+	 * Lo usa NewProviderOrderHelper::update_cost().
+	 *
+	 * @param Article $copia Artículo de la compra.
+	 * @param \App\Models\ProviderOrder $provider_order Compra que se procesa.
+	 * @return bool
+	 */
+	public static function el_costo_lo_manda_la_vinculacion($copia, $provider_order) {
+		if (empty($copia->costo_neto_de_vinculacion) || empty($copia->provider_article_id)) {
+			return false;
+		}
+
+		$proveedor = Provider::where('id', $provider_order->provider_id)->first();
+
+		if (is_null($proveedor) || empty($proveedor->comercio_city_user_id)) {
+			return false;
+		}
+
+		$dueno_de_la_fuente = Article::withTrashed()->where('id', $copia->provider_article_id)->value('user_id');
+
+		return !is_null($dueno_de_la_fuente) && (int) $dueno_de_la_fuente === (int) $proveedor->comercio_city_user_id;
+	}
+
+	/**
 	 * Escribe una copia existente bajo candado de fila (D2-M R3, Diseño 3bis). Relee la copia por id
 	 * con lockForUpdate dentro de una transacción (tres intentos ante un deadlock; cada intento empieza
 	 * de cero) y deja que `$aplicar` decida con la marca y el costo releídos. E1 y la reversión toman el
