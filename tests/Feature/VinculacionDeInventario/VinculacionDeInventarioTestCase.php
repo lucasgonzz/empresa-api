@@ -10,7 +10,11 @@ use App\Models\InventoryLinkageScope;
 use App\Models\User;
 use App\Models\ExtencionEmpresa;
 use App\Services\MercadoLibre\ProductService;
+use Illuminate\Database\Events\TransactionBeginning;
+use Illuminate\Database\Events\TransactionCommitted;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\Feature\Precios\RecalculoEnLote\RecalculoEnLoteTestCase;
@@ -54,8 +58,17 @@ abstract class VinculacionDeInventarioTestCase extends RecalculoEnLoteTestCase
     /** @var \App\Models\InventoryLinkage */
     protected $vinculacion;
 
-    /** @var array Eventos de DB::listen (sentencias y nivel de transacción). */
+    /** @var array Eventos de DB::listen (sentencias, nivel e identidad de la transacción). */
     protected $sentencias = [];
+
+    /** @var int Nivel de transacción antes de la llamada medida (DatabaseTransactions deja 1). */
+    protected $nivel_antes = 0;
+
+    /** @var array Pila de ids de las transacciones abiertas desde escuchar_sentencias(). */
+    protected $pila_de_transacciones = [];
+
+    /** @var int */
+    protected $contador_de_transacciones = 0;
 
     protected function setUp(): void
     {
@@ -289,19 +302,39 @@ abstract class VinculacionDeInventarioTestCase extends RecalculoEnLoteTestCase
     }
 
     /**
-     * Escucha las sentencias SQL con su nivel de transacción (CA15e).
+     * Escucha las sentencias SQL con su nivel de transacción y con la identidad de la transacción
+     * (la más interna abierta al ejecutarla) para CA15e. El nivel de antes de la llamada se guarda
+     * en `$nivel_antes`: DatabaseTransactions ya deja 1 abierto, así que "dentro de una transacción"
+     * quiere decir un nivel MAYOR que ese, no >= 1.
      *
      * @return void
      */
     protected function escuchar_sentencias()
     {
         $this->sentencias = [];
+        $this->nivel_antes = DB::transactionLevel();
+        $this->pila_de_transacciones = [];
+        $this->contador_de_transacciones = 0;
+
+        Event::listen(TransactionBeginning::class, function () {
+            $this->pila_de_transacciones[] = ++$this->contador_de_transacciones;
+        });
+
+        Event::listen(TransactionCommitted::class, function () {
+            array_pop($this->pila_de_transacciones);
+        });
+
+        Event::listen(TransactionRolledBack::class, function () {
+            array_pop($this->pila_de_transacciones);
+        });
 
         DB::listen(function ($consulta) {
             $this->sentencias[] = [
-                'sql'      => strtolower($consulta->sql),
-                'bindings' => $consulta->bindings,
-                'nivel'    => DB::transactionLevel(),
+                'sql'         => strtolower($consulta->sql),
+                'bindings'    => $consulta->bindings,
+                'nivel'       => DB::transactionLevel(),
+                'transaccion' => empty($this->pila_de_transacciones) ? 0 : end($this->pila_de_transacciones),
+                'pila'        => $this->pila_de_transacciones,
             ];
         });
     }

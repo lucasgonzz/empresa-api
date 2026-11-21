@@ -31,6 +31,9 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
     /** @var bool Interruptor de los listeners de CA15c y CA15d (se registran una vez y se apagan). */
     private $listener_activo = false;
 
+    /** @var int|null Posición, en las sentencias escuchadas, del update que hace el listener de CA15c. */
+    private $indice_del_listener = null;
+
     /**
      * Fixture de CA15: salidas prendidas, fuente en 4828, copia con el estado pedido.
      *
@@ -69,6 +72,8 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
         Article::retrieved(function ($modelo) use ($copia_id, $columnas) {
             if ($this->listener_activo && $modelo->id == $copia_id) {
                 $this->listener_activo = false;
+                // Posición que va a ocupar el update del listener en $this->sentencias (CA15e lo excluye a él solo).
+                $this->indice_del_listener = count($this->sentencias);
                 DB::table('articles')->where('id', $copia_id)->update($columnas);
             }
         });
@@ -153,7 +158,7 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
         $this->assertEqualsWithDelta(5000.0, $v['cost'], 0.0000005, 'hoy da cost 6050');
         $this->assertEqualsWithDelta(6655.00, $v['final'], 0.0001, 'hoy da 8052,55');
 
-        $this->assert_candado($sentencias, $copia->id);
+        $this->assert_candado($sentencias, $copia->id, $this->indice_del_listener);
     }
 
     /**
@@ -176,13 +181,21 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
 
     /**
      * CA15e — el primer `for update` de la copia es la relectura por id del helper, antes del
-     * `for update` del historial y del `update`, en una transacción. Sin escribir, 0 `for update`.
+     * `for update` del historial y del `update`, y los dos van en la MISMA transacción interna: una
+     * abierta por la llamada medida (nivel mayor al que había antes; DatabaseTransactions ya deja 1).
+     * Sin escribir, 0 `for update`.
      *
-     * @param  array $sentencias
-     * @param  int   $copia_id
+     * El `update` que se compara es el PRIMERO de la copia en toda la lista, sin filtrar por posición:
+     * si alguna escritura de la copia va antes del candado, el test rompe. La única excepción es el
+     * `update` de un listener que emula a E1/reversión (CA15c/d), que se identifica por su posición
+     * exacta (`$this->indice_del_listener`) y no por "todo lo anterior".
+     *
+     * @param  array    $sentencias
+     * @param  int      $copia_id
+     * @param  int|null $excluida Posición del `update` del listener identificado (CA15c), si lo hubo.
      * @return void
      */
-    private function assert_candado(array $sentencias, $copia_id)
+    private function assert_candado(array $sentencias, $copia_id, $excluida = null)
     {
         $primero = null;
         $indice_update = null;
@@ -190,28 +203,34 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
 
         foreach ($sentencias as $i => $s) {
             $es_for_update = strpos($s['sql'], 'for update') !== false && strpos($s['sql'], 'from `articles`') !== false;
-            $con_la_copia = in_array($copia_id, $s['bindings']);
+            $con_la_copia = in_array((string) $copia_id, array_map('strval', $s['bindings']), true);
 
             if ($es_for_update && $con_la_copia && is_null($primero)) {
                 $primero = $i;
                 $this->assertFalse(strpos($s['sql'], ' in (') !== false, 'la relectura es por id, no el whereIn del historial');
-                $this->assertGreaterThanOrEqual(1, $s['nivel'], 'dentro de una transacción');
             }
 
             if ($es_for_update && strpos($s['sql'], ' in (') !== false && is_null($indice_historial)) {
                 $indice_historial = $i;
             }
 
-            // El primer update de la copia DESPUÉS del candado (en CA15c el listener emula a E1 con un
-            // update anterior, que no es del helper).
-            if (!is_null($primero) && $i > $primero && strpos($s['sql'], 'update `articles`') === 0 && $con_la_copia && is_null($indice_update)) {
+            // El primer update de la copia en TODA la lista (sin filtro por posición), salvo el del
+            // listener identificado.
+            if (strpos($s['sql'], 'update `articles`') === 0 && $con_la_copia && $i !== $excluida && is_null($indice_update)) {
                 $indice_update = $i;
             }
         }
 
         $this->assertNotNull($primero, 'hay una relectura con for update de la copia');
-        $this->assertNotNull($indice_update, 'hay un update de la copia después del candado');
-        $this->assertLessThan($indice_update, $primero, 'el candado va antes del update');
+        $this->assertNotNull($indice_update, 'hay un update de la copia');
+        $this->assertLessThan($indice_update, $primero, 'el candado va antes del primer update de la copia');
+
+        $this->assertGreaterThan($this->nivel_antes, $sentencias[$primero]['nivel'], 'el candado va en una transacción interna (nivel mayor al de antes de la llamada)');
+        $this->assertGreaterThan($this->nivel_antes, $sentencias[$indice_update]['nivel'], 'el update va en una transacción interna');
+        $this->assertGreaterThan(0, $sentencias[$primero]['transaccion'], 'el candado va dentro de una transacción abierta por la llamada');
+        // El update puede ir en un savepoint anidado (el historial de precios abre el suyo), pero tiene que
+        // seguir adentro de la transacción que tomó el candado: nunca en otra anterior ni posterior.
+        $this->assertContains($sentencias[$primero]['transaccion'], $sentencias[$indice_update]['pila'], 'candado y update en la MISMA transacción interna');
 
         if (!is_null($indice_historial)) {
             $this->assertLessThan($indice_historial, $primero, 'el candado va antes del for update del historial');
