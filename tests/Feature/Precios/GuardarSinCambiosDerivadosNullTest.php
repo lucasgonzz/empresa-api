@@ -357,11 +357,16 @@ class GuardarSinCambiosDerivadosNullTest extends ListasSiempreTestCase
         $this->assertSame('5.00', $pivote->previus_final_price, 'Lista por margen sin cambio: el previus se pisó con el precio actual.');
         $this->assertSinDiferencias($antes, $this->foto($articulo->id), 'Lista común: el PUT sin cambios movió la foto:');
 
-        // Lista a mano.
+        // Lista a mano. Las columnas derivadas (percentage, precio_luego_de_recargos, monto_ganancia)
+        // van coherentes con el 9.00 fijado (los valores que calcula el sistema): si no, el recálculo
+        // las corregiría y la foto se movería por una incoherencia del fixture, no por el previus.
         DB::table('article_price_type')->where('id', $pivote->id)->update([
-            'setear_precio_final' => 1,
-            'final_price'         => '9.00',
-            'previus_final_price' => '4.00',
+            'setear_precio_final'      => 1,
+            'final_price'              => '9.00',
+            'previus_final_price'      => '4.00',
+            'percentage'               => '93.20',
+            'precio_luego_de_recargos' => '9.00',
+            'monto_ganancia'           => '3.59',
         ]);
 
         $antes = $this->foto($articulo->id);
