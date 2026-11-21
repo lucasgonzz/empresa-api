@@ -281,6 +281,7 @@ class Alta_de_la_copia_en_costo_neto_Test extends VinculacionDeInventarioTestCas
         $this->postJson('api/inventory-linkage', [
             'client_id'                  => $cliente_id,
             'inventory_linkage_scope_id' => $sin_contexto->inventory_linkage_scope_id,
+            'categories'                 => [],
         ])->assertStatus(201);
 
         $this->assertEquals($cuenta + 1, InventoryLinkage::count(), 'el POST deja 1 fila nueva');

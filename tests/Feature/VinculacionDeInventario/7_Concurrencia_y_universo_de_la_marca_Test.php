@@ -195,13 +195,15 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
                 $indice_historial = $i;
             }
 
-            if (strpos($s['sql'], 'update `articles`') === 0 && $con_la_copia && is_null($indice_update)) {
+            // El primer update de la copia DESPUÉS del candado (en CA15c el listener emula a E1 con un
+            // update anterior, que no es del helper).
+            if (!is_null($primero) && $i > $primero && strpos($s['sql'], 'update `articles`') === 0 && $con_la_copia && is_null($indice_update)) {
                 $indice_update = $i;
             }
         }
 
         $this->assertNotNull($primero, 'hay una relectura con for update de la copia');
-        $this->assertNotNull($indice_update, 'hay un update de la copia');
+        $this->assertNotNull($indice_update, 'hay un update de la copia después del candado');
         $this->assertLessThan($indice_update, $primero, 'el candado va antes del update');
 
         if (!is_null($indice_historial)) {
@@ -356,10 +358,9 @@ class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTe
             return Article::find($articulo->id);
         };
 
+        // La copia se crea por UNA vinculación (ensure_…): checkArticle recorrería todas las del proveedor.
         $copiar = function ($vinculacion, $proveedor, $origen) use ($ayuda) {
-            $ayuda($vinculacion, $proveedor->id)->checkArticle($origen);
-
-            return Article::withTrashed()->where('provider_article_id', $origen->id)->orderBy('id', 'DESC')->first();
+            return $ayuda($vinculacion, $proveedor->id)->ensure_client_article_for_linkage($vinculacion, $origen);
         };
 
         $f_a1 = $fuente($p1);

@@ -489,7 +489,7 @@ abstract class VinculacionDeInventarioTestCase extends RecalculoEnLoteTestCase
         $this->crear_lista($this->galvan, 'Precio final', null, 1);
 
         DB::table('articles')->where('id', $copia->id)->update([
-            'tiendanube_product_id'  => 'tn-' . $copia->id,
+            'tiendanube_product_id'  => 700000 + (int) $copia->id,
             'disponible_tienda_nube' => 1,
             'mercado_libre'          => 1,
             'meli_category_id'       => 'MLA1234',
