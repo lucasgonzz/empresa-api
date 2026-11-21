@@ -316,8 +316,9 @@ class RecalculoDePreciosEnLote
                     /*
                      * La comparación suelta de hoy ($precio_anterior != final_price), la misma que
                      * hacía ProcessChunkSetFinalPrices::handle(): el precio de antes sale de la
-                     * base (string con dos decimales) y el de después es el float ya cuantizado a
-                     * dos decimales por setFinalPrice().
+                     * base (string, con los decimales de la columna) y el de después es el float ya
+                     * cuantizado a dos decimales por setFinalPrice(), salvo que el precio no haya
+                     * cambiado: entonces es el mismo valor guardado, con su precisión.
                      */
                     $precio_anterior = $article->final_price;
 
