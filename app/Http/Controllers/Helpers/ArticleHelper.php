@@ -39,6 +39,13 @@ use Illuminate\Support\Str;
 
 class ArticleHelper {
 
+    /**
+     * Diferencia máxima para considerar que el precio calculado es "el mismo" que el guardado.
+     * Es la misma convención de ArticlePriceTypeMonedaHelper::distinto() e InventoryLinkageHelper
+     * (`> 0.000001` es "distinto"); en pesos o dólares es indistinguible de cero.
+     */
+    const TOLERANCIA_PRECIO_SIN_CAMBIO = 0.000001;
+
     static function checkRecipesForSetPirces($article, $instance) {
         $recipes = Self::get_recipes_que_tienen_este_articulo_como_insumo($article);
         foreach ($recipes as $recipe) {
@@ -950,8 +957,41 @@ class ArticleHelper {
          * Ver el test el_articulo_sin_costo_ni_precio_conserva_el_final_price_en_null(), que arma
          * esa configuracion estrecha a mano justamente porque no es la de una cuenta cualquiera.
          */
+        /**
+         * 🔴 PERO NO SE CUANTIZA UN PRECIO QUE NO CAMBIO (misión preservar-precision-legacy-20261121).
+         *
+         * El párrafo de arriba supone `articles.final_price` DECIMAL(22,2). Golden-Breeze tiene la
+         * columna con 6 decimales (deriva de esquema vieja) y artículos guardados como 0.266200: al
+         * abrirlos y guardarlos sin tocar nada (o recalcularlos), el round(…, 2) los pasaba a 0.270000
+         * (+1,4 %), pisaba previus_final_price y final_price_updated_at y dejaba un evento de
+         * historial, aunque nadie hubiera cambiado el precio. Medido igual en v4.3.27 y v4.3.70.
+         *
+         * Por eso, si lo calculado coincide con lo que la base ya tiene (a menos de
+         * TOLERANCIA_PRECIO_SIN_CAMBIO), se conserva lo guardado con su precisión y no se cuantiza:
+         * la comparación de más abajo no ve cambio y no se registra nada. Es el mismo criterio de
+         * "se arregla en el origen, una vez" y reemplaza al round sólo en ese caso.
+         *
+         * - Columna sana DECIMAL(22,2): current "155.44" contra calculado 155.4404… difiere más que la
+         *   tolerancia, se cuantiza como siempre y da 155.44 = lo guardado: mismo resultado que antes.
+         * - Cambio legítimo (costo, margen, dólar, redondeo): el calculado se aleja de lo guardado, se
+         *   cuantiza a 2 decimales y se registra como siempre. Un artículo con cola que cambia de
+         *   verdad queda canónico.
+         * - El (float) del valor guardado puede hacer que Eloquent marque la columna sucia ("0.2662"
+         *   contra "0.266200") y reescriba el mismo número: inocuo, el save() va con timestamps apagados.
+         *
+         * 🔴 NO "simplificar" quitando la rama: sin ella vuelve el 0.266200 -> 0.270000. Tampoco
+         * comparar en cada consumidor (ver el párrafo de arriba).
+         */
         if (!is_null($final_price)) {
-            $final_price = round((float) $final_price, 2);
+
+            if (
+                !is_null($current_final_price)
+                && abs((float) $current_final_price - (float) $final_price) <= self::TOLERANCIA_PRECIO_SIN_CAMBIO
+            ) {
+                $final_price = (float) $current_final_price;
+            } else {
+                $final_price = round((float) $final_price, 2);
+            }
         }
 
         /**
