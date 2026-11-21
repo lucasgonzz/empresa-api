@@ -496,6 +496,13 @@ abstract class VinculacionDeInventarioTestCase extends RecalculoEnLoteTestCase
             'me_li_id'               => 'MLA' . $copia->id,
             'stock'                  => 5,
         ]);
+
+        // Mercado Libre sólo encola con al menos una imagen (ProductService::add_article_to_sync).
+        \App\Models\Image::create([
+            'hosting_url'    => 'https://test.local/zz-' . $copia->id . '.jpg',
+            'imageable_id'   => $copia->id,
+            'imageable_type' => 'article',
+        ]);
     }
 
     protected function tearDown(): void

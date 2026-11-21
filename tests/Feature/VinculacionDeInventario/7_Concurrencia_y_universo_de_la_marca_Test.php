@@ -21,6 +21,13 @@ use Illuminate\Support\Facades\DB;
  */
 class Concurrencia_y_universo_de_la_marca_Test extends VinculacionDeInventarioTestCase
 {
+    /**
+     * Columnas de precio que la reversión no puede mover.
+     *
+     * @var array
+     */
+    const PRECIO = ['final_price', 'costo_real', 'previus_final_price', 'final_price_updated_at'];
+
     /** @var bool Interruptor de los listeners de CA15c y CA15d (se registran una vez y se apagan). */
     private $listener_activo = false;
 

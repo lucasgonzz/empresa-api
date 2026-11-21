@@ -98,6 +98,7 @@ class Conversion_de_copias_existentes_Test extends VinculacionDeInventarioTestCa
         $this->prender_salidas($normal);
 
         $suma_antes = (float) DB::table('articles')->whereIn('id', [$normal->id, $replica->id])->sum('final_price');
+        $cambios_antes = DB::table('price_changes')->where('article_id', $replica->id)->count();
         $antes = $this->foto_efectos([$replica->id]);
 
         list($codigo, $salida) = $this->convertir([$normal->id, $replica->id]);
@@ -106,7 +107,7 @@ class Conversion_de_copias_existentes_Test extends VinculacionDeInventarioTestCa
         $this->assertEquals(0, $this->marca_de($replica->id), '161802 sin convertir');
         $this->assertEquals(1, $this->marca_de($normal->id), 'la otra sí');
         $this->assertEquals($antes['articulo_' . $replica->id], $this->foto_efectos([$replica->id])['articulo_' . $replica->id], 'fila de 161802 intacta');
-        $this->assertEquals(0, DB::table('price_changes')->where('article_id', $replica->id)->count(), 'sin price_changes aunque la simulación pasó por PriceChangeController');
+        $this->assertEquals($cambios_antes, DB::table('price_changes')->where('article_id', $replica->id)->count(), 'sin price_changes aunque la simulación pasó por PriceChangeController');
         $this->assertEqualsWithDelta($suma_antes, (float) DB::table('articles')->whereIn('id', [$normal->id, $replica->id])->sum('final_price'), 0.0001);
     }
 
