@@ -32,8 +32,7 @@ use Tests\Feature\ListasSiempre\ListasSiempreTestCase;
  * que pase; si una corrida se cortó, el setUp la devuelve antes de empezar.
  * No correr contra una base compartida: ensancha la tabla `articles` de la base del slot.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union types,
- * promoción de constructor, readonly, enum ni #[...].
+ * IMPORTANTE: PHP 7.4, sin sintaxis de PHP 8 (ver .mision/RESTRICCIONES.md).
  *
  * @group precios-por-lista
  */
