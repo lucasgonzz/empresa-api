@@ -793,6 +793,10 @@ class AiExcelImportController extends Controller
      *   - permitir_provider_code_repetido (bool)
      *   - permitir_provider_code_repetido_en_multi_providers (bool)
      *   - actualizar_articulos_de_otro_proveedor (bool)
+     *   - update_other_provider_by_provider_code (bool, opcional): cruce por código de proveedor con artículos de otros
+     *     proveedores; ausente = vale `actualizar_articulos_de_otro_proveedor`.
+     *   - update_other_provider_by_identification (bool, opcional): cruce por número interno, barras, SKU o nombre con
+     *     artículos de otros proveedores; ausente = vale `actualizar_articulos_de_otro_proveedor`.
      *   - actualizar_por_provider_code (bool)
      *   - actualizar_proveedor (bool)
      *   - desempatar_por_nombre (bool): con provider_code repetido, quedarse con el
@@ -972,6 +976,30 @@ class AiExcelImportController extends Controller
              */
             'descuentos_negativos_descuentan'                    => filter_var($request->input('descuentos_negativos_descuentan', false), FILTER_VALIDATE_BOOLEAN),
             'barras_repetidas_por_codigo_de_proveedor'           => filter_var($request->input('barras_repetidas_por_codigo_de_proveedor', false), FILTER_VALIDATE_BOOLEAN),
+
+            /*
+             * Misión `historial-precios-proveedor`: decide por separado si el cruce por CÓDIGO DE
+             * PROVEEDOR (escalón provider_code) puede mezclar artículos de otros proveedores.
+             * Opcional con default del lado api: AUSENTE (null) = vale lo mismo que
+             * `actualizar_articulos_de_otro_proveedor`, o sea el comportamiento de siempre
+             * (SPA vieja, jobs ya encolados). Si viene, se normaliza con filter_var
+             * (`(bool) 'false'` daría TRUE).
+             */
+            'update_other_provider_by_provider_code'             => $request->input('update_other_provider_by_provider_code') === null
+                                                                        ? null
+                                                                        : filter_var($request->input('update_other_provider_by_provider_code'), FILTER_VALIDATE_BOOLEAN),
+
+            /*
+             * Misión `historial-precios-proveedor` (ADENDA 1): bandera propia del cruce por
+             * IDENTIFICACIÓN (número interno, código de barras, SKU o nombre) con artículos de otros
+             * proveedores. Cada pregunta del modal decide SU caso: esta gobierna sólo esos escalones;
+             * `update_other_provider_by_provider_code` gobierna sólo el cruce por código de proveedor.
+             * Opcional: AUSENTE (null) = vale lo mismo que `actualizar_articulos_de_otro_proveedor`
+             * (SPA vieja, jobs ya encolados). Si viene, se normaliza con filter_var.
+             */
+            'update_other_provider_by_identification'            => $request->input('update_other_provider_by_identification') === null
+                                                                        ? null
+                                                                        : filter_var($request->input('update_other_provider_by_identification'), FILTER_VALIDATE_BOOLEAN),
         ]);
 
         if ($result['hubo_un_error']) {
@@ -1396,6 +1424,13 @@ class AiExcelImportController extends Controller
                      * claves de siempre y no espera un recorrido del archivo que no va a mostrar.
                      */
                     'analizar_precio'             => $request->boolean('analizar_precio'),
+
+                    /*
+                     * Misión historial-precios-proveedor: si el resultado trae `other_provider_articles`
+                     * (artículos del Excel, por barras/SKU, que el dueño ya tiene con otro proveedor).
+                     * Opcional, default false: la SPA vieja no la manda y recibe las claves de siempre.
+                     */
+                    'detect_other_provider_articles' => $request->boolean('detect_other_provider_articles'),
                 ],
             ]);
 

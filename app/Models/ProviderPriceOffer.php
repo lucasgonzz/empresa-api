@@ -34,6 +34,22 @@ class ProviderPriceOffer extends Model
 {
     protected $guarded = [];
 
+    /**
+     * Tipos de las columnas de uso (misión historial-precios-proveedor).
+     * `updated_article_cost` / `changed_article_provider` quedan en null
+     * cuando la fila es anterior a esta versión ("sin dato").
+     *
+     * @var array
+     */
+    protected $casts = [
+        'updated_article_cost'         => 'integer',
+        'previous_article_cost'        => 'float',
+        'price_change_id'              => 'integer',
+        'changed_article_provider'     => 'integer',
+        'previous_article_provider_id' => 'integer',
+        'last_seen_reference_id'       => 'integer',
+    ];
+
     /** El proveedor mandó una lista de precios en Excel */
     const ORIGEN_IMPORTACION = 'importacion';
 

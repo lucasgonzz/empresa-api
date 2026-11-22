@@ -15,8 +15,7 @@ class PriceChangeController extends Controller
         $owner_id = UserHelper::userId();
         $article = \App\Models\Article::where('id', $article_id)->where('user_id', $owner_id)->firstOrFail();
         $usuario = UserHelper::user(false);
-        $ver_costo = $usuario && (is_null($usuario->owner_id) || $usuario->admin_access
-            || $usuario->permissions()->where('slug', 'article.cost')->exists());
+        $ver_costo = \App\Http\Controllers\Helpers\ProviderPriceOfferHelper::can_see_cost($usuario);
         $models = PriceChange::where('article_id', $article_id)
                             ->orderBy('created_at', 'DESC')
                             ->orderBy('id', 'DESC')
@@ -26,8 +25,16 @@ class PriceChangeController extends Controller
             ->where(function ($q) use ($owner_id) {
                 $q->where('id', $owner_id)->orWhere('owner_id', $owner_id);
             })->pluck('name', 'id');
-        $salida = $models->map(function ($model) use ($ver_costo, $nombres) {
+        // Misión historial-precios-proveedor: la oferta de proveedor que originó cada cambio (UNA consulta).
+        $ofertas_por_cambio = \App\Http\Controllers\Helpers\ProviderPriceOfferHelper::offers_by_price_change(
+            $owner_id,
+            $models->pluck('id')->all(),
+            $ver_costo
+        );
+        $salida = $models->map(function ($model) use ($ver_costo, $nombres, $ofertas_por_cambio) {
             $dato = $model->toArray();
+            // Siempre un array (vacío si el cambio no vino de ninguna oferta).
+            $dato['provider_offers'] = isset($ofertas_por_cambio[$model->id]) ? $ofertas_por_cambio[$model->id] : [];
             $dato['empleado_nombre'] = $nombres[$model->employee_id] ?? null;
             if (!$ver_costo) {
                 // En cuentas con listas el precio general puede ser el costo sin
