@@ -88,13 +88,32 @@ class OfertasDeProveedorService
      * chunk de importación de decenas de miles de artículos no puede
      * convertirse en decenas de miles de INSERTs.
      *
-     * @param array $buffer [article_id => [provider_id => ['cost' => float|string, 'provider_code' => string|null, 'moneda_id' => int|null]]]
+     * 🔴 Misión historial-precios-proveedor — marcas de uso y "visto":
+     * - Una oferta que SE USÓ (updated_article_cost = 1 o changed_article_provider = 1)
+     *   se escribe SIEMPRE, aunque el costo no haya cambiado: es un hecho
+     *   (lo que pasó con el artículo) que no se puede perder por dedupe.
+     * - Si no se escribe fila porque no cambió nada, la fila vigente recibe
+     *   `last_seen_at` / `last_seen_reference_id` (un UPDATE por tanda de
+     *   1000, nunca uno por fila): "siempre queda registro de cuándo se
+     *   encontró ese precio" sin multiplicar filas.
+     * - Toda fila escrita lleva updated_article_cost / changed_article_provider
+     *   en 0/1 (nunca null) y previous_article_provider_id (si la entrada no lo
+     *   trae se resuelve con UNA consulta a `articles`).
+     * - El upsert del mismo día/origen nunca borra una marca ya escrita
+     *   (ver `$update` más abajo).
+     * Las llamadas viejas (sin claves nuevas ni quinto parámetro) siguen
+     * andando igual.
+     *
+     * @param array $buffer [article_id => [provider_id => ['cost' => float|string, 'provider_code' => string|null, 'moneda_id' => int|null,
+     *                       'updated_article_cost' => int|null, 'previous_article_cost' => float|null,
+     *                       'changed_article_provider' => int|null, 'previous_article_provider_id' => int|null]]]
      * @param int $user_id Dueño de las ofertas (articles.user_id)
      * @param string $origen 'importacion' | 'compra' | 'manual', una sola para TODO el lote
      * @param int|null $referencia_id import_history_id | provider_order_id | null
+     * @param array $price_change_ids [article_id => price_change_id] eventos de price_changes que produjo el uso
      * @return void
      */
-    public static function registrar_lote(array $buffer, int $user_id, string $origen, ?int $referencia_id): void
+    public static function registrar_lote(array $buffer, int $user_id, string $origen, ?int $referencia_id, array $price_change_ids = []): void
     {
         if (empty($buffer)) {
             return;
@@ -131,6 +150,12 @@ class OfertasDeProveedorService
                     'provider_code' => isset($oferta['provider_code']) ? $oferta['provider_code'] : null,
                     'cost' => $cost,
                     'moneda_id' => isset($oferta['moneda_id']) ? (int) $oferta['moneda_id'] : self::MONEDA_POR_DEFECTO,
+                    // Marcas de uso: 0/1 (si no vienen, la oferta "no se usó")
+                    'updated_article_cost' => !empty($oferta['updated_article_cost']) ? 1 : 0,
+                    'previous_article_cost' => isset($oferta['previous_article_cost']) ? (float) $oferta['previous_article_cost'] : null,
+                    'changed_article_provider' => !empty($oferta['changed_article_provider']) ? 1 : 0,
+                    // null = la entrada no lo trae: se resuelve desde articles más abajo
+                    'previous_article_provider_id' => isset($oferta['previous_article_provider_id']) ? (int) $oferta['previous_article_provider_id'] : null,
                 ];
             }
         }
@@ -149,10 +174,10 @@ class OfertasDeProveedorService
             ->orderBy('provider_id')
             ->orderBy('fecha', 'desc')
             ->orderBy('id', 'desc')
-            ->select(['article_id', 'provider_id', 'cost', 'fecha'])
+            ->select(['id', 'article_id', 'provider_id', 'cost', 'fecha'])
             ->get();
 
-        // [article_id][provider_id] => ['cost' => float, 'fecha' => 'Y-m-d']
+        // [article_id][provider_id] => ['id' => int, 'cost' => float, 'fecha' => 'Y-m-d']
         // Se guarda también la fecha (antes solo el costo) para poder decidir
         // la reconfirmación del paso 3 (A3): hace falta saber CUÁNTO hace que
         // no se escribe una fila de este par, no solo si el costo cambió.
@@ -168,6 +193,7 @@ class OfertasDeProveedorService
             // historial más viejo y no interesan acá.
             if (!isset($ultima_fila_vigente[$clave_article][$clave_provider])) {
                 $ultima_fila_vigente[$clave_article][$clave_provider] = [
+                    'id' => (int) $fila->id,
                     'cost' => (float) $fila->cost,
                     'fecha' => $fila->fecha,
                 ];
@@ -179,21 +205,29 @@ class OfertasDeProveedorService
         $fecha_hoy = $ahora->toDateString();
         $filas_a_escribir = [];
 
+        // Ids de las filas vigentes que NO se reescriben pero hay que marcar como "vistas" ahora.
+        $ids_vistos = [];
+
         foreach ($candidatas as $candidata) {
             $previa = isset($ultima_fila_vigente[$candidata['article_id']][$candidata['provider_id']])
                 ? $ultima_fila_vigente[$candidata['article_id']][$candidata['provider_id']]
                 : null;
 
+            // La oferta se usó para algo (costo o titular): es un hecho que se escribe siempre.
+            $se_uso = $candidata['updated_article_cost'] === 1 || $candidata['changed_article_provider'] === 1;
+
             // Sin fila previa: siempre es una novedad y se escribe. Con fila
-            // previa: solo se descarta si el costo NO cambió (epsilon) Y
-            // además esa fila previa todavía está dentro de la ventana de
-            // reconfirmación (A3). Pasados los DIAS_RECONFIRMACION días, se
-            // escribe igual aunque el costo sea el mismo — ver el docblock
-            // de la constante y del método.
-            if ($previa !== null && abs($previa['cost'] - $candidata['cost']) < self::EPSILON_COSTO) {
+            // previa: solo se descarta si el costo NO cambió (epsilon), la oferta
+            // no se usó Y además esa fila previa todavía está dentro de la
+            // ventana de reconfirmación (A3). Pasados los DIAS_RECONFIRMACION
+            // días, se escribe igual aunque el costo sea el mismo — ver el
+            // docblock de la constante y del método.
+            if ($previa !== null && !$se_uso && abs($previa['cost'] - $candidata['cost']) < self::EPSILON_COSTO) {
                 $dias_desde_la_ultima = Carbon::parse($previa['fecha'])->diffInDays($ahora);
 
                 if ($dias_desde_la_ultima < self::DIAS_RECONFIRMACION) {
+                    // No se inserta, pero queda anotado que se volvió a ver este precio.
+                    $ids_vistos[] = $previa['id'];
                     continue;
                 }
                 // Si no: cae al armado de abajo y escribe una fila de
@@ -210,13 +244,60 @@ class OfertasDeProveedorService
                 'origen' => $origen,
                 'fecha' => $fecha_hoy,
                 'referencia_id' => $referencia_id,
+                'updated_article_cost' => $candidata['updated_article_cost'],
+                // El costo previo y el vínculo con price_changes sólo tienen sentido si la oferta se usó
+                'previous_article_cost' => $candidata['updated_article_cost'] === 1 ? $candidata['previous_article_cost'] : null,
+                'price_change_id' => ($candidata['updated_article_cost'] === 1 && isset($price_change_ids[$candidata['article_id']]))
+                    ? (int) $price_change_ids[$candidata['article_id']]
+                    : null,
+                'changed_article_provider' => $candidata['changed_article_provider'],
+                'previous_article_provider_id' => $candidata['previous_article_provider_id'],
                 'created_at' => $ahora,
                 'updated_at' => $ahora,
             ];
         }
 
+        // Marca "visto por última vez" en las vigentes que no se reescribieron:
+        // un UPDATE por tanda, nunca uno por fila.
+        foreach (array_chunk(array_values(array_unique($ids_vistos)), self::LOTE_UPSERT) as $tanda_ids) {
+            DB::table('provider_price_offers')
+                ->where('user_id', $user_id)
+                ->whereIn('id', $tanda_ids)
+                ->update([
+                    'last_seen_at' => $ahora,
+                    'last_seen_reference_id' => $referencia_id,
+                ]);
+        }
+
         if (empty($filas_a_escribir)) {
             return;
+        }
+
+        // El titular anterior de las entradas que no lo traen (los call sites de
+        // "otro proveedor" no conocen el modelo) se lee de articles con UNA consulta.
+        $article_ids_sin_titular = [];
+
+        foreach ($filas_a_escribir as $fila_a_escribir) {
+            if ($fila_a_escribir['previous_article_provider_id'] === null) {
+                $article_ids_sin_titular[$fila_a_escribir['article_id']] = $fila_a_escribir['article_id'];
+            }
+        }
+
+        if (!empty($article_ids_sin_titular)) {
+            $titulares = [];
+
+            foreach (array_chunk(array_values($article_ids_sin_titular), self::LOTE_UPSERT) as $tanda_articulos) {
+                $titulares += DB::table('articles')
+                    ->whereIn('id', $tanda_articulos)
+                    ->pluck('provider_id', 'id')
+                    ->all();
+            }
+
+            foreach ($filas_a_escribir as $indice => $fila_a_escribir) {
+                if ($fila_a_escribir['previous_article_provider_id'] === null && isset($titulares[$fila_a_escribir['article_id']])) {
+                    $filas_a_escribir[$indice]['previous_article_provider_id'] = (int) $titulares[$fila_a_escribir['article_id']];
+                }
+            }
         }
 
         foreach (array_chunk($filas_a_escribir, self::LOTE_UPSERT) as $lote) {
@@ -234,7 +315,69 @@ class OfertasDeProveedorService
                  * vino a evitar (una oferta en dolares etiquetada como pesos compite y
                  * gana "el mas barato" por ~1000x).
                  */
-                ['cost', 'provider_code', 'moneda_id', 'referencia_id', 'updated_at']
+                [
+                    'cost', 'provider_code', 'moneda_id', 'referencia_id', 'updated_at',
+                    /*
+                     * Mismo día y origen = misma fila (unique sin cambios): la segunda
+                     * escritura NUNCA borra lo que dejó la primera. Las marcas de uso
+                     * sólo pueden subir (GREATEST), el costo y el titular previos
+                     * quedan los del primer uso del día (COALESCE) y el vínculo con
+                     * price_changes se pisa sólo si la nueva llamada trae uno.
+                     * Laravel 8 acepta expresiones (DB::raw) como valor de $update
+                     * (MySqlGrammar::compileUpsert las pasa por parameter()).
+                     */
+                    'updated_article_cost' => DB::raw('GREATEST(COALESCE(`updated_article_cost`, 0), VALUES(`updated_article_cost`))'),
+                    'changed_article_provider' => DB::raw('GREATEST(COALESCE(`changed_article_provider`, 0), VALUES(`changed_article_provider`))'),
+                    'previous_article_cost' => DB::raw('COALESCE(`previous_article_cost`, VALUES(`previous_article_cost`))'),
+                    'previous_article_provider_id' => DB::raw('COALESCE(`previous_article_provider_id`, VALUES(`previous_article_provider_id`))'),
+                    'price_change_id' => DB::raw('COALESCE(VALUES(`price_change_id`), `price_change_id`)'),
+                ]
+            );
+        }
+    }
+
+    /**
+     * Completa `price_change_id` en las ofertas de HOY, de ese origen y esa
+     * referencia que SE USARON para actualizar el costo (updated_article_cost = 1).
+     * Lo usa compras: la oferta se escribe al catalogar el costo, pero el
+     * evento de price_changes recién existe cuando se recalculan los precios
+     * (después), así que el vínculo se completa en un segundo paso.
+     *
+     * Un solo UPDATE con CASE por tanda de 500 artículos (nunca uno por fila).
+     *
+     * @param int $user_id Dueño de las ofertas
+     * @param string $origen 'compra' | 'importacion' | ...
+     * @param int $referencia_id provider_order_id | import_history_id
+     * @param array $price_change_ids [article_id => price_change_id]
+     * @return void
+     */
+    public static function link_price_changes(int $user_id, string $origen, int $referencia_id, array $price_change_ids): void
+    {
+        if (empty($price_change_ids)) {
+            return;
+        }
+
+        $fecha_hoy = now()->toDateString();
+
+        foreach (array_chunk($price_change_ids, 500, true) as $tanda) {
+            $casos = '';
+            $bindings_casos = [];
+            $article_ids = [];
+
+            foreach ($tanda as $article_id => $price_change_id) {
+                $casos .= ' WHEN ? THEN ?';
+                $bindings_casos[] = (int) $article_id;
+                $bindings_casos[] = (int) $price_change_id;
+                $article_ids[] = (int) $article_id;
+            }
+
+            $marcas = implode(',', array_fill(0, count($article_ids), '?'));
+
+            DB::update(
+                'UPDATE provider_price_offers SET price_change_id = CASE article_id' . $casos . ' END'
+                . ' WHERE user_id = ? AND origen = ? AND referencia_id = ? AND fecha = ?'
+                . ' AND updated_article_cost = 1 AND article_id IN (' . $marcas . ')',
+                array_merge($bindings_casos, [$user_id, $origen, $referencia_id, $fecha_hoy], $article_ids)
             );
         }
     }
