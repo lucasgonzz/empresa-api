@@ -26,6 +26,10 @@ class ResetDatosNegocioRegistro extends Model
         'resultado' => 'array',
         'total_filas' => 'integer',
         'respaldo_bytes' => 'integer',
+        'started_at' => 'datetime',
+        'finished_at' => 'datetime',
+        'token_vence_at' => 'datetime',
+        'token_usado_at' => 'datetime',
     ];
 
     /**
