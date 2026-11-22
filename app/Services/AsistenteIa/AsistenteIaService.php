@@ -4064,10 +4064,20 @@ CONFIRMACION;
         $bloque_de_tareas = $this->bloque_de_tareas_programadas($conversation, $owner);
 
         if ($bloque_de_tareas !== '') {
-            $system[] = [
-                'type' => 'text',
-                'text' => $bloque_de_tareas,
-            ];
+            if (count($system) > 1) {
+                /*
+                 * Se suma al FINAL del último bloque no cacheado en vez de abrir uno nuevo: los tests del
+                 * censo del system (MemoriaDelAgente/2, ChatIa) fijan cuántos bloques lleva cada canal, y
+                 * para el caché es lo mismo (ninguno de los dos lleva cache_control). Sólo si no hay
+                 * ninguno (sin memoria ni conversaciones anteriores) va como bloque propio.
+                 */
+                $system[count($system) - 1]['text'] .= "\n\n" . $bloque_de_tareas;
+            } else {
+                $system[] = [
+                    'type' => 'text',
+                    'text' => $bloque_de_tareas,
+                ];
+            }
         }
 
         return $system;
