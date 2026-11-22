@@ -195,6 +195,36 @@ class AsistenteCanalHelper
     }
 
     /**
+     * Cierre de los descriptores heredados (3 a 9) que va delante del worker vivo del asistente
+     * (Enmienda 7, hallazgo de la revisión 1-A).
+     *
+     * En el hosting compartido `schedule:run` corre bajo `flock -n <slug>.schedule.lock` (cc-cron.sh)
+     * y bajo el envoltorio de Hostinger (`flock -w 1 /tmp/cron_lock_<uid> …`). Los procesos de
+     * `runInBackground()` heredan esos candados como descriptores abiertos: como el worker vive
+     * ~50 s, el `schedule:run` del minuto siguiente se saltearía entero. Un `exec` sin comando
+     * aplica sus redirecciones al subshell `( … )` de fondo, así que ni el worker ni
+     * `schedule:finish` conservan los candados.
+     */
+    const PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS = 'exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- ; ';
+
+    /**
+     * Comando completo del worker vivo del asistente para el evento del schedule: el cierre de
+     * candados heredados y después el `queue:work` (armado con el mismo formato que usa
+     * `$schedule->command()`). Es determinístico: el mutex del evento depende del comando y
+     * `schedule:finish` rearma el schedule para encontrarlo.
+     *
+     * @param  string  $cola  Cola del asistente (p. ej. `default_asistente`).
+     * @return string
+     */
+    public static function comando_del_worker_del_turno_whatsapp(string $cola): string
+    {
+        return self::PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS
+            . \Illuminate\Console\Application::formatCommandString(
+                'queue:work --queue=' . $cola . ' --sleep=1 --max-time=50 --tries=1'
+            );
+    }
+
+    /**
      * Cola del asistente para el schedule del Kernel (D7): la del turno si corresponde, o la misma
      * cola si quedaron jobs pendientes en ella aunque el dueño ya no cumpla las condiciones, para
      * que un turno despachado antes de apagar la extensión o el interruptor no quede huérfano.

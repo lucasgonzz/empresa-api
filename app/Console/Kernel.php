@@ -148,7 +148,9 @@ class Kernel extends ConsoleKernel
         // cola es null y no se programa nada.
         $cola_asistente = \App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::cola_del_turno_whatsapp_para_el_schedule($company_owner);
         if ($cola_asistente !== null) {
-            $schedule->command('queue:work --queue=' . $cola_asistente . ' --sleep=1 --max-time=50 --tries=1')
+            // exec (no command): el comando lleva delante el cierre de los candados heredados del cron
+            // (Enmienda 7; ver AsistenteCanalHelper::PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS).
+            $schedule->exec(\App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::comando_del_worker_del_turno_whatsapp($cola_asistente))
                 ->everyMinute()
                 ->withoutOverlapping(10)
                 ->runInBackground();
