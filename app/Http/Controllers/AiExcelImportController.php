@@ -1408,6 +1408,13 @@ class AiExcelImportController extends Controller
                      * claves de siempre y no espera un recorrido del archivo que no va a mostrar.
                      */
                     'analizar_precio'             => $request->boolean('analizar_precio'),
+
+                    /*
+                     * Misión historial-precios-proveedor: si el resultado trae `other_provider_articles`
+                     * (artículos del Excel, por barras/SKU, que el dueño ya tiene con otro proveedor).
+                     * Opcional, default false: la SPA vieja no la manda y recibe las claves de siempre.
+                     */
+                    'detect_other_provider_articles' => $request->boolean('detect_other_provider_articles'),
                 ],
             ]);
 
