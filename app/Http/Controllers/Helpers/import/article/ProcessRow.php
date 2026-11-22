@@ -2011,7 +2011,7 @@ class ProcessRow {
      *
      * @param mixed $articulo_ya_creado artículo hallado por la cascada
      * @param int|null $provider_id proveedor de la fila
-     * @param string|null $escalon_de_match escalón que produjo el match (ArticleIndexCache::ultimo_escalon())
+     * @param string|null $escalon_de_match escalón que produjo la coincidencia, según ArticleIndexCache::ultimo_escalon()
      * @return bool true = omitir la actualización del artículo
      */
     function omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id, $escalon_de_match = null) {
