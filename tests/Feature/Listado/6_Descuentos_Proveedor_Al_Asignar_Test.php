@@ -440,6 +440,51 @@ class Descuentos_Proveedor_Al_Asignar_Test extends EmpresaTestCase
     }
 
     /**
+     * Prendida: si la persona BORRA el descuento del proveedor desde la ficha (DELETE api/article-discount/{id}),
+     * el costo real vuelve al costo sin descuento al instante y un guardado posterior de la ficha, sin
+     * cambios, lo conserva (misión guardar-sin-cambios-listas-y-costo-real: ese guardado ya no pone al día
+     * lo que el borrado dejara atrasado).
+     *
+     * @test
+     */
+    public function prendida_borrar_el_descuento_recalcula_y_un_guardado_sin_cambios_lo_conserva()
+    {
+        $this->set_preferencia(1);
+
+        $provider = $this->proveedor_con_descuentos(self::PROVEEDOR, [10]);
+
+        $alta = $this->postJson('api/article', $this->payload_alta([
+            'name'        => 'zz Articulo descuento borrado',
+            'provider_id' => $provider->id,
+        ]));
+
+        $alta->assertStatus(201);
+
+        $article = Article::find(json_decode($alta->getContent(), true)['model']['id']);
+
+        $descuento = $this->descuentos_tagueados($article->id)->first();
+
+        $this->assertNotNull($descuento, 'El alta tiene que haber materializado la bonificacion.');
+
+        $this->deleteJson('api/article-discount/'.$descuento->id)->assertSuccessful();
+
+        $sin_descuento = (float) $article->fresh()->costo_real;
+
+        $this->assertEqualsWithDelta(
+            (float) $article->fresh()->cost,
+            $sin_descuento,
+            self::DELTA,
+            'Borrar el descuento tiene que dejar el costo real sin descuento (sin IVA en este articulo).'
+        );
+
+        $this->putJson('api/article/'.$article->id, $this->payload_edicion($article->fresh(), [
+            'name' => 'zz Articulo descuento borrado (renombrado)',
+        ]))->assertStatus(200);
+
+        $this->assertEqualsWithDelta($sin_descuento, (float) $article->fresh()->costo_real, self::DELTA, 'Un guardado sin cambios trajo de vuelta el descuento.');
+    }
+
+    /**
      * 🔴 El helper deja la relacion `article_discounts` FRESCA para quien recalcule despues.
      *
      * Es la clase de error del 31/8/2026 (relacion de Eloquent vieja en memoria): Eloquent cachea
