@@ -9,7 +9,10 @@ class AddAgenteAltaBebidasToUsers extends Migration
     public function up()
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->boolean('agente_alta_bebidas')->default(false);
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('users', 'agente_alta_bebidas')) {
+                $table->boolean('agente_alta_bebidas')->default(false);
+            }
         });
     }
 
