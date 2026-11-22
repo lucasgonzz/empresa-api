@@ -9,7 +9,10 @@ class AddUpdateProviderExplicitToArticleProviderOrder extends Migration
     public function up()
     {
         Schema::table('article_provider_order', function (Blueprint $table) {
-            $table->boolean('update_provider_explicit')->default(false);
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('article_provider_order', 'update_provider_explicit')) {
+                $table->boolean('update_provider_explicit')->default(false);
+            }
         });
     }
 
