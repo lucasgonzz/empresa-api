@@ -176,7 +176,14 @@ class GuardarSinCambiosCostoRealNuloTest extends ListasSiempreTestCase
         $this->recalcular($articulo, $dueno);
         $this->guardar_sin_cambios($articulo->id)->assertOk();
 
-        DB::table('articles')->where('id', $articulo->id)->update(['cost' => $cost, 'costo_real' => null, 'base_margen' => null, 'base_margen_final' => null]);
+        // Con costo vacío el precio final guardado es 0 (coherente con el costo): lo único que se mide es el costo real.
+        $atributos = ['cost' => $cost, 'costo_real' => null, 'base_margen' => null, 'base_margen_final' => null];
+
+        if (!$cost) {
+            $atributos['final_price'] = 0;
+        }
+
+        DB::table('articles')->where('id', $articulo->id)->update($atributos);
 
         return Article::find($articulo->id);
     }
