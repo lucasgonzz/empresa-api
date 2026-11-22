@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Models\Article;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -70,6 +71,12 @@ class ProviderPriceOfferHelper
             ? []
             : DB::table('provider_orders')->whereIn('id', $purchase_ids)->where('user_id', $owner_id)->pluck('num', 'id')->all();
 
+        // Fecha de las importaciones citadas ("Importación del dd/mm/aaaa"): UNA consulta.
+        $import_ids = $rows->where('origen', 'importacion')->pluck('referencia_id')->filter()->unique()->values()->all();
+        $import_dates = empty($import_ids)
+            ? []
+            : DB::table('import_histories')->whereIn('id', $import_ids)->where('user_id', $owner_id)->pluck('created_at', 'id')->all();
+
         // Fecha de los cambios de precio vinculados: UNA consulta.
         $price_change_ids = $rows->pluck('price_change_id')->filter()->unique()->values()->all();
         $price_change_dates = empty($price_change_ids)
@@ -88,7 +95,7 @@ class ProviderPriceOfferHelper
                 'origen'                         => $row->origen,
                 'fecha'                          => $row->fecha,
                 'referencia_id'                  => is_null($row->referencia_id) ? null : (int) $row->referencia_id,
-                'reference_label'                => self::reference_label($row, $purchase_numbers),
+                'reference_label'                => self::reference_label($row, $purchase_numbers, $import_dates),
                 'last_seen_at'                   => $row->last_seen_at,
                 'last_seen_reference_id'         => is_null($row->last_seen_reference_id) ? null : (int) $row->last_seen_reference_id,
                 // null = fila anterior a la misión ("sin dato"); no se convierte en 0.
@@ -189,13 +196,16 @@ class ProviderPriceOfferHelper
     }
 
     /**
-     * Texto corto que identifica de dónde salió la oferta ("Compra N° 12" / "Importación N° 7").
+     * Texto corto que identifica de dónde salió la oferta ("Compra N° 12" / "Importación del 07/03/2026").
+     * Plan §2.9: la importación se rotula con la fecha de la importación (import_histories.created_at); si
+     * ya no existe, con la fecha de la oferta, que es la del mismo día.
      *
      * @param \stdClass $row Fila de provider_price_offers
      * @param array $purchase_numbers [provider_order_id => num]
+     * @param array $import_dates [import_history_id => created_at] (una consulta para todas las filas)
      * @return string|null
      */
-    protected static function reference_label($row, array $purchase_numbers)
+    protected static function reference_label($row, array $purchase_numbers, array $import_dates = [])
     {
         if (is_null($row->referencia_id)) {
             return null;
@@ -208,7 +218,11 @@ class ProviderPriceOfferHelper
         }
 
         if ($row->origen === 'importacion') {
-            return 'Importación #' . $row->referencia_id;
+            $fecha = isset($import_dates[$row->referencia_id]) ? $import_dates[$row->referencia_id] : $row->fecha;
+
+            return empty($fecha)
+                ? 'Importación #' . $row->referencia_id
+                : 'Importación del ' . Carbon::parse($fecha)->format('d/m/Y');
         }
 
         return null;
