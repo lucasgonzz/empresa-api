@@ -428,7 +428,7 @@ class Formato_con_secciones_Test extends TestCase
         ]))['secciones']['etapa_1'];
 
         $this->assertSame(
-            $this->seccion_por_defecto(['titulo' => 'Con extras']),
+            $this->ordenar_claves($this->seccion_por_defecto(['titulo' => 'Con extras'])),
             $this->ordenar_claves($meta)
         );
         $this->assertSame(
