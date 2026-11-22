@@ -443,6 +443,9 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
 
     Route::get('price-change/{article_id}', 'PriceChangeController@index');
 
+    // Historial de precios por proveedor de un artículo (misión historial-precios-proveedor).
+    Route::get('provider-price-offer/article/{article_id}', 'ProviderPriceOfferController@index_by_article');
+
     Route::put('sale/{sale_id}/delivery-info', 'SaleController@update_delivery_info');
     Route::get('sale/{sale_id}/ticket-2-logo', 'SaleController@ticket_logo_raster');
     // Ticket de comandera armado con un diseño de ticket (misión diseno-ticket-comandera,
