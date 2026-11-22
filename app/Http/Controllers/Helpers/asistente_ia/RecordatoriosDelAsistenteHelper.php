@@ -38,7 +38,9 @@ use Illuminate\Support\Facades\DB;
  * Contrato (admin consumidor → empresa proveedor), con `X-Admin-Api-Key`:
  *   GET  admin-sync/asistente/recordatorios-pendientes?plantilla=1|0
  *        → 200 {recordatorios:[{id, tarea_id, fecha, hora, detalle, texto, ai_conversation_id, ruta}]}
- *        (`id` = "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}:{HHMM}"; desde el 13/11/2026 también
+ *        (`id` = "recordatorio:{pending_id}-{created_at unix}:{Y-m-d}:{HHMM}"; desde el 21/11/2026 también los
+ *        resultados de las tareas del asistente —`recordatorio:tarea_asistente:{ejecucion}-{unix}`, con `plantilla`
+ *        y `resumen` opcionales: ver DespertadorDeTareasIaHelper—; desde el 13/11/2026 también
  *        los avisos que pidió el dueño —pedidos nuevos de la tienda y stock cero—, con `tarea_id` null y
  *        su propio prefijo: ver AvisosDelDuenoIaHelper)
  *   POST admin-sync/asistente/recordatorios/avisado {id, whatsapp_message_id?} → 200 {ok:true} · 404
@@ -254,7 +256,16 @@ class RecordatoriosDelAsistenteHelper
         $con_avisos_del_dueno = !is_null($del_dueno)
             && ($del_dueno['pedidos'] !== AvisosDelDuenoIaHelper::PEDIDOS_APAGADO || $del_dueno['stock_cero']);
 
-        if (!count($vencidos) && !$con_avisos_del_dueno) {
+        /*
+         * Misión agente-tareas-programadas (21/11/2026): los resultados de las tareas del asistente que ya
+         * terminaron (ejecuciones `lista`) viajan por acá con la misma forma, más dos claves opcionales
+         * (`plantilla`, `resumen`) que sólo lee el admin nuevo. Sin ninguna lista, esta consulta devuelve
+         * exactamente lo de antes. Se piden SIEMPRE, también cuando el admin consulta con `plantilla=0`: la
+         * plantilla de recordatorios es la que sirve de respaldo y el admin decide cómo mandarlo.
+         */
+        $de_tareas_del_asistente = DespertadorDeTareasIaHelper::items_de_entrega($dueno);
+
+        if (!count($vencidos) && !$con_avisos_del_dueno && !count($de_tareas_del_asistente)) {
 
             return [];
         }
@@ -289,15 +300,24 @@ class RecordatoriosDelAsistenteHelper
             ];
         }
 
-        if (!$con_avisos_del_dueno) {
+        if (!$con_avisos_del_dueno && !count($de_tareas_del_asistente)) {
 
             return $recordatorios;
         }
 
-        foreach (AvisosDelDuenoIaHelper::pendientes($dueno, $conversacion) as $aviso) {
+        if ($con_avisos_del_dueno) {
 
-            $recordatorios[] = $aviso['item'];
-            $momentos[] = $aviso['momento'];
+            foreach (AvisosDelDuenoIaHelper::pendientes($dueno, $conversacion) as $aviso) {
+
+                $recordatorios[] = $aviso['item'];
+                $momentos[] = $aviso['momento'];
+            }
+        }
+
+        foreach ($de_tareas_del_asistente as $de_tarea) {
+
+            $recordatorios[] = $de_tarea['item'];
+            $momentos[] = $de_tarea['momento'];
         }
 
         /* Todo junto, por momento (a igual momento, primero las tareas) y con el mismo tope. */
@@ -345,6 +365,12 @@ class RecordatoriosDelAsistenteHelper
      */
     public static function marcar_avisado(User $dueno, $id, $whatsapp_message_id = null): bool
     {
+        /* Misión agente-tareas-programadas (21/11/2026): el resultado de una tarea del asistente tiene su propio id y sello. */
+        if (DespertadorDeTareasIaHelper::es_id_propio($id)) {
+
+            return DespertadorDeTareasIaHelper::marcar($dueno, $id, $whatsapp_message_id);
+        }
+
         /* C2 (13/11/2026): los avisos que pidió el dueño tienen su propio id y su propio sello. */
         if (AvisosDelDuenoIaHelper::es_id_propio($id)) {
 
