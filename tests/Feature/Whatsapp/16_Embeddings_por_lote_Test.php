@@ -10,6 +10,7 @@ use App\Models\EmbeddingRun;
 use App\Models\ExtencionEmpresa;
 use App\Models\User;
 use App\Observers\ArticleObserver;
+use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
 use Carbon\Carbon;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
@@ -140,11 +141,18 @@ class Embeddings_por_lote_Test extends TestCase
      */
     protected function articulo($nombre, array $extra = [])
     {
-        return Article::create(array_merge([
+        $articulo = Article::create(array_merge([
             'name'    => $nombre,
             'status'  => 'active',
             'user_id' => $this->comercio->id,
         ], $extra));
+
+        // Queue::fake() descartó el job que despachó el observer, pero la marca de "encolado"
+        // (embedding_queued_at) quedó puesta en la base. Se libera para simular que ese job ya
+        // corrió: estos tests miden lo que despacha el comando sobre un artículo pendiente.
+        ArticleEmbeddingDispatcher::release($articulo->id);
+
+        return $articulo;
     }
 
     /**
