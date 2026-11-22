@@ -403,6 +403,19 @@ class ArticlePriceTypeMonedaHelper {
                 ->get();
         }
 
+        /*
+         * 🔴 NO sacar: un guardado de la ficha que no cambió NADA de las listas ni del costo no completa las
+         * columnas de la pivot que estaban en NULL (misión guardar-sin-cambios-listas-y-costo-real). Golden-
+         * Breeze tiene las monedas cargadas y la pivot vacía (nunca se espejó): abrir y guardar un artículo
+         * sin tocar nada la llenaba (-100/0.00, 220.18/1108.00, ...) y el comparador del humo de
+         * actualización marcaba DIFERENCIAS. Es el mismo criterio de la 4.3.72 para `base_margen*`: la
+         * columna que estaba NULL vuelve a NULL; la que tenía valor se espeja como siempre, y cualquier cambio
+         * real (costo, IVA, proveedor, el precio o el margen de una lista) hace que se espeje todo como
+         * siempre. «Sin cambio» es sobre lo persistido (ver ArticlePricesHelper::listas_sin_cambio_en_el_guardado()).
+         * Sólo la ficha toma la foto; importación y recálculo nunca entran por acá.
+         */
+        $conservar_nulls = !PreciosEnLote::esta_activo() && ArticlePricesHelper::listas_sin_cambio_en_el_guardado($article);
+
         foreach ($entradas as $entrada) {
 
             if (is_null($entrada->final_price)) {
@@ -432,6 +445,22 @@ class ArticlePriceTypeMonedaHelper {
                 'final_price' => $entrada->final_price,
                 'percentage'  => $entrada->percentage,
             ];
+
+            if ($conservar_nulls) {
+
+                $pivot_antes = ArticlePricesHelper::pivot_antes_del_guardado($article, $entrada->price_type_id);
+
+                if (!is_null($pivot_antes)) {
+
+                    // Las columnas que la pivot tenía en NULL vuelven a NULL (y se escribe el NULL: el
+                    // attach de la ficha pudo haberles puesto el margen por defecto de la lista).
+                    foreach (['final_price', 'percentage'] as $columna) {
+                        if (is_null($pivot_antes[$columna])) {
+                            $columnas_del_pivot[$columna] = null;
+                        }
+                    }
+                }
+            }
 
             if ($en_lote) {
                 PreciosEnLote::registrar_pivot($article, $entrada->price_type_id, $columnas_del_pivot, false);

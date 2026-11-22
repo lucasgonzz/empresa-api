@@ -466,6 +466,21 @@ class ArticleHelper {
             $costo_real = $res['price'];
             $des        = $res['des'];
 
+            /*
+             * 🔴 NO sacar: un guardado de la ficha SIN cambios en el costo, el IVA ni el proveedor conserva
+             * el `costo_real` que el artículo ya tiene (misión guardar-sin-cambios-listas-y-costo-real).
+             * MBMalizia (artículo 2689) lo tenía guardado sin la bonificación del proveedor (cost x 1,105)
+             * aunque la fila de `article_discounts` de 15 % ya existía: el primer guardado «lo ponía al día»
+             * (9.768.200) sin que nadie tocara nada, y el comparador del humo de actualización marcaba
+             * DIFERENCIAS. La ficha avisa con ArticlePricesHelper::conservar_costo_real() sólo cuando ninguna
+             * entrada del costo cambió; un cambio real de costo, IVA o proveedor llega acá sin el aviso y se
+             * calcula como siempre. Los demás caminos (importación, recálculo, compras) nunca lo avisan. Sin
+             * `costo_real` guardado no hay nada que conservar y se calcula.
+             */
+            if (!is_null($costo_real_guardado) && ArticlePricesHelper::debe_conservar_costo_real($article)) {
+                $costo_real = (float) $costo_real_guardado;
+            }
+
             // La asignacion en memoria queda siempre afuera del if: los callers que piden
             // simulacion ($guardar_cambios = false) necesitan el valor en el objeto en memoria,
             // y ActualizarBBDD lo toma del array de retorno que se arma mas abajo con esta misma
@@ -1067,6 +1082,24 @@ class ArticleHelper {
          * lo persistible (nunca la rama de tolerancia: 6.98775 calculado contra 6.99 guardado no entra a
          * la tolerancia y es «sin cambio» igual). Ver PLAN guardar-sin-cambios-derivados-null.
          */
+        /*
+         * 🔴 NO sacar: un `costo_real` guardado en NULL sigue en NULL cuando la ficha dice que ni el costo, ni el
+         * IVA, ni el proveedor cambiaron y el precio final tampoco (misión guardar-sin-cambios-costo-real-nulo).
+         * El Kiosco Verde (artículo 1, sin costo) lo veía pasar de NULL a 0.000000 y Candyguay (artículo
+         * 222234, con costo cargado) de NULL a 4500, junto con base_margen y base_margen_final: el comparador
+         * del humo marcaba DIFERENCIAS. El cálculo corre completo (el precio final se arma con el costo real
+         * calculado, por eso no se mueve) y recién acá se restituye el NULL; un cambio real llega sin el aviso
+         * de la ficha, o con el precio cambiado, y se calcula como siempre. Es el criterio de más abajo para
+         * `base_margen*` aplicado al costo real.
+         */
+        if (
+            !$cambio_el_precio
+            && is_null($costo_real_guardado)
+            && ArticlePricesHelper::debe_conservar_costo_real($article)
+        ) {
+            $article->costo_real = null;
+        }
+
         if (!$cambio_el_precio && Self::costo_real_sin_cambio($costo_real_guardado, $article->costo_real)) {
 
             if (is_null($base_margen_guardado)) {
