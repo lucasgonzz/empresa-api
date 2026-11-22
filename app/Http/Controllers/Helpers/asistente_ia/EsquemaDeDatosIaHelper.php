@@ -489,7 +489,7 @@ class EsquemaDeDatosIaHelper
             'campos'      => [
                 'article_id'         => ['tipo' => 'search', 'etiqueta' => 'articulo'],
                 'article_variant_id' => ['tipo' => 'number', 'etiqueta' => 'variante del articulo'],
-                'combo_id'           => ['tipo' => 'number', 'etiqueta' => 'combo del que el articulo es componente'],
+                'combo_id'           => ['tipo' => 'search', 'etiqueta' => 'combo del que el articulo es componente'],
                 'address_id'         => ['tipo' => 'search', 'etiqueta' => 'sucursal'],
                 'employee_id'        => ['tipo' => 'search', 'etiqueta' => 'quien estaba vendiendo'],
                 'motivo'             => ['tipo' => 'text',   'etiqueta' => 'motivo del freno (sin_stock o stock_insuficiente)'],
