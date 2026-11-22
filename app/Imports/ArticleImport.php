@@ -103,7 +103,13 @@ class ArticleImport implements ToCollection
          * Misión `historial-precios-proveedor`: bandera propia del cruce por código de proveedor
          * (bool|null). Va último y con default null por la misma razón que los de arriba.
          */
-        $update_other_provider_by_provider_code = null
+        $update_other_provider_by_provider_code = null,
+
+        /*
+         * Misión `historial-precios-proveedor` (ADENDA 1): bandera propia del cruce por identificación
+         * (bool|null). Va último y con default null por la misma razón que la anterior.
+         */
+        $update_other_provider_by_identification = null
     ) {
 
         $this->log_activado = false;
@@ -194,6 +200,7 @@ class ArticleImport implements ToCollection
             'equivalencias'                                         => (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [],
             'opciones_de_lectura'                                   => is_array($opciones_de_lectura) ? $opciones_de_lectura : [],
             'update_other_provider_by_provider_code'                => $update_other_provider_by_provider_code,
+            'update_other_provider_by_identification'               => $update_other_provider_by_identification,
         ]);
 
         $this->nombres_proveedores = [];

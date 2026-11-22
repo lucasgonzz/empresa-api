@@ -793,6 +793,10 @@ class AiExcelImportController extends Controller
      *   - permitir_provider_code_repetido (bool)
      *   - permitir_provider_code_repetido_en_multi_providers (bool)
      *   - actualizar_articulos_de_otro_proveedor (bool)
+     *   - update_other_provider_by_provider_code (bool, opcional): cruce por código de proveedor con artículos de otros
+     *     proveedores; ausente = vale `actualizar_articulos_de_otro_proveedor`.
+     *   - update_other_provider_by_identification (bool, opcional): cruce por número interno, barras, SKU o nombre con
+     *     artículos de otros proveedores; ausente = vale `actualizar_articulos_de_otro_proveedor`.
      *   - actualizar_por_provider_code (bool)
      *   - actualizar_proveedor (bool)
      *   - desempatar_por_nombre (bool): con provider_code repetido, quedarse con el
@@ -984,6 +988,18 @@ class AiExcelImportController extends Controller
             'update_other_provider_by_provider_code'             => $request->input('update_other_provider_by_provider_code') === null
                                                                         ? null
                                                                         : filter_var($request->input('update_other_provider_by_provider_code'), FILTER_VALIDATE_BOOLEAN),
+
+            /*
+             * Misión `historial-precios-proveedor` (ADENDA 1): bandera propia del cruce por
+             * IDENTIFICACIÓN (número interno, código de barras, SKU o nombre) con artículos de otros
+             * proveedores. Cada pregunta del modal decide SU caso: esta gobierna sólo esos escalones;
+             * `update_other_provider_by_provider_code` gobierna sólo el cruce por código de proveedor.
+             * Opcional: AUSENTE (null) = vale lo mismo que `actualizar_articulos_de_otro_proveedor`
+             * (SPA vieja, jobs ya encolados). Si viene, se normaliza con filter_var.
+             */
+            'update_other_provider_by_identification'            => $request->input('update_other_provider_by_identification') === null
+                                                                        ? null
+                                                                        : filter_var($request->input('update_other_provider_by_identification'), FILTER_VALIDATE_BOOLEAN),
         ]);
 
         if ($result['hubo_un_error']) {

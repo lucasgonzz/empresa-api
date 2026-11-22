@@ -149,6 +149,15 @@ class InitExcelImport
             : null;
 
         /*
+         * Misión `historial-precios-proveedor` (ADENDA 1): bandera propia del cruce por identificación
+         * (número interno, barras, SKU, nombre) con artículos de otros proveedores. null (clave ausente)
+         * = vale lo mismo que `actualizar_articulos_de_otro_proveedor`.
+         */
+        $this->update_other_provider_by_identification = (isset($data['update_other_provider_by_identification']) && $data['update_other_provider_by_identification'] !== null)
+            ? filter_var($data['update_other_provider_by_identification'], FILTER_VALIDATE_BOOLEAN)
+            : null;
+
+        /*
          * Misión importacion-formula-precio (20/11/2026): dos opciones de lectura del Excel que
          * ofrece el paso 3 del modal a partir del análisis algorítmico (AnalisisDePrecioDelExcel).
          * Default false: un llamador que no las manda importa exactamente igual que antes.
@@ -967,7 +976,8 @@ class InitExcelImport
                 $this->desempatar_por_nombre,
                 $this->equivalencias,
                 $this->opciones_de_lectura(),
-                $this->update_other_provider_by_provider_code
+                $this->update_other_provider_by_provider_code,
+                $this->update_other_provider_by_identification
             );
 
             $this->chunk_number++;

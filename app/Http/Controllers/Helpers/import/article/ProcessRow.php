@@ -88,6 +88,17 @@ class ProcessRow {
     protected $update_other_provider_by_provider_code = null;
 
     /**
+     * Misión `historial-precios-proveedor` (ADENDA 1): bandera propia del cruce por IDENTIFICACIÓN
+     * (número interno, código de barras, SKU o nombre) con artículos de otros proveedores: la que mira
+     * omitir_por_pertencer_a_otro_proveedor(). null = vale lo mismo que
+     * `actualizar_articulos_de_otro_proveedor` (clásico, AdminSync, prueba, SPA vieja, jobs encolados).
+     * El cruce por código de proveedor sigue gobernado por `update_other_provider_by_provider_code`.
+     *
+     * @var bool|null
+     */
+    protected $update_other_provider_by_identification = null;
+
+    /**
      * Misión importacion-formula-precio (20/11/2026): opciones de lectura del Excel.
      *  - descuentos_negativos_descuentan (bool): «-25» descuenta 25 % y «5» suma 5 %.
      *  - barras_repetidas_por_codigo_de_proveedor (bool): ver CodigosDeBarraRepetidos.
@@ -479,6 +490,11 @@ class ProcessRow {
         // Misión historial-precios-proveedor: bandera propia del cruce por código de proveedor (null = la principal).
         $this->update_other_provider_by_provider_code = (isset($data['update_other_provider_by_provider_code']) && $data['update_other_provider_by_provider_code'] !== null)
             ? (bool) $data['update_other_provider_by_provider_code']
+            : null;
+
+        // Misión historial-precios-proveedor (ADENDA 1): bandera propia del cruce por identificación (null = la principal).
+        $this->update_other_provider_by_identification = (isset($data['update_other_provider_by_identification']) && $data['update_other_provider_by_identification'] !== null)
+            ? (bool) $data['update_other_provider_by_identification']
             : null;
 
         // Misión importacion-formula-precio: opciones de lectura del Excel (ver la propiedad).
@@ -1785,7 +1801,7 @@ class ProcessRow {
 
                     $this->articulos_repetidos++;
 
-                    if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id)) {
+                    if (!$this->omitir_por_pertencer_a_otro_proveedor($_articulo_ya_creado, $provider_id, $escalon_de_match)) {
 
                         $this->iniciar();
 
@@ -1804,7 +1820,7 @@ class ProcessRow {
 
                 $this->add_article_match();
 
-                if (!$this->omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id)) {
+                if (!$this->omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id, $escalon_de_match)) {
 
                     $this->iniciar();
 
@@ -1981,12 +1997,38 @@ class ProcessRow {
         }
     }
 
-    function omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id) {
+    /**
+     * ¿La fila se saltea (sólo se registra la oferta) porque el artículo hallado es de OTRO proveedor y
+     * el usuario no pidió actualizarlo?
+     *
+     * Misión `historial-precios-proveedor` (ADENDA 1): cada pregunta del importador decide SU caso. Si
+     * el artículo se halló por código de proveedor (escalón `provider_code`), manda
+     * `update_other_provider_by_provider_code`; si se halló por número interno, código de barras, SKU o
+     * nombre, manda `update_other_provider_by_identification`. Una bandera ausente (null) vale lo que
+     * la principal `actualizar_articulos_de_otro_proveedor`, o sea el comportamiento de siempre
+     * (clásico, AdminSync, prueba gratuita, SPA vieja, jobs encolados). Antes una sola bandera
+     * gobernaba también barras/SKU/nombre y un "No" a esa pregunta no se respetaba si la otra decía "Sí".
+     *
+     * @param mixed $articulo_ya_creado artículo hallado por la cascada
+     * @param int|null $provider_id proveedor de la fila
+     * @param string|null $escalon_de_match escalón que produjo el match (ArticleIndexCache::ultimo_escalon())
+     * @return bool true = omitir la actualización del artículo
+     */
+    function omitir_por_pertencer_a_otro_proveedor($articulo_ya_creado, $provider_id, $escalon_de_match = null) {
+
+        // Bandera del caso: código de proveedor vs. el resto de los escalones; null = la principal.
+        $bandera_propia = $escalon_de_match === 'provider_code'
+            ? $this->update_other_provider_by_provider_code
+            : $this->update_other_provider_by_identification;
+
+        $actualizar_otro_proveedor = $bandera_propia !== null
+            ? $bandera_propia
+            : $this->actualizar_articulos_de_otro_proveedor;
 
         if (
             !is_null($articulo_ya_creado->provider_id)
             && !is_null($provider_id)
-            && !$this->actualizar_articulos_de_otro_proveedor
+            && !$actualizar_otro_proveedor
             && $articulo_ya_creado->provider_id != $provider_id
         ) {
             return true;
