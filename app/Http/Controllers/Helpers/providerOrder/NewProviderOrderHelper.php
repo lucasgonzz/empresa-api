@@ -27,6 +27,7 @@ use App\Models\ProviderOrderDiscount;
 use App\Models\ProviderOrderExtraCost;
 use App\Services\Compras\CodigosDeProveedor;
 use App\Services\Compras\OfertasDeProveedorService;
+use App\Http\Controllers\Helpers\import\article\motor\PreciosEnLote;
 use App\Services\HistorialPreciosService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -75,6 +76,17 @@ class NewProviderOrderHelper {
      * @var array<int, int>
      */
     protected $articulos_con_precio_pendiente = [];
+
+    /**
+     * Misión historial-precios-proveedor. Camino INMEDIATO (el de antes, sin diferir): último evento de
+     * price_changes que dejó cada setFinalPrice() de esta compra, [article_id => price_change_id].
+     * Cada llamada abre su propio scope del historial y a lo sumo crea un evento por artículo; el
+     * último pisa al anterior, igual que el motor en lote deja un solo evento (el último de hoy, D1).
+     * Lo llena recalcular_precio() y lo vacía recalcular_precios_pendientes().
+     *
+     * @var array<int, int>
+     */
+    protected $eventos_de_precio_inmediatos = [];
 
     /**
      * Pares del historial de proveedores ("Precio Final" de article_provider) que SetProvider grabó
@@ -270,6 +282,65 @@ class NewProviderOrderHelper {
         }
 
         ArticleHelper::setFinalPrice($article);
+
+        $this->anotar_evento_de_precio_inmediato((int) $article->id);
+    }
+
+    /**
+     * Misión historial-precios-proveedor. Camino inmediato: anota el evento de price_changes que
+     * acaba de dejar setFinalPrice() para este artículo, para vincularlo después con su oferta del
+     * proveedor (mismo vínculo que hace el camino diferido con el evento del motor en lote).
+     * Es sólo bookkeeping: nunca voltea la compra. No anota nada si hay un scope exterior del
+     * historial abierto o el modo lote de precios está prendido (setFinalPrice() no abrió un scope
+     * propio y last_events() podría traer eventos de otra operación).
+     *
+     * @param int $article_id Artículo que se acaba de recalcular
+     * @return void
+     */
+    protected function anotar_evento_de_precio_inmediato(int $article_id)
+    {
+        try {
+            if (HistorialPreciosService::activo() || PreciosEnLote::esta_activo()) {
+                return;
+            }
+
+            $eventos = HistorialPreciosService::last_events();
+
+            if (isset($eventos[$article_id])) {
+                $this->eventos_de_precio_inmediatos[$article_id] = (int) $eventos[$article_id];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('NewProviderOrderHelper: no se pudo anotar el cambio de precio de la oferta', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Misión historial-precios-proveedor. Vincula las ofertas de esta compra que se usaron para
+     * actualizar el costo con los eventos de price_changes indicados: un solo UPDATE por tanda
+     * (nunca una escritura por fila), en su propio try/catch con Log::warning. No toca stock,
+     * totales ni cuenta corriente.
+     *
+     * @param array $price_change_ids [article_id => price_change_id]
+     * @return void
+     */
+    protected function vincular_ofertas_con_cambios_de_precio(array $price_change_ids)
+    {
+        try {
+            if (!empty($price_change_ids) && !HistorialPreciosService::activo() && !empty($this->provider_order)) {
+                OfertasDeProveedorService::link_price_changes(
+                    (int) $this->provider_order->user_id,
+                    'compra',
+                    (int) $this->provider_order->id,
+                    $price_change_ids
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::warning('NewProviderOrderHelper: no se pudo vincular la oferta con el cambio de precio', [
+                'message' => $e->getMessage(),
+            ]);
+        }
     }
 
     /**
@@ -306,6 +377,11 @@ class NewProviderOrderHelper {
              */
             $this->historial_de_proveedores_pendiente = [];
 
+            // Camino inmediato: los eventos que dejó cada setFinalPrice() de la compra.
+            $eventos_inmediatos = $this->eventos_de_precio_inmediatos;
+            $this->eventos_de_precio_inmediatos = [];
+            $this->vincular_ofertas_con_cambios_de_precio($eventos_inmediatos);
+
             return;
         }
 
@@ -322,20 +398,7 @@ class NewProviderOrderHelper {
          * exterior del historial abierto, los eventos todavía no existen (se crean al cerrarlo) y
          * last_events() podría traer los de otra operación: en ese caso no se vincula nada.
          */
-        try {
-            if (!HistorialPreciosService::activo() && !empty($this->provider_order)) {
-                OfertasDeProveedorService::link_price_changes(
-                    (int) $this->provider_order->user_id,
-                    'compra',
-                    (int) $this->provider_order->id,
-                    HistorialPreciosService::last_events()
-                );
-            }
-        } catch (\Throwable $e) {
-            Log::warning('NewProviderOrderHelper: no se pudo vincular la oferta con el cambio de precio', [
-                'message' => $e->getMessage(),
-            ]);
-        }
+        $this->vincular_ofertas_con_cambios_de_precio(HistorialPreciosService::last_events());
 
         /*
          * 🔴 Combos calculados (misión combos-calculados, 30/9/2026; entró a esta rama con el merge
