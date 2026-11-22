@@ -97,7 +97,13 @@ class ArticleImport implements ToCollection
         $equivalencias = [],
 
         // Misión importacion-formula-precio: opciones de lectura del Excel (ver InitExcelImport::opciones_de_lectura()).
-        $opciones_de_lectura = []
+        $opciones_de_lectura = [],
+
+        /*
+         * Misión `historial-precios-proveedor`: bandera propia del cruce por código de proveedor
+         * (bool|null). Va último y con default null por la misma razón que los de arriba.
+         */
+        $update_other_provider_by_provider_code = null
     ) {
 
         $this->log_activado = false;
@@ -187,6 +193,7 @@ class ArticleImport implements ToCollection
             'desempatar_por_nombre'                                 => $this->desempatar_por_nombre,
             'equivalencias'                                         => (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [],
             'opciones_de_lectura'                                   => is_array($opciones_de_lectura) ? $opciones_de_lectura : [],
+            'update_other_provider_by_provider_code'                => $update_other_provider_by_provider_code,
         ]);
 
         $this->nombres_proveedores = [];
@@ -515,6 +522,48 @@ class ArticleImport implements ToCollection
         }
     }
 
+    /**
+     * Misión historial-precios-proveedor: arma las ofertas de los artículos que CREÓ este chunk.
+     * El costo del artículo nació con esa oferta: queda marcada como usada, sin costo anterior ni
+     * titular anterior. Sólo artículos con proveedor y costo > 0. Nunca lanza.
+     *
+     * @param mixed $articulos_creados_models Colección/array de App\Models\Article recién creados
+     * @return array [article_id => [provider_id => oferta]]
+     */
+    protected function ofertas_de_articulos_creados($articulos_creados_models)
+    {
+        $ofertas = [];
+
+        try {
+            if (empty($articulos_creados_models)) {
+                return $ofertas;
+            }
+
+            foreach ($articulos_creados_models as $articulo) {
+                if (empty($articulo->id) || empty($articulo->provider_id) || !isset($articulo->cost) || (float) $articulo->cost <= 0) {
+                    continue;
+                }
+
+                $ofertas[(int) $articulo->id][(int) $articulo->provider_id] = [
+                    'provider_code' => isset($articulo->provider_code) ? $articulo->provider_code : null,
+                    'cost' => $articulo->cost,
+                    'moneda_id' => !empty($articulo->cost_in_dollars) ? 2 : 1,
+                    'origen' => 'importacion',
+                    'updated_article_cost' => 1,
+                    'previous_article_cost' => null,
+                    'changed_article_provider' => 0,
+                    'previous_article_provider_id' => null,
+                ];
+            }
+        } catch (\Throwable $e) {
+            Log::warning('ArticleImport: no se pudieron armar las ofertas de los artículos creados', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+
+        return $ofertas;
+    }
+
     function guardar_articulos() {
 
 
@@ -541,6 +590,9 @@ class ArticleImport implements ToCollection
             );
             $observations = $actualizar_bbdd->get_observations();
 
+            // Artículos creados por este chunk (con su id real ya asignado), para registrar sus ofertas.
+            $articulos_creados_models = $actualizar_bbdd->get_articulos_creados_models();
+
             foreach ($observations as $observation) {
                 $observation['name'] = 'BBDD -> '.$observation['name'];
                 $this->observations['procesos'][] = $observation;
@@ -554,11 +606,23 @@ class ArticleImport implements ToCollection
                 // compra) en UNA sola llamada por chunk. Propio try/catch, separado del de
                 // ActualizarBBDD de arriba: el histórico es un extra y su falla nunca puede
                 // voltear la importación, que es lo que el usuario vino a hacer.
+                // Misión historial-precios-proveedor: a las ofertas de las filas se suman las de los
+                // artículos CREADOS por este chunk (el costo nació con la oferta) y se manda el mapa
+                // [article_id => price_change_id] de los eventos que produjo la operación.
+                $buffer_de_ofertas = $this->process_row->get_ofertas_de_precio_buffer();
+
+                foreach ($this->ofertas_de_articulos_creados($articulos_creados_models) as $article_id => $ofertas_del_articulo) {
+                    foreach ($ofertas_del_articulo as $provider_id => $oferta) {
+                        $buffer_de_ofertas[$article_id][$provider_id] = $oferta;
+                    }
+                }
+
                 OfertasDeProveedorService::registrar_lote(
-                    $this->process_row->get_ofertas_de_precio_buffer(),
+                    $buffer_de_ofertas,
                     (int) $this->user->id,
                     'importacion',
-                    $this->import_history_id ? (int) $this->import_history_id : null
+                    $this->import_history_id ? (int) $this->import_history_id : null,
+                    \App\Services\HistorialPreciosService::last_events()
                 );
             } catch (\Throwable $e) {
                 Log::warning('ArticleImport: no se pudo registrar el histórico de precios ofertados', [

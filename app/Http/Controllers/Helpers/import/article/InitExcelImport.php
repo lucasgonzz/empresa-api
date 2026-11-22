@@ -140,6 +140,15 @@ class InitExcelImport
         );
 
         /*
+         * Misión `historial-precios-proveedor`: bandera propia del cruce por código de proveedor.
+         * null (clave ausente) = vale lo mismo que `actualizar_articulos_de_otro_proveedor`:
+         * el clásico, AdminSync, la importación de prueba y la SPA vieja no la mandan.
+         */
+        $this->update_other_provider_by_provider_code = (isset($data['update_other_provider_by_provider_code']) && $data['update_other_provider_by_provider_code'] !== null)
+            ? filter_var($data['update_other_provider_by_provider_code'], FILTER_VALIDATE_BOOLEAN)
+            : null;
+
+        /*
          * Misión importacion-formula-precio (20/11/2026): dos opciones de lectura del Excel que
          * ofrece el paso 3 del modal a partir del análisis algorítmico (AnalisisDePrecioDelExcel).
          * Default false: un llamador que no las manda importa exactamente igual que antes.
@@ -957,7 +966,8 @@ class InitExcelImport
                 $this->precios_incluyen_iva,
                 $this->desempatar_por_nombre,
                 $this->equivalencias,
-                $this->opciones_de_lectura()
+                $this->opciones_de_lectura(),
+                $this->update_other_provider_by_provider_code
             );
 
             $this->chunk_number++;

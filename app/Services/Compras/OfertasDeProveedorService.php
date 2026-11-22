@@ -154,8 +154,10 @@ class OfertasDeProveedorService
                     'updated_article_cost' => !empty($oferta['updated_article_cost']) ? 1 : 0,
                     'previous_article_cost' => isset($oferta['previous_article_cost']) ? (float) $oferta['previous_article_cost'] : null,
                     'changed_article_provider' => !empty($oferta['changed_article_provider']) ? 1 : 0,
-                    // null = la entrada no lo trae: se resuelve desde articles más abajo
+                    // Si la entrada trae la clave (aunque sea null = "no tenía titular") se respeta tal cual;
+                    // si NO la trae, se resuelve desde articles más abajo.
                     'previous_article_provider_id' => isset($oferta['previous_article_provider_id']) ? (int) $oferta['previous_article_provider_id'] : null,
+                    'resolver_titular_previo' => !array_key_exists('previous_article_provider_id', $oferta),
                 ];
             }
         }
@@ -252,6 +254,7 @@ class OfertasDeProveedorService
                     : null,
                 'changed_article_provider' => $candidata['changed_article_provider'],
                 'previous_article_provider_id' => $candidata['previous_article_provider_id'],
+                'resolver_titular_previo' => $candidata['resolver_titular_previo'],
                 'created_at' => $ahora,
                 'updated_at' => $ahora,
             ];
@@ -278,7 +281,7 @@ class OfertasDeProveedorService
         $article_ids_sin_titular = [];
 
         foreach ($filas_a_escribir as $fila_a_escribir) {
-            if ($fila_a_escribir['previous_article_provider_id'] === null) {
+            if ($fila_a_escribir['resolver_titular_previo']) {
                 $article_ids_sin_titular[$fila_a_escribir['article_id']] = $fila_a_escribir['article_id'];
             }
         }
@@ -294,10 +297,15 @@ class OfertasDeProveedorService
             }
 
             foreach ($filas_a_escribir as $indice => $fila_a_escribir) {
-                if ($fila_a_escribir['previous_article_provider_id'] === null && isset($titulares[$fila_a_escribir['article_id']])) {
+                if ($fila_a_escribir['resolver_titular_previo'] && isset($titulares[$fila_a_escribir['article_id']])) {
                     $filas_a_escribir[$indice]['previous_article_provider_id'] = (int) $titulares[$fila_a_escribir['article_id']];
                 }
             }
+        }
+
+        // La marca auxiliar de resolución no es una columna: se quita antes de escribir.
+        foreach ($filas_a_escribir as $indice => $fila_a_escribir) {
+            unset($filas_a_escribir[$indice]['resolver_titular_previo']);
         }
 
         foreach (array_chunk($filas_a_escribir, self::LOTE_UPSERT) as $lote) {

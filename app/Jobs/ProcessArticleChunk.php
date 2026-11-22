@@ -61,6 +61,15 @@ class ProcessArticleChunk implements ShouldQueue
      */
     protected $desempatar_por_nombre = false;
 
+    /**
+     * Misión `historial-precios-proveedor`: bandera propia del cruce por código de proveedor
+     * (bool|null). null = vale lo mismo que `actualizar_articulos_de_otro_proveedor`. Un job
+     * serializado antes de esta misión no trae la propiedad y la deserializa en null.
+     *
+     * @var bool|null
+     */
+    protected $update_other_provider_by_provider_code = null;
+
     /** Misión importacion-formula-precio: opciones de lectura del Excel (ver InitExcelImport::opciones_de_lectura()). */
     protected $opciones_de_lectura = [];
 
@@ -130,7 +139,13 @@ class ProcessArticleChunk implements ShouldQueue
              * (descuentos negativos, códigos de barras repetidos). Va último y con default por la
              * misma razón que los de arriba: un job ya encolado sin esta clave corre como siempre.
              */
-            $opciones_de_lectura = []
+            $opciones_de_lectura = [],
+
+            /*
+             * Misión `historial-precios-proveedor`: va último y con default null, igual que los de
+             * arriba: un job ya encolado y serializado con la firma vieja corre como siempre.
+             */
+            $update_other_provider_by_provider_code = null
     ) {
 
         $this->csv_path                                     = $csv_path;
@@ -160,6 +175,7 @@ class ProcessArticleChunk implements ShouldQueue
         $this->desempatar_por_nombre                                = $desempatar_por_nombre;
         $this->equivalencias                                        = (is_array($equivalencias) || is_string($equivalencias)) ? $equivalencias : [];
         $this->opciones_de_lectura                                  = is_array($opciones_de_lectura) ? $opciones_de_lectura : [];
+        $this->update_other_provider_by_provider_code               = $update_other_provider_by_provider_code === null ? null : (bool) $update_other_provider_by_provider_code;
 
         $this->observations = '';
 
@@ -552,7 +568,8 @@ class ProcessArticleChunk implements ShouldQueue
                 $this->desempatar_por_nombre,
                 (is_array($this->equivalencias) || is_string($this->equivalencias)) ? $this->equivalencias : [],
                 // Un job serializado antes de esta misión no tiene la propiedad: cae al default.
-                is_array($this->opciones_de_lectura ?? null) ? $this->opciones_de_lectura : []
+                is_array($this->opciones_de_lectura ?? null) ? $this->opciones_de_lectura : [],
+                $this->update_other_provider_by_provider_code ?? null
             );
 
         } catch (\Throwable $e) {

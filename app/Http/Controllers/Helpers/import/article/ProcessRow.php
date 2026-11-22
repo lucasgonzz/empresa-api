@@ -78,6 +78,16 @@ class ProcessRow {
     protected $desempatar_por_nombre = false;
 
     /**
+     * Misión `historial-precios-proveedor`: bandera PROPIA del escalón provider_code de la
+     * cascada (cruzar con artículos de otros proveedores por código de proveedor). null =
+     * vale lo mismo que `actualizar_articulos_de_otro_proveedor` (clásico, AdminSync, prueba,
+     * SPA vieja, jobs ya encolados: idéntico a antes). Sólo el importador de 4 pasos la manda.
+     *
+     * @var bool|null
+     */
+    protected $update_other_provider_by_provider_code = null;
+
+    /**
      * Misión importacion-formula-precio (20/11/2026): opciones de lectura del Excel.
      *  - descuentos_negativos_descuentan (bool): «-25» descuenta 25 % y «5» suma 5 %.
      *  - barras_repetidas_por_codigo_de_proveedor (bool): ver CodigosDeBarraRepetidos.
@@ -455,6 +465,11 @@ class ProcessRow {
             isset($data['desempatar_por_nombre']) ? $data['desempatar_por_nombre'] : false,
             FILTER_VALIDATE_BOOLEAN
         );
+
+        // Misión historial-precios-proveedor: bandera propia del cruce por código de proveedor (null = la principal).
+        $this->update_other_provider_by_provider_code = (isset($data['update_other_provider_by_provider_code']) && $data['update_other_provider_by_provider_code'] !== null)
+            ? (bool) $data['update_other_provider_by_provider_code']
+            : null;
 
         // Misión importacion-formula-precio: opciones de lectura del Excel (ver la propiedad).
         $this->opciones_de_lectura = isset($data['opciones_de_lectura']) && is_array($data['opciones_de_lectura'])
@@ -1471,7 +1486,11 @@ class ProcessRow {
             
             $this->permitir_provider_code_repetido,
             $this->permitir_provider_code_repetido_en_multi_providers,
-            $this->actualizar_articulos_de_otro_proveedor,
+            // Misión historial-precios-proveedor: el cruce por código de proveedor tiene su bandera;
+            // sin ella (null) vale la principal, como siempre.
+            $this->update_other_provider_by_provider_code !== null
+                ? $this->update_other_provider_by_provider_code
+                : $this->actualizar_articulos_de_otro_proveedor,
             $this->actualizar_por_provider_code,
             $this->actualizar_proveedor,
             /*
@@ -2259,6 +2278,10 @@ class ProcessRow {
         $cambios = $this->sacar_precio_de_la_lista_si_no_cambio($articulo_ya_creado, $cambios);
         $cambios = $this->aplicar_criterio_de_precio($articulo_ya_creado, $data, $cambios);
         $this->terminar('criterio de precio manual vs margen');
+
+        // Misión historial-precios-proveedor: el precio de esta fila queda registrado SIEMPRE
+        // (propio proveedor u otro con bandera), diga o no que se usó para actualizar el costo.
+        $this->buffer_row_offer($articulo_ya_creado, $data, $cambios);
 
         /*
          * Slug al renombrar (decisión de Lucas, 24/9/2026, misión importacion-excel-motor-rapido):
@@ -3284,6 +3307,22 @@ class ProcessRow {
                 && !$this->actualizar_proveedor
             ) {
                 // $this->log('No se agrego provider_id porque actualizar_proveedor: '.$this->actualizar_proveedor);
+                continue;
+            }
+
+            /*
+             * Misión historial-precios-proveedor (P6): si el titular NO cambia (actualizar_proveedor
+             * apagado) y la fila es de otro proveedor, el código de proveedor del artículo conserva el
+             * del titular. El de este proveedor queda en el pivot article_provider, que se escribe igual.
+             * Antes `articles.provider_code` pasaba a ser el de la fila aunque el titular siguiera siendo otro.
+             */
+            if (
+                $key == 'provider_code'
+                && !$this->actualizar_proveedor
+                && !is_null($existing->provider_id)
+                && !empty($data['provider_id'])
+                && $existing->provider_id != $data['provider_id']
+            ) {
                 continue;
             }
 
@@ -5242,6 +5281,57 @@ class ProcessRow {
             // Guarda 4: nunca lanza. Un histórico de precios que revienta la importación
             // sería peor que no tener histórico.
             Log::warning('ProcessRow: no se pudo registrar oferta de otro proveedor', [
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Misión historial-precios-proveedor: registra SIEMPRE el precio que trae la fila para el
+     * proveedor de la fila (el propio titular u otro proveedor cuyo artículo se actualiza), con la
+     * marca de si se usó para actualizar `articles.cost`, el costo anterior, si cambió el titular y
+     * quién lo era. Reusa el buffer de ofertas (`buffer_oferta_de_precio`) y sus guardas: sin
+     * proveedor, sin costo > 0 o con id fake no registra; nunca lanza (el histórico no puede
+     * voltear la importación).
+     *
+     * @param \App\Models\Article $articulo_ya_creado artículo matcheado (antes de guardar los cambios)
+     * @param array $data fila armada por procesar(): 'provider_id', 'cost', 'provider_code', 'cost_in_dollars'
+     * @param array $cambios salida de get_modified_fields() ya filtrada por el criterio de precio
+     * @return void
+     */
+    protected function buffer_row_offer($articulo_ya_creado, array $data, array $cambios): void
+    {
+        try {
+            $article_id = isset($articulo_ya_creado->id) ? $articulo_ya_creado->id : null;
+            $provider_id = isset($data['provider_id']) ? (int) $data['provider_id'] : 0;
+
+            // Sin proveedor, sin costo > 0 o artículo fake (todavía sin INSERT): nada que registrar.
+            if (
+                $provider_id <= 0
+                || !isset($data['cost'])
+                || (float) $data['cost'] <= 0
+                || !is_numeric($article_id)
+                || (int) $article_id <= 0
+            ) {
+                return;
+            }
+
+            // ¿Esta oferta actualizó el costo del artículo? Sólo si 'cost' sobrevivió en $cambios.
+            $uso_el_costo = array_key_exists('cost', $cambios);
+
+            $this->buffer_oferta_de_precio((int) $article_id, $provider_id, [
+                'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
+                'cost' => $data['cost'],
+                'moneda_id' => !empty($data['cost_in_dollars']) ? 2 : 1,
+                'origen' => 'importacion',
+                'updated_article_cost' => $uso_el_costo ? 1 : 0,
+                'previous_article_cost' => $uso_el_costo && isset($articulo_ya_creado->cost) ? $articulo_ya_creado->cost : null,
+                'changed_article_provider' => array_key_exists('provider_id', $cambios) ? 1 : 0,
+                // Titular ANTES de esta operación (null = no tenía): la clave siempre viaja para que el servicio no lo resuelva
+                'previous_article_provider_id' => !empty($articulo_ya_creado->provider_id) ? (int) $articulo_ya_creado->provider_id : null,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('ProcessRow: no se pudo registrar la oferta de la fila', [
                 'message' => $e->getMessage(),
             ]);
         }

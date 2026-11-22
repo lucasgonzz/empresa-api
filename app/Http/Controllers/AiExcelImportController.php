@@ -972,6 +972,18 @@ class AiExcelImportController extends Controller
              */
             'descuentos_negativos_descuentan'                    => filter_var($request->input('descuentos_negativos_descuentan', false), FILTER_VALIDATE_BOOLEAN),
             'barras_repetidas_por_codigo_de_proveedor'           => filter_var($request->input('barras_repetidas_por_codigo_de_proveedor', false), FILTER_VALIDATE_BOOLEAN),
+
+            /*
+             * Misión `historial-precios-proveedor`: decide por separado si el cruce por CÓDIGO DE
+             * PROVEEDOR (escalón provider_code) puede mezclar artículos de otros proveedores.
+             * Opcional con default del lado api: AUSENTE (null) = vale lo mismo que
+             * `actualizar_articulos_de_otro_proveedor`, o sea el comportamiento de siempre
+             * (SPA vieja, jobs ya encolados). Si viene, se normaliza con filter_var
+             * (`(bool) 'false'` daría TRUE).
+             */
+            'update_other_provider_by_provider_code'             => $request->input('update_other_provider_by_provider_code') === null
+                                                                        ? null
+                                                                        : filter_var($request->input('update_other_provider_by_provider_code'), FILTER_VALIDATE_BOOLEAN),
         ]);
 
         if ($result['hubo_un_error']) {
