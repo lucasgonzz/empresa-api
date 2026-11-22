@@ -140,7 +140,8 @@ class Tareas_del_asistente_posponer_y_cancelar_Test extends TareasDelAsistenteTe
 
         $this->assertFalse($reanudada['error'], 'La herramienta rechazó la reprogramación: ' . $reanudada['texto']);
         $this->assertSame('activa', $this->fila_de($pausada->id)->estado);
-        $this->assertSame('2026-11-22 08:00:00', $this->fila_de($pausada->id)->proxima_ejecucion_at, 'Hoy a las 08:00 ya pasó: la próxima es el día siguiente.');
+        // Enmienda del Coordinador al commit de aceptación (defecto del test): el reloj está en domingo 22/11 09:00, así que la próxima es el lunes.
+        $this->assertSame('2026-11-23 08:00:00', $this->fila_de($pausada->id)->proxima_ejecucion_at, 'Hoy a las 08:00 ya pasó: la próxima es el día siguiente.');
     }
 
     /**
