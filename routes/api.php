@@ -435,6 +435,11 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::get('/vender/buscar-articulo-por-codido/{code}', 'VenderController@search_bar_code');
     Route::post('/vender/buscar-articulo-por-nombre/{from_provider_order?}', 'VenderController@search_nombre')->middleware('throttle:300,1');
 
+    // Demanda no satisfecha de Vender: el freno por falta de stock queda registrado (y se puede cancelar
+    // si fue un error). Sin extensión propia: la SPA sólo lo llama cuando existe el freno de stock.
+    Route::post('unmet-demand', 'UnmetDemandController@store');
+    Route::put('unmet-demand/{id}/cancel', 'UnmetDemandController@cancel');
+
 
 
     Route::resource('stock-movement', 'Stock\StockMovementController')->except(['index', 'show']);
