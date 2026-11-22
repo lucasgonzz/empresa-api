@@ -249,7 +249,11 @@ class OfertasDeProveedorService
                 'updated_article_cost' => $candidata['updated_article_cost'],
                 // El costo previo y el vínculo con price_changes sólo tienen sentido si la oferta se usó
                 'previous_article_cost' => $candidata['updated_article_cost'] === 1 ? $candidata['previous_article_cost'] : null,
-                'price_change_id' => ($candidata['updated_article_cost'] === 1 && isset($price_change_ids[$candidata['article_id']]))
+                // Ronda 3 (A2-3): el vínculo vale si la oferta se usó para el costo O para cambiar el titular
+                // (un cambio de titular con el mismo costo también puede mover el precio de venta y generar
+                // un evento en price_changes: la oferta queda enlazada a ese evento).
+                'price_change_id' => (($candidata['updated_article_cost'] === 1 || $candidata['changed_article_provider'] === 1)
+                    && isset($price_change_ids[$candidata['article_id']]))
                     ? (int) $price_change_ids[$candidata['article_id']]
                     : null,
                 'changed_article_provider' => $candidata['changed_article_provider'],
