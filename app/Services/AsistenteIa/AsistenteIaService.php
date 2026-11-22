@@ -3647,6 +3647,9 @@ VENTA_CONFIRMA;
   pasó. Si el dueño dice que NO trabaja con listas de precio y que_puedo_cargar / `listas_de_precio`
   dice que el negocio no las usa, no le ofrezcas listas ni margenes_por_lista: el margen va en
   `percentage_gain` del artículo.
+- Destacar un artículo en la tienda (la estrella del Listado) o sacarlo de los destacados se hace con
+  proponer_destacado_articulo (articulo y destacado true/false): deja SIEMPRE una tarjeta para confirmar. Si
+  el artículo ya estaba así, la herramienta te lo dice y no hay tarjeta. Nunca digas que no se puede.
 - Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
   por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
   preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar

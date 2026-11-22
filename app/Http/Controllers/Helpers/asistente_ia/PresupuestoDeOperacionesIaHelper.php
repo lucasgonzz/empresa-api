@@ -58,6 +58,10 @@ class PresupuestoDeOperacionesIaHelper
         if ($accion->tipo === AiMessageAction::TIPO_RENOMBRE_MASIVO) {
             return true;
         }
+        // Misión asistente-diario-20261121 (M1): destacar un artículo también escribe un artículo.
+        if ($accion->tipo === AiMessageAction::TIPO_DESTACADO_ARTICULO) {
+            return true;
+        }
         $datos = is_array($accion->datos) ? $accion->datos : [];
         if (in_array($accion->tipo, [AiMessageAction::TIPO_ALTA, AiMessageAction::TIPO_EDICION, AiMessageAction::TIPO_BAJA], true)) {
             $declaracion = CatalogoDeEscrituraIaHelper::declaracion((string) ($datos['entidad'] ?? ''));

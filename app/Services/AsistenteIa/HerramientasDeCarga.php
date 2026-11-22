@@ -17,6 +17,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AvisosDelDuenoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaAvisosDelDuenoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaBancosChequesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCuotasTiendaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\PropuestaDestacadoArticuloIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaComboIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraConFacturaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PropuestaCompraSinArticulosIaHelper;
@@ -296,6 +297,12 @@ class HerramientasDeCarga
          * persona ve la cantidad y los ejemplos «antes → después» y confirma ella.
          */
         AiMessageAction::TIPO_RENOMBRE_MASIVO,
+        /*
+         * 🔴 Destacar un artículo en la tienda (misión asistente-diario-20261121, M1): cambia lo que ve el
+         * público en la tienda y el artículo sale de un nombre dicho de memoria (como la foto de un artículo).
+         * La persona ve cuál es y confirma ella, también en modo directo.
+         */
+        AiMessageAction::TIPO_DESTACADO_ARTICULO,
     ];
 
     /**
@@ -1975,6 +1982,23 @@ class HerramientasDeCarga
             ], 'required' => ['ancho', 'alto']],
         ];
 
+        /*
+         * Misión asistente-diario-20261121 (M1), al final por el prefijo del caché: DESTACAR un artículo en la
+         * tienda. Truvari pidió «destacá este artículo en la tienda» y el agente contestó que no podía: la
+         * estrella del Listado es una ruta GET con efectos que las acciones de pantalla bloquean a propósito.
+         * Ver PropuestaDestacadoArticuloIaHelper.
+         */
+        $definiciones[] = [
+            'name' => 'proponer_destacado_articulo',
+            'description' => 'Arma la tarjeta para DESTACAR un artículo en la tienda online (la estrella del Listado) o para QUITARLE el destacado, para que la persona la confirme: NO cambia nada hasta que confirma. Usala cuando pidan "destacá este artículo", "ponelo en destacados", "sacalo de los destacados". Pasá el artículo por su nombre o código en articulo (o por articulo_id si otra herramienta te lo devolvió) y destacado = true para destacarlo o false para quitarlo. Si el artículo ya está en ese estado, la respuesta trae ya_estaba y NO hay tarjeta: decíselo a la persona. Si el nombre es ambiguo trae "faltan" con los candidatos: preguntá cuál. Si la tarjeta avisa que el artículo no está publicado en la tienda, contáselo: queda destacado pero no se ve hasta que se publique. Es de UN solo artículo.',
+            'input_schema' => ['type' => 'object', 'properties' => [
+                'articulo'    => ['type' => 'string', 'description' => 'Nombre o código del artículo, tal como lo dijo la persona.'],
+                'articulo_id' => ['type' => 'integer', 'description' => 'El id del artículo, solo si otra herramienta o un "faltan" lo devolvió.'],
+                'destacado'   => ['type' => 'boolean', 'description' => 'true para destacarlo en la tienda; false para quitarle el destacado.'],
+                'reemplaza_a' => ['type' => 'integer'],
+            ], 'required' => ['destacado']],
+        ];
+
         if ($con_whatsapp) {
 
             foreach (self::definiciones_de_whatsapp() as $definicion) {
@@ -2658,6 +2682,13 @@ class HerramientasDeCarga
              */
             case 'proponer_renombre_masivo':
                 return self::resultado(PropuestaRenombreMasivoIaHelper::proponer($contexto, $assistant_message, $input));
+
+            /*
+             * Misión asistente-diario-20261121 (M1): destacar un artículo en la tienda. 🔴 SIN la puerta de la
+             * auto-confirmación, a propósito: siempre espera el sí (ver NUNCA_AUTO_CONFIRMABLES).
+             */
+            case 'proponer_destacado_articulo':
+                return self::resultado(PropuestaDestacadoArticuloIaHelper::proponer($contexto, $assistant_message, $input));
 
             /*
              * Misión asistente-diario-20261119 (rama C, M3): la foto a medida. Sin tarjeta: no toca el negocio,
