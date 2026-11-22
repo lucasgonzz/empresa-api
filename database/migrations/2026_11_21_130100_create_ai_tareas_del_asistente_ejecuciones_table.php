@@ -50,6 +50,16 @@ class CreateAiTareasDelAsistenteEjecucionesTable extends Migration
 
             $table->string('whatsapp_message_id', 128)->nullable();
 
+            /*
+             * Enmienda 1 (22/11/2026): cómo salió el resultado cuando el admin lo selló. `texto` = el texto completo
+             * (ventana de 24 h abierta); `plantilla` = sólo una plantilla, y el resultado se le entrega al dueño en
+             * su próximo turno de WhatsApp. Lo manda el admin nuevo (`via`) o lo deduce la empresa.
+             */
+            $table->string('entregada_via', 20)->nullable();
+
+            /* Cuándo se le puso el resultado delante de la respuesta de un turno del dueño (una sola vez). */
+            $table->dateTime('mostrada_at')->nullable();
+
             $table->timestamps();
 
             $table->index('owner_id', 'atdae_owner_idx');

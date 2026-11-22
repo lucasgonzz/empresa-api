@@ -41,29 +41,45 @@ class TareasDelAsistenteIaHelper
     /** Cuando el modelo no encuentra la tarea: el mismo texto para «es de otro negocio» y «no existe». */
     const NO_ENCONTRADA = 'No encontré esa tarea; usá consultar_tareas_del_asistente para ver las que hay.';
 
-    /** @var bool|null  Si las tablas y la columna existen en esta base (se pregunta una vez por proceso). */
+    /** @var bool|null  Sólo se guarda el «true»: si las tablas y la columna ya existen en esta base (por proceso). */
     protected static $hay_tablas = null;
 
     /**
-     * true si esta base tiene las dos tablas y la columna de horarios (una instalación a medio actualizar no
-     * ofrece las herramientas ni despierta nada, en silencio).
+     * true si esta base tiene las dos tablas, las columnas de la entrega (enmienda 1) y la columna de horarios
+     * (una instalación a medio actualizar no ofrece las herramientas ni despierta nada, en silencio).
+     *
+     * 🔴 SÓLO SE CACHEA EL «TRUE» (enmienda 1, E4). Un worker vivo que arrancó antes de correr las migraciones
+     * preguntó una vez, obtuvo «false» y lo habría repetido hasta reiniciarse: las tareas no despertaban nunca
+     * aunque la base ya estuviera completa. Con el «false» sin cachear se vuelve a preguntar (tres consultas
+     * al esquema, sólo mientras la instalación está incompleta) y apenas existen las tablas se ven.
      *
      * @return bool
      */
     public static function hay_tablas(): bool
     {
-        if (is_null(self::$hay_tablas)) {
+        if (self::$hay_tablas === true) {
 
-            try {
-                self::$hay_tablas = Schema::hasTable('ai_tareas_del_asistente')
-                    && Schema::hasTable('ai_tareas_del_asistente_ejecuciones')
-                    && Schema::hasColumn('users', 'agente_horarios');
-            } catch (\Throwable $e) {
-                self::$hay_tablas = false;
-            }
+            return true;
         }
 
-        return self::$hay_tablas;
+        try {
+
+            $hay = Schema::hasTable('ai_tareas_del_asistente')
+                && Schema::hasTable('ai_tareas_del_asistente_ejecuciones')
+                && Schema::hasColumn('ai_tareas_del_asistente_ejecuciones', 'mostrada_at')
+                && Schema::hasColumn('users', 'agente_horarios');
+
+        } catch (\Throwable $e) {
+
+            return false;
+        }
+
+        if ($hay) {
+
+            self::$hay_tablas = true;
+        }
+
+        return $hay;
     }
 
     /**

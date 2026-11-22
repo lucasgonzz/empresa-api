@@ -34,6 +34,11 @@ class AiTareaDelAsistenteEjecucion extends Model
 
     const MOTIVO_COLGADA = 'colgada';
 
+    /** Cómo salió el resultado al sellarse (enmienda 1): el texto completo o sólo una plantilla. */
+    const VIA_TEXTO = 'texto';
+
+    const VIA_PLANTILLA = 'plantilla';
+
     protected $table = 'ai_tareas_del_asistente_ejecuciones';
 
     protected $guarded = [];
@@ -48,6 +53,7 @@ class AiTareaDelAsistenteEjecucion extends Model
         'ai_message_id'      => 'integer',
         'ocurrencia_at'      => 'datetime',
         'entregada_at'       => 'datetime',
+        'mostrada_at'        => 'datetime',
     ];
 
     /**
