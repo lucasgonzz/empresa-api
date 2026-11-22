@@ -231,7 +231,9 @@ class ResponderMensajeChatIaJob implements ShouldQueue
              * resultado va al principio de ESTA respuesta, así el historial y lo que lee el admin son lo mismo.
              */
             $a_entregar = $service->resultados_a_entregar();
-            $texto = EntregaDeResultadosDeTareasIaHelper::anteponer($a_entregar, $texto);
+            $entrega = EntregaDeResultadosDeTareasIaHelper::armar($a_entregar, $texto);
+            $texto = $entrega['texto'];
+            $a_entregar = $entrega['entregadas']; // sólo los que entraron en el mensaje: esos se marcan mostrados
 
             $message->contenido = $texto;
             $message->estado = 'listo';

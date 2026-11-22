@@ -228,4 +228,65 @@ class Tareas_del_asistente_largo_maximo_Test extends TareasDelAsistenteConModelo
         $this->assertLessThanOrEqual(self::TOPE, mb_strlen((string) $corto->contenido));
         $this->assertSame('2026-11-27 17:20:00', $this->ejecucion_cruda($ejecucion->id)->mostrada_at);
     }
+
+    /**
+     * armar() informa cuáles resultados entraron de verdad: con espacio entran todos; con poco, sólo los primeros
+     * (los más viejos) y los que quedan afuera no figuran (el Job sólo marca los que figuran); sin espacio para
+     * ninguno, la respuesta sale sola y no entra ninguno.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function armar_informa_cuales_resultados_entraron()
+    {
+        $pendientes = $this->pendientes_de(3, 1500);
+
+        // Con una respuesta corta entran los tres.
+        $armado = EntregaDeResultadosDeTareasIaHelper::armar($pendientes, $this->texto_de(80, 'Z'));
+
+        $this->assertSame([1, 2, 3], array_column($armado['entregadas'], 'id'));
+        $this->assertLessThanOrEqual(self::TOPE, mb_strlen($armado['texto']));
+
+        // Con una de 3700 queda lugar para uno solo (unos 394 caracteres): entra el primero, recortado.
+        $armado = EntregaDeResultadosDeTareasIaHelper::armar($pendientes, $this->texto_de(3700, 'Z'));
+
+        $this->assertSame([1], array_column($armado['entregadas'], 'id'));
+        $this->assertStringContainsString('(seguí en la app)', $armado['texto']);
+        $this->assertLessThanOrEqual(self::TOPE, mb_strlen($armado['texto']));
+
+        // Con una de 3900 no queda espacio útil: sale sola y no entra ninguno.
+        $respuesta = $this->texto_de(3900, 'Z');
+        $armado = EntregaDeResultadosDeTareasIaHelper::armar($pendientes, $respuesta);
+
+        $this->assertSame([], $armado['entregadas']);
+        $this->assertTrue($armado['texto'] === $respuesta);
+
+        // Sin pendientes: la respuesta tal cual, hasta con sus espacios.
+        $armado = EntregaDeResultadosDeTareasIaHelper::armar([], '  hola  ');
+
+        $this->assertSame('  hola  ', $armado['texto']);
+        $this->assertSame([], $armado['entregadas']);
+    }
+
+    /**
+     * Un resultado corto no se infla ni se recorta, y le deja lo que sobra al largo: 1 de 300 + 1 de 3500 + una
+     * respuesta de 100 entran los dos, el corto entero.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function lo_que_sobra_de_un_resultado_corto_se_lo_queda_el_largo()
+    {
+        $pendientes = [
+            ['id' => 1, 'titulo' => 'Corta', 'texto' => $this->texto_de(300, 'A')],
+            ['id' => 2, 'titulo' => 'Larga', 'texto' => $this->texto_de(3500, 'B')],
+        ];
+
+        $armado = EntregaDeResultadosDeTareasIaHelper::armar($pendientes, $this->texto_de(100, 'Z'));
+
+        $this->assertSame([1, 2], array_column($armado['entregadas'], 'id'));
+        $this->assertStringContainsString($pendientes[0]['texto'], $armado['texto']);
+        $this->assertLessThanOrEqual(self::TOPE, mb_strlen($armado['texto']));
+        $this->assertGreaterThan(3000, mb_strlen($armado['texto']), 'El largo tiene que aprovechar lo que sobró.');
+    }
 }
