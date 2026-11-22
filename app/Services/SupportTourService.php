@@ -200,7 +200,8 @@ class SupportTourService
         }
 
         // Como en el resolver de Vender, una ubicación explícita gana sobre la bandeja de campos sacados.
-        foreach (VenderLayoutHelper::ETAPAS as $etapa) {
+        // Se recorren TODAS las secciones del diseño (etapa_1..3 y las seccion_N creadas por el usuario).
+        foreach (array_keys((array) $layout['etapas']) as $etapa) {
             if (in_array($campo, array_column((array) ($layout['etapas'][$etapa] ?? []), 'key'), true)) {
                 return true;
             }
