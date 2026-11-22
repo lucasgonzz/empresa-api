@@ -110,6 +110,25 @@ class MigracionesIdempotentesTest extends TestCase
     }
 
     /**
+     * Ordena las líneas de cada definición para comparar sin importar el orden físico de las columnas.
+     *
+     * @param array $foto
+     * @return array
+     */
+    protected function sin_orden(array $foto)
+    {
+        foreach ($foto as $tabla => $definicion) {
+            $lineas = array_map(function ($linea) {
+                return rtrim($linea, ',');
+            }, explode("\n", $definicion));
+            sort($lineas);
+            $foto[$tabla] = implode("\n", $lineas);
+        }
+
+        return $foto;
+    }
+
+    /**
      * Devuelve el esquema a la foto tomada al empezar: recrea las tablas que difieren (la base de testing sólo
      * guarda datos de fixture, que no son de estos casos). Se usa en `finally` para no contaminar otros tests.
      *
@@ -196,7 +215,17 @@ class MigracionesIdempotentesTest extends TestCase
                 DB::table('migrations')->where('migration', $nombre)->exists(),
                 'El migrador tendría que dejar registrada ' . $nombre
             );
-            $this->assertEquals($antes, $this->foto_del_esquema(), 'El esquema tendría que quedar idéntico tras reintentar ' . $nombre);
+            $despues = $this->foto_del_esquema();
+            if ($fantasma) {
+                // Con restos parciales las columnas que faltaban se agregan al final: el orden físico no puede
+                // coincidir. Se compara igual cada columna, tipo, default e índice (líneas del CREATE sin orden).
+                $antes_sin_orden = $this->sin_orden($antes);
+                $despues_sin_orden = $this->sin_orden($despues);
+            } else {
+                $antes_sin_orden = $antes;
+                $despues_sin_orden = $despues;
+            }
+            $this->assertEquals($antes_sin_orden, $despues_sin_orden, 'El esquema tendría que quedar idéntico tras reintentar ' . $nombre);
         } finally {
             $this->asegurar_fila($nombre);
             $this->restaurar_esquema($antes);
