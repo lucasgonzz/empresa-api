@@ -66,6 +66,7 @@ use App\Models\CurrentAcount;
 use App\Models\Sale;
 use App\Models\SaleModification;
 use App\Models\User;
+use App\Models\WhatsappBotConfig;
 use Carbon\Carbon;
 use App\Services\DemoEventoEmitter;
 use Exception;
@@ -789,11 +790,15 @@ class SaleController extends Controller
             /**
              * Envío automático opcional del comprobante por WhatsApp (grupo 137, Prompt 05).
              * Se despacha DESPUÉS del commit, nunca dentro de la transacción de guardado: si
-             * el envío falla, la venta ya guardada no se ve afectada. El job revalida config
-             * activa, opt-in (auto_send_sale_pdf) y cliente con teléfono por su cuenta,
+             * el envío falla, la venta ya guardada no se ve afectada. Sólo se encola si el número del
+             * dueño está configurado y migrado (fila activa + conexión completa; misión
+             * whatsapp-venta-numero-migrado). El job revalida esa misma regla, el opt-in
+             * (auto_send_sale_pdf) y cliente con teléfono por su cuenta,
              * y desde agentes-ia-extension-unica (22/10/2026) también la extensión `agentes_ia` del dueño.
              */
-            SendSaleWhatsappJob::dispatch($model->id);
+            if (WhatsappBotConfig::puede_enviar_comprobante_automatico((int) $model->user_id)) {
+                SendSaleWhatsappJob::dispatch($model->id);
+            }
 
             /**
              * Evento de la demo (mision 50). Igual que el WhatsApp de arriba, va DESPUES del
@@ -1518,11 +1523,14 @@ class SaleController extends Controller
             /**
              * Envío automático opcional del comprobante por WhatsApp (grupo 137, Prompt 05).
              * Mismo punto que el mail de arriba: después del commit, nunca dentro de la
-             * transacción. El job revalida config activa, opt-in (auto_send_sale_pdf) y
-             * cliente con teléfono por su cuenta, y la extensión `agentes_ia` del dueño
-             * (agentes-ia-extension-unica, 22/10/2026).
+             * transacción. Sólo se encola si el número del dueño está configurado y migrado (fila
+             * activa + conexión completa; misión whatsapp-venta-numero-migrado). El job revalida esa
+             * regla, el opt-in (auto_send_sale_pdf) y cliente con teléfono por su cuenta, y la
+             * extensión `agentes_ia` del dueño (agentes-ia-extension-unica, 22/10/2026).
              */
-            SendSaleWhatsappJob::dispatch($model->id);
+            if (WhatsappBotConfig::puede_enviar_comprobante_automatico((int) $model->user_id)) {
+                SendSaleWhatsappJob::dispatch($model->id);
+            }
 
             return response()->json(['model' => $this->fullModel('Sale', $model->id)], 200);
         
