@@ -27,6 +27,7 @@ use App\Models\ProviderOrderDiscount;
 use App\Models\ProviderOrderExtraCost;
 use App\Services\Compras\CodigosDeProveedor;
 use App\Services\Compras\OfertasDeProveedorService;
+use App\Services\HistorialPreciosService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -313,6 +314,28 @@ class NewProviderOrderHelper {
         $this->articulos_con_precio_pendiente = [];
 
         RecalculoDePreciosEnLote::recalcular($ids, $this->user);
+
+        /*
+         * Misión historial-precios-proveedor: las ofertas de esta compra que SE USARON para actualizar
+         * el costo quedan vinculadas al evento de price_changes que acaba de crear el recálculo. Es
+         * sólo bookkeeping: va en su propio try/catch y nunca voltea la compra. Si hay un scope
+         * exterior del historial abierto, los eventos todavía no existen (se crean al cerrarlo) y
+         * last_events() podría traer los de otra operación: en ese caso no se vincula nada.
+         */
+        try {
+            if (!HistorialPreciosService::activo() && !empty($this->provider_order)) {
+                OfertasDeProveedorService::link_price_changes(
+                    (int) $this->provider_order->user_id,
+                    'compra',
+                    (int) $this->provider_order->id,
+                    HistorialPreciosService::last_events()
+                );
+            }
+        } catch (\Throwable $e) {
+            Log::warning('NewProviderOrderHelper: no se pudo vincular la oferta con el cambio de precio', [
+                'message' => $e->getMessage(),
+            ]);
+        }
 
         /*
          * 🔴 Combos calculados (misión combos-calculados, 30/9/2026; entró a esta rama con el merge
@@ -2138,6 +2161,14 @@ class NewProviderOrderHelper {
 
             CodigosDeProveedor::resguardar_referencia_actual($article);
             $article = $this->update_iva($article, $new_article);
+
+            // Misión historial-precios-proveedor: lo que había ANTES de esta compra, para que la oferta
+            // del proveedor diga si se usó para cambiar el costo y/o el titular del artículo.
+            $costo_antes = $article->cost;
+            $titular_antes = $article->provider_id;
+            $cambia_proveedor = $this->will_update_article_provider($article, $new_article)
+                && !empty($this->provider_order->provider_id)
+                && (int) $article->provider_id !== (int) $this->provider_order->provider_id;
             
             if ($this->provider_order->update_prices) {
 
@@ -2155,7 +2186,18 @@ class NewProviderOrderHelper {
             // Registrar la referencia y oferta no depende de cambiar el costo/precio vigente del artículo,
             // salvo en la orden que nace de una sugerencia (costo estimado: ver $catalogar_costo_del_proveedor).
             if ($this->catalogar_costo_del_proveedor) {
-                $this->catalogar_costo_proveedor($article, $new_article);
+
+                // ¿El costo de esta compra se usó para actualizar el costo del artículo? Sólo con
+                // "actualizar precios" y si el costo realmente cambió.
+                $costo_usado = $this->provider_order->update_prices
+                    && abs((float) $article->cost - (float) $costo_antes) > 0.000001;
+
+                $this->catalogar_costo_proveedor($article, $new_article, [
+                    'updated_article_cost' => $costo_usado ? 1 : 0,
+                    'previous_article_cost' => $costo_usado ? $costo_antes : null,
+                    'changed_article_provider' => $cambia_proveedor ? 1 : 0,
+                    'previous_article_provider_id' => !empty($titular_antes) ? (int) $titular_antes : null,
+                ]);
             }
 
             // Si el articulo esta inacive, se actualiza la info de bar_code y demas
@@ -2175,7 +2217,16 @@ class NewProviderOrderHelper {
         }
     }
 
-    function update_article_provider($article, $new_article) {
+    /**
+     * Decide si esta compra va a escribir el proveedor/código del artículo (la condición que usa
+     * update_article_provider(), extraída para que la oferta del proveedor pueda registrar de
+     * antemano si el titular cambia). No modifica nada.
+     *
+     * @param \App\Models\Article $article Artículo de la compra
+     * @param array $new_article Línea de la compra (con 'pivot')
+     * @return bool
+     */
+    function will_update_article_provider($article, $new_article) {
 
         $provider_id = $this->provider_order->provider_id;
         $actualizar_proveedor = !empty($new_article['pivot']['update_provider']);
@@ -2184,7 +2235,14 @@ class NewProviderOrderHelper {
             $actualizar_proveedor = $actualizar_proveedor || $this->provider_order->update_prices;
         }
 
-        if ($actualizar_proveedor || ($provider_id && (int) $article->provider_id === (int) $provider_id)) {
+        return $actualizar_proveedor || ($provider_id && (int) $article->provider_id === (int) $provider_id);
+    }
+
+    function update_article_provider($article, $new_article) {
+
+        $provider_id = $this->provider_order->provider_id;
+
+        if ($this->will_update_article_provider($article, $new_article)) {
             $article->provider_code = CodigosDeProveedor::codigo_para($article, $provider_id);
             $article->provider_id = $provider_id;
             $article->timestamps = false;
@@ -2207,7 +2265,7 @@ class NewProviderOrderHelper {
      *
      * También se registra con `update_prices` apagado: es la oferta de este proveedor, no el costo vigente.
      */
-    function catalogar_costo_proveedor($article, $new_article) {
+    function catalogar_costo_proveedor($article, $new_article, array $usage = []) {
 
         $provider_id = $this->provider_order->provider_id;
 
@@ -2292,11 +2350,11 @@ class NewProviderOrderHelper {
             // El costo de una compra REAL es el dato más confiable del histórico: ya viene
             // neto (back-out de IVA arriba) y con proveedor y fecha ciertos.
             OfertasDeProveedorService::registrar_lote(
-                [$article->id => [$provider_id => [
+                [$article->id => [$provider_id => array_merge([
                     'cost' => $cost,
                     'provider_code' => isset($pivot_data['provider_code']) ? $pivot_data['provider_code'] : null,
                     'moneda_id' => $moneda_id_de_la_oferta,
-                ]]],
+                ], $usage)]],
                 (int) $this->provider_order->user_id,
                 'compra',
                 $this->provider_order->id
