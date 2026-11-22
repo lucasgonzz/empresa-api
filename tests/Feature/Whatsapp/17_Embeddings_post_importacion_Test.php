@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
+use App\Services\ArticleEmbeddingDispatcher;
 use Tests\TestCase;
 
 /**
@@ -127,11 +128,18 @@ class Embeddings_post_importacion_Test extends TestCase
      */
     protected function articulo($nombre)
     {
-        return Article::create([
+        $articulo = Article::create([
             'name'    => $nombre,
             'status'  => 'active',
             'user_id' => $this->comercio->id,
         ]);
+
+        // Queue::fake() descartó el job que despachó el observer, pero la marca de "encolado"
+        // (embedding_queued_at) quedó puesta en la base. Se libera para simular que ese job ya
+        // corrió: estos tests miden lo que despacha el comando sobre un artículo pendiente.
+        ArticleEmbeddingDispatcher::release($articulo->id);
+
+        return $articulo;
     }
 
     /**

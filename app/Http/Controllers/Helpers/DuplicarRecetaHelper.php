@@ -245,6 +245,8 @@ class DuplicarRecetaHelper
         $nuevo->embedding               = null;
         $nuevo->embedding_generated_at  = null;
         $nuevo->embedding_source_hash   = null;
+        // La marca de job pendiente también es del original: el duplicado nace sin job encolado.
+        $nuevo->embedding_queued_at     = null;
 
         $nuevo->user_id = $user_id;
 
