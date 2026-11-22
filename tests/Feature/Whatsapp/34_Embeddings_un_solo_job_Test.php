@@ -99,8 +99,11 @@ class Embeddings_un_solo_job_Test extends TestCase
         // El comando resuelve el dueño de la instancia por acá, igual que el scheduler.
         config(['app.USER_ID' => $this->comercio->id]);
 
-        // Ninguna red, ni siquiera por accidente.
-        Http::fake(['*' => Http::response([], 200)]);
+        // OJO: acá NO va un `Http::fake(['*' => ...])` genérico. En Laravel 8 los stubs de
+        // Http::fake() se acumulan y gana el PRIMERO que matchea, así que un '*' puesto en el
+        // setUp tapaba al stub de api.openai.com de fingir_openai() y el job nunca recibía vector.
+        // Los tests que corren el job llaman a fingir_openai(); los demás no salen a la red porque
+        // la cola está fakeada o el cliente HTTP no se usa.
     }
 
     /**
