@@ -232,6 +232,8 @@ class PriceChangeWithOfferTest extends EmpresaTestCase
             'password'     => Hash::make(uniqid()),
         ]);
 
+        // Limpia el guard cacheado: sin esto el segundo request sigue autenticado como el dueño.
+        $this->app['auth']->forgetGuards();
         $this->actingAs($empleado, 'web');
 
         $por_id = $this->modelos_por_id($this->getJson('api/price-change/' . $this->taladro->id)->assertStatus(200)->json('models'));
