@@ -355,6 +355,16 @@ class ProcessRow {
     protected $ofertas_de_precio_buffer = [];
 
     /**
+     * Misión `historial-precios-proveedor` (ronda 2): memo [article_id => cost_in_dollars (0|1)] de la
+     * moneda de los artículos que no están a mano como modelo (sólo el camino "bloqueado por código de
+     * proveedor en otro proveedor") cuando el Excel no trae columna de moneda. Una consulta por artículo
+     * y por chunk, nunca una por fila repetida.
+     *
+     * @var array
+     */
+    protected $moneda_de_articulos_memo = [];
+
+    /**
      * Cache en memoria de los descuentos estándar (ProviderDiscount) de cada proveedor,
      * indexado por provider_id, para no repetir la consulta fila a fila del Excel.
      * Se llena de forma perezosa en get_provider_standard_discount_percentages().
@@ -1786,7 +1796,7 @@ class ProcessRow {
                         // El artículo pertenece a otro proveedor y se sigue salteando igual que
                         // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
                         // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
-                        $this->registrar_oferta_de_otro_proveedor([$_articulo_ya_creado->id], $provider_id, $data);
+                        $this->registrar_oferta_de_otro_proveedor([$_articulo_ya_creado->id], $provider_id, $data, [(int) $_articulo_ya_creado->id => $_articulo_ya_creado]);
                     }
 
                 }
@@ -1805,7 +1815,7 @@ class ProcessRow {
                     // El artículo pertenece a otro proveedor y se sigue salteando igual que
                     // siempre (attach_provider ya corrió en :1092 y el pivot se pisa como
                     // antes): lo único nuevo es que la oferta queda con fecha en el histórico.
-                    $this->registrar_oferta_de_otro_proveedor([$articulo_ya_creado->id], $provider_id, $data);
+                    $this->registrar_oferta_de_otro_proveedor([$articulo_ya_creado->id], $provider_id, $data, [(int) $articulo_ya_creado->id => $articulo_ya_creado]);
                 }
             }
 
@@ -5239,8 +5249,10 @@ class ProcessRow {
      * @param array $article_ids ids reales (int) o strings 'fake_...' a descartar
      * @param int|null $provider_id
      * @param array $data fila armada por procesar(): se leen 'cost', 'provider_code' y 'cost_in_dollars'
+     * @param array $articulos modelos ya cargados de esos ids (opcional): evitan consultar la moneda del
+     *                         artículo cuando el Excel no trae columna de moneda
      */
-    protected function registrar_oferta_de_otro_proveedor($article_ids, $provider_id, array $data): void
+    protected function registrar_oferta_de_otro_proveedor($article_ids, $provider_id, array $data, array $articulos = []): void
     {
         try {
             // Guardas 1 y 2: sin provider_id, o sin cost / cost <= 0, no hay nada que registrar.
@@ -5253,20 +5265,15 @@ class ProcessRow {
             // ya está resuelto acá (se arma en procesar(), antes de los tres call sites de este
             // método) y sale de la columna "moneda" del
             // Excel (get_cost_in_dollars(): usd/u$s/dolar/dólar/... = 1, cualquier otra cosa
-            // o columna ausente = 0). Sin esta clave, registrar_lote() completaba con
+            // = 0). Ronda 2 de la misión historial-precios-proveedor: si el Excel NO mapea la
+            // columna, la clave no existe y la moneda es la del artículo (moneda_id_de_la_oferta()).
+            // Sin esta clave, registrar_lote() completaba con
             // MONEDA_POR_DEFECTO (1 = Peso) -- el mismo bug que A1 ya había arreglado del
             // lado de la compra (NewProviderOrderHelper::catalogar_costo_proveedor()), pero
             // acá sin tocar: una oferta en dólares mal etiquetada como pesos compite en
             // mejores_ofertas_para() (que solo deja competir moneda_id=1) y le gana a todo
             // el resto por ~1000x, con el ahorro estimado, el total y la orden de compra
             // generada arrastrando el mismo desvío.
-            $oferta = [
-                'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
-                'cost'          => $data['cost'],
-                'moneda_id'     => !empty($data['cost_in_dollars']) ? 2 : 1,
-                'origen'        => 'importacion',
-            ];
-
             foreach ($article_ids as $article_id) {
                 // Guarda 3: nunca un fake_id (artículo todavía sin INSERT en este chunk).
                 if (is_string($article_id) && strncmp($article_id, 'fake_', strlen('fake_')) === 0) {
@@ -5274,6 +5281,13 @@ class ProcessRow {
                 }
                 $article_id_int = (int) $article_id;
                 if ($article_id_int > 0) {
+                    $oferta = [
+                        'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
+                        'cost'          => $data['cost'],
+                        // Ronda 2: la moneda de la fila si el Excel la trae; si no, la del artículo.
+                        'moneda_id'     => $this->moneda_id_de_la_oferta($data, $article_id_int, isset($articulos[$article_id_int]) ? $articulos[$article_id_int] : null),
+                        'origen'        => 'importacion',
+                    ];
                     $this->buffer_oferta_de_precio($article_id_int, (int) $provider_id, $oferta);
                 }
             }
@@ -5284,6 +5298,37 @@ class ProcessRow {
                 'message' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Misión `historial-precios-proveedor` (ronda 2): moneda con la que se registra la oferta de una fila.
+     * Regla: la de la fila si el Excel mapea la columna "moneda" (clave `cost_in_dollars` en $data, aunque
+     * valga 0); si no, la moneda del artículo (`articles.cost_in_dollars`), igual que
+     * precio_de_la_lista_en_la_moneda_del_articulo(). Sin esto, un Excel sin columna de moneda registraba
+     * en pesos el costo de un artículo en dólares y la oferta competía mal en mejores_ofertas_para().
+     *
+     * @param array $data fila armada por procesar()
+     * @param int $article_id id real del artículo de la oferta
+     * @param \App\Models\Article|null $articulo modelo del artículo si ya está cargado (evita la consulta)
+     * @return int 1 = Peso, 2 = Dólar
+     */
+    protected function moneda_id_de_la_oferta(array $data, int $article_id, $articulo = null): int
+    {
+        // La columna de moneda vino en el Excel: manda la fila.
+        if (array_key_exists('cost_in_dollars', $data)) {
+            return !empty($data['cost_in_dollars']) ? 2 : 1;
+        }
+
+        // Sin columna de moneda: la del artículo (modelo a mano o, si no, una consulta memoizada).
+        if (!is_null($articulo) && isset($articulo->cost_in_dollars)) {
+            return !empty($articulo->cost_in_dollars) ? 2 : 1;
+        }
+
+        if (!array_key_exists($article_id, $this->moneda_de_articulos_memo)) {
+            $this->moneda_de_articulos_memo[$article_id] = (int) Article::where('id', $article_id)->value('cost_in_dollars');
+        }
+
+        return !empty($this->moneda_de_articulos_memo[$article_id]) ? 2 : 1;
     }
 
     /**
@@ -5322,7 +5367,8 @@ class ProcessRow {
             $this->buffer_oferta_de_precio((int) $article_id, $provider_id, [
                 'provider_code' => isset($data['provider_code']) ? $data['provider_code'] : null,
                 'cost' => $data['cost'],
-                'moneda_id' => !empty($data['cost_in_dollars']) ? 2 : 1,
+                // Ronda 2: moneda de la fila si el Excel la trae; si no, la del artículo.
+                'moneda_id' => $this->moneda_id_de_la_oferta($data, (int) $article_id, $articulo_ya_creado),
                 'origen' => 'importacion',
                 'updated_article_cost' => $uso_el_costo ? 1 : 0,
                 'previous_article_cost' => $uso_el_costo && isset($articulo_ya_creado->cost) ? $articulo_ya_creado->cost : null,
