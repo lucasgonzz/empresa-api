@@ -149,7 +149,9 @@ class ResponderMensajeChatIaJob implements ShouldQueue
          * el mensaje sigue 'pendiente' y la respuesta sale una sola vez, cuando corre de verdad.
          */
         if ($this->esperas < self::MAX_ESPERAS && $this->hay_un_turno_anterior_en_curso($message)) {
-            dispatch(new self($this->ai_message_id, $this->esperas + 1))->delay(now()->addSeconds(self::SEGUNDOS_DE_ESPERA));
+            // Conserva la cola de origen: si cayera en `default` volvería a esperar al cron del minuto.
+            dispatch((new self($this->ai_message_id, $this->esperas + 1))->onQueue($this->queue))
+                ->delay(now()->addSeconds(self::SEGUNDOS_DE_ESPERA));
 
             return;
         }
