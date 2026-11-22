@@ -34,6 +34,22 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Worker propio del turno del asistente (shared hosting)
+    |--------------------------------------------------------------------------
+    |
+    | Misión asistente-whatsapp-velocidad. En el shared el turno del asistente esperaba al cron
+    | del minuto (~28 s de mediana). Con esto encendido (y QUEUE_SCHEDULER_WORKER también), el turno
+    | se despacha a la cola `<QUEUE_NAME>_asistente` y el scheduler deja un worker vivo sobre ella.
+    | Con QUEUE_ASISTENTE_WORKER=false el turno vuelve a `default` y lo atiende el cron de siempre:
+    | es el freno por cliente si Hostinger se queja, sin desplegar. En el VPS no hace nada.
+    | Default true. filter_var y no (bool): "false" y "0" tienen que apagarlo.
+    |
+    */
+
+    'asistente_worker' => filter_var(env('QUEUE_ASISTENTE_WORKER', true), FILTER_VALIDATE_BOOLEAN),
+
+    /*
+    |--------------------------------------------------------------------------
     | Queue Connections
     |--------------------------------------------------------------------------
     |

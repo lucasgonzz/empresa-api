@@ -435,6 +435,11 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::get('/vender/buscar-articulo-por-codido/{code}', 'VenderController@search_bar_code');
     Route::post('/vender/buscar-articulo-por-nombre/{from_provider_order?}', 'VenderController@search_nombre')->middleware('throttle:300,1');
 
+    // Demanda no satisfecha de Vender: el freno por falta de stock queda registrado (y se puede cancelar
+    // si fue un error). Sin extensión propia: la SPA sólo lo llama cuando existe el freno de stock.
+    Route::post('unmet-demand', 'UnmetDemandController@store');
+    Route::put('unmet-demand/{id}/cancel', 'UnmetDemandController@cancel');
+
 
 
     Route::resource('stock-movement', 'Stock\StockMovementController')->except(['index', 'show']);
@@ -1715,6 +1720,13 @@ Route::middleware('admin.api.key:siempre')
         // puede decidir de qué comercio se habla. Un cliente viejo sin esta ruta responde 404/405 SIN `code` y el
         // admin lo muestra como «versión vieja».
         Route::post('acceso-soporte', 'AdminSync\\AccesoSoporteController@store');
+        // Reset de datos de negocio del cliente (misión reset-datos-cliente, 21/11/2026): vacía con TRUNCATE las tablas
+        // de negocio (ids desde 1) y conserva la configuración; simula por defecto y para ejecutar exige el nombre de
+        // la base y un token de simulación de un solo uso, escribe un respaldo SQL antes de borrar y deja registro de
+        // cada intento. `siempre`: BORRA datos de producción, «no hay clave cargada» no puede significar «pasá».
+        // Un cliente viejo sin esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
+        Route::post('reset-datos-negocio', 'AdminSync\\ResetDatosNegocioController@store');
+        Route::get('reset-datos-negocio/registros', 'AdminSync\\ResetDatosNegocioController@registros');
         Route::post('support/tours', 'AdminSync\\SupportTourController@store');
         Route::get('support/tours/importaciones/candidatas', 'AdminSync\\SupportTourController@importaciones_candidatas');
         Route::get('support/tours/catalogo', 'AdminSync\\SupportTourController@catalogo');
@@ -1813,6 +1825,10 @@ Route::middleware('admin.api.key')
         Route::get('asistente/disponibilidad', 'AdminSync\\AsistenteController@disponibilidad');
         Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
         Route::post('asistente/mensajes/{id}/liberar-entrega', 'AdminSync\\AsistenteController@liberar_entrega');
+        // La reacción del dueño (👍 / 👎 / 😡) a una respuesta del asistente por WhatsApp (misión
+        // asistente-reacciones-wa): el admin la recibe en el número de ComercioCity y la reenvía acá. Valora la
+        // respuesta; no crea turno ni despierta al asistente. Misma auth que las de arriba (clave adentro).
+        Route::post('asistente/reacciones', 'AdminSync\\AsistenteController@reaccion');
         // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
         // propósito: el admin pide los pendientes (con su link ya emitido) y recién DESPUÉS de que
         // el WhatsApp salió marca el aviso. Si el envío falla, el informe no queda marcado y sale

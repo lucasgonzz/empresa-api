@@ -9,11 +9,20 @@ class CotizacionPorArticulo extends Migration
     public function up()
     {
         foreach (['article_sale', 'article_budget'] as $tabla) {
-            Schema::table($tabla, function (Blueprint $table) {
-                $table->decimal('cotizacion_aplicada', 20, 6)->nullable();
-                $table->string('cotizacion_origen', 16)->nullable();
-                $table->unsignedTinyInteger('moneda_base_precio')->nullable();
-                $table->unsignedTinyInteger('moneda_base_costo')->nullable();
+            Schema::table($tabla, function (Blueprint $table) use ($tabla) {
+                // Guarda de reintento: cada columna se crea sólo si falta (una vuelta atrás pudo dejar algunas).
+                if (!Schema::hasColumn($tabla, 'cotizacion_aplicada')) {
+                    $table->decimal('cotizacion_aplicada', 20, 6)->nullable();
+                }
+                if (!Schema::hasColumn($tabla, 'cotizacion_origen')) {
+                    $table->string('cotizacion_origen', 16)->nullable();
+                }
+                if (!Schema::hasColumn($tabla, 'moneda_base_precio')) {
+                    $table->unsignedTinyInteger('moneda_base_precio')->nullable();
+                }
+                if (!Schema::hasColumn($tabla, 'moneda_base_costo')) {
+                    $table->unsignedTinyInteger('moneda_base_costo')->nullable();
+                }
             });
         }
     }

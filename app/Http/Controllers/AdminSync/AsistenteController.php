@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteImagenHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDelAsistenteHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ReaccionDelAsistenteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\RecordatoriosDelAsistenteHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TopeDeTokensHelper;
 use App\Http\Controllers\Helpers\MostradorHelper;
@@ -329,7 +330,9 @@ class AsistenteController extends Controller
          */
         try {
 
-            dispatch(new ResponderMensajeChatIaJob($assistant_message->id));
+            // Cola propia del turno en shared (null = la cola por defecto, como siempre).
+            dispatch((new ResponderMensajeChatIaJob($assistant_message->id))
+                ->onQueue(AsistenteCanalHelper::cola_del_turno_whatsapp()));
 
         } catch (\Throwable $e) {
 
@@ -585,6 +588,52 @@ class AsistenteController extends Controller
         }
 
         return $this->estado_del_mensaje($mensaje);
+    }
+
+    /**
+     * POST admin-sync/asistente/reacciones  (JSON)
+     *
+     * La reacción del dueño (👍 / 👎 / 😡 …) a una respuesta de su asistente por WhatsApp, que el admin recibe en el
+     * número de ComercioCity y reenvía acá (misión asistente-reacciones-wa, 22/11/2026). Cuerpo:
+     * `whatsapp_message_id` (obligatorio: wamid reaccionado), `emoji` (obligatorio, '' = quitó la reacción),
+     * `ai_message_id` (opcional) y `reaction_message_id` (opcional, sólo log). La lógica vive en
+     * ReaccionDelAsistenteHelper; el controlador sólo valida el acceso y arma los datos.
+     *
+     * 🔴 Una reacción NO es un mensaje: no crea turno, no despacha al asistente. Contesta siempre 200 si el acceso
+     * es válido y el cuerpo está bien, aunque la reacción no aplique (`aplicada: false` + `motivo`): el admin
+     * no tiene que reintentar nada.
+     *
+     * @param  Request  $request
+     * @return JsonResponse  200 · 401 sin clave · 403 sin extensión · 409 sin dueño resuelto · 422 cuerpo inválido
+     */
+    public function reaccion(Request $request): JsonResponse
+    {
+        $rechazo = $this->rechazo_de_acceso($request);
+
+        if (!is_null($rechazo)) {
+
+            return $rechazo;
+        }
+
+        // `emoji` con array_key_exists: el emoji vacío (quitó la reacción) llega como null por el middleware.
+        $datos = [
+            'whatsapp_message_id' => $request->input('whatsapp_message_id'),
+            'ai_message_id'       => $request->input('ai_message_id'),
+            'reaction_message_id' => $request->input('reaction_message_id'),
+        ];
+
+        if (array_key_exists('emoji', $request->all())) {
+            $datos['emoji'] = $request->input('emoji');
+        }
+
+        $error = ReaccionDelAsistenteHelper::error_de_validacion($datos);
+
+        if (!is_null($error)) {
+
+            return response()->json(['message' => $error], 422);
+        }
+
+        return response()->json(ReaccionDelAsistenteHelper::aplicar(AsistenteCanalHelper::dueno(), $datos));
     }
 
     public function liberar_entrega(Request $request, $id): JsonResponse

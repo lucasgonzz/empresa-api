@@ -9,7 +9,10 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('support_tours', function (Blueprint $table) {
-            $table->unsignedBigInteger('import_history_id')->nullable();
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('support_tours', 'import_history_id')) {
+                $table->unsignedBigInteger('import_history_id')->nullable();
+            }
         });
     }
 

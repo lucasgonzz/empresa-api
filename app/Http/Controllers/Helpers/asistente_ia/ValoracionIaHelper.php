@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\WhatsappReactionHelper;
 use App\Models\AiMessage;
 use Carbon\Carbon;
 
@@ -31,6 +32,12 @@ class ValoracionIaHelper
 
     /** Largo máximo del comentario (lo corta la interfaz; acá es la defensa). */
     const MAX_COMENTARIO = 1000;
+
+    /** La valoración la puso el dueño desde el chat del sistema o la app (PUT api/ai-mensajes/{id}/valoracion). */
+    const ORIGEN_SISTEMA = 'sistema';
+
+    /** La valoración salió de una reacción del dueño por WhatsApp (misión asistente-reacciones-wa). */
+    const ORIGEN_REACCION = 'reaccion_whatsapp';
 
     /**
      * Valida lo que llega del request. Devuelve null si está bien, o el código de error para el 422.
@@ -74,6 +81,12 @@ class ValoracionIaHelper
             ? $comentario_limpio
             : null;
         $mensaje->valorado_at = is_null($valoracion) ? null : Carbon::now();
+        /*
+         * Quién la puso (misión asistente-reacciones-wa): lo que se escribe desde el sistema es `sistema`, y una
+         * reacción de WhatsApp no puede pisar el comentario que el dueño escribió acá. Al sacar la valoración el
+         * origen también se limpia.
+         */
+        $mensaje->valoracion_origen = is_null($valoracion) ? null : self::ORIGEN_SISTEMA;
 
         /*
          * Sin tocar updated_at: el polling de la SPA y de la app compara mensajes y un updated_at nuevo
@@ -84,6 +97,58 @@ class ValoracionIaHelper
         $mensaje->timestamps = true;
 
         return $mensaje;
+    }
+
+    /**
+     * Aplica la reacción de WhatsApp del dueño (👍 / 👎 / 😡 …) a una respuesta del asistente.
+     *
+     * Tabla (misión asistente-reacciones-wa, §2.3 del plan):
+     *   - Valoración del SISTEMA con comentario escrito por el dueño → no se toca, sea cual sea la reacción: lo
+     *     que escribió a mano vale más que un emoji (`valoracion_del_sistema`). Una fila vieja con valoración y
+     *     origen null cuenta como del sistema (protección conservadora).
+     *   - Reacción negativa → `no_me_gusta`; positiva → `me_gusta`; con el comentario «reacción <emoji> por
+     *     WhatsApp», `valorado_at` ahora y origen `reaccion_whatsapp`. Reemplaza una valoración de reacción
+     *     anterior o una del sistema SIN comentario.
+     *   - Quitada o neutra → limpia la valoración SI era de reacción (WhatsApp admite una sola reacción por
+     *     persona y mensaje: cambiar 👎 por 😂 es retirar el 👎); si no había nada o era del sistema, no hace nada.
+     *
+     * @param  AiMessage  $mensaje  Respuesta del asistente (rol assistant) ya resuelta dentro del dueño.
+     * @param  string  $emoji  Emoji tal como llegó ('' = la quitó).
+     * @return array  `aplicada` (bool) y, si no se aplicó, `motivo` (`valoracion_del_sistema` | `sin_cambios`).
+     */
+    public static function valorar_por_reaccion(AiMessage $mensaje, $emoji)
+    {
+        $es_del_sistema = $mensaje->valoracion_origen === self::ORIGEN_SISTEMA
+            || (is_null($mensaje->valoracion_origen) && !is_null($mensaje->valoracion));
+
+        $tiene_comentario = trim((string) $mensaje->valoracion_comentario) !== '';
+
+        if ($es_del_sistema && $tiene_comentario) {
+            return ['aplicada' => false, 'motivo' => 'valoracion_del_sistema'];
+        }
+
+        $clase = WhatsappReactionHelper::classify($emoji);
+
+        if ($clase === WhatsappReactionHelper::NEGATIVA || $clase === WhatsappReactionHelper::POSITIVA) {
+            $mensaje->valoracion = $clase === WhatsappReactionHelper::NEGATIVA ? self::NO_ME_GUSTA : self::ME_GUSTA;
+            $mensaje->valoracion_comentario = WhatsappReactionHelper::comment_for($emoji);
+            $mensaje->valorado_at = Carbon::now();
+            $mensaje->valoracion_origen = self::ORIGEN_REACCION;
+        } elseif ($mensaje->valoracion_origen === self::ORIGEN_REACCION) {
+            $mensaje->valoracion = null;
+            $mensaje->valoracion_comentario = null;
+            $mensaje->valorado_at = null;
+            $mensaje->valoracion_origen = null;
+        } else {
+            return ['aplicada' => false, 'motivo' => 'sin_cambios'];
+        }
+
+        // Sin tocar updated_at, igual que `valorar()`: el polling compara mensajes y esto no cambia lo respondido.
+        $mensaje->timestamps = false;
+        $mensaje->save();
+        $mensaje->timestamps = true;
+
+        return ['aplicada' => true];
     }
 
     /**

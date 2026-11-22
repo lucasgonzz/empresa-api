@@ -9,7 +9,10 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('support_tours', function (Blueprint $table) {
-            $table->json('pasos_programados')->nullable();
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('support_tours', 'pasos_programados')) {
+                $table->json('pasos_programados')->nullable();
+            }
         });
     }
 

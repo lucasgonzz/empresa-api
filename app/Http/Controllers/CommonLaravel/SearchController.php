@@ -855,7 +855,13 @@ class SearchController extends Controller
                 }]);
             }
 
-            $pagina_sql = VenderSearchHelper::pagina_sql_si_no_expande($light_query, $per_page, $page_actual);
+            // Con un criterio de hasta 3 caracteres el total se cuenta con tope (ver
+            // VenderSearchHelper::pagina_sql_con_total_acotado); `total_es_minimo` le avisa al
+            // frontend que ese número es un piso. Con la extensión de variantes devuelve null y
+            // el total sigue siendo exacto (camino de expansión).
+            $pagina_acotada = VenderSearchHelper::pagina_sql_con_total_acotado($light_query, $per_page, $page_actual, $query_value);
+            $pagina_sql = $pagina_acotada ? $pagina_acotada['paginador'] : null;
+            $total_es_minimo = $pagina_acotada ? $pagina_acotada['total_es_minimo'] : false;
             $light_articles = $pagina_sql ? $pagina_sql->getCollection() : $light_query->get();
             if ($es_compra) {
                 foreach ($light_articles as $article) {
@@ -957,6 +963,12 @@ class SearchController extends Controller
         }
 
         $respuesta = ['models' => $models, 'matches' => $matches, 'saldos' => $saldos];
+
+        // `total_es_minimo` SOLO con contexto Vender (misma regla que `totales`: para los demás
+        // modelos la clave no existe y la respuesta es idéntica a la de siempre).
+        if ($usar_contexto_vender) {
+            $respuesta['total_es_minimo'] = $total_es_minimo;
+        }
 
         // `totales` SOLO con la marca de la pantalla de Ventas: para cualquier otro caso la clave no
         // existe (no se agrega un `totales => null`), asi la respuesta es identica a la de siempre.
