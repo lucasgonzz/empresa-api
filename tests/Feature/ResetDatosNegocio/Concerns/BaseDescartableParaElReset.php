@@ -58,6 +58,9 @@ trait BaseDescartableParaElReset
     /** Ruta del storage original, para devolverlo en tearDown. */
     protected $storage_original;
 
+    /** Store de cache que había antes de forzar 'array' (null si no se forzó). */
+    protected $cache_original = null;
+
     /** Carpeta temporal que hace de storage durante el test. */
     protected $storage_temporal;
 
@@ -99,6 +102,7 @@ trait BaseDescartableParaElReset
 
         $this->base_descartable = $this->base_del_slot . '_test_reset' . getmypid();
 
+        $this->aislar_la_cache();
         $this->redirigir_el_storage();
         $this->crear_la_base_descartable();
         $this->apuntar_la_conexion_a($this->base_descartable);
@@ -119,6 +123,13 @@ trait BaseDescartableParaElReset
     protected function terminar_entorno_del_reset()
     {
         Carbon::setTestNow();
+
+        // Devuelve el store de cache original (la app se recrea por test, pero así no depende de eso).
+        if ($this->cache_original !== null) {
+            config(['cache.default' => $this->cache_original]);
+            $this->app['cache']->forgetDriver('array');
+            $this->cache_original = null;
+        }
 
         DemoSetupLockHelper::soltar($this->candado_del_test);
         $this->candado_del_test = false;
@@ -142,6 +153,23 @@ trait BaseDescartableParaElReset
             && strpos($this->storage_temporal, 'reset_datos_test_') !== false && is_dir($this->storage_temporal)) {
             (new Filesystem())->deleteDirectory($this->storage_temporal);
         }
+    }
+
+    /**
+     * Fuerza el store de cache 'array' (en memoria del proceso) durante el test. El reset llama a Cache::flush():
+     * con un store compartido entre procesos (file/redis) vaciaría la cache de las otras particiones que corren a
+     * la vez. Sólo aislamiento del fixture. Se restaura en terminar_entorno_del_reset().
+     *
+     * @return void
+     */
+    protected function aislar_la_cache()
+    {
+        $this->cache_original = config('cache.default');
+        config(['cache.default' => 'array']);
+
+        // Descarta el store ya resuelto para que el siguiente Cache::* use el 'array'.
+        $this->app['cache']->forgetDriver($this->cache_original);
+        $this->app['cache']->forgetDriver('array');
     }
 
     /**
@@ -202,12 +230,46 @@ trait BaseDescartableParaElReset
         $a_copiar = array_merge($catalogo::TABLAS_DE_CONFIGURACION, $catalogo::TABLAS_DE_SISTEMA);
 
         DB::statement('SET FOREIGN_KEY_CHECKS=0');
+        $filtro_de_dueno = $this->condicion_del_dueno_del_fixture($slot);
         foreach ($a_copiar as $tabla) {
             if (in_array($tabla, $tablas, true)) {
-                DB::statement('INSERT INTO `' . $nueva . '`.`' . $tabla . '` SELECT * FROM `' . $slot . '`.`' . $tabla . '`');
+                // `users` se copia filtrada: la base del slot puede traer dueños filtrados por otros tests no
+                // transaccionales (p. ej. id 900) y el reset se niega con `varios_duenos` si ve más de uno.
+                $donde = $tabla === 'users' ? ' WHERE ' . $filtro_de_dueno : '';
+                DB::statement('INSERT INTO `' . $nueva . '`.`' . $tabla . '` SELECT * FROM `' . $slot . '`.`' . $tabla . '`' . $donde);
             }
         }
         DB::statement('SET FOREIGN_KEY_CHECKS=1');
+    }
+
+    /**
+     * Condición SQL (sobre `users` de la base del slot) que deja pasar sólo al dueño del fixture y a sus empleados.
+     * El dueño es el de id = config('app.USER_ID') si existe con owner_id NULL; si no, el dueño de menor id.
+     * Es sólo aislamiento del fixture: no cambia lo que el reset hace ni lo que los tests afirman.
+     *
+     * @param string $slot Nombre de la base del slot.
+     * @return string Fragmento para un WHERE (sin la palabra WHERE).
+     */
+    protected function condicion_del_dueno_del_fixture($slot)
+    {
+        $id_configurado = (int) config('app.USER_ID');
+        $id_dueno = null;
+
+        if ($id_configurado > 0) {
+            $id_dueno = DB::table($slot . '.users')->where('id', $id_configurado)->whereNull('owner_id')->value('id');
+        }
+        if ($id_dueno === null) {
+            $id_dueno = DB::table($slot . '.users')->whereNull('owner_id')->orderBy('id')->value('id');
+        }
+
+        // Sin ningún dueño en el slot no hay nada que filtrar: se copia igual que antes (la rama vacía).
+        if ($id_dueno === null) {
+            return '1=1';
+        }
+
+        $id_dueno = (int) $id_dueno;
+
+        return '(`id` = ' . $id_dueno . ' OR `owner_id` = ' . $id_dueno . ')';
     }
 
     /**
