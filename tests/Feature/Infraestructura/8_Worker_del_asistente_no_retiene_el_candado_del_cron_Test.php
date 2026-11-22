@@ -17,7 +17,7 @@ use Tests\Feature\AsistenteWhatsapp\AsistenteWhatsappTestCase;
  * ~50 s, el `schedule:run` del minuto siguiente se saltearía entero. El comando del evento tiene que
  * cerrar los descriptores heredados (3 a 9) en el subshell de fondo antes del worker.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, argumentos nombrados, union types ni enum.
  *
  * @group asistente-whatsapp
  */
