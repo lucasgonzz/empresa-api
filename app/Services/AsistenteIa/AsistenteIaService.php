@@ -106,6 +106,33 @@ class AsistenteIaService
     private $ofrecer_soporte = false;
 
     /**
+     * Misión agente-tareas-programadas: true / false si ya se sabe si el turno en curso es DESATENDIDO (lo
+     * disparó una tarea programada, no el dueño); null fuera de un turno (se mira la conversación). Se fija en
+     * responder() con el `assistant` exacto, porque con el dueño escribiendo en el medio «el último mensaje» no
+     * alcanza para saber a qué pedido responde este turno.
+     *
+     * @var bool|null
+     */
+    private $turno_desatendido = null;
+
+    /**
+     * Misión agente-tareas-programadas (enmienda 1): el id del `assistant` del turno en curso, para que el turno
+     * desatendido sepa cuál es SU tarea cuando hay dos en la misma conversación. null fuera de un turno.
+     *
+     * @var int|null
+     */
+    private $assistant_id_del_turno = null;
+
+    /**
+     * Misión agente-tareas-programadas (enmienda 1, E1): los resultados de tareas que el job va a poner al
+     * principio de la respuesta de este turno (el dueño sólo recibió una plantilla). Los calcula responder() una
+     * sola vez: el aviso al modelo y el job usan la MISMA lista. Vacío fuera de un turno del dueño.
+     *
+     * @var array<int, array{id: int, titulo: string, texto: string}>
+     */
+    private $resultados_a_entregar = [];
+
+    /**
      * Techo de vueltas del loop de tool use sin las herramientas de carga, CONTADA la llamada de cierre
      * (ver MAX_TOOL_ITERATIONS_CON_ACCIONES, que cuenta el porqué de los dos).
      */
@@ -132,6 +159,13 @@ class AsistenteIaService
      * INCLUYE esa llamada: un turno que se come el techo hace 23 vueltas normales y 1 de cierre.
      */
     const MAX_TOOL_ITERATIONS_CON_ACCIONES = 24;
+
+    /**
+     * Techo de vueltas de un turno DESATENDIDO (misión agente-tareas-programadas): el que despertó una tarea
+     * programada. Nadie lo mira ni puede contestarle una pregunta, así que consulta lo justo y cierra. Como los
+     * otros, incluye la llamada de cierre sin herramientas.
+     */
+    const MAX_TOOL_ITERATIONS_DESATENDIDO = 6;
 
     /** Techo de mensajes del historial que viajan a la API. */
     const MAX_MENSAJES_HISTORIAL = 30;
@@ -534,6 +568,9 @@ class AsistenteIaService
         $this->marcar_progreso = true;
         $this->manual_de_prueba = null;
         $this->ofrecer_soporte = false;
+        $this->turno_desatendido = \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::es_turno_desatendido($conversation, $assistant_message);
+        $this->assistant_id_del_turno = empty($assistant_message->id) ? null : (int) $assistant_message->id;
+        $this->resultados_a_entregar = \App\Http\Controllers\Helpers\asistente_ia\EntregaDeResultadosDeTareasIaHelper::pendientes($conversation, $assistant_message);
 
         $owner = User::find($conversation->user_id);
 
@@ -722,6 +759,11 @@ class AsistenteIaService
         $url       = ProveedorIaHelper::url_messages($proveedor);
 
         $max_iterations = $con_acciones ? self::MAX_TOOL_ITERATIONS_CON_ACCIONES : self::MAX_TOOL_ITERATIONS;
+
+        // Un turno desatendido (lo despertó una tarea programada) no pasa de 6 vueltas.
+        if ($this->turno_desatendido === true) {
+            $max_iterations = self::MAX_TOOL_ITERATIONS_DESATENDIDO;
+        }
 
         /*
          * Misión asistente-capacidades-y-hilos (22/9/2026): true en cuanto el modelo pide una tool
@@ -2327,6 +2369,17 @@ class AsistenteIaService
     public function menciones(): array
     {
         return $this->menciones;
+    }
+
+    /**
+     * Los resultados de tareas programadas que el job tiene que poner al principio de la respuesta de este turno
+     * (el dueño sólo recibió una plantilla). Ver EntregaDeResultadosDeTareasIaHelper.
+     *
+     * @return array<int, array{id: int, titulo: string, texto: string}>
+     */
+    public function resultados_a_entregar(): array
+    {
+        return $this->resultados_a_entregar;
     }
 
     /**
@@ -3985,7 +4038,19 @@ CONFIRMACION;
          * conversaciones) y aquél es de esta charla. Solo con Agentes de IA, en todos los canales; si
          * falla, el helper devuelve '' y el chat sigue sin memoria.
          */
-        $memoria = $this->con_memoria($owner) ? AgenteContextoHelper::bloque_para_prompt($owner) : '';
+        $memoria = '';
+
+        if ($this->con_memoria($owner)) {
+            /*
+             * Misión agente-tareas-programadas: un turno desatendido es de SOLO LECTURA, también para la memoria.
+             * bloque_para_prompt() siembra los archivos de fábrica la primera vez (AgenteContextoHelper::asegurar):
+             * si todavía no hay ninguno, ese turno no escribe nada y sigue sin memoria; el primer turno del dueño la siembra.
+             */
+            $sin_sembrar = $this->es_turno_desatendido($conversation)
+                && ! \App\Models\AgenteContextoArchivo::where('user_id', (int) $owner->id)->exists();
+
+            $memoria = $sin_sembrar ? '' : AgenteContextoHelper::bloque_para_prompt($owner);
+        }
 
         if ($memoria !== '') {
             $system[] = [
@@ -4018,6 +4083,31 @@ CONFIRMACION;
                 'text' => "Contexto de fondo de esta conversación (datos ya calculados por el sistema, no los recalcules):\n"
                     . $contexto,
             ];
+        }
+
+        /*
+         * Misión agente-tareas-programadas (21/11/2026): dos bloques SIN cache_control y al final, para no
+         * tocar el cacheado. (1) En un turno desatendido, que el modelo sepa que no lo escribió el dueño.
+         * (2) Cuando se ofrecen las herramientas de tareas, la hora de ahora: el prompt trae el día pero no la
+         * hora, y «dentro de un rato» o «a las 10» no se resuelven sin ella.
+         */
+        $bloque_de_tareas = $this->bloque_de_tareas_programadas($conversation, $owner);
+
+        if ($bloque_de_tareas !== '') {
+            if (count($system) > 1) {
+                /*
+                 * Se suma al FINAL del último bloque no cacheado en vez de abrir uno nuevo: los tests del
+                 * censo del system (MemoriaDelAgente/2, ChatIa) fijan cuántos bloques lleva cada canal, y
+                 * para el caché es lo mismo (ninguno de los dos lleva cache_control). Sólo si no hay
+                 * ninguno (sin memoria ni conversaciones anteriores) va como bloque propio.
+                 */
+                $system[count($system) - 1]['text'] .= "\n\n" . $bloque_de_tareas;
+            } else {
+                $system[] = [
+                    'type' => 'text',
+                    'text' => $bloque_de_tareas,
+                ];
+            }
         }
 
         return $system;
@@ -5863,7 +5953,12 @@ CONFIRMACION;
         $ahora        = $this->ahora();
         $transcurrido = $ahora - (int) $inicio_del_loop;
 
-        if ($assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp() && ! is_null($assistant_message->created_at)) {
+        /*
+         * Misión agente-tareas-programadas: en un turno desatendido NO hay un admin esperando desde el alta del
+         * mensaje (lo armó el barrido del cron), así que el reloj es sólo el del loop: si el job esperó en la
+         * cola, ese tiempo no le tiene que comer el presupuesto al turno.
+         */
+        if ($this->turno_desatendido !== true && $assistant_message instanceof AiMessage && $assistant_message->es_de_whatsapp() && ! is_null($assistant_message->created_at)) {
             $transcurrido = max($transcurrido, $ahora - \Carbon\Carbon::parse($assistant_message->created_at)->getTimestamp());
         }
 
@@ -6132,8 +6227,15 @@ CONFIRMACION;
             }
         }
 
+        // Misión agente-tareas-programadas: en un turno desatendido no se ofrece nada que escriba o saque algo del negocio.
+        $desatendido = $this->es_turno_desatendido($conversation);
+
         if ($this->con_memoria($owner)) {
             foreach (HerramientasDeContexto::definiciones() as $definicion) {
+                if ($desatendido && $definicion['name'] === HerramientasDeContexto::GUARDAR) {
+                    continue;
+                }
+
                 $tools[] = $definicion;
             }
         }
@@ -6142,7 +6244,7 @@ CONFIRMACION;
             foreach (HerramientasDeLaApp::definiciones($con_acciones) as $definicion) {
                 $tools[] = $definicion;
             }
-        } elseif ($es_whatsapp && $conversation instanceof AiConversation && ImagenPorWhatsappIaHelper::disponible($conversation, $owner)) {
+        } elseif (! $desatendido && $es_whatsapp && $conversation instanceof AiConversation && ImagenPorWhatsappIaHelper::disponible($conversation, $owner)) {
             /*
              * Misión asistente-truvari-pedidos-fallidos (C1, 13/11/2026): por WhatsApp, pedir_imagen sola (sin
              * gráficos ni tablas, que ahí no se dibujan) y con la descripción del canal. Va donde van las de la
@@ -6161,6 +6263,17 @@ CONFIRMACION;
             $tools[] = $definicion;
         }
 
+        /*
+         * Misión agente-tareas-programadas (21/11/2026): programar, reprogramar, consultar y cancelar tareas del
+         * asistente y guardar los horarios del dueño. Sólo si habla el dueño y el turno no es desatendido (una
+         * tarea no programa otras tareas). Antes del manual y del soporte de la prueba, para no mover el prefijo.
+         */
+        if (! $desatendido && HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)) {
+            foreach (HerramientasDeTareasDelAsistente::definiciones() as $definicion) {
+                $tools[] = $definicion;
+            }
+        }
+
         if ($this->manual_de_prueba) {
             $tools[] = HerramientaDeManualDePrueba::definicion();
         }
@@ -6171,6 +6284,62 @@ CONFIRMACION;
         }
 
         return $this->con_cache_control($tools);
+    }
+
+    /**
+     * true si el turno en curso es DESATENDIDO: lo despertó una tarea programada del asistente, no lo escribió el
+     * dueño (misión agente-tareas-programadas). Dentro de responder() sale de la propiedad que fijó con el
+     * `assistant` exacto; fuera de un turno se mira la conversación.
+     *
+     * @param AiConversation|null $conversation
+     * @return bool
+     */
+    protected function es_turno_desatendido($conversation): bool
+    {
+        if (! is_null($this->turno_desatendido)) {
+            return $this->turno_desatendido;
+        }
+
+        return \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::es_turno_desatendido($conversation, null);
+    }
+
+    /**
+     * El bloque de sistema NO cacheado de las tareas programadas: el aviso del turno desatendido, o la hora
+     * actual cuando se ofrecen las herramientas de tareas. '' si no corresponde ninguno.
+     *
+     * @param AiConversation $conversation
+     * @param User|null $owner
+     * @return string
+     */
+    protected function bloque_de_tareas_programadas(AiConversation $conversation, $owner): string
+    {
+        if ($this->es_turno_desatendido($conversation)) {
+
+            $contexto = \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::contexto_del_turno($conversation, $this->assistant_id_del_turno);
+
+            return 'Este turno no lo escribió el dueño: lo disparó tu tarea programada «' . $contexto['titulo'] . '» de las ' . $contexto['hora']
+                . '. El dueño no está mirando: tu respuesta le llega sola por WhatsApp (o queda en esta conversación). Hacé lo que dice la instrucción con consultas. '
+                . 'No podés cargar, confirmar, enviar ni guardar nada; si hace falta su sí, terminá con UNA pregunta concreta. Corto, para leer en el teléfono.';
+        }
+
+        $partes = [];
+
+        if (HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)) {
+
+            $ahora = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::ahora();
+
+            $partes[] = 'Ahora son las ' . $ahora->format('H:i') . ' del ' . FormatoIaHelper::fecha_con_dia($ahora) . '.';
+        }
+
+        /* Enmienda 1 (E1): resultados de tareas que el código pone al principio de la respuesta de este turno. */
+        $entrega = \App\Http\Controllers\Helpers\asistente_ia\EntregaDeResultadosDeTareasIaHelper::aviso_para_el_modelo($this->resultados_a_entregar);
+
+        if ($entrega !== '') {
+
+            $partes[] = $entrega;
+        }
+
+        return implode("\n\n", $partes);
     }
 
     /**
@@ -7629,7 +7798,22 @@ CONFIRMACION;
                     && $assistant_message instanceof AiMessage
                     && $assistant_message->es_de_whatsapp();
 
-                if ($assistant_message instanceof AiMessage && ($assistant_message->es_de_la_app() || $de_la_app_por_whatsapp) && HerramientasDeLaApp::maneja($tool_name)) {
+                /*
+                 * Misión agente-tareas-programadas: en un turno desatendido (lo despertó una tarea) todo lo que
+                 * carga, confirma, guarda, pide una imagen o programa otras tareas se rechaza ACÁ, antes del
+                 * despacho, aunque el modelo lo invente sin que se le haya ofrecido. Nadie puede contestarle
+                 * «¿confirmo?» y «sí, dale» de la instrucción guardada no es el sí del dueño.
+                 */
+                $rechazada_por_desatendido = $this->es_turno_desatendido($conversation)
+                    && (HerramientasDeCarga::maneja($tool_name)
+                        || HerramientasDeTareasDelAsistente::maneja($tool_name)
+                        || $tool_name === HerramientasDeContexto::GUARDAR
+                        || $tool_name === HerramientasDeLaApp::PEDIR_IMAGEN);
+
+                if ($rechazada_por_desatendido) {
+                    $content = 'En un turno programado no podés hacer esto: dejalo como una pregunta para el dueño.';
+                    $error_de_la_herramienta = true;
+                } elseif ($assistant_message instanceof AiMessage && ($assistant_message->es_de_la_app() || $de_la_app_por_whatsapp) && HerramientasDeLaApp::maneja($tool_name)) {
                     $de_la_app = HerramientasDeLaApp::ejecutar($tool_name, $tool_input, $conversation, $assistant_message, count($this->bloques));
 
                     if (! is_null($de_la_app['bloque'])) {
@@ -7697,6 +7881,13 @@ CONFIRMACION;
                     $this->juntar_adjuntos($tool_name, $datos);
                     $content = $this->contenido_de_tool_result($datos);
                     $error_de_la_herramienta = isset($datos['error']);
+                } elseif (HerramientasDeTareasDelAsistente::maneja($tool_name)) {
+                    // Misión agente-tareas-programadas: programar, reprogramar, consultar y cancelar tareas del
+                    // asistente y guardar horarios. El dueño sale de la conversación; el despacho vuelve a
+                    // mirar que hable el dueño y que haya Agentes de IA.
+                    $resultado_de_tareas = HerramientasDeTareasDelAsistente::ejecutar($tool_name, $tool_input, $conversation);
+                    $content = $resultado_de_tareas['content'];
+                    $error_de_la_herramienta = (bool) $resultado_de_tareas['is_error'];
                 } elseif (HerramientasDeConversaciones::maneja($tool_name)) {
                     // Misión agente-memoria-y-sin-techo (30/10/2026): buscar y leer las conversaciones
                     // anteriores de la persona. La tenencia (mismo dueño Y misma persona) sale de la

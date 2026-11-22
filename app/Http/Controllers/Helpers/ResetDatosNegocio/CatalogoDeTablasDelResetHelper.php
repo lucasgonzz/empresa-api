@@ -41,7 +41,7 @@ class CatalogoDeTablasDelResetHelper
         'advises', 'afip_errors', 'afip_observations', 'afip_tickets', 'agente_consolidacion_estados',
         'agente_consolidacion_hallazgos', 'agente_consolidacion_memorias', 'agente_consolidaciones', 'ai_archivos',
         'ai_avisos_del_asistente', 'ai_conversations', 'ai_envios_fallidos', 'ai_message_actions', 'ai_message_imagenes',
-        'ai_messages', 'answers', 'apertura_cajas', 'article_actualizados_article_import_result', 'article_actualizados_import_history',
+        'ai_messages', 'ai_tareas_del_asistente', 'ai_tareas_del_asistente_ejecuciones', 'answers', 'apertura_cajas', 'article_actualizados_article_import_result', 'article_actualizados_import_history',
         'article_article_price_type_group', 'article_article_ubication', 'article_articles_pre_import',
         'article_budget', 'article_cart', 'article_color', 'article_combo', 'article_commerce_order',
         'article_compact_embeddings', 'article_creados_article_import_result', 'article_creados_import_history',
