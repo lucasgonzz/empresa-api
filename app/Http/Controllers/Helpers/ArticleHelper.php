@@ -466,6 +466,21 @@ class ArticleHelper {
             $costo_real = $res['price'];
             $des        = $res['des'];
 
+            /*
+             * 🔴 NO sacar: un guardado de la ficha SIN cambios en el costo, el IVA ni el proveedor conserva
+             * el `costo_real` que el artículo ya tiene (misión guardar-sin-cambios-listas-y-costo-real).
+             * MBMalizia (artículo 2689) lo tenía guardado sin la bonificación del proveedor (cost x 1,105)
+             * aunque la fila de `article_discounts` de 15 % ya existía: el primer guardado «lo ponía al día»
+             * (9.768.200) sin que nadie tocara nada, y el comparador del humo de actualización marcaba
+             * DIFERENCIAS. La ficha avisa con ArticlePricesHelper::conservar_costo_real() sólo cuando ninguna
+             * entrada del costo cambió; un cambio real de costo, IVA o proveedor llega acá sin el aviso y se
+             * calcula como siempre. Los demás caminos (importación, recálculo, compras) nunca lo avisan. Sin
+             * `costo_real` guardado no hay nada que conservar y se calcula.
+             */
+            if (!is_null($costo_real_guardado) && ArticlePricesHelper::debe_conservar_costo_real($article)) {
+                $costo_real = (float) $costo_real_guardado;
+            }
+
             // La asignacion en memoria queda siempre afuera del if: los callers que piden
             // simulacion ($guardar_cambios = false) necesitan el valor en el objeto en memoria,
             // y ActualizarBBDD lo toma del array de retorno que se arma mas abajo con esta misma
