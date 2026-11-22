@@ -2,7 +2,10 @@
 
 namespace App\Http\Controllers\Helpers;
 
+use App\Models\Address;
 use App\Models\Article;
+use App\Models\ArticleVariant;
+use App\Models\Combo;
 use App\Models\UnmetDemand;
 use App\Models\User;
 use Carbon\Carbon;
@@ -78,6 +81,14 @@ class UnmetDemandHelper
         $variant_id = self::entero_o_null(isset($datos['article_variant_id']) ? $datos['article_variant_id'] : null);
         $combo_id = self::entero_o_null(isset($datos['combo_id']) ? $datos['combo_id'] : null);
         $address_id = self::entero_o_null(isset($datos['address_id']) ? $datos['address_id'] : null);
+
+        // Pertenencia (multi-tenant): un id que no es del dueño se guarda como null, sin 422, para no
+        // romper el contrato con la SPA ni el mostrador. Sin esto, un request armado a mano mostraría
+        // (vía el asistente: sucursal -> calle) datos de otro comercio.
+        $variant_id = self::variante_del_articulo($variant_id, $article_id);
+        $combo_id = self::combo_del_duenio($combo_id, $owner_id);
+        $address_id = self::sucursal_del_duenio($address_id, $owner_id);
+
         $cantidad_pedida = self::numero_o_null(isset($datos['cantidad_pedida']) ? $datos['cantidad_pedida'] : null);
         $stock_disponible = self::numero_o_null(isset($datos['stock_disponible']) ? $datos['stock_disponible'] : null);
 
@@ -208,6 +219,79 @@ class UnmetDemandHelper
             && Schema::hasColumn('purchase_suggestion_articles', 'demanda_no_satisfecha_veces');
 
         return self::$esquema_confirmado;
+    }
+
+    /**
+     * Ids de los artículos (no borrados) del dueño con al menos un freno sin cancelar dentro de los
+     * últimos $dias. Los usa el recolector del mostrador para sumar estos artículos a los candidatos
+     * del motor de compras: un artículo en cero, sin ventas y sin mínimo sólo se ve por esta señal.
+     *
+     * @param int $owner_id
+     * @param int $dias Ventana hacia atrás (la del motor: PurchaseSuggestionService::DIAS_DEMANDA_NO_SATISFECHA).
+     * @return array Ids enteros, sin repetir.
+     */
+    public static function articulos_con_frenos_vigentes(int $owner_id, int $dias): array
+    {
+        $ids = DB::table('unmet_demands')
+            ->join('articles', 'articles.id', '=', 'unmet_demands.article_id')
+            ->where('unmet_demands.user_id', $owner_id)
+            ->where('articles.user_id', $owner_id)
+            ->whereNull('articles.deleted_at')
+            ->whereNull('unmet_demands.canceled_at')
+            ->where('unmet_demands.created_at', '>=', Carbon::now()->subDays($dias))
+            ->distinct()
+            ->pluck('unmet_demands.article_id')
+            ->all();
+
+        return array_map('intval', $ids);
+    }
+
+    /**
+     * La variante sólo vale si es de ese artículo (que ya se comprobó que es del dueño).
+     *
+     * @param int|null $variant_id
+     * @param int $article_id
+     * @return int|null El mismo id si corresponde; null si no.
+     */
+    protected static function variante_del_articulo(?int $variant_id, int $article_id): ?int
+    {
+        if ($variant_id === null) {
+            return null;
+        }
+
+        return ArticleVariant::where('id', $variant_id)->where('article_id', $article_id)->exists() ? $variant_id : null;
+    }
+
+    /**
+     * El combo sólo vale si es del dueño.
+     *
+     * @param int|null $combo_id
+     * @param int $owner_id
+     * @return int|null El mismo id si corresponde; null si no.
+     */
+    protected static function combo_del_duenio(?int $combo_id, int $owner_id): ?int
+    {
+        if ($combo_id === null) {
+            return null;
+        }
+
+        return Combo::where('id', $combo_id)->where('user_id', $owner_id)->exists() ? $combo_id : null;
+    }
+
+    /**
+     * La sucursal sólo vale si es del dueño.
+     *
+     * @param int|null $address_id
+     * @param int $owner_id
+     * @return int|null El mismo id si corresponde; null si no.
+     */
+    protected static function sucursal_del_duenio(?int $address_id, int $owner_id): ?int
+    {
+        if ($address_id === null) {
+            return null;
+        }
+
+        return Address::where('id', $address_id)->where('user_id', $owner_id)->exists() ? $address_id : null;
     }
 
     /**
