@@ -6,15 +6,17 @@ use App\Exceptions\CupoEmbeddingsDePruebaException;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\FinalizeEmbeddingRun;
-use App\Jobs\GenerateArticleEmbeddingJob;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\User;
+use App\Services\ArticleEmbeddingDispatcher;
+use App\Services\ArticleEmbeddingService;
 use App\Services\CupoEmbeddingsDePrueba;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -185,23 +187,20 @@ class GenerateArticleEmbeddings extends Command
         // Determinar si se deben regenerar todos o solo los pendientes.
         $regenerate_all = (bool) $this->option('all');
 
-        // Query base: artículos activos del usuario, sin soft-delete.
-        $query = Article::query()
-            ->where('user_id', $user_id)
-            ->where('status', 'active')
-            ->whereNull('deleted_at')
-            ->select('id');
-
+        /*
+         * Fase 1 (misión embedding-un-solo-job): sellar SIN job los artículos cuyo texto no cambió.
+         *
+         * Un artículo con `updated_at` movido por una venta, un cambio de stock o de precio matchea
+         * el filtro de pendientes pero su texto vectorizable es el mismo: antes eso costaba un job
+         * por artículo y por ciclo que cortaba por huella. Ahora se resuelve acá, sin cola, sin
+         * tanda y sin contar. Con --all no corre: ahí se quiere forzar el re-despacho.
+         */
         if (! $regenerate_all) {
-            // Procesar solo artículos pendientes:
-            // - Sin embedding todavía (primera vez).
-            // - O con embedding desactualizado (artículo modificado después de la última generación).
-            $query->where(function ($q) {
-                $q->whereNull('embedding')
-                  ->orWhereNull('embedding_generated_at')
-                  ->orWhereColumn('updated_at', '>', 'embedding_generated_at');
-            });
+            $this->sellar_articulos_al_dia((int) $user_id);
         }
+
+        // Query base: pendientes del usuario (ver pendientes_query()).
+        $query = $this->pendientes_query((int) $user_id, $regenerate_all);
 
         // Contar total para informar al usuario antes de comenzar.
         $total = $query->count();
@@ -271,8 +270,12 @@ class GenerateArticleEmbeddings extends Command
         // Procesar en chunks de 50 para evitar cargar todo en memoria.
         $query->chunkById(50, function ($articles) use (&$dispatched, $run) {
             foreach ($articles as $article) {
-                GenerateArticleEmbeddingJob::dispatch($article->id, $run->id);
-                $dispatched++;
+                // Sólo cuenta lo realmente despachado: si el artículo ya tenía un job vigente
+                // (de un observer o de otro proceso) se saltea, y total_jobs tiene que coincidir
+                // con los jobs que van a reportar a la tanda o FinalizeEmbeddingRun no cierra.
+                if (ArticleEmbeddingDispatcher::dispatch_if_not_queued((int) $article->id, (int) $run->id)) {
+                    $dispatched++;
+                }
             }
             $this->info("  {$dispatched} jobs despachados...");
         });
@@ -295,5 +298,101 @@ class GenerateArticleEmbeddings extends Command
         $this->info("articles:generate-embeddings: listo. {$dispatched} jobs en cola (tanda {$run->id}).");
 
         return 0;
+    }
+
+    /**
+     * Arma la consulta de artículos que hay que despachar.
+     *
+     * Artículos activos y no borrados del usuario, que no tengan un job vigente (marca
+     * `embedding_queued_at` vacía o vencida). Sin $regenerate_all, además tienen que estar
+     * pendientes: nunca procesados, tocados después de la última generación, o sin vector salvo
+     * que ya se hayan procesado con texto vacío (huella sha1 de '', que deja el vector en NULL a
+     * propósito y no debe volver a traerse para siempre).
+     *
+     * @param int  $user_id        Dueño de la instancia.
+     * @param bool $regenerate_all true con --all: sólo se respeta la marca.
+     *
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private function pendientes_query(int $user_id, bool $regenerate_all)
+    {
+        // Momento a partir del cual una marca se considera de un job perdido.
+        $marca_vencida_antes_de = Carbon::now()->subMinutes(ArticleEmbeddingDispatcher::QUEUED_MARK_TTL_MINUTES);
+
+        $query = Article::query()
+            ->where('user_id', $user_id)
+            ->where('status', 'active')
+            ->whereNull('deleted_at')
+            ->where(function ($q) use ($marca_vencida_antes_de) {
+                $q->whereNull('embedding_queued_at')
+                  ->orWhere('embedding_queued_at', '<', $marca_vencida_antes_de);
+            })
+            ->select('id');
+
+        if (! $regenerate_all) {
+            $query->where(function ($q) {
+                $q->whereNull('embedding_generated_at')
+                  ->orWhereColumn('updated_at', '>', 'embedding_generated_at')
+                  ->orWhere(function ($sin_vector) {
+                      $sin_vector->whereNull('embedding')
+                          ->where(function ($huella) {
+                              $huella->whereNull('embedding_source_hash')
+                                  ->orWhere('embedding_source_hash', '<>', ArticleEmbeddingDispatcher::EMPTY_TEXT_HASH);
+                          });
+                  });
+            });
+        }
+
+        return $query;
+    }
+
+    /**
+     * Sella `embedding_generated_at` de los pendientes cuyo texto vectorizable no cambió.
+     *
+     * Recorre los pendientes de a 50 sin hidratar el vector (sólo se trae si existe, como
+     * `sin_vector`), arma el texto actual y, si su huella coincide con la guardada y el vector
+     * está (o el texto es vacío), los sella en bloque. Se sella sólo lo no editado desde el
+     * inicio de la lectura del chunk (`updated_at < inicio`): lo editado en ese mismo instante
+     * pasa a la fase de despacho, donde el job decide por huella.
+     *
+     * @param int $user_id Dueño de la instancia.
+     *
+     * @return void
+     */
+    private function sellar_articulos_al_dia(int $user_id): void
+    {
+        $service = new ArticleEmbeddingService();
+
+        $query = $this->pendientes_query($user_id, false)
+            ->select('id', 'user_id', 'name', 'bar_code', 'category_id', 'brand_id', 'embedding_source_hash')
+            ->selectRaw('(embedding IS NULL) AS sin_vector')
+            ->with(['category', 'brand', 'descriptions']);
+
+        $query->chunkById(50, function ($articles) use ($service) {
+            // Inicio de la lectura de este chunk (ver el criterio en el PHPDoc del método).
+            $inicio_del_chunk = Carbon::now();
+
+            // IDs cuyo texto ya está reflejado en el vector guardado.
+            $ids_al_dia = [];
+
+            foreach ($articles as $article) {
+                $texto = $service->embedding_for_article($article);
+
+                if (ArticleEmbeddingDispatcher::is_text_up_to_date(
+                    $article->embedding_source_hash,
+                    ! (bool) $article->sin_vector,
+                    $texto
+                )) {
+                    $ids_al_dia[] = $article->id;
+                }
+            }
+
+            if (! empty($ids_al_dia)) {
+                DB::table('articles')
+                    ->whereIn('id', $ids_al_dia)
+                    ->where('updated_at', '<', $inicio_del_chunk)
+                    ->update(['embedding_generated_at' => Carbon::now()]);
+            }
+        });
     }
 }
