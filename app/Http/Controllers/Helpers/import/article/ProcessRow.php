@@ -366,10 +366,10 @@ class ProcessRow {
     protected $ofertas_de_precio_buffer = [];
 
     /**
-     * Misión `historial-precios-proveedor` (ronda 2): memo [article_id => cost_in_dollars (0|1)] de la
+     * Misión `historial-precios-proveedor` (rondas 2 y 3): memo [article_id => cost_in_dollars (0|1)] de la
      * moneda de los artículos que no están a mano como modelo (sólo el camino "bloqueado por código de
-     * proveedor en otro proveedor") cuando el Excel no trae columna de moneda. Una consulta por artículo
-     * y por chunk, nunca una por fila repetida.
+     * proveedor en otro proveedor") cuando el Excel no trae columna de moneda. Se llena con UNA consulta
+     * por chunk (resolver_monedas_pendientes_del_buffer()), nunca con una por fila.
      *
      * @var array
      */
@@ -5251,9 +5251,61 @@ class ProcessRow {
         $this->ofertas_de_precio_buffer[$article_id][$provider_id] = $oferta;
     }
 
+    /**
+     * Devuelve el buffer de ofertas de precio listo para volcar al histórico. Antes de devolverlo
+     * resuelve (con UNA consulta por chunk) la moneda de las ofertas que quedaron pendientes porque la
+     * fila no la traía y no había modelo del artículo a mano (ronda 3, A2-1).
+     *
+     * @return array [article_id => [provider_id => oferta]]
+     */
     public function get_ofertas_de_precio_buffer(): array
     {
+        $this->resolver_monedas_pendientes_del_buffer();
+
         return $this->ofertas_de_precio_buffer;
+    }
+
+    /**
+     * Misión `historial-precios-proveedor` (ronda 3, A2-1): completa `moneda_id` de las ofertas del
+     * buffer que quedaron en null ("moneda pendiente"), leyendo `articles.cost_in_dollars` de todos esos
+     * artículos juntos (whereIn por tandas de 1000: un chunk del importador trae como mucho 1000 filas,
+     * así que en la práctica es UNA consulta) en vez de un SELECT por fila. Alimenta el memo para que
+     * un artículo ya resuelto no se vuelva a consultar. Un artículo que ya no existe cuenta como pesos,
+     * igual que antes (value() devolvía null y (int) null = 0).
+     *
+     * @return void
+     */
+    protected function resolver_monedas_pendientes_del_buffer(): void
+    {
+        // Ids de los artículos con alguna oferta de moneda pendiente y sin memo.
+        $ids_a_consultar = [];
+
+        foreach ($this->ofertas_de_precio_buffer as $article_id => $ofertas_por_proveedor) {
+            foreach ($ofertas_por_proveedor as $oferta) {
+                if (array_key_exists('moneda_id', $oferta) && is_null($oferta['moneda_id'])
+                    && !array_key_exists($article_id, $this->moneda_de_articulos_memo)) {
+                    $ids_a_consultar[$article_id] = (int) $article_id;
+                }
+            }
+        }
+
+        // Una consulta por tanda de 1000 ids (nunca una por artículo ni por fila).
+        foreach (array_chunk(array_values($ids_a_consultar), 1000) as $tanda_de_ids) {
+            $monedas = Article::whereIn('id', $tanda_de_ids)->pluck('cost_in_dollars', 'id')->all();
+
+            foreach ($tanda_de_ids as $id_de_la_tanda) {
+                $this->moneda_de_articulos_memo[$id_de_la_tanda] = isset($monedas[$id_de_la_tanda]) ? (int) $monedas[$id_de_la_tanda] : 0;
+            }
+        }
+
+        // Completa la moneda de cada oferta pendiente con la del memo.
+        foreach ($this->ofertas_de_precio_buffer as $article_id => $ofertas_por_proveedor) {
+            foreach ($ofertas_por_proveedor as $provider_id => $oferta) {
+                if (array_key_exists('moneda_id', $oferta) && is_null($oferta['moneda_id'])) {
+                    $this->ofertas_de_precio_buffer[$article_id][$provider_id]['moneda_id'] = !empty($this->moneda_de_articulos_memo[$article_id]) ? 2 : 1;
+                }
+            }
+        }
     }
 
     /**
@@ -5352,25 +5404,28 @@ class ProcessRow {
      * @param array $data fila armada por procesar()
      * @param int $article_id id real del artículo de la oferta
      * @param \App\Models\Article|null $articulo modelo del artículo si ya está cargado (evita la consulta)
-     * @return int 1 = Peso, 2 = Dólar
+     * @return int|null 1 = Peso, 2 = Dólar, null = pendiente (se resuelve en bloque al vaciar el buffer, ronda 3)
      */
-    protected function moneda_id_de_la_oferta(array $data, int $article_id, $articulo = null): int
+    protected function moneda_id_de_la_oferta(array $data, int $article_id, $articulo = null): ?int
     {
         // La columna de moneda vino en el Excel: manda la fila.
         if (array_key_exists('cost_in_dollars', $data)) {
             return !empty($data['cost_in_dollars']) ? 2 : 1;
         }
 
-        // Sin columna de moneda: la del artículo (modelo a mano o, si no, una consulta memoizada).
-        if (!is_null($articulo) && isset($articulo->cost_in_dollars)) {
+        // Sin columna de moneda: la del modelo del artículo si está a mano (aunque su cost_in_dollars sea
+        // NULL, que cuenta como pesos: no hace falta consultar nada).
+        if ($articulo instanceof Article && array_key_exists('cost_in_dollars', $articulo->getAttributes())) {
             return !empty($articulo->cost_in_dollars) ? 2 : 1;
         }
 
-        if (!array_key_exists($article_id, $this->moneda_de_articulos_memo)) {
-            $this->moneda_de_articulos_memo[$article_id] = (int) Article::where('id', $article_id)->value('cost_in_dollars');
+        // Ya resuelta antes en este chunk (memo).
+        if (array_key_exists($article_id, $this->moneda_de_articulos_memo)) {
+            return !empty($this->moneda_de_articulos_memo[$article_id]) ? 2 : 1;
         }
 
-        return !empty($this->moneda_de_articulos_memo[$article_id]) ? 2 : 1;
+        // Pendiente: se resuelve en bloque al vaciar el buffer (resolver_monedas_pendientes_del_buffer()).
+        return null;
     }
 
     /**
