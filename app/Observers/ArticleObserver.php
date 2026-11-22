@@ -3,7 +3,7 @@
 namespace App\Observers;
 
 use App\Http\Controllers\Helpers\UserHelper;
-use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Services\ArticleEmbeddingDispatcher;
 use App\Models\Article;
 use App\Models\ImportStatus;
 use App\Models\User;
@@ -140,7 +140,8 @@ class ArticleObserver
             return;
         }
 
-        GenerateArticleEmbeddingJob::dispatch($article->id);
+        // Un solo job por artículo: si ya hay uno pendiente, no se encola otro.
+        ArticleEmbeddingDispatcher::dispatch_if_not_queued($article->id);
     }
 
     /**
@@ -166,7 +167,8 @@ class ArticleObserver
             return;
         }
 
-        GenerateArticleEmbeddingJob::dispatch($article->id);
+        // Un solo job por artículo: si ya hay uno pendiente, no se encola otro.
+        ArticleEmbeddingDispatcher::dispatch_if_not_queued($article->id);
     }
 
     /**
