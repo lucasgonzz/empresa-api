@@ -21,7 +21,10 @@ class AddDemoIngresoTokenIdToVersionSessionTransfersTable extends Migration
     {
         Schema::table('version_session_transfers', function (Blueprint $table) {
             /** Espeja `demo_ingreso_token_id` de la sesión de origen. */
-            $table->unsignedBigInteger('demo_ingreso_token_id')->nullable()->after('skip_offline_articles_sync');
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('version_session_transfers', 'demo_ingreso_token_id')) {
+                $table->unsignedBigInteger('demo_ingreso_token_id')->nullable()->after('skip_offline_articles_sync');
+            }
         });
     }
 

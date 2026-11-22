@@ -2,6 +2,7 @@
 
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -18,15 +19,34 @@ class AddTicketYFuenteAImageAssignmentRuns extends Migration
      */
     public function up()
     {
-        if (!Schema::hasTable('image_assignment_runs') || Schema::hasColumn('image_assignment_runs', 'support_ticket_id')) {
+        if (!Schema::hasTable('image_assignment_runs')) {
             return;
         }
 
+        // Guarda de reintento: columnas e índice se crean sólo si faltan (vuelta atrás que dejó restos).
         Schema::table('image_assignment_runs', function (Blueprint $table) {
-            $table->unsignedBigInteger('support_ticket_id')->nullable();
-            $table->string('fuente', 190)->nullable();
-            $table->index(['user_id', 'origen', 'support_ticket_id'], 'iar_user_origen_ticket_idx');
+            if (!Schema::hasColumn('image_assignment_runs', 'support_ticket_id')) {
+                $table->unsignedBigInteger('support_ticket_id')->nullable();
+            }
+            if (!Schema::hasColumn('image_assignment_runs', 'fuente')) {
+                $table->string('fuente', 190)->nullable();
+            }
+            if (!$this->existe_indice('image_assignment_runs', 'iar_user_origen_ticket_idx')) {
+                $table->index(['user_id', 'origen', 'support_ticket_id'], 'iar_user_origen_ticket_idx');
+            }
         });
+    }
+
+    /**
+     * Indica si la tabla ya tiene un índice con ese nombre (para no crearlo dos veces al reintentar).
+     *
+     * @param string $tabla
+     * @param string $nombre
+     * @return bool
+     */
+    private function existe_indice(string $tabla, string $nombre): bool
+    {
+        return count(DB::select('SHOW INDEX FROM `' . $tabla . '` WHERE Key_name = ?', [$nombre])) > 0;
     }
 
     /**
