@@ -902,6 +902,9 @@ class CatalogoDeEscrituraIaHelper
         // Misión movimientos-deposito-auditoria (3/10/2026): el ABM de estados sumó store().
         'deposit_movement_status'      => 'estados de movimientos de depósito: se configuran desde ABM > Inventario y los fijos del sistema (En proceso, Recibido) no se tocan',
         'stock_movement'               => 'el stock se mueve por sus pantallas',
+        // Misión demanda-sin-stock-vender: la demanda sin stock es un registro automático que nace del freno
+        // de Vender y se cancela desde su aviso; el asistente la lee por el esquema de datos pero no la escribe.
+        'unmet_demand'                 => 'demanda sin stock: registro automático que nace del freno de Vender y se cancela desde su aviso; que el asistente la cree o cancele falsearía la señal de compras',
         // Técnicas, de flujo o sin formulario propio (revisadas el 21/9/2026).
         'ai_conversations'             => 'estado del propio asistente',
         'article_pdf'                  => 'impresión: configuración de PDF con su propia pantalla',

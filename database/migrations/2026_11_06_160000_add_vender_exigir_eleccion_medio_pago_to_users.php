@@ -9,7 +9,10 @@ class AddVenderExigirEleccionMedioPagoToUsers extends Migration
     public function up(): void
     {
         Schema::table('users', function (Blueprint $table) {
-            $table->boolean('vender_exigir_eleccion_medio_pago')->default(false);
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('users', 'vender_exigir_eleccion_medio_pago')) {
+                $table->boolean('vender_exigir_eleccion_medio_pago')->default(false);
+            }
         });
     }
 

@@ -429,6 +429,13 @@ class DatabaseSeeder extends Seeder
         $this->call(VenderLayoutSeeder::class);
 
         /*
+            "Diseño ágil" de Vender (misión vender-secciones-personalizables, 22/11/2026): se siembra
+            sin uso, después del predeterminado y por el mismo motivo (itera los dueños). También lo
+            corren UserSetupHelper::base_seeders() y DemoSetupHelper::base_seeders().
+        */
+        $this->call(VenderLayoutAgilSeeder::class);
+
+        /*
             Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno por
             lista de precios, o uno genérico. Al final del run() por los mismos motivos que el de
             arriba (itera los dueños) y además porque tiene que correr después de PriceTypeSeeder,

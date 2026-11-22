@@ -589,7 +589,9 @@ class AiConversationController extends Controller
          * ofrece reintentar.
          */
         try {
-            dispatch(new ResponderMensajeChatIaJob($assistant_message->id));
+            // Misma cola propia que el WhatsApp en shared (null = la cola por defecto, como siempre).
+            dispatch((new ResponderMensajeChatIaJob($assistant_message->id))
+                ->onQueue(\App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::cola_del_turno_whatsapp()));
         } catch (\Throwable $e) {
             $assistant_message->contenido = ResponderMensajeChatIaJob::CONTENIDO_ERROR_AMIGABLE;
             $assistant_message->estado = 'error';

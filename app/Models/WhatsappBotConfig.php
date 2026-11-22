@@ -92,6 +92,8 @@ class WhatsappBotConfig extends Model
         'kapso_api_key_configurada',
         'webhook_secret_configurado',
         'conexion_configurada',
+        // Derivado de solo lectura: ¿el número está listo para los envíos automáticos (fila activa + conexión completa)?
+        'numero_listo_para_envios',
     ];
 
     /**
@@ -125,6 +127,36 @@ class WhatsappBotConfig extends Model
         return trim((string) $this->getAttributeFromArray('phone_number_id')) !== ''
             && $this->kapso_api_key_configurada
             && $this->webhook_secret_configurado;
+    }
+
+    /**
+     * ¿El número de WhatsApp de esta fila está "configurado y migrado", o sea listo para los envíos
+     * automáticos? Es la fila activa más las tres credenciales de la conexión dedicada. No existe una
+     * columna "migrado": esto es lo que queda cuando ComercioCity carga la conexión por
+     * `admin-sync/whatsapp-bot/conexion`. Atributo derivado de solo lectura (ver `$appends`): la SPA lo
+     * usa para deshabilitar el envío automático del comprobante mientras el número no esté listo.
+     *
+     * @return bool
+     */
+    public function getNumeroListoParaEnviosAttribute(): bool
+    {
+        return (bool) $this->is_active && $this->conexion_configurada;
+    }
+
+    /**
+     * Regla única para el envío automático del comprobante de venta: el dueño tiene una fila de
+     * config ACTIVA (`getForUser`) y su conexión está completa (`conexion_configurada`). La usan el
+     * despacho en `SaleController` (store y update) y la revalidación de `SendSaleWhatsappJob`.
+     *
+     * @param  int  $user_id  Id del dueño de la venta.
+     * @return bool
+     */
+    public static function puede_enviar_comprobante_automatico(int $user_id): bool
+    {
+        // Fila activa del dueño, o null si no hay config o está inactiva.
+        $config = static::getForUser($user_id);
+
+        return ! is_null($config) && $config->conexion_configurada;
     }
 
     /**

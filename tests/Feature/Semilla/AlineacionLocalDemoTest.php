@@ -106,6 +106,14 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
         'VenderLayoutSeeder',
 
         /*
+         * El "Diseño ágil" de Vender (mision vender-secciones-personalizables, 22/11/2026): se
+         * siembra sin uso, junto al predeterminado, en local (DatabaseSeeder) y en la demo
+         * (DemoSetupHelper::base_seeders()). Sin el, un dueño de la demo no lo encuentra en el ABM
+         * de Diseños de Vender y local y demo vuelven a mostrar cosas distintas.
+         */
+        'VenderLayoutAgilSeeder',
+
+        /*
          * Los diseños de etiquetas de góndola (mision disenos-etiquetas-gondola, 29/9/2026): corre
          * en local (DatabaseSeeder) y en la demo, y sin el el menu de etiquetas del listado queda
          * con la opcion de siempre y el ABM de diseños vacio.
@@ -151,6 +159,8 @@ class AlineacionLocalDemoTest extends EmpresaTestCase
         /* No inserta extensiones: le escribe la descripción a las que ya insertaron las otras. */
         ['ExtencionDuplicarPresupuestosSeeder', 'ExtencionEmpresaDescriptionSeeder'],
         ['ExtencionEmpresaAiExcelImportSeeder', 'ExtencionEmpresaDescriptionSeeder'],
+        /* El ágil asegura el predeterminado antes de crearse, pero la lista tiene que decir lo mismo. */
+        ['VenderLayoutSeeder', 'VenderLayoutAgilSeeder'],
     ];
 
     /**
