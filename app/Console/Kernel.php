@@ -142,6 +142,18 @@ class Kernel extends ConsoleKernel
         // Usuario dueño de la instancia (config app.USER_ID) con extensiones cargadas.
         $company_owner = $this->resolve_company_owner_for_schedule();
 
+        // Worker vivo del turno del asistente en el shared (misión asistente-whatsapp-velocidad, D7).
+        // Sin --stop-when-empty: queda esperando con --sleep=1, que es lo que lo diferencia del de
+        // `default`. --max-time=50 (no 55) para que el tick siguiente no lo encuentre vivo. En VPS la
+        // cola es null y no se programa nada.
+        $cola_asistente = \App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::cola_del_turno_whatsapp_para_el_schedule($company_owner);
+        if ($cola_asistente !== null) {
+            $schedule->command('queue:work --queue=' . $cola_asistente . ' --sleep=1 --max-time=50 --tries=1')
+                ->everyMinute()
+                ->withoutOverlapping(10)
+                ->runInBackground();
+        }
+
         // Sincronización de artículos pendientes hacia Tienda Nube solo si tiene la extensión.
         //
         // El when() es la misma consulta con la que arranca el comando (sync_to_t_n_articles del
