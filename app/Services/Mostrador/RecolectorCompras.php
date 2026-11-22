@@ -2,9 +2,11 @@
 
 namespace App\Services\Mostrador;
 
+use App\Http\Controllers\Helpers\UnmetDemandHelper;
 use App\Models\PurchaseSuggestion;
 use App\Models\User;
 use App\Services\PurchaseSuggestion\ContextoFinancieroService;
+use App\Services\PurchaseSuggestion\PurchaseSuggestionService;
 use App\Services\StockSuggestion\CoberturaService;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -136,8 +138,9 @@ class RecolectorCompras extends RecolectorBase
 
     /**
      * Ids de los artículos activos del dueño que pueden disparar una reposición: con
-     * mínimo cargado (en algún depósito o en el artículo) o con alguna venta en la
-     * ventana de velocidad del motor (reciente + interanual).
+     * mínimo cargado (en algún depósito o en el artículo), con alguna venta en la
+     * ventana de velocidad del motor (reciente + interanual) o con frenos de Vender por
+     * falta de stock vigentes (demanda no satisfecha).
      *
      * @param User $owner
      * @return array
@@ -171,7 +174,15 @@ class RecolectorCompras extends RecolectorBase
             ->pluck('article_purchases.article_id')
             ->all();
 
-        $ids = array_map('intval', array_merge($con_minimo_en_deposito, $con_minimo_propio, $con_ventas));
+        // Cuarto conjunto (misión demanda-sin-stock-vender): artículos que Vender frenó por falta de
+        // stock (sin cancelar, dentro de la ventana de demanda del motor). Un artículo en cero, sin
+        // ventas y sin mínimo no entra por ningún otro lado y el motor nunca llegaría a verlo. Con el
+        // esquema viejo (sin la tabla) queda como antes.
+        $con_frenos = UnmetDemandHelper::esquema_listo()
+            ? UnmetDemandHelper::articulos_con_frenos_vigentes($owner->id, PurchaseSuggestionService::DIAS_DEMANDA_NO_SATISFECHA)
+            : [];
+
+        $ids = array_map('intval', array_merge($con_minimo_en_deposito, $con_minimo_propio, $con_ventas, $con_frenos));
 
         $ids = array_values(array_unique($ids));
         sort($ids);
