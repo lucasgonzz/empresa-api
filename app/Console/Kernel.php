@@ -264,6 +264,17 @@ class Kernel extends ConsoleKernel
                 ->dailyAt('03:00')
                 ->runInBackground()
                 ->withoutOverlapping(65);
+
+            // Tareas propias del asistente (misión agente-tareas-programadas): cada minuto, sólo si hay una
+            // tarea vencida (con 2 min de anticipo) o un turno por cerrar. Barrido corto: despacha el job y sale.
+            $schedule->command('asistente:despertar-tareas')->everyMinute()->withoutOverlapping(5)->runInBackground()->when(function () use ($company_owner) {
+                return $this->gate_de_datos(function () use ($company_owner) {
+                    return $this->tabla_existe_para_el_schedule('ai_tareas_del_asistente')
+                        && $this->tabla_existe_para_el_schedule('ai_tareas_del_asistente_ejecuciones')
+                        && (\App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::hay_para_despertar($company_owner)
+                            || \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::hay_para_cerrar($company_owner));
+                });
+            });
         }
 
         // sugerencias:generar (05:00) y compras:generar (05:30) YA NO SE AGENDAN (misión
