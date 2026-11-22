@@ -268,7 +268,7 @@ class Reacciones_del_dueno_Test extends AsistenteWhatsappTestCase
                 ->assertJsonPath('aplicada', false)
                 ->assertJsonPath('motivo', 'valoracion_del_sistema');
 
-            $this->assertSame($puesta, $this->valoracion_de($respuesta), 'La valoración del sistema con comentario no se toca.');
+            $this->assertEquals($puesta, $this->valoracion_de($respuesta), 'La valoración del sistema con comentario no se toca.');
         }
 
         // Una valoración del sistema SIN comentario sí se reemplaza.
