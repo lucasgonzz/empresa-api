@@ -116,6 +116,14 @@ class AsistenteIaService
     private $turno_desatendido = null;
 
     /**
+     * Misión agente-tareas-programadas (enmienda 1): el id del `assistant` del turno en curso, para que el turno
+     * desatendido sepa cuál es SU tarea cuando hay dos en la misma conversación. null fuera de un turno.
+     *
+     * @var int|null
+     */
+    private $assistant_id_del_turno = null;
+
+    /**
      * Techo de vueltas del loop de tool use sin las herramientas de carga, CONTADA la llamada de cierre
      * (ver MAX_TOOL_ITERATIONS_CON_ACCIONES, que cuenta el porqué de los dos).
      */
@@ -552,6 +560,7 @@ class AsistenteIaService
         $this->manual_de_prueba = null;
         $this->ofrecer_soporte = false;
         $this->turno_desatendido = \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::es_turno_desatendido($conversation, $assistant_message);
+        $this->assistant_id_del_turno = empty($assistant_message->id) ? null : (int) $assistant_message->id;
 
         $owner = User::find($conversation->user_id);
 
@@ -6285,7 +6294,7 @@ CONFIRMACION;
     {
         if ($this->es_turno_desatendido($conversation)) {
 
-            $contexto = \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::contexto_del_turno($conversation);
+            $contexto = \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::contexto_del_turno($conversation, $this->assistant_id_del_turno);
 
             return 'Este turno no lo escribió el dueño: lo disparó tu tarea programada «' . $contexto['titulo'] . '» de las ' . $contexto['hora']
                 . '. El dueño no está mirando: tu respuesta le llega sola por WhatsApp (o queda en esta conversación). Hacé lo que dice la instrucción con consultas. '

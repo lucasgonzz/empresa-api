@@ -193,6 +193,18 @@ class DespertadorDeTareasIaHelper
 
         } catch (QueryException $e) {
 
+            /*
+             * 🔴 Sólo el duplicado del unique (tarea_id, ocurrencia_at) significa «otro proceso ya la despertó».
+             * Cualquier otro error de base (un timeout de lock, una base que se cae a mitad del barrido) NO puede
+             * correr la tarea a su próxima en silencio: la ocurrencia se perdería sin turno ni aviso. Se vuelve a
+             * lanzar: despertar() lo registra con Log y la tarea queda como estaba, pendiente para el minuto
+             * siguiente (la transacción deshace lo que se hubiera escrito).
+             */
+            if (!self::es_duplicado_del_unique($e)) {
+
+                throw $e;
+            }
+
             /* Otro proceso ya la despertó con una fila vieja: acá sólo se corre la tarea a su próxima. */
             self::avanzar($tarea, $ocurrencia, $ahora, false);
 
@@ -244,6 +256,25 @@ class DespertadorDeTareasIaHelper
     }
 
     /**
+     * true si el error de base es el duplicado de una clave única (MySQL/MariaDB 1062, SQLSTATE 23000): el
+     * unique (tarea_id, ocurrencia_at) que garantiza que una ocurrencia corre una sola vez.
+     *
+     * @param  \Illuminate\Database\QueryException  $e
+     * @return bool
+     */
+    protected static function es_duplicado_del_unique(QueryException $e): bool
+    {
+        $info = is_array($e->errorInfo) ? $e->errorInfo : [];
+
+        if (isset($info[1]) && (int) $info[1] === 1062) {
+
+            return true;
+        }
+
+        return (string) $e->getCode() === '23000' && stripos($e->getMessage(), 'duplicate') !== false;
+    }
+
+    /**
      * Despacha el job que responde el turno. Si no se puede encolar, el turno queda cerrado como fallido en vez
      * de colgado.
      *
@@ -254,7 +285,13 @@ class DespertadorDeTareasIaHelper
     {
         try {
 
-            ResponderMensajeChatIaJob::dispatch($assistant_id);
+            /*
+             * Enmienda 1 (E3): por la MISMA cola que los demás turnos de WhatsApp (AdminSync/AsistenteController).
+             * En hosting compartido es la cola propia del asistente: en `default`, compartida con las
+             * importaciones, el turno esperaría y el vigía lo daría por colgado a los 10 minutos. Con el
+             * interruptor apagado o en el VPS la cola es null y cae a `default`, como el resto.
+             */
+            ResponderMensajeChatIaJob::dispatch($assistant_id)->onQueue(AsistenteCanalHelper::cola_del_turno_whatsapp());
 
         } catch (\Throwable $e) {
 
@@ -286,6 +323,12 @@ class DespertadorDeTareasIaHelper
             ]);
 
         } catch (QueryException $e) {
+
+            /* Un error que no es el duplicado no se traga (ver el 🔴 de despertar_una): sube y la tarea no avanza. */
+            if (!self::es_duplicado_del_unique($e)) {
+
+                throw $e;
+            }
 
             /* Ya había una fila de esa ocurrencia (otro proceso): sólo se avanza. */
         }
@@ -340,12 +383,14 @@ class DespertadorDeTareasIaHelper
     }
 
     /**
-     * true si el dueño tuvo actividad en alguna de sus conversaciones hace menos de MINUTOS_SIN_INTERRUMPIR.
+     * true si el DUEÑO escribió él mismo hace menos de MINUTOS_SIN_INTERRUMPIR minutos.
      *
-     * 🔴 SE MIDE CON `last_message_at` DE LA CONVERSACIÓN, no con los mensajes: es el reloj que ya escribe cada
-     * alta de un mensaje del dueño (WhatsApp, panel y app) y el que usa el resto del canal (la ráfaga, la
-     * conversación vigente). Una charla en curso es exactamente lo que no se quiere pisar con un turno
-     * desatendido; la tarea se reintenta cada minuto hasta MINUTOS_MAXIMOS_DE_ESPERA después de su hora.
+     * 🔴 SE MIDEN LOS MENSAJES `user` DEL DUEÑO, no `last_message_at` de la conversación (enmienda 1, E2). Ese reloj
+     * lo mueve todo: el propio despertar (al armar el turno de una tarea), los recordatorios, los avisos, las
+     * sugerencias y el MCP. Medirlo hacía que una tarea frenara a la que vencía a su misma hora (la segunda salía
+     * ~10 minutos después y MAX_POR_BARRIDO quedaba en 1). Acá cuenta sólo lo que escribió la persona en una
+     * conversación suya, y los mensajes sintéticos (tipo `tarea_programada`) no son de la persona. La tarea se
+     * reintenta cada minuto hasta MINUTOS_MAXIMOS_DE_ESPERA después de su hora.
      *
      * @param  \App\Models\User  $dueno
      * @param  \Carbon\Carbon  $ahora
@@ -353,9 +398,25 @@ class DespertadorDeTareasIaHelper
      */
     protected static function el_dueno_esta_escribiendo(User $dueno, Carbon $ahora): bool
     {
-        return AiConversation::where('user_id', (int) $dueno->id)
-            ->where('auth_user_id', (int) $dueno->id)
-            ->where('last_message_at', '>', $ahora->copy()->subMinutes(self::MINUTOS_SIN_INTERRUMPIR)->format('Y-m-d H:i:s'))
+        $desde = $ahora->copy()->subMinutes(self::MINUTOS_SIN_INTERRUMPIR)->format('Y-m-d H:i:s');
+
+        return AiMessage::where('rol', 'user')
+            ->where(function ($q) {
+                $q->whereNull('tipo')->orWhere('tipo', '<>', AiMessage::TIPO_TAREA_PROGRAMADA);
+            })
+            ->where('created_at', '>', $desde)
+            ->whereIn('ai_conversation_id', function ($q) use ($dueno, $desde) {
+                /*
+                 * Sólo conversaciones suyas con movimiento reciente: es un prefiltro barato (toda escritura de un
+                 * mensaje del dueño mueve este reloj, así que no descarta ninguno real) que evita revisar los
+                 * mensajes de todo el historial. NO decide por sí solo: lo que decide es el mensaje del dueño.
+                 */
+                $q->select('id')
+                    ->from('ai_conversations')
+                    ->where('user_id', (int) $dueno->id)
+                    ->where('auth_user_id', (int) $dueno->id)
+                    ->where('last_message_at', '>', $desde);
+            })
             ->exists();
     }
 
@@ -588,15 +649,25 @@ class DespertadorDeTareasIaHelper
      * programada, para el bloque que le explica al modelo por qué lo despertaron. Si no encuentra la ejecución
      * (un turno armado a mano), un título genérico y la hora de ahora.
      *
+     * 🔴 La ejecución se identifica por el `assistant` DEL TURNO (enmienda 1, E2): con dos tareas a la misma hora
+     * puede haber dos ejecuciones en curso en la misma conversación, y «la última en curso» le habría puesto a
+     * cada turno el título de la otra. Sin el id del turno (quien no lo conoce) cae a la última en curso.
+     *
      * @param  \App\Models\AiConversation  $conversation
+     * @param  int|null  $assistant_id  El `assistant` del turno que se está respondiendo.
      * @return array{titulo: string, hora: string}
      */
-    public static function contexto_del_turno(AiConversation $conversation): array
+    public static function contexto_del_turno(AiConversation $conversation, $assistant_id = null): array
     {
-        $ejecucion = AiTareaDelAsistenteEjecucion::where('ai_conversation_id', (int) $conversation->id)
-            ->where('estado', AiTareaDelAsistenteEjecucion::ESTADO_EN_CURSO)
-            ->orderBy('id', 'DESC')
-            ->first();
+        $consulta = AiTareaDelAsistenteEjecucion::where('ai_conversation_id', (int) $conversation->id)
+            ->where('estado', AiTareaDelAsistenteEjecucion::ESTADO_EN_CURSO);
+
+        if (!empty($assistant_id)) {
+
+            $consulta->where('ai_message_id', (int) $assistant_id);
+        }
+
+        $ejecucion = $consulta->orderBy('id', 'DESC')->first();
 
         $tarea = is_null($ejecucion) ? null : AiTareaDelAsistente::where('id', (int) $ejecucion->tarea_id)->first();
 
