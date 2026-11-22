@@ -774,9 +774,10 @@ class DespertadorDeTareasIaHelper
      * @param  \App\Models\User  $dueno
      * @param  mixed  $id  El `id` del contrato.
      * @param  mixed  $whatsapp_message_id
+     * @param  mixed  $via  Enmienda 1: «texto» o «plantilla» (cómo salió); sin él o con otro valor se deduce.
      * @return bool  false (el 404 del contrato) si el id no parsea o no es de este dueño.
      */
-    public static function marcar(User $dueno, $id, $whatsapp_message_id = null): bool
+    public static function marcar(User $dueno, $id, $whatsapp_message_id = null, $via = null): bool
     {
         if (!self::es_id_propio($id) || !TareasDelAsistenteIaHelper::hay_tablas()
             || !preg_match('/^(\d{1,12})-(\d{1,12})$/', substr($id, strlen(self::PREFIJO_ID)), $partes)) {
@@ -784,7 +785,7 @@ class DespertadorDeTareasIaHelper
             return false;
         }
 
-        return DB::transaction(function () use ($dueno, $partes, $whatsapp_message_id) {
+        return DB::transaction(function () use ($dueno, $partes, $whatsapp_message_id, $via) {
 
             /* Siempre dentro del dueño: el número solo no alcanza para saber de quién es. */
             $ejecucion = AiTareaDelAsistenteEjecucion::where('owner_id', (int) $dueno->id)
@@ -815,6 +816,8 @@ class DespertadorDeTareasIaHelper
             $ejecucion->estado = AiTareaDelAsistenteEjecucion::ESTADO_ENTREGADA;
             $ejecucion->entregada_at = TareasDelAsistenteIaHelper::ahora();
             $ejecucion->whatsapp_message_id = $wamid;
+            /* Enmienda 1: con una plantilla el dueño todavía no leyó el resultado; su próximo turno se lo entrega. */
+            $ejecucion->entregada_via = EntregaDeResultadosDeTareasIaHelper::via_del_sello($via, $dueno, $ejecucion->entregada_at);
             $ejecucion->save();
 
             if (!is_null($wamid) && !is_null($ejecucion->ai_message_id)) {

@@ -871,7 +871,7 @@ class AsistenteController extends Controller
     }
 
     /**
-     * POST admin-sync/asistente/recordatorios/avisado  body {id, whatsapp_message_id?}
+     * POST admin-sync/asistente/recordatorios/avisado  body {id, whatsapp_message_id?, via?}
      *
      * Sella el recordatorio de ese día como mandado y lo deja en la conversación de WhatsApp del
      * dueño como un mensaje del asistente (ver RecordatoriosDelAsistenteHelper::marcar_avisado). El
@@ -897,7 +897,9 @@ class AsistenteController extends Controller
         $encontrado = RecordatoriosDelAsistenteHelper::marcar_avisado(
             $dueno,
             $request->input('id'),
-            $request->input('whatsapp_message_id')
+            $request->input('whatsapp_message_id'),
+            /* Enmienda 1 de agente-tareas-programadas: «texto» | «plantilla», opcional (el admin viejo no lo manda). */
+            $request->input('via')
         );
 
         if (!$encontrado) {

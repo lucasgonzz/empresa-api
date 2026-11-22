@@ -65,21 +65,28 @@ abstract class TareasDelAsistenteConModeloTestCase extends TareasDelAsistenteTes
         return $textos;
     }
 
+    /** @var \Closure|null  Lo que hace el doble del modelo AHORA (se cambia entre turnos de un mismo test). */
+    protected $comportamiento_del_modelo = null;
+
     /**
-     * Fakea los dos proveedores: el modelo contesta siempre `$texto`. Una red de 500 para cualquier otro host.
+     * Instala (una sola vez por test) el doble de los dos proveedores: delega en `$comportamiento_del_modelo`.
+     * Http::fake acumula los stubs y gana el primero que coincide, así que no se puede volver a fakear entre
+     * dos turnos: lo que cambia es el comportamiento al que delega. Una red de 500 para cualquier otro host.
      *
-     * @param  string  $texto
      * @return void
      */
-    protected function modelo_contesta($texto)
+    protected function instalar_el_doble_del_modelo()
     {
-        $doble = function () use ($texto) {
-            return Http::response([
-                'model'       => 'deepseek-flash-test',
-                'stop_reason' => 'end_turn',
-                'content'     => [['type' => 'text', 'text' => $texto]],
-                'usage'       => ['input_tokens' => 300, 'output_tokens' => 15],
-            ], 200);
+        if (!is_null($this->comportamiento_del_modelo)) {
+            return;
+        }
+
+        $this->comportamiento_del_modelo = function () {
+            return Http::response(['error' => 'sin comportamiento'], 500);
+        };
+
+        $doble = function () {
+            return call_user_func($this->comportamiento_del_modelo);
         };
 
         Http::fake([
@@ -90,21 +97,37 @@ abstract class TareasDelAsistenteConModeloTestCase extends TareasDelAsistenteTes
     }
 
     /**
+     * El modelo contesta siempre `$texto` (hasta que el test cambie el comportamiento).
+     *
+     * @param  string  $texto
+     * @return void
+     */
+    protected function modelo_contesta($texto)
+    {
+        $this->instalar_el_doble_del_modelo();
+
+        $this->comportamiento_del_modelo = function () use ($texto) {
+            return Http::response([
+                'model'       => 'deepseek-flash-test',
+                'stop_reason' => 'end_turn',
+                'content'     => [['type' => 'text', 'text' => $texto]],
+                'usage'       => ['input_tokens' => 300, 'output_tokens' => 15],
+            ], 200);
+        };
+    }
+
+    /**
      * El modelo explota (excepción en el cliente HTTP): el turno tiene que terminar en `error`.
      *
      * @return void
      */
     protected function modelo_falla()
     {
-        $doble = function () {
+        $this->instalar_el_doble_del_modelo();
+
+        $this->comportamiento_del_modelo = function () {
             throw new \RuntimeException('el modelo no contesta');
         };
-
-        Http::fake([
-            'api.deepseek.com/*'  => $doble,
-            'api.anthropic.com/*' => $doble,
-            '*'                   => Http::response(['error' => 'host sin stub'], 500),
-        ]);
     }
 
     /**

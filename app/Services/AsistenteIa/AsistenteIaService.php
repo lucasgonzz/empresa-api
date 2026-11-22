@@ -124,6 +124,15 @@ class AsistenteIaService
     private $assistant_id_del_turno = null;
 
     /**
+     * Misión agente-tareas-programadas (enmienda 1, E1): los resultados de tareas que el job va a poner al
+     * principio de la respuesta de este turno (el dueño sólo recibió una plantilla). Los calcula responder() una
+     * sola vez: el aviso al modelo y el job usan la MISMA lista. Vacío fuera de un turno del dueño.
+     *
+     * @var array<int, array{id: int, titulo: string, texto: string}>
+     */
+    private $resultados_a_entregar = [];
+
+    /**
      * Techo de vueltas del loop de tool use sin las herramientas de carga, CONTADA la llamada de cierre
      * (ver MAX_TOOL_ITERATIONS_CON_ACCIONES, que cuenta el porqué de los dos).
      */
@@ -561,6 +570,7 @@ class AsistenteIaService
         $this->ofrecer_soporte = false;
         $this->turno_desatendido = \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::es_turno_desatendido($conversation, $assistant_message);
         $this->assistant_id_del_turno = empty($assistant_message->id) ? null : (int) $assistant_message->id;
+        $this->resultados_a_entregar = \App\Http\Controllers\Helpers\asistente_ia\EntregaDeResultadosDeTareasIaHelper::pendientes($conversation, $assistant_message);
 
         $owner = User::find($conversation->user_id);
 
@@ -2359,6 +2369,17 @@ class AsistenteIaService
     public function menciones(): array
     {
         return $this->menciones;
+    }
+
+    /**
+     * Los resultados de tareas programadas que el job tiene que poner al principio de la respuesta de este turno
+     * (el dueño sólo recibió una plantilla). Ver EntregaDeResultadosDeTareasIaHelper.
+     *
+     * @return array<int, array{id: int, titulo: string, texto: string}>
+     */
+    public function resultados_a_entregar(): array
+    {
+        return $this->resultados_a_entregar;
     }
 
     /**
@@ -6301,14 +6322,24 @@ CONFIRMACION;
                 . 'No podés cargar, confirmar, enviar ni guardar nada; si hace falta su sí, terminá con UNA pregunta concreta. Corto, para leer en el teléfono.';
         }
 
-        if (! HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)) {
+        $partes = [];
 
-            return '';
+        if (HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)) {
+
+            $ahora = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::ahora();
+
+            $partes[] = 'Ahora son las ' . $ahora->format('H:i') . ' del ' . FormatoIaHelper::fecha_con_dia($ahora) . '.';
         }
 
-        $ahora = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::ahora();
+        /* Enmienda 1 (E1): resultados de tareas que el código pone al principio de la respuesta de este turno. */
+        $entrega = \App\Http\Controllers\Helpers\asistente_ia\EntregaDeResultadosDeTareasIaHelper::aviso_para_el_modelo($this->resultados_a_entregar);
 
-        return 'Ahora son las ' . $ahora->format('H:i') . ' del ' . FormatoIaHelper::fecha_con_dia($ahora) . '.';
+        if ($entrega !== '') {
+
+            $partes[] = $entrega;
+        }
+
+        return implode("\n\n", $partes);
     }
 
     /**

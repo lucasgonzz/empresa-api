@@ -361,14 +361,15 @@ class RecordatoriosDelAsistenteHelper
      * @param  \App\Models\User  $dueno
      * @param  mixed  $id  El `id` del contrato.
      * @param  mixed  $whatsapp_message_id  El wamid del WhatsApp que salió, o null.
+     * @param  mixed  $via  Sólo para el resultado de una tarea del asistente: «texto» | «plantilla» (opcional).
      * @return bool  false si el id no parsea o la tarea no es de este dueño (el 404 del contrato).
      */
-    public static function marcar_avisado(User $dueno, $id, $whatsapp_message_id = null): bool
+    public static function marcar_avisado(User $dueno, $id, $whatsapp_message_id = null, $via = null): bool
     {
         /* Misión agente-tareas-programadas (21/11/2026): el resultado de una tarea del asistente tiene su propio id y sello. */
         if (DespertadorDeTareasIaHelper::es_id_propio($id)) {
 
-            return DespertadorDeTareasIaHelper::marcar($dueno, $id, $whatsapp_message_id);
+            return DespertadorDeTareasIaHelper::marcar($dueno, $id, $whatsapp_message_id, $via);
         }
 
         /* C2 (13/11/2026): los avisos que pidió el dueño tienen su propio id y su propio sello. */
