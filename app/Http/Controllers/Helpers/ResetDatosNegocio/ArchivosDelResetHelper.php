@@ -110,6 +110,15 @@ class ArchivosDelResetHelper
         $destino = RespaldoDelResetHelper::directorio() . DIRECTORY_SEPARATOR . $stamp . '-archivos';
         $resultado['destino'] = RespaldoDelResetHelper::RUTA_PUBLICA . '/' . $stamp . '-archivos';
 
+        // La carpeta de respaldos ya la creó y protegió el respaldo SQL; se reafirma por si se llama sola.
+        try {
+            RespaldoDelResetHelper::proteger_la_carpeta_de_la_web();
+        } catch (\Throwable $e) {
+            $resultado['errores'][] = $e->getMessage() . ' No se movió ningún archivo.';
+
+            return $resultado;
+        }
+
         if (!is_dir($destino) && !@mkdir($destino, 0775, true) && !is_dir($destino)) {
             $resultado['errores'][] = 'No se pudo crear la carpeta de destino ' . $resultado['destino'] . ': no se movió ningún archivo.';
 

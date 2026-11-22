@@ -55,6 +55,46 @@ class RespaldoDelResetHelper
     }
 
     /**
+     * Deja la carpeta de respaldos inservible por web: `.htaccess` que niega todo (Apache 2.4 con `Require all
+     * denied` y Apache 2.2 con `Deny from all`) e `index.html` vacío (para que no se liste el contenido). Sólo
+     * escribe lo que falta; nunca pisa archivos que ya estén. Es idempotente.
+     *
+     * Falla cerrado: si no se puede escribir alguno de los dos archivos lanza RuntimeException, y el reset se
+     * frena antes de crear el respaldo.
+     *
+     * @return void
+     * @throws RuntimeException Si no se pudo escribir la protección.
+     */
+    public static function proteger_la_carpeta_de_la_web()
+    {
+        $directorio = self::directorio();
+
+        // Si la carpeta todavía no existe (llamada suelta) se crea antes de proteger.
+        if (!is_dir($directorio) && !@mkdir($directorio, 0775, true) && !is_dir($directorio)) {
+            throw new RuntimeException('No se pudo crear la carpeta de respaldos ' . self::RUTA_PUBLICA . '.');
+        }
+
+        // Contenido del .htaccess: compatible con Apache 2.4 (Require) y 2.2 (Order/Deny).
+        $contenido_htaccess = "# Respaldos del reset de datos: no se sirven por web.\n"
+            . "<IfModule mod_authz_core.c>\n    Require all denied\n</IfModule>\n"
+            . "<IfModule !mod_authz_core.c>\n    Order allow,deny\n    Deny from all\n</IfModule>\n";
+
+        $protecciones = ['.htaccess' => $contenido_htaccess, 'index.html' => ''];
+
+        foreach ($protecciones as $nombre => $contenido) {
+            $ruta = $directorio . DIRECTORY_SEPARATOR . $nombre;
+
+            if (file_exists($ruta)) {
+                continue;
+            }
+
+            if (@file_put_contents($ruta, $contenido) === false) {
+                throw new RuntimeException('No se pudo escribir ' . $nombre . ' en la carpeta de respaldos ' . self::RUTA_PUBLICA . ': el respaldo quedaría servible por web.');
+            }
+        }
+    }
+
+    /**
      * Nombre del archivo `.sql.gz` de una corrida.
      *
      * @param string $stamp Sello `AAAAmmdd-HHiiss`.
@@ -95,6 +135,9 @@ class RespaldoDelResetHelper
         if (!is_writable($directorio)) {
             throw new RuntimeException('La carpeta de respaldos ' . self::RUTA_PUBLICA . ' no es escribible.');
         }
+
+        // El volcado trae la tabla `users` completa: la carpeta no puede quedar servible por web (falla cerrado).
+        self::proteger_la_carpeta_de_la_web();
 
         $ruta = $directorio . DIRECTORY_SEPARATOR . self::nombre_del_archivo($stamp, $base);
         if (file_exists($ruta)) {
@@ -150,6 +193,10 @@ class RespaldoDelResetHelper
 
             throw $e;
         }
+
+        // El volcado trae datos de usuarios: sólo lo lee el dueño del proceso (si el sistema de archivos no
+        // soporta permisos el chmod falla sin consecuencias; la protección web ya quedó puesta arriba).
+        @chmod($ruta, 0600);
 
         clearstatcache(true, $ruta);
 
