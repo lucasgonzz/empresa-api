@@ -145,8 +145,23 @@ class MigracionesIdempotentesTest extends TestCase
         }
         foreach ($antes as $tabla => $definicion) {
             if (!isset($ahora[$tabla]) || $ahora[$tabla] !== $definicion) {
+                // Filas que había en la tabla antes de recrearla: se guardan para devolverlas después.
+                // Sin esto, recrear la tabla borra los datos del seeder (p.ej. la fila de online_configurations)
+                // y los tests que corren después en la misma base fallan (gate 4.3.73, 22/11/2026).
+                $filas = isset($ahora[$tabla]) ? DB::table($tabla)->get() : collect();
                 DB::statement('DROP TABLE IF EXISTS `' . $tabla . '`');
                 DB::statement($definicion);
+                if ($filas->count()) {
+                    // Columnas de la tabla recreada: sólo se reinsertan los valores de esas columnas.
+                    $columnas = Schema::getColumnListing($tabla);
+                    foreach ($filas->chunk(500) as $tanda) {
+                        $insertar = [];
+                        foreach ($tanda as $fila) {
+                            $insertar[] = array_intersect_key((array) $fila, array_flip($columnas));
+                        }
+                        DB::table($tabla)->insert($insertar);
+                    }
+                }
             }
         }
     }
