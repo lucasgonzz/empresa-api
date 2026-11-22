@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\DB;
  * doble (Http::fake): el texto del resultado NO lo devuelve el doble, tiene que ponerlo el código. Cola fakeada y
  * reloj fijo (TareasDelAsistenteTestCase).
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4: sin match, sin nullsafe, sin str_contains, sin argumentos nombrados.
  */
 class Tareas_del_asistente_entrega_con_ventana_cerrada_Test extends TareasDelAsistenteConModeloTestCase
 {
@@ -323,7 +323,7 @@ class Tareas_del_asistente_entrega_con_ventana_cerrada_Test extends TareasDelAsi
 
         $segundo = (string) $this->el_dueno_escribe('¿Y lo otro?', self::RESPUESTA)->contenido;
 
-        $this->assertStringStartsWith('RESULTADO-D: dos pedidos de la tienda esperan.', $segundo, 'La cuarta sale en el turno siguiente (sola: sin encabezado).');
+        $this->assertStringStartsWith('RESULTADO-D: dos pedidos de la tienda esperan.', $segundo, 'La cuarta sale en el turno siguiente (sola y sin encabezado).');
         $this->assertFalse(strpos($segundo, 'RESULTADO-A'));
         $this->assertNotNull($this->ejecucion_cruda($d->id)->mostrada_at);
     }

@@ -23,7 +23,7 @@ use Illuminate\Support\Facades\Queue;
  *   E4. Un error de base que no es el duplicado del unique no avanza la tarea en silencio; el caché estático
  *       `hay_tablas` no deja un «false» pegado.
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4: sin match, sin nullsafe, sin str_contains, sin argumentos nombrados.
  */
 class Tareas_del_asistente_misma_hora_y_cola_Test extends TareasDelAsistenteConModeloTestCase
 {
@@ -199,7 +199,7 @@ class Tareas_del_asistente_misma_hora_y_cola_Test extends TareasDelAsistenteConM
 
     /**
      * 🔴 E3. El turno de la tarea va por la misma cola que los demás turnos de WhatsApp: con el interruptor
-     * encendido en hosting compartido, la cola propia del asistente (control: no es null).
+     * encendido en hosting compartido, la cola propia del asistente (control, no es null).
      *
      * @group asistente-whatsapp
      * @test
