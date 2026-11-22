@@ -368,9 +368,12 @@ class GenerateArticleEmbeddings extends Command
             ->selectRaw('(embedding IS NULL) AS sin_vector')
             ->with(['category', 'brand', 'descriptions']);
 
-        $query->chunkById(50, function ($articles) use ($service) {
-            // Inicio de la lectura de este chunk (ver el criterio en el PHPDoc del método).
-            $inicio_del_chunk = Carbon::now();
+        // Inicio de la lectura del chunk, tomado ANTES del SELECT que lo trae (ver el criterio en
+        // el PHPDoc del método). El primero se toma acá; los siguientes, al final de cada callback,
+        // que es justo antes de que chunkById consulte el bloque que sigue.
+        $inicio_del_chunk = Carbon::now();
+
+        $query->chunkById(50, function ($articles) use ($service, &$inicio_del_chunk) {
 
             // IDs cuyo texto ya está reflejado en el vector guardado.
             $ids_al_dia = [];
@@ -393,6 +396,9 @@ class GenerateArticleEmbeddings extends Command
                     ->where('updated_at', '<', $inicio_del_chunk)
                     ->update(['embedding_generated_at' => Carbon::now()]);
             }
+
+            // El próximo bloque se lee después de este momento.
+            $inicio_del_chunk = Carbon::now();
         });
     }
 }
