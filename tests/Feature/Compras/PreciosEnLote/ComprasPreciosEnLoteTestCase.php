@@ -670,6 +670,13 @@ abstract class ComprasPreciosEnLoteTestCase extends ComprasTestCase
             $fila['provider_order_extra_cost_id'] = self::CREADO_EN_LA_CORRIDA;
         }
 
+        // Id del price_changes al que quedó vinculada la oferta: es un id generado (distinto en cada
+        // corrida), así que se reemplaza por una marca. El null se conserva: la foto sigue
+        // distinguiendo oferta vinculada de no vinculada.
+        if (array_key_exists('price_change_id', $fila) && !is_null($fila['price_change_id'])) {
+            $fila['price_change_id'] = self::CREADO_EN_LA_CORRIDA;
+        }
+
         return $fila;
     }
 
