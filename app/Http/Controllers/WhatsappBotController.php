@@ -7,6 +7,7 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\WhatsappBotConexionHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
+use App\Http\Controllers\Helpers\WhatsappReactionHelper;
 use App\Models\User;
 use App\Models\WhatsappBotConfig;
 use App\Models\WhatsappChat;
@@ -113,6 +114,17 @@ class WhatsappBotController extends Controller
      */
     private function handle_message_received(WhatsappBotConfig $config, array $payload): void
     {
+        // 🔴 Misión asistente-reacciones-wa (22/11/2026): una reacción (👍 / 👎 / 😡 a una respuesta del agente) NO
+        // es un mensaje. Se desvía acá, ANTES de parsear y de persistir: no crea entrante, no toca `last_inbound_at`
+        // ni `unread_count` y no despierta al agente. Incluye el formato legado de Kapso (texto «Reacted with 👎 to
+        // message wamid.…»), que sin este desvío se guardaba como mensaje del cliente y disparaba una respuesta.
+        $reaction = WhatsappReactionHelper::extract_reaction($payload);
+        if (! is_null($reaction)) {
+            WhatsappReactionHelper::apply_to_agent_message($config, $reaction);
+
+            return;
+        }
+
         $parsed = $this->parse_inbound_message($payload);
         if ($parsed === null) {
             return;
