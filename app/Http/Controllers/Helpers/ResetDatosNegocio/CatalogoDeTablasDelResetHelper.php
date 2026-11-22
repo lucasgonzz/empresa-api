@@ -99,7 +99,14 @@ class CatalogoDeTablasDelResetHelper
         'services', 'stock_movements', 'stock_suggestion_articles', 'stock_suggestions', 'sub_categories',
         'super_budget_feature_items', 'super_budget_features', 'super_budget_titles', 'super_budgets',
         'sync_from_meli_article_article', 'sync_from_meli_articles', 'sync_from_meli_orders', 'sync_to_meli_articles',
-        'sync_to_t_n_articles', 'tags', 'task_user', 'tasks', 'tienda_nube_orders', 'tipo_envases', 'views',
+        'sync_to_t_n_articles', 'tags', 'task_user', 'tasks', 'tienda_nube_orders', 'tipo_envases',
+        // unmet_demands (misión demanda-sin-stock-vender, 21/11/2026): un registro por cada freno de Vender por falta
+        // de stock. Es demanda operativa del cliente (guarda article_id, article_variant_id, combo_id, address_id y el
+        // user_id dueño) y alimenta las sugerencias de compra, ya vaciadas. No es configuración: tras vaciar articles
+        // quedaría con ids colgados, así que se vacía. Lo único que apunta a ella es el asistente de IA (lectura).
+        // La columna demanda_no_satisfecha_* de purchase_suggestion_articles no necesita ajuste: la tabla ya se vacía.
+        'unmet_demands',
+        'views',
         'whatsapp_chat_messages', 'whatsapp_chats',
     ];
 
