@@ -493,4 +493,126 @@ class GuardarSinCambiosListasYCostoRealTest extends ListasSiempreTestCase
 
         $this->assertEquals(9768200, (float) DB::table('articles')->where('id', $articulo->id)->value('costo_real'), 'Un cambio real de proveedor no recalculó el costo real.');
     }
+
+    // ------------------------------------------------------------------------------------------
+    // Borrar un descuento / recargo por la pantalla recalcula (ronda 2)
+    // ------------------------------------------------------------------------------------------
+
+    /**
+     * Cuenta con IVA al costo y una lista del 10 %, y un artículo de costo 10.000.000 con IVA 10,5 %
+     * (costo real 11.050.000, lista 12.155.000) recalculado y estabilizado por la ficha.
+     *
+     * @return \App\Models\Article
+     */
+    protected function articulo_con_lista_para_borrar($dueno, $lista)
+    {
+        $iva_10_5 = Iva::where('percentage', '10.5')->first();
+
+        $articulo = $this->articulo($dueno, 'borrar', [
+            'cost'        => '10000000',
+            'aplicar_iva' => 1,
+            'iva_id'      => $iva_10_5->id,
+        ]);
+
+        $articulo->price_types()->attach($lista->id, ['percentage' => 10]);
+
+        $this->recalcular($articulo, $dueno);
+        $this->guardar_sin_cambios($articulo->id)->assertOk();
+
+        $this->assertEquals(11050000, (float) DB::table('articles')->where('id', $articulo->id)->value('costo_real'), 'Precondición: costo real sin descuentos.');
+
+        return Article::find($articulo->id);
+    }
+
+    /**
+     * Cuenta del test de borrado, con una lista del 10 %.
+     *
+     * @return array [User, PriceType]
+     */
+    protected function cuenta_con_lista_para_borrar()
+    {
+        $dueno = $this->dueno_nuevo('borrar-lc', [
+            'listas_de_precio'           => 1,
+            'dollar'                     => 1000,
+            'cotizar_precios_en_dolares' => 0,
+            'aplicar_iva_al_costo'       => 1,
+            'aplicar_descuentos_en_articulos_antes_del_margen_de_ganancia' => 1,
+        ]);
+
+        DB::table('sale_taxes')->where('user_id', $dueno->id)->delete();
+        ArticlePricesHelper::$sale_taxes_cache = [];
+
+        $lista = $this->otra_lista($dueno, 'zz Lista borrar', 10, 1);
+
+        $this->actingAs($dueno, 'web');
+
+        return [User::find($dueno->id), $lista];
+    }
+
+    /**
+     * Costo real, precio final y precio de la lista guardados, para comparar.
+     *
+     * @return array
+     */
+    protected function precios_de($articulo, $lista)
+    {
+        return [
+            'costo_real'  => (float) DB::table('articles')->where('id', $articulo->id)->value('costo_real'),
+            'final_price' => (float) DB::table('articles')->where('id', $articulo->id)->value('final_price'),
+            'lista'       => (float) $this->pivote($articulo, $lista)->final_price,
+        ];
+    }
+
+    /**
+     * Borrar un descuento por DELETE api/article-discount/{id} (lo que hace la SPA) deja costo real,
+     * precio final y lista SIN ese descuento al instante, y un guardado sin cambios no lo trae de vuelta.
+     *
+     * @return void
+     */
+    public function test_borrar_un_descuento_recalcula_costo_precio_y_listas()
+    {
+        list($dueno, $lista) = $this->cuenta_con_lista_para_borrar();
+        $articulo = $this->articulo_con_lista_para_borrar($dueno, $lista);
+        $sin_descuento = $this->precios_de($articulo, $lista);
+
+        $id = $this->postJson('api/article-discount', ['model_id' => $articulo->id, 'percentage' => 15, 'amount' => null, 'show_in_online' => 0])
+            ->assertStatus(201)->json('model.id');
+
+        $con_descuento = $this->precios_de($articulo, $lista);
+        $this->assertEquals(9392500, $con_descuento['costo_real'], 'Precondición: el alta del descuento recalcula.');
+
+        $this->deleteJson('api/article-discount/' . $id)->assertSuccessful();
+
+        $this->assertEquals($sin_descuento, $this->precios_de($articulo, $lista), 'Borrar el descuento no recalculó costo, precio y lista.');
+
+        $this->guardar_sin_cambios($articulo->id)->assertOk();
+
+        $this->assertEquals($sin_descuento, $this->precios_de($articulo, $lista), 'Un guardado sin cambios trajo de vuelta el descuento borrado.');
+    }
+
+    /**
+     * Igual con un recargo: DELETE api/article-surchage/{id}.
+     *
+     * @return void
+     */
+    public function test_borrar_un_recargo_recalcula_costo_precio_y_listas()
+    {
+        list($dueno, $lista) = $this->cuenta_con_lista_para_borrar();
+        $articulo = $this->articulo_con_lista_para_borrar($dueno, $lista);
+        $sin_recargo = $this->precios_de($articulo, $lista);
+
+        $id = $this->postJson('api/article-surchage', ['model_id' => $articulo->id, 'percentage' => 10, 'amount' => null, 'luego_del_precio_final' => 0])
+            ->assertStatus(201)->json('model.id');
+
+        $con_recargo = $this->precios_de($articulo, $lista);
+        $this->assertNotEquals($sin_recargo['costo_real'], $con_recargo['costo_real'], 'Precondición: el alta del recargo recalcula.');
+
+        $this->deleteJson('api/article-surchage/' . $id)->assertSuccessful();
+
+        $this->assertEquals($sin_recargo, $this->precios_de($articulo, $lista), 'Borrar el recargo no recalculó costo, precio y lista.');
+
+        $this->guardar_sin_cambios($articulo->id)->assertOk();
+
+        $this->assertEquals($sin_recargo, $this->precios_de($articulo, $lista), 'Un guardado sin cambios trajo de vuelta el recargo borrado.');
+    }
 }
