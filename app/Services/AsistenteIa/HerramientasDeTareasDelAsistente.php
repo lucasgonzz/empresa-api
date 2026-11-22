@@ -26,7 +26,7 @@ use App\Models\User;
  *
  * Van AL FINAL de build_tools() (antes del manual y del soporte de la prueba) para no mover el prefijo del caché.
  *
- * IMPORTANTE (PHP 7.4): nada de `?->`, `match`, `str_contains` ni argumentos nombrados.
+ * IMPORTANTE (PHP 7.4): nada de nullsafe, match, str_contains ni argumentos nombrados.
  */
 class HerramientasDeTareasDelAsistente
 {

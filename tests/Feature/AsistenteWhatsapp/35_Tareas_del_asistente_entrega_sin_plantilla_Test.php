@@ -16,7 +16,7 @@ use Illuminate\Support\Facades\Cache;
  *
  * 🔴 Archivo NUEVO: los tests de aceptación del commit 573440a6 no se tocan.
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4: sin match, sin nullsafe, sin str_contains, sin argumentos nombrados.
  */
 class Tareas_del_asistente_entrega_sin_plantilla_Test extends TareasDelAsistenteTestCase
 {
