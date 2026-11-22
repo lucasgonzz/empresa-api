@@ -35,7 +35,7 @@ use Tests\TestCase;
  * 🔴 Fuera de alcance, a propósito: el despacho en `SaleController` NO revisa la extensión
  * `agentes_ia` (la revalida el job). Acá el dueño la tiene para que el caso "sí encola" sea realista.
  *
- * PHP 7.4: sin match, str_contains, ?->, argumentos nombrados ni union types.
+ * PHP 7.4 estricto: sin sintaxis ni funciones de PHP 8.
  */
 class Envio_comprobante_numero_listo_Test extends TestCase
 {
