@@ -296,30 +296,43 @@ class Envio_comprobante_numero_listo_Test extends TestCase
     }
 
     /**
+     * Las tres credenciales de la conexión: cada caso del test (c) deja afuera UNA. Va por data
+     * provider (una transacción por caso) porque el store rechaza como duplicada una segunda venta
+     * idéntica dentro del mismo test y respondería 200 en vez de 201.
+     *
+     * @return array
+     */
+    public function credenciales_de_la_conexion()
+    {
+        return [
+            'sin phone_number_id' => ['phone_number_id'],
+            'sin kapso_api_key'   => ['kapso_api_key'],
+            'sin webhook_secret'  => ['webhook_secret'],
+        ];
+    }
+
+    /**
      * (c) Fila activa pero con la conexión incompleta: falta cualquiera de las tres credenciales.
      *
      * @group whatsapp
+     * @dataProvider credenciales_de_la_conexion
      * @test
+     *
+     * @param  string  $columna  Credencial que queda vacía en este caso.
      */
-    public function con_fila_activa_y_conexion_incompleta_no_se_encola_en_store_ni_en_update()
+    public function con_fila_activa_y_conexion_incompleta_no_se_encola_en_store_ni_en_update($columna)
     {
-        // Cada vuelta deja afuera UNA de las tres credenciales.
-        $faltantes = ['phone_number_id', 'kapso_api_key', 'webhook_secret'];
+        $this->crear_config([$columna => '']);
+        Queue::fake();
 
-        foreach ($faltantes as $columna) {
-            WhatsappBotConfig::where('user_id', self::USER_ID)->delete();
-            $this->crear_config([$columna => '']);
-            Queue::fake();
+        $this->guardar_venta_por_store();
+        $this->editar_venta_por_update();
 
-            $this->guardar_venta_por_store();
-            $this->editar_venta_por_update();
-
-            $this->assertEquals(
-                0,
-                $this->jobs_encolados(),
-                'Sin ' . $columna . ' el número no está migrado y no se tiene que encolar el comprobante.'
-            );
-        }
+        $this->assertEquals(
+            0,
+            $this->jobs_encolados(),
+            'Sin ' . $columna . ' el número no está migrado y no se tiene que encolar el comprobante.'
+        );
     }
 
     /**
