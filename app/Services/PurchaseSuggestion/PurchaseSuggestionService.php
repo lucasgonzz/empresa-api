@@ -2,6 +2,7 @@
 
 namespace App\Services\PurchaseSuggestion;
 
+use App\Http\Controllers\Helpers\UnmetDemandHelper;
 use App\Models\Article;
 use App\Models\PurchaseSuggestion;
 use App\Services\Compras\OfertasDeProveedorService;
@@ -52,6 +53,12 @@ class PurchaseSuggestionService
     /** Tamaño de lote de lectura de artículos con relaciones (memoria: with('addresses','providers') sobre miles de filas) */
     const LOTE_LECTURA_ARTICULOS = 50;
 
+    /**
+     * Ventana (días) de la demanda no satisfecha de Vender que cuenta como tercer disparador
+     * (misión demanda-sin-stock-vender). Lo que se pidió hace más y no se repuso ya no empuja.
+     */
+    const DIAS_DEMANDA_NO_SATISFECHA = 30;
+
     /** @var PurchaseSuggestion Cabecera de la corrida (dueño y los cuatro parámetros del algoritmo) */
     protected $suggestion;
 
@@ -95,6 +102,13 @@ class PurchaseSuggestionService
         // sumando cálculos por sucursal.
         $velocidades = $cobertura_service->velocidades_globales($article_ids);
 
+        // Demanda no satisfecha de Vender (frenos por falta de stock, sin cancelar, últimos 30
+        // días): UNA consulta agregada para todo el chunk. Null = el esquema todavía no está
+        // migrado (ventana de deploy): el motor queda exactamente como antes, sin claves nuevas.
+        $demandas = UnmetDemandHelper::esquema_listo()
+            ? UnmetDemandHelper::resumen_por_articulo((int) $this->suggestion->user_id, $article_ids, self::DIAS_DEMANDA_NO_SATISFECHA)
+            : null;
+
         $dias_vigencia_oferta = (int) ($this->suggestion->dias_vigencia_oferta ?? self::DIAS_VIGENCIA_OFERTA);
 
         // Ídem: una sola query para todo el chunk, nunca una por artículo.
@@ -112,9 +126,9 @@ class PurchaseSuggestionService
             ->where('status', '!=', 'inactive')
             ->whereIn('id', $article_ids)
             ->with(['addresses', 'providers'])
-            ->chunk(self::LOTE_LECTURA_ARTICULOS, function ($articulos) use (&$lineas, $cobertura_service, $velocidades, $ofertas) {
+            ->chunk(self::LOTE_LECTURA_ARTICULOS, function ($articulos) use (&$lineas, $cobertura_service, $velocidades, $ofertas, $demandas) {
                 foreach ($articulos as $article) {
-                    $linea = $this->calcular_para_articulo($article, $cobertura_service, $velocidades, $ofertas);
+                    $linea = $this->calcular_para_articulo($article, $cobertura_service, $velocidades, $ofertas, $demandas);
 
                     if ($linea !== null) {
                         $lineas[] = $linea;
@@ -133,9 +147,12 @@ class PurchaseSuggestionService
      * @param CoberturaService $cobertura_service
      * @param array $velocidades Mapa clave_global() => velocidad diaria, para TODO el chunk
      * @param array $ofertas Salida de OfertasDeProveedorService::mejores_ofertas_para(), para TODO el chunk
+     * @param array|null $demandas Salida de UnmetDemandHelper::resumen_por_articulo() para TODO el chunk
+     *                             ([article_id => ['veces','cantidad']]); null si el esquema no está migrado
+     *                             (la línea queda sin las claves de demanda).
      * @return array|null
      */
-    protected function calcular_para_articulo(Article $article, CoberturaService $cobertura_service, array $velocidades, array $ofertas): ?array
+    protected function calcular_para_articulo(Article $article, CoberturaService $cobertura_service, array $velocidades, array $ofertas, ?array $demandas = null): ?array
     {
         [$stock_global, $stock_min_global] = $this->calcular_stock_global($article);
 
@@ -150,8 +167,22 @@ class PurchaseSuggestionService
         $dispara_cobertura = $cobertura_dias !== null && $cobertura_dias <= $dias_punto_pedido;
         $dispara_minimo = $stock_min_global !== null && $stock_global < $stock_min_global;
 
-        // Ninguno de los dos disparadores: el artículo no entra a la sugerencia.
-        if (!$dispara_cobertura && !$dispara_minimo) {
+        // Tercer disparador (misión demanda-sin-stock-vender): Vender frenó este artículo por falta
+        // de stock y lo pedido todavía supera lo que hay. Es el único que ve a un artículo en 0 sin
+        // ventas y sin mínimo (cobertura() da null con velocidad 0). Si el comercio ya repuso por
+        // encima de lo pedido, la demanda vieja no dispara.
+        $demanda_veces = 0;
+        $demanda_cantidad = 0.0;
+
+        if ($demandas !== null && isset($demandas[$article->id])) {
+            $demanda_veces = (int) $demandas[$article->id]['veces'];
+            $demanda_cantidad = (float) $demandas[$article->id]['cantidad'];
+        }
+
+        $dispara_demanda = $demanda_veces > 0 && $stock_global < $demanda_cantidad;
+
+        // Ningún disparador: el artículo no entra a la sugerencia.
+        if (!$dispara_cobertura && !$dispara_minimo && !$dispara_demanda) {
             return null;
         }
 
@@ -166,7 +197,12 @@ class PurchaseSuggestionService
             ? ($stock_min_global - $stock_global)
             : 0.0;
 
-        $cantidad_sugerida = (float) max(ceil(max($cantidad_velocidad, $cantidad_minimo)), 1);
+        $cantidad_demanda = $dispara_demanda
+            ? ($demanda_cantidad - $stock_global)
+            : 0.0;
+
+        // Los tres disparadores no se suman: se toma el máximo (lo que falta por la razón más exigente).
+        $cantidad_sugerida = (float) max(ceil(max($cantidad_velocidad, $cantidad_minimo, $cantidad_demanda)), 1);
 
         $titular_id = $article->provider_id ? (int) $article->provider_id : null;
         $ofertas_articulo = isset($ofertas[$article->id]) ? $ofertas[$article->id] : [];
@@ -199,7 +235,7 @@ class PurchaseSuggestionService
             $ahorro_estimado = ($eleccion['costo_proveedor_titular'] - $eleccion['costo_estimado']) * $cantidad_sugerida;
         }
 
-        return [
+        $linea = [
             'article_id' => $article->id,
             'provider_id' => $eleccion['provider_id'],
             'provider_id_titular' => $eleccion['provider_id_titular'],
@@ -213,6 +249,15 @@ class PurchaseSuggestionService
             'ahorro_estimado' => $ahorro_estimado,
             'oferta_fecha' => $eleccion['oferta_fecha'],
         ];
+
+        // Con el esquema migrado, toda línea expone cuánta demanda no satisfecha tuvo (0 si ninguna):
+        // el bulk insert del job las guarda en las columnas nuevas de purchase_suggestion_articles.
+        if ($demandas !== null) {
+            $linea['demanda_no_satisfecha_veces'] = $demanda_veces;
+            $linea['demanda_no_satisfecha_cantidad'] = $demanda_cantidad;
+        }
+
+        return $linea;
     }
 
     /**

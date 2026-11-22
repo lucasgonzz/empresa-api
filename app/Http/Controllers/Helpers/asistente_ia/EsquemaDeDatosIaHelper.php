@@ -441,7 +441,7 @@ class EsquemaDeDatosIaHelper
         ],
         'proveedores y compras' => [
             'providers', 'provider_orders', 'article_provider_order', 'provider_price_offers',
-            'provider_order_afip_tickets', 'purchase_suggestions',
+            'provider_order_afip_tickets', 'purchase_suggestions', 'unmet_demands',
         ],
         'caja y tesoreria' => [
             'cajas', 'movimiento_cajas', 'movimiento_entre_cajas', 'turno_cajas', 'resumen_cajas', 'cheques',
@@ -478,6 +478,31 @@ class EsquemaDeDatosIaHelper
      * @var array<string, array<string, mixed>>
      */
     const CURADAS_ADICIONALES = [
+        /*
+         * Pedidos que Vender frenó por falta de stock (misión demanda-sin-stock-vender): señal de
+         * "alguien quiso comprar esto y no lo teníamos". Lo que el vendedor canceló (fue un error)
+         * se oculta con la condición fija de condiciones_fijas_de().
+         */
+        'unmet_demand' => [
+            'etiqueta'    => 'pedidos sin stock en Vender',
+            'descripcion' => 'Cada vez que en Vender alguien eligio un articulo y el sistema no lo dejo agregar porque no habia stock (`motivo` sin_stock) o no alcanzaba para la cantidad pedida (`motivo` stock_insuficiente), queda un registro: es un cliente que quiso comprar algo que el negocio no tenia. `cantidad_pedida` es lo que quisieron llevar (vacio si el freno fue al elegir, antes de poner la cantidad) y `stock_disponible` lo que habia en ese momento. Sirve para "que me pidieron esta semana que no tenia" y para decidir que comprar. No incluye los que el vendedor cancelo por haber sido un error.',
+            'campos'      => [
+                'article_id'         => ['tipo' => 'search', 'etiqueta' => 'articulo'],
+                'article_variant_id' => ['tipo' => 'number', 'etiqueta' => 'variante del articulo'],
+                'combo_id'           => ['tipo' => 'search', 'etiqueta' => 'combo del que el articulo es componente'],
+                'address_id'         => ['tipo' => 'search', 'etiqueta' => 'sucursal'],
+                'employee_id'        => ['tipo' => 'search', 'etiqueta' => 'quien estaba vendiendo'],
+                'motivo'             => ['tipo' => 'text',   'etiqueta' => 'motivo del freno (sin_stock o stock_insuficiente)'],
+                'cantidad_pedida'    => ['tipo' => 'number', 'etiqueta' => 'cantidad que querian llevar'],
+                'stock_disponible'   => ['tipo' => 'number', 'etiqueta' => 'stock que habia en ese momento'],
+                'created_at'         => ['tipo' => 'date',   'etiqueta' => 'fecha'],
+            ],
+            'relaciones'  => [
+                'articulo' => ['tabla' => 'articles',  'columna_id' => 'article_id',  'campo' => 'name'],
+                'sucursal' => ['tabla' => 'addresses', 'columna_id' => 'address_id',  'campo' => 'street'],
+                'empleado' => ['tabla' => 'users',     'columna_id' => 'employee_id', 'campo' => 'name'],
+            ],
+        ],
         'current_acount' => [
             'etiqueta'    => 'movimientos de cuenta corriente',
             'descripcion' => 'Los movimientos de cuenta corriente de clientes y proveedores: ventas a cuenta, pagos, notas de credito. `debe`, `haber` y `saldo` son de LA CUENTA de ese movimiento (un cliente puede tener una en pesos y otra en dolares), no de la persona. Para "que me debe Fulano" va consultar_ventas_impagas_de_un_cliente o consultar_movimientos_de_cuenta_corriente, que ya resuelven la cuenta.',
@@ -1556,6 +1581,11 @@ class EsquemaDeDatosIaHelper
 
         if ($tabla === 'articles') {
             $condiciones[] = ['sql' => "articles.status = 'active'", 'texto' => 'solo articulos activos (los pausados y los borrados no aparecen)'];
+        }
+
+        // Lo que el vendedor canceló en Vender (fue un error) nunca le llega al asistente.
+        if ($tabla === 'unmet_demands') {
+            $condiciones[] = ['sql' => 'unmet_demands.canceled_at IS NULL', 'texto' => 'sin los que el vendedor canceló'];
         }
 
         if ($tabla === 'sales') {
