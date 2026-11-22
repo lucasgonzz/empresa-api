@@ -460,11 +460,12 @@ class GuardarSinCambiosPreservaPrecisionTest extends ListasSiempreTestCase
 
     /**
      * CA1-bis. Reproduce el artículo 10 de Golden-Breeze: pivots `article_price_type` en NULL y
-     * `base_margen`/`base_margen_final` en NULL. El precio y sus fechas quedan intactos; lo único que
-     * cambia son EXACTAMENTE 12 valores de pivots, enumerados acá uno por uno; `base_margen*` siguen
-     * NULL (CA5 del PLAN guardar-sin-cambios-derivados-null). El comparador
-     * de precios del humo sigue siendo estricto: estos 12 seguirán apareciendo como DIFERENCIAS y no se
-     * aceptan solos (pregunta P1 del PLAN). Este test no estabiliza el fixture ni elige otro artículo.
+     * `base_margen`/`base_margen_final` en NULL. El precio y sus fechas quedan intactos, `base_margen*`
+     * siguen NULL (CA5 del PLAN guardar-sin-cambios-derivados-null) y, desde la misión
+     * guardar-sin-cambios-listas-y-costo-real, las pivots en NULL también: la 4.3.72 dejaba EXACTAMENTE
+     * 12 valores de pivots que se completaban (pregunta P1) y la regla de Lucas del 22/11/2026 los
+     * descartó: guardar sin cambios no mueve ningún valor de las listas. Este test no estabiliza el
+     * fixture ni elige otro artículo.
      *
      * @return void
      */
@@ -521,42 +522,24 @@ class GuardarSinCambiosPreservaPrecisionTest extends ListasSiempreTestCase
         $this->assertNull($fila->base_margen, 'base_margen NULL fue completado por un guardado sin cambios.');
         $this->assertNull($fila->base_margen_final, 'base_margen_final NULL fue completado por un guardado sin cambios.');
 
-        // Los 12 valores esperados, de pivots (espejo de las monedas en pesos).
-        $esperadas = [];
-
+        /*
+         * Regla de Lucas (22/11/2026, misión guardar-sin-cambios-listas-y-costo-real): guardar sin cambios no
+         * cambia ningún valor de las listas. Las pivots que Golden tiene en NULL SIGUEN en NULL (antes de esa
+         * misión este test enumeraba los 12 valores del espejo de las monedas que se completaban, pregunta P1).
+         */
         foreach ($listas as $lista) {
+            $pivote = $this->pivote($articulo, $lista);
 
-            $en_pesos = 'article_price_type_monedas[lista=' . $lista->id . ',moneda=' . self::ARS . ']';
-            $pivot    = 'article_price_type[lista=' . $lista->id . ']';
-
-            $this->assertNotNull($antes[$en_pesos . '.final_price'], 'La foto antes no tiene la fila en pesos de la lista ' . $lista->id);
-
-            $esperadas[$pivot . '.final_price'] = [null, $antes[$en_pesos . '.final_price']];
-            $esperadas[$pivot . '.percentage']  = [null, $antes[$en_pesos . '.percentage']];
+            $this->assertNull($pivote->final_price, 'final_price NULL de la lista ' . $lista->id . ' fue completado por un guardado sin cambios.');
+            $this->assertNull($pivote->percentage, 'percentage NULL de la lista ' . $lista->id . ' fue completado por un guardado sin cambios.');
         }
-
-        // Listas 1 y 2: 0.00 y -100.00, como Golden 4 y 5.
-        foreach ([$listas[0], $listas[1]] as $lista) {
-            $this->assertSame('0.00', $esperadas['article_price_type[lista=' . $lista->id . '].final_price'][1]);
-            $this->assertSame('-100.00', $esperadas['article_price_type[lista=' . $lista->id . '].percentage'][1]);
-        }
-
-        // Listas 3..6: espejo de su fila en pesos, y no NULL.
-        foreach ([2, 3, 4, 5] as $i) {
-            $this->assertNotNull($esperadas['article_price_type[lista=' . $listas[$i]->id . '].final_price'][1]);
-            $this->assertNotNull($esperadas['article_price_type[lista=' . $listas[$i]->id . '].percentage'][1]);
-        }
-
-        ksort($esperadas);
-
-        $this->assertCount(12, $esperadas);
 
         $diferencias = $this->diferencias($antes, $despues);
 
         $this->assertEquals(
-            $esperadas,
+            [],
             $diferencias,
-            'La diferencia antes/despues no es exactamente la esperada (12 valores):' . $this->describir($diferencias)
+            'Guardar sin cambios movio algo del articulo o de sus listas:' . $this->describir($diferencias)
         );
     }
 

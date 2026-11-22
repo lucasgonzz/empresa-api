@@ -401,9 +401,18 @@ class Descuentos_Proveedor_Al_Asignar_Test extends EmpresaTestCase
 
         $this->assertNotNull($descuento, 'El alta tiene que haber materializado la bonificacion.');
 
-        /* El usuario lo edita a mano: 10% -> 40%. */
-        $descuento->percentage = 40;
-        $descuento->save();
+        /*
+         * El usuario lo edita a mano: 10% -> 40%, por el endpoint real de descuentos de artículo, que además
+         * recalcula el costo real. (Antes se escribía la fila directo y el `costo_real` quedaba atrasado hasta
+         * el guardado siguiente de la ficha; desde la misión guardar-sin-cambios-listas-y-costo-real un
+         * guardado sin cambios de costo, IVA ni proveedor conserva el `costo_real` guardado, así que el
+         * descuento editado tiene que haberlo recalculado quien lo editó, como hace la pantalla.)
+         */
+        $this->putJson('api/article-discount/'.$descuento->id, [
+            'percentage'     => 40,
+            'amount'         => null,
+            'show_in_online' => 0,
+        ])->assertStatus(200);
 
         $edicion = $this->putJson('api/article/'.$article->id, $this->payload_edicion($article->fresh(), [
             'name' => 'zz Articulo guardado sin cambio de proveedor (renombrado)',
