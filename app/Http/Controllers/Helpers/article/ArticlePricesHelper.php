@@ -56,6 +56,27 @@ class ArticlePricesHelper {
     private static $foto_de_pivots = null;
 
     /**
+     * Foto de las filas de `article_price_type_monedas` de UN artículo y de su `costo_real` guardado,
+     * tomada por ArticleController::update antes de que la ficha pise las monedas (misión
+     * guardar-sin-cambios-listas-y-costo-real). Sirve para decidir si el guardado cambió algo de las
+     * listas: si no cambió nada, el espejo de las monedas en la pivot no completa las columnas que
+     * estaban en NULL. Forma: ['article_id' => int, 'costo_real' => string|null,
+     * 'filas' => ["<price_type_id>|<moneda_id>" => ['percentage' => ..., 'final_price' => ...]]].
+     * `null` = sin foto (importación, recálculo, cualquier camino que no sea la ficha).
+     *
+     * @var array|null
+     */
+    private static $foto_de_monedas = null;
+
+    /**
+     * Id del artículo cuyo `costo_real` guardado se conserva en el cálculo de la ficha, porque ninguna
+     * entrada del costo (costo, IVA, proveedor) cambió en el request. `null` = se recalcula como siempre.
+     *
+     * @var int|null
+     */
+    private static $conservar_costo_real_de = null;
+
+    /**
      * EL punto unico donde se decide cuanto sale un articulo. Tarea 7, 11/8/2026.
      *
      * Por que existe: en una cuenta con listas de precio, articles.final_price es un numero que
@@ -1234,6 +1255,7 @@ class ArticlePricesHelper {
             $filas[(int) $fila->price_type_id] = [
                 'final_price'         => $fila->final_price,
                 'previus_final_price' => $fila->previus_final_price,
+                'percentage'          => $fila->percentage,
             ];
         }
 
@@ -1257,7 +1279,150 @@ class ArticlePricesHelper {
      * @return void
      */
     static function olvidar_foto_de_pivots() {
-        self::$foto_de_pivots = null;
+        self::$foto_de_pivots           = null;
+        self::$foto_de_monedas          = null;
+        self::$conservar_costo_real_de  = null;
+    }
+
+    /**
+     * Lee las filas de `article_price_type_monedas` del artículo tal como están en la base. La ficha la
+     * llama ANTES de attach_price_type_monedas(), que pisa porcentaje y precio con lo que trae el request.
+     *
+     * @param  \App\Models\Article $article
+     * @return array  ["<price_type_id>|<moneda_id>" => ['percentage' => ..., 'final_price' => ...]]
+     */
+    static function foto_de_monedas($article) {
+
+        $filas = [];
+
+        foreach (\Illuminate\Support\Facades\DB::table('article_price_type_monedas')->where('article_id', $article->id)->get() as $fila) {
+            $filas[$fila->price_type_id . '|' . $fila->moneda_id] = [
+                'percentage'  => $fila->percentage,
+                'final_price' => $fila->final_price,
+            ];
+        }
+
+        return $filas;
+    }
+
+    /**
+     * Activa la foto de monedas (y el `costo_real` guardado) para el artículo. Se descarta junto con la
+     * foto de pivots, en olvidar_foto_de_pivots().
+     *
+     * @param  int         $article_id
+     * @param  array       $filas       Lo que devolvió foto_de_monedas().
+     * @param  string|null $costo_real  `articles.costo_real` guardado antes del guardado.
+     * @return void
+     */
+    static function usar_foto_de_monedas($article_id, array $filas, $costo_real) {
+        self::$foto_de_monedas = ['article_id' => (int) $article_id, 'costo_real' => $costo_real, 'filas' => $filas];
+    }
+
+    /**
+     * Marca que el `costo_real` guardado del artículo se conserva en el cálculo de la ficha.
+     *
+     * @param  int $article_id
+     * @return void
+     */
+    static function conservar_costo_real($article_id) {
+        self::$conservar_costo_real_de = (int) $article_id;
+    }
+
+    /**
+     * ¿La ficha pidió conservar el `costo_real` guardado de este artículo?
+     *
+     * @param  \App\Models\Article $article
+     * @return bool
+     */
+    static function debe_conservar_costo_real($article) {
+        return !is_null(self::$conservar_costo_real_de) && self::$conservar_costo_real_de === (int) $article->id;
+    }
+
+    /**
+     * Las entradas del costo real que el request de la ficha puede cambiar: costo, IVA (alícuota y
+     * si se aplica) y proveedor (que arrastra sus descuentos). Normalizadas para compararlas: un número
+     * escrito distinto ("10400000" contra "10400000.000000") es el mismo valor.
+     *
+     * @param  \App\Models\Article $article
+     * @return array
+     */
+    static function entradas_del_costo_real($article) {
+
+        $normalizar = function ($valor) {
+            if (is_null($valor) || $valor === '') {
+                return null;
+            }
+
+            return is_numeric($valor) ? round((float) $valor, 6) : (string) $valor;
+        };
+
+        return [
+            'cost'        => $normalizar($article->cost),
+            'iva_id'      => $normalizar($article->iva_id),
+            'aplicar_iva' => (int) $article->aplicar_iva,
+            'provider_id' => $normalizar($article->provider_id),
+        ];
+    }
+
+    /**
+     * ¿Alguna entrada de las listas o del costo cambió en este guardado de la ficha? Se compara, ya
+     * persistido, el `costo_real` y cada fila de monedas contra la foto: si TODO es igual, el guardado no
+     * tocó las listas y el espejo de las monedas en la pivot no tiene nada que completar. Sin foto
+     * (cualquier camino que no sea la ficha) devuelve false: se espeja como siempre.
+     *
+     * @param  \App\Models\Article $article  Con el `costo_real` ya calculado.
+     * @return bool
+     */
+    static function listas_sin_cambio_en_el_guardado($article) {
+
+        if (is_null(self::$foto_de_monedas) || self::$foto_de_monedas['article_id'] !== (int) $article->id) {
+            return false;
+        }
+
+        if (!ArticleHelper::costo_real_sin_cambio(self::$foto_de_monedas['costo_real'], $article->costo_real)) {
+            return false;
+        }
+
+        $actuales = self::foto_de_monedas($article);
+        $antes    = self::$foto_de_monedas['filas'];
+
+        if (count($actuales) !== count($antes)) {
+            return false;
+        }
+
+        foreach ($actuales as $clave => $fila) {
+
+            if (!isset($antes[$clave])) {
+                return false;
+            }
+
+            foreach (['percentage', 'final_price'] as $columna) {
+                if (!ArticleHelper::costo_real_sin_cambio($antes[$clave][$columna], $fila[$columna])) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * La fila de la pivot `article_price_type` de una lista tal como estaba antes del guardado de la
+     * ficha, o null si no hay foto (o la lista no tenía fila).
+     *
+     * @param  \App\Models\Article $article
+     * @param  int                 $price_type_id
+     * @return array|null          ['final_price' => ..., 'percentage' => ..., ...]
+     */
+    static function pivot_antes_del_guardado($article, $price_type_id) {
+
+        if (is_null(self::$foto_de_pivots) || self::$foto_de_pivots['article_id'] !== (int) $article->id) {
+            return null;
+        }
+
+        $price_type_id = (int) $price_type_id;
+
+        return isset(self::$foto_de_pivots['filas'][$price_type_id]) ? self::$foto_de_pivots['filas'][$price_type_id] : null;
     }
 
     /**

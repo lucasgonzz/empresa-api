@@ -69,8 +69,21 @@ class ArticleSurchageController extends Controller
 
     public function destroy($id) {
         $model = ArticleSurchage::find($id);
+        // El artículo se resuelve ANTES de borrar: sin la fila ya no hay forma de saber cuál recalcular.
+        $article = $model->article;
         $model->delete();
         ImageController::deleteModelImages($model);
+        /*
+         * 🔴 NO sacar: borrar un recargo tiene que recalcular el costo real, el precio y las listas, igual que
+         * store() y update(). El guardado de la ficha conserva el costo real guardado cuando nada cambió
+         * (misión guardar-sin-cambios-listas-y-costo-real), así que ya no es él quien pone al día lo que
+         * este endpoint dejaba atrasado. La SPA borra por DELETE api/<recurso>/{id}. Un recargo sin artículo
+         * (alta con temporal_id, todavía sin guardar) no recalcula nada.
+         */
+        if (!is_null($article)) {
+            ArticleHelper::setFinalPrice($article);
+            $this->sendAddModelNotification('article', $article->id, false);
+        }
         $this->sendDeleteModelNotification('ArticleSurchage', $model->id);
         return response(null);
     }

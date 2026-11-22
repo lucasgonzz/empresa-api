@@ -11,6 +11,7 @@ use App\Http\Controllers\Helpers\asistente_ia\AccionesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ArchivosAdjuntosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AudioDelMensajeIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AvisosDeTurnosIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\EntregaDeResultadosDeTareasIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PedidosDeImagenIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TranscripcionDeAudioIaHelper;
@@ -225,6 +226,15 @@ class ResponderMensajeChatIaJob implements ShouldQueue
         try {
             $texto = $service->responder($conversation, $message);
 
+            /*
+             * Enmienda 1 de agente-tareas-programadas (E1): si al dueño sólo le llegó la plantilla de una tarea, el
+             * resultado va al principio de ESTA respuesta, así el historial y lo que lee el admin son lo mismo.
+             */
+            $a_entregar = $service->resultados_a_entregar();
+            $entrega = EntregaDeResultadosDeTareasIaHelper::armar($a_entregar, $texto);
+            $texto = $entrega['texto'];
+            $a_entregar = $entrega['entregadas']; // sólo los que entraron en el mensaje: esos se marcan mostrados
+
             $message->contenido = $texto;
             $message->estado = 'listo';
             /*
@@ -269,6 +279,9 @@ class ResponderMensajeChatIaJob implements ShouldQueue
             }
 
             $message->save();
+
+            /* Guardada la respuesta, esos resultados quedan mostrados (si el turno falla, no se marcan). */
+            EntregaDeResultadosDeTareasIaHelper::marcar_mostradas($a_entregar);
 
             /* Recién con el mensaje guardado (el bloque ya existe), los pedidos de imagen salen al admin. */
             $this->despachar_pedidos_de_imagen($service->pedidos_de_imagen());

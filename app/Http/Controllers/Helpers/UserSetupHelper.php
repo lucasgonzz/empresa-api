@@ -480,6 +480,12 @@ class UserSetupHelper
             'VenderLayoutSeeder',
 
             /*
+                "Diseño ágil" de Vender (misión vender-secciones-personalizables, 22/11/2026): se
+                siembra sin uso, después del predeterminado. Mismo motivo: itera los dueños.
+            */
+            'VenderLayoutAgilSeeder',
+
+            /*
                 Diseños de etiquetas de góndola (misión disenos-etiquetas-gondola, 29/9/2026): uno
                 por lista de precios, o uno genérico. Tiene que correr después de create_user() y
                 de crear_price_types(), y este foreach ya va después de los dos.

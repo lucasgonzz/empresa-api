@@ -142,6 +142,16 @@ class AvisosDeTurnosIaHelper
                 return null;
             }
 
+            /*
+             * 🔴 Un turno que despertó una tarea programada (misión agente-tareas-programadas) no deja este
+             * aviso: citaría la instrucción guardada («no te pude contestar "[Tarea programada] …"») como si
+             * el dueño la hubiera pedido. Lo cierra el barrido del comando de tareas, que marca la ejecución fallida.
+             */
+            if (DespertadorDeTareasIaHelper::es_turno_desatendido($conversation, $assistant)) {
+
+                return null;
+            }
+
             /* Uno por mensaje: el job y el vigía no pueden dejar dos para el mismo turno. */
             $ya = AiAvisoDelAsistente::where('ai_message_id', (int) $assistant->id)
                                     ->where('tipo', AiAvisoDelAsistente::TIPO_TURNO_SIN_TERMINAR)
