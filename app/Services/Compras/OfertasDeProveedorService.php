@@ -99,8 +99,8 @@ class OfertasDeProveedorService
      * - Toda fila escrita lleva updated_article_cost / changed_article_provider
      *   en 0/1 (nunca null) y previous_article_provider_id (si la entrada no lo
      *   trae se resuelve con UNA consulta a `articles`).
-     * - El upsert del mismo día/origen nunca borra una marca ya escrita
-     *   (ver `$update` más abajo).
+     * - El upsert del mismo día/origen (regla A2-2): con costo distinto la fila refleja entera la última
+     *   importación; con el mismo costo conserva las marcas de uso ya escritas (ver el comentario del upsert).
      * Las llamadas viejas (sin claves nuevas ni quinto parámetro) siguen
      * andando igual.
      *
@@ -312,37 +312,47 @@ class OfertasDeProveedorService
             unset($filas_a_escribir[$indice]['resolver_titular_previo']);
         }
 
+        /*
+         * Regla A2-2 (ADENDA 2, 22/11/2026): mismo par, mismo día y mismo origen = misma fila (unique sin
+         * cambios), y la fila nunca mezcla dos importaciones:
+         *  - costo (y moneda) DISTINTO: la fila pasa a reflejar ENTERA la última importación (costo, marcas
+         *    de uso, costo previo, vínculo con price_changes, cambio de titular, titular previo y
+         *    referencia). Una fila "usada" siempre corresponde a su propio costo y a su propio evento.
+         *  - costo IGUAL: se conservan las marcas de uso ya guardadas (un reimport idéntico no pierde un
+         *    "usada") y sólo se anota "visto por última vez". Si lo guardado NO estaba usado y la nueva
+         *    llamada sí, la fila pasa a registrar ese uso (un uso es un hecho que no se pierde).
+         *
+         * 🔴 Orden de las asignaciones: MySQL evalúa los SET de izquierda a derecha y una columna ya
+         * asignada se lee con su valor NUEVO. Por eso las columnas que dependen de `cost`, `moneda_id` o de
+         * las marcas viejas van ANTES de las que las pisan, y `cost` / `moneda_id` van al final.
+         * Laravel 8 acepta expresiones (DB::raw) como valor de $update (MySqlGrammar::compileUpsert).
+         */
+        $igual = '(ABS(`cost` - VALUES(`cost`)) < ' . self::EPSILON_COSTO . ' AND `moneda_id` = VALUES(`moneda_id`))';
+        $vieja_usada = '(COALESCE(`updated_article_cost`, 0) = 1 OR COALESCE(`changed_article_provider`, 0) = 1)';
+        $ahora_texto = $ahora->toDateTimeString();
+
         foreach (array_chunk($filas_a_escribir, self::LOTE_UPSERT) as $lote) {
             DB::table('provider_price_offers')->upsert(
                 $lote,
                 ['article_id', 'provider_id', 'fecha', 'origen'],
-                /*
-                 * `moneda_id` va en la lista de columnas a pisar, y no es un detalle:
-                 * en un INSERT nuevo se escribe bien igual, pero en el UPDATE por
-                 * conflicto del unique (mismo par, mismo dia, mismo origen) sin esta
-                 * clave quedaba el valor viejo. Escenario real: el proveedor manda su
-                 * lista en dolares a la tarde despues de una en pesos, o el usuario
-                 * corrige la columna `moneda` y reimporta -- el costo se actualizaba y
-                 * la moneda no, que es exactamente el error de plata que este campo
-                 * vino a evitar (una oferta en dolares etiquetada como pesos compite y
-                 * gana "el mas barato" por ~1000x).
-                 */
                 [
-                    'cost', 'provider_code', 'moneda_id', 'referencia_id', 'updated_at',
-                    /*
-                     * Mismo día y origen = misma fila (unique sin cambios): la segunda
-                     * escritura NUNCA borra lo que dejó la primera. Las marcas de uso
-                     * sólo pueden subir (GREATEST), el costo y el titular previos
-                     * quedan los del primer uso del día (COALESCE) y el vínculo con
-                     * price_changes se pisa sólo si la nueva llamada trae uno.
-                     * Laravel 8 acepta expresiones (DB::raw) como valor de $update
-                     * (MySqlGrammar::compileUpsert las pasa por parameter()).
-                     */
-                    'updated_article_cost' => DB::raw('GREATEST(COALESCE(`updated_article_cost`, 0), VALUES(`updated_article_cost`))'),
-                    'changed_article_provider' => DB::raw('GREATEST(COALESCE(`changed_article_provider`, 0), VALUES(`changed_article_provider`))'),
-                    'previous_article_cost' => DB::raw('COALESCE(`previous_article_cost`, VALUES(`previous_article_cost`))'),
-                    'previous_article_provider_id' => DB::raw('COALESCE(`previous_article_provider_id`, VALUES(`previous_article_provider_id`))'),
-                    'price_change_id' => DB::raw('COALESCE(VALUES(`price_change_id`), `price_change_id`)'),
+                    'provider_code', 'updated_at',
+                    // "Visto por última vez" sólo cuando el costo no cambió (si cambió, la fila es otra importación).
+                    'last_seen_at' => DB::raw('IF(' . $igual . ", '" . $ahora_texto . "', `last_seen_at`)"),
+                    'last_seen_reference_id' => DB::raw('IF(' . $igual . ', VALUES(`referencia_id`), `last_seen_reference_id`)'),
+                    // Costo previo: con el mismo costo y uso guardado del costo se conserva; si no, el de la última.
+                    'previous_article_cost' => DB::raw('IF(' . $igual . ' AND COALESCE(`updated_article_cost`, 0) = 1, `previous_article_cost`, VALUES(`previous_article_cost`))'),
+                    // Titular previo: con el mismo costo y cambio de titular guardado se conserva; si no, el de la última.
+                    'previous_article_provider_id' => DB::raw('IF(' . $igual . ' AND COALESCE(`changed_article_provider`, 0) = 1, `previous_article_provider_id`, VALUES(`previous_article_provider_id`))'),
+                    // Vínculo: con el mismo costo y uso guardado se conserva el que ya había (o el nuevo si no tenía); si no, el de la última.
+                    'price_change_id' => DB::raw('IF(' . $igual . ' AND ' . $vieja_usada . ', COALESCE(`price_change_id`, VALUES(`price_change_id`)), VALUES(`price_change_id`))'),
+                    // Referencia: con el mismo costo y uso guardado queda la del uso; si no, la de la última importación.
+                    'referencia_id' => DB::raw('IF(' . $igual . ' AND ' . $vieja_usada . ', `referencia_id`, VALUES(`referencia_id`))'),
+                    // Marcas de uso: con el mismo costo sólo pueden subir; con otro costo valen las de la última.
+                    'updated_article_cost' => DB::raw('IF(' . $igual . ', GREATEST(COALESCE(`updated_article_cost`, 0), VALUES(`updated_article_cost`)), VALUES(`updated_article_cost`))'),
+                    'changed_article_provider' => DB::raw('IF(' . $igual . ', GREATEST(COALESCE(`changed_article_provider`, 0), VALUES(`changed_article_provider`)), VALUES(`changed_article_provider`))'),
+                    // Al final: las expresiones de arriba comparan contra el costo y la moneda VIEJOS.
+                    'moneda_id', 'cost',
                 ]
             );
         }
