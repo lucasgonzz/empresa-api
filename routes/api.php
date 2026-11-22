@@ -1825,6 +1825,10 @@ Route::middleware('admin.api.key')
         Route::get('asistente/disponibilidad', 'AdminSync\\AsistenteController@disponibilidad');
         Route::get('asistente/mensajes/{id}', 'AdminSync\\AsistenteController@mostrar_mensaje');
         Route::post('asistente/mensajes/{id}/liberar-entrega', 'AdminSync\\AsistenteController@liberar_entrega');
+        // La reacción del dueño (👍 / 👎 / 😡) a una respuesta del asistente por WhatsApp (misión
+        // asistente-reacciones-wa): el admin la recibe en el número de ComercioCity y la reenvía acá. Valora la
+        // respuesta; no crea turno ni despierta al asistente. Misma auth que las de arriba (clave adentro).
+        Route::post('asistente/reacciones', 'AdminSync\\AsistenteController@reaccion');
         // Los informes de la mañana que el admin le manda al dueño por WhatsApp. Son dos rutas a
         // propósito: el admin pide los pendientes (con su link ya emitido) y recién DESPUÉS de que
         // el WhatsApp salió marca el aviso. Si el envío falla, el informe no queda marcado y sale
