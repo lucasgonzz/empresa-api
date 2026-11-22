@@ -17,12 +17,46 @@ class HistorialPreciosService
 {
     private static $contexto;
 
+    /**
+     * Eventos creados por la última operación confirmada del scope exterior:
+     * [article_id => price_change_id]. Lo leen los que necesitan vincular el
+     * evento con otra cosa (ofertas de proveedor, misión historial-precios-proveedor).
+     * Se vacía al abrir un scope exterior nuevo y queda en [] si la operación
+     * hace rollback.
+     *
+     * @var array
+     */
+    private static $ultimos_eventos = [];
+
+    /**
+     * Devuelve [article_id => price_change_id] de los eventos que creó la última
+     * operación exterior de ejecutar() (vacío si no creó ninguno o si hizo rollback).
+     *
+     * @return array
+     */
+    public static function last_events()
+    {
+        return self::$ultimos_eventos;
+    }
+
     public static function activo()
     {
         return self::$contexto !== null;
     }
 
-    public static function ejecutar(array $ids, $actor, $origen, callable $operacion)
+    /**
+     * Ejecuta una operación dentro del scope del historial de precios.
+     *
+     * @param array $ids Artículos a capturar de entrada
+     * @param mixed $actor Empleado que actúa (null = usuario autenticado)
+     * @param string $origen Origen del evento ('importacion', 'recalculo_lote', ...)
+     * @param callable $operacion Operación a ejecutar
+     * @param array $options Opciones del scope EXTERIOR. 'record_cost_only_changes' (bool):
+     *                       también crea evento cuando sólo cambió articles.cost (sin tocar
+     *                       listas ni precio final). Por defecto apagada: nadie más la usa.
+     * @return mixed Lo que devuelva la operación
+     */
+    public static function ejecutar(array $ids, $actor, $origen, callable $operacion, array $options = [])
     {
         if (self::activo()) {
             self::capturar($ids);
@@ -34,7 +68,11 @@ class HistorialPreciosService
             'ids' => [],
             'actor' => $actor === null ? Auth::id() : $actor,
             'origen' => $origen,
+            'record_cost_only_changes' => !empty($options['record_cost_only_changes']),
         ];
+
+        // Scope exterior nuevo: se olvidan los eventos de la operación anterior
+        self::$ultimos_eventos = [];
 
         try {
             return DB::transaction(function () use ($ids, $operacion) {
@@ -43,6 +81,10 @@ class HistorialPreciosService
                 self::registrar();
                 return $resultado;
             });
+        } catch (\Throwable $e) {
+            // Rollback: los eventos que se hubieran creado ya no existen
+            self::$ultimos_eventos = [];
+            throw $e;
         } finally {
             // Los workers y simulaciones reutilizan proceso: un rollback no debe
             // dejar el "antes" de una operación para el siguiente trabajo.
@@ -181,7 +223,12 @@ class HistorialPreciosService
                 $dato['operacion'] = $antes === null ? 'alta' : ($nuevo === null ? 'baja' : 'cambio');
                 $detalle[] = $dato;
             }
-            if (!$detalle && $previo['final_comparable'] === $actual['final_comparable']) {
+            // Cambio sólo de costo (opción del scope exterior): el costo cambió aunque
+            // ninguna lista ni el precio final se hayan movido. Se compara con epsilon
+            // y distinguiendo null (un costo null no es lo mismo que 0).
+            $cambio_solo_costo = self::$contexto['record_cost_only_changes']
+                && self::costo_cambio($previo['cost'] ?? null, $actual['cost']);
+            if (!$detalle && !$cambio_solo_costo && $previo['final_comparable'] === $actual['final_comparable']) {
                 continue;
             }
             $eventos[] = [
@@ -206,7 +253,9 @@ class HistorialPreciosService
             return;
         }
         $pivotes = [];
+        $ids_de_eventos = [];
         foreach (DB::table('price_changes')->where('operacion_uuid', $uuid)->get(['id', 'article_id']) as $evento) {
+            $ids_de_eventos[(int) $evento->article_id] = (int) $evento->id;
             foreach ($fotos[$evento->article_id] as $lista_id => $precio) {
                 $pivotes[] = ['price_change_id' => $evento->id, 'price_type_id' => $lista_id, 'final_price' => $precio];
             }
@@ -214,5 +263,22 @@ class HistorialPreciosService
         foreach (array_chunk($pivotes, 500) as $tanda) {
             DB::table('price_change_price_type')->insert($tanda);
         }
+        self::$ultimos_eventos = $ids_de_eventos;
+    }
+
+    /**
+     * Indica si el costo cambió entre dos fotos, distinguiendo null de 0 y
+     * tolerando diferencias de redondeo menores a una millonésima.
+     *
+     * @param mixed $antes Costo de la foto previa (null si no había)
+     * @param mixed $despues Costo de la foto posterior
+     * @return bool
+     */
+    private static function costo_cambio($antes, $despues)
+    {
+        if ($antes === null || $despues === null) {
+            return ($antes === null) !== ($despues === null);
+        }
+        return abs((float) $antes - (float) $despues) >= 0.000001;
     }
 }
