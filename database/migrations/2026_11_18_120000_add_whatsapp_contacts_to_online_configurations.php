@@ -9,8 +9,13 @@ class AddWhatsappContactsToOnlineConfigurations extends Migration
     public function up()
     {
         Schema::table('online_configurations', function (Blueprint $table) {
-            $table->string('whatsapp_consultations_phone', 15)->nullable();
-            $table->string('whatsapp_seller_phone', 15)->nullable();
+            // Guarda de reintento: si la columna ya existe (vuelta atrás que dejó columnas) no se crea de nuevo.
+            if (!Schema::hasColumn('online_configurations', 'whatsapp_consultations_phone')) {
+                $table->string('whatsapp_consultations_phone', 15)->nullable();
+            }
+            if (!Schema::hasColumn('online_configurations', 'whatsapp_seller_phone')) {
+                $table->string('whatsapp_seller_phone', 15)->nullable();
+            }
         });
     }
 

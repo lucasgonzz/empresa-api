@@ -7,6 +7,7 @@ use App\Models\AiConversation;
 use App\Models\MostradorReporte;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Quién habla y en qué conversación, cuando el mensaje entra por WhatsApp (misión
@@ -137,6 +138,125 @@ class AsistenteCanalHelper
     public static function tiene_extension($dueno)
     {
         return !is_null($dueno) && UserHelper::hasExtencion(self::EXTENSION, $dueno);
+    }
+
+    /**
+     * Nombre de la cola propia del turno del asistente, derivado de QUEUE_NAME (misión
+     * asistente-whatsapp-velocidad, etapa 2, D5). Con QUEUE_NAME sin setear es `default_asistente`.
+     *
+     * Se deriva y no es fijo a propósito: las instalaciones que comparten base (config/queue.php) se
+     * distinguen por QUEUE_NAME, y una cola con nombre fijo dejaría que el worker de una tomara el
+     * turno de otra.
+     *
+     * @return string
+     */
+    protected static function nombre_de_la_cola_del_asistente()
+    {
+        return config('queue.connections.database.queue', 'default') . '_asistente';
+    }
+
+    /**
+     * ¿Se dan las condiciones de infraestructura para usar la cola propia del asistente?
+     * Hosting compartido (no VPS), con el worker del scheduler y el interruptor del asistente
+     * (QUEUE_ASISTENTE_WORKER) encendidos. En el VPS el supervisor sólo consume `default`: una cola
+     * nueva dejaría el turno sin nadie que lo levante.
+     *
+     * @return bool
+     */
+    protected static function cola_del_asistente_habilitada()
+    {
+        return ! config('app.VPS')
+            && config('queue.scheduler_worker')
+            && config('queue.asistente_worker');
+    }
+
+    /**
+     * Cola a la que se despacha el turno del asistente (WhatsApp y chat de la pantalla), o null
+     * para la cola por defecto, que es el comportamiento de siempre (D5).
+     *
+     * Devuelve la cola propia sólo en hosting compartido con el worker del scheduler y el
+     * interruptor encendidos Y con el dueño de la instancia con la extensión `agentes_ia`. En
+     * cualquier otro caso (VPS incluido) devuelve null. Es el ayudante ÚNICO: así los dos canales
+     * y el redespacho no tienen criterios distintos.
+     *
+     * @return string|null
+     */
+    public static function cola_del_turno_whatsapp(): ?string
+    {
+        if (! self::cola_del_asistente_habilitada()) {
+            return null;
+        }
+
+        if (! self::tiene_extension(self::dueno())) {
+            return null;
+        }
+
+        return self::nombre_de_la_cola_del_asistente();
+    }
+
+    /**
+     * Cierre de los descriptores heredados (3 a 9) que va delante del worker vivo del asistente
+     * (Enmienda 7, hallazgo de la revisión 1-A).
+     *
+     * En el hosting compartido `schedule:run` corre bajo `flock -n <slug>.schedule.lock` (cc-cron.sh)
+     * y bajo el envoltorio de Hostinger (`flock -w 1 /tmp/cron_lock_<uid> …`). Los procesos de
+     * `runInBackground()` heredan esos candados como descriptores abiertos: como el worker vive
+     * ~50 s, el `schedule:run` del minuto siguiente se saltearía entero. Un `exec` sin comando
+     * aplica sus redirecciones al subshell `( … )` de fondo, así que ni el worker ni
+     * `schedule:finish` conservan los candados.
+     */
+    const PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS = 'exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&- ; ';
+
+    /**
+     * Comando completo del worker vivo del asistente para el evento del schedule: el cierre de
+     * candados heredados y después el `queue:work` (armado con el mismo formato que usa
+     * `$schedule->command()`). Es determinístico: el mutex del evento depende del comando y
+     * `schedule:finish` rearma el schedule para encontrarlo.
+     *
+     * @param  string  $cola  Cola del asistente (p. ej. `default_asistente`).
+     * @return string
+     */
+    public static function comando_del_worker_del_turno_whatsapp(string $cola): string
+    {
+        return self::PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS
+            . \Illuminate\Console\Application::formatCommandString(
+                'queue:work --queue=' . $cola . ' --sleep=1 --max-time=50 --tries=1'
+            );
+    }
+
+    /**
+     * Cola del asistente para el schedule del Kernel (D7): la del turno si corresponde, o la misma
+     * cola si quedaron jobs pendientes en ella aunque el dueño ya no cumpla las condiciones, para
+     * que un turno despachado antes de apagar la extensión o el interruptor no quede huérfano.
+     * Null si no hay que programar ningún worker.
+     *
+     * Nunca devuelve cola en VPS ni con el worker del scheduler apagado, ni siquiera con filas
+     * pendientes: ahí el bloque de workers del schedule no se ejecuta.
+     *
+     * @param  \App\Models\User|null  $dueno  El dueño ya resuelto por el Kernel (null si no hay USER_ID).
+     * @return string|null
+     */
+    public static function cola_del_turno_whatsapp_para_el_schedule($dueno): ?string
+    {
+        if (config('app.VPS') || ! config('queue.scheduler_worker')) {
+            return null;
+        }
+
+        $cola = self::nombre_de_la_cola_del_asistente();
+
+        // El worker vive siempre que el dueño tenga la extensión y el interruptor esté prendido.
+        if (config('queue.asistente_worker') && self::tiene_extension($dueno)) {
+            return $cola;
+        }
+
+        // Sin eso, sólo si hay turnos pendientes en esa cola. Si la consulta falla, no se programa.
+        try {
+            $hay_pendientes = DB::table('jobs')->where('queue', $cola)->exists();
+        } catch (\Throwable $e) {
+            $hay_pendientes = false;
+        }
+
+        return $hay_pendientes ? $cola : null;
     }
 
     /**

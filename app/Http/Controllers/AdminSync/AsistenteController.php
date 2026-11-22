@@ -330,7 +330,9 @@ class AsistenteController extends Controller
          */
         try {
 
-            dispatch(new ResponderMensajeChatIaJob($assistant_message->id));
+            // Cola propia del turno en shared (null = la cola por defecto, como siempre).
+            dispatch((new ResponderMensajeChatIaJob($assistant_message->id))
+                ->onQueue(AsistenteCanalHelper::cola_del_turno_whatsapp()));
 
         } catch (\Throwable $e) {
 

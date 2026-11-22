@@ -8,12 +8,15 @@ return new class extends Migration
 {
     public function up(): void
     {
-        if (!Schema::hasColumn('ai_messages', 'entrega_whatsapp_token')) {
-            Schema::table('ai_messages', function (Blueprint $table) {
+        // Guarda de reintento: cada columna se evalúa por separado (una vuelta atrás pudo dejar sólo una).
+        Schema::table('ai_messages', function (Blueprint $table) {
+            if (!Schema::hasColumn('ai_messages', 'entrega_whatsapp_token')) {
                 $table->uuid('entrega_whatsapp_token')->nullable();
+            }
+            if (!Schema::hasColumn('ai_messages', 'entrega_whatsapp_hasta')) {
                 $table->dateTime('entrega_whatsapp_hasta')->nullable();
-            });
-        }
+            }
+        });
     }
 
     public function down(): void
