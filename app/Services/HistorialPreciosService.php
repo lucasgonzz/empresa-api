@@ -29,6 +29,17 @@ class HistorialPreciosService
     private static $ultimos_eventos = [];
 
     /**
+     * Misión historial-precios-proveedor (ronda 2): acumulador de eventos mientras una operación
+     * partida en varios scopes exteriores seguidos (las tandas de RecalculoDePreciosEnLote) corre
+     * dentro de acumulando_eventos(). null = no hay acumulación abierta y cada scope exterior se
+     * comporta como siempre (vacía last_events() al abrir). Se cierra siempre en el finally de
+     * acumulando_eventos(), así que no queda abierto entre trabajos del mismo proceso.
+     *
+     * @var array|null [article_id => price_change_id]
+     */
+    private static $acumulador_de_eventos = null;
+
+    /**
      * Devuelve [article_id => price_change_id] de los eventos que creó la última
      * operación exterior de ejecutar() (vacío si no creó ninguno o si hizo rollback).
      *
@@ -42,6 +53,44 @@ class HistorialPreciosService
     public static function activo()
     {
         return self::$contexto !== null;
+    }
+
+    /**
+     * Misión historial-precios-proveedor (ronda 2): corre una operación que abre VARIOS scopes
+     * exteriores seguidos (una tanda de RecalculoDePreciosEnLote por scope) y, al terminar, deja en
+     * last_events() los eventos de TODOS ellos, no sólo los del último. Sin esto cada ejecutar()
+     * exterior vacía last_events() al abrir y el que vincula eventos con otra cosa (las ofertas de
+     * una compra) sólo veía la última tanda.
+     *
+     * No rompe el reseteo que evita mezclar operaciones: al abrir se vacía last_events(), el
+     * acumulador sólo suma eventos creados por scopes que cierran ADENTRO de esta llamada, y se
+     * descarta en el finally. Con un scope exterior ya abierto (los eventos todavía no existen) o con
+     * otra acumulación en curso, corre la operación sin más. Si la operación tira, no queda ningún
+     * evento visible: los scopes que ya cerraron confirmaron los suyos, pero el llamador va a
+     * revertir o a reintentar.
+     *
+     * @param callable $operacion Operación que abre los scopes exteriores
+     * @return mixed Lo que devuelva la operación
+     */
+    public static function acumulando_eventos(callable $operacion)
+    {
+        if (self::activo() || self::$acumulador_de_eventos !== null) {
+            return $operacion();
+        }
+
+        self::$acumulador_de_eventos = [];
+        self::$ultimos_eventos = [];
+
+        try {
+            $resultado = $operacion();
+            self::$ultimos_eventos = self::$acumulador_de_eventos;
+            return $resultado;
+        } catch (\Throwable $e) {
+            self::$ultimos_eventos = [];
+            throw $e;
+        } finally {
+            self::$acumulador_de_eventos = null;
+        }
     }
 
     /**
@@ -71,8 +120,9 @@ class HistorialPreciosService
             'record_cost_only_changes' => !empty($options['record_cost_only_changes']),
         ];
 
-        // Scope exterior nuevo: se olvidan los eventos de la operación anterior
-        self::$ultimos_eventos = [];
+        // Scope exterior nuevo: se olvidan los eventos de la operación anterior (salvo los que
+        // acumula una operación partida en tandas, ver acumulando_eventos()).
+        self::$ultimos_eventos = self::$acumulador_de_eventos !== null ? self::$acumulador_de_eventos : [];
 
         try {
             return DB::transaction(function () use ($ids, $operacion) {
@@ -262,6 +312,12 @@ class HistorialPreciosService
         }
         foreach (array_chunk($pivotes, 500) as $tanda) {
             DB::table('price_change_price_type')->insert($tanda);
+        }
+        if (self::$acumulador_de_eventos !== null) {
+            // Operación partida en tandas: los eventos de esta tanda se suman a los anteriores.
+            self::$acumulador_de_eventos = array_replace(self::$acumulador_de_eventos, $ids_de_eventos);
+            self::$ultimos_eventos = self::$acumulador_de_eventos;
+            return;
         }
         self::$ultimos_eventos = $ids_de_eventos;
     }
