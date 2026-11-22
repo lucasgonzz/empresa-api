@@ -172,13 +172,63 @@ class RecordBatchUsageTest extends EmpresaTestCase
     }
 
     /**
-     * CA6 (servicio): dos llamadas el mismo día y origen dejan UNA fila con el último costo, pero la
-     * segunda (sin uso, otro costo) no borra la marca de uso, el costo anterior, el cambio de titular
-     * ni el vínculo con el cambio de precio que dejó la primera.
+     * CA6 (servicio) — ADENDA 2, A2-2 (22/11/2026): dos llamadas el mismo día y origen con el MISMO costo
+     * dejan UNA fila y la segunda (sin uso) no borra la marca de uso, el costo anterior, el cambio de
+     * titular ni el vínculo con el cambio de precio que dejó la primera.
      *
      * @return void
      */
     public function test_same_day_upsert_never_erases_usage_or_link()
+    {
+        OfertasDeProveedorService::registrar_lote(
+            $this->buffer([
+                'cost'                         => 1200,
+                'updated_article_cost'         => 1,
+                'previous_article_cost'        => 1000,
+                'changed_article_provider'     => 1,
+                'previous_article_provider_id' => $this->ba->id,
+            ]),
+            $this->owner->id,
+            'importacion',
+            60,
+            [$this->taladro->id => 7]
+        );
+
+        OfertasDeProveedorService::registrar_lote(
+            $this->buffer([
+                'cost'                         => 1200,
+                'updated_article_cost'         => 0,
+                'previous_article_cost'        => null,
+                'changed_article_provider'     => 0,
+                'previous_article_provider_id' => $this->rosario->id,
+            ]),
+            $this->owner->id,
+            'importacion',
+            61
+        );
+
+        $filas = $this->filas();
+
+        $this->assertCount(1, $filas, 'Mismo día y mismo origen: una sola fila (unique sin cambios).');
+        $this->assertEquals(1200.0, (float) $filas[0]->cost);
+
+        $this->assert_columnas_de_uso();
+
+        $this->assertSame(1, (int) $filas[0]->updated_article_cost, 'La segunda llamada no borra la marca de uso.');
+        $this->assertSame(1, (int) $filas[0]->changed_article_provider, 'Ni el cambio de proveedor.');
+        $this->assertEquals(1000.0, (float) $filas[0]->previous_article_cost, 'Queda el costo anterior del primer uso del día.');
+        $this->assertSame($this->ba->id, (int) $filas[0]->previous_article_provider_id, 'Queda el titular anterior del primer uso del día.');
+        $this->assertSame(7, (int) $filas[0]->price_change_id, 'Ni el vínculo con el cambio de precio.');
+    }
+
+    /**
+     * CA6 (servicio) — ADENDA 2, A2-2 (22/11/2026): con costo DISTINTO y sin uso en la segunda llamada,
+     * la fila queda entera como la última importación (sin marcas de uso, sin costo previo, sin vínculo,
+     * sin cambio de titular): nunca una fila "usada" con un costo que no corresponde.
+     *
+     * @return void
+     */
+    public function test_same_day_upsert_with_different_cost_reflects_the_last_import()
     {
         OfertasDeProveedorService::registrar_lote(
             $this->buffer([
@@ -215,11 +265,10 @@ class RecordBatchUsageTest extends EmpresaTestCase
 
         $this->assert_columnas_de_uso();
 
-        $this->assertSame(1, (int) $filas[0]->updated_article_cost, 'La segunda llamada no borra la marca de uso.');
-        $this->assertSame(1, (int) $filas[0]->changed_article_provider, 'Ni el cambio de proveedor.');
-        $this->assertEquals(1000.0, (float) $filas[0]->previous_article_cost, 'Queda el costo anterior del primer uso del día.');
-        $this->assertSame($this->ba->id, (int) $filas[0]->previous_article_provider_id, 'Queda el titular anterior del primer uso del día.');
-        $this->assertSame(7, (int) $filas[0]->price_change_id, 'Ni el vínculo con el cambio de precio.');
+        $this->assertSame(0, (int) $filas[0]->updated_article_cost);
+        $this->assertSame(0, (int) $filas[0]->changed_article_provider);
+        $this->assertNull($filas[0]->previous_article_cost);
+        $this->assertNull($filas[0]->price_change_id);
     }
 
     /**
