@@ -641,21 +641,67 @@ class ResetDatosNegocioHelper
      */
     protected static function plataformas_conectadas_que_frenan()
     {
-        if (!Schema::hasTable('platform_connectors') || !Schema::hasTable('platforms')) {
-            return [];
+        $slugs = [];
+
+        // 1) Conectores guardados en la base (platform_connectors) en estado conectado.
+        if (Schema::hasTable('platform_connectors') && Schema::hasTable('platforms')) {
+            $slugs = DB::table('platform_connectors')
+                ->join('platforms', 'platforms.id', '=', 'platform_connectors.platform_id')
+                ->where('platform_connectors.status', PlatformConnector::STATUS_CONECTADO)
+                ->whereIn('platforms.slug', self::PLATAFORMAS_QUE_FRENAN)
+                ->distinct()
+                ->pluck('platforms.slug')
+                ->all();
         }
 
-        $slugs = DB::table('platform_connectors')
-            ->join('platforms', 'platforms.id', '=', 'platform_connectors.platform_id')
-            ->where('platform_connectors.status', PlatformConnector::STATUS_CONECTADO)
-            ->whereIn('platforms.slug', self::PLATAFORMAS_QUE_FRENAN)
-            ->distinct()
-            ->pluck('platforms.slug')
-            ->all();
+        // 2) Tienda Nube también anda sin conector, con las credenciales del entorno.
+        if (!in_array('tienda_nube', $slugs, true) && self::tienda_nube_anda_por_credenciales_de_entorno()) {
+            $slugs[] = 'tienda_nube';
+        }
 
         sort($slugs);
 
         return $slugs;
+    }
+
+    /**
+     * ¿Tienda Nube sigue sincronizando por las credenciales del entorno, aunque no haya conector conectado?
+     *
+     * `BaseTiendaNubeService` usa TN_ACCESS_TOKEN y TN_USER_ID cuando no hay conector, y el scheduler sólo corre la
+     * sincronización si el dueño tiene la extensión `usa_tienda_nube`. Se considera activa cuando se cumplen las
+     * tres cosas: token y user id no vacíos (hacen falta los dos para llamar a la API; se mira la config y también
+     * el entorno, porque con la config cacheada `env()` queda vacío y viceversa) y la extensión asignada a algún
+     * dueño (`users.owner_id` NULL). Fallar cerrado: ante la duda se frena, porque despublicar no es posible.
+     *
+     * @return bool
+     */
+    protected static function tienda_nube_anda_por_credenciales_de_entorno()
+    {
+        $access_token = trim((string) config('tiendanube.access_token'));
+        if ($access_token === '') {
+            $access_token = trim((string) env('TN_ACCESS_TOKEN'));
+        }
+
+        $user_id = trim((string) config('tiendanube.store_id'));
+        if ($user_id === '') {
+            $user_id = trim((string) env('TN_USER_ID'));
+        }
+
+        if ($access_token === '' || $user_id === '') {
+            return false;
+        }
+
+        if (!Schema::hasTable('extencion_empresas') || !Schema::hasTable('extencion_empresa_user')) {
+            return false;
+        }
+
+        // Extensión de Tienda Nube asignada a un dueño (las extensiones se asignan al dueño, no a empleados).
+        return DB::table('extencion_empresa_user')
+            ->join('extencion_empresas', 'extencion_empresas.id', '=', 'extencion_empresa_user.extencion_empresa_id')
+            ->join('users', 'users.id', '=', 'extencion_empresa_user.user_id')
+            ->whereNull('users.owner_id')
+            ->where('extencion_empresas.slug', 'usa_tienda_nube')
+            ->exists();
     }
 
     // ---------------------------------------------------------------------------------------------------------
