@@ -287,6 +287,71 @@ class SameDayOfferRulesTest extends EmpresaTestCase
         $this->assertSame(19, (int) $filas[0]->price_change_id, 'El cambio de titular que movió el precio de venta queda enlazado.');
     }
 
+    /**
+     * Ronda 3 (revisión, MAYOR 1): mismo costo, la vieja sólo cambió el titular (pc 19, ref 70) y la
+     * nueva usó el costo (pc 8, ref 71, costo previo 1100): la fila es ENTERA de la nueva, sin columnas
+     * de la vieja (nada de changed = 1 ni pc = 19 con updated = 1 y costo previo 1100).
+     *
+     * @return void
+     */
+    public function test_same_cost_title_change_then_cost_use_row_is_entirely_the_new_one()
+    {
+        $this->registrar($this->oferta(1200, [
+            'updated_article_cost'         => 0,
+            'changed_article_provider'     => 1,
+            'previous_article_provider_id' => $this->ba->id,
+        ]), 70, [$this->taladro->id => 19]);
+
+        $this->registrar($this->oferta(1200, [
+            'updated_article_cost'         => 1,
+            'previous_article_cost'        => 1100,
+            'changed_article_provider'     => 0,
+            'previous_article_provider_id' => null,
+        ]), 71, [$this->taladro->id => 8]);
+
+        $filas = $this->filas();
+
+        $this->assertCount(1, $filas);
+        $this->assertSame(71, (int) $filas[0]->referencia_id);
+        $this->assertSame(1, (int) $filas[0]->updated_article_cost);
+        $this->assertEquals(1100.0, (float) $filas[0]->previous_article_cost);
+        $this->assertSame(8, (int) $filas[0]->price_change_id);
+        $this->assertSame(0, (int) $filas[0]->changed_article_provider);
+        $this->assertNull($filas[0]->previous_article_provider_id);
+    }
+
+    /**
+     * La inversa: la vieja usó el costo (pc 7, ref 70) y la nueva, con el mismo costo, sólo cambió el
+     * titular (pc 19, ref 71): la fila es ENTERA de la nueva (sin costo previo ni updated de la vieja).
+     *
+     * @return void
+     */
+    public function test_same_cost_cost_use_then_title_change_row_is_entirely_the_new_one()
+    {
+        $this->registrar($this->oferta(1200, [
+            'updated_article_cost'         => 1,
+            'previous_article_cost'        => 1000,
+            'changed_article_provider'     => 0,
+            'previous_article_provider_id' => null,
+        ]), 70, [$this->taladro->id => 7]);
+
+        $this->registrar($this->oferta(1200, [
+            'updated_article_cost'         => 0,
+            'changed_article_provider'     => 1,
+            'previous_article_provider_id' => $this->ba->id,
+        ]), 71, [$this->taladro->id => 19]);
+
+        $filas = $this->filas();
+
+        $this->assertCount(1, $filas);
+        $this->assertSame(71, (int) $filas[0]->referencia_id);
+        $this->assertSame(0, (int) $filas[0]->updated_article_cost);
+        $this->assertNull($filas[0]->previous_article_cost);
+        $this->assertSame(19, (int) $filas[0]->price_change_id);
+        $this->assertSame(1, (int) $filas[0]->changed_article_provider);
+        $this->assertSame($this->ba->id, (int) $filas[0]->previous_article_provider_id);
+    }
+
     /* ==================================================================
      * Helpers
      * ================================================================== */
