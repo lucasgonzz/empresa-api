@@ -2,7 +2,7 @@
 
 namespace App\Observers;
 
-use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Services\ArticleEmbeddingDispatcher;
 use App\Models\Article;
 use App\Models\Description;
 
@@ -151,29 +151,16 @@ class DescriptionObserver
             return;
         }
 
-        // Un disparo de más no cuesta una llamada a OpenAI: GenerateArticleEmbeddingJob
-        // recalcula el texto y corta por hash si quedó igual que el guardado.
+        // Un solo job por artículo (misión embedding-un-solo-job): ArticleEmbeddingDispatcher
+        // reclama la marca `embedding_queued_at` y despacha sólo si no había un job pendiente.
+        // Un artículo con N descripciones nuevas o editadas seguidas deja UN job, y ese job lee
+        // el texto vigente al correr (y corta por huella si quedó igual al guardado).
         //
-        // 🔴 Eso vale porque en este sistema los jobs se procesan de a uno: el Kernel
-        // agenda `queue:work --stop-when-empty` con `withoutOverlapping(75)`, que impide
-        // un segundo worker en paralelo. Con dos workers, dos jobs del mismo artículo
-        // podrían leer el hash viejo a la vez, pasar los dos el guard y pagar los dos la
-        // llamada. Si algún día se agregan workers concurrentes, esto hay que revisarlo.
-        //
-        // Volumen conocido y aceptado: un artículo puede tener varias descripciones (el
-        // generador con IA crea una por sección), y cada una encola su propio job, aunque
-        // el servicio solo lea la primera. Son filas en `jobs` y una hidratación por job,
-        // sin costo en OpenAI. Se prefiere eso antes que un memo de "ya encolado" por
-        // proceso, que en un worker de vida larga se quedaría pegado y dejaría artículos
-        // sin revectorizar — el modo de falla silencioso es peor que el ruido.
-        //
-        // 🔴 Con afterCommit() EXPLÍCITO (misión alertas-descripciones, 14/10/2026): aprobar,
-        // editar o quitar una descripción desde Alertas → Catálogo → Descripciones la escribe
-        // adentro de un DB::transaction, y en redis `after_commit` está en false: un worker libre
-        // podía tomar el job antes del commit, leer el artículo sin el cambio y guardar el hash de
-        // la versión vieja (y el siguiente disparo cortaba por hash igual). Fuera de una
-        // transacción despacha en el momento, como antes. Mismo criterio que
-        // ImageAssignmentRunHelper::crear().
-        GenerateArticleEmbeddingJob::dispatch($article_id)->afterCommit();
+        // El job fuerza afterCommit en su constructor (misión alertas-descripciones, 14/10/2026):
+        // aprobar, editar o quitar una descripción desde Alertas → Catálogo → Descripciones se
+        // escribe adentro de un DB::transaction y en redis `after_commit` está en false; sin eso
+        // un worker libre podía leer el artículo sin el cambio. La marca se escribe dentro de la
+        // misma transacción: si se revierte, se revierte también la marca.
+        ArticleEmbeddingDispatcher::dispatch_if_not_queued($article_id);
     }
 }
