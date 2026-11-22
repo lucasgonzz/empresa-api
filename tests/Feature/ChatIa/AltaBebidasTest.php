@@ -581,4 +581,25 @@ class AltaBebidasTest extends EmpresaTestCase
         $this->assertArrayHasKey('error', $r);
         $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $this->conversacion->id)->count());
     }
+
+    /**
+     * Misión asistente-diario-20261121 (A1): el prompt de carga de un negocio con Vinoteca trae las reglas del
+     * pedido a proveedor (costo base, un pedido entero, listado al final) y la regla general de no escribir el
+     * precio manual; un negocio SIN vinoteca no recibe las de vinoteca.
+     */
+    public function test_el_prompt_trae_las_reglas_del_pedido_a_proveedor_solo_con_vinoteca()
+    {
+        $servicio = new \App\Services\AsistenteIa\AsistenteIaService();
+        $prompt = $servicio->build_system_prompt($this->conversacion, $this->dueno->fresh(), true, false);
+        $this->assertStringContainsString('es el COSTO BASE por unidad', $prompt);
+        $this->assertStringContainsString('UNA sola confirmación', $prompt);
+        $this->assertStringContainsString('PRECIO DE VENTA final por unidad', $prompt);
+        $this->assertStringContainsString('NUNCA el campo de precio manual', $prompt);
+        $this->assertStringContainsString('el margen va en', $prompt);
+
+        $this->dueno->extencions()->detach(ExtencionEmpresa::where('slug', 'vinoteca')->value('id'));
+        $sin = $servicio->build_system_prompt($this->conversacion, $this->dueno->fresh(), true, false);
+        $this->assertStringNotContainsString('es el COSTO BASE por unidad', $sin);
+        $this->assertStringContainsString('NUNCA el campo de precio manual', $sin);
+    }
 }

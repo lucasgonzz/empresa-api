@@ -47,6 +47,20 @@ class AltaBebidasIaHelper
     }
 
     /**
+     * Misión asistente-diario-20261121 (A1): reglas para cargar el pedido a un proveedor en un negocio con la
+     * extensión Vinoteca (precio por botella = costo base, pedido entero tras una confirmación, listado de
+     * lo que subió o bajó). Es texto de prompt: no cambia ninguna cuenta del sistema.
+     *
+     * @return string
+     */
+    public static function instrucciones_de_pedido_a_proveedor(): string
+    {
+        return 'Pedido a proveedor en una vinoteca: el «precio por botella» o «por unidad» que da el dueño de un pedido es el COSTO BASE por unidad: se edita `cost` (proponer_edicion) y el stock que llega en cajas va con proponer_stock_en_deposito. Si dijo «el costo base», NO preguntes si es costo o precio de venta. '
+            .'Un pedido con varios renglones cuyo detalle ya está claro se carga entero tras UNA sola confirmación de los casos ambiguos: no vuelvas a preguntar lo que el dueño ya contestó. '
+            .'Si pide el listado de lo que bajó o subió de precio y en qué porcentaje, armalo AL TERMINAR (después de aplicar costo y margen) con el PRECIO DE VENTA final por unidad de cada artículo, no con el costo, comparándolo contra el precio anterior que leíste ANTES de editar.';
+    }
+
+    /**
      * true si la foto del alta la encontró el asistente en INTERNET (no la mandó el dueño). P6 (16/11/2026).
      *
      * @param  ContextoDeCargaIa  $contexto
