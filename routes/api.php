@@ -212,6 +212,9 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::get('synced-version-notification/pending', 'SyncedVersionNotificationController@pending');
     Route::post('synced-version-notification/{id}/mark-read', 'SyncedVersionNotificationController@markRead');
 
+    // Versión instalada del sistema y su historial de actualizaciones.
+    Route::get('installed-version', 'InstalledVersionController@index');
+
     // Soporte tipo chat para clientes del sistema.
     Route::get('agentes/canales', 'AgentesController@canales');
     Route::get('support-ticket', 'SupportTicketController@index');

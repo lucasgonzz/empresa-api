@@ -4,6 +4,7 @@ namespace App\Http\Controllers\AdminSync;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\ApiUrlHelper;
+use App\Http\Controllers\Helpers\InstalledVersionHelper;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -72,6 +73,10 @@ class UpdateDefaultVersionController extends Controller
 
             return response()->json(['error' => 'internal error'], 500);
         }
+
+        // Último paso de cada actualización: se registra la versión que corre el código (archivo VERSION).
+        // El helper no lanza: nunca altera el status ni el cuerpo de la respuesta al admin.
+        InstalledVersionHelper::register_from_update_closing();
 
         // Se loguea el alcance para que el log del deploy muestre si la escritura quedo acotada al
         // comercio o si corrio sobre toda la base por falta de USER_ID en el .env.

@@ -76,6 +76,12 @@ jobs:
           COMPOSER_MEMORY_LIMIT: -1
         run: composer install --no-dev --optimize-autoloader --no-interaction --no-ansi --no-scripts
 
+      - name: Escribir el numero de version en el paquete
+        # El codigo del cliente no sabe que version es: este archivo (VERSION, en la raiz del zip) se lo dice.
+        # Lo lee InstalledVersionHelper::code_version() para el registro de versiones instaladas.
+        # /VERSION esta en el .gitignore: no entra al merge a master.
+        run: echo "${{ steps.version.outputs.VERSION }}" > VERSION
+
       - name: Empaquetar la API con vendor adentro
         # Mismas exclusiones que el pipeline actual del admin (step_upload_api), MENOS vendor/,
         # que es el punto de todo esto. Se suman .git/* (el zip viejo lo arrastraba y por eso
@@ -96,6 +102,7 @@ jobs:
           # Lo que el admin verifica al bajarlo: artisan en la raíz y el autoload de composer.
           unzip -l "$ZIP" | grep -qE ' artisan$'                || { echo 'FALTA artisan en la raiz del zip'; exit 1; }
           unzip -l "$ZIP" | grep -qE ' vendor/autoload\.php$'    || { echo 'FALTA vendor/autoload.php en el zip'; exit 1; }
+          unzip -l "$ZIP" | grep -qE ' VERSION$'                || { echo 'FALTA VERSION en el zip'; exit 1; }
           unzip -l "$ZIP" | tail -1
           ls -la "$ZIP"
 
