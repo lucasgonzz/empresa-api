@@ -37,6 +37,7 @@ use App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PromesaDeAccionFuturaIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\TareaAfirmadaSinHerramientaIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\VentaConDatosInventadosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ReporteContableIaHelper;
@@ -358,11 +359,14 @@ class AsistenteIaService
      *   - 'carga_sin_propuesta' (A2): «¿Lo cargo?» sin propuesta, por texto;
      *   - 'soporte' (A7): «Listo el pedido a soporte» sin un pedir_ayuda_a_soporte ok;
      *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
+     *   - 'tarea_afirmada' (arreglo de veracidad de agente-tareas-programadas, 23/11/2026): «Quedó programada»,
+     *     «la pasé al viernes», «ya está cancelada» sin un programar / reprogramar / cancelar_tarea_del_asistente ok.
+     *     Va antes de 'promesa' para que «te escribo a las 15:45» sin tarea no quede tapado por ella;
      *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento»;
      *   - 'solo_anotacion' (P4 de la misión asistente-mejoras-4-dias, V22): «Me lo anoto.» y nada más, cuando la
      *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento.
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', TareaAfirmadaSinHerramientaIaHelper::GUARDA, 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion'];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -4782,6 +4786,19 @@ CONFIRMACION;
             return AnotacionPrometidaIaHelper::dice_que_lo_anota($saneado) && ! $this->hubo_herramienta_ok(HerramientasDeContexto::GUARDAR);
         }
 
+        /*
+         * Arreglo de veracidad de agente-tareas-programadas: «Quedó programada» / «la cancelé» sin la herramienta de
+         * tareas ok. Sólo si el turno las ofrece (un empleado o un turno desatendido no las tiene: no había qué llamar).
+         */
+        if ($guarda === TareaAfirmadaSinHerramientaIaHelper::GUARDA) {
+
+            if (! in_array(HerramientasDeTareasDelAsistente::PROGRAMAR, $this->nombres_de_herramientas($tools), true)) {
+                return false;
+            }
+
+            return count(TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($saneado, $this->pedido_de_la_persona($conversation, $assistant_message), $this->herramientas_ok_del_turno(), $herramientas_pedidas)) > 0;
+        }
+
         /* A4: «Reviso y te confirmo», «Dame un momento». */
         if ($guarda === 'promesa') {
 
@@ -4836,6 +4853,10 @@ CONFIRMACION;
             return AnotacionPrometidaIaHelper::nota_para_reintentar(in_array(HerramientasDeContexto::GUARDAR, $this->nombres_de_herramientas($tools), true));
         }
 
+        if ($guarda === TareaAfirmadaSinHerramientaIaHelper::GUARDA) {
+            return TareaAfirmadaSinHerramientaIaHelper::nota_para_reintentar();
+        }
+
         if ($guarda === 'promesa') {
             return PromesaDeAccionFuturaIaHelper::nota_para_reintentar();
         }
@@ -4870,6 +4891,13 @@ CONFIRMACION;
 
         if ($guarda === 'anotacion') {
             return AnotacionPrometidaIaHelper::sin_lo_anotado($texto);
+        }
+
+        if ($guarda === TareaAfirmadaSinHerramientaIaHelper::GUARDA && $assistant_message instanceof AiMessage) {
+
+            $conversacion = AiConversation::find($assistant_message->ai_conversation_id);
+
+            return TareaAfirmadaSinHerramientaIaHelper::sin_lo_afirmado($texto, $conversacion ? $this->pedido_de_la_persona($conversacion, $assistant_message) : '', $this->herramientas_ok_del_turno());
         }
 
         if ($guarda === 'promesa') {
@@ -8006,6 +8034,25 @@ CONFIRMACION;
         }
 
         return false;
+    }
+
+    /**
+     * Los nombres de las herramientas que contestaron bien al menos una vez en esta respuesta.
+     *
+     * @return array<int, string>
+     */
+    protected function herramientas_ok_del_turno(): array
+    {
+        $nombres = [];
+
+        foreach ($this->herramientas_del_turno as $herramienta) {
+
+            if ($herramienta['ok']) {
+                $nombres[] = (string) $herramienta['nombre'];
+            }
+        }
+
+        return $nombres;
     }
 
     /**
