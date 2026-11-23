@@ -485,7 +485,10 @@ class Coexistencia_ecos_e_historial_Test extends TestCase
         }
 
         if ($caso === 'solo_conversation') {
-            $this->assertSame($filas_antes + 1, WhatsappChatMessage::count());
+            // Se registró exactamente 1 fila nueva (la del wamid). El eco además descarta el borrador a_confirmar
+            // (CA2), así que el total sólo crece en el historial; la fila nueva se cuenta por su origen.
+            $this->assertSame(1, WhatsappChatMessage::where('source', $camino === 'eco' ? 'celular' : 'historial')->count());
+            $this->assertSame($camino === 'eco' ? $filas_antes : $filas_antes + 1, WhatsappChatMessage::count());
 
             return;
         }
@@ -823,7 +826,9 @@ class Coexistencia_ecos_e_historial_Test extends TestCase
         }
 
         if ($tipo === 'imagen_control') {
-            $this->assertSame($filas_antes + 1, WhatsappChatMessage::count());
+            // 1 fila nueva por su origen; el eco además descarta el borrador a_confirmar (CA2), el historial no.
+            $this->assertSame(1, WhatsappChatMessage::where('source', $origen === 'business_app' ? 'celular' : 'historial')->count());
+            $this->assertSame($origen === 'business_app' ? $filas_antes : $filas_antes + 1, WhatsappChatMessage::count());
 
             return;
         }
