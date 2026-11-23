@@ -4787,8 +4787,8 @@ CONFIRMACION;
         }
 
         /*
-         * Arreglo de veracidad de agente-tareas-programadas: «Quedó programada» / «la cancelé» sin la herramienta de
-         * tareas ok. Sólo si el turno las ofrece (un empleado o un turno desatendido no las tiene: no había qué llamar).
+         * Arreglo de veracidad de agente-tareas-programadas: «Quedó programada» / «la cancelé» que ni la herramienta
+         * de tareas del turno ni la BASE (tareas del dueño) respaldan. Sólo si el turno las ofrece (un empleado o un turno desatendido no las tiene: no había qué llamar).
          */
         if ($guarda === TareaAfirmadaSinHerramientaIaHelper::GUARDA) {
 
@@ -4796,7 +4796,7 @@ CONFIRMACION;
                 return false;
             }
 
-            return count(TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($saneado, $this->pedido_de_la_persona($conversation, $assistant_message), $this->herramientas_ok_del_turno(), $herramientas_pedidas)) > 0;
+            return count(TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($saneado, $this->pedido_de_la_persona($conversation, $assistant_message), $this->herramientas_ok_del_turno(), $herramientas_pedidas, (int) $conversation->user_id)) > 0;
         }
 
         /* A4: «Reviso y te confirmo», «Dame un momento». */
@@ -4897,7 +4897,7 @@ CONFIRMACION;
 
             $conversacion = AiConversation::find($assistant_message->ai_conversation_id);
 
-            return TareaAfirmadaSinHerramientaIaHelper::sin_lo_afirmado($texto, $conversacion ? $this->pedido_de_la_persona($conversacion, $assistant_message) : '', $this->herramientas_ok_del_turno());
+            return TareaAfirmadaSinHerramientaIaHelper::sin_lo_afirmado($texto, $conversacion ? $this->pedido_de_la_persona($conversacion, $assistant_message) : '', $this->herramientas_ok_del_turno(), $conversacion ? (int) $conversacion->user_id : null);
         }
 
         if ($guarda === 'promesa') {
