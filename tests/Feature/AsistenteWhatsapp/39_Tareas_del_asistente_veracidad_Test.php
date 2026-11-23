@@ -236,7 +236,7 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
     {
         $tarea = $this->tarea_del_asistente(['proxima_ejecucion_at' => '2026-11-24 17:00:00', 'fecha_inicio' => '2026-11-24']);
 
-        $this->modelo_con_guion([['texto', 'Listo, la pasé al viernes a las 17 para que no te escriba antes.']]);
+        $this->modelo_con_guion([['texto', 'Listo, la pasé al viernes a las 18 para que no te escriba antes.']]);
 
         $turno = $this->turno_del_dueno('Pasame la tarea de logística para el viernes');
 
@@ -364,6 +364,9 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
     public function describir_lo_que_devolvio_la_consulta_no_dispara()
     {
         $this->tarea_del_asistente();
+
+        // Lo que la consulta devolvería: la de ventas diarias ya está cancelada en la base.
+        $this->tarea_a_las('Ventas diarias', '08:00', ['estado' => 'cancelada']);
 
         $textos = [
             'La de logística está programada para el viernes a las 17.',
