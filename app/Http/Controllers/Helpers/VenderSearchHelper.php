@@ -3,6 +3,9 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
+use Illuminate\Pagination\LengthAwarePaginator;
+use Illuminate\Pagination\Paginator;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Helper del "contexto Vender" del buscador general.
@@ -41,6 +44,102 @@ class VenderSearchHelper
         }
 
         return $pagina->paginate($per_page, ['*'], 'page', $page);
+    }
+
+    /**
+     * Hasta cuántos caracteres (sin espacios de los costados) un criterio se considera "corto".
+     * Un criterio así ("ma", "mar") matchea con una fracción enorme del catálogo (en un catálogo de
+     * 560.000 artículos, "ma" coincide con 200.000): contarlas todas cuesta lo mismo que recorrer la
+     * tabla entera y el número exacto no le sirve a nadie.
+     */
+    const CRITERIO_CORTO_MAX_CARACTERES = 3;
+
+    /**
+     * Con un criterio corto, cuántas páginas "por delante de la que se está mirando" se cuentan. El
+     * total que se informa es, como mucho, `offset + per_page * PAGINAS_DE_TOPE + 1`; al avanzar de
+     * página el tope se corre con ella, así que ningún artículo queda inalcanzable.
+     */
+    const PAGINAS_DE_TOPE = 20;
+
+    /**
+     * Igual que `pagina_sql_si_no_expande`, pero para un criterio CORTO el total no se cuenta exacto
+     * sino con tope (ver `PAGINAS_DE_TOPE`), y se devuelve la bandera `total_es_minimo` para que el
+     * frontend muestre "Más de N" en vez de un número que no es el total.
+     *
+     * Criterio largo (más de `CRITERIO_CORTO_MAX_CARACTERES`): exactamente lo de siempre
+     * (`paginate()`, COUNT exacto), bandera false. Criterio corto:
+     *   1. Se trae la página primero, con el orden ya puesto (lo resuelve el índice, sin filesort).
+     *   2. Si la página no se llenó (y tiene filas, o es la primera), el total es `offset + filas`:
+     *      exacto y sin ningún COUNT.
+     *   3. Si se llenó (o es una página vacía más allá del final), se cuenta con tope: una subconsulta
+     *      `SELECT 1 ... LIMIT tope + 1` sin ORDER BY. Si llega a `tope + 1` el total es ese piso y
+     *      la bandera es true; si no, el conteo es exacto.
+     * Una consulta con GROUP BY / HAVING / UNION / DISTINCT no se puede contar así: va por el camino
+     * exacto.
+     *
+     * Devuelve null en las mismas condiciones que `pagina_sql_si_no_expande` (extensión
+     * article_variants activa): quien llama sigue con el camino de expansión.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $query     Consulta liviana con el WHERE completo.
+     * @param int    $per_page  Filas por página.
+     * @param int    $page      Página pedida (>= 1).
+     * @param string $criterio  Criterio de texto de la búsqueda (query_value).
+     * @return array|null ['paginador' => \Illuminate\Pagination\LengthAwarePaginator, 'total_es_minimo' => bool]
+     */
+    public static function pagina_sql_con_total_acotado($query, $per_page, $page, $criterio)
+    {
+        if (UserHelper::hasExtencion('article_variants')) {
+            return null;
+        }
+
+        $es_criterio_corto = mb_strlen(trim((string) $criterio)) <= self::CRITERIO_CORTO_MAX_CARACTERES;
+        $base = (clone $query)->toBase();
+        $se_puede_acotar = empty($base->groups) && empty($base->havings) && empty($base->unions) && empty($base->distinct);
+
+        if (! $es_criterio_corto || ! $se_puede_acotar) {
+            return [
+                'paginador' => self::pagina_sql_si_no_expande($query, $per_page, $page),
+                'total_es_minimo' => false,
+            ];
+        }
+
+        $pagina = clone $query;
+        // Mismo normalizado de orden que el camino exacto: sin orden, LIMIT puede repetir filas
+        // entre páginas.
+        if (empty($pagina->getQuery()->orders)) {
+            $pagina->orderBy($pagina->getModel()->getQualifiedKeyName(), 'ASC');
+        }
+
+        // Desplazamiento de la página pedida (cantidad de filas que quedan antes).
+        $offset = ($page - 1) * $per_page;
+        $filas = $pagina->forPage($page, $per_page)->get();
+        $total_es_minimo = false;
+
+        if ($filas->count() < $per_page && ($filas->count() > 0 || $page == 1)) {
+            // Página incompleta: el total sale de la propia página, sin contar nada.
+            $total = $offset + $filas->count();
+        } else {
+            // Se cuentan, como mucho, `tope + 1` filas: alcanza para saber si hay más que el tope.
+            $tope = $offset + $per_page * self::PAGINAS_DE_TOPE;
+            $conteo = (clone $query)->toBase();
+            $conteo->orders = null;
+            $conteo->columns = null;
+            $conteo->select(DB::raw('1'))->limit($tope + 1);
+            $total = (int) $query->getModel()->getConnection()->query()->fromSub($conteo, 't')->count();
+
+            if ($total > $tope) {
+                $total_es_minimo = true;
+            }
+        }
+
+        // Mismas opciones que arma Eloquent en paginate(), para que la respuesta JSON no cambie
+        // (path, links).
+        $paginador = new LengthAwarePaginator($filas, $total, $per_page, $page, [
+            'path' => Paginator::resolveCurrentPath(),
+            'pageName' => 'page',
+        ]);
+
+        return ['paginador' => $paginador, 'total_es_minimo' => $total_es_minimo];
     }
 
     /**

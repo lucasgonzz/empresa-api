@@ -46,6 +46,37 @@ class ArticlePricesHelper {
     static $payment_method_layer3_cache = [];
 
     /**
+     * Foto de las filas de `article_price_type` de UN artículo, tomada por ArticleController::update
+     * antes de que la ficha pise el pivot (misión guardar-sin-cambios-derivados-null-20261121).
+     * Forma: ['article_id' => int, 'filas' => [price_type_id => ['final_price' => ..., 'previus_final_price' => ...]]].
+     * `null` = sin foto (importación, recálculo, cualquier camino que no sea la ficha).
+     *
+     * @var array|null
+     */
+    private static $foto_de_pivots = null;
+
+    /**
+     * Foto de las filas de `article_price_type_monedas` de UN artículo y de su `costo_real` guardado,
+     * tomada por ArticleController::update antes de que la ficha pise las monedas (misión
+     * guardar-sin-cambios-listas-y-costo-real). Sirve para decidir si el guardado cambió algo de las
+     * listas: si no cambió nada, el espejo de las monedas en la pivot no completa las columnas que
+     * estaban en NULL. Forma: ['article_id' => int, 'costo_real' => string|null,
+     * 'filas' => ["<price_type_id>|<moneda_id>" => ['percentage' => ..., 'final_price' => ...]]].
+     * `null` = sin foto (importación, recálculo, cualquier camino que no sea la ficha).
+     *
+     * @var array|null
+     */
+    private static $foto_de_monedas = null;
+
+    /**
+     * Id del artículo cuyo `costo_real` guardado se conserva en el cálculo de la ficha, porque ninguna
+     * entrada del costo (costo, IVA, proveedor) cambió en el request. `null` = se recalcula como siempre.
+     *
+     * @var int|null
+     */
+    private static $conservar_costo_real_de = null;
+
+    /**
      * EL punto unico donde se decide cuanto sale un articulo. Tarea 7, 11/8/2026.
      *
      * Por que existe: en una cuenta con listas de precio, articles.final_price es un numero que
@@ -608,9 +639,6 @@ class ArticlePricesHelper {
                         $percentage = $relation->pivot->percentage;
                     }
 
-                    if ($previus_final_price != $relation->pivot->final_price) {
-                        $previus_final_price = $relation->pivot->final_price;
-                    }
                 }
             }
 
@@ -830,6 +858,9 @@ class ArticlePricesHelper {
             $res = Self::cerrar_precio_de_lista($price_type, $final_price, $cost, $article, $user, $describir ? [] : null, $precio_de_lista_fijado_a_mano);
 
             $final_price = $res['final_price'];
+
+            // Mismo criterio en las tres ramas (margen, a mano, sin fila): ver previus_del_pivot().
+            $previus_final_price = Self::previus_del_pivot($article, $price_type->id, $relation, $final_price);
 
             if ($describir) {
                 $des_lista = array_merge($des_lista, $res['des']);
@@ -1208,6 +1239,249 @@ class ArticlePricesHelper {
 
         $article->load('iva');
     }
+
+    /**
+     * Lee las filas de `article_price_type` del artículo tal como están en la base (valores crudos).
+     * La ficha la llama ANTES de attach_price_types(), que pisa `final_price` con el valor del request.
+     *
+     * @param  \App\Models\Article $article
+     * @return array  [price_type_id => ['final_price' => ..., 'previus_final_price' => ...]]
+     */
+    static function foto_de_pivots($article) {
+
+        $filas = [];
+
+        foreach (\Illuminate\Support\Facades\DB::table('article_price_type')->where('article_id', $article->id)->get() as $fila) {
+            $filas[(int) $fila->price_type_id] = [
+                'final_price'         => $fila->final_price,
+                'previus_final_price' => $fila->previus_final_price,
+                'percentage'          => $fila->percentage,
+            ];
+        }
+
+        return $filas;
+    }
+
+    /**
+     * Activa la foto para el artículo: previus_del_pivot() la usa en vez de la fila ya pisada.
+     *
+     * @param  int   $article_id
+     * @param  array $filas  lo que devolvió foto_de_pivots()
+     * @return void
+     */
+    static function usar_foto_de_pivots($article_id, array $filas) {
+        self::$foto_de_pivots = ['article_id' => (int) $article_id, 'filas' => $filas];
+    }
+
+    /**
+     * Descarta la foto (va en un `finally`: en un worker largo no puede sobrevivir al request).
+     *
+     * @return void
+     */
+    static function olvidar_foto_de_pivots() {
+        self::$foto_de_pivots           = null;
+        self::$foto_de_monedas          = null;
+        self::$conservar_costo_real_de  = null;
+    }
+
+    /**
+     * Lee las filas de `article_price_type_monedas` del artículo tal como están en la base. La ficha la
+     * llama ANTES de attach_price_type_monedas(), que pisa porcentaje y precio con lo que trae el request.
+     *
+     * @param  \App\Models\Article $article
+     * @return array  ["<price_type_id>|<moneda_id>" => ['percentage' => ..., 'final_price' => ...]]
+     */
+    static function foto_de_monedas($article) {
+
+        $filas = [];
+
+        foreach (\Illuminate\Support\Facades\DB::table('article_price_type_monedas')->where('article_id', $article->id)->get() as $fila) {
+            $filas[$fila->price_type_id . '|' . $fila->moneda_id] = [
+                'percentage'  => $fila->percentage,
+                'final_price' => $fila->final_price,
+            ];
+        }
+
+        return $filas;
+    }
+
+    /**
+     * Activa la foto de monedas (y el `costo_real` guardado) para el artículo. Se descarta junto con la
+     * foto de pivots, en olvidar_foto_de_pivots().
+     *
+     * @param  int         $article_id
+     * @param  array       $filas       Lo que devolvió foto_de_monedas().
+     * @param  string|null $costo_real  `articles.costo_real` guardado antes del guardado.
+     * @return void
+     */
+    static function usar_foto_de_monedas($article_id, array $filas, $costo_real) {
+        self::$foto_de_monedas = ['article_id' => (int) $article_id, 'costo_real' => $costo_real, 'filas' => $filas];
+    }
+
+    /**
+     * Marca que el `costo_real` guardado del artículo se conserva en el cálculo de la ficha.
+     *
+     * @param  int $article_id
+     * @return void
+     */
+    static function conservar_costo_real($article_id) {
+        self::$conservar_costo_real_de = (int) $article_id;
+    }
+
+    /**
+     * ¿La ficha pidió conservar el `costo_real` guardado de este artículo?
+     *
+     * @param  \App\Models\Article $article
+     * @return bool
+     */
+    static function debe_conservar_costo_real($article) {
+        return !is_null(self::$conservar_costo_real_de) && self::$conservar_costo_real_de === (int) $article->id;
+    }
+
+    /**
+     * Las entradas del costo real que el request de la ficha puede cambiar: costo, IVA (alícuota y
+     * si se aplica) y proveedor (que arrastra sus descuentos). Normalizadas para compararlas: un número
+     * escrito distinto ("10400000" contra "10400000.000000") es el mismo valor.
+     *
+     * @param  \App\Models\Article $article
+     * @return array
+     */
+    static function entradas_del_costo_real($article) {
+
+        $normalizar = function ($valor) {
+            if (is_null($valor) || $valor === '') {
+                return null;
+            }
+
+            return is_numeric($valor) ? round((float) $valor, 6) : (string) $valor;
+        };
+
+        return [
+            'cost'        => $normalizar($article->cost),
+            'iva_id'      => $normalizar($article->iva_id),
+            'aplicar_iva' => (int) $article->aplicar_iva,
+            'provider_id' => $normalizar($article->provider_id),
+        ];
+    }
+
+    /**
+     * ¿Alguna entrada de las listas o del costo cambió en este guardado de la ficha? Se compara, ya
+     * persistido, el `costo_real` y cada fila de monedas contra la foto: si TODO es igual, el guardado no
+     * tocó las listas y el espejo de las monedas en la pivot no tiene nada que completar. Sin foto
+     * (cualquier camino que no sea la ficha) devuelve false: se espeja como siempre.
+     *
+     * @param  \App\Models\Article $article  Con el `costo_real` ya calculado.
+     * @return bool
+     */
+    static function listas_sin_cambio_en_el_guardado($article) {
+
+        if (is_null(self::$foto_de_monedas) || self::$foto_de_monedas['article_id'] !== (int) $article->id) {
+            return false;
+        }
+
+        if (!ArticleHelper::costo_real_sin_cambio(self::$foto_de_monedas['costo_real'], $article->costo_real)) {
+            return false;
+        }
+
+        $actuales = self::foto_de_monedas($article);
+        $antes    = self::$foto_de_monedas['filas'];
+
+        if (count($actuales) !== count($antes)) {
+            return false;
+        }
+
+        foreach ($actuales as $clave => $fila) {
+
+            if (!isset($antes[$clave])) {
+                return false;
+            }
+
+            foreach (['percentage', 'final_price'] as $columna) {
+                if (!ArticleHelper::costo_real_sin_cambio($antes[$clave][$columna], $fila[$columna])) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * La fila de la pivot `article_price_type` de una lista tal como estaba antes del guardado de la
+     * ficha, o null si no hay foto (o la lista no tenía fila).
+     *
+     * @param  \App\Models\Article $article
+     * @param  int                 $price_type_id
+     * @return array|null          ['final_price' => ..., 'percentage' => ..., ...]
+     */
+    static function pivot_antes_del_guardado($article, $price_type_id) {
+
+        if (is_null(self::$foto_de_pivots) || self::$foto_de_pivots['article_id'] !== (int) $article->id) {
+            return null;
+        }
+
+        $price_type_id = (int) $price_type_id;
+
+        return isset(self::$foto_de_pivots['filas'][$price_type_id]) ? self::$foto_de_pivots['filas'][$price_type_id] : null;
+    }
+
+    /**
+     * `previus_final_price` que le toca al pivot de una lista, con la misma regla que
+     * `articles.previus_final_price`: sólo se mueve si cambió el precio PERSISTIBLE de la lista.
+     *
+     * 🔴 NO sacar ni "simplificar" a `$relacion->pivot->final_price` (lo de antes): un guardado sin
+     * cambios igualaba el anterior al actual, borraba el «Aumento» del Excel de clientes y completaba
+     * con 6.99 los NULL que deja la importación (Plazoleta, 44.460 filas). Se compara después de
+     * cuantizar (`round(…, 2)` contra el DECIMAL(30,2) guardado), no con una tolerancia ni con un flag
+     * de la rama de precisión: 5.5902 calculado y 5.59 guardado son el mismo precio. Y en la ficha la
+     * fila anterior sale de la foto tomada antes de attach_price_types(), que ya pisó el pivot con el
+     * valor del request (si no, un precio a mano 9 -> 10 compararía 10 contra 10).
+     * Ver PLAN guardar-sin-cambios-derivados-null.
+     *
+     * @param  \App\Models\Article $article
+     * @param  int                 $price_type_id
+     * @param  object|null         $relacion      Fila actual del pivot (price_types()->find / pivot_actual).
+     * @param  float|string|null   $final_nuevo   El `final_price` que se va a escribir en el pivot.
+     * @return string|float|null
+     */
+    static function previus_del_pivot($article, $price_type_id, $relacion, $final_nuevo) {
+
+        $anterior_final   = null;
+        $anterior_previus = null;
+        $hay_anterior     = false;
+
+        if (!is_null(self::$foto_de_pivots) && self::$foto_de_pivots['article_id'] === (int) $article->id) {
+
+            $price_type_id = (int) $price_type_id;
+
+            if (isset(self::$foto_de_pivots['filas'][$price_type_id])) {
+                $hay_anterior     = true;
+                $anterior_final   = self::$foto_de_pivots['filas'][$price_type_id]['final_price'];
+                $anterior_previus = self::$foto_de_pivots['filas'][$price_type_id]['previus_final_price'];
+            }
+
+        } else if (!is_null($relacion) && isset($relacion->pivot)) {
+
+            $hay_anterior     = true;
+            $anterior_final   = $relacion->pivot->final_price;
+            $anterior_previus = isset($relacion->pivot->previus_final_price) ? $relacion->pivot->previus_final_price : null;
+        }
+
+        // Pivot que no existía: no hay precio anterior.
+        if (!$hay_anterior) {
+            return null;
+        }
+
+        $sin_cambio = (is_null($final_nuevo) && is_null($anterior_final))
+            || (
+                !is_null($final_nuevo)
+                && !is_null($anterior_final)
+                && abs(round((float) $final_nuevo, 2) - round((float) $anterior_final, 2)) < 0.000001
+            );
+
+        return $sin_cambio ? $anterior_previus : $anterior_final;
+    }
+
 
     /**
      * Escribe las columnas de una lista en el pivot article_price_type, o las registra si el modo

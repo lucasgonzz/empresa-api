@@ -76,8 +76,14 @@ class SendSaleWhatsappJob implements ShouldQueue
                 return;
             }
 
+            // Misión whatsapp-venta-numero-migrado: sin número configurado y migrado (fila activa + conexión
+            // completa) no se manda nada. Es la misma regla con la que se decide encolar este job.
+            if (! WhatsappBotConfig::puede_enviar_comprobante_automatico((int) $sale->user_id)) {
+                return;
+            }
+
             $config = WhatsappBotConfig::getForUser((int) $sale->user_id);
-            // Opt-in: sin config activa o sin auto_send_sale_pdf, no se manda nada (comportamiento por defecto).
+            // Opt-in: sin auto_send_sale_pdf no se manda nada (comportamiento por defecto).
             if (is_null($config) || ! $config->auto_send_sale_pdf) {
                 return;
             }

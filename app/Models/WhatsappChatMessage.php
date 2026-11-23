@@ -40,6 +40,9 @@ class WhatsappChatMessage extends Model
         // modelo; el cast está para que si sale serializado en una respuesta o en un
         // broadcast salga como número y no como el string que devuelve el driver de MySQL.
         'ai_auto_send_token' => 'integer',
+        // Cuándo reaccionó el cliente a la respuesta del agente (misión asistente-reacciones-wa): `valoracion`,
+        // `valoracion_comentario` y `valorado_at` las escribe la reacción de WhatsApp.
+        'valorado_at' => 'datetime',
         // El mensaje lo inyectó el endpoint de simulación (`simulate-inbound`) o salió como
         // respuesta del agente a uno inyectado; el cliente nunca lo escribió ni lo recibió.
         // Se castea a booleano para que llegue al front y al broadcast como true/false y la

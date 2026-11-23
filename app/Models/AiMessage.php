@@ -108,6 +108,13 @@ class AiMessage extends Model
 
     const TIPO_IMAGEN = 'imagen';
 
+    /**
+     * El mensaje sintético que arma una tarea programada del asistente al despertarse (misión
+     * agente-tareas-programadas): no lo escribió el dueño, lo disparó el reloj. El turno que lo responde es
+     * desatendido (sin cargas ni memoria). Cabe en string(20).
+     */
+    const TIPO_TAREA_PROGRAMADA = 'tarea_programada';
+
     protected $guarded = [];
 
     // Contexto estructurado del agente; no forma parte de las burbujas ni del contrato público.

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Exceptions\CupoEmbeddingsDePruebaException;
 use App\Models\Article;
+use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -104,6 +105,12 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
      */
     public function handle(ArticleEmbeddingService $service): void
     {
+        // Primero se libera la marca de "encolado" (misión embedding-un-solo-job), ANTES de leer
+        // el artículo: un cambio que llegue mientras este job corre ya puede encolar otro (este
+        // pudo haber leído el texto viejo), y uno que llegó antes de correr no encoló nada
+        // porque este job lee el texto vigente.
+        ArticleEmbeddingDispatcher::release($this->article_id);
+
         // Cargar el artículo con las relaciones necesarias para armar el texto.
         // Si fue eliminado (soft delete o delete real), retornar silenciosamente.
         $article = Article::with(['category', 'brand', 'descriptions'])
@@ -207,6 +214,14 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
             // sumarle un resultado a la tanda en cada intento la cerraría de más (tres intentos
             // de un solo artículo contarían como tres jobs terminados). El conteo del fracaso
             // definitivo lo hace failed(), una sola vez.
+            //
+            // Si todavía quedan intentos, el job sigue pendiente por el backoff: se vuelve a
+            // marcar el artículo como encolado para que nadie despache otro mientras tanto. En
+            // el último intento no se re-marca (failed() lo deja libre).
+            if ($this->attempts() < $this->tries) {
+                ArticleEmbeddingDispatcher::mark_as_queued($this->article_id);
+            }
+
             throw $exception;
         }
     }
@@ -272,6 +287,29 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
             'error'            => $exception->getMessage(),
         ]);
 
+        // El job ya no está pendiente: se libera la marca para que se pueda volver a encolar.
+        ArticleEmbeddingDispatcher::release($this->article_id);
+
         $this->registrar_resultado('fallados');
+    }
+
+    /**
+     * ID del artículo al que apunta este job (lo usan los tests con Queue::assertPushed).
+     *
+     * @return int
+     */
+    public function get_article_id(): int
+    {
+        return $this->article_id;
+    }
+
+    /**
+     * ID de la tanda a la que reporta este job, o null si no pertenece a ninguna.
+     *
+     * @return int|null
+     */
+    public function get_embedding_run_id(): ?int
+    {
+        return $this->embedding_run_id;
     }
 }

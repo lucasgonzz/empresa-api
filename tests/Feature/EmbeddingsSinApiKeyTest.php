@@ -13,6 +13,7 @@ use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Queue;
+use App\Services\ArticleEmbeddingDispatcher;
 use Tests\TestCase;
 
 /**
@@ -107,6 +108,11 @@ class EmbeddingsSinApiKeyTest extends TestCase
             'status'  => 'active',
             'user_id' => $this->comercio->id,
         ]);
+
+        // Queue::fake() descartó el job que despachó el observer, pero la marca de "encolado"
+        // (embedding_queued_at) quedó puesta en la base. Se libera para simular que ese job ya
+        // corrió: estos tests miden lo que despacha el comando sobre un artículo pendiente.
+        ArticleEmbeddingDispatcher::release($articulo->id);
 
         Queue::fake();
 

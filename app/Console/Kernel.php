@@ -142,6 +142,27 @@ class Kernel extends ConsoleKernel
         // Usuario dueño de la instancia (config app.USER_ID) con extensiones cargadas.
         $company_owner = $this->resolve_company_owner_for_schedule();
 
+        // Worker vivo del turno del asistente en el shared (misión asistente-whatsapp-velocidad, D7).
+        // Sin --stop-when-empty: queda esperando con --sleep=1, que es lo que lo diferencia del de
+        // `default`. En VPS la cola es null y no se programa nada.
+        //
+        // SIN withoutOverlapping y con --max-time=65 (Enmienda 8): con el mutex, un turno que cruzaba el
+        // arranque del minuto hacía saltear ese tick y no había worker hasta el minuto siguiente (hueco
+        // medido el 22/11: un mensaje de truvari esperó 32 s). Ahora cada minuto arranca un worker aunque
+        // el anterior siga ocupado, y cada uno se pisa unos segundos con el siguiente (65 > 60), así no
+        // queda hueco. Tope natural de procesos: un worker ocioso muere a los 65 s y sólo sobrevive el
+        // que está contestando un turno, o sea dos a la vez como mucho en la práctica. Dos workers son
+        // seguros: cada fila de `jobs` la reserva uno solo y ResponderMensajeChatIaJob ya serializa por
+        // conversación (hay_un_turno_anterior_en_curso).
+        $cola_asistente = \App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::cola_del_turno_whatsapp_para_el_schedule($company_owner);
+        if ($cola_asistente !== null) {
+            // exec (no command): el comando lleva delante el cierre de los candados heredados del cron
+            // (Enmienda 7; ver AsistenteCanalHelper::PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS).
+            $schedule->exec(\App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper::comando_del_worker_del_turno_whatsapp($cola_asistente))
+                ->everyMinute()
+                ->runInBackground();
+        }
+
         // Sincronización de artículos pendientes hacia Tienda Nube solo si tiene la extensión.
         //
         // El when() es la misma consulta con la que arranca el comando (sync_to_t_n_articles del
@@ -264,6 +285,17 @@ class Kernel extends ConsoleKernel
                 ->dailyAt('03:00')
                 ->runInBackground()
                 ->withoutOverlapping(65);
+
+            // Tareas propias del asistente (misión agente-tareas-programadas): cada minuto, sólo si hay una
+            // tarea vencida (con 2 min de anticipo) o un turno por cerrar. Barrido corto: despacha el job y sale.
+            $schedule->command('asistente:despertar-tareas')->everyMinute()->withoutOverlapping(5)->runInBackground()->when(function () use ($company_owner) {
+                return $this->gate_de_datos(function () use ($company_owner) {
+                    return $this->tabla_existe_para_el_schedule('ai_tareas_del_asistente')
+                        && $this->tabla_existe_para_el_schedule('ai_tareas_del_asistente_ejecuciones')
+                        && (\App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::hay_para_despertar($company_owner)
+                            || \App\Http\Controllers\Helpers\asistente_ia\DespertadorDeTareasIaHelper::hay_para_cerrar($company_owner));
+                });
+            });
         }
 
         // sugerencias:generar (05:00) y compras:generar (05:30) YA NO SE AGENDAN (misión

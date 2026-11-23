@@ -22,7 +22,8 @@ class AdminSyncHelper
      */
     public static function apply_published_version(array $versionPayload, array $notificationsPayload): SyncedVersion
     {
-        return DB::transaction(function () use ($versionPayload, $notificationsPayload) {
+        // Se guarda en una variable para registrar la versión instalada recién después del commit.
+        $result = DB::transaction(function () use ($versionPayload, $notificationsPayload) {
             $synced_version = SyncedVersion::updateOrCreate(
                 ['uuid' => $versionPayload['uuid']],
                 [
@@ -64,6 +65,11 @@ class AdminSyncHelper
 
             return $synced_version->fresh('notifications');
         });
+
+        // Registro en installed_versions (en try/catch adentro del helper: no cambia la respuesta).
+        InstalledVersionHelper::register_from_publication($result);
+
+        return $result;
     }
 }
 

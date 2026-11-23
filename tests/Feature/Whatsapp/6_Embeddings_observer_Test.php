@@ -8,6 +8,7 @@ use App\Models\ExtencionEmpresa;
 use App\Models\ImportStatus;
 use App\Models\User;
 use App\Observers\ArticleObserver;
+use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Support\Facades\DB;
@@ -271,6 +272,11 @@ class Embeddings_observer_Test extends TestCase
 
         foreach ($cambios as $cambio) {
             Queue::fake();
+
+            // Simula que el job del cambio anterior ya corrió (Queue::fake() lo descartó y dejó
+            // la marca de "encolado" puesta): sin esto el observer no encola otro, a propósito.
+            ArticleEmbeddingDispatcher::release($articulo->id);
+
             $articulo->update($cambio);
 
             Queue::assertPushed(

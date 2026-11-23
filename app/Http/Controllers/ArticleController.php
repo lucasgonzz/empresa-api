@@ -578,6 +578,15 @@ class ArticleController extends Controller
 
         $actual_stock = $model->stock;
         $actual_provider_id = $model->provider_id;
+
+        /*
+         * Entradas del costo real ANTES de pisar nada con el request (misión
+         * guardar-sin-cambios-listas-y-costo-real): si después del guardado siguen iguales, el costo real
+         * guardado se conserva (ver ArticleHelper::setFinalPrice_sin_historial). Y el `costo_real` guardado
+         * y las monedas, para saber si el guardado cambió algo de las listas (ver la foto de más abajo).
+         */
+        $entradas_del_costo_antes = ArticlePricesHelper::entradas_del_costo_real($model);
+        $costo_real_antes         = $model->costo_real;
         
         $model->status                            = 'active';
         $model->provider_id                       = $request->provider_id;
@@ -598,6 +607,9 @@ class ArticleController extends Controller
 
         // Con `iva_id` y `aplicar_iva` ya asignados, recién ahora se puede descomponer el costo.
         $model = $this->set_costo_desde_request($model, $request);
+
+        // ¿El request cambió algo de lo que entra al costo real? (costo, alícuota de IVA, si se aplica, proveedor)
+        $costo_sin_cambios = ArticlePricesHelper::entradas_del_costo_real($model) === $entradas_del_costo_antes;
 
         /* Mision 44: mismo criterio que en store(), ver el comentario de alla. */
         $model->percentage_gain                   = CriterioDePrecioHelper::normalizar($request->percentage_gain);
@@ -700,6 +712,16 @@ class ArticleController extends Controller
         // GeneralHelper::attachModels($model, 'addresses', $request->addresses, ['amount']);
         // ArticleHelper::setArticleStockFromAddresses($model);
 
+        /*
+         * 🔴 Foto de las filas de `article_price_type` ANTES de que attach_price_types() las pise con el
+         * valor del request: setFinalPrice() la usa para decidir el `previus_final_price` de cada lista
+         * (sólo se mueve si cambió el precio persistible; un precio a mano 9 -> 10 deja 9 como anterior).
+         * Sin foto compararía 10 contra 10. Se descarta en el `finally` de abajo. Ver PLAN
+         * guardar-sin-cambios-derivados-null.
+         */
+        $foto_de_pivots  = ArticlePricesHelper::foto_de_pivots($model);
+        $foto_de_monedas = ArticlePricesHelper::foto_de_monedas($model);
+
         ArticlePriceTypeMonedaHelper::attach_price_type_monedas($model, $request->price_type_monedas);
         
         ArticlePriceTypeHelper::attach_price_types($model, $request->price_types);
@@ -721,7 +743,18 @@ class ArticleController extends Controller
          */
         ArticleProviderDiscountHelper::aplicar_al_asignar_proveedor($model, $actual_provider_id);
 
-        $model = ArticleHelper::setFinalPrice($model);
+        ArticlePricesHelper::usar_foto_de_pivots($model->id, $foto_de_pivots);
+        ArticlePricesHelper::usar_foto_de_monedas($model->id, $foto_de_monedas, $costo_real_antes);
+
+        if ($costo_sin_cambios) {
+            ArticlePricesHelper::conservar_costo_real($model->id);
+        }
+
+        try {
+            $model = ArticleHelper::setFinalPrice($model);
+        } finally {
+            ArticlePricesHelper::olvidar_foto_de_pivots();
+        }
 
         $this->attach_provider($model);
 

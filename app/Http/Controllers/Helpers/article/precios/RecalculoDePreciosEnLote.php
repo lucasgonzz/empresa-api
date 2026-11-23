@@ -188,17 +188,27 @@ class RecalculoDePreciosEnLote
         Article::columnas_sin_embedding();
         self::columnas_de_articles();
 
-        foreach (array_chunk($ids, self::tamanio_de_lote()) as $tanda) {
+        /*
+         * Misión historial-precios-proveedor (ronda 2): cada tanda abre su propio scope exterior del
+         * historial, que al abrir vacía HistorialPreciosService::last_events(). Para que quien vincula
+         * los eventos con otra cosa (las ofertas de una compra) vea los de TODAS las tandas y no sólo
+         * los de la última, las tandas corren dentro de acumulando_eventos(): no agrega escrituras, sólo
+         * suma en memoria los ids que cada tanda ya había creado.
+         */
+        \App\Services\HistorialPreciosService::acumulando_eventos(function () use ($ids, $owner, $auth_user_id, $price_types, $price_update_run_id, &$resultado) {
 
-            $parcial = self::recalcular_tanda($tanda, $owner, $auth_user_id, $price_types, $price_update_run_id);
+            foreach (array_chunk($ids, self::tamanio_de_lote()) as $tanda) {
 
-            $resultado['recalculados']   += $parcial['recalculados'];
-            $resultado['filas_escritas'] += $parcial['filas_escritas'];
+                $parcial = self::recalcular_tanda($tanda, $owner, $auth_user_id, $price_types, $price_update_run_id);
 
-            foreach ($parcial['cambiaron'] as $article_id) {
-                $resultado['cambiaron'][] = $article_id;
+                $resultado['recalculados']   += $parcial['recalculados'];
+                $resultado['filas_escritas'] += $parcial['filas_escritas'];
+
+                foreach ($parcial['cambiaron'] as $article_id) {
+                    $resultado['cambiaron'][] = $article_id;
+                }
             }
-        }
+        });
 
         return $resultado;
     }
@@ -316,8 +326,9 @@ class RecalculoDePreciosEnLote
                     /*
                      * La comparación suelta de hoy ($precio_anterior != final_price), la misma que
                      * hacía ProcessChunkSetFinalPrices::handle(): el precio de antes sale de la
-                     * base (string con dos decimales) y el de después es el float ya cuantizado a
-                     * dos decimales por setFinalPrice().
+                     * base (string, con los decimales de la columna) y el de después es el float ya
+                     * cuantizado a dos decimales por setFinalPrice(), salvo que el precio no haya
+                     * cambiado: entonces es el mismo valor guardado, con su precisión.
                      */
                     $precio_anterior = $article->final_price;
 

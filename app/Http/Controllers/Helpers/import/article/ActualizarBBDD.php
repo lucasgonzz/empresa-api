@@ -189,7 +189,9 @@ class ActualizarBBDD {
         $argumentos = func_get_args();
         return \App\Services\HistorialPreciosService::ejecutar(array_column($this->articulos_para_actualizar_CACHE, 'id'), $this->auth_user_id, 'importacion', function () use ($argumentos) {
             return call_user_func_array([$this, 'guardar_articulos_sin_historial'], $argumentos);
-        });
+            // La importación también registra los cambios sólo de costo (los precios de venta no se
+            // movieron, por ejemplo con precio manual): la oferta del proveedor se vincula a ese evento.
+        }, ['record_cost_only_changes' => true]);
     }
 
     function guardar_articulos_sin_historial() {
