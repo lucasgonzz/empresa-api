@@ -14,7 +14,7 @@ use Tests\Feature\AsistenteWhatsapp\AsistenteWhatsappTestCase;
  * El problema: en el hosting compartido `schedule:run` corre bajo `flock -n <slug>.schedule.lock`
  * (cc-cron.sh) y bajo el envoltorio de Hostinger (`flock -w 1 /tmp/cron_lock_<uid> …`). Los procesos
  * que `runInBackground()` lanza heredan esos descriptores, y como el worker vivo del asistente dura
- * ~50 s, el `schedule:run` del minuto siguiente se saltearía entero. El comando del evento tiene que
+ * ~65 s, el `schedule:run` del minuto siguiente se saltearía entero. El comando del evento tiene que
  * cerrar los descriptores heredados (3 a 9) en el subshell de fondo antes del worker.
  *
  * IMPORTANTE (PHP 7.4): sin match, str_contains, argumentos nombrados, union types ni enum.
@@ -24,7 +24,7 @@ use Tests\Feature\AsistenteWhatsapp\AsistenteWhatsappTestCase;
 class Worker_del_asistente_no_retiene_el_candado_del_cron_Test extends AsistenteWhatsappTestCase
 {
     /** Comando del worker del asistente que los demás tests también buscan. */
-    const COMANDO_DEL_WORKER = 'queue:work --queue=default_asistente --sleep=1 --max-time=50';
+    const COMANDO_DEL_WORKER = 'queue:work --queue=default_asistente --sleep=1 --max-time=65';
 
     /** @var string[] Archivos temporales de candado que hay que borrar al terminar. */
     protected $archivos_de_candado = [];
@@ -134,8 +134,7 @@ class Worker_del_asistente_no_retiene_el_candado_del_cron_Test extends Asistente
         $this->assertSame(0, strpos($comando, $prefijo), 'El comando tiene que empezar cerrando los descriptores heredados.');
         $this->assertStringContainsString('exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-', $prefijo);
         $this->assertStringContainsString(self::COMANDO_DEL_WORKER, $comando);
-        $this->assertTrue($evento->withoutOverlapping);
-        $this->assertSame(10, $evento->expiresAt);
+        $this->assertFalse($evento->withoutOverlapping, 'Enmienda 8: el worker del asistente va sin withoutOverlapping.');
         $this->assertTrue($evento->runInBackground);
         $this->assertSame('* * * * *', $evento->expression);
 
