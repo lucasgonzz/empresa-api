@@ -34,3 +34,5 @@ asd.zip
 *.pem
 *.p12
 *.pfx
+# Número de versión que escribe el workflow de release dentro del paquete (no se commitea)
+/VERSION

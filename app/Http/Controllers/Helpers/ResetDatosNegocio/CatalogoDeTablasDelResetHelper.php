@@ -158,7 +158,7 @@ class CatalogoDeTablasDelResetHelper
      */
     const TABLAS_DE_SISTEMA = [
         'ai_token_usages', 'cache', 'cache_locks', 'centro_recursos_pases', 'demo_eventos', 'demo_ingreso_tokens',
-        'demo_tracking_config', 'errors', 'geocoder_counters', 'image_service_calls', 'local_actividad_eventos',
+        'demo_tracking_config', 'errors', 'geocoder_counters', 'image_service_calls', 'installed_versions', 'local_actividad_eventos',
         'mantenimientos', 'migrations', 'oauth_states', 'password_resets', 'personal_access_tokens', 'prueba_config',
         'prueba_hitos', 'reset_datos_negocio_registros', 'serper_usage_events', 'support_message_attachments',
         'support_messages', 'support_tickets', 'support_tours', 'support_typing_states', 'synced_version_notification_reads',
