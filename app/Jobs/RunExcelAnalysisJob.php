@@ -9,6 +9,7 @@ use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\import\article\AiExcelAnalyzer;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\ExcelNumericFormatStats;
+use App\Http\Controllers\Helpers\import\article\OtherProviderArticlesInExcel;
 use App\Http\Controllers\Helpers\import\client\AiClientAnalyzer;
 use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Http\Controllers\Helpers\import\provider\AiProviderAnalyzer;
@@ -712,6 +713,23 @@ class RunExcelAnalysisJob implements ShouldQueue
                 $resultado['cadena_identificacion'] = $identificacion['cadena_identificacion'];
                 $resultado['nombres_duplicados']    = $identificacion['nombres_duplicados'];
                 $resultado['desempate_por_nombre']  = $identificacion['desempate_por_nombre'];
+            }
+
+            /*
+             * Misión historial-precios-proveedor: artículos del Excel (por barras/SKU) que el dueño ya
+             * tiene con OTRO proveedor. Sólo si la SPA lo pide (`detect_other_provider_articles`): sin
+             * la bandera el resultado conserva exactamente las claves de siempre. Nunca lanza (la
+             * clase atrapa) y sin proveedor o sin columnas de barras/SKU devuelve todo en cero.
+             */
+            if (!empty($payload['detect_other_provider_articles'])) {
+                $resultado['other_provider_articles'] = OtherProviderArticlesInExcel::count(
+                    $excel_full_path,
+                    is_array($column_mapping) ? $column_mapping : [],
+                    $provider_id,
+                    (int) $run->user_id,
+                    $opciones['hoja'],
+                    $opciones['fila_encabezado']
+                );
             }
 
             /*

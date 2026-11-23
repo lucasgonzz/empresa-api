@@ -213,6 +213,8 @@ class ExcelAnalysisRun extends Model
         // Misión importacion-formula-precio (20/11/2026): opciones de lectura del paso 3.
         'descuentos_negativos_descuentan',
         'barras_repetidas_por_codigo_de_proveedor',
+        // Misión historial-precios-proveedor: respuesta del paso 3 sobre artículos que ya están con otro proveedor.
+        'other_provider_articles_policy',
     ];
 
     /**

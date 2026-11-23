@@ -45,8 +45,8 @@ class Worker_del_turno_de_whatsapp_Test extends AsistenteWhatsappTestCase
     /** Cola que el turno de WhatsApp usa en shared cuando QUEUE_NAME no está seteada. */
     const COLA_POR_DEFECTO = 'default_asistente';
 
-    /** Comando del worker del asistente (D7 del plan): vivo, sleep 1 y tope de 50 s (no 55). */
-    const COMANDO_DEL_WORKER = 'queue:work --queue=default_asistente --sleep=1 --max-time=50';
+    /** Comando del worker del asistente (D7 + Enmienda 8): vivo, sleep 1 y tope de 65 s (se pisa con el siguiente). */
+    const COMANDO_DEL_WORKER = 'queue:work --queue=default_asistente --sleep=1 --max-time=65';
 
     protected function setUp(): void
     {
@@ -362,8 +362,9 @@ class Worker_del_turno_de_whatsapp_Test extends AsistenteWhatsappTestCase
 
     /**
      * Con la extensión y el interruptor encendido, el schedule programa UN worker de la cola del
-     * asistente: vivo (sin `--stop-when-empty`), con tope de 50 s, un solo proceso a la vez
-     * (`withoutOverlapping(10)`) y sin bloquear el resto (`runInBackground`). Y vive siempre, sin
+     * asistente: vivo (sin `--stop-when-empty`), con tope de 65 s, SIN `withoutOverlapping`
+     * (Enmienda 8: cada minuto arranca uno aunque el anterior siga ocupado) y sin bloquear el resto
+     * (`runInBackground`). Y vive siempre, sin
      * depender de que haya jobs pendientes (P2 = A). Los dos workers de siempre quedan idénticos.
      *
      * @test
@@ -384,8 +385,7 @@ class Worker_del_turno_de_whatsapp_Test extends AsistenteWhatsappTestCase
 
         $this->assertStringContainsString(self::COMANDO_DEL_WORKER, $comando);
         $this->assertStringNotContainsString('--stop-when-empty', $comando, 'El worker queda vivo esperando: es justo lo que lo diferencia del de default.');
-        $this->assertTrue($evento->withoutOverlapping, 'Un solo worker del asistente por instancia.');
-        $this->assertSame(10, $evento->expiresAt, 'withoutOverlapping(10): un turno largo puede extender la vida del worker.');
+        $this->assertFalse($evento->withoutOverlapping, 'Enmienda 8: sin withoutOverlapping, así un turno que cruza el minuto no deja sin worker al tick siguiente.');
         $this->assertTrue($evento->runInBackground, 'Sin runInBackground bloquearía el resto del schedule:run.');
         $this->assertTrue($evento->filtersPass($this->app), 'Sin jobs pendientes igual arranca: el worker vive siempre con la extensión.');
 
@@ -393,7 +393,7 @@ class Worker_del_turno_de_whatsapp_Test extends AsistenteWhatsappTestCase
         config(['queue.connections.database.queue' => 'fenix']);
         $con_queue_name = $this->eventos_del_worker_del_asistente();
         $this->assertCount(1, $con_queue_name);
-        $this->assertStringContainsString('queue:work --queue=fenix_asistente --sleep=1 --max-time=50', (string) $con_queue_name[0]->command);
+        $this->assertStringContainsString('queue:work --queue=fenix_asistente --sleep=1 --max-time=65', (string) $con_queue_name[0]->command);
         config(['queue.connections.database.queue' => 'default']);
 
         // Los dos eventos queue:work existentes, idénticos (alcance de §4: no se tocan).
@@ -407,6 +407,37 @@ class Worker_del_turno_de_whatsapp_Test extends AsistenteWhatsappTestCase
         $this->assertTrue($de_excel->withoutOverlapping);
         $this->assertSame(75, $de_excel->expiresAt);
         $this->assertTrue($de_excel->runInBackground);
+    }
+
+    /**
+     * CA17 (Enmienda 8): aunque el mutex del evento del asistente esté tomado en la caché (el
+     * worker anterior todavía ocupado), el evento igual pasa sus filtros y se lanzaría. Es el hueco
+     * medido el 22/11 (turno de truvari 05:23, 32 s de espera): con `withoutOverlapping` el tick
+     * se salteaba y no había worker hasta el minuto siguiente.
+     *
+     * El mutex se toma como lo toma Laravel 8.83: `CacheEventMutex::create()` hace un
+     * `cache->add(Event::mutexName(), true, expiresAt * 60)` y el filtro `skip` que agrega
+     * `withoutOverlapping()` consulta `mutex->exists()`.
+     *
+     * @test
+     */
+    public function test_el_worker_arranca_aunque_el_anterior_siga_ocupado()
+    {
+        $this->dar_extension();
+
+        $eventos = $this->eventos_del_worker_del_asistente();
+        $this->assertCount(1, $eventos, 'Tiene que haber exactamente UN worker del asistente.');
+        $evento = $eventos[0];
+
+        // Worker anterior ocupado: se toma el mutex del evento en la caché, con el mismo
+        // mecanismo que usa el schedule (tiempo de vida de sobra para que siga tomado).
+        $evento->expiresAt = 10;
+        $this->assertTrue($evento->mutex->create($evento), 'Precondición: se pudo tomar el mutex del evento.');
+        $this->assertTrue($evento->mutex->exists($evento), 'Precondición: el mutex del evento quedó tomado en la caché.');
+
+        $this->assertTrue($evento->filtersPass($this->app), 'Con el worker anterior ocupado el evento igual tiene que lanzarse.');
+
+        $evento->mutex->forget($evento);
     }
 
     // ---------------------------------------------------------------------------------------
