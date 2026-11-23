@@ -565,4 +565,322 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
         $this->assertSame([], $h::acciones_no_hechas(self::CASO_CANCELE, '', ['cancelar_tarea_del_asistente'], []));
         $this->assertSame([], $h::acciones_no_hechas(self::CASO_PROGRAMADA_CAJA, '', [], ['proponer_tarea']));
     }
+
+    /* ═══════════════ RONDA 2: la verdad es lo que dice la BASE, no lo que pasó en este turno ═══════════════ */
+
+    /**
+     * Lo que la guarda diría de la frase para el dueño del comercio, con la base REAL de la prueba y sin
+     * herramientas en el turno: los tipos de afirmación que la base NO respalda.
+     *
+     * @param  string  $frase
+     * @param  string  $pedido  Lo que escribió la persona.
+     * @return array<int,string>
+     */
+    protected function no_hechas($frase, $pedido)
+    {
+        return TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($frase, $pedido, [], [], $this->comercio->id);
+    }
+
+    /**
+     * Una tarea ACTIVA del dueño con el título y la hora dados (diaria salvo que se pida otra cosa).
+     *
+     * @param  string  $titulo
+     * @param  string  $hora  HH:MM.
+     * @param  array  $mas  Columnas a pisar.
+     * @return \App\Models\AiTareaDelAsistente
+     */
+    protected function tarea_a_las($titulo, $hora, array $mas = [])
+    {
+        return $this->tarea_del_asistente(array_merge([
+            'titulo'               => $titulo,
+            'recurrencia'          => 'diaria',
+            'hora'                 => $hora,
+            'proxima_ejecucion_at' => Carbon::now()->addDay()->format('Y-m-d') . ' ' . $hora . ':00',
+        ], $mas));
+    }
+
+    /**
+     * Una tarea CANCELADA hace un rato.
+     *
+     * @param  string  $titulo
+     * @return \App\Models\AiTareaDelAsistente
+     */
+    protected function tarea_cancelada($titulo)
+    {
+        return $this->tarea_a_las($titulo, '08:00', ['estado' => 'cancelada']);
+    }
+
+    /**
+     * 🔴 HALLAZGO 1. Una confirmación VERDADERA de algo hecho en un turno anterior no dispara: la tarea que la
+     * hace cierta está en la base. La misma frase SIN esa tarea (hay otra, de otra hora y otro tema) sí dispara.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_confirmacion_verdadera_de_un_turno_anterior_no_dispara()
+    {
+        // [frase, pedido, cómo se arma la tarea que la hace verdadera, tipo]
+        $casos = [
+            ['De nada. Te escribo mañana a las 8 con el resumen.', 'Gracias por la tarea del resumen', 'a_las_8', 'programar'],
+            ['Sí, quedó programada para mañana a las 8.', '¿Quedó programada la tarea del resumen?', 'a_las_8', 'programar'],
+            ['¡De nada! Quedó para el viernes a las 9.', 'Gracias por pasar la tarea al viernes', 'a_las_9', 'reprogramar'],
+            ['Tenés una: te aviso a las 9 todos los lunes con los cheques.', 'Qué tareas tengo', 'a_las_9', 'programar'],
+            ['Sí, la cancelé hace un rato.', '¿Cancelaste la tarea de ventas diarias?', 'cancelada_ventas', 'cancelar'],
+            ['Sí, ya está cancelada.', '¿Ya cancelaste la tarea de cobros semanales?', 'cancelada_cobros', 'cancelar'],
+        ];
+
+        foreach ($casos as $caso) {
+
+            DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+            // SIN la tarea que la hace verdadera: hay otra, de otra hora y otro tema.
+            $this->tarea_a_las('Preguntas de logística', '17:00');
+
+            $this->assertSame([$caso[3]], $this->no_hechas($caso[0], $caso[1]), 'Sin la tarea tiene que disparar: ' . $caso[0]);
+
+            // CON la tarea que la hace verdadera.
+            if ($caso[2] === 'a_las_8') {
+                $this->tarea_a_las('Resumen del día', '08:00');
+            } elseif ($caso[2] === 'a_las_9') {
+                $this->tarea_a_las('Cheques de los lunes', '09:00');
+            } elseif ($caso[2] === 'cancelada_ventas') {
+                $this->tarea_cancelada('Ventas diarias');
+            } else {
+                $this->tarea_cancelada('Cobros semanales');
+            }
+
+            $this->assertSame([], $this->no_hechas($caso[0], $caso[1]), 'Con la tarea en la base NO tiene que disparar: ' . $caso[0]);
+        }
+    }
+
+    /**
+     * 🔴 HALLAZGO 1 (segunda lista). Ofertas, ejemplos y condicionales NUNCA disparan, aunque la base no tenga nada
+     * ni nada de esa hora, y aunque vayan en la misma oración separados por coma o dos puntos.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function las_ofertas_los_ejemplos_y_los_condicionales_nunca_disparan()
+    {
+        $frases = [
+            'Te aviso a las 15 si querés.',
+            'Te escribo a las 9 si te parece bien.',
+            'Por ejemplo, te escribo a las 8 con el resumen del día.',
+            'Cuando la programe, te aviso a las 9 todos los días.',
+            'Te aviso a las 15 si querés: decime y la programo.',
+        ];
+
+        foreach ([false, true] as $con_otra_tarea) {
+
+            DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+            if ($con_otra_tarea) {
+                $this->tarea_a_las('Preguntas de logística', '17:00');
+            }
+
+            foreach ($frases as $frase) {
+                $this->assertSame([], $this->no_hechas($frase, 'Qué podés hacer con las tareas'), 'Una oferta no dispara: ' . $frase);
+            }
+        }
+    }
+
+    /**
+     * 🔴 HALLAZGO 1 (nota). Las frases que antes se escapaban y que con la verdad de la base ya no son riesgosas:
+     * sin la tarea disparan; con la tarea de esa hora, no.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function las_promesas_con_hora_se_contrastan_con_la_base()
+    {
+        $casos = [
+            ['Listo, te escribo el viernes a las 9.', '09:00', 'programar'],
+            ['Dale, mañana a las 8 te mando el resumen.', '08:00', 'programar'],
+            ['Listo, a las 20 te escribo con las ventas.', '20:00', 'programar'],
+            ['Quedó programado: a las 20:00 te paso las ventas del día.', '20:00', 'programar'],
+            ['Programé el resumen de ventas para las 20:00.', '20:00', 'programar'],
+            ['Vuelve el viernes 27/11 a las 09:00.', '09:00', 'reprogramar'],
+        ];
+
+        foreach ($casos as $caso) {
+
+            DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+            // Sin nada en la base y con una tarea de OTRA hora: dispara.
+            $this->assertSame([$caso[2]], $this->no_hechas($caso[0], 'Programame un aviso, la tarea del resumen'), 'Sin tarea: ' . $caso[0]);
+
+            $this->tarea_a_las('Ventas del día a primera hora', $caso[1] === '08:00' ? '10:00' : '08:00');
+
+            $this->assertSame([$caso[2]], $this->no_hechas($caso[0], 'Programame un aviso, la tarea del resumen'), 'Con una tarea de otra hora: ' . $caso[0]);
+
+            $this->tarea_a_las('Resumen', $caso[1]);
+
+            $this->assertSame([], $this->no_hechas($caso[0], 'Programame un aviso, la tarea del resumen'), 'Con una tarea a esa hora: ' . $caso[0]);
+        }
+    }
+
+    /**
+     * 🔴 HALLAZGO 2a. Cancelar una tarea cuyo TEMA es «ventas»: dispara con la tarea «Ventas del día a primera hora»
+     * activa y NO dispara con esa tarea ya cancelada (la mentira no deja nada vivo).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function cancelar_la_tarea_de_ventas_dispara_con_la_tarea_activa_y_no_con_la_cancelada()
+    {
+        $frases = [
+            'La de ventas diarias la cancelé.',
+            'Listo, cancelé el resumen de ventas diario.',
+            'Listo, las ventas diarias quedaron canceladas.',
+            'Lo de las ventas quedó cancelado.',
+        ];
+
+        $pedido = 'Cancelame la tarea de ventas diarias';
+
+        foreach ($frases as $frase) {
+
+            DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+            $this->tarea_a_las('Ventas del día a primera hora', '08:00');
+
+            $this->assertSame(['cancelar'], $this->no_hechas($frase, $pedido), 'Con la tarea activa tiene que disparar: ' . $frase);
+
+            DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->update(['estado' => 'cancelada']);
+
+            $this->assertSame([], $this->no_hechas($frase, $pedido), 'Con la tarea ya cancelada NO tiene que disparar: ' . $frase);
+        }
+    }
+
+    /**
+     * 🔴 HALLAZGO 2a. «Lo de los cobros lo pasé al lunes.» con una tarea de cobros que NO corre el lunes dispara;
+     * si la tarea ya corre el lunes, es verdad.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function pasar_lo_de_los_cobros_al_lunes_se_contrasta_con_el_dia_de_la_tarea()
+    {
+        $frase = 'Lo de los cobros lo pasé al lunes.';
+        $pedido = 'Pasá la tarea de cobros al lunes';
+
+        $this->tarea_a_las('Cobros de la semana', '09:00', [
+            'recurrencia'          => 'una_vez',
+            'proxima_ejecucion_at' => Carbon::now()->next(Carbon::TUESDAY)->format('Y-m-d') . ' 09:00:00',
+        ]);
+
+        $this->assertSame(['reprogramar'], $this->no_hechas($frase, $pedido), 'La tarea corre el martes: tiene que disparar.');
+
+        DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)
+            ->update(['proxima_ejecucion_at' => Carbon::now()->next(Carbon::MONDAY)->format('Y-m-d') . ' 09:00:00']);
+
+        $this->assertSame([], $this->no_hechas($frase, $pedido), 'La tarea ya corre el lunes: es verdad.');
+    }
+
+    /**
+     * 🔴 HALLAZGO 2a. «Cancelé el pedido 123» y «La venta quedó cancelada» son registros concretos: con tareas
+     * activas de otro tema NO disparan. Pero si la persona venía hablando de la TAREA de ventas, gana la tarea.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function un_registro_concreto_no_dispara_pero_gana_la_tarea_si_la_persona_hablaba_de_ella()
+    {
+        $this->tarea_a_las('Preguntas de logística', '17:00');
+
+        $this->assertSame([], $this->no_hechas('Cancelé el pedido 123.', 'Cancelame el pedido 123'));
+        $this->assertSame([], $this->no_hechas('La venta quedó cancelada.', 'Cancelame la venta de ayer'));
+
+        DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+        $this->tarea_a_las('Ventas del día a primera hora', '08:00');
+
+        $this->assertSame([], $this->no_hechas('Cancelé el pedido 123.', 'Cancelame el pedido 123'));
+        $this->assertSame(['cancelar'], $this->no_hechas('Cancelé la venta de ayer.', 'Cancelame la tarea de ventas'), 'Si hablaban de la tarea de ventas, gana la tarea.');
+    }
+
+    /**
+     * 🔴 Un dueño SIN ninguna tarea no ve nunca el aviso por una frase de cancelación: no hay nada que la mentira
+     * deje vivo. Ni en el detector ni en el turno completo (una sola llamada al modelo, texto intacto).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function sin_ninguna_tarea_una_cancelacion_no_dispara()
+    {
+        foreach ([self::CASO_CANCELE, self::CASO_YA_ESTA_CANCELADA, 'La de ventas diarias la cancelé.', 'Sí, ya está cancelada.'] as $frase) {
+            $this->assertSame([], $this->no_hechas($frase, 'Cancelame la tarea de ventas diarias'), $frase);
+        }
+
+        $this->modelo_con_guion([['texto', self::CASO_CANCELE]]);
+
+        $turno = $this->turno_del_dueno('Cancelame la tarea de ventas diarias');
+
+        $this->assertSame(self::CASO_CANCELE, (string) $turno->contenido);
+        $this->assertSame(1, $this->vueltas_al_modelo());
+    }
+
+    /**
+     * 🔴 En un turno posterior, la confirmación verdadera pasa entera: sin reintento y sin aviso.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function en_el_turno_posterior_la_confirmacion_verdadera_pasa_sin_reintento()
+    {
+        $this->tarea_a_las('Resumen del día', '08:00');
+
+        $texto = 'De nada. Te escribo mañana a las 8 con el resumen.';
+
+        $this->modelo_con_guion([['texto', $texto]]);
+
+        $turno = $this->turno_del_dueno('Gracias por la tarea del resumen');
+
+        $this->assertSame($texto, (string) $turno->contenido);
+        $this->assertSame(1, $this->vueltas_al_modelo(), 'Sin reintento.');
+    }
+
+    /**
+     * 🔴 HALLAZGO 2b. La consulta OK en el turno ya no es un salvoconducto: los textos reales que la base desmiente
+     * disparan igual (reintento y aviso honesto).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function con_la_consulta_ok_los_textos_reales_que_la_base_desmiente_disparan()
+    {
+        $this->tarea_a_las('Ventas diarias', '08:00');
+
+        $casos = [
+            [self::CASO_YA_ESTA_CANCELADA, 'Sacá la tarea de ventas diarias', self::AVISO_CANCELAR],
+            [self::CASO_PROGRAMADA_PROVEEDOR, 'Avisame hoy a las 15:45 si llamé al proveedor', self::AVISO_PROGRAMAR],
+            [self::CASO_PROGRAMADA_CAJA, 'Avisame a las 15:43 cómo viene la caja', self::AVISO_PROGRAMAR],
+        ];
+
+        foreach ($casos as $caso) {
+
+            $this->modelo_con_guion([['tool', 'consultar_tareas_del_asistente', []], ['texto', $caso[0]]]);
+
+            $antes = $this->vueltas_al_modelo();
+
+            $turno = $this->turno_del_dueno($caso[1]);
+
+            $this->assertStringContainsString($caso[2], (string) $turno->contenido, 'Tiene que avisar la verdad: ' . $caso[0]);
+            $this->assertSame(3, $this->vueltas_al_modelo() - $antes, 'Consulta, texto y UN reintento.');
+        }
+    }
+
+    /**
+     * 🔴 La nota del reintento no empuja a duplicar: dice que en la base no figura, manda a consultar si no sabe el
+     * id y admite que no lo hizo.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function la_nota_del_reintento_no_empuja_a_duplicar()
+    {
+        $nota = TareaAfirmadaSinHerramientaIaHelper::nota_para_reintentar();
+
+        $this->assertStringNotContainsString('AHORA', $nota);
+        $this->assertStringContainsString('consultar_tareas_del_asistente', $nota);
+        $this->assertStringContainsString('no figura', $nota);
+    }
 }
