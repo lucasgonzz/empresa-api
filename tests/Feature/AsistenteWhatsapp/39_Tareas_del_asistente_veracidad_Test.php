@@ -32,7 +32,7 @@ use Illuminate\Support\Facades\Http;
  * 🔴 El job es el real (ResponderMensajeChatIaJob) y el modelo es un doble guionado con Http::fake: ningún test
  * sale a la red.
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4: sin match, sin nullsafe, sin str_contains, sin argumentos nombrados.
  */
 class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTestCase
 {
