@@ -201,7 +201,7 @@ class AsistenteCanalHelper
      * En el hosting compartido `schedule:run` corre bajo `flock -n <slug>.schedule.lock` (cc-cron.sh)
      * y bajo el envoltorio de Hostinger (`flock -w 1 /tmp/cron_lock_<uid> …`). Los procesos de
      * `runInBackground()` heredan esos candados como descriptores abiertos: como el worker vive
-     * ~50 s, el `schedule:run` del minuto siguiente se saltearía entero. Un `exec` sin comando
+     * ~65 s, el `schedule:run` del minuto siguiente se saltearía entero. Un `exec` sin comando
      * aplica sus redirecciones al subshell `( … )` de fondo, así que ni el worker ni
      * `schedule:finish` conservan los candados.
      */
@@ -210,8 +210,10 @@ class AsistenteCanalHelper
     /**
      * Comando completo del worker vivo del asistente para el evento del schedule: el cierre de
      * candados heredados y después el `queue:work` (armado con el mismo formato que usa
-     * `$schedule->command()`). Es determinístico: el mutex del evento depende del comando y
-     * `schedule:finish` rearma el schedule para encontrarlo.
+     * `$schedule->command()`). Es determinístico: `schedule:finish` rearma el schedule y tiene que
+     * encontrar el mismo evento. El evento va SIN `withoutOverlapping` (Enmienda 8): no hay mutex
+     * que retenga el tick; `--max-time=65` hace que cada worker se pise unos segundos con el
+     * siguiente, para que un turno que cruza el arranque del minuto no deje la cola sin worker.
      *
      * @param  string  $cola  Cola del asistente (p. ej. `default_asistente`).
      * @return string
@@ -220,7 +222,7 @@ class AsistenteCanalHelper
     {
         return self::PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS
             . \Illuminate\Console\Application::formatCommandString(
-                'queue:work --queue=' . $cola . ' --sleep=1 --max-time=50 --tries=1'
+                'queue:work --queue=' . $cola . ' --sleep=1 --max-time=65 --tries=1'
             );
     }
 
