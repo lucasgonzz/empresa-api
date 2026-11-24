@@ -191,7 +191,7 @@ class AsistenteCanalHelper
 
     /**
      * ¿Se dan las condiciones para usar la cola propia del asistente? La puerta única de
-     * infraestructura (shared: worker del scheduler; VPS: la opción `asistente_worker_vps`) y el
+     * infraestructura (en el shared el worker del scheduler; en el VPS la opción `asistente_worker_vps`) y el
      * interruptor del asistente (QUEUE_ASISTENTE_WORKER) encendidos. En el VPS, sin la opción, el
      * supervisor sólo consume `default`: una cola nueva dejaría el turno sin nadie que lo levante.
      *
