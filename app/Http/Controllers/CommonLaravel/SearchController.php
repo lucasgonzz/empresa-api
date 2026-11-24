@@ -14,6 +14,8 @@ use App\Http\Controllers\Helpers\sale\ListadoVentasHelper;
 use App\Http\Controllers\Helpers\sale\SaleArticlesEagerLoadHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\VenderSearchHelper;
+use App\Http\Controllers\Helpers\caja\CajaVisibilidadHelper;
+use App\Models\Caja;
 use App\Http\Controllers\Helpers\client\AcopioPendienteClientesHelper;
 use App\Models\CurrentAcount;
 use App\Models\Provider;
@@ -82,9 +84,31 @@ class SearchController extends Controller
         return $model_name::where('user_id', $this->userId());
     }
 
+    /**
+     * Misión cajas-permisos-claros (ticket 167 de Trama): el buscador de Tesorería respeta la regla de
+     * visibilidad de cajas. Sin esto, un empleado escribía en el buscador y le aparecían las cajas de
+     * otras sucursales aunque el listado las ocultara (la SPA ignora su filtro cuando hay búsqueda).
+     * Sólo actúa sobre `Caja` y sobre empleados no administradores; para todo lo demás devuelve la
+     * query tal cual. No se aplica a `searchFromModal`: ese es catálogo de selección.
+     *
+     * @param \Illuminate\Database\Eloquent\Builder $models Query base del modelo.
+     * @param string $model_name Clase del modelo, con namespace.
+     * @return \Illuminate\Database\Eloquent\Builder
+     */
+    private function acotar_cajas_a_tesoreria($models, $model_name)
+    {
+        if ($model_name !== Caja::class) {
+            return $models;
+        }
+
+        $auth_user = $this->user(false);
+
+        return is_null($auth_user) ? $models : CajaVisibilidadHelper::acotar_a_tesoreria($models, $auth_user);
+    }
+
     function search(Request $request, $model_name_param, $_filters = null, $paginate = 0, $return_used_filters = false, $return_raw_models = false, $return_query = false) {
         $model_name = GeneralHelper::getModelName($model_name_param);
-        $models = $this->query_base_del_modelo($model_name);
+        $models = $this->acotar_cajas_a_tesoreria($this->query_base_del_modelo($model_name), $model_name);
 
         $auth_user = $this->user(false);
         if (!is_null($auth_user)) {
@@ -618,7 +642,7 @@ class SearchController extends Controller
 
         // Query base: solo el filtro por usuario. El withAll() se aplica aparte (ver abajo), porque
         // no todos los modelos lo definen.
-        $models = $this->query_base_del_modelo($model_name);
+        $models = $this->acotar_cajas_a_tesoreria($this->query_base_del_modelo($model_name), $model_name);
 
         // withAll() solo si el modelo lo define. De los ~273 modelos en app/Models, solo ~197
         // definen scopeWithAll; los ~76 restantes tiraban BadMethodCallException (500) apenas se
