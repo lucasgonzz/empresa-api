@@ -766,7 +766,9 @@ PROMPT;
 
         /*
          * Cortada por el techo de salida: la planilla es ancha y el column_mapping no entró. Se
-         * repite UNA vez la misma llamada (mismo prompt, proveedor y modelo) con el doble de techo.
+         * repite UNA vez la misma llamada (mismo prompt) con el doble de techo y plazo propio; si el
+         * modelo era DeepSeek Pro con razonamiento, el reintento va a Flash sin razonamiento
+         * (ModelosIaHelper::ia_del_reintento_por_corte()); con Anthropic o Flash, el mismo modelo.
          * Los errores HTTP y de conexión no pasan por acá: salen de call_claude_con_techo() con sus
          * mismos mensajes, sin reintento propio.
          */
@@ -777,6 +779,18 @@ PROMPT;
         }
 
         return $text;
+    }
+
+    /**
+     * Segundos enteros (redondeados hacia arriba) que pasaron desde $inicio. Existe como método
+     * aparte para poder pisarlo en los tests sin dormir el proceso.
+     *
+     * @param  int|float  $inicio  Instante de inicio, de hrtime(true) (nanosegundos).
+     * @return int  Segundos transcurridos.
+     */
+    protected function segundos_gastados_desde($inicio)
+    {
+        return (int) ceil((hrtime(true) - $inicio) / 1e9);
     }
 
     /**
@@ -812,17 +826,47 @@ PROMPT;
             throw new \RuntimeException(self::MENSAJE_IA_SIN_CONFIGURAR);
         }
 
+        /*
+         * Reintento por corte: un DeepSeek Pro que razona pasa a Flash sin razonamiento (el razonamiento
+         * no tiene tope y podría volver a gastarse el techo); el resto repite el mismo modelo con doble techo.
+         */
+        $modelo_inicial = $ia['modelo'];
+        if ($factor > 1) {
+            $ia = ModelosIaHelper::ia_del_reintento_por_corte($ia);
+        }
+
         $proveedor = $ia['proveedor'];
         $modelo    = $ia['modelo'];
 
         $timeout = (int) config('services.importacion_excel_ia.timeout', 120);
         $timeout = $timeout > 0 ? $timeout : 120;
-        if ($factor > 1 && $proveedor === ProveedorIaHelper::DEEPSEEK) {
-            // El reintento por techo de salida usa el remanente de este análisis.
-            $timeout = ProveedorIaHelper::segundos_restantes($inicio, $timeout);
+        if ($factor > 1) {
+            // Segundos que ya consumió el análisis (el primer pedido).
+            $gastados = $this->segundos_gastados_desde($inicio);
+
+            // El reintento por corte tiene plazo propio: timeout × factor, recortado al presupuesto que queda.
+            $timeout = ModelosIaHelper::timeout_del_reintento_por_corte($timeout, $factor, $gastados);
+
             if ($timeout < 1) {
-                throw new \RuntimeException(self::MENSAJE_IA_SIN_RESPUESTA);
+                /*
+                 * No queda presupuesto para repetir el pedido. La IA sí contestó (cortada): lo que no se
+                 * pudo es leerla entera, por eso va el mensaje de "ilegible" y no el de "no respondió".
+                 */
+                Log::warning('AiProviderAnalyzer: no queda tiempo para el reintento por corte', [
+                    'proveedor'         => $proveedor,
+                    'modelo'            => $modelo,
+                    'segundos_gastados' => $gastados,
+                ]);
+
+                throw new \RuntimeException(self::MENSAJE_IA_RESPUESTA_ILEGIBLE);
             }
+
+            Log::info('AiProviderAnalyzer: reintento por corte', [
+                'modelo_inicial'    => $modelo_inicial,
+                'modelo'            => $modelo,
+                'timeout'           => $timeout,
+                'segundos_gastados' => $gastados,
+            ]);
         }
 
         /*
@@ -938,7 +982,7 @@ PROMPT;
          */
         /*
          * Respuesta CORTADA por el techo de salida (`stop_reason = max_tokens`): lo que vino es un JSON
-         * a medias. call_claude() la reintenta una vez con el doble de techo y, si se corta de nuevo,
+         * a medias. call_claude() la reintenta una vez con el doble de techo (con Flash si era Pro con razonamiento) y, si se corta de nuevo,
          * la trata como "no se pudo interpretar" (el mismo mensaje de siempre), con un
          * warning claro en el log, porque la causa es el techo y no la planilla: si se repite, hay que
          * subir IMPORTACION_EXCEL_IA_MAX_TOKENS_CON_RAZONAMIENTO. La llamada ya quedó registrada arriba

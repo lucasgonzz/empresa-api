@@ -42,6 +42,7 @@ class OnlineConfigurationController extends Controller
 
         $model = OnlineConfiguration::where('id', $id)->lockForUpdate()->first();
         $this->guardar_contactos_whatsapp($model, $request);
+        $this->guardar_textos_footer($model, $request);
         if ($request->has('reservar_stock_pedidos_web') && Schema::hasColumn('online_configurations', 'reservar_stock_pedidos_web')) {
             $nuevo = $request->boolean('reservar_stock_pedidos_web');
             if ($nuevo !== (bool) $model->reservar_stock_pedidos_web) {
@@ -235,6 +236,46 @@ class OnlineConfigurationController extends Controller
         // $this->fullModel() ya devuelve el modelo con mail_password oculto por el $hidden del
         // modelo (Eloquent lo excluye al serializar a JSON), asi que nunca se filtra por esta via.
         return response()->json(['model' => $this->fullModel('OnlineConfiguration', $model->id)], 200);
+    }
+
+    protected function guardar_textos_footer($model, Request $request) {
+        $limites = [
+            'footer_contacto_titulo' => 80,
+            'footer_contacto_email'  => 150,
+            'footer_contacto_texto'  => 2000,
+        ];
+        foreach ($limites as $campo => $maximo) {
+            if (!$request->has($campo) || !Schema::hasColumn('online_configurations', $campo)) {
+                continue;
+            }
+            $valor = $request->input($campo);
+            if (!is_null($valor) && !is_string($valor)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    $campo => 'Ingresá texto, no números, listas ni objetos.',
+                ]);
+            }
+            $valor = is_null($valor) ? '' : trim($valor);
+            if ($valor === '') {
+                $model->{$campo} = null;
+                continue;
+            }
+            if (strip_tags($valor) !== $valor || preg_match('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/', $valor)) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    $campo => 'Ingresá texto plano, sin etiquetas HTML ni controles.',
+                ]);
+            }
+            if (mb_strlen($valor) > $maximo) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    $campo => 'Este texto puede tener hasta '.$maximo.' caracteres.',
+                ]);
+            }
+            if ($campo === 'footer_contacto_email' && filter_var($valor, FILTER_VALIDATE_EMAIL) === false) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    $campo => 'Ingresá un correo válido, por ejemplo ventas@tutienda.com.',
+                ]);
+            }
+            $model->{$campo} = $valor;
+        }
     }
 
     protected function guardar_contactos_whatsapp($model, Request $request) {
