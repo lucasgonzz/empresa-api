@@ -442,14 +442,14 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
     }
 
     /**
-     * 🔴 Ronda 2, hallazgo 2. El estado va al PRINCIPIO del último bloque no cacheado (no al final): así no corre
-     * los límites de lo que el bloque ya traía (memoria del negocio). El bloque cacheado queda idéntico y la cantidad
-     * de bloques no cambia.
+     * 🔴 Ronda 2, hallazgo 2. El estado viaja en el último bloque no cacheado SIN pisar lo que otros tests fijan de ese
+     * bloque: la memoria sigue empezando con su etiqueta y su tramo «lo aprendido» no se mide con el estado adentro. El
+     * bloque cacheado queda idéntico y la cantidad de bloques no cambia.
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function el_estado_va_al_principio_del_ultimo_bloque_no_cacheado()
+    public function el_estado_viaja_en_el_ultimo_bloque_sin_correr_la_memoria()
     {
         $sin_tareas = $this->bloques_del_system($this->conversacion_whatsapp());
 
@@ -461,10 +461,17 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
         $this->assertSame($sin_tareas[0], $con_tareas[0], 'El bloque cacheado no puede cambiar.');
         $this->assertCount(count($sin_tareas), $con_tareas);
 
-        $ultimo = $con_tareas[count($con_tareas) - 1];
+        $ultimo = (string) $con_tareas[count($con_tareas) - 1]['text'];
 
-        $this->assertArrayNotHasKey('cache_control', $ultimo);
-        $this->assertSame(0, strpos((string) $ultimo['text'], self::ENCABEZADO), 'El estado tiene que abrir el último bloque no cacheado.');
-        $this->assertStringContainsString('Ahora son las 10:00', (string) $ultimo['text'], 'La hora sigue en el bloque de tareas.');
+        $this->assertArrayNotHasKey('cache_control', $con_tareas[count($con_tareas) - 1]);
+        $this->assertStringContainsString(self::ENCABEZADO, $ultimo, 'El estado viaja en el último bloque no cacheado.');
+        $this->assertStringContainsString('Ahora son las 10:00', $ultimo, 'La hora sigue en el bloque de tareas.');
+        $this->assertStringStartsWith('<memoria_del_negocio>', $ultimo, 'La memoria tiene que seguir empezando con su etiqueta.');
+
+        $desde_lo_aprendido = strpos($ultimo, '=== aprendizajes/correcciones.md');
+
+        if ($desde_lo_aprendido !== false) {
+            $this->assertStringNotContainsString(self::ENCABEZADO, substr($ultimo, $desde_lo_aprendido), 'El estado no puede quedar dentro del tramo de lo aprendido.');
+        }
     }
 }
