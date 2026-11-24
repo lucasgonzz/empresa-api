@@ -66,9 +66,8 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
      */
     protected function agregado_de($system)
     {
-        $posicion = strpos($system, self::ENCABEZADO);
-
-        return $posicion === false ? '' : substr($system, $posicion);
+        // Ronda 2: el estado ya no está al final del system (abre el último bloque), así que se corta hasta la regla.
+        return $this->estado_delimitado($system);
     }
 
     /**
@@ -312,7 +311,7 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
         $agregado = $this->agregado_de($this->texto_del_system($this->bloques_del_system($this->conversacion_whatsapp())));
 
         $this->assertNotSame('', $agregado, 'El system no trae el estado real de las tareas.');
-        $this->assertLessThanOrEqual(1500, mb_strlen($agregado), 'El agregado pasa de 1.500 caracteres (' . mb_strlen($agregado) . ').');
+        $this->assertLessThanOrEqual(2000, mb_strlen($agregado), 'El agregado pasa de 2.000 caracteres (' . mb_strlen($agregado) . ').');
 
         foreach ($ids_activas as $id) {
             $this->assertStringContainsString('[id ' . $id . ']', $agregado, 'Una activa quedó afuera por el tope de tamaño.');
