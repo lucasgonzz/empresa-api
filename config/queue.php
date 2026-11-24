@@ -41,12 +41,33 @@ return [
     | del minuto (~28 s de mediana). Con esto encendido (y QUEUE_SCHEDULER_WORKER también), el turno
     | se despacha a la cola `<QUEUE_NAME>_asistente` y el scheduler deja un worker vivo sobre ella.
     | Con QUEUE_ASISTENTE_WORKER=false el turno vuelve a `default` y lo atiende el cron de siempre:
-    | es el freno por cliente si Hostinger se queja, sin desplegar. En el VPS no hace nada.
+    | es el freno por cliente si Hostinger se queja, sin desplegar. En el VPS sólo hace algo si además
+    | está prendido `asistente_worker_vps` (abajo).
     | Default true. filter_var y no (bool): "false" y "0" tienen que apagarlo.
     |
     */
 
     'asistente_worker' => filter_var(env('QUEUE_ASISTENTE_WORKER', true), FILTER_VALIDATE_BOOLEAN),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Worker propio del turno del asistente en el VPS (apagado por defecto)
+    |--------------------------------------------------------------------------
+    |
+    | Misión asistente-cola-vps (S4 de colas-prevencion-fase2). En el VPS el turno del asistente va a
+    | `default`, que consume un solo worker de supervisor con --timeout=3600: un export de hasta 1 h lo
+    | deja esperando. Con QUEUE_ASISTENTE_WORKER_VPS=true (y QUEUE_ASISTENTE_WORKER, que por defecto es
+    | true) el turno va a `<cola>_asistente` y el scheduler del cliente lanza el mismo worker por minuto
+    | que el shared (sin mutex, --max-time=65). En el VPS NO se mira `scheduler_worker` (vale false a
+    | propósito) ni la caché. Default false: ninguna instancia cambia sin pedirlo.
+    |
+    | Para volver atrás, en este orden: 1) QUEUE_ASISTENTE_WORKER=false (los turnos nuevos vuelven a
+    | `default` y el worker sigue hasta vaciar `_asistente`); 2) con `_asistente` en 0, quitar esta
+    | variable. Al revés quedarían turnos huérfanos. filter_var y no (bool): "false" y "0" la apagan.
+    |
+    */
+
+    'asistente_worker_vps' => filter_var(env('QUEUE_ASISTENTE_WORKER_VPS', false), FILTER_VALIDATE_BOOLEAN),
 
     /*
     |--------------------------------------------------------------------------
