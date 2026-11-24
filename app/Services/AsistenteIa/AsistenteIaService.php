@@ -6329,6 +6329,17 @@ CONFIRMACION;
             $ahora = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::ahora();
 
             $partes[] = 'Ahora son las ' . $ahora->format('H:i') . ' del ' . FormatoIaHelper::fecha_con_dia($ahora) . '.';
+
+            /*
+             * Prevención de «la cancelé» dicho de memoria: la lista REAL de tareas del dueño y la regla corta, en
+             * este mismo bloque (sin abrir otro). El Helper devuelve '' si no pudo leerla y el turno sigue igual.
+             */
+            $estado_real = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::estado_para_el_modelo($owner);
+
+            if ($estado_real !== '') {
+
+                $partes[] = $estado_real;
+            }
         }
 
         /* Enmienda 1 (E1): resultados de tareas que el código pone al principio de la respuesta de este turno. */
