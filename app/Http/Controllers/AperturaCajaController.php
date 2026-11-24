@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
+use App\Http\Controllers\Helpers\caja\CajaVisibilidadHelper;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
 use Illuminate\Http\Request;
@@ -11,6 +12,27 @@ use Maatwebsite\Excel\Facades\Excel;
 
 class AperturaCajaController extends Controller
 {
+    /** El 403 de una caja que el empleado no ve en Tesorería (misión cajas-permisos-claros). */
+    const MENSAJE_CAJA_NO_VISIBLE = 'No tenés permiso para ver esta caja en Tesorería. Pedile al dueño que te agregue en la caja, en «Quiénes la ven en Tesorería».';
+
+    /**
+     * Respuesta 403 si el usuario autenticado no ve la caja en Tesorería; null si la ve (o si la caja
+     * no existe, caso que las acciones resuelven como siempre). Ver CajaVisibilidadHelper.
+     *
+     * @param int|string|null $caja_id Id de la caja a consultar.
+     * @return \Illuminate\Http\JsonResponse|null
+     */
+    protected function rechazo_si_no_ve_la_caja($caja_id) {
+        $auth_user = $this->user(false);
+        $caja = Caja::where('id', $caja_id)->withAll()->first();
+
+        if (is_null($auth_user) || is_null($caja) || CajaVisibilidadHelper::ve_en_tesoreria($caja, $auth_user)) {
+            return null;
+        }
+
+        return response()->json(['message' => self::MENSAJE_CAJA_NO_VISIBLE], 403);
+    }
+
 
     /**
      * Aperturas de una caja, de la más nueva a la más vieja.
@@ -24,6 +46,12 @@ class AperturaCajaController extends Controller
      * @return \Illuminate\Http\JsonResponse
      */
     public function index(Request $request, $caja_id) {
+        $rechazo = $this->rechazo_si_no_ve_la_caja($caja_id);
+
+        if (!is_null($rechazo)) {
+            return $rechazo;
+        }
+
         $query = AperturaCaja::where('caja_id', $caja_id)
                             ->orderBy('created_at', 'DESC')
                             ->orderBy('id', 'DESC')
@@ -59,6 +87,16 @@ class AperturaCajaController extends Controller
     }  
 
     public function show($id) {
+        $apertura = AperturaCaja::find($id);
+
+        if (!is_null($apertura)) {
+            $rechazo = $this->rechazo_si_no_ve_la_caja($apertura->caja_id);
+
+            if (!is_null($rechazo)) {
+                return $rechazo;
+            }
+        }
+
         return response()->json(['model' => $this->fullModel('AperturaCaja', $id)], 200);
     }
 
