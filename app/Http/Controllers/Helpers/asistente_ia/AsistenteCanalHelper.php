@@ -7,7 +7,10 @@ use App\Models\AiConversation;
 use App\Models\MostradorReporte;
 use App\Models\User;
 use Carbon\Carbon;
+use Illuminate\Queue\LuaScripts;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Redis;
 
 /**
  * Quién habla y en qué conversación, cuando el mensaje entra por WhatsApp (misión
@@ -148,25 +151,55 @@ class AsistenteCanalHelper
      * distinguen por QUEUE_NAME, y una cola con nombre fijo dejaría que el worker de una tomara el
      * turno de otra.
      *
+     * En el shared es la cola de la conexión `database`, literal como siempre. En el VPS (opción
+     * `queue.asistente_worker_vps`) es la de la conexión por defecto: con `redis` respeta QUEUE_NAME y,
+     * si no, REDIS_QUEUE (config/queue.php), que pueden diferir del nombre de la conexión `database`.
+     *
      * @return string
      */
     protected static function nombre_de_la_cola_del_asistente()
     {
+        if (config('app.VPS')) {
+            return config('queue.connections.' . config('queue.default') . '.queue', 'default') . '_asistente';
+        }
+
         return config('queue.connections.database.queue', 'default') . '_asistente';
     }
 
     /**
-     * ¿Se dan las condiciones de infraestructura para usar la cola propia del asistente?
-     * Hosting compartido (no VPS), con el worker del scheduler y el interruptor del asistente
-     * (QUEUE_ASISTENTE_WORKER) encendidos. En el VPS el supervisor sólo consume `default`: una cola
-     * nueva dejaría el turno sin nadie que lo levante.
+     * Puerta ÚNICA de infraestructura del worker del asistente. La usan las dos funciones públicas
+     * (el despacho del turno y el schedule del Kernel) para que no puedan divergir: si una abriera y
+     * la otra no, el turno iría a `<cola>_asistente` sin worker que lo levante.
+     *
+     *  - Shared (no VPS): el worker del scheduler (`queue.scheduler_worker`), como siempre.
+     *  - VPS: SÓLO `queue.asistente_worker_vps` (apagada por defecto). Ignora a propósito
+     *    `queue.scheduler_worker`: en el VPS vale false (el supervisor ya consume `default` y el
+     *    scheduler no lanza el worker de `default`), y exigirlo dejaría la opción inutilizable. Tampoco
+     *    mira `cache.default`: el evento del worker no tiene mutex (Enmienda 8), no hay candado que la
+     *    caché tenga que sostener.
+     *
+     * @return bool
+     */
+    protected static function infraestructura_del_worker_del_asistente()
+    {
+        if (config('app.VPS')) {
+            return (bool) config('queue.asistente_worker_vps');
+        }
+
+        return (bool) config('queue.scheduler_worker');
+    }
+
+    /**
+     * ¿Se dan las condiciones para usar la cola propia del asistente? La puerta única de
+     * infraestructura (shared: worker del scheduler; VPS: la opción `asistente_worker_vps`) y el
+     * interruptor del asistente (QUEUE_ASISTENTE_WORKER) encendidos. En el VPS, sin la opción, el
+     * supervisor sólo consume `default`: una cola nueva dejaría el turno sin nadie que lo levante.
      *
      * @return bool
      */
     protected static function cola_del_asistente_habilitada()
     {
-        return ! config('app.VPS')
-            && config('queue.scheduler_worker')
+        return self::infraestructura_del_worker_del_asistente()
             && config('queue.asistente_worker');
     }
 
@@ -174,10 +207,11 @@ class AsistenteCanalHelper
      * Cola a la que se despacha el turno del asistente (WhatsApp y chat de la pantalla), o null
      * para la cola por defecto, que es el comportamiento de siempre (D5).
      *
-     * Devuelve la cola propia sólo en hosting compartido con el worker del scheduler y el
-     * interruptor encendidos Y con el dueño de la instancia con la extensión `agentes_ia`. En
-     * cualquier otro caso (VPS incluido) devuelve null. Es el ayudante ÚNICO: así los dos canales
-     * y el redespacho no tienen criterios distintos.
+     * Devuelve la cola propia sólo si se cumple la puerta de infraestructura (shared con el worker
+     * del scheduler; VPS con la opción `asistente_worker_vps`) y el interruptor está encendido, Y el
+     * dueño de la instancia tiene la extensión `agentes_ia`. En cualquier otro caso (el VPS sin la
+     * opción incluido) devuelve null. Es el ayudante ÚNICO: así los dos canales y el redespacho no
+     * tienen criterios distintos.
      *
      * @return string|null
      */
@@ -232,15 +266,17 @@ class AsistenteCanalHelper
      * que un turno despachado antes de apagar la extensión o el interruptor no quede huérfano.
      * Null si no hay que programar ningún worker.
      *
-     * Nunca devuelve cola en VPS ni con el worker del scheduler apagado, ni siquiera con filas
-     * pendientes: ahí el bloque de workers del schedule no se ejecuta.
+     * Nunca devuelve cola si la puerta de infraestructura está cerrada (shared sin worker del
+     * scheduler; VPS sin `asistente_worker_vps`), ni siquiera con filas pendientes: ahí el worker no
+     * se programa. En VPS la vuelta atrás es en dos pasos (ver config/queue.php): primero el
+     * interruptor `asistente_worker`, y recién con la cola vacía la opción `asistente_worker_vps`.
      *
      * @param  \App\Models\User|null  $dueno  El dueño ya resuelto por el Kernel (null si no hay USER_ID).
      * @return string|null
      */
     public static function cola_del_turno_whatsapp_para_el_schedule($dueno): ?string
     {
-        if (config('app.VPS') || ! config('queue.scheduler_worker')) {
+        if (! self::infraestructura_del_worker_del_asistente()) {
             return null;
         }
 
@@ -252,13 +288,60 @@ class AsistenteCanalHelper
         }
 
         // Sin eso, sólo si hay turnos pendientes en esa cola. Si la consulta falla, no se programa.
-        try {
-            $hay_pendientes = DB::table('jobs')->where('queue', $cola)->exists();
-        } catch (\Throwable $e) {
-            $hay_pendientes = false;
+        return self::hay_turnos_pendientes_en($cola) ? $cola : null;
+    }
+
+    /**
+     * ¿Quedan turnos (pendientes, reservados o demorados) en la cola propia del asistente? Decide si
+     * el worker sigue programado cuando el dueño ya no cumple las condiciones, para no dejar huérfano
+     * un turno despachado antes de apagar algo.
+     *
+     *  - Shared: la consulta de siempre sobre la tabla `jobs`, sin cambios.
+     *  - VPS con driver `database`: la misma consulta sobre la tabla de la conexión por defecto.
+     *  - VPS con driver `redis`: el mismo script Lua y las mismas claves que `RedisQueue::size`
+     *    (lista, `:delayed` y `:reserved`).
+     *  - Cualquier otro driver, o una excepción: false y un `Log::warning` (no se programa worker;
+     *    el huérfano lo vería la herramienta de colas).
+     *
+     * 🔴 El driver se lee de la CONFIG (`queue.default` → `queue.connections.<conexion>.driver`) y no
+     * por la fachada `Queue`: con `Queue::fake()` (el test 7) la fachada devuelve el fake y con `sync`
+     * (phpunit.xml) `size()` da siempre 0, así que dejaría sin worker a un huérfano real.
+     *
+     * @param  string  $cola  Cola del asistente (p. ej. `default_asistente`).
+     * @return bool
+     */
+    protected static function hay_turnos_pendientes_en(string $cola): bool
+    {
+        if (! config('app.VPS')) {
+            try {
+                return DB::table('jobs')->where('queue', $cola)->exists();
+            } catch (\Throwable $e) {
+                return false;
+            }
         }
 
-        return $hay_pendientes ? $cola : null;
+        $conexion = config('queue.default');
+        $driver = config('queue.connections.' . $conexion . '.driver');
+
+        try {
+            if ($driver === 'database') {
+                return DB::table(config('queue.connections.' . $conexion . '.table', 'jobs'))->where('queue', $cola)->exists();
+            }
+
+            if ($driver === 'redis') {
+                $clave = 'queues:' . $cola;
+                $total = Redis::connection(config('queue.connections.' . $conexion . '.connection', 'default'))
+                    ->eval(LuaScripts::size(), 3, $clave, $clave . ':delayed', $clave . ':reserved');
+
+                return (int) $total > 0;
+            }
+
+            Log::warning('Cola del asistente en VPS: el driver "' . $driver . '" no se sabe contar; no se programa el worker de ' . $cola . '.');
+        } catch (\Throwable $e) {
+            Log::warning('Cola del asistente en VPS: no se pudo contar ' . $cola . ' (' . $e->getMessage() . '); no se programa el worker.');
+        }
+
+        return false;
     }
 
     /**
