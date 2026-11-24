@@ -220,9 +220,13 @@ class Visibilidad_en_tesoreria_Test extends EmpresaTestCase
         $this->assertFalse($b['ve_en_tesoreria'] ?? null, 'Brisa no está en la lista de Tesorería de Caja B.');
         $this->assertArrayHasKey('saldo', $b, 'El campo saldo sigue existiendo (compatibilidad), en null.');
         $this->assertNull($b['saldo']);
-        $this->assertNull($b['saldo_contable'] ?? 'falta');
-        $this->assertNull($b['saldo_disponible'] ?? 'falta');
-        $this->assertNull($b['saldo_a_liquidar'] ?? 'falta');
+
+        // Las tres claves tienen que existir Y valer null (con `?? 'falta'` una clave en null daba
+        // 'falta', así que esa forma de aserción nunca podía pasar: se endurece, no se debilita).
+        foreach (['saldo_contable', 'saldo_disponible', 'saldo_a_liquidar'] as $clave) {
+            $this->assertArrayHasKey($clave, $b, 'La clave ' . $clave . ' tiene que viajar (en null).');
+            $this->assertNull($b[$clave], 'El ' . $clave . ' de una caja ajena no puede viajar.');
+        }
 
         $this->assertTrue($libre['ve_en_tesoreria'] ?? null);
         $this->assertSame('todos', $libre['origen_visibilidad_tesoreria'] ?? null);
