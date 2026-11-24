@@ -236,7 +236,7 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
     {
         $tarea = $this->tarea_del_asistente(['proxima_ejecucion_at' => '2026-11-24 17:00:00', 'fecha_inicio' => '2026-11-24']);
 
-        $this->modelo_con_guion([['texto', 'Listo, la pasé al viernes a las 18 para que no te escriba antes.']]);
+        $this->modelo_con_guion([['texto', 'Listo, la pasé al viernes a las 17 para que no te escriba antes.']]);
 
         $turno = $this->turno_del_dueno('Pasame la tarea de logística para el viernes');
 
@@ -885,5 +885,193 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
         $this->assertStringNotContainsString('AHORA', $nota);
         $this->assertStringContainsString('consultar_tareas_del_asistente', $nota);
         $this->assertStringContainsString('no figura', $nota);
+    }
+
+    /* ═══════════════ RONDA 3: se achica a las afirmaciones EXPLÍCITAS sobre tareas ═══════════════ */
+
+    /**
+     * Arma uno de los cuatro estados de base de la ronda 3.
+     *
+     * @param  string  $estado  vacia | activa_9 | cancelada_2h | pausada
+     * @return void
+     */
+    protected function estado_de_base($estado)
+    {
+        DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+        if ($estado === 'activa_9') {
+            $this->tarea_a_las('Resumen de ventas', '09:00');
+        } elseif ($estado === 'cancelada_2h') {
+            $tarea = $this->tarea_a_las('Resumen de ventas', '09:00', ['estado' => 'cancelada']);
+            DB::table('ai_tareas_del_asistente')->where('id', $tarea->id)->update(['updated_at' => Carbon::now()->subHours(2)]);
+        } elseif ($estado === 'pausada') {
+            $this->tarea_a_las('Resumen de ventas', '09:00', ['estado' => 'pausada']);
+        }
+    }
+
+    /**
+     * 🔴 RONDA 3, punto 1. Las promesas sueltas («te escribo a las 9», «a las 9 te paso…», «te recuerdo que a las
+     * 17…») NUNCA disparan, con cualquier estado de la base: se acepta no atrapar la promesa suelta a cambio de no
+     * borrar una oración verdadera.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function las_promesas_sueltas_nunca_disparan_con_ningun_estado_de_base()
+    {
+        $frases = [
+            'Te recuerdo que a las 17 tenés la reunión con el contador.',
+            'Te aviso que a las 18 cierra el banco.',
+            'Te paso lo que vendiste a las 10 y a las 11.',
+            'Te mando el resumen de caja de las 8 a las 14.',
+            'A las 9 te paso a buscar el camión del reparto.',
+            'Te aviso a las 17 por la reunión con el contador, ya está en la agenda.',
+            'Listo, te escribo el viernes a las 9.',
+            'Dale, mañana a las 8 te mando el resumen.',
+            'De nada. Te escribo mañana a las 8 con el resumen.',
+            'Tenés una: te aviso a las 9 todos los lunes con los cheques.',
+        ];
+
+        foreach (['vacia', 'activa_9', 'cancelada_2h', 'pausada'] as $estado) {
+
+            $this->estado_de_base($estado);
+
+            foreach ($frases as $frase) {
+                $this->assertSame([], $this->no_hechas($frase, 'Gracias por la tarea del resumen'), '[' . $estado . '] no tiene que disparar: ' . $frase);
+            }
+        }
+    }
+
+    /**
+     * 🔴 RONDA 3, punto 3 (el bug que la enmienda de la ronda 2 tapó). Reprogramar con día Y hora compara los dos:
+     * con la tarea a las 17:00 pero que corre el martes, «la pasé al viernes a las 17» es mentira; con la próxima
+     * ejecución ese viernes a las 17:00, es verdad.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function reprogramar_con_dia_y_hora_compara_los_dos()
+    {
+        $casos = [
+            ['Listo, la pasé al viernes a las 17 para que no te escriba antes.', Carbon::FRIDAY],
+            ['Listo, la pasé al viernes a las 17.', Carbon::FRIDAY],
+            ['Quedó para el viernes a las 17.', Carbon::FRIDAY],
+            ['Hecho, la moví al jueves a las 17:00.', Carbon::THURSDAY],
+        ];
+
+        foreach ($casos as $caso) {
+
+            DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+            $tarea = $this->tarea_del_asistente(['proxima_ejecucion_at' => Carbon::now()->next(Carbon::TUESDAY)->format('Y-m-d') . ' 17:00:00']);
+
+            $this->assertSame(['reprogramar'], $this->no_hechas($caso[0], 'Pasame la tarea de logística para el viernes'), 'La próxima es el martes: tiene que disparar: ' . $caso[0]);
+
+            DB::table('ai_tareas_del_asistente')->where('id', $tarea->id)
+                ->update(['proxima_ejecucion_at' => Carbon::now()->next($caso[1])->format('Y-m-d') . ' 17:00:00']);
+
+            $this->assertSame([], $this->no_hechas($caso[0], 'Pasame la tarea de logística para el viernes'), 'La próxima es ese día a las 17: es verdad: ' . $caso[0]);
+        }
+    }
+
+    /**
+     * 🔴 RONDA 3, punto 3. Programar con un día nombrado y una hora exige una tarea activa a esa hora que corra ese
+     * día; una diaria a esa hora respalda cualquier día.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function programar_con_dia_y_hora_exige_que_corra_ese_dia_salvo_las_diarias()
+    {
+        $frase = 'Quedó programada para mañana a las 17.';
+        $pedido = 'Programame una tarea para mañana a las 17';
+
+        DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+
+        $tarea = $this->tarea_a_las('Preguntas de logística', '17:00', [
+            'recurrencia'          => 'una_vez',
+            'proxima_ejecucion_at' => Carbon::now()->addDays(3)->format('Y-m-d') . ' 17:00:00',
+        ]);
+
+        $this->assertSame(['programar'], $this->no_hechas($frase, $pedido), 'Corre en tres días: no es la de mañana.');
+
+        DB::table('ai_tareas_del_asistente')->where('id', $tarea->id)->update(['proxima_ejecucion_at' => Carbon::now()->addDay()->format('Y-m-d') . ' 17:00:00']);
+
+        $this->assertSame([], $this->no_hechas($frase, $pedido), 'Corre mañana a las 17.');
+
+        DB::table('ai_tareas_del_asistente')->where('id', $tarea->id)
+            ->update(['recurrencia' => 'diaria', 'proxima_ejecucion_at' => Carbon::now()->addDays(3)->format('Y-m-d') . ' 17:00:00']);
+
+        $this->assertSame([], $this->no_hechas($frase, $pedido), 'Una diaria a las 17 respalda cualquier día.');
+    }
+
+    /**
+     * 🔴 RONDA 3, punto 4. «Hoy no te escribo más, que descanses.» no cancela ninguna tarea; sí lo es «no te escribo
+     * más» cuando la persona pidió sacar la tarea.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function no_te_escribo_mas_solo_cuenta_si_se_hablaba_de_cancelar_una_tarea()
+    {
+        $this->tarea_a_las('Resumen de ventas', '09:00');
+
+        $this->assertSame([], $this->no_hechas('Hoy no te escribo más, que descanses.', 'Gracias, chau'));
+        $this->assertSame(['cancelar'], $this->no_hechas('Listo, no te escribo más.', 'Sacá la tarea de ventas, no me escribas más'));
+    }
+
+    /**
+     * 🔴 RONDA 3, punto 6. Con una tarea VIVA cuyo título comparte una palabra con la oración, alcanza como referencia a
+     * una tarea aunque el pedido no diga «tarea»; con una tarea de otro tema, no.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function una_tarea_viva_con_una_palabra_en_comun_alcanza_como_referencia()
+    {
+        $this->tarea_a_las('Ventas del día a primera hora', '08:00');
+
+        $this->assertSame(['cancelar'], $this->no_hechas('La de ventas diarias la cancelé.', 'Gracias'));
+
+        DB::table('ai_tareas_del_asistente')->where('owner_id', $this->comercio->id)->delete();
+        $this->tarea_a_las('Preguntas de logística', '17:00');
+
+        $this->assertSame([], $this->no_hechas('La de ventas diarias la cancelé.', 'Gracias'));
+    }
+
+    /**
+     * 🔴 RONDA 3, punto 5. Un texto neutro hace CERO consultas: ni a la base de tareas ni, con el pedido como función,
+     * al pedido de la persona. La lectura sólo ocurre después de que el detector de texto encontró una candidata.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function un_texto_neutro_no_consulta_la_base()
+    {
+        $this->tarea_a_las('Resumen de ventas', '09:00');
+
+        $consultas = 0;
+
+        DB::listen(function () use (&$consultas) {
+            $consultas++;
+        });
+
+        $texto = 'Hoy vendiste $120.000 en 14 ventas. Te paso el detalle si querés.';
+
+        $this->assertSame([], TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($texto, 'Cómo vengo hoy', [], [], $this->comercio->id));
+        $this->assertSame(0, $consultas, 'acciones_no_hechas: un texto neutro no consulta.');
+
+        $pedido_perezoso = function () {
+            throw new \RuntimeException('El pedido no se tiene que pedir para un texto neutro.');
+        };
+
+        $this->assertSame([], TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($texto, $pedido_perezoso, [], [], $this->comercio->id));
+        $this->assertSame($texto, TareaAfirmadaSinHerramientaIaHelper::sin_lo_afirmado($texto, $pedido_perezoso, [], $this->comercio->id));
+        $this->assertSame(0, $consultas, 'Ni el pedido ni la base se leen con un texto neutro.');
+
+        // Con una candidata, en cambio, sí se lee la base.
+        TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas('Quedó programada para hoy a las 15:45.', 'Programame una tarea', [], [], $this->comercio->id);
+
+        $this->assertGreaterThan(0, $consultas, 'Con una candidata se contrasta con la base.');
     }
 }
