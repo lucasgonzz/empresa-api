@@ -811,6 +811,64 @@ class ModelosIaHelper
     }
 
     /**
+     * Timeout del reintento por corte de la importación con IA (la respuesta llegó cortada por el
+     * techo de salida y se repite el pedido con el doble de techo). Tiene plazo PROPIO: el doble del
+     * timeout configurado, recortado a lo que queda del presupuesto del análisis. No hereda el
+     * remanente del primer pedido (con un primer pedido rápido, ese remanente era de unos pocos
+     * segundos y el reintento moría antes de empezar).
+     *
+     * @param  int  $timeout  Timeout configurado para una llamada (segundos).
+     * @param  int  $factor  Multiplicador del reintento (2 = el reintento por corte).
+     * @param  int  $segundos_gastados  Segundos que ya consumió el análisis (el primer pedido).
+     * @return int  Timeout en segundos, o 0 si no queda tiempo (menos del piso de TIMEOUT_MINIMO_RESPALDO_SEGUNDOS).
+     */
+    public static function timeout_del_reintento_por_corte(int $timeout, int $factor, int $segundos_gastados): int
+    {
+        // Lo que queda del presupuesto total del análisis.
+        $restante = self::PRESUPUESTO_IMPORTACION_SEGUNDOS - $segundos_gastados;
+
+        // Con menos del piso no alcanza ni para una planilla chica: no se pide.
+        if ($restante < self::TIMEOUT_MINIMO_RESPALDO_SEGUNDOS) {
+            return 0;
+        }
+
+        return min($timeout * $factor, $restante);
+    }
+
+    /**
+     * La IA con la que se hace el reintento por corte. Si el modelo era DeepSeek Pro con razonamiento
+     * prendido pasa a Flash sin razonamiento: el razonamiento de DeepSeek no tiene tope propio y puede
+     * volver a gastarse el techo pensando; Flash sólo escribe el JSON, más rápido y más barato. En
+     * cualquier otro caso (Anthropic, Flash elegido, Pro con razonamiento apagado) devuelve la misma
+     * IA, sin tocar: mismo modelo, techo doble.
+     *
+     * @param  array  $ia  Lo que devolvió resolver() para la tarea Excel.
+     * @return array  La misma $ia, o la resolución de Flash sin thinking.
+     */
+    public static function ia_del_reintento_por_corte(array $ia): array
+    {
+        // Sólo DeepSeek Pro con thinking enabled cambia de modelo.
+        $es_pro_con_razonamiento = isset($ia['proveedor'], $ia['opcion_efectiva'])
+            && (string) $ia['proveedor'] === ProveedorIaHelper::DEEPSEEK
+            && (string) $ia['opcion_efectiva'] === self::DEEPSEEK_PRO
+            && is_array($ia['thinking'] ?? null)
+            && isset($ia['thinking']['type'])
+            && (string) $ia['thinking']['type'] === 'enabled';
+
+        if (! $es_pro_con_razonamiento) {
+            return $ia;
+        }
+
+        return self::resolucion_de_opcion(
+            $ia['tarea'],
+            $ia['opcion_elegida'],
+            self::DEEPSEEK_FLASH,
+            false,
+            (bool) $ia['fallback']
+        );
+    }
+
+    /**
      * El dueño del comercio de un usuario: él mismo si no tiene `owner_id`, si no su dueño. La
      * configuración de modelos vive en la fila del dueño; los servicios reciben un user_id que casi
      * siempre ya es el del dueño, pero no cuesta nada asegurarlo.

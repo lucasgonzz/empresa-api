@@ -9,7 +9,8 @@ use Illuminate\Validation\ValidationException;
 class MedidasEnvioHelper
 {
     const CAMPOS = ['peso', 'alto', 'ancho', 'profundidad'];
-    const ETIQUETAS = ['peso' => 'Peso (kg)', 'alto' => 'Alto (cm)', 'ancho' => 'Ancho (cm)', 'profundidad' => 'Largo / profundidad (cm)'];
+    // 'profundidad' es la key técnica (contrato con la tienda); para el dueño es el "Largo" (lo que Zipnova llama length).
+    const ETIQUETAS = ['peso' => 'Peso (kg)', 'alto' => 'Alto (cm)', 'ancho' => 'Ancho (cm)', 'profundidad' => 'Largo (cm)'];
 
     /** Omitido conserva, null limpia. La tabla lateral conserva compatible el SELECT * de las APIs anteriores. */
     public static function datos(array $cuerpo)

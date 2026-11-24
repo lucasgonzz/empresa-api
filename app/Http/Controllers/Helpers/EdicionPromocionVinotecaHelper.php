@@ -13,7 +13,7 @@ class EdicionPromocionVinotecaHelper
     const CAMPOS = ['name', 'cost', 'final_price', 'stock', 'online', 'address_id', 'description', 'peso', 'alto', 'ancho', 'profundidad'];
     const ETIQUETAS = ['name' => 'Nombre', 'cost' => 'Costo por promo', 'final_price' => 'Precio de venta',
         'stock' => 'Stock de promos', 'online' => 'Disponible en la tienda', 'address_id' => 'Depósito', 'description' => 'Descripción',
-        'peso' => 'Peso (kg)', 'alto' => 'Alto (cm)', 'ancho' => 'Ancho (cm)', 'profundidad' => 'Largo / profundidad (cm)'];
+        'peso' => 'Peso (kg)', 'alto' => 'Alto (cm)', 'ancho' => 'Ancho (cm)', 'profundidad' => 'Largo (cm)'];
 
     public static function promo($id, $owner_id, $candado = false)
     {
