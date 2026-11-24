@@ -14,16 +14,23 @@ class ColorDeMailHelper
     /** Superficie sobre la que se apoya el botón: la tarjeta del mail es blanca fija. */
     const SURFACE = '#ffffff';
 
-    /** Contraste mínimo del fondo del botón contra la tarjeta (WCAG 1.4.11, componentes de interfaz). */
-    const MIN_BUTTON_CONTRAST = 3;
+    /** Contraste mínimo de cualquier fondo contra la tarjeta: descarta los casi blancos (se confunden con la tarjeta). */
+    const MIN_BUTTON_CONTRAST = 1.5;
+
+    /** Contraste mínimo para los grises: un gris claro se lee como botón desactivado. */
+    const MIN_GRAY_CONTRAST = 3;
+
+    /** Croma (0 a 1) por debajo del cual un color se considera gris. */
+    const GRAY_CHROMA = 0.10;
 
     /**
      * Elige el fondo y el texto del botón principal del mail.
      *
      * Candidatos en orden: el valor dado (color primario), los de $fallbacks (botón de agregar al
      * carrito y color secundario) y por último el neutro. Gana el primero que es un hex válido y
-     * contrasta al menos 3:1 contra la tarjeta blanca; así un primario casi blanco (ej. #E9E7EA) no
-     * deja el botón "Ver artículo" o "Volver a la tienda" parecido a uno desactivado.
+     * aceptable (decisión de Lucas 23/11/2026, adenda B: sólo se reemplazan blancos y grises claros):
+     * contraste >= 1,5:1 contra la tarjeta blanca y, si es gris (croma < 0,10), >= 3:1. Así un primario casi
+     * blanco (ej. #E9E7EA) no deja el botón parecido a uno desactivado, pero un naranja o verde con tono se respeta.
      *
      * @param mixed $value Color primario del comercio (hex #RGB o #RRGGBB; cualquier otra cosa se ignora).
      * @param array $fallbacks Otros colores candidatos, en orden de preferencia.
@@ -36,14 +43,31 @@ class ColorDeMailHelper
         $color = self::NEUTRAL;
         foreach ($candidates as $candidate) {
             $normalized = self::normalize($candidate);
-            if ($normalized !== null && self::contrast($normalized, self::SURFACE) >= self::MIN_BUTTON_CONTRAST) {
+            if ($normalized !== null && self::is_acceptable($normalized)) {
                 $color = $normalized;
                 break;
             }
         }
-        // Texto: el de mayor contraste sobre el fondo elegido (siempre >= 4,5:1 con un fondo que da >= 3:1 contra blanco).
+        // Texto: el de mayor contraste (blanco o negro) sobre el fondo elegido; siempre >= 4,5:1.
         $text = self::contrast($color, '#ffffff') >= self::contrast($color, '#000000') ? '#ffffff' : '#000000';
         return ['background' => $color, 'text' => $text];
+    }
+
+    /**
+     * Indica si un color #RRGGBB sirve de fondo del botón (regla de la adenda B).
+     *
+     * @param string $color Color en hex de 6 dígitos.
+     * @return bool true si contrasta >= 1,5:1 con la tarjeta y, siendo gris, >= 3:1.
+     */
+    private static function is_acceptable($color)
+    {
+        $ratio = self::contrast($color, self::SURFACE);
+        if ($ratio < self::MIN_BUTTON_CONTRAST) {
+            return false;
+        }
+        $channels = array(hexdec(substr($color, 1, 2)), hexdec(substr($color, 3, 2)), hexdec(substr($color, 5, 2)));
+        $is_gray = (max($channels) - min($channels)) / 255 < self::GRAY_CHROMA;
+        return !$is_gray || $ratio >= self::MIN_GRAY_CONTRAST;
     }
 
     /**
