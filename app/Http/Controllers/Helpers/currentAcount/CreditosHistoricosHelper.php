@@ -36,6 +36,9 @@ class CreditosHistoricosHelper
         $estados = [];
         $saldo = 0;
         $credito_total = 0;
+        // Arrastre (en centavos) de un saldo inicial legado: suma al saldo pero no se imputa (ver es_saldo_inicial_legado).
+        $arrastre_legado = 0;
+        $id_saldo_inicial_legado = null;
         foreach ($movimientos as $movimiento) {
             if ((int) $movimiento->is_provisorio) {
                 continue;
@@ -44,6 +47,16 @@ class CreditosHistoricosHelper
             $debe = self::centavos($movimiento->debe);
             $haber = self::centavos($movimiento->haber);
             $saldo += $debe - $haber;
+            if (self::es_saldo_inicial_legado($movimiento)) {
+                // No es débito ni fuente: queda fuera de estados e imputaciones. Un segundo legado en la misma
+                // cuenta es un dato que no conocemos: se rechaza en vez de arrastrarlo en silencio.
+                if (!is_null($id_saldo_inicial_legado)) {
+                    self::error($movimiento, 'es un segundo saldo inicial con Haber negativo en esta cuenta (el primero es el #'.$id_saldo_inicial_legado.'). Pedile a soporte que revise los saldos iniciales antes de recalcular');
+                }
+                $id_saldo_inicial_legado = $movimiento->id;
+                $arrastre_legado -= $haber;
+                continue;
+            }
             if ($debe > 0) {
                 $debitos[$movimiento->id] = ['movimiento' => $movimiento, 'total' => $debe, 'pendiente' => $debe];
             } elseif ($debe < 0) {
@@ -103,13 +116,15 @@ class CreditosHistoricosHelper
                 'status' => $debito['pendiente'] === 0 ? 'pagado' : ($debito['pendiente'] === $debito['total'] ? 'sin_pagar' : 'pagandose'),
                 'pagandose' => ($debito['total'] - $debito['pendiente']) / 100];
         }
-        // Invariante: ninguna fila pendiente agrega deuda por encima del saldo económico.
-        if ($pendiente - $remanente !== $saldo) {
+        // Invariante: ninguna fila pendiente agrega deuda por encima del saldo económico. El arrastre del saldo
+        // inicial legado es deuda que el saldo cuenta pero que ninguna venta recibe.
+        if ($pendiente - $remanente + $arrastre_legado !== $saldo) {
             throw ValidationException::withMessages(['cuenta_corriente' => 'Los importes de esta cuenta no se pueden conciliar. Pedile a soporte que revise el historial antes de registrar otro pago.']);
         }
         return ['estados' => $estados, 'imputaciones' => $imputaciones,
             'credito_total' => $credito_total / 100, 'saldo_economico' => $saldo / 100,
-            'pendiente' => $pendiente / 100, 'remanente' => $remanente / 100];
+            'pendiente' => $pendiente / 100, 'remanente' => $remanente / 100,
+            'arrastre_legado' => $arrastre_legado / 100];
     }
 
     /** Requiere transacción y candado del dueño. No modifica saldo, economía, comisiones ni puntos. */
@@ -132,6 +147,28 @@ class CreditosHistoricosHelper
             DB::table('pagado_por')->insert($lote);
         }
         return $plan;
+    }
+
+    /**
+     * Saldo inicial legado: fila importada en 2024 con detalle 'Saldo inicial', Debe NULL y Haber NEGATIVO
+     * (el importador guardaba `haber = saldo` sin abs). La cadena de saldos la cuenta como +|haber| (deuda),
+     * pero el motor normal nunca la imputó: no es débito (debe NULL) ni fuente (fondos negativos).
+     * Se la trata igual acá: arrastre que suma al saldo y NO recibe ni da pagos, sin tocar su importe. El signo
+     * original es dudoso (pudo ser saldo a favor), así que NO se la convierte en deuda imputable ni se corrige
+     * el dato; si alguien la repara a Haber positivo deja de ser legada y pasa a ser una fuente normal.
+     * Cualquier otra forma con Haber negativo (otro detalle, con venta, compra o destino) sigue rechazada.
+     * Ver .mision/PLAN.md (ticket 171) y APRENDER_NO_PARCHEAR.md (saldo inicial con signo).
+     *
+     * @param CurrentAcount $movimiento
+     * @return bool
+     */
+    private static function es_saldo_inicial_legado($movimiento)
+    {
+        return $movimiento->detalle === 'Saldo inicial'
+            && is_null($movimiento->debe)
+            && is_numeric($movimiento->haber) && (float) $movimiento->haber < 0
+            && is_null($movimiento->sale_id) && is_null($movimiento->provider_order_id)
+            && is_null($movimiento->to_pay_id) && is_null($movimiento->getRawOriginal('to_pay_ids'));
     }
 
     private static function centavos($importe)
@@ -189,7 +226,7 @@ class CreditosHistoricosHelper
                 self::error($movimiento, 'está vinculado a una compra que no coincide con esta cuenta, titular o moneda. Pedile a soporte que revise la compra vinculada');
             }
         }
-        if ((!is_null($movimiento->debe) && !is_numeric($movimiento->debe)) || (!is_null($movimiento->haber) && !is_numeric($movimiento->haber)) || (float) $movimiento->haber < 0 || (!is_null($movimiento->debe) && (float) $movimiento->haber != 0)) {
+        if ((!is_null($movimiento->debe) && !is_numeric($movimiento->debe)) || (!is_null($movimiento->haber) && !is_numeric($movimiento->haber)) || ((float) $movimiento->haber < 0 && !self::es_saldo_inicial_legado($movimiento)) || (!is_null($movimiento->debe) && (float) $movimiento->haber != 0)) {
             self::error($movimiento, 'tiene importes incompatibles en Debe y Haber. Revisá el comprobante con soporte antes de recalcular');
         }
     }
