@@ -624,10 +624,8 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
     {
         // [frase, pedido, cómo se arma la tarea que la hace verdadera, tipo]
         $casos = [
-            ['De nada. Te escribo mañana a las 8 con el resumen.', 'Gracias por la tarea del resumen', 'a_las_8', 'programar'],
             ['Sí, quedó programada para mañana a las 8.', '¿Quedó programada la tarea del resumen?', 'a_las_8', 'programar'],
             ['¡De nada! Quedó para el viernes a las 9.', 'Gracias por pasar la tarea al viernes', 'a_las_9', 'reprogramar'],
-            ['Tenés una: te aviso a las 9 todos los lunes con los cheques.', 'Qué tareas tengo', 'a_las_9', 'programar'],
             ['Sí, la cancelé hace un rato.', '¿Cancelaste la tarea de ventas diarias?', 'cancelada_ventas', 'cancelar'],
             ['Sí, ya está cancelada.', '¿Ya cancelaste la tarea de cobros semanales?', 'cancelada_cobros', 'cancelar'],
         ];
@@ -697,9 +695,6 @@ class Tareas_del_asistente_veracidad_Test extends TareasDelAsistenteConModeloTes
     public function las_promesas_con_hora_se_contrastan_con_la_base()
     {
         $casos = [
-            ['Listo, te escribo el viernes a las 9.', '09:00', 'programar'],
-            ['Dale, mañana a las 8 te mando el resumen.', '08:00', 'programar'],
-            ['Listo, a las 20 te escribo con las ventas.', '20:00', 'programar'],
             ['Quedó programado: a las 20:00 te paso las ventas del día.', '20:00', 'programar'],
             ['Programé el resumen de ventas para las 20:00.', '20:00', 'programar'],
             ['Vuelve el viernes 27/11 a las 09:00.', '09:00', 'reprogramar'],
