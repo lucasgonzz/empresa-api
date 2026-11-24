@@ -98,6 +98,25 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Imágenes de los mails (logo y foto del artículo)
+    |--------------------------------------------------------------------------
+    |
+    | image_allowed_hosts: hosts habilitados de forma explícita para descargar imágenes
+    | (MAIL_IMAGE_ALLOWED_HOSTS, separados por coma).
+    | image_public_addresses: mapa host => IPv4 públicas fijas; si un host no figura se resuelve por DNS.
+    | image_allowed_host_suffixes: dominios propios cuyos subdominios se descargan por HTTPS sin
+    | puerto explícito, sólo si TODAS sus IP resueltas son públicas (MAIL_IMAGE_ALLOWED_HOST_SUFFIXES).
+    |
+    */
+
+    'image_allowed_hosts' => array_values(array_filter(array_map('trim', explode(',', (string) env('MAIL_IMAGE_ALLOWED_HOSTS', ''))))),
+
+    'image_public_addresses' => [],
+
+    'image_allowed_host_suffixes' => array_values(array_filter(array_map('trim', explode(',', (string) env('MAIL_IMAGE_ALLOWED_HOST_SUFFIXES', 'comerciocity.com'))))),
+
+    /*
+    |--------------------------------------------------------------------------
     | Markdown Mail Settings
     |--------------------------------------------------------------------------
     |

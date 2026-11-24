@@ -78,18 +78,24 @@ class Advise extends Mailable
         $logo = null;
         foreach ([$configuration ? $configuration->logo_url : null, $user->image_url] as $source) {
             if (!empty($source)) {
-                $logo = $helper->prepare($source, $origin, $hosts);
+                $logo = $helper->prepare($source, $origin, $hosts, 440);
                 if ($logo !== null) {
                     break;
                 }
             }
         }
-        $palette = ColorDeMailHelper::palette($configuration ? $configuration->primary_color : null);
+        // Botón "Ver artículo": primario del comercio si contrasta con la tarjeta blanca; si no, botón de agregar
+        // al carrito o secundario, y por último el neutro (un primario casi blanco parecía un botón desactivado).
+        $palette = ColorDeMailHelper::palette(
+            $configuration ? $configuration->primary_color : null,
+            $configuration ? array($configuration->add_to_cart_button_color, $configuration->secondary_color) : array()
+        );
 
         // hosting_url es el contrato real de Image; jamás usar el placeholder como artículo.
         $image = null;
         if (isset($article->images) && count($article->images) > 0) {
-            $image = $helper->prepare($article->images[0]->hosting_url, $origin, $hosts);
+            // La foto va chica (192 px) en una celda fija: se reduce antes de codificar para no superar el tope de 1 MB.
+            $image = $helper->prepare($article->images[0]->hosting_url, $origin, $hosts, 192);
         }
 
         // Precio solo si el negocio NO trabaja con listas de precio (con listas el precio

@@ -8,7 +8,14 @@ namespace App\Http\Controllers\Helpers;
  */
 class ImagenParaMailHelper
 {
+    /** Tope de bytes de entrada (archivo local o descarga) y de salida (PNG). */
     const MAX_BYTES = 1048576;
+
+    /** Tope de píxeles que se acepta decodificar (4096 x 4096): los logos y fotos reales de los comercios son grandes. */
+    const MAX_PIXELS = 16777216;
+
+    /** Lado mayor, en píxeles, al que se reduce una imagen antes de adjuntarla (logo; la foto del artículo pide menos). */
+    const DEFAULT_MAX_SIDE = 440;
 
     public static function publicUrl($value, $origin = null)
     {
@@ -49,33 +56,111 @@ class ImagenParaMailHelper
             && !preg_match('/^(0\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|192\.0\.0\.|198\.(18|19)\.|(?:22[4-9]|23[0-9]|24[0-9]|25[0-5])\.)/', $ip);
     }
 
-    public function prepare($source, $origin, array $allowedHosts)
+    /**
+     * Arma la imagen lista para adjuntar al mail (PNG reducido) desde un archivo local o un host habilitado.
+     *
+     * @param mixed $source URL absoluta o ruta relativa de la imagen.
+     * @param mixed $origin URL pública del sistema (para completar rutas relativas).
+     * @param array $allowedHosts Hosts habilitados de forma explícita (en minúscula).
+     * @param int $max_side Lado mayor máximo del PNG resultante.
+     * @return array|null ['bytes', 'mime', 'name'] o null si no se pudo (el mail conserva el nombre en texto).
+     */
+    public function prepare($source, $origin, array $allowedHosts, $max_side = self::DEFAULT_MAX_SIDE)
     {
         try {
             $local = $this->localBytes($source, $allowedHosts);
             if ($local !== false) {
-                return $this->convert($local);
+                return $this->convert($local, $max_side);
             }
             $url = self::publicUrl($source, $origin);
-            if ($url === null || !in_array(strtolower(parse_url($url, PHP_URL_HOST)), $allowedHosts, true)) {
+            if ($url === null) {
                 return null;
             }
             $host = strtolower(parse_url($url, PHP_URL_HOST));
-            $map = config('mail.image_public_addresses', []);
-            $addresses = isset($map[$host]) ? $map[$host] : [];
-            if (!is_array($addresses) || !$addresses) {
+            // Habilitado: está en la lista explícita o es de un dominio propio (sufijo) por HTTPS y sin puerto.
+            if (!in_array($host, $allowedHosts, true) && !self::matchesAllowedSuffix($url)) {
                 return null;
             }
-            foreach ($addresses as $ip) {
-                if (!is_string($ip) || !self::publicIpv4($ip)) {
-                    return null;
-                }
+            $addresses = $this->addresses($host);
+            if ($addresses === null) {
+                return null;
             }
             $bytes = $this->download($url, $host, $addresses[0]);
-            return $this->convert($bytes);
+            return $this->convert($bytes, $max_side);
         } catch (\Throwable $e) {
             return null;
         }
+    }
+
+    /**
+     * Indica si la URL pertenece a un dominio propio habilitado por sufijo (mail.image_allowed_host_suffixes).
+     * Sólo HTTPS y sin puerto explícito; el host debe ser el sufijo o un subdominio suyo (nunca una coincidencia parcial).
+     *
+     * @param string $url URL ya validada por publicUrl().
+     * @return bool
+     */
+    private static function matchesAllowedSuffix($url)
+    {
+        $parts = parse_url($url);
+        if (!$parts || !isset($parts['scheme'], $parts['host']) || strtolower($parts['scheme']) !== 'https'
+            || isset($parts['port'])) {
+            return false;
+        }
+        $host = strtolower($parts['host']);
+        $suffixes = config('mail.image_allowed_host_suffixes', []);
+        foreach (is_array($suffixes) ? $suffixes : [] as $suffix) {
+            // El sufijo tiene que ser un nombre DNS completo (sin comodines, rutas ni espacios).
+            if (!is_string($suffix) || !preg_match('/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $suffix)) {
+                continue;
+            }
+            $tail = '.'.$suffix;
+            if ($host === $suffix || (strlen($host) > strlen($tail) && substr($host, -strlen($tail)) === $tail)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Direcciones IPv4 con las que se descarga un host habilitado: primero el mapa fijo de configuración
+     * (mail.image_public_addresses) y, si no hay entrada, la resolución DNS del host. TODAS tienen que ser
+     * públicas: una sola privada o reservada descarta el host (la descarga queda fijada a la primera, sin rebinding).
+     *
+     * @param string $host Host habilitado, en minúscula.
+     * @return array|null Lista no vacía de IPv4 públicas o null si no hay o alguna no es pública.
+     */
+    private function addresses($host)
+    {
+        $map = config('mail.image_public_addresses', []);
+        $addresses = is_array($map) && isset($map[$host]) ? $map[$host] : [];
+        if (!is_array($addresses) || !$addresses) {
+            $addresses = $this->resolveHost($host);
+        }
+        if (!is_array($addresses) || !$addresses) {
+            return null;
+        }
+        $addresses = array_values($addresses);
+        foreach ($addresses as $ip) {
+            if (!is_string($ip) || !self::publicIpv4($ip)) {
+                return null;
+            }
+        }
+        return $addresses;
+    }
+
+    /**
+     * Resuelve un host a sus direcciones IPv4. En testing no sale a la red.
+     *
+     * @param string $host Host a resolver.
+     * @return array Direcciones IPv4 (vacío si no resuelve).
+     */
+    protected function resolveHost($host)
+    {
+        if (app()->environment('testing') || !function_exists('gethostbynamel')) {
+            return [];
+        }
+        $list = @gethostbynamel($host);
+        return is_array($list) ? $list : [];
     }
 
     /** false: fuente remota; null: local rechazado; string: bytes locales acotados. */
@@ -284,13 +369,20 @@ class ImagenParaMailHelper
         return $ok && $status === 200 ? $bytes : null;
     }
 
-    public function convert($bytes)
+    /**
+     * Decodifica una imagen (PNG, JPEG o WEBP por sus bytes), la reduce si hace falta y la devuelve como PNG con alpha.
+     *
+     * @param mixed $bytes Bytes de la imagen (hasta MAX_BYTES).
+     * @param int $max_side Lado mayor máximo; si la imagen es más grande se reduce proporcionalmente.
+     * @return array|null ['bytes', 'mime', 'name'] o null si no es válida, es demasiado grande o no hay memoria.
+     */
+    public function convert($bytes, $max_side = self::DEFAULT_MAX_SIDE)
     {
         if (!is_string($bytes) || $bytes === '' || strlen($bytes) > self::MAX_BYTES) {
             return null;
         }
         foreach (['getimagesizefromstring', 'imagecreatefromstring', 'imagepng', 'imagealphablending',
-            'imagesavealpha', 'imagedestroy'] as $function) {
+            'imagesavealpha', 'imagedestroy', 'imagecreatetruecolor', 'imagecopyresampled'] as $function) {
             if (!function_exists($function)) {
                 return null;
             }
@@ -298,7 +390,8 @@ class ImagenParaMailHelper
         $info = @getimagesizefromstring($bytes);
         $decoders = ['image/png' => 'imagecreatefrompng', 'image/jpeg' => 'imagecreatefromjpeg', 'image/webp' => 'imagecreatefromwebp'];
         if (!$info || !isset($decoders[$info['mime']]) || !function_exists($decoders[$info['mime']])
-            || $info[0] < 1 || $info[1] < 1 || $info[0] > 4096 || $info[1] > 4096 || $info[0] * $info[1] > 4000000) {
+            || $info[0] < 1 || $info[1] < 1 || $info[0] > 4096 || $info[1] > 4096
+            || $info[0] * $info[1] > self::MAX_PIXELS || !$this->hasMemoryFor($info[0], $info[1])) {
             return null;
         }
         $im = @imagecreatefromstring($bytes);
@@ -306,11 +399,31 @@ class ImagenParaMailHelper
             return null;
         }
         $level = ob_get_level();
+        $small = null;
         try {
             imagealphablending($im, false);
             imagesavealpha($im, true);
+            $width = $info[0];
+            $height = $info[1];
+            $max_side = max(1, (int) $max_side);
+            // Reducir ANTES de codificar: un logo de 3590 px o una foto de 1533 px no entran en 1 MB como PNG.
+            if (max($width, $height) > $max_side) {
+                $ratio = $max_side / max($width, $height);
+                $new_width = max(1, (int) round($width * $ratio));
+                $new_height = max(1, (int) round($height * $ratio));
+                $small = imagecreatetruecolor($new_width, $new_height);
+                if (!$small) {
+                    return null;
+                }
+                imagealphablending($small, false);
+                imagesavealpha($small, true);
+                imagefill($small, 0, 0, imagecolorallocatealpha($small, 0, 0, 0, 127));
+                if (!imagecopyresampled($small, $im, 0, 0, 0, 0, $new_width, $new_height, $width, $height)) {
+                    return null;
+                }
+            }
             ob_start();
-            $ok = @imagepng($im);
+            $ok = @imagepng($small !== null ? $small : $im);
             $png = ob_get_contents();
             return $ok && is_string($png) && $png !== '' && strlen($png) <= self::MAX_BYTES
                 ? ['bytes' => $png, 'mime' => 'image/png', 'name' => 'logo.png'] : null;
@@ -319,6 +432,34 @@ class ImagenParaMailHelper
                 ob_end_clean();
             }
             imagedestroy($im);
+            if ($small !== null) {
+                imagedestroy($small);
+            }
         }
+    }
+
+    /**
+     * Estima si hay memoria para decodificar y reducir una imagen (ancho x alto x 5 bytes + 8 MB) antes de intentarlo.
+     *
+     * @param int $width Ancho en píxeles.
+     * @param int $height Alto en píxeles.
+     * @return bool false si superaría el memory_limit disponible (así una imagen grande degrada a texto en vez de abortar el envío).
+     */
+    protected function hasMemoryFor($width, $height)
+    {
+        $limit = ini_get('memory_limit');
+        if ($limit === false || $limit === '' || (int) $limit === -1) {
+            return true;
+        }
+        $bytes = (float) $limit;
+        $unit = strtolower(substr(trim($limit), -1));
+        if ($unit === 'g') {
+            $bytes *= 1073741824;
+        } elseif ($unit === 'm') {
+            $bytes *= 1048576;
+        } elseif ($unit === 'k') {
+            $bytes *= 1024;
+        }
+        return $width * $height * 5 + 8388608 <= $bytes - memory_get_usage();
     }
 }
