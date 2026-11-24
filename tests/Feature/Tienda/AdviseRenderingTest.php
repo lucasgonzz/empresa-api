@@ -150,7 +150,12 @@ class AdviseRenderingTest extends TestCase
         $this->configuration->update(['primary_color' => 'red; color:red']);
         $data = (new Advise($this->article))->build()->viewData;
         $this->assertNull($data['article_url']);
-        $this->assertSame('#111827', $data['accent_color']);
+        // Decisión de Lucas 23/11/2026, adenda B: sólo blancos y grises claros. Con el primario inválido gana el
+        // secundario por defecto #fe7802 (tiene tono, ya es aceptable); antes caía al neutro.
+        $this->assertSame('#fe7802', $data['accent_color']);
+        // Con el secundario también inválido para el botón (blanco) sigue el neutro #111827.
+        $this->configuration->update(['secondary_color' => '#FFFFFF']);
+        $this->assertSame('#111827', (new Advise($this->article))->build()->viewData['accent_color']);
         $this->assertStringNotContainsString('Ver artículo', $this->send()->getBody());
     }
 
