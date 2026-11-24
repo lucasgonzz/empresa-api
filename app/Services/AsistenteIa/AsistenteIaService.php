@@ -4093,6 +4093,20 @@ CONFIRMACION;
          */
         $bloque_de_tareas = $this->bloque_de_tareas_programadas($conversation, $owner);
 
+        /*
+         * Prevención de «la cancelé» dicho de memoria: la lista REAL de tareas del dueño y la regla corta. Vacío en
+         * turno desatendido, para el empleado o si la lectura falla. Dónde va (lo fijan tests de otros dueños del
+         * bloque): si el último bloque no cacheado es el de la MEMORIA, justo después de su etiqueta de apertura
+         * (la memoria tiene que seguir empezando con la etiqueta y su tramo «lo aprendido» medirse hasta el final
+         * del bloque sin contar este agregado); en cualquier otro (conversaciones anteriores, contexto de fondo,
+         * que se reconocen por cómo empiezan) va al final, junto a la hora.
+         */
+        $estado_real = '';
+
+        if (! $this->es_turno_desatendido($conversation) && HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)) {
+            $estado_real = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::estado_para_el_modelo($owner);
+        }
+
         if ($bloque_de_tareas !== '') {
             if (count($system) > 1) {
                 /*
@@ -4101,11 +4115,19 @@ CONFIRMACION;
                  * para el caché es lo mismo (ninguno de los dos lleva cache_control). Sólo si no hay
                  * ninguno (sin memoria ni conversaciones anteriores) va como bloque propio.
                  */
-                $system[count($system) - 1]['text'] .= "\n\n" . $bloque_de_tareas;
+                $texto_ultimo = $system[count($system) - 1]['text'];
+                $etiqueta_memoria = '<' . \App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper::ETIQUETA_DEL_PROMPT . '>';
+
+                if ($estado_real !== '' && strpos($texto_ultimo, $etiqueta_memoria) === 0) {
+                    $texto_ultimo = $etiqueta_memoria . "\n" . $estado_real . "\n\n" . ltrim(substr($texto_ultimo, strlen($etiqueta_memoria)));
+                    $estado_real = '';
+                }
+
+                $system[count($system) - 1]['text'] = $texto_ultimo . "\n\n" . ($estado_real !== '' ? $estado_real . "\n\n" : '') . $bloque_de_tareas;
             } else {
                 $system[] = [
                     'type' => 'text',
-                    'text' => $bloque_de_tareas,
+                    'text' => ($estado_real !== '' ? $estado_real . "\n\n" : '') . $bloque_de_tareas,
                 ];
             }
         }
