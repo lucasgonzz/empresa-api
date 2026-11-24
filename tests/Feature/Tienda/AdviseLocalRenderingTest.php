@@ -262,11 +262,29 @@ class AdviseLocalRenderingTest extends TestCase
             if ($format === 'webp' && !function_exists('imagecreatefromwebp')) { $this->assertNull($result); }
             else { $this->assertSame('image/png', $result['mime']); }
         }
-        foreach ([[4097, 1], [2001, 2000]] as $size) {
+        // Decisión del Coordinador 23/11/2026, corrección A (pedido de Truvari): 4097 px de lado sigue rechazado;
+        // 2001x2000 y 4096x4096 ahora se aceptan y se reducen (lado mayor <= 440 px del camino por defecto, PNG <= 1 MB).
+        $im = imagecreatetruecolor(4097, 1);
+        imagepng($im, $this->sandbox.'/public/large.png'); imagedestroy($im);
+        $this->assertNull($this->prepare($this->base.'/large.png'));
+        foreach ([[2001, 2000], [4096, 4096]] as $size) {
             $im = imagecreatetruecolor($size[0], $size[1]);
             imagepng($im, $this->sandbox.'/public/large.png'); imagedestroy($im);
-            $this->assertNull($this->prepare($this->base.'/large.png'));
+            $result = $this->prepare($this->base.'/large.png');
+            $this->assertNotNull($result, $size[0].'x'.$size[1]);
+            $info = getimagesizefromstring($result['bytes']);
+            $this->assertSame('image/png', $info['mime']);
+            $this->assertLessThanOrEqual(440, max($info[0], $info[1]));
+            $this->assertLessThanOrEqual(1048576, strlen($result['bytes']));
         }
+        // Sin memoria suficiente para decodificar, degrada a null (el mail conserva el nombre en texto).
+        $sin_memoria = new class extends ImagenParaMailHelper {
+            protected function hasMemoryFor($width, $height)
+            {
+                return false;
+            }
+        };
+        $this->assertNull($sin_memoria->prepare($this->base.'/large.png', 'https://assets.vendor.com', ['assets.vendor.com']));
         $bytes = $this->fixture('png');
         file_put_contents($this->sandbox.'/public/exact.png', str_pad($bytes, 1048576, "\0"));
         $this->assertNotNull($this->prepare($this->base.'/exact.png'));
@@ -382,7 +400,14 @@ class AdviseLocalRenderingTest extends TestCase
         $decoded = imagecreatefromstring($bytes);
         ob_start(); imagepng($decoded); $png = ob_get_clean(); imagedestroy($decoded);
         $this->assertGreaterThan(1048576, strlen($png));
-        $this->assertNull($this->prepare($this->base.'/noisy.jpg'));
+        // Decisión del Coordinador 23/11/2026, corrección A (pedido de Truvari): ya no se descarta; se reduce antes de
+        // codificar y la salida sigue acotada (PNG, lado mayor <= 440 px, <= 1 MB).
+        $result = $this->prepare($this->base.'/noisy.jpg');
+        $this->assertNotNull($result);
+        $info = getimagesizefromstring($result['bytes']);
+        $this->assertSame('image/png', $info['mime']);
+        $this->assertLessThanOrEqual(440, max($info[0], $info[1]));
+        $this->assertLessThanOrEqual(1048576, strlen($result['bytes']));
     }
 
     public function test_remoto_fuera_del_namespace_conserva_pinning_y_local_invalido_no_escapa()
