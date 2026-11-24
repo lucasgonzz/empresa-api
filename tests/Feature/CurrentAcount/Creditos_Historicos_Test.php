@@ -381,4 +381,153 @@ class Creditos_Historicos_Test extends TestCase
         $this->assertEquals(100, $cuenta->fresh()->saldo);
         $this->assertEquals(40, $otra->fresh()->saldo);
     }
+
+    /**
+     * Fixture "Cabaña" (ticket 171): saldo inicial importado en 2024 con Haber NEGATIVO, una venta, su pago,
+     * un crédito histórico y otra venta. Saldo esperado 399,70. Devuelve la cuenta y los movimientos por clave.
+     */
+    protected function cuenta_cabania()
+    {
+        $cuenta = $this->cuenta();
+        $m = [];
+        $m['L'] = $this->movimiento($cuenta, null, -99.70, '2024-10-01 11:26:13', ['detalle' => 'Saldo inicial', 'saldo' => 99.70, 'status' => 'pago_from_client']);
+        $m['V1'] = $this->movimiento($cuenta, 1000, null, '2024-11-01 10:00:00', ['saldo' => 1099.70]);
+        $m['P1'] = $this->movimiento($cuenta, null, 1000, '2024-11-10 10:00:00', ['saldo' => 99.70]);
+        $m['C'] = $this->movimiento($cuenta, -200, null, '2025-01-01 10:00:00', ['saldo' => -100.30]);
+        $m['V2'] = $this->movimiento($cuenta, 500, null, '2025-02-01 10:00:00', ['saldo' => 399.70]);
+        $cuenta->update(['saldo' => 399.70]);
+        return [$cuenta, $m];
+    }
+
+    /** Fila cruda del movimiento, tal cual está en la base (sin casts), para comparar "no se tocó". */
+    protected function fila_cruda($id)
+    {
+        return (array) DB::table('current_acounts')->where('id', $id)->first();
+    }
+
+    /** CA1 + CA2: el saldo inicial legado no bloquea la venta y queda intacto, sin imputarse. */
+    public function test_saldo_inicial_legado_con_haber_negativo_no_bloquea_la_venta()
+    {
+        list($cuenta, $m) = $this->cuenta_cabania();
+        $venta = Sale::create(['user_id' => 500, 'client_id' => $cuenta->model_id,
+            'moneda_id' => 1, 'total' => 300, 'terminada' => 1, 'created_at' => '2026-11-18 10:00:00']);
+        (new CurrentAcountFromSaleHelper($venta))->crear_current_acount();
+        $v3 = CurrentAcount::where('sale_id', $venta->id)->firstOrFail();
+        $this->assertEquals(699.70, $cuenta->fresh()->saldo);
+        $this->assertSame('pagado', $m['V1']->fresh()->status);
+        $this->assertEquals(1000, $m['V1']->fresh()->pagandose);
+        $this->assertSame('pagandose', $m['V2']->fresh()->status);
+        $this->assertEquals(200, $m['V2']->fresh()->pagandose);
+        $this->assertSame('sin_pagar', $v3->fresh()->status);
+        $this->assertEquals(0, $v3->fresh()->pagandose);
+        $ids = array_map(function ($mov) { return $mov->id; }, $m);
+        $ids[] = $v3->id;
+        $pivotes = DB::table('pagado_por')->whereIn('debe_id', $ids)->orderBy('debe_id')->orderBy('haber_id')
+            ->get(['debe_id', 'haber_id', 'pagado'])->map(function ($r) { return [(int) $r->debe_id, (int) $r->haber_id, (float) $r->pagado]; })->all();
+        $this->assertEquals([[$m['V1']->id, $m['P1']->id, 1000.0], [$m['V2']->id, $m['C']->id, 200.0]], $pivotes);
+    }
+
+    public function test_saldo_inicial_legado_no_se_imputa_ni_se_modifica()
+    {
+        list($cuenta, $m) = $this->cuenta_cabania();
+        $alta = $this->fila_cruda($m['L']->id);
+        $venta = Sale::create(['user_id' => 500, 'client_id' => $cuenta->model_id,
+            'moneda_id' => 1, 'total' => 300, 'terminada' => 1, 'created_at' => '2026-11-18 10:00:00']);
+        (new CurrentAcountFromSaleHelper($venta))->crear_current_acount();
+        $foto = $this->foto($cuenta);
+        CurrentAcountHelper::checkPagos($cuenta->id);
+        $this->assertEquals($alta, $this->fila_cruda($m['L']->id), 'El saldo inicial legado no se toca: importe, saldo, estado, pagandose y updated_at.');
+        $this->assertSame('pago_from_client', $m['L']->fresh()->status);
+        $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $m['L']->id)->orWhere('haber_id', $m['L']->id)->count());
+        $this->assertEquals($foto, $this->foto($cuenta), 'Segunda corrida idéntica a la primera.');
+    }
+
+    /** CA3: los caminos de entrada (chequeo, pago, NC) funcionan y plan() informa el arrastre. */
+    public function test_saldo_inicial_legado_pago_nc_y_chequeo_por_endpoint()
+    {
+        list($cuenta, $m) = $this->cuenta_cabania();
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertEquals(399.70, $plan['saldo_economico']);
+        $this->assertEquals(300, $plan['pendiente']);
+        $this->assertEquals(0, $plan['remanente']);
+        $this->assertEquals(99.70, $plan['arrastre_legado']);
+        $this->getJson('api/check-saldos/'.$cuenta->id)->assertStatus(200);
+        foreach ([1, 0] as $actual) {
+            list($cuenta, $m) = $this->cuenta_cabania();
+            $this->postJson('api/current-acount/pago', $this->payload_pago($cuenta, $actual))->assertStatus(201);
+            $this->assertEquals(374.70, $cuenta->fresh()->saldo);
+            $this->assertEquals(225, $m['V2']->fresh()->pagandose);
+            $this->assertSame('pagandose', $m['V2']->fresh()->status);
+        }
+        list($cuenta, $m) = $this->cuenta_cabania();
+        $this->postJson('api/current-acount/nota-credito', ['credit_account_id' => $cuenta->id,
+            'model_name' => 'client', 'model_id' => $cuenta->model_id, 'form' => ['nota_credito' => 25, 'description' => 'Prueba']])->assertStatus(201);
+        $this->assertEquals(374.70, $cuenta->fresh()->saldo);
+    }
+
+    /** CA4 + CA6: mismo dato en una cuenta de proveedor; una cuenta sin legado no cambia y informa arrastre 0. */
+    public function test_saldo_inicial_legado_de_proveedor_y_cuenta_sin_legado()
+    {
+        $user = User::findOrFail(500);
+        $this->actingAs($user, 'web');
+        $proveedor = \App\Models\Provider::create(['name' => 'Proveedor legado ticket 171', 'user_id' => $user->id]);
+        $cuenta = CreditAccount::create(['model_name' => 'provider', 'model_id' => $proveedor->id,
+            'moneda_id' => 1, 'user_id' => $user->id, 'saldo' => 250]);
+        $base = ['credit_account_id' => $cuenta->id, 'provider_id' => $proveedor->id, 'user_id' => $user->id,
+            'moneda_id' => 1, 'pagandose' => 0, 'is_provisorio' => 0];
+        CurrentAcount::create(array_merge($base, ['debe' => null, 'haber' => -50, 'saldo' => 50, 'detalle' => 'Saldo inicial',
+            'status' => 'pago_from_client', 'created_at' => '2024-10-01 11:26:13', 'updated_at' => '2024-10-01 11:26:13']));
+        CurrentAcount::create(array_merge($base, ['debe' => 300, 'haber' => null, 'saldo' => 350, 'detalle' => 'Compra',
+            'status' => 'sin_pagar', 'created_at' => '2024-11-01 10:00:00', 'updated_at' => '2024-11-01 10:00:00']));
+        CurrentAcount::create(array_merge($base, ['debe' => -100, 'haber' => null, 'saldo' => 250, 'detalle' => 'Crédito',
+            'status' => 'sin_pagar', 'created_at' => '2025-01-01 10:00:00', 'updated_at' => '2025-01-01 10:00:00']));
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertEquals(50, $plan['arrastre_legado']);
+        $this->assertEquals(200, $plan['pendiente']);
+        $this->assertEquals(250, $plan['saldo_economico']);
+        // CA6: sin saldo inicial legado, el arrastre es 0 y las imputaciones son las de siempre.
+        $sin_legado = $this->cuenta();
+        $debito = $this->movimiento($sin_legado, 100, null, '2026-01-01 10:00:00');
+        $this->movimiento($sin_legado, -50, null, '2026-02-01 10:00:00');
+        $plan = CreditosHistoricosHelper::plan($sin_legado);
+        $this->assertEquals(0, $plan['arrastre_legado']);
+        $this->assertCount(1, $plan['imputaciones']);
+        $this->assertEquals(50, $plan['imputaciones'][0]['pagado']);
+        $this->assertEquals(50, $plan['pendiente']);
+        $this->assertEquals(50, $plan['saldo_economico']);
+    }
+
+    /** CA5: lo que no es el saldo inicial legado sigue rechazado, sin escribir y con mensaje claro. */
+    public function test_haber_negativo_que_no_es_saldo_inicial_legado_sigue_rechazado()
+    {
+        foreach (['pago_negativo', 'legado_con_destino', 'legado_con_venta', 'dos_legados'] as $caso) {
+            $cuenta = $this->cuenta();
+            $debito = $this->movimiento($cuenta, 100, null, '2026-01-01 10:00:00');
+            $this->movimiento($cuenta, -50, null, '2026-02-01 10:00:00');
+            $legado = ['detalle' => 'Saldo inicial', 'status' => 'pago_from_client'];
+            if ($caso === 'pago_negativo') {
+                $malo = $this->movimiento($cuenta, null, -10, '2026-01-02 10:00:00', ['detalle' => 'Pago']);
+            } elseif ($caso === 'legado_con_destino') {
+                $malo = $this->movimiento($cuenta, null, -10, '2024-10-01 11:26:13', $legado + ['to_pay_id' => $debito->id]);
+            } elseif ($caso === 'legado_con_venta') {
+                $venta = Sale::create(['user_id' => 500, 'client_id' => $cuenta->model_id, 'moneda_id' => 1, 'total' => 10]);
+                $malo = $this->movimiento($cuenta, null, -10, '2024-10-01 11:26:13', $legado + ['sale_id' => $venta->id]);
+            } else {
+                $this->movimiento($cuenta, null, -5, '2024-10-01 11:26:13', $legado);
+                $malo = $this->movimiento($cuenta, null, -10, '2024-10-01 11:26:14', $legado);
+            }
+            $foto = $this->foto($cuenta);
+            $respuesta = $this->getJson('api/check-saldos/'.$cuenta->id);
+            $respuesta->assertStatus(422);
+            $mensaje = $respuesta->json('message');
+            $this->assertStringContainsString('#'.$malo->id, $mensaje, $caso);
+            $this->assertStringContainsString('soporte', $mensaje, $caso);
+            if ($caso === 'dos_legados') {
+                $this->assertStringContainsString('segundo saldo inicial con Haber negativo', $mensaje);
+            } else {
+                $this->assertStringContainsString('importes incompatibles', $mensaje, $caso);
+            }
+            $this->assertEquals($foto, $this->foto($cuenta), $caso.' no debe alterar el historial.');
+        }
+    }
 }
