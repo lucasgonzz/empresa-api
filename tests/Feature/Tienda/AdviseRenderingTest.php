@@ -88,10 +88,9 @@ class AdviseRenderingTest extends TestCase
         $this->assertStringContainsString('Artículo &lt;escapado&gt;', $html);
         $this->assertStringNotContainsString('NO ES EL DUEÑO', $html);
         $this->assertStringContainsString('https://shop.vendor.com/articulos/producto/'.$this->owner->id, $html);
-        // Decisión del Coordinador 23/11/2026, corrección A (pedido de Truvari): primario #fff y secundario #fe7802
-        // (2,6:1) no contrastan 3:1 contra la tarjeta blanca; el botón cae al neutro #111827 con texto blanco
-        // (antes quedaba blanco sobre blanco, el defecto del punto 12).
-        $this->assertStringContainsString('background-color:#111827; color:#ffffff;', $html);
+        // Decisión de Lucas 23/11/2026, adenda B: sólo blancos y grises claros. El primario #fff se descarta (blanco sobre
+        // la tarjeta blanca, el defecto del punto 12) y gana el secundario #fe7802, que tiene tono, con texto negro.
+        $this->assertStringContainsString('background-color:#fe7802; color:#000000;', $html);
         $this->assertContains('https://assets.vendor.com/producto.jpg', $this->helper->requests);
         $this->assertNotContains('https://assets.vendor.com/placeholder.png', $this->helper->requests);
         $children = $message->getChildren();

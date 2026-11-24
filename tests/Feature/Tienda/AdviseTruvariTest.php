@@ -196,11 +196,47 @@ class AdviseTruvariTest extends TestCase
         $this->assertSame(['background' => '#250237', 'text' => '#ffffff'],
             ColorDeMailHelper::palette('#E9E7EA', array('#250237', '#250237')));
         $this->assertSame('#c5111d', ColorDeMailHelper::palette('#c5111d', array('#250237'))['background']);
-        $this->assertSame('#111827', ColorDeMailHelper::palette('red;position:fixed', array(null, '#fe7802'))['background']);
+        // Decisión de Lucas 23/11/2026, adenda B: sólo blancos y grises claros. El secundario #fe7802 (naranja con tono,
+        // 2,6:1 contra blanco) ya es un fondo aceptable: antes caía al neutro #111827.
+        $this->assertSame('#fe7802', ColorDeMailHelper::palette('red;position:fixed', array(null, '#fe7802'))['background']);
         $this->assertSame('#111827', ColorDeMailHelper::palette('#E9E7EA')['background']);
         // Orden de candidatos: primario, botón de agregar al carrito, secundario; los inválidos no cuentan.
         $this->assertSame('#123456', ColorDeMailHelper::palette('#E9E7EA', array('#FFEEEE', '#123456'))['background']);
-        $this->assertSame('#111827', ColorDeMailHelper::palette('#E9E7EA', array('bad', '#fe7802'))['background']);
+        // Decisión de Lucas 23/11/2026, adenda B: sólo blancos y grises claros (el inválido no cuenta y gana #fe7802).
+        $this->assertSame('#fe7802', ColorDeMailHelper::palette('#E9E7EA', array('bad', '#fe7802'))['background']);
+    }
+
+    /** Casos de la tabla de la adenda B: [primario, botón carrito, secundario, fondo esperado, texto esperado]. */
+    public function adenda_b_cases()
+    {
+        return array(
+            'truvari' => array('#E9E7EA', '#250237', '#250237', '#250237', '#ffffff'),
+            'naranja' => array('#FF9800', null, '#fe7802', '#FF9800', '#000000'),
+            'verde' => array('#4CAF50', null, null, '#4CAF50', '#000000'),
+            'amarillo' => array('#FFC107', null, null, '#FFC107', '#000000'),
+            'celeste' => array('#03A9F4', null, null, '#03A9F4', '#000000'),
+            'naranja por defecto' => array('#fe7802', null, null, '#fe7802', '#000000'),
+            'gris claro con secundario' => array('#CCCCCC', null, '#250237', '#250237', '#ffffff'),
+            'gris claro sin nada' => array('#CCCCCC', null, null, '#111827', '#ffffff'),
+            'amarillo casi blanco' => array('#FFF9C4', null, '#fe7802', '#fe7802', '#000000'),
+            'gris 777777' => array('#777777', null, null, '#777777', '#000000'),
+            'rojo' => array('#c5111d', null, null, '#c5111d', '#ffffff'),
+            'blanco corto' => array('#fff', null, '#fe7802', '#fe7802', '#000000'),
+            'con espacios' => array('  #4CAF50 ', null, null, '  #4CAF50 ', '#000000'),
+        );
+    }
+
+    /**
+     * CA3.1 bis (adenda B): sólo los casi blancos y los grises claros se reemplazan; los colores con tono se respetan.
+     *
+     * @dataProvider adenda_b_cases
+     */
+    public function test_paleta_adenda_b_solo_reemplaza_blancos_y_grises_claros($primary, $cart, $secondary, $background, $text)
+    {
+        $palette = ColorDeMailHelper::palette($primary, array($cart, $secondary));
+        // El fondo se devuelve normalizado (trim), con las mayúsculas originales.
+        $this->assertSame(trim($background), $palette['background']);
+        $this->assertSame($text, $palette['text']);
     }
 
     /** CA3.2 El mail "Volvió el stock" usa el fondo oscuro de la marca para "Ver artículo". */
