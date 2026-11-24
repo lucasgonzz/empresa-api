@@ -7,6 +7,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\caja\CajaAperturaHelper;
 use App\Http\Controllers\Helpers\caja\CajaCierreHelper;
 use App\Http\Controllers\Helpers\caja\CajaLiquidacionHelper;
+use App\Http\Controllers\Helpers\caja\CajaVisibilidadHelper;
 use App\Models\Caja;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -32,7 +33,18 @@ class CajaController extends Controller
          * se calculan con una sola query de agregación por caja (sin traer movimientos a memoria,
          * hay clientes con cajas de decenas de miles de movimientos).
          */
+        // Usuario que pide (empleado o dueño): la visibilidad se mide sobre él, no sobre el dueño.
+        $auth_user = $this->user(false);
+
         foreach ($models as $model) {
+
+            // Marca ve_en_tesoreria / opera_en_vender / origen y, si es una caja ajena de un
+            // empleado no administrador, anula los saldos: entonces ni se calculan (ahorra la
+            // query de liquidez). El catálogo de cajas sigue completo: Vender, cheques y gastos
+            // lo necesitan para elegir y mostrar nombres.
+            if (!is_null($auth_user) && !CajaVisibilidadHelper::marcar($model, $auth_user)) {
+                continue;
+            }
 
             $model->saldo_contable = $model->saldo;
 
@@ -95,11 +107,29 @@ class CajaController extends Controller
         GeneralHelper::attachModels($model, 'treasury_users', $request->input('treasury_users') ?? []);
         
         $this->sendAddModelNotification('Caja', $model->id);
-        return response()->json(['model' => $this->fullModel('Caja', $model->id)], 201);
+        return response()->json(['model' => $this->con_visibilidad($this->fullModel('Caja', $model->id))], 201);
     }  
 
     public function show($id) {
-        return response()->json(['model' => $this->fullModel('Caja', $id)], 200);
+        return response()->json(['model' => $this->con_visibilidad($this->fullModel('Caja', $id))], 200);
+    }
+
+    /**
+     * Suma a la caja devuelta los campos de visibilidad para el usuario autenticado, para que la fila
+     * editada o creada no pierda la marca en el store de la SPA. Si el empleado no la ve en Tesorería,
+     * sus saldos van en null (misma regla que el listado).
+     *
+     * @param \App\Models\Caja|null $caja Caja ya cargada con `withAll()`.
+     * @return \App\Models\Caja|null La misma caja.
+     */
+    protected function con_visibilidad($caja) {
+        $auth_user = $this->user(false);
+
+        if (!is_null($caja) && !is_null($auth_user)) {
+            CajaVisibilidadHelper::marcar($caja, $auth_user);
+        }
+
+        return $caja;
     }
 
     /**
@@ -125,7 +155,7 @@ class CajaController extends Controller
         GeneralHelper::attachModels($model, 'treasury_users', $request->input('treasury_users') ?? []);
         
         $this->sendAddModelNotification('Caja', $model->id);
-        return response()->json(['model' => $this->fullModel('Caja', $model->id)], 200);
+        return response()->json(['model' => $this->con_visibilidad($this->fullModel('Caja', $model->id))], 200);
     }
 
     function abrir_caja($caja_id) {
