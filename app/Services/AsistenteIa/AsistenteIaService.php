@@ -856,6 +856,17 @@ class AsistenteIaService
         }
 
         /*
+         * Misión agente-tareas-programadas, arreglo «pensamiento» (24/11/2026): si el dueño pide algo sobre tareas
+         * programadas (programar, avisar a una hora, posponer, cancelar, consultar), el turno corre con el modelo
+         * Profundo desde la primera vuelta: con el Ágil, 5 a 6 de 12 respuestas decían haber programado o cancelado
+         * sin hacerlo. Se decide UNA vez por turno, con el texto de la persona (PedidoSobreTareasIaHelper), y sólo
+         * si se ofrecen las herramientas de tareas y el turno no es desatendido. El texto de ninguna respuesta cambia.
+         */
+        $pedido_sobre_tareas = ! $this->es_turno_desatendido($conversation)
+            && HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)
+            && \App\Http\Controllers\Helpers\asistente_ia\PedidoSobreTareasIaHelper::aplica($conversation, $assistant_message, $this->pedido_de_la_persona($conversation, $assistant_message));
+
+        /*
          * El reloj del presupuesto arranca ACÁ y no en el while: la transcripción de abajo es una
          * llamada HTTP más del turno, y tiene que quedar adentro de PRESUPUESTO_SEGUNDOS para que la
          * cadena de techos (ver su docblock) siga cerrando con el $timeout del job. Con ahora() y no con
@@ -1148,7 +1159,7 @@ class AsistenteIaService
             $iterations++;
 
             /* Las cargas pueden escalar el modelo dentro de DeepSeek a partir de la próxima vuelta. */
-            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, false, $toco_una_carga, $modelo_pedido);
+            $eleccion = ProveedorIaHelper::modelo_del_asistente($owner, false, $toco_una_carga || $pedido_sobre_tareas, $modelo_pedido);
             $model    = $modelo_de_respaldo_del_turno ?? $eleccion['modelo'];
 
             /*
