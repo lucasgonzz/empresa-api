@@ -4796,7 +4796,9 @@ CONFIRMACION;
                 return false;
             }
 
-            return count(TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($saneado, $this->pedido_de_la_persona($conversation, $assistant_message), $this->herramientas_ok_del_turno(), $herramientas_pedidas, (int) $conversation->user_id)) > 0;
+            return count(TareaAfirmadaSinHerramientaIaHelper::acciones_no_hechas($saneado, function () use ($conversation, $assistant_message) {
+                return $this->pedido_de_la_persona($conversation, $assistant_message);
+            }, $this->herramientas_ok_del_turno(), $herramientas_pedidas, (int) $conversation->user_id)) > 0;
         }
 
         /* A4: «Reviso y te confirmo», «Dame un momento». */

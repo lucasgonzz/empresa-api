@@ -30,6 +30,12 @@ use Illuminate\Support\Facades\Log;
  * la herramienta, se contrasta con las tareas del dueño antes de disparar; así tampoco hace falta mirar si hubo
  * una consulta en el turno. Si la base no se puede leer, la guarda no dispara (nunca rompe el turno).
  *
+ * RONDA 3 (segunda revisión): la guarda se achicó a las afirmaciones EXPLÍCITAS sobre tareas. Las promesas sueltas
+ * («te recuerdo que a las 17 tenés la reunión», «te escribo mañana a las 8») ya no disparan nunca: pueden ser el
+ * contexto de una oración que sí afirma («quedó programada…: te pregunto si…») pero no una afirmación. La base se
+ * lee recién cuando el detector de texto encontró una candidata (un texto neutro hace cero consultas) y el pedido
+ * de la persona se pide a demanda (puede llegar como función).
+ *
  * El mecanismo es el de las guardas hermanas (AnotacionPrometidaIaHelper, PedidoDeAyudaASoporteIaHelper): un
  * reintento con una nota que dice la verdad y, si el modelo insiste, se cambian SOLO esas oraciones por un
  * aviso honesto. Acá vive la detección; el Service sólo decide cuándo mirar (herramientas ofrecidas, turno
@@ -54,27 +60,35 @@ class TareaAfirmadaSinHerramientaIaHelper
      * Lo que se dice haber hecho, normalizado, por tipo. Tres grupos de patrones:
      *   - 'fuerte': el verbo en primera persona del pasado («la programé», «la pasé al viernes», «lo cancelé»);
      *   - 'estado': el resultado dicho como estado («quedó programada», «ya está cancelada», «no te va a escribir más»);
-     *   - 'promesa': «te escribo a las 9», «a las 20 te paso las ventas»: una hora y un verbo de avisarte. Se
-     *     refiere a sí misma a una tarea, así que no necesita que la persona haya hablado de tareas.
+     *   - 'debil' (sólo cancelar): «hoy no te escribo más», que sin una referencia a tarea o a lo pedido es sólo una
+     *     despedida.
+     * Las promesas sueltas («te escribo a las 9», «a las 20 te paso las ventas») NO disparan nunca: sirven de contexto
+     * de una oración que sí afirma, no como afirmación.
      */
     const PATRONES = [
         self::PROGRAMAR => [
-            'fuerte'  => '/\b(?:(?:te )?(?:la|lo|las|los) (?:programe|agende)|programe (?:la|el|una|un|esa|ese)|agende (?:la|el|una|un|esa|ese)|(?:la|lo) deje (?:programad|agendad)[oa]|ya programe)\b/u',
-            'estado'  => '/\b(?:qued(?:o|a|aron) (?:programad|agendad)[oa]s?|ya (?:esta|queda) (?:programad|agendad)[oa]s?)\b/u',
-            'promesa' => '/\b(?:te (?:escribo|aviso|pregunto|consulto|recuerdo|mando|paso)\b[^.]{0,50}?\b(?:a|para) las? \d|(?:a|para) las? \d{1,2}(?: \d{2})?\b[^.]{0,30}?\bte (?:escribo|aviso|pregunto|consulto|recuerdo|mando|paso)\b)/u',
+            'fuerte' => '/\b(?:(?:te )?(?:la|lo|las|los) (?:programe|agende)|programe (?:la|el|una|un|esa|ese)|agende (?:la|el|una|un|esa|ese)|(?:la|lo) deje (?:programad|agendad)[oa]|ya programe)\b/u',
+            'estado' => '/\b(?:qued(?:o|a|aron) (?:programad|agendad)[oa]s?|ya (?:esta|queda) (?:programad|agendad)[oa]s?)\b/u',
         ],
         self::REPROGRAMAR => [
-            'fuerte'  => '/\b(?:(?:la|lo) (?:pase|movi|corri|cambie|adelante|atrase|pospuse|postergue|reprograme|reagende|ajuste) (?:para|al|a la|a las|el|de|hasta)|reprograme (?:la|el|esa|ese)|ajuste (?:la|el|esa|ese) (?:tarea|aviso|recordatorio|hora|horario|dia)|(?:pase|movi|corri|cambie|pospuse|postergue|adelante|atrase) (?:la|el|esa|ese) (?:tarea|aviso|recordatorio))\b/u',
-            'estado'  => '/\b(?:qued(?:o|a) (?:para (?:el|este|la|las|hoy|manana|pasado)|reprogramad[oa]|pospuest[oa]|postergad[oa]|movid[oa])|vuelv[ea] (?:el|este|manana|hoy|a las))\b/u',
+            'fuerte' => '/\b(?:(?:la|lo) (?:pase|movi|corri|cambie|adelante|atrase|pospuse|postergue|reprograme|reagende|ajuste) (?:para|al|a la|a las|el|de|hasta)|reprograme (?:la|el|esa|ese)|ajuste (?:la|el|esa|ese) (?:tarea|aviso|recordatorio|hora|horario|dia)|(?:pase|movi|corri|cambie|pospuse|postergue|adelante|atrase) (?:la|el|esa|ese) (?:tarea|aviso|recordatorio))\b/u',
+            'estado' => '/\b(?:qued(?:o|a) (?:para (?:el|este|la|las|hoy|manana|pasado)|reprogramad[oa]|pospuest[oa]|postergad[oa]|movid[oa])|vuelv[ea] (?:el|este|manana|hoy|a las))\b/u',
         ],
         self::CANCELAR => [
             'fuerte' => '/\b(?:(?:la|lo) (?:cancele|elimine|borre|desactive|pare)|cancele (?:la|el|esa|ese|las|los)|(?:la|lo) di de baja|di de baja (?:la|el|esa|ese))\b/u',
-            'estado' => '/\b(?:ya esta cancelad[oa]s?|qued(?:o|a|aron) cancelad[oa]s?|no te (?:va a|voy a) (?:escribir|avisar|preguntar) mas|no vuelv[ea] a (?:correr|escribir|avisar)|no (?:te )?(?:escribo|aviso|pregunto) mas)\b/u',
+            'estado' => '/\b(?:ya esta cancelad[oa]s?|qued(?:o|a|aron) cancelad[oa]s?|no te (?:va a|voy a) (?:escribir|avisar|preguntar) mas|no vuelv[ea] a (?:correr|escribir|avisar))\b/u',
+            'debil'  => '/\b(?:no (?:te )?(?:escribo|aviso|pregunto) mas)\b/u',
         ],
     ];
 
     /** Lo que, en la oración, la refiere a una tarea o aviso del asistente (normalizado). */
-    const REFERENCIA_A_TAREA = '/\b(?:tareas?|avisos?|recordatorios?|te (?:escribo|aviso|pregunto|consulto|recuerdo)|escribirte|avisarte|preguntarte|consultarte|no te (?:va a|voy a) (?:escribir|avisar|preguntar)|no vuelv[ea] a (?:correr|escribir|avisar)|no (?:te )?(?:escribo|aviso|pregunto) mas)\b/u';
+    const REFERENCIA_A_TAREA = '/\b(?:tareas?|avisos?|recordatorios?|te (?:escribo|aviso|pregunto|consulto|recuerdo)|escribirte|avisarte|preguntarte|consultarte|no te (?:va a|voy a) (?:escribir|avisar|preguntar)|no vuelv[ea] a (?:correr|escribir|avisar))\b/u';
+
+    /** Lo que, en la oración, hace de «no te escribo más» una cancelación y no una despedida (normalizado). */
+    const REFERENCIA_DE_CANCELACION = '/\b(?:tareas?|avisos?|recordatorios?|por eso|sobre eso|con las|con los|todos los dias|todas las|cada (?:dia|lunes|semana))\b/u';
+
+    /** Lo que, en lo que pidió la persona, es pedir cancelar o sacar algo o que no le escriban (normalizado). */
+    const PEDIDO_DE_CANCELAR = '/\b(?:cancel\w*|saca\w*|elimin\w*|borr\w*|no me (?:escribas|avises|preguntes)|deja(?:r)? de|basta)\b/u';
 
     /** Lo que, en lo que escribió la persona, indica que venían hablando de tareas del asistente (normalizado). */
     const CONTEXTO_DE_TAREA = '/\b(?:tareas?|recordatorios?|avisos?|avisame|escribime|preguntame|no me (?:escribas|avises)|programa(?:me|la|lo|r|d[oa]s?)|reprograma(?:me|la|lo|r)?|posponela|pospone(?:la|r)?|postergala|posterga(?:r)?)\b/u';
@@ -86,7 +100,7 @@ class TareaAfirmadaSinHerramientaIaHelper
      * Un registro CONCRETO como objeto del verbo o como sujeto: «cancelé el pedido 123», «la venta quedó cancelada».
      * Sólo el singular con artículo; «las ventas», «los cobros» o «lo de las ventas» son temas de las tareas.
      */
-    const REGISTRO_CONCRETO = '(?:pedido|venta|factura|compra|entrega|envio|pago|cobro|cheque|turno|reunion|visita|cuota|presupuesto|remito|orden|oferta|promocion|publicacion|cita|clase|viaje)';
+    const REGISTRO_CONCRETO = '(?:pedido|venta|factura|compra|entrega|envio|pago|cobro|cheque|turno|reunion|visita|cuota|presupuesto|remito|orden|oferta|promocion|publicacion|cita|clase|viaje|evento|campana|jornada|capacitacion|llamada|junta)';
 
     /** Lo que, en cualquier parte de la oración, la vuelve una oferta, un ejemplo o un condicional: nunca afirma. */
     const OFERTA = '/\b(?:si queres|si quieres|si te parece|si preferis|si te sirve|si te late|por ejemplo|cuando (?:la|lo) programe|(?:la|lo) programo|(?:la|lo) agendo|decime y|avisame y)\b/u';
@@ -102,10 +116,11 @@ class TareaAfirmadaSinHerramientaIaHelper
      *
      * Un tipo queda respaldado si la herramienta correspondiente salió OK en el turno (programar y reprogramar se
      * respaldan entre sí; cancelar sólo con cancelar). Si no, se contrasta con las tareas del dueño (ver
-     * es_mentira()). Con alguna carga o aviso armado en el turno (herramientas `proponer_*`) no se mira.
+     * es_mentira_de()). Con alguna carga o aviso armado en el turno (herramientas `proponer_*`) no se mira. La base
+     * (y el pedido de la persona) se leen sólo si el texto trae una afirmación candidata.
      *
      * @param  string  $texto  El texto de la respuesta, ya saneado.
-     * @param  string  $pedido  Lo que escribió la persona en el turno.
+     * @param  string|\Closure  $pedido  Lo que escribió la persona, o una función que lo devuelve (se pide a demanda).
      * @param  array<int, string>  $herramientas_ok  Herramientas que contestaron bien en el turno.
      * @param  array<int, string>  $herramientas_pedidas  Todas las herramientas que pidió el modelo.
      * @param  int|null  $owner_id  El dueño: sin él no hay base que contrastar y manda sólo el texto.
@@ -120,19 +135,31 @@ class TareaAfirmadaSinHerramientaIaHelper
             }
         }
 
+        $dame_pedido = self::perezoso($pedido);
+
+        $candidatas = self::candidatas($texto, $dame_pedido, $herramientas_ok);
+
+        if (! count($candidatas)) {
+            return [];
+        }
+
+        $tareas = self::tareas_del_dueno($owner_id);
         $tipos = [];
 
-        foreach (self::mentiras_de($texto, $pedido, $herramientas_ok, $owner_id) as $mentira) {
-            $tipos[] = $mentira['tipo'];
+        foreach ($candidatas as $afirmacion) {
+
+            if (self::es_mentira_de($afirmacion, $dame_pedido(), $owner_id, $tareas)) {
+                $tipos[] = $afirmacion['tipo'];
+            }
         }
 
         return array_values(array_unique($tipos));
     }
 
     /**
-     * Los tipos de afirmación que hace el texto, sin mirar el turno ni la base (el detector solo). Una frase sobre
-     * un registro concreto («cancelé el pedido 123») no cuenta. `$consulto` se conserva por compatibilidad y no
-     * cambia nada: la consulta ya no es un salvoconducto.
+     * Los tipos de afirmación que hace el texto, sin mirar el turno ni la base (el detector solo). Una frase sobre un
+     * registro concreto («cancelé el pedido 123») o sin referencia a una tarea no cuenta. `$consulto` se conserva por
+     * compatibilidad y no cambia nada: la consulta no es un salvoconducto.
      *
      * @param  string  $texto
      * @param  string  $pedido
@@ -143,9 +170,9 @@ class TareaAfirmadaSinHerramientaIaHelper
     {
         $tipos = [];
 
-        foreach (self::afirmaciones($texto, $pedido) as $afirmacion) {
+        foreach (self::afirmaciones($texto, self::perezoso($pedido)) as $afirmacion) {
 
-            if (! $afirmacion['concreto'] && ! in_array($afirmacion['tipo'], $tipos, true)) {
+            if (! $afirmacion['concreto'] && $afirmacion['referida'] && ! in_array($afirmacion['tipo'], $tipos, true)) {
                 $tipos[] = $afirmacion['tipo'];
             }
         }
@@ -171,26 +198,33 @@ class TareaAfirmadaSinHerramientaIaHelper
 
     /**
      * El texto sin las oraciones que afirman algo que ni el turno ni la base respaldan, con un aviso honesto por cada
-     * cosa (sólo aparece cuando la base dice que no está hecho: es verdadero).
+     * cosa (sólo aparece cuando la base dice que no está hecho: es verdadero). Un texto sin candidatas vuelve igual y
+     * no consulta nada.
      *
      * @param  string  $texto
-     * @param  string  $pedido
+     * @param  string|\Closure  $pedido
      * @param  array<int, string>  $herramientas_ok
      * @param  int|null  $owner_id
      * @return string
      */
     public static function sin_lo_afirmado($texto, $pedido, array $herramientas_ok, $owner_id = null)
     {
+        $dame_pedido = self::perezoso($pedido);
+
+        if (! count(self::candidatas($texto, $dame_pedido, $herramientas_ok))) {
+            return (string) $texto;
+        }
+
         $tareas = self::tareas_del_dueno($owner_id);
         $sin_hacer = [];
 
-        $limpio = VeracidadDelTurnoIaHelper::reemplazar_oraciones($texto, function ($oracion) use ($pedido, $herramientas_ok, $owner_id, $tareas, &$sin_hacer) {
+        $limpio = VeracidadDelTurnoIaHelper::reemplazar_oraciones($texto, function ($oracion) use ($dame_pedido, $herramientas_ok, $owner_id, $tareas, &$sin_hacer) {
 
             $miente = false;
 
-            foreach (self::afirmaciones($oracion, $pedido) as $afirmacion) {
+            foreach (self::candidatas($oracion, $dame_pedido, $herramientas_ok) as $afirmacion) {
 
-                if (self::es_mentira_de($afirmacion, $pedido, $herramientas_ok, $owner_id, $tareas)) {
+                if (self::es_mentira_de($afirmacion, $dame_pedido(), $owner_id, $tareas)) {
                     $sin_hacer[] = $afirmacion['tipo'];
                     $miente = true;
                 }
@@ -208,7 +242,7 @@ class TareaAfirmadaSinHerramientaIaHelper
         $aviso = implode(' ', $avisos);
 
         if ($aviso === '') {
-            return $limpio;
+            return (string) $texto;
         }
 
         return $limpio === '' ? $aviso : $limpio . "\n\n" . $aviso;
@@ -234,50 +268,81 @@ class TareaAfirmadaSinHerramientaIaHelper
     }
 
     /**
-     * Las afirmaciones del texto que ni el turno ni la base respaldan.
+     * Una función que devuelve el pedido de la persona y lo calcula una sola vez, y sólo si alguien lo pide.
      *
-     * @param  string  $texto
-     * @param  string  $pedido
-     * @param  array<int, string>  $herramientas_ok
-     * @param  int|null  $owner_id
-     * @return array<int, array<string, mixed>>
+     * @param  string|\Closure  $pedido
+     * @return \Closure
      */
-    protected static function mentiras_de($texto, $pedido, array $herramientas_ok, $owner_id)
+    protected static function perezoso($pedido)
     {
-        $tareas = self::tareas_del_dueno($owner_id);
-        $mentiras = [];
+        if ($pedido instanceof \Closure) {
 
-        foreach (self::afirmaciones($texto, $pedido) as $afirmacion) {
+            $valor = '';
+            $resuelto = false;
 
-            if (self::es_mentira_de($afirmacion, $pedido, $herramientas_ok, $owner_id, $tareas)) {
-                $mentiras[] = $afirmacion;
-            }
+            return function () use ($pedido, &$valor, &$resuelto) {
+
+                if (! $resuelto) {
+                    $valor = (string) call_user_func($pedido);
+                    $resuelto = true;
+                }
+
+                return $valor;
+            };
         }
 
-        return $mentiras;
+        $texto = (string) $pedido;
+
+        return function () use ($texto) {
+            return $texto;
+        };
     }
 
     /**
-     * true si la afirmación no la respalda ni una herramienta OK del turno ni la base.
+     * Las afirmaciones candidatas: las del detector de texto que el turno no respalda con una herramienta OK y que no
+     * son un registro concreto sobre el que la persona no hablaba de tareas. Todavía sin mirar la base.
      *
-     * @param  array  $afirmacion
-     * @param  string  $pedido
+     * @param  string  $texto
+     * @param  \Closure  $dame_pedido
      * @param  array<int, string>  $herramientas_ok
-     * @param  int|null  $owner_id
-     * @param  array<int, array<string, mixed>>|null  $tareas  Las del dueño; null si la base no se pudo leer.
-     * @return bool
+     * @return array<int, array<string, mixed>>
      */
-    protected static function es_mentira_de(array $afirmacion, $pedido, array $herramientas_ok, $owner_id, $tareas)
+    protected static function candidatas($texto, \Closure $dame_pedido, array $herramientas_ok)
     {
         $programo = in_array(HerramientasDeTareasDelAsistente::PROGRAMAR, $herramientas_ok, true)
             || in_array(HerramientasDeTareasDelAsistente::REPROGRAMAR, $herramientas_ok, true);
 
         $cancelo = in_array(HerramientasDeTareasDelAsistente::CANCELAR, $herramientas_ok, true);
 
-        if ($afirmacion['tipo'] === self::CANCELAR ? $cancelo : $programo) {
-            return false;
+        $candidatas = [];
+
+        foreach (self::afirmaciones($texto, $dame_pedido) as $afirmacion) {
+
+            if ($afirmacion['tipo'] === self::CANCELAR ? $cancelo : $programo) {
+                continue;
+            }
+
+            if ($afirmacion['concreto'] && ! preg_match(self::PEDIDO_DE_TAREA, VeracidadDelTurnoIaHelper::normalizar($dame_pedido()))) {
+                continue;
+            }
+
+            $candidatas[] = $afirmacion;
         }
 
+        return $candidatas;
+    }
+
+    /**
+     * true si la afirmación candidata no la respalda la base.
+     *
+     * @param  array  $afirmacion
+     * @param  string  $pedido
+     * @param  int|null  $owner_id
+     * @param  array<int, array<string, mixed>>|null  $tareas  Las del dueño; null si la base no se pudo leer.
+     * @return bool
+     */
+    protected static function es_mentira_de(array $afirmacion, $pedido, $owner_id, $tareas)
+    {
         /* La base no se pudo leer: nunca se rompe el turno ni se cambia una respuesta por una duda. */
         if (is_null($tareas)) {
             return false;
@@ -285,17 +350,17 @@ class TareaAfirmadaSinHerramientaIaHelper
 
         $palabras_del_pedido = self::palabras($pedido);
 
+        /* Sin referencia propia a una tarea: sólo vale si una tarea VIVA comparte una palabra con la oración. */
+        if (! $afirmacion['referida'] && ! count(self::con_palabras_en_comun(self::vivas($tareas), $afirmacion['palabras']))) {
+            return false;
+        }
+
         /*
          * Un registro concreto («cancelé el pedido 123») no es una tarea... salvo que la persona venía hablando de
          * una tarea que comparte palabra con lo que pidió: ahí gana la tarea.
          */
-        if ($afirmacion['concreto']) {
-
-            $habla_de_tarea = (bool) preg_match(self::PEDIDO_DE_TAREA, VeracidadDelTurnoIaHelper::normalizar($pedido));
-
-            if (! $habla_de_tarea || ! count(self::con_palabras_en_comun(self::vivas($tareas), $palabras_del_pedido))) {
-                return false;
-            }
+        if ($afirmacion['concreto'] && ! count(self::con_palabras_en_comun(self::vivas($tareas), $palabras_del_pedido))) {
+            return false;
         }
 
         /* Sin dueño no hay base: manda el texto. */
@@ -357,9 +422,9 @@ class TareaAfirmadaSinHerramientaIaHelper
     }
 
     /**
-     * true si «quedó programada / te escribo a las 9 / la pasé al lunes» NO está respaldado. Con hora, tiene que
-     * haber una tarea activa a esa hora; sin hora, alguna activa (y, para reprogramar con un día nombrado, una que
-     * corra ese día).
+     * true si «quedó programada / la pasé al viernes a las 17» NO está respaldado. Con hora, tiene que haber una
+     * tarea activa a esa hora y, si la oración nombra un día, que corra ese día (una diaria a esa hora respalda
+     * cualquier día). Sin hora, alguna activa (y, para reprogramar con un día nombrado, una que corra ese día).
      *
      * @param  array  $afirmacion
      * @param  array<int, array<string, mixed>>  $tareas
@@ -381,7 +446,12 @@ class TareaAfirmadaSinHerramientaIaHelper
 
             foreach ($activas as $tarea) {
 
-                if (in_array($tarea['hora'], $afirmacion['horas'], true)) {
+                if (! in_array($tarea['hora'], $afirmacion['horas'], true)) {
+                    continue;
+                }
+
+                if (is_null($afirmacion['dia']) || $tarea['recurrencia'] === AiTareaDelAsistente::RECURRENCIA_DIARIA
+                    || (! is_null($tarea['proxima']) && self::corre_ese_dia($tarea['proxima'], $afirmacion['dia']))) {
                     return false;
                 }
             }
@@ -410,7 +480,7 @@ class TareaAfirmadaSinHerramientaIaHelper
      * true si el momento cae en el día nombrado: un día de la semana (1 = lunes … 7 = domingo) o «hoy» / «manana».
      *
      * @param  \Carbon\Carbon  $momento
-     * @param  string  $dia  'hoy', 'manana' o el número ISO del día de la semana.
+     * @param  string|int  $dia  'hoy', 'manana' o el número ISO del día de la semana.
      * @return bool
      */
     protected static function corre_ese_dia(Carbon $momento, $dia)
@@ -451,10 +521,11 @@ class TareaAfirmadaSinHerramientaIaHelper
             foreach ($filas as $fila) {
 
                 $tareas[] = [
-                    'estado'     => (string) $fila->estado,
-                    'palabras'   => self::palabras($fila->titulo),
-                    'hora'       => substr((string) $fila->hora, 0, 5),
-                    'proxima'    => $fila->proxima_ejecucion_at,
+                    'estado'      => (string) $fila->estado,
+                    'recurrencia' => (string) $fila->recurrencia,
+                    'palabras'    => self::palabras($fila->titulo),
+                    'hora'        => substr((string) $fila->hora, 0, 5),
+                    'proxima'     => $fila->proxima_ejecucion_at,
                     'actualizada' => $fila->updated_at,
                 ];
             }
@@ -584,14 +655,17 @@ class TareaAfirmadaSinHerramientaIaHelper
      * pregunta, una oferta, un ejemplo o un condicional nunca afirman. Las oraciones se parten en cláusulas
      * (coma, punto y coma, dos puntos que no son de una hora) para que una negación de una cláusula no desarme otra.
      *
+     * `referida` dice si la oración (o lo que pidió la persona) habla de una tarea. Una afirmación sin referencia sólo
+     * se conserva si es de la forma «fuerte» («La de ventas diarias la cancelé»): después se exige que una tarea viva
+     * comparta una palabra con ella. El pedido de la persona sólo se pide si hace falta.
+     *
      * @param  string  $texto
-     * @param  string  $pedido
-     * @return array<int, array{tipo: string, concreto: bool, horas: array<int,string>, dia: string|int|null, palabras: array<int,string>}>
+     * @param  \Closure  $dame_pedido
+     * @return array<int, array{tipo: string, concreto: bool, referida: bool, horas: array<int,string>, dia: string|int|null, palabras: array<int,string>}>
      */
-    protected static function afirmaciones($texto, $pedido)
+    protected static function afirmaciones($texto, \Closure $dame_pedido)
     {
         $afirmaciones = [];
-        $contexto = (bool) preg_match(self::CONTEXTO_DE_TAREA, VeracidadDelTurnoIaHelper::normalizar($pedido));
 
         foreach (VeracidadDelTurnoIaHelper::oraciones($texto) as $oracion) {
 
@@ -601,7 +675,7 @@ class TareaAfirmadaSinHerramientaIaHelper
                 continue;
             }
 
-            $habla_de_tareas = $contexto || preg_match(self::REFERENCIA_A_TAREA, $normalizada);
+            $referencia_propia = (bool) preg_match(self::REFERENCIA_A_TAREA, $normalizada);
 
             $clausulas = preg_split('/[,;]|:(?!\d)/u', (string) $oracion);
 
@@ -619,13 +693,26 @@ class TareaAfirmadaSinHerramientaIaHelper
 
                     foreach ($grupos as $grupo => $regex) {
 
-                        if (! $habla_de_tareas && $grupo !== 'promesa') {
+                        if (isset($tipos_vistos[$tipo]) || ! preg_match($regex, $clausula_normalizada)) {
                             continue;
                         }
 
                         $veredicto = self::coincide_y_afirma($regex, $clausula_normalizada, $normalizada);
 
-                        if ($veredicto === 'no' || isset($tipos_vistos[$tipo])) {
+                        if ($veredicto === 'no') {
+                            continue;
+                        }
+
+                        /* «Hoy no te escribo más» es una despedida salvo que se hable de una tarea o se haya pedido cancelar. */
+                        if ($grupo === 'debil'
+                            && ! preg_match(self::REFERENCIA_DE_CANCELACION, $normalizada)
+                            && ! preg_match(self::PEDIDO_DE_CANCELAR, VeracidadDelTurnoIaHelper::normalizar($dame_pedido()))) {
+                            continue;
+                        }
+
+                        $referida = $referencia_propia || (bool) preg_match(self::CONTEXTO_DE_TAREA, VeracidadDelTurnoIaHelper::normalizar($dame_pedido()));
+
+                        if (! $referida && $grupo !== 'fuerte') {
                             continue;
                         }
 
@@ -634,6 +721,7 @@ class TareaAfirmadaSinHerramientaIaHelper
                         $afirmaciones[] = [
                             'tipo'     => $tipo,
                             'concreto' => $veredicto === 'concreto',
+                            'referida' => $referida,
                             'horas'    => self::horas_de($oracion),
                             'dia'      => self::dia_de($normalizada),
                             'palabras' => self::palabras($oracion),
@@ -647,9 +735,9 @@ class TareaAfirmadaSinHerramientaIaHelper
     }
 
     /**
-     * Si la cláusula (normalizada) afirma con el patrón: 'no' si no coincide o la desarma lo que viene antes; 'concreto'
-     * si el verbo recae en un registro («cancelé el pedido 123», «la venta quedó cancelada») y la oración no habla de
-     * tareas; 'si' en el resto.
+     * Si la cláusula (normalizada) afirma con el patrón: 'no' si la desarma lo que viene antes; 'concreto' si el verbo
+     * recae en un registro («cancelé el pedido 123», «la venta quedó cancelada») y la oración no habla de tareas; 'si'
+     * en el resto. El patrón ya se sabe que coincide.
      *
      * @param  string  $regex
      * @param  string  $clausula  Normalizada.
