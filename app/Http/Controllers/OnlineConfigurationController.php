@@ -127,6 +127,13 @@ class OnlineConfigurationController extends Controller
             $model->permitir_pedidos_sin_stock = $request->boolean('permitir_pedidos_sin_stock');
         }
 
+        // Leyenda de descuento por medio de pago (misión tienda-cobro-tarjeta, 24/11/2026). Solo se
+        // asigna si el PUT trae la clave y la columna existe: una pantalla vieja de empresa-spa que no
+        // la conoce no puede apagarla sola, y un deploy que sube el código antes de migrar no rompe.
+        if ($request->has('mostrar_leyenda_de_descuento') && Schema::hasColumn('online_configurations', 'mostrar_leyenda_de_descuento')) {
+            $model->mostrar_leyenda_de_descuento = $request->boolean('mostrar_leyenda_de_descuento');
+        }
+
         $model->online_description              = $request->online_description;
 
         // Descripción para vista previa al compartir el link de la tienda (og:description /
