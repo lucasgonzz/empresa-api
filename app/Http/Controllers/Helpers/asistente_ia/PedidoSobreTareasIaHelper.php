@@ -209,14 +209,30 @@ class PedidoSobreTareasIaHelper
     }
 
     /**
-     * «No me escribas / avises / preguntes / mandes / recuerdes (más)»: pide que deje de avisarle.
+     * «No me escribas / avises / recuerdes / molestes (más)» y, con un «más» o un momento, «no me preguntes /
+     * mandes / cuentes / informes»: pide que deje de avisarle.
+     *
+     * 🔴 «No me preguntes» a secas NO dispara: es la frase de siempre del modo directo («Anotá la nafta y no me
+     * preguntes», test 51 de ChatIa) y no habla de tareas. Con «más» («no me preguntes más») o un momento («no me
+     * mandes nada hasta el lunes») sí, que es lo que dice el plan.
      *
      * @param  string  $normalizado
      * @return bool
      */
     protected static function pide_no_ser_molestado(string $normalizado): bool
     {
-        return preg_match('/\bno me (?:escribas|avises|preguntes|mandes|recuerdes|cuentes|informes|molestes|hables|llames)\b/u', $normalizado) === 1;
+        if (preg_match('/\bno me (?:escribas|avises|recuerdes|molestes|hables|llames)\b/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        if (preg_match('/\bno me (?:preguntes|mandes|cuentes|informes)\b/u', $normalizado) !== 1) {
+
+            return false;
+        }
+
+        return preg_match('/\bno me (?:preguntes|mandes|cuentes|informes)\b.*\bmas\b/u', $normalizado) === 1
+            || self::nombra_un_momento($normalizado);
     }
 
     /**
