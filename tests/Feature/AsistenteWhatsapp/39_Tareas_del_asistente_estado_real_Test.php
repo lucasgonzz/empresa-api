@@ -185,6 +185,10 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
         $cancelacion = $this->herramienta('cancelar_tarea_del_asistente', ['tarea_id' => $tarea->id]);
         $this->assertFalse($cancelacion['error'], 'La herramienta de cancelar no tendría que fallar.');
 
+        // herramienta() deja un assistant 'pendiente' en una conversación aparte; el job real espera a los turnos en
+        // curso del dueño y el segundo turno nunca correría. Se cierra: aquí se prueba el estado, no la cola de turnos.
+        DB::table('ai_messages')->where('estado', 'pendiente')->update(['estado' => 'listo']);
+
         $this->el_dueno_escribe('Gracias, ¿y ahora?');
 
         $todos = $this->pedidos_al_modelo();
