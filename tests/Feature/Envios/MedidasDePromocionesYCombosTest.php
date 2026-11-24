@@ -173,4 +173,25 @@ class MedidasDePromocionesYCombosTest extends EmpresaTestCase
         $despues = EdicionPromocionVinotecaHelper::referencia($promo->fresh(), ['peso' => 8]);
         $this->assertNotSame($antes, $despues);
     }
+
+    /**
+     * CA3: el 422 habla como la pantalla ("Largo (cm)"), nunca con la palabra técnica "profundidad"
+     * ni con el rótulo viejo "Largo / profundidad". Y un PUT válido sigue devolviendo los valores.
+     * @dataProvider tipos
+     */
+    public function test_mensaje_de_medida_invalida_dice_largo($tipo)
+    {
+        $payload = $this->payload($tipo);
+        $alta = $this->postJson('api/'.$tipo, array_merge($payload, $this->medidas()))->assertCreated();
+        $id = $alta->json('model.id');
+        $respuesta = $this->putJson('api/'.$tipo.'/'.$id, array_merge($payload, ['profundidad' => '-1']))
+            ->assertStatus(422)->assertJsonValidationErrors('profundidad');
+        $mensaje = implode(' ', $respuesta->json('errors.profundidad'));
+        $this->assertStringContainsString('Largo (cm)', $mensaje);
+        $this->assertStringNotContainsString('profundidad', $mensaje);
+        // No regresión: un PUT válido conserva y devuelve los valores cargados.
+        $valido = $this->putJson('api/'.$tipo.'/'.$id, array_merge($payload, ['peso' => '8.1234', 'profundidad' => 40]))->assertOk();
+        $this->assertEquals('8.1234', $valido->json('model.peso'));
+        $this->assertEquals(40, $valido->json('model.profundidad'));
+    }
 }
