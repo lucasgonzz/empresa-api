@@ -386,4 +386,197 @@ class Tareas_del_asistente_pensamiento_Test extends TareasDelAsistenteConModeloT
 
         $this->assert_todas_las_vueltas_con('model_agil', 'El sí a otra pregunta sigue con el modelo ágil');
     }
+
+    /* ─────────────────────────────── ronda 2: recall de las formas de pedir ─────────────────────────────── */
+
+    /**
+     * 🔴 Ronda 2, hallazgo 1. Los verbos de aviso se reconocen en todas sus formas cuando la oración nombra un
+     * momento: pregunta en voseo y tuteo, infinitivo con enclítico, subjuntivo, imperativo con enclítico
+     * («acordame», «pasame», «mandámelo», «haceme acordar»), más las frases sueltas de las notas de la revisión.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function las_formas_de_pedir_un_aviso_disparan()
+    {
+        $pedidos = [
+            // Pregunta o afirmación en voseo y tuteo.
+            '¿Me avisás mañana a las 9 cómo viene la caja?',
+            'Me mandás todos los días las ventas',
+            'Me escribís el viernes',
+            'Me preguntás mañana si pagué',
+            'Me pasás cada mañana la caja',
+            'Me avisas mañana a las 9',
+            'Me mandas todos los días el resumen',
+            'Me recuerdas el viernes lo del alquiler',
+            // Infinitivo con enclítico y con poder.
+            'Me podés avisar mañana a las 9',
+            'Podés mandarme todos los días el saldo de caja',
+            'Podrías recordarme el lunes lo del alquiler',
+            'Mandarme a las 8 la caja',
+            // Subjuntivo.
+            'Necesito que me avises el lunes',
+            'Quiero que todos los días me avises cuánto vendí',
+            'Quiero que me recuerdes el viernes',
+            'Te pido que todos los días me pases las ventas',
+            'Quiero que me mandes el resumen todos los días',
+            // Imperativo con enclítico.
+            'Haceme acordar mañana',
+            'Acordame el lunes',
+            'Mandámelo todos los días',
+            'Cada día a las 8 pasame las ventas de ayer',
+            'Todas las mañanas pasame la caja',
+            'El resumen de ventas mandámelo a las 8 en vez de las 9',
+            'Avisame cuando sean las 6',
+            // Las de las notas de la revisión.
+            'Dejame de mandar las ventas',
+            'Ya no quiero que me mandes lo de la caja',
+            'No quiero más el resumen diario',
+            'Cambiá el aviso de la caja para las 10',
+            'Qué tenés agendado',
+            'Qué me vas a mandar mañana',
+            'Qué me ibas a preguntar el viernes',
+            'Suspendé todo por esta semana',
+            'Quiero un aviso todos los días a las 9',
+        ];
+
+        foreach ($pedidos as $pedido) {
+            $this->assertTrue(PedidoSobreTareasIaHelper::habla_de_tareas($pedido), 'Tendría que disparar: «' . $pedido . '».');
+        }
+    }
+
+    /**
+     * 🔴 Ronda 2, punto 4. Pedidos comunes con verbos parecidos o momentos sueltos NO disparan (más los de CA3, que
+     * ya los fija el otro test).
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function los_pedidos_parecidos_pero_comunes_no_disparan()
+    {
+        $pedidos = [
+            'Pasame las ventas de ayer',
+            'Contame cuánto vendí ayer',
+            'Mandame el link de la tienda',
+            'Pasame el resumen de la semana',
+            '¿A qué hora cerró la caja?',
+            'Cargá una venta de ayer a las 10',
+            'El pedido de Pérez es para mañana',
+            'Avisale a Juan que mañana no viene',
+            'Mañana abro a las 9',
+            'El proveedor viene el viernes a la tarde',
+            '¿Qué vence mañana?',
+            'Cargá la compra de mañana',
+        ];
+
+        foreach ($pedidos as $pedido) {
+            $this->assertFalse(PedidoSobreTareasIaHelper::habla_de_tareas($pedido), 'No tendría que disparar: «' . $pedido . '».');
+        }
+    }
+
+    /**
+     * 🔴 Ronda 2, punto 3a. El asistente reconoce sus propias propuestas de tarea, y no las preguntas comunes.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_asistente_reconoce_sus_propuestas_de_tarea()
+    {
+        $propuestas = [
+            '¿Querés que te lo mande todos los días?',
+            'Listo, te aviso mañana a las 9. ¿Te parece?',
+            '¿Te escribo el viernes a las 9?',
+            '¿La programo?',
+            '¿La paso al lunes?',
+        ];
+
+        foreach ($propuestas as $propuesta) {
+            $this->assertTrue(PedidoSobreTareasIaHelper::el_asistente_hablo_de_tareas($propuesta), 'Es una propuesta de tarea: «' . $propuesta . '».');
+        }
+
+        foreach (['¿Cargo la venta?', '¿A qué hora cargo la venta?', 'Ayer vendiste $50.000. ¿Querés el detalle por vendedor?', 'Te paso el saldo de Pérez: $20.000.'] as $comun) {
+            $this->assertFalse(PedidoSobreTareasIaHelper::el_asistente_hablo_de_tareas($comun), 'No es una propuesta de tarea: «' . $comun . '».');
+        }
+    }
+
+    /**
+     * 🔴 Ronda 2, punto 3b. Una corrección breve de hora o día cuenta como respuesta corta dependiente del
+     * contexto; una frase larga o sin momento, no.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function las_correcciones_breves_de_momento_son_respuestas_cortas()
+    {
+        foreach (['Mejor a las 10', 'No, mejor a las 10', 'Cambiá la hora a las 9', 'A las 9', 'El lunes', 'A la tarde'] as $texto) {
+            $this->assertTrue(PedidoSobreTareasIaHelper::es_correccion_de_momento($texto), 'Es una corrección de momento: «' . $texto . '».');
+        }
+
+        foreach (['Cargá una venta de 2 remeras a Juan por favor ahora mismo', 'Gracias', '¿A las 9?', 'Sí'] as $texto) {
+            $this->assertFalse(PedidoSobreTareasIaHelper::es_correccion_de_momento($texto), 'No es una corrección de momento: «' . $texto . '».');
+        }
+    }
+
+    /**
+     * Las propuestas de tarea del asistente a las que la persona contesta «Sí».
+     *
+     * @return array<string,array<int,string>>
+     */
+    public function propuestas_del_asistente()
+    {
+        return [
+            'todos los días'  => ['¿Querés que te lo mande todos los días?'],
+            'te aviso'        => ['Listo, te aviso mañana a las 9. ¿Te parece?'],
+            'te escribo'      => ['¿Te escribo el viernes a las 9?'],
+            'la programo'     => ['¿La programo?'],
+            'la paso'         => ['¿La paso al lunes?'],
+        ];
+    }
+
+    /**
+     * 🔴 Ronda 2, punto 3a. El «sí» que contesta a una propuesta de tarea del asistente corre con el profundo.
+     *
+     * @dataProvider propuestas_del_asistente
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function un_si_a_una_propuesta_de_tarea_corre_con_el_profundo($propuesta)
+    {
+        $this->conversacion_con_pregunta('Quiero saber cómo viene la caja', $propuesta);
+
+        $this->el_dueno_escribe('Sí');
+
+        $this->assert_todas_las_vueltas_con('model_profundo', 'El sí a una propuesta de tarea corre con el modelo profundo');
+    }
+
+    /**
+     * 🔴 Ronda 2, punto 3b. «Mejor a las 10» tras una propuesta de tarea corre con el profundo.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function mejor_a_las_10_tras_una_propuesta_de_tarea_corre_con_el_profundo()
+    {
+        $this->conversacion_con_pregunta('Quiero saber cómo viene la caja', 'Listo, te aviso mañana a las 9. ¿Te parece?');
+
+        $this->el_dueno_escribe('Mejor a las 10');
+
+        $this->assert_todas_las_vueltas_con('model_profundo', 'La corrección de hora tras una propuesta de tarea corre con el profundo');
+    }
+
+    /**
+     * 🔴 Ronda 2, punto 3b. «A las 10» tras «¿A qué hora cargo la venta?» sigue con el ágil: el asistente no habló
+     * de tareas.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function a_las_10_tras_una_pregunta_de_la_venta_sigue_con_el_agil()
+    {
+        $this->conversacion_con_pregunta('Cargá una venta de 2 remeras a Juan', '¿A qué hora cargo la venta?');
+
+        $this->el_dueno_escribe('A las 10');
+
+        $this->assert_todas_las_vueltas_con('model_agil', 'La hora de una venta sigue con el modelo ágil');
+    }
 }
