@@ -167,18 +167,21 @@ class WhatsappChatHelper
         // ataría la ventana —lo importante— al éxito de una descarga de un tercero, que es
         // exactamente el bug que esta misión viene a arreglar. No dar vuelta estas dos cosas.
         $media_columns = [];
+
+        // Misión whatsapp-coexistencia-ecos: el wamid del entrante vivo SE PERSISTE para que el historial
+        // importado después (`origin: history_sync`) detecte que ese mensaje ya entró y no lo duplique. Es
+        // seguro desde que `handle_delivery_status_event()` filtra `direction = out` (ver ahí). Nulo si
+        // Kapso no lo mandó o si el mensaje es simulado.
+        $wa_message_id = isset($payload['message']['id']) && trim((string) $payload['message']['id']) !== ''
+            ? trim((string) $payload['message']['id'])
+            : null;
+
         if (is_array($media)) {
             // `media_type` va SIEMPRE, con archivo o sin él: es lo que le dice a la
             // conversación "acá llegó una foto" aunque no se haya podido bajar (D14).
             $media_columns['media_type'] = isset($media['media_type']) ? $media['media_type'] : null;
 
-            // El id del mensaje en WhatsApp se lee acá y se le pasa al servicio SOLO para armar
-            // el nombre determinista del archivo. 🔴 NO SE PERSISTE (D17):
-            // `handle_delivery_status_event()` busca por la columna `wa_message_id` sin filtrar
-            // `direction`, así que sembrarla con ids de mensajes entrantes le abriría una
-            // colisión — un evento de entrega podría caer sobre la fila equivocada.
-            $wa_message_id = isset($payload['message']['id']) ? (string) $payload['message']['id'] : null;
-
+            // El id del mensaje (leído arriba) se le pasa al servicio para armar el nombre determinista del archivo.
             $stored = (new WhatsappInboundMediaService())->store_inbound_media(
                 $media,
                 (int) $chat->id,
@@ -200,6 +203,7 @@ class WhatsappChatHelper
             'direction' => 'in',
             'source' => 'cliente',
             'body' => $body,
+            'wa_message_id' => $wa_message_id,
             // Lo único que distingue en la base este mensaje de uno que el cliente escribió
             // de verdad: `direction` y `source` son idénticos a propósito (la simulación tiene
             // que recorrer el mismo camino), así que sin esta columna el registro comercial
@@ -849,6 +853,11 @@ class WhatsappChatHelper
             ->where(function ($query) {
                 $query->whereNull('ai_status')->orWhere('ai_status', '!=', 'a_confirmar');
             })
+            // Misión whatsapp-coexistencia-ecos: el historial importado es contexto, no un pendiente (se
+            // inserta hoy con fecha vieja y su id sería el MAX). Mismo criterio en las otras dos copias.
+            ->where(function ($query) {
+                $query->whereNull('source')->orWhere('source', '!=', 'historial');
+            })
             ->selectRaw('MAX(id) as id')
             ->groupBy('whatsapp_chat_id')
             ->pluck('id');
@@ -1177,7 +1186,11 @@ class WhatsappChatHelper
             return;
         }
 
-        $message = WhatsappChatMessage::where('wa_message_id', $wa_message_id)->first();
+        // 🔴 Sólo filas SALIENTES (misión whatsapp-coexistencia-ecos): desde que los entrantes guardan su wamid
+        // (D17 cerrado), un evento de entrega no puede caer sobre la fila `in` de un mensaje del cliente.
+        $message = WhatsappChatMessage::where('wa_message_id', $wa_message_id)
+            ->where('direction', 'out')
+            ->first();
         if (is_null($message)) {
             // Puede pasar si el mensaje se mandó desde otro canal, o si el estado llega
             // antes de que termine de persistirse la respuesta de send_text (orden de red).
@@ -1261,7 +1274,7 @@ class WhatsappChatHelper
      * @param  string  $phone  Ya normalizado (solo dígitos).
      * @return int|null
      */
-    private static function find_unique_matching_client_id($user_id, $phone)
+    public static function find_unique_matching_client_id($user_id, $phone)
     {
         if ($phone === '') {
             return null;
@@ -1289,7 +1302,7 @@ class WhatsappChatHelper
      * @param  array  $payload
      * @return string|null
      */
-    private static function extract_contact_name(array $payload)
+    public static function extract_contact_name(array $payload)
     {
         $candidates = [
             isset($payload['contact']['name']) ? $payload['contact']['name'] : null,
