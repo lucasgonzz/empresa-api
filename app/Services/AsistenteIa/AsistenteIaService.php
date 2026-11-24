@@ -4093,6 +4093,17 @@ CONFIRMACION;
          */
         $bloque_de_tareas = $this->bloque_de_tareas_programadas($conversation, $owner);
 
+        /*
+         * Prevención de «la cancelé» dicho de memoria: la lista REAL de tareas del dueño y la regla corta. Va al
+         * PRINCIPIO del último bloque no cacheado (no al final: ese final lo miden los límites de la memoria del
+         * negocio). Vacío en turno desatendido, para el empleado o si la lectura falla.
+         */
+        $estado_real = '';
+
+        if (! $this->es_turno_desatendido($conversation) && HerramientasDeTareasDelAsistente::se_ofrecen($owner, $conversation)) {
+            $estado_real = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::estado_para_el_modelo($owner);
+        }
+
         if ($bloque_de_tareas !== '') {
             if (count($system) > 1) {
                 /*
@@ -4101,11 +4112,12 @@ CONFIRMACION;
                  * para el caché es lo mismo (ninguno de los dos lleva cache_control). Sólo si no hay
                  * ninguno (sin memoria ni conversaciones anteriores) va como bloque propio.
                  */
-                $system[count($system) - 1]['text'] .= "\n\n" . $bloque_de_tareas;
+                $system[count($system) - 1]['text'] = ($estado_real !== '' ? $estado_real . "\n\n" : '')
+                    . $system[count($system) - 1]['text'] . "\n\n" . $bloque_de_tareas;
             } else {
                 $system[] = [
                     'type' => 'text',
-                    'text' => $bloque_de_tareas,
+                    'text' => ($estado_real !== '' ? $estado_real . "\n\n" : '') . $bloque_de_tareas,
                 ];
             }
         }
@@ -6329,17 +6341,6 @@ CONFIRMACION;
             $ahora = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::ahora();
 
             $partes[] = 'Ahora son las ' . $ahora->format('H:i') . ' del ' . FormatoIaHelper::fecha_con_dia($ahora) . '.';
-
-            /*
-             * Prevención de «la cancelé» dicho de memoria: la lista REAL de tareas del dueño y la regla corta, en
-             * este mismo bloque (sin abrir otro). El Helper devuelve '' si no pudo leerla y el turno sigue igual.
-             */
-            $estado_real = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::estado_para_el_modelo($owner);
-
-            if ($estado_real !== '') {
-
-                $partes[] = $estado_real;
-            }
         }
 
         /* Enmienda 1 (E1): resultados de tareas que el código pone al principio de la respuesta de este turno. */

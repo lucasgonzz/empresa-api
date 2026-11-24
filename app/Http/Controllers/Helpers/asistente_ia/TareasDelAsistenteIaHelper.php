@@ -39,7 +39,7 @@ class TareasDelAsistenteIaHelper
     const DIAS_MAXIMOS = 90;
 
     /** Estado real para el modelo: tope de caracteres del agregado, y la regla fija que lo cierra (no se recorta). */
-    const ESTADO_LARGO_MAXIMO = 1500;
+    const ESTADO_LARGO_MAXIMO = 2000;
 
     const ESTADO_REGLA = 'No digas que programaste, cambiaste o cancelaste algo que esta lista no muestra así, salvo que llames a la herramienta en este turno. Si antes en esta conversación dijiste otra cosa, vale la lista: corregilo.';
 
@@ -336,7 +336,9 @@ class TareasDelAsistenteIaHelper
      * 🔴 Lo que dice la base ahora: activas y pausadas (listar(): mismo «cuando» y «próxima» que la herramienta de
      * consulta) y hasta 5 canceladas o terminadas de las últimas 24 h, las más nuevas primero; sin tareas, lo dice.
      * Siempre cierra con la regla. Dos consultas como mucho. Si algo falla devuelve '' y el turno sigue como antes.
-     * Tope de ~1.500 caracteres: primero se achican los títulos (con «…»), después se sueltan recientes y vivas.
+     * 🔴 NUNCA se descarta una viva en silencio. Tope de 2.000 caracteres; se recorta en este orden: títulos hasta 12
+     * caracteres, recientes (la más vieja primero), vivas en formato compacto y, si aun así no entran, se muestran las
+     * que entran y una línea dice cuántas faltan y que hay que consultar la herramienta.
      *
      * @param  \App\Models\User  $dueno
      * @return string  Texto para el modelo, o '' si no se pudo leer.
@@ -357,20 +359,30 @@ class TareasDelAsistenteIaHelper
                 ->where('updated_at', '>=', Carbon::now()->subHours(24))
                 ->orderBy('updated_at', 'desc')->orderBy('id', 'desc')->limit(5)->get()->all();
 
-            /* Largo máximo de cada título: arranca completo y baja de a 8 hasta 12 si el texto no entra. */
+            /* Recorte: largo de títulos, si las vivas van compactas y cuántas vivas se muestran (el resto se cuenta). */
             $largo_titulo = self::LARGO_TITULO;
+            $compacto = false;
+            $mostradas = count($vivas);
 
             while (true) {
 
                 $lineas = [];
 
-                foreach ($vivas as $viva) {
+                foreach (array_slice($vivas, 0, $mostradas) as $viva) {
 
                     /* Las de una sola vez ya dicen día y hora en «cuando»; la próxima sólo suma en las recurrentes. */
                     $unica = strncmp($viva['cuando'], 'el ', 3) === 0 || strncmp($viva['cuando'], 'a las ', 6) === 0;
+                    $proxima = !is_null($viva['proxima']) && ($compacto || !$unica) ? 'próxima ' . $viva['proxima'] : '';
 
-                    $lineas[] = '- [id ' . $viva['tarea_id'] . '] «' . mb_strimwidth($viva['titulo'], 0, $largo_titulo, '…') . '»: ' . $viva['cuando']
-                        . (!$unica && !is_null($viva['proxima']) ? ', próxima ' . $viva['proxima'] : '') . ' (' . $viva['estado'] . ')';
+                    $lineas[] = '- [id ' . $viva['tarea_id'] . '] «' . mb_strimwidth($viva['titulo'], 0, $largo_titulo, '…') . '»'
+                        . ($compacto ? ($proxima !== '' ? ': ' . $proxima : '') : ': ' . $viva['cuando'] . ($proxima !== '' ? ', ' . $proxima : ''))
+                        . ' (' . $viva['estado'] . ')';
+                }
+
+                if ($mostradas < count($vivas)) {
+
+                    $faltan = count($vivas) - $mostradas;
+                    $lineas[] = '… y ' . $faltan . ' tarea' . ($faltan > 1 ? 's' : '') . ' más que no entran acá: llamá a consultar_tareas_del_asistente antes de afirmar algo sobre ellas.';
                 }
 
                 foreach ($recientes as $reciente) {
@@ -384,7 +396,8 @@ class TareasDelAsistenteIaHelper
                 $texto = 'Tareas programadas del dueño AHORA (es la verdad; sólo cambia cuando llamás a programar, reprogramar o cancelar en este turno):' . "\n"
                     . (count($lineas) ? implode("\n", $lineas) : 'El dueño no tiene ninguna tarea programada.') . "\n" . self::ESTADO_REGLA;
 
-                if (mb_strlen($texto) <= self::ESTADO_LARGO_MAXIMO || (count($vivas) <= 1 && !count($recientes) && $largo_titulo <= 12)) {
+                /* Termina siempre: cada vuelta recorta algo y, sin nada más que recortar, se devuelve lo que hay. */
+                if (mb_strlen($texto) <= self::ESTADO_LARGO_MAXIMO || $mostradas === 0) {
 
                     return $texto;
                 }
@@ -397,9 +410,13 @@ class TareasDelAsistenteIaHelper
 
                     array_pop($recientes);
 
+                } elseif (!$compacto) {
+
+                    $compacto = true;
+
                 } else {
 
-                    array_pop($vivas);
+                    $mostradas--;
                 }
             }
 
