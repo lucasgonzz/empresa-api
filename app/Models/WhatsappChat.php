@@ -208,6 +208,10 @@ class WhatsappChat extends Model
             ->where(function ($query) {
                 $query->whereNull('ai_status')->orWhere('ai_status', '!=', 'a_confirmar');
             })
+            // El historial importado (coexistencia) no cuenta como pendiente: ver chat_ids_sin_responder().
+            ->where(function ($query) {
+                $query->whereNull('source')->orWhere('source', '!=', 'historial');
+            })
             ->orderBy('created_at', 'DESC')
             ->orderBy('id', 'DESC')
             ->first();
