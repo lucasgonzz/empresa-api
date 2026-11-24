@@ -3,6 +3,7 @@
 namespace App\Jobs;
 
 use App\Exceptions\CupoEmbeddingsDePruebaException;
+use App\Exceptions\EmbeddingsCredencialRechazadaException;
 use App\Models\Article;
 use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
@@ -203,6 +204,21 @@ class GenerateArticleEmbeddingJob implements ShouldQueue
             }
         } catch (CupoEmbeddingsDePruebaException $exception) {
             $this->registrar_resultado('salteados');
+        } catch (EmbeddingsCredencialRechazadaException $exception) {
+            /*
+             * 🔴 CREDENCIAL RECHAZADA (misión embeddings-corte-credencial-20261123): error PERMANENTE, y
+             * este catch tiene que ir ANTES del `\Throwable` de abajo. NO se re-lanza (0 reintentos, 0 filas
+             * en `failed_jobs`) y NO se llama a mark_as_queued: la marca ya se liberó al principio de
+             * handle() y tiene que quedar así, o el artículo quedaría trabado 12 h (QUEUED_MARK_TTL_MINUTES)
+             * esperando un reintento que no va a haber. Tampoco se escribe embedding_generated_at ni
+             * embedding_source_hash: el artículo sigue PENDIENTE y la primera pasada del comando con el corte
+             * ya vencido (o tras `cache:forget`) lo vuelve a tomar.
+             *
+             * Se cuenta como `fallados` y no se espera a failed(): como el job termina acá y no falla, failed()
+             * nunca corre, y sin esta suma la tanda no llegaría a `terminados == total_jobs` y
+             * FinalizeEmbeddingRun esperaría a que venza (20 min).
+             */
+            $this->registrar_resultado('fallados');
         } catch (\Throwable $exception) {
             Log::channel('daily')->error('GenerateArticleEmbeddingJob: error al generar embedding.', [
                 'article_id' => $this->article_id,

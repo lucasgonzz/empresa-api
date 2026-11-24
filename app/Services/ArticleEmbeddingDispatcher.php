@@ -49,13 +49,23 @@ class ArticleEmbeddingDispatcher
      * job corre dentro del despacho y libera la marca; al revés quedaría marcado sin job.
      * Si el despacho lanza, se libera la marca y se re-lanza la excepción.
      *
+     * 🔴 Con el corte por credencial rechazada abierto (EmbeddingsCredencialCorte) NO despacha, y lo
+     * consulta ANTES de reclamar la marca: así un artículo editado durante el corte queda con
+     * `embedding_queued_at` nulo y la primera pasada del comando tras el corte lo toma. Si reclamara
+     * primero, la marca quedaría puesta sin ningún job y el artículo trabado hasta el vencimiento de
+     * la marca (12 h).
+     *
      * @param int      $article_id       ID del artículo.
      * @param int|null $embedding_run_id ID de la tanda a la que reportar, o null si no hay tanda.
      *
-     * @return bool true si despachó un job; false si ya había uno vigente.
+     * @return bool true si despachó un job; false si ya había uno vigente o hay un corte abierto.
      */
     public static function dispatch_if_not_queued(int $article_id, ?int $embedding_run_id = null): bool
     {
+        if (EmbeddingsCredencialCorte::abierto()) {
+            return false;
+        }
+
         // Momento a partir del cual una marca se considera vencida.
         $expired_before = Carbon::now()->subMinutes(self::QUEUED_MARK_TTL_MINUTES);
 
