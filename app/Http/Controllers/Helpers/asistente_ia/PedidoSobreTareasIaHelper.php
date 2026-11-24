@@ -33,6 +33,18 @@ class PedidoSobreTareasIaHelper
     /** Verbos con los que se le pide algo al asistente en voseo, ya normalizados (el pedido de aviso, de cuenta, de recuerdo). */
     const VERBOS_DE_AVISO = 'avisa|avisame|avisanos|escribi|escribime|escribinos|pregunta|preguntame|preguntanos|conta|contame|contanos|manda|mandame|mandanos|envia|enviame|recorda|recordame|recuerda|recuerdame|acordate|informa|informame|reporta|reportame|resumi|resumime|programa|agenda|agendame';
 
+    /** Imperativo con enclítico («avisame», «pasame», «acordame», «mandamelo»), ya normalizado. */
+    const IMPERATIVO_CON_ENCLITICO = '(?:avisa|manda|escribi|pregunta|conta|recorda|pasa|informa|deci|envia|acorda|reporta|resumi)(?:me|nos)(?:lo|la|los|las)?';
+
+    /** Infinitivo con enclítico («avisarme», «mandarme», «recordarme»): cubre «me podés avisar» y «podrías recordarme». */
+    const INFINITIVO_CON_ENCLITICO = '(?:avisar|mandar|escribir|preguntar|contar|recordar|pasar|informar|decir|enviar|acordar)(?:me|nos)(?:lo|la|los|las)?';
+
+    /** Presente en voseo y tuteo detrás de «me» («me avisás», «me escribís», «me recordás»), sin acentos. */
+    const PRESENTE_VOSEO_Y_TUTEO = 'avisas|mandas|escribis|escribes|preguntas|contas|cuentas|recordas|recuerdas|pasas|informas|decis|dices|envias|acordas|acuerdas';
+
+    /** Subjuntivo detrás de «me» («que me avises», «quiero que me recuerdes»), sin acentos. */
+    const SUBJUNTIVO = 'avises|mandes|escribas|preguntes|cuentes|recuerdes|pases|informes|digas|envies|acuerdes';
+
     /** Verbos de cancelar o sacar algo, ya normalizados. */
     const VERBOS_DE_CANCELAR = 'cancela|cancelame|cancelalo|cancelala|cancelalas|cancelalos|cancelar|cancelas|saca|sacame|sacalo|sacala|sacar|borra|borrame|borralo|borrala|borrar|elimina|eliminalo|eliminala|eliminar|anula|anulalo|anulala|anular|pausa|pausalo|pausala|pausar|frena|frenalo|frenala|desactiva|desactivalo|desactivala|suspende|suspendelo|suspendela|quita|quitalo|quitala';
 
@@ -78,7 +90,7 @@ class PedidoSobreTareasIaHelper
             return true;
         }
 
-        if (!self::es_confirmacion_corta($pedido)) {
+        if (!self::es_confirmacion_corta($pedido) && !self::es_correccion_de_momento($pedido)) {
 
             return false;
         }
@@ -138,7 +150,56 @@ class PedidoSobreTareasIaHelper
             return false;
         }
 
-        return preg_match('/tarea|programad|cancel/u', $normalizado) === 1 || self::habla_de_tareas($texto);
+        if (preg_match('/tarea|programad|programo|agendo|cancel/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        return self::propone_una_tarea($normalizado) || self::habla_de_tareas($texto);
+    }
+
+    /**
+     * true si la persona escribió una corrección breve de hora o día («mejor a las 10», «no, mejor a las 10»,
+     * «cambiá la hora a las 9», «a las 9», «el lunes», «a la tarde»): seis palabras como mucho, que nombran un momento
+     * y nada más. Sola no habla de tareas; sólo cuenta si el mensaje anterior del asistente sí (ver aplica()).
+     *
+     * @param  string|null  $texto
+     * @return bool
+     */
+    public static function es_correccion_de_momento($texto): bool
+    {
+        if (preg_match('/[?¿]/u', (string) $texto)) {
+
+            return false;
+        }
+
+        $normalizado = self::normalizar((string) $texto);
+
+        if ($normalizado === '' || count(explode(' ', $normalizado)) > 6) {
+
+            return false;
+        }
+
+        return self::nombra_un_momento($normalizado)
+            || preg_match('/\bcambi(?:a|ar|ame|alo|ala) (?:la|el) (?:hora|horario)\b/u', $normalizado) === 1;
+    }
+
+    /**
+     * true si el texto (ya normalizado) es una propuesta de tarea del asistente: un verbo de aviso en primera
+     * persona con un momento («te aviso mañana a las 9», «¿te escribo el viernes?», «¿querés que te lo mande todos los
+     * días?») o pasar, mover o posponer algo a otro momento («¿la paso al lunes?»).
+     *
+     * @param  string  $normalizado
+     * @return bool
+     */
+    protected static function propone_una_tarea(string $normalizado): bool
+    {
+        if (!self::nombra_un_momento($normalizado)) {
+
+            return false;
+        }
+
+        return preg_match('/\b(?:que )?te (?:(?:lo|la|los|las) )?(?:aviso|avise|mando|mande|escribo|escriba|pregunto|pregunte|paso|pase|recuerdo|recuerde|cuento|cuente|informo|informe|envio|envie)\b|\b(?:la|lo) (?:paso|muevo|pospongo|cambio|dejo)\b/u', $normalizado) === 1;
     }
 
     /* ─────────────────────────────── reglas (sobre el texto ya normalizado) ─────────────────────────────── */
@@ -152,13 +213,45 @@ class PedidoSobreTareasIaHelper
      */
     protected static function pide_avisar_en_un_momento(string $normalizado): bool
     {
-        if (preg_match('/\b(?:recordame|recuerdame|acordate)\b/u', $normalizado) === 1) {
+        /*
+         * Un momento claramente PASADO («ayer», «el viernes pasado») no cuenta para estos verbos: «pasame las ventas
+         * de ayer» es una consulta. Una repetición («todos los días») u otro momento futuro de la oración sí cuenta.
+         */
+        if (!self::nombra_un_momento(self::sin_momentos_pasados($normalizado))) {
 
-            return true;
+            return false;
         }
 
-        return preg_match('/\b(?:' . self::VERBOS_DE_AVISO . ')\b/u', $normalizado) === 1
-            && self::nombra_un_momento($normalizado);
+        $formas = [
+            '\b(?:' . self::VERBOS_DE_AVISO . ')\b',
+            '\b(?:' . self::IMPERATIVO_CON_ENCLITICO . ')\b',
+            '\b(?:' . self::INFINITIVO_CON_ENCLITICO . ')\b',
+            '\bme (?:(?:lo|la|los|las) )?(?:' . self::PRESENTE_VOSEO_Y_TUTEO . '|' . self::SUBJUNTIVO . ')\b',
+            '\bme (?:(?:lo|la|los|las) )?(?:(?:podes|puedes|podrias|queres|tenes que|tienes que|vas a) )?(?:avisar|mandar|escribir|preguntar|contar|recordar|pasar|informar|decir|enviar|acordar)\b',
+            '\bhace(?:me|nos|rme|rnos) acordar\b',
+            '\bacordate\b',
+        ];
+
+        return preg_match('/' . implode('|', $formas) . '/u', $normalizado) === 1;
+    }
+
+    /**
+     * El texto sin los momentos claramente pasados («ayer», «de ayer a la noche», «anoche», «el viernes pasado», «la
+     * semana pasada», «el mes pasado»): lo que queda se mira con nombra_un_momento().
+     *
+     * @param  string  $normalizado
+     * @return string
+     */
+    protected static function sin_momentos_pasados(string $normalizado): string
+    {
+        $patrones = [
+            '\b(?:de |del )?(?:ayer|anteayer|anoche)(?: (?:a|por|en) la (?:manana|tarde|noche)| a las? (?:' . self::CANTIDADES . '))?\b',
+            '\b(?:el |del )?(?:' . self::DIAS . ') pasado(?: a la (?:manana|tarde|noche))?\b',
+            '\b(?:la|de la) semana pasada\b',
+            '\b(?:el|del) (?:mes|ano) pasado\b',
+        ];
+
+        return (string) preg_replace('/' . implode('|', $patrones) . '/u', ' ', $normalizado);
     }
 
     /**
@@ -204,8 +297,26 @@ class PedidoSobreTareasIaHelper
             return true;
         }
 
-        /* «Dejá de avisarme», «dejá de escribirme». */
-        return preg_match('/\bdeja(?:r|lo|la)? de (?:avis|escrib|pregunt|mand|record|cont|inform|moles)\w*/u', $normalizado) === 1;
+        /* «Dejá de avisarme», «dejame de mandar», «dejá de escribirme». */
+        if (preg_match('/\bdeja(?:r|lo|la|me|nos)? de (?:avis|escrib|pregunt|mand|envi|record|cont|inform|moles)\w*/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        /* «Suspendé todo por esta semana», «pausá todo». */
+        if (preg_match('/\b(?:suspende|pausa|frena|desactiva)(?:lo|la)? todo\b/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        /* «Ya no quiero que me mandes lo de la caja». */
+        if (preg_match('/\bno quiero que me (?:mandes|escribas|avises|preguntes|cuentes|informes|envies|molestes|llames)\b/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        /* «No quiero más el resumen diario», «no quiero más avisos». */
+        return preg_match('/\bno quiero mas (?:(?:el|la|los|las) )?(?:resumen|resumenes|aviso|avisos|recordatorio|recordatorios|reporte|reportes|informe|informes)\b/u', $normalizado) === 1;
     }
 
     /**
@@ -267,7 +378,13 @@ class PedidoSobreTareasIaHelper
      */
     protected static function cambia_un_horario(string $normalizado): bool
     {
-        return preg_match('/\b(?:manana|tarde|noche|primera hora|mediodia)\b.{0,15}\bes\b.{0,6}\ba las? \d/u', $normalizado) === 1;
+        if (preg_match('/\b(?:manana|tarde|noche|primera hora|mediodia)\b.{0,15}\bes\b.{0,6}\ba las? \d/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        /* «Cambiá el aviso de la caja para las 10», «cambiá la tarea a las 9» («la hora» suelta es del contexto). */
+        return preg_match('/\bcambi(?:a|ar|ame|alo|ala)\b.{0,25}\b(?:aviso|avisos|tarea|tareas|recordatorio|recordatorios)\b.*\b(?:a|para) las? (?:' . self::CANTIDADES . ')\b/u', $normalizado) === 1;
     }
 
     /**
@@ -278,7 +395,19 @@ class PedidoSobreTareasIaHelper
      */
     protected static function consulta_lo_programado(string $normalizado): bool
     {
-        if (preg_match('/\bprogramad[oa]s?\b/u', $normalizado) === 1) {
+        if (preg_match('/\b(?:programad|agendad)[oa]s?\b/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        /* «Qué me vas a mandar mañana», «qué me ibas a preguntar el viernes». */
+        if (preg_match('/\bque me (?:vas|ibas|va|iba) a (?:mandar|escribir|preguntar|avisar|contar|enviar|pasar|decir|informar)\b/u', $normalizado) === 1) {
+
+            return true;
+        }
+
+        /* «Quiero un aviso todos los días a las 9». */
+        if (preg_match('/\b(?:un|una) (?:aviso|recordatorio|alerta)\b/u', $normalizado) === 1 && self::nombra_un_momento(self::sin_momentos_pasados($normalizado))) {
 
             return true;
         }
@@ -320,6 +449,9 @@ class PedidoSobreTareasIaHelper
             '\bsemana (?:que viene|proxima)\b',
             '\bmes que viene\b',
             '\bproxim[oa] (?:semana|mes)\b',
+            '\bal (?:' . $dias . ')\b',
+            '\bcuando (?:sean|son) las? (?:' . $cantidades . ')\b',
+            '\bcuando llegue (?:el )?(?:' . $dias . ')\b',
         ];
 
         return preg_match('/' . implode('|', $momentos) . '/u', $normalizado) === 1;
