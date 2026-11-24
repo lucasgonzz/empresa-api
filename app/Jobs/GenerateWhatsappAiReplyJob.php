@@ -402,6 +402,10 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             ->where(function ($query) {
                 $query->whereNull('ai_status')->orWhere('ai_status', '!=', 'a_confirmar');
             })
+            // El historial importado (coexistencia) no cuenta: el agente nunca responde mensajes viejos.
+            ->where(function ($query) {
+                $query->whereNull('source')->orWhere('source', '!=', 'historial');
+            })
             ->orderBy('created_at', 'DESC')
             ->orderBy('id', 'DESC')
             ->first();
