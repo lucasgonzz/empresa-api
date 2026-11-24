@@ -320,4 +320,152 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
 
         $this->assertStringContainsString('No digas que programaste, cambiaste o cancelaste', $agregado, 'La regla no se recorta.');
     }
+
+    /**
+     * El estado real recortado: desde el encabezado hasta el final de la regla fija (no incluye lo que venga
+     * después en el system, venga o no al final).
+     *
+     * @param  string  $system
+     * @return string
+     */
+    protected function estado_delimitado($system)
+    {
+        $desde = strpos($system, self::ENCABEZADO);
+
+        if ($desde === false) {
+            return '';
+        }
+
+        $fin = 'vale la lista: corregilo.';
+        $hasta = strpos($system, $fin, $desde);
+
+        return $hasta === false ? substr($system, $desde) : substr($system, $desde, $hasta + strlen($fin) - $desde);
+    }
+
+    /**
+     * Cuántas tareas dice el texto que no entran («… y N tarea(s) más…»), 0 si no hay esa línea.
+     *
+     * @param  string  $estado
+     * @return int
+     */
+    protected function cuantas_no_entran($estado)
+    {
+        return preg_match('/… y (\d+) tareas? más que no entran acá: llamá a consultar_tareas_del_asistente antes de afirmar algo sobre ellas\./u', $estado, $m) ? (int) $m[1] : 0;
+    }
+
+    /**
+     * 🔴 Ronda 2, hallazgo 1. Diez activas lunes a viernes con títulos cortos y sin canceladas: las diez tienen que
+     * estar en el texto (antes se descartaba la última en silencio) y el agregado no pasa de 2.000 caracteres.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function diez_activas_de_lunes_a_viernes_aparecen_las_diez()
+    {
+        $ids = [];
+
+        for ($i = 1; $i <= 10; $i++) {
+            $ids[] = (int) $this->tarea_del_asistente([
+                'titulo'               => 'Reporte ' . $i,
+                'recurrencia'          => 'dias_semana',
+                'dias'                 => '1,2,3,4,5',
+                'hora'                 => '08:30',
+                'fecha_inicio'         => null,
+                'proxima_ejecucion_at' => '2026-11-23 08:30:00',
+            ])->id;
+        }
+
+        $estado = $this->estado_delimitado($this->texto_del_system($this->bloques_del_system($this->conversacion_whatsapp())));
+
+        $this->assertLessThanOrEqual(2000, mb_strlen($estado), 'Pasa de 2.000 caracteres (' . mb_strlen($estado) . ').');
+
+        foreach ($ids as $id) {
+            $this->assertStringContainsString('[id ' . $id . ']', $estado, 'Se descartó una tarea viva sin avisar.');
+        }
+    }
+
+    /**
+     * 🔴 Ronda 2, hallazgo 1. Diez activas de lunes a sábado con fecha de fin, tres pausadas y cinco canceladas
+     * recientes (trece vivas): nunca se descarta una viva en silencio. Cada una está en el texto o está contada en la
+     * línea «… y N tarea(s) más…», con N exacto; y el agregado no pasa de 2.000 caracteres.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function trece_vivas_con_recientes_ninguna_se_pierde_en_silencio()
+    {
+        $ids = [];
+
+        for ($i = 1; $i <= 10; $i++) {
+            $ids[] = (int) $this->tarea_del_asistente([
+                'titulo'               => 'Activa ' . $i . ' ' . str_repeat('de ventas ', 3),
+                'recurrencia'          => 'dias_semana',
+                'dias'                 => '1,2,3,4,5,6',
+                'hora'                 => '08:30',
+                'fecha_inicio'         => null,
+                'fecha_fin'            => '2026-12-31',
+                'proxima_ejecucion_at' => '2026-11-23 08:30:00',
+            ])->id;
+        }
+
+        for ($i = 1; $i <= 3; $i++) {
+            $ids[] = (int) $this->tarea_del_asistente([
+                'titulo'               => 'Pausada ' . $i . ' ' . str_repeat('de caja ', 3),
+                'recurrencia'          => 'dias_semana',
+                'dias'                 => '1,3,5',
+                'hora'                 => '09:00',
+                'fecha_inicio'         => null,
+                'estado'               => 'pausada',
+                'proxima_ejecucion_at' => null,
+            ])->id;
+        }
+
+        for ($i = 1; $i <= 5; $i++) {
+            $this->tarea_con_cambio_hace(['titulo' => 'Cancelada ' . $i, 'estado' => 'cancelada', 'proxima_ejecucion_at' => null], $i);
+        }
+
+        $estado = $this->estado_delimitado($this->texto_del_system($this->bloques_del_system($this->conversacion_whatsapp())));
+
+        $this->assertLessThanOrEqual(2000, mb_strlen($estado), 'Pasa de 2.000 caracteres (' . mb_strlen($estado) . ').');
+
+        $presentes = 0;
+
+        foreach ($ids as $id) {
+            if (strpos($estado, '[id ' . $id . ']') !== false) {
+                $presentes++;
+            }
+        }
+
+        $no_entran = $this->cuantas_no_entran($estado);
+
+        $this->assertSame(13, $presentes + $no_entran, 'Cada viva tiene que estar en el texto o contada en «y N tareas más» (presentes ' . $presentes . ', N ' . $no_entran . ').');
+        $this->assertStringContainsString('No digas que programaste, cambiaste o cancelaste', $estado, 'La regla no se recorta.');
+    }
+
+    /**
+     * 🔴 Ronda 2, hallazgo 2. El estado va al PRINCIPIO del último bloque no cacheado (no al final): así no corre
+     * los límites de lo que el bloque ya traía (memoria del negocio). El bloque cacheado queda idéntico y la cantidad
+     * de bloques no cambia.
+     *
+     * @group asistente-whatsapp
+     * @test
+     */
+    public function el_estado_va_al_principio_del_ultimo_bloque_no_cacheado()
+    {
+        $sin_tareas = $this->bloques_del_system($this->conversacion_whatsapp());
+
+        $this->tarea_del_asistente(['titulo' => 'Una sola']);
+
+        $con_tareas = $this->bloques_del_system($this->conversacion_whatsapp());
+
+        $this->assertGreaterThan(1, count($con_tareas), 'El caso necesita un bloque no cacheado previo.');
+        $this->assertSame($sin_tareas[0], $con_tareas[0], 'El bloque cacheado no puede cambiar.');
+        $this->assertCount(count($sin_tareas), $con_tareas);
+
+        $ultimo = $con_tareas[count($con_tareas) - 1];
+
+        $this->assertArrayNotHasKey('cache_control', $ultimo);
+        $this->assertSame(0, strpos((string) $ultimo['text'], self::ENCABEZADO), 'El estado tiene que abrir el último bloque no cacheado.');
+        $this->assertStringContainsString('Ahora son las 10:00', (string) $ultimo['text'], 'La hora sigue en el bloque de tareas.');
+    }
 }
