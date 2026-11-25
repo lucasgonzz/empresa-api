@@ -348,4 +348,109 @@ class Pivotes_huerfanos_y_signo_Test extends TestCase
         $respuesta->assertStatus(422);
         $this->assertStringContainsString('Un monto de pago no puede ser negativo', $respuesta->json('message'));
     }
+
+    /**
+     * Fixture "Sin crédito" (U5): cuenta A con D1 100, D2 200 y P haber 25 (saldo 275) y cuenta X de otro cliente con
+     * PX haber 30 y DX debe 100. Ninguna tiene crédito (debe < 0): checkPagos() va por la vía legacy, sin plan().
+     */
+    protected function cuenta_sin_credito()
+    {
+        $cuenta = $this->cuenta();
+        $m = [];
+        $m['D1'] = $this->movimiento($cuenta, 100, null, '2026-01-01 10:00:00');
+        $m['D2'] = $this->movimiento($cuenta, 200, null, '2026-01-15 10:00:00');
+        $m['P'] = $this->movimiento($cuenta, null, 25, '2026-03-01 10:00:00');
+        $cuenta_x = $this->cuenta();
+        $x = [];
+        $x['PX'] = $this->movimiento($cuenta_x, null, 30, '2026-02-01 10:00:00');
+        $x['DX'] = $this->movimiento($cuenta_x, 100, null, '2026-02-01 10:00:00');
+        $cuenta->update(['saldo' => 275]);
+        $this->assertFalse(CreditosHistoricosHelper::tiene_creditos($cuenta->id), 'A debe ir por la vía legacy.');
+        $this->assertFalse(CreditosHistoricosHelper::tiene_creditos($cuenta_x->id), 'X debe ir por la vía legacy.');
+        return [$cuenta, $m, $cuenta_x, $x];
+    }
+
+    /** CA13: cruce del lado débito sin créditos (caso 427): se rechaza y NO se borra la imputación de la otra cuenta. */
+    public function test_sin_creditos_un_cruce_del_lado_debito_se_rechaza_sin_borrar_la_imputacion_de_la_otra_cuenta()
+    {
+        list($cuenta, $m, $cuenta_x, $x) = $this->cuenta_sin_credito();
+        $this->pivote($m['D1']->id, $m['P']->id, 25);
+        $this->pivote($m['D1']->id, $x['PX']->id, 30);
+        $m['D1']->update(['status' => 'pagandose', 'pagandose' => 55]);
+        $foto = $this->foto($cuenta);
+        $foto_x = $this->foto($cuenta_x);
+        $respuesta = $this->getJson('api/check-saldos/'.$cuenta->id);
+        $respuesta->assertStatus(422);
+        $mensaje = $respuesta->json('message');
+        $this->assertStringContainsString('imputaciones vinculadas con otra cuenta', $mensaje);
+        $this->assertStringContainsString('#'.$m['D1']->id, $mensaje);
+        $this->assertStringContainsString('#'.$x['PX']->id, $mensaje);
+        $this->assertStringContainsString('cuenta corriente #'.$cuenta_x->id, $mensaje);
+        $this->assertStringContainsString('soporte', $mensaje);
+        $this->assertEquals($foto, $this->foto($cuenta));
+        $this->assertEquals($foto_x, $this->foto($cuenta_x));
+        $this->assertEquals(1, DB::table('pagado_por')->where('debe_id', $m['D1']->id)->where('haber_id', $x['PX']->id)->count());
+    }
+
+    /** CA14: cruce del lado haber sin créditos (caso 3867/505): se rechaza desde las dos cuentas. */
+    public function test_sin_creditos_un_cruce_del_lado_haber_se_rechaza_desde_las_dos_cuentas()
+    {
+        list($cuenta, $m, $cuenta_x, $x) = $this->cuenta_sin_credito();
+        $this->pivote($x['DX']->id, $m['P']->id, 25);
+        $x['DX']->update(['status' => 'pagandose', 'pagandose' => 25]);
+        $foto = $this->foto($cuenta);
+        $foto_x = $this->foto($cuenta_x);
+        $respuesta = $this->getJson('api/check-saldos/'.$cuenta->id);
+        $respuesta->assertStatus(422);
+        $mensaje = $respuesta->json('message');
+        $this->assertStringContainsString('#'.$m['P']->id, $mensaje);
+        $this->assertStringContainsString('#'.$x['DX']->id, $mensaje);
+        $this->assertStringContainsString('cuenta corriente #'.$cuenta_x->id, $mensaje);
+        $respuesta_x = $this->getJson('api/check-saldos/'.$cuenta_x->id);
+        $respuesta_x->assertStatus(422);
+        $mensaje_x = $respuesta_x->json('message');
+        $this->assertStringContainsString('#'.$x['DX']->id, $mensaje_x);
+        $this->assertStringContainsString('#'.$m['P']->id, $mensaje_x);
+        $this->assertStringContainsString('cuenta corriente #'.$cuenta->id, $mensaje_x);
+        $this->assertEquals($foto, $this->foto($cuenta));
+        $this->assertEquals($foto_x, $this->foto($cuenta_x));
+        $this->assertEquals(1, DB::table('pagado_por')->where('debe_id', $x['DX']->id)->where('haber_id', $m['P']->id)->count());
+    }
+
+    /** CA15: un pago con recálculo sobre una cuenta cruzada no se registra y no escribe nada. */
+    public function test_sin_creditos_un_pago_con_recalculo_sobre_cuenta_cruzada_no_se_registra()
+    {
+        list($cuenta, $m, $cuenta_x, $x) = $this->cuenta_sin_credito();
+        $this->pivote($m['D1']->id, $m['P']->id, 25);
+        $this->pivote($m['D1']->id, $x['PX']->id, 30);
+        $m['D1']->update(['status' => 'pagandose', 'pagandose' => 55]);
+        $movimientos = CurrentAcount::where('credit_account_id', $cuenta->id)->count();
+        $cajas = MovimientoCaja::count();
+        $foto_x = $this->foto($cuenta_x);
+        $respuesta = $this->postJson('api/current-acount/pago', $this->payload_pago($cuenta, 0, 25));
+        $respuesta->assertStatus(422);
+        $mensaje = $respuesta->json('message');
+        $this->assertStringContainsString('imputaciones vinculadas con otra cuenta', $mensaje);
+        $this->assertStringContainsString('#'.$x['PX']->id, $mensaje);
+        $this->assertEquals($movimientos, CurrentAcount::where('credit_account_id', $cuenta->id)->count());
+        $this->assertEquals($cajas, MovimientoCaja::count());
+        $this->assertEquals($foto_x, $this->foto($cuenta_x));
+        $this->assertEquals(1, DB::table('pagado_por')->where('debe_id', $m['D1']->id)->where('haber_id', $x['PX']->id)->count());
+    }
+
+    /** CA16 (caracterización, verde hoy y mañana): los huérfanos sin créditos no bloquean y la vía legacy no los cambia. */
+    public function test_sin_creditos_los_pivotes_huerfanos_no_bloquean()
+    {
+        list($cuenta, $m) = $this->cuenta_sin_credito();
+        $fantasma_x = $this->id_inexistente();
+        $fantasma_y = $fantasma_x + 1;
+        $m['D2']->update(['status' => 'pagado', 'pagandose' => 200]);
+        $this->pivote($fantasma_x, $m['P']->id, 25);
+        $this->pivote($m['D2']->id, $fantasma_y, 200);
+        $this->getJson('api/check-saldos/'.$cuenta->id)->assertStatus(200);
+        $this->assertSame('sin_pagar', $m['D2']->fresh()->status);
+        $this->assertEquals(0, $m['D2']->fresh()->pagandose);
+        $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $m['D2']->id)->where('haber_id', $fantasma_y)->count());
+        $this->assertEquals(1, DB::table('pagado_por')->where('debe_id', $fantasma_x)->where('haber_id', $m['P']->id)->count());
+    }
 }
