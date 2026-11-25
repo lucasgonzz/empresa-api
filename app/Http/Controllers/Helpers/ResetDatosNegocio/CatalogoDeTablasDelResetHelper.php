@@ -124,7 +124,7 @@ class CatalogoDeTablasDelResetHelper
      */
     const TABLAS_DE_CONFIGURACION = [
         'acceso_soporte_tokens', 'addresses', 'afip_information', 'afip_selected_payment_methods', 'afip_tipo_comprobantes',
-        'agente_contexto_archivos', 'agente_contexto_revisiones', 'article_pdf_observations', 'article_pdfs',
+        'agente_contexto_archivos', 'agente_contexto_revisiones', 'ai_conocimiento_del_negocio', 'article_pdf_observations', 'article_pdfs',
         'article_price_type_groups', 'article_property_types', 'article_property_values', 'article_ticket_designs',
         'article_ticket_infos', 'article_ubications', 'balanzas', 'budget_statuses', 'business_hours_configs',
         'buyer_message_default_responses', 'c_a_payment_method_types', 'caja_current_acount_payment_method',
