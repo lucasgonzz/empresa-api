@@ -479,6 +479,17 @@ class CurrentAcountController extends Controller
     public function notaCredito(Request $request) {
 
         /*
+         * Un monto no numérico, cero o negativo no se registra (NC N°267 de la cuenta 5377: Haber -334.851
+         * por escribir "-" en un input `min="0"`). El back es la autoridad. Va ANTES de la transacción y
+         * responde directo: una ValidationException dentro del try caería al catch de abajo.
+         */
+        $monto_libre = isset($request->form['nota_credito']) ? $request->form['nota_credito'] : null;
+        if (!is_numeric($monto_libre) || (float) $monto_libre <= 0) {
+            $llego = is_scalar($monto_libre) ? (string) $monto_libre : json_encode($monto_libre);
+            return response()->json(['message' => 'El monto de la nota de crédito tiene que ser un número mayor a 0 (llegó '.$llego.'). No se registró nada.'], 422);
+        }
+
+        /*
          * 🔴 Transacción + candado de la cuenta corriente como primera sentencia (misión
          * cuenta-corriente-carrera-y-velocidad, 23/9/2026). Hasta hoy la nota de crédito de monto
          * libre corría sin transacción: podía intercalarse con otra escritura sobre la misma cuenta
