@@ -74,10 +74,18 @@ class CreditosHistoricosHelper
 
         $imputaciones = [];
         $remanente = 0;
+        // Destinos guardados que se ignoraron por estar fuera de la cuenta (ver destinos_fuera_de_la_cuenta).
+        $destinos_ignorados = [];
         foreach ($fuentes as $fuente) {
             $movimiento = $fuente['movimiento'];
             $fondos = $fuente['total'];
             $dirigidos = self::destinos($movimiento);
+            // Destinos que el motor normal ignoraría (otra cuenta o inexistentes): no bloquean, se informan.
+            $ignorados = self::destinos_fuera_de_la_cuenta($cuenta, $dirigidos, $debitos);
+            foreach ($ignorados as $ignorado) {
+                $destinos_ignorados[] = ['haber_id' => $movimiento->id, 'destino_id' => $ignorado];
+            }
+            $dirigidos = array_values(array_diff($dirigidos, $ignorados));
             foreach ($dirigidos as $dirigido) {
                 if (!isset($debitos[$dirigido])) {
                     self::error($movimiento, 'está dirigido al movimiento #'.$dirigido.' que no es una deuda válida de esta cuenta y moneda. Pedile a soporte que revise ese destino antes de volver a imputar');
@@ -124,7 +132,7 @@ class CreditosHistoricosHelper
         return ['estados' => $estados, 'imputaciones' => $imputaciones,
             'credito_total' => $credito_total / 100, 'saldo_economico' => $saldo / 100,
             'pendiente' => $pendiente / 100, 'remanente' => $remanente / 100,
-            'arrastre_legado' => $arrastre_legado / 100];
+            'arrastre_legado' => $arrastre_legado / 100, 'destinos_ignorados' => $destinos_ignorados];
     }
 
     /** Requiere transacción y candado del dueño. No modifica saldo, economía, comisiones ni puntos. */
@@ -169,6 +177,34 @@ class CreditosHistoricosHelper
             && is_numeric($movimiento->haber) && (float) $movimiento->haber < 0
             && is_null($movimiento->sale_id) && is_null($movimiento->provider_order_id)
             && is_null($movimiento->to_pay_id) && is_null($movimiento->getRawOriginal('to_pay_ids'));
+    }
+
+    /**
+     * Destinos dirigidos que el motor normal ignora y por eso `plan()` también: un id que no existe o que
+     * pertenece a OTRA cuenta (CurrentAcountPagoHelper: si el destino no es de la misma credit_account_id
+     * el pago sigue el orden FIFO; el alta del pago ignora los inexistentes). El pago entra en orden en su
+     * propia cuenta, nunca se imputa deuda de otra cuenta ni moneda, y el to_pay_id guardado no se reescribe.
+     * Un id de ESTA cuenta que no es débito (pago, crédito, saldo inicial, provisorio) NO se ignora: sigue
+     * rechazado por el error de `plan()`. Cambia la regla de soporte-145 por decisión de Lucas (P4, ticket 171,
+     * .mision/PLAN.md). Una sola consulta, y sólo si hay algún dirigido que no es débito de la cuenta.
+     *
+     * @param CreditAccount $cuenta
+     * @param int[] $dirigidos ids dirigidos ya validados por destinos()
+     * @param array $debitos débitos imputables de la cuenta, indexados por id
+     * @return int[] ids ignorados, en el mismo orden en que se dirigieron
+     */
+    private static function destinos_fuera_de_la_cuenta($cuenta, $dirigidos, $debitos)
+    {
+        $faltantes = array_values(array_filter($dirigidos, function ($id) use ($debitos) {
+            return !isset($debitos[$id]);
+        }));
+        if (empty($faltantes)) {
+            return [];
+        }
+        $cuentas = CurrentAcount::whereIn('id', $faltantes)->pluck('credit_account_id', 'id')->all();
+        return array_values(array_filter($faltantes, function ($id) use ($cuentas, $cuenta) {
+            return !isset($cuentas[$id]) || (int) $cuentas[$id] !== (int) $cuenta->id;
+        }));
     }
 
     private static function centavos($importe)
