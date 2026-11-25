@@ -49,6 +49,8 @@ class OnlineConfiguration extends Model
         'article_description_font_size' => 'integer',
         // Master switch de correo propio por cliente (prompt 358).
         'mail_enabled' => 'boolean',
+        // Leyenda de descuento por medio de pago en la tienda (misión tienda-cobro-tarjeta, 24/11/2026).
+        'mostrar_leyenda_de_descuento' => 'boolean',
         'mail_port' => 'integer',
         // Cast nativo de Laravel: encripta/desencripta automaticamente con la APP_KEY al leer y
         // escribir el atributo. Verificado soportado en esta version de Laravel (8.75).

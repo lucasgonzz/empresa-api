@@ -37,7 +37,7 @@ class PaymentMethodTypeSeeder extends Seeder
     public function run()
     {
         /*
-         * Solo MercadoPago (decision de Lucas, 3/9/2026: "payway sacalo").
+         * MercadoPago y Tarjeta Mercado Pago (decision de Lucas, 3/9/2026: "payway sacalo").
          *
          * Payway estaba en esta lista pero no se ofrece mas, asi que una instalacion nueva no
          * tiene por que arrancar con un tipo que nadie va a usar. No se BORRA de las bases que ya
@@ -48,6 +48,13 @@ class PaymentMethodTypeSeeder extends Seeder
         $models = [
             [
                 'name' => 'MercadoPago',
+            ],
+            // Misión tienda-cobro-tarjeta (24/11/2026): cobro con tarjeta dentro de la página de la
+            // tienda. Nombre EXACTO: tienda-api lo compara tal cual. Para bases de producción
+            // existentes va el seeder suelto PaymentMethodTypeTarjetaMercadoPagoSeeder (nunca una
+            // migración: ver su comentario).
+            [
+                'name' => 'Tarjeta Mercado Pago',
             ],
         ];
 
