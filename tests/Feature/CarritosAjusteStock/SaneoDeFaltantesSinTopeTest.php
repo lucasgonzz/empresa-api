@@ -30,7 +30,7 @@ use Tests\Feature\Stock\AuditoriaStockTestCase;
  */
 class SaneoDeFaltantesSinTopeTest extends AuditoriaStockTestCase
 {
-    /** Clase del job de mail (string: se intercepta con Bus::fake). */
+    /** Clase del job de mail, como texto para interceptarla con Bus::fake. */
     const JOB_DE_MAIL = 'App\Jobs\ProcessSendCartAdjustedMail';
 
     /**
