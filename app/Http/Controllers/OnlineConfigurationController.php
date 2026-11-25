@@ -208,6 +208,15 @@ class OnlineConfigurationController extends Controller
         $model->notificar_pedido_al_cliente         = $request->boolean('notificar_pedido_al_cliente', $model->notificar_pedido_al_cliente ?? true);
         $model->avisar_ingreso_stock_por_mail       = $request->boolean('avisar_ingreso_stock_por_mail', $model->avisar_ingreso_stock_por_mail ?? true);
 
+        // Ajuste de los carritos por stock (misión carritos-ajuste-stock, 25/11/2026). Las tres opciones son
+        // booleanos prendidos por defecto: sólo se asignan si la columna existe (un deploy que sube el código
+        // antes de migrar no rompe) y, si el PUT no trae la clave (una pantalla vieja), conservan su valor.
+        foreach (['ajustar_carritos_por_stock', 'avisar_ajuste_carrito_por_mail', 'avisar_puede_agotarse'] as $opcion_de_carritos) {
+            if (Schema::hasColumn('online_configurations', $opcion_de_carritos)) {
+                $model->$opcion_de_carritos = $request->boolean($opcion_de_carritos, $model->$opcion_de_carritos ?? true);
+            }
+        }
+
         // mail_password es write-only: solo se pisa si viene con contenido. Si el request no
         // trae el campo o llega vacio (la UI lo muestra siempre en blanco por seguridad), se
         // conserva la contraseña ya guardada en vez de borrarla.
