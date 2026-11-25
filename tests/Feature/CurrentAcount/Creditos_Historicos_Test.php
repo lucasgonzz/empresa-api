@@ -380,6 +380,29 @@ class Creditos_Historicos_Test extends TestCase
     }
 
     /**
+     * Fixture "Cabaña" (ticket 171): saldo inicial importado en 2024 con Haber NEGATIVO, una venta, su pago,
+     * un crédito histórico y otra venta. Saldo esperado 399,70. Devuelve la cuenta y los movimientos por clave.
+     */
+    protected function cuenta_cabania()
+    {
+        $cuenta = $this->cuenta();
+        $m = [];
+        $m['L'] = $this->movimiento($cuenta, null, -99.70, '2024-10-01 11:26:13', ['detalle' => 'Saldo inicial', 'saldo' => 99.70, 'status' => 'pago_from_client']);
+        $m['V1'] = $this->movimiento($cuenta, 1000, null, '2024-11-01 10:00:00', ['saldo' => 1099.70]);
+        $m['P1'] = $this->movimiento($cuenta, null, 1000, '2024-11-10 10:00:00', ['saldo' => 99.70]);
+        $m['C'] = $this->movimiento($cuenta, -200, null, '2025-01-01 10:00:00', ['saldo' => -100.30]);
+        $m['V2'] = $this->movimiento($cuenta, 500, null, '2025-02-01 10:00:00', ['saldo' => 399.70]);
+        $cuenta->update(['saldo' => 399.70]);
+        return [$cuenta, $m];
+    }
+
+    /** Fila cruda del movimiento, tal cual está en la base (sin casts), para comparar "no se tocó". */
+    protected function fila_cruda($id)
+    {
+        return (array) DB::table('current_acounts')->where('id', $id)->first();
+    }
+
+    /**
      * Fixture "Ajeno" (ticket 171, Unidad 1b): cuenta A (cliente, pesos) con D1 100, D2 200, un crédito de -50 y un pago P de 25
      * (su `to_pay_id` según $destino: null, 'ajeno' = débito DX de otra cuenta del mismo tipo y moneda, 'inexistente');
      * cuenta X de otro cliente con DX 100 sin pagar. Devuelve [cuenta A, movimientos por clave, cuenta X, DX].
@@ -453,6 +476,34 @@ class Creditos_Historicos_Test extends TestCase
         $plan_base = CreditosHistoricosHelper::plan($cuenta_base);
         $this->assertSame([], $plan_base['destinos_ignorados'], 'Sin destinos fuera de la cuenta la clave existe y está vacía.');
         $this->assertEquals($this->plan_normalizado($plan_base, $m_base), $this->plan_normalizado($plan, $m), 'Paridad con to_pay_id NULL.');
+    }
+
+    /** CA9: el caso Cabaña completo (saldo inicial legado + pago con destino ajeno) deja los valores de CA1. */
+    public function test_saldo_inicial_legado_y_destino_ajeno_juntos_no_bloquean_la_venta()
+    {
+        list($cuenta, $m) = $this->cuenta_cabania();
+        $cuenta_x = $this->cuenta();
+        $dx = $this->movimiento($cuenta_x, 100, null, '2026-01-10 10:00:00');
+        $m['P1']->update(['to_pay_id' => $dx->id]);
+        $alta = $this->fila_cruda($m['L']->id);
+        $foto_x = $this->foto($cuenta_x);
+        $venta = Sale::create(['user_id' => 500, 'client_id' => $cuenta->model_id,
+            'moneda_id' => 1, 'total' => 300, 'terminada' => 1, 'created_at' => '2026-11-18 10:00:00']);
+        (new CurrentAcountFromSaleHelper($venta))->crear_current_acount();
+        $v3 = CurrentAcount::where('sale_id', $venta->id)->firstOrFail();
+        $this->assertEquals(699.70, $cuenta->fresh()->saldo);
+        $this->assertSame('pagado', $m['V1']->fresh()->status);
+        $this->assertEquals(1000, $m['V1']->fresh()->pagandose);
+        $this->assertSame('pagandose', $m['V2']->fresh()->status);
+        $this->assertEquals(200, $m['V2']->fresh()->pagandose);
+        $this->assertSame('sin_pagar', $v3->fresh()->status);
+        $this->assertEquals([[$m['V1']->id, $m['P1']->id, 1000.0], [$m['V2']->id, $m['C']->id, 200.0]], $this->pivotes_de($m + ['V3' => $v3]));
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertEquals(99.70, $plan['arrastre_legado']);
+        $this->assertSame([['haber_id' => $m['P1']->id, 'destino_id' => $dx->id]], $plan['destinos_ignorados']);
+        $this->assertEquals($alta, $this->fila_cruda($m['L']->id), 'El saldo inicial legado no se toca.');
+        $this->assertEquals($dx->id, $m['P1']->fresh()->to_pay_id);
+        $this->assertEquals($foto_x, $this->foto($cuenta_x));
     }
 
     /** CA10: destino inexistente, y lista con un destino ajeno y uno válido (el válido va primero). */
