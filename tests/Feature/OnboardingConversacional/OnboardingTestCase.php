@@ -7,6 +7,7 @@ use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiTareaDelAsistente;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Tests\Feature\AsistenteWhatsapp\TareasDelAsistenteConModeloTestCase;
 
 /**
@@ -214,6 +215,72 @@ abstract class OnboardingTestCase extends TareasDelAsistenteConModeloTestCase
         $hasta = strpos($system, '</onboarding_del_negocio>', $desde);
 
         return $hasta === false ? substr($system, $desde) : substr($system, $desde, $hasta - $desde + strlen('</onboarding_del_negocio>'));
+    }
+
+    /* ─────────────────────────────── modelo en secuencia ─────────────────────────────── */
+
+    /** @var int  Cuántas veces le pegó el turno al doble del modelo desde `modelo_en_secuencia()`. */
+    protected $llamadas_al_modelo = 0;
+
+    /**
+     * El modelo doblado contesta una SECUENCIA de pasos, uno por llamada del loop del turno. Un paso es un texto
+     * (`end_turn`) o `['herramienta' => nombre, 'input' => [...]]` (`tool_use`). Agotada la lista repite el último
+     * paso, así un reintento de la guarda de veracidad recibe el mismo texto y la llamada de más queda contada.
+     *
+     * @param  array<int,string|array>  $pasos
+     * @return void
+     */
+    protected function modelo_en_secuencia(array $pasos)
+    {
+        $this->instalar_el_doble_del_modelo();
+
+        $this->llamadas_al_modelo = 0;
+
+        $this->comportamiento_del_modelo = function () use ($pasos) {
+
+            $paso = $pasos[min($this->llamadas_al_modelo, count($pasos) - 1)];
+
+            $this->llamadas_al_modelo++;
+
+            if (is_array($paso)) {
+
+                return Http::response([
+                    'model'       => 'deepseek-flash-test',
+                    'stop_reason' => 'tool_use',
+                    'content'     => [[
+                        'type'  => 'tool_use',
+                        'id'    => 'toolu_' . uniqid(),
+                        'name'  => $paso['herramienta'],
+                        'input' => $paso['input'],
+                    ]],
+                    'usage'       => ['input_tokens' => 300, 'output_tokens' => 40],
+                ], 200);
+            }
+
+            return Http::response([
+                'model'       => 'deepseek-flash-test',
+                'stop_reason' => 'end_turn',
+                'content'     => [['type' => 'text', 'text' => $paso]],
+                'usage'       => ['input_tokens' => 300, 'output_tokens' => 20],
+            ], 200);
+        };
+    }
+
+    /**
+     * Un `guardar_en_contexto` con `temas`, armado como paso de `modelo_en_secuencia()`.
+     *
+     * @param  array<int,string>  $temas
+     * @return array
+     */
+    protected function paso_guardar($temas)
+    {
+        return ['herramienta' => 'guardar_en_contexto', 'input' => [
+            'ruta'      => 'negocio/identidad.md',
+            'operacion' => 'agregar',
+            'contenido' => '- Dato de prueba de la suite (' . implode(', ', $temas) . ').',
+            'motivo'    => 'El dueño lo contó por WhatsApp',
+            'temas'     => $temas,
+        ]];
     }
 
     /* ─────────────────────────────── estado ─────────────────────────────── */

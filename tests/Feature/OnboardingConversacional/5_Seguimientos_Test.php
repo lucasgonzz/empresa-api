@@ -88,24 +88,34 @@ class Seguimientos_Test extends OnboardingTestCase
     }
 
     /**
-     * Si la última tarea la canceló el dueño (a través del modelo), no se vuelve a crear: es una pausa suya.
+     * CAMBIO DE CONTRATO DELIBERADO (misión onboarding-pausa-y-temas-20261125, autorizado por el Coordinador):
+     * reemplaza a `test_cancelada_es_pausa_del_dueno`, que fijaba como diseño la regla defectuosa «tarea de
+     * onboarding cancelada ⇒ pausado_por_el_dueno». Esa regla confundía un efecto (la tarea quedó cancelada, y la
+     * puede cancelar el modelo creyendo que terminó: demo3, msg 192) con la intención del dueño. Ahora el modelo
+     * no puede cancelar el recordatorio del onboarding: se rechaza con el avance real y el estado no cambia.
      *
      * @group onboarding-conversacional
      * @test
      */
-    public function test_cancelada_es_pausa_del_dueno()
+    public function test_cancelar_la_tarea_de_onboarding_no_pausa()
     {
         $this->el_dueno_escribe('Hola, ¿andás?');
 
         $tarea = $this->tareas_de_onboarding('activa')[0];
 
-        $this->herramienta('cancelar_tarea_del_asistente', ['tarea_id' => $tarea->id]);
+        $resultado = $this->herramienta('cancelar_tarea_del_asistente', ['tarea_id' => $tarea->id]);
+
+        $this->assertTrue($resultado['error'], 'El modelo no puede cancelar el recordatorio del onboarding.');
+        $this->assertStringContainsString('pausar', $resultado['texto']);
+        $this->assertStringContainsString('de 32', $resultado['texto']);
+        $this->assertSame('activa', $this->estado_de_tarea($tarea->id), 'La tarea sigue activa.');
+        $this->assertSame('en_curso', $this->onboarding()->ia_onboarding_estado);
 
         $this->el_dueno_escribe('Gracias, seguimos');
 
-        $this->assertSame('pausado_por_el_dueno', $this->onboarding()->ia_onboarding_estado);
-        $this->assertCount(0, $this->tareas_de_onboarding('activa'));
-        $this->assertCount(1, $this->tareas_de_onboarding(), 'No se crea ninguna tarea nueva.');
+        $this->assertSame('en_curso', $this->onboarding()->ia_onboarding_estado);
+        $this->assertCount(1, $this->tareas_de_onboarding('activa'));
+        $this->assertCount(1, $this->tareas_de_onboarding(), 'No se crea ninguna tarea nueva: es la misma.');
     }
 
     /**
