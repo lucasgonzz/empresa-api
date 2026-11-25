@@ -27,7 +27,7 @@ class AndreaniTarifaNormalizer
     const TIPO_DOMICILIO = 'domicilio';
     const TIPO_SUCURSAL = 'sucursal';
 
-    /** Máximo de bultos por consulta de tarifa (medido: 30 da 200). */
+    /** Máximo de bultos por consulta de tarifa (con 30 Andreani responde 200, se midió el 25/11/2026). */
     const MAX_BULTOS = 30;
 
     /** Topes de paquetería por bulto. */
