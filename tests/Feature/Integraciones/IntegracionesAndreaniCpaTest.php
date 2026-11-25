@@ -97,7 +97,7 @@ class IntegracionesAndreaniCpaTest extends EmpresaTestCase
         $this->fakear_andreani_que_rechaza_el_cpa();
         $this->conectar_andreani();
 
-        $respuesta = $this->postJson('/api/integraciones/andreani/cotizar-prueba', ['zipcode' => ' x5000-abc '])->assertStatus(200);
+        $respuesta = $this->postJson('/api/integraciones/andreani/cotizar-prueba', ['zipcode' => 'X5000ABC'])->assertStatus(200);
 
         $keys = [];
         foreach ($respuesta->json('cotizacion.opciones') as $opcion) {

@@ -52,7 +52,7 @@ class AndreaniClient
      *
      * @param string $cliente Número de cliente de Andreani (ej. `CL0003750`).
      * @param string $contrato Contrato (domicilio o sucursal según lo que se cotice).
-     * @param string $cp_destino Código postal de destino.
+     * @param string $cp_destino Código postal de destino (si viene como CPA se usan sus 4 dígitos).
      * @param array $bultos Lista de `{valorDeclarado, volumen (cm3), kilos}`, ya con las claves de Andreani.
      * @param int|string|null $sucursal_origen Sucursal desde la que despacha el comercio, si la cargó.
      * @return array Respuesta cruda: `{pesoAforado, tarifaSinIva{...}, tarifaConIva{..., total}}`.
@@ -61,7 +61,8 @@ class AndreaniClient
     public function tarifa($cliente, $contrato, $cp_destino, array $bultos, $sucursal_origen = null)
     {
         $consulta = [
-            'cpDestino' => (string) $cp_destino,
+            // Andreani sólo entiende los 4 dígitos del CP: con un CPA ("X5000ABC") responde 400.
+            'cpDestino' => AndreaniTarifaNormalizer::codigo_postal_numerico($cp_destino),
             'contrato'  => (string) $contrato,
             'cliente'   => (string) $cliente,
         ];
@@ -93,7 +94,7 @@ class AndreaniClient
      */
     public function sucursales($cp)
     {
-        $respuesta = $this->pedir('/v2/sucursales', ['codigoPostal' => (string) $cp]);
+        $respuesta = $this->pedir('/v2/sucursales', ['codigoPostal' => AndreaniTarifaNormalizer::codigo_postal_numerico($cp)]);
 
         return array_values($respuesta);
     }

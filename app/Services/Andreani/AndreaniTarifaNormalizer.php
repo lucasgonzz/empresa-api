@@ -39,6 +39,34 @@ class AndreaniTarifaNormalizer
     const MAX_PUNTOS_DE_RETIRO = 5;
 
     /**
+     * El código postal numérico de 4 dígitos que Andreani entiende, sacado de lo que escribió o eligió el comprador.
+     *
+     * 🔴 Andreani responde 400 al CPA (`cpDestino=X5000ABC` y `codigoPostal=X5000ABC`; medido: `cpDestino=1425` da
+     * 200), y Google Places devuelve justamente el CPA ("X5000ABC", "C1425ABC") o letra + 4 dígitos ("X5000").
+     * Zipnova sí acepta el CPA: este recorte vale SÓLO para lo que se le manda a Andreani. Si no tiene forma de CP
+     * argentino (ni 4 dígitos ni letra + 4 dígitos + 3 letras) se devuelve limpio y en mayúsculas, sin adivinar
+     * dígitos: Andreani lo rechaza con su 400 y la cotización lo informa como `sin_tarifa`.
+     *
+     * @param mixed $codigo_postal "5000", "X5000", "X5000ABC", " x5000-abc "...
+     * @return string Los 4 dígitos ("5000"), o el texto limpio si no tiene esa forma ('' si no es texto ni número).
+     */
+    public static function codigo_postal_numerico($codigo_postal)
+    {
+        if (!is_scalar($codigo_postal)) {
+            return '';
+        }
+
+        // Sin espacios ni signos, en mayúsculas (el teclado del teléfono agrega " " y "-").
+        $limpio = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $codigo_postal));
+
+        if (preg_match('/^[A-Z]?(\d{4})(?:[A-Z]{3})?$/', $limpio, $partes)) {
+            return $partes[1];
+        }
+
+        return $limpio;
+    }
+
+    /**
      * Pasa los ítems de Zipnova (gramos y cm) a bultos de Andreani (kilos, cm y volumen en cm3).
      *
      * El valor declarado total se reparte por unidad con 2 decimales y el resto del redondeo cae en el último
