@@ -116,6 +116,14 @@ class AsistenteIaService
     private $turno_desatendido = null;
 
     /**
+     * Misión onboarding-conversacional-whatsapp: true si ESTE turno es el primero del onboarding del dueño (su primer
+     * mensaje por WhatsApp). Lo fija responder() y lo lee el bloque <onboarding_del_negocio> para presentarse.
+     *
+     * @var bool
+     */
+    private $onboarding_primer_turno = false;
+
+    /**
      * Misión agente-tareas-programadas (enmienda 1): el id del `assistant` del turno en curso, para que el turno
      * desatendido sepa cuál es SU tarea cuando hay dos en la misma conversación. null fuera de un turno.
      *
@@ -598,6 +606,13 @@ class AsistenteIaService
          * sistema (tarjetas con botón).
          */
         $es_app = $assistant_message->es_de_la_app();
+
+        /*
+         * Misión onboarding-conversacional-whatsapp (23/11/2026): el primer mensaje del dueño por WhatsApp arranca el
+         * onboarding (las 32 preguntas del negocio, de a una); en los turnos siguientes retoma la pregunta en curso y
+         * agenda el recordatorio. El helper atrapa todo: nunca rompe el turno.
+         */
+        $this->onboarding_primer_turno = \App\Http\Controllers\Helpers\asistente_ia\OnboardingDelNegocioIaHelper::al_empezar_el_turno($conversation, $assistant_message, $owner);
 
         /*
          * Misión asistente-fotos-barras-y-compras (24/9/2026): si la persona contestó un "sí" corto a
@@ -4118,6 +4133,19 @@ CONFIRMACION;
             $estado_real = \App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper::estado_para_el_modelo($owner);
         }
 
+        /*
+         * Misión onboarding-conversacional-whatsapp: el bloque <onboarding_del_negocio> sigue EXACTAMENTE la regla del
+         * estado real de tareas (dentro del último bloque no cacheado, sin abrir uno nuevo): se antepone a `$estado_real`
+         * y así el censo de bloques y lo que miden los tests de la memoria no cambian. Sólo por WhatsApp o la app.
+         */
+        if ($es_whatsapp || $es_app) {
+            $onboarding = \App\Http\Controllers\Helpers\asistente_ia\OnboardingDelNegocioIaHelper::bloque_para_prompt($conversation, $owner, $this->onboarding_primer_turno, $this->assistant_id_del_turno);
+
+            if ($onboarding !== '') {
+                $estado_real = $onboarding . ($estado_real !== '' ? "\n\n" . $estado_real : '');
+            }
+        }
+
         if ($bloque_de_tareas !== '') {
             if (count($system) > 1) {
                 /*
@@ -6307,6 +6335,12 @@ CONFIRMACION;
             }
         }
 
+        // Misión onboarding-conversacional-whatsapp: omitir, empezar, pausar y retomar las preguntas del negocio.
+        // Mismas condiciones que las de tareas, y justo después de ellas para no mover el prefijo del caché.
+        if (! $desatendido && HerramientasDeConocimiento::se_ofrece($owner, $conversation)) {
+            $tools[] = HerramientasDeConocimiento::definicion();
+        }
+
         if ($this->manual_de_prueba) {
             $tools[] = HerramientaDeManualDePrueba::definicion();
         }
@@ -7840,6 +7874,7 @@ CONFIRMACION;
                 $rechazada_por_desatendido = $this->es_turno_desatendido($conversation)
                     && (HerramientasDeCarga::maneja($tool_name)
                         || HerramientasDeTareasDelAsistente::maneja($tool_name)
+                        || HerramientasDeConocimiento::maneja($tool_name)
                         || $tool_name === HerramientasDeContexto::GUARDAR
                         || $tool_name === HerramientasDeLaApp::PEDIR_IMAGEN);
 
@@ -7921,6 +7956,11 @@ CONFIRMACION;
                     $resultado_de_tareas = HerramientasDeTareasDelAsistente::ejecutar($tool_name, $tool_input, $conversation);
                     $content = $resultado_de_tareas['content'];
                     $error_de_la_herramienta = (bool) $resultado_de_tareas['is_error'];
+                } elseif (HerramientasDeConocimiento::maneja($tool_name)) {
+                    // Misión onboarding-conversacional-whatsapp: omitir, empezar, pausar, retomar o ver el estado.
+                    $resultado_de_conocimiento = HerramientasDeConocimiento::ejecutar(is_array($tool_input) ? $tool_input : [], $conversation);
+                    $content = $resultado_de_conocimiento['content'];
+                    $error_de_la_herramienta = (bool) $resultado_de_conocimiento['is_error'];
                 } elseif (HerramientasDeConversaciones::maneja($tool_name)) {
                     // Misión agente-memoria-y-sin-techo (30/10/2026): buscar y leer las conversaciones
                     // anteriores de la persona. La tenencia (mismo dueño Y misma persona) sale de la
