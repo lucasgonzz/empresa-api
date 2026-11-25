@@ -1698,6 +1698,12 @@ Route::post('demo/ingreso', 'DemoIngresoController@store');
 Route::post('acceso-soporte/canjear', 'AccesoSoporteController@canjear')->middleware('throttle:10,1');
 Route::get('acceso-soporte/verificacion-perfil', 'AccesoSoporteController@capacidad_verificacion_perfil');
 
+// Empuje inmediato del aviso de pedido nuevo (misión whatsapp-aviso-pedido, 25/11/2026, contrato C2). 🔴 Es PÚBLICA a
+// propósito: la llama tienda-api apenas crea el pedido y no comparte ningún secreto con empresa. Es segura porque sólo
+// adelanta un aviso que igual saldría: el pedido tiene que ser del dueño de esta instancia y de los últimos 30 minutos,
+// se empuja una sola vez por pedido (idempotente) y lleva `throttle:60,1`. Responde 202 {motivo} o 404.
+Route::post('tienda/pedidos/{id}/aviso-al-asistente', 'TiendaAvisoDePedidoController@avisar')->whereNumber('id')->middleware('throttle:60,1');
+
 // Acceso de un solo uso al configurador de extensiones, pedido por el admin (misión extensiones-desde-el-admin,
 // 15/10/2026). `admin.api.key:siempre`: exige X-Admin-Api-Key aunque la instancia no tenga clave cargada,
 // porque esta ruta EMITE un acceso (el tri-estado de `admin.api.key` a secas dejaría pasar sin clave).

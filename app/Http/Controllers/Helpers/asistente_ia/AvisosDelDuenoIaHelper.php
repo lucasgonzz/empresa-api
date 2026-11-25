@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Http\Controllers\Helpers\Order\ComboEsquemaHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Models\AiAvisoDelAsistente;
 use App\Models\AiConversation;
@@ -55,6 +56,17 @@ use Illuminate\Support\Facades\Schema;
  *
  * 🔴 Y VENCEN COMO LOS RECORDATORIOS (HORAS_DE_GRACIA): si en tres horas no salieron (ventana cerrada sin
  * plantilla, admin caído), ya no se ofrecen. «Entró un pedido» de ayer no es un aviso.
+ *
+ * 🔴 MISIÓN whatsapp-aviso-pedido (25/11/2026): EL AVISO DE PEDIDO NUEVO AHORA SE PRENDE DESDE LA TIENDA. La casilla
+ * `online_configurations.notificar_pedido_por_whatsapp` (default 1, «Recibir por WhatsApp el aviso de pedido nuevo de
+ * tu asistente personal») prende el modo `al_toque` sin pasar por el chat, SÓLO con la extensión Agentes de IA
+ * (modo efectivo en preferencias(): sin extensión o casilla en 0 → apagado; el modo que el dueño eligió por chat
+ * —al_toque / horas— gana sobre el default de la casilla; casilla en 1 → al_toque; sin fila o sin columna →
+ * apagado, como antes). El mensaje trae número, comprador, total, entrega, pago y los primeros 3 artículos, y el
+ * ítem pide la plantilla de tareas del admin (`plantilla` + `resumen`) cuando la ventana de 24 h está cerrada. El
+ * empuje inmediato (AvisoInmediatoDePedidoIaHelper) sólo adelanta la consulta del admin: el ítem, el reclamo y el
+ * sello son los de siempre, así que sale un solo mensaje por pedido. La consulta de 5 minutos del admin queda como
+ * respaldo (no se agrega ninguna consulta periódica).
  *
  * Todo en la zona de la app (America/Argentina/Buenos_Aires). Nunca lanza hacia el admin: si algo falla, los
  * recordatorios de la Agenda siguen saliendo.
@@ -113,6 +125,15 @@ class AvisosDelDuenoIaHelper
     /** @var bool|null Si `users` ya tiene las columnas (se pregunta una vez por proceso). */
     protected static $hay_columnas = null;
 
+    /** @var bool|null Si `online_configurations` ya tiene la casilla del aviso de pedido (una vez por proceso). */
+    protected static $hay_casilla = null;
+
+    /** Largo máximo del `resumen` que viaja como variable de la plantilla (el parámetro de Meta admite más). */
+    const LARGO_MAXIMO_DEL_RESUMEN = 400;
+
+    /** Cuántos artículos se nombran en el aviso de un pedido (el resto va en «y K más»). */
+    const ARTICULOS_DEL_PEDIDO = 3;
+
     /**
      * true si la base ya tiene las columnas de las preferencias (un upgrade a medio correr no rompe nada).
      *
@@ -170,6 +191,26 @@ class AvisosDelDuenoIaHelper
             $modo = self::PEDIDOS_APAGADO;
         }
 
+        /*
+         * Modo EFECTIVO de los pedidos (misión whatsapp-aviso-pedido): lo leen el gate de recordatorios-pendientes,
+         * la tarjeta del chat y el empuje inmediato, así que los tres dicen lo mismo.
+         *   1. Sin la extensión Agentes de IA → apagado.
+         *   2. Casilla de la tienda en 0 → apagado (gana sobre lo que haya quedado por chat).
+         *   3. Modo elegido por chat (al_toque / horas) → ese modo.
+         *   4. Casilla en 1 → al_toque.
+         *   5. Sin fila o sin columna de la casilla → apagado (como antes de la casilla).
+         */
+        $interruptor = self::interruptor_de_la_tienda($dueno);
+
+        if (!AsistenteCanalHelper::tiene_extension($dueno) || $interruptor === false) {
+
+            $modo = self::PEDIDOS_APAGADO;
+
+        } elseif ($modo === self::PEDIDOS_APAGADO && $interruptor === true) {
+
+            $modo = self::PEDIDOS_AL_TOQUE;
+        }
+
         return [
             'pedidos'        => $modo,
             'horas'          => $horas,
@@ -191,6 +232,127 @@ class AvisosDelDuenoIaHelper
     public static function ultimo_id($tabla): int
     {
         return (int) DB::table((string) $tabla)->max('id');
+    }
+
+    /**
+     * El valor de la casilla de la tienda del dueño (`online_configurations.notificar_pedido_por_whatsapp`).
+     *
+     * @param  \App\Models\User  $dueno
+     * @return bool|null  true / false según la casilla; null si no hay columna (base a medio actualizar) o el dueño no
+     *                    tiene fila de configuración de la tienda. Nunca lanza.
+     */
+    public static function interruptor_de_la_tienda(User $dueno)
+    {
+        try {
+
+            if (!self::hay_casilla()) {
+
+                return null;
+            }
+
+            $valor = DB::table('online_configurations')->where('user_id', (int) $dueno->id)->value('notificar_pedido_por_whatsapp');
+
+            return is_null($valor) ? null : (bool) $valor;
+
+        } catch (\Throwable $e) {
+
+            return null;
+        }
+    }
+
+    /**
+     * true si la base ya tiene la columna de la casilla (se pregunta una vez por proceso).
+     *
+     * @return bool
+     */
+    public static function hay_casilla(): bool
+    {
+        if (is_null(self::$hay_casilla)) {
+
+            try {
+                self::$hay_casilla = Schema::hasColumn('online_configurations', 'notificar_pedido_por_whatsapp');
+            } catch (\Throwable $e) {
+                self::$hay_casilla = false;
+            }
+        }
+
+        return self::$hay_casilla;
+    }
+
+    /**
+     * Lo que corre al pasar la casilla de la tienda de apagada a prendida: el aviso arranca desde ese momento
+     * (cursor en el último pedido, `desde` ahora), así que un pedido que entró mientras estaba apagada no se avisa.
+     * Si el dueño tenía el resumen por horas, se conserva su modo y sólo se reinicia el tramo. Nunca lanza.
+     *
+     * @param  int  $dueno_id
+     * @return void
+     */
+    public static function al_prender_desde_la_configuracion($dueno_id)
+    {
+        try {
+
+            if (!self::hay_columnas()) {
+
+                return;
+            }
+
+            DB::table('users')->where('id', (int) $dueno_id)->update([
+                'agente_aviso_pedidos_cursor' => self::ultimo_id('orders'),
+                'agente_aviso_pedidos_desde'  => Carbon::now()->format('Y-m-d H:i:s'),
+            ]);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AvisosDelDuenoIaHelper: no se pudo reiniciar el cursor al prender la casilla', [
+                'owner_id' => (int) $dueno_id,
+                'error'    => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Deja el cursor de pedidos en `order_id - 1` si todavía no tiene (dueño que nunca prendió nada y recibe el
+     * aviso por la casilla por defecto): así el pedido que disparó el empuje entra en `pendientes()` y no queda
+     * salteado por `cursor_o_desde_ahora()`. No toca un cursor que ya existe.
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  int  $order_id
+     * @return void
+     */
+    public static function cursor_para_el_pedido(User $dueno, $order_id)
+    {
+        try {
+
+            DB::table('users')
+                ->where('id', (int) $dueno->id)
+                ->whereNull('agente_aviso_pedidos_cursor')
+                ->update(['agente_aviso_pedidos_cursor' => max(0, (int) $order_id - 1)]);
+
+        } catch (\Throwable $e) {
+
+            Log::warning('AvisosDelDuenoIaHelper: no se pudo fijar el cursor del pedido', [
+                'owner_id' => (int) $dueno->id,
+                'order_id' => (int) $order_id,
+                'error'    => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * true si el aviso de este pedido ya salió (está sellado en `ai_avisos_del_asistente`).
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  \App\Models\Order  $pedido
+     * @return bool
+     */
+    public static function pedido_ya_sellado(User $dueno, Order $pedido): bool
+    {
+        if (!self::hay_columnas()) {
+
+            return false;
+        }
+
+        return count(self::sellados($dueno, AiAvisoDelAsistente::TIPO_PEDIDO_TIENDA, [self::clave_de_pedido($pedido)])) > 0;
     }
 
     /**
@@ -396,7 +558,11 @@ class AvisosDelDuenoIaHelper
                     $momento,
                     self::detalle_del_pedido($pedido),
                     self::texto_del_pedido($pedido)
-                ),
+                ) + [
+                    /* Ventana de 24 h cerrada: el admin manda la plantilla de tareas con este resumen como variable. */
+                    'plantilla' => 'tarea_del_asistente',
+                    'resumen'   => self::resumen_del_pedido($pedido),
+                ],
             ];
         }
 
@@ -419,10 +585,144 @@ class AvisosDelDuenoIaHelper
         return 'Pedido N° ' . self::numero_del_pedido($pedido) . ' de la tienda: ' . self::comprador($pedido) . ', ' . self::pesos(OrderHelper::get_total($pedido));
     }
 
+    /**
+     * El mensaje completo del pedido (ventana de 24 h abierta): número, comprador, total, entrega, pago y los
+     * primeros 3 artículos. Queda tal cual en la conversación del dueño, así que si contesta el asistente sabe
+     * de qué pedido habla.
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return string
+     */
     protected static function texto_del_pedido(Order $pedido): string
     {
         return '🛒 Entró un pedido nuevo en la tienda: *N° ' . self::numero_del_pedido($pedido) . '* de ' . self::comprador($pedido)
-            . ', por ' . self::pesos(OrderHelper::get_total($pedido)) . ".\nSi querés el detalle, preguntame.";
+            . ', por ' . self::pesos(OrderHelper::get_total($pedido)) . ".\n"
+            . 'Entrega: ' . self::entrega_del_pedido($pedido) . ' · Pago: ' . self::pago_del_pedido($pedido) . "\n"
+            . self::articulos_del_pedido($pedido) . "\n"
+            . 'Respondeme este mensaje si querés el detalle.';
+    }
+
+    /**
+     * El texto que viaja como variable de la plantilla de tareas (ventana cerrada), en una sola línea y de a lo
+     * sumo LARGO_MAXIMO_DEL_RESUMEN caracteres. Se completa en la plantilla: «Ya tengo listo lo que me encargaste:
+     * {resumen}. Respondeme por acá y te lo paso.»
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return string
+     */
+    protected static function resumen_del_pedido(Order $pedido): string
+    {
+        // La entrega con la primera letra en minúscula (queda adentro de una frase): «retiro por local».
+        $entrega = self::entrega_del_pedido($pedido);
+        $entrega = mb_strtolower(mb_substr($entrega, 0, 1)) . mb_substr($entrega, 1);
+
+        $metodo = self::metodo_de_pago_del_pedido($pedido);
+
+        $resumen = 'el aviso del pedido N° ' . self::numero_del_pedido($pedido) . ' de la tienda: '
+            . self::nombre_corto(self::comprador($pedido)) . ', ' . self::pesos(OrderHelper::get_total($pedido))
+            . ', ' . $entrega . ', ' . (is_null($metodo) ? 'pago no indicado' : 'pago con ' . $metodo)
+            . ', ' . self::cantidad_de_renglones($pedido) . ' ' . (self::cantidad_de_renglones($pedido) === 1 ? 'artículo' : 'artículos');
+
+        return mb_substr($resumen, 0, self::LARGO_MAXIMO_DEL_RESUMEN);
+    }
+
+    /**
+     * Cómo le llega el pedido al comprador: «Envío por correo» (Zipnova), «Envío propio: <zona>», «Envío a
+     * domicilio» (sin zona) o «Retiro por local».
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return string
+     */
+    protected static function entrega_del_pedido(Order $pedido): string
+    {
+        if ($pedido->envio_va_por_zipnova()) {
+
+            return 'Envío por correo';
+        }
+
+        if ((int) $pedido->deliver === 1) {
+
+            $zona = is_null($pedido->delivery_zone) ? '' : self::nombre_corto((string) $pedido->delivery_zone->name);
+
+            return $zona === '' ? 'Envío a domicilio' : 'Envío propio: ' . $zona;
+        }
+
+        return 'Retiro por local';
+    }
+
+    /** El nombre del método de pago del pedido, o null si no tiene. */
+    protected static function metodo_de_pago_del_pedido(Order $pedido)
+    {
+        $metodo = is_null($pedido->payment_method) ? '' : self::nombre_corto((string) $pedido->payment_method->name);
+
+        return $metodo === '' ? null : $metodo;
+    }
+
+    /** «Mercado Pago» o «no indicado». */
+    protected static function pago_del_pedido(Order $pedido): string
+    {
+        $metodo = self::metodo_de_pago_del_pedido($pedido);
+
+        return is_null($metodo) ? 'no indicado' : $metodo;
+    }
+
+    /**
+     * Los renglones del pedido (artículos en el orden del pivot, combos y promos de vinoteca) como pares
+     * [nombre, cantidad].
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return array<int, array{0: string, 1: mixed}>
+     */
+    protected static function renglones_del_pedido(Order $pedido): array
+    {
+        $renglones = [];
+
+        foreach ($pedido->articles as $articulo) {
+            $renglones[] = [self::nombre_corto((string) $articulo->name), $articulo->pivot->amount];
+        }
+
+        foreach (ComboEsquemaHelper::combos_del_pedido($pedido) as $combo) {
+            $renglones[] = [self::nombre_corto((string) $combo->name), $combo->pivot->amount];
+        }
+
+        foreach ($pedido->promocion_vinotecas as $promocion) {
+            $renglones[] = [self::nombre_corto((string) $promocion->name), $promocion->pivot->amount];
+        }
+
+        return $renglones;
+    }
+
+    /** Cuántos renglones tiene el pedido. */
+    protected static function cantidad_de_renglones(Order $pedido): int
+    {
+        return count(self::renglones_del_pedido($pedido));
+    }
+
+    /**
+     * «1 artículo: Malbec Reserva x2» o «5 artículos: A x1, B x2, C x1 y 2 más».
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return string
+     */
+    protected static function articulos_del_pedido(Order $pedido): string
+    {
+        $renglones = self::renglones_del_pedido($pedido);
+        $total = count($renglones);
+
+        $nombrados = [];
+
+        foreach (array_slice($renglones, 0, self::ARTICULOS_DEL_PEDIDO) as $renglon) {
+            $nombrados[] = $renglon[0] . ' x' . self::cantidad($renglon[1]);
+        }
+
+        $texto = $total . ' ' . ($total === 1 ? 'artículo' : 'artículos') . ': ' . implode(', ', $nombrados);
+
+        if ($total > self::ARTICULOS_DEL_PEDIDO) {
+
+            $texto .= ' y ' . ($total - self::ARTICULOS_DEL_PEDIDO) . ' más';
+        }
+
+        return $texto;
     }
 
     /* ─────────────────────────────── pedidos por hora fija ─────────────────────────────── */

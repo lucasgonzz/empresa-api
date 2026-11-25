@@ -250,7 +250,9 @@ class RecordatoriosDelAsistenteHelper
          * Misión asistente-truvari-pedidos-fallidos (C2, 13/11/2026): los avisos que el dueño pidió (pedidos
          * nuevos de la tienda, stock cero) viajan por acá, con la misma forma y su propio id
          * (AvisosDelDuenoIaHelper). Apagados por defecto: sin preferencias no hay ninguno y esta consulta
-         * devuelve exactamente lo de antes.
+         * devuelve exactamente lo de antes. Excepción (misión whatsapp-aviso-pedido, 25/11/2026): el aviso de
+         * pedido nuevo viene prendido por la casilla de la configuración de la tienda en los comercios con
+         * Agentes de IA (modo efectivo en AvisosDelDuenoIaHelper::preferencias()).
          */
         $del_dueno = AvisosDelDuenoIaHelper::hay_columnas() ? AvisosDelDuenoIaHelper::preferencias($dueno) : null;
         $con_avisos_del_dueno = !is_null($del_dueno)
