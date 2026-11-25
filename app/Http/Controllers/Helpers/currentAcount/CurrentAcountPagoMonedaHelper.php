@@ -443,6 +443,12 @@ class CurrentAcountPagoMonedaHelper {
      * lo resolvía con un `CurrentAcount::find()` sin mirar la cuenta). Un débito que no existe no se
      * rechaza acá: el alta lo ignora y el pago entra en orden.
      *
+     * Un débito de la MISMA cuenta tiene que ser una deuda imputable, con la misma regla que usa
+     * `CreditosHistoricosHelper::plan()` para sus débitos: `debe` numérico mayor a cero y no provisorio.
+     * Un pago, un crédito, una NC, un saldo inicial en el Haber o un provisorio no lo son: si el alta
+     * los guardara como destino, `plan()` rechazaría la cuenta el día que tenga un crédito (ticket 171).
+     * Un débito ya pagado de la misma cuenta se acepta (`plan()` tampoco mira el status).
+     *
      * Lee el débito igual que `CurrentAcountCuotaHelper::get_to_pay_id()`: `to_pay['id']`.
      *
      * @param  int|string  $credit_account_id  La cuenta que se paga.
@@ -458,9 +464,22 @@ class CurrentAcountPagoMonedaHelper {
 
         $debito = CurrentAcount::find($to_pay['id']);
 
-        if (is_null($debito) || (int) $debito->credit_account_id == (int) $credit_account_id) {
+        if (is_null($debito)) {
 
             return null;
+        }
+
+        if ((int) $debito->credit_account_id == (int) $credit_account_id) {
+
+            // Misma regla que los débitos de CreditosHistoricosHelper::plan(): debe > 0 y no provisorio.
+            if (is_numeric($debito->debe) && (float) $debito->debe > 0 && !(int) $debito->is_provisorio) {
+
+                return null;
+            }
+
+            return 'El comprobante #'.$debito->id.' al que se quiere imputar el pago no es una deuda de esta cuenta '
+                    .'(es un pago, un crédito o un movimiento provisorio). Elegí una venta o nota de débito pendiente, '
+                    .'o registrá el pago sin elegir comprobante.';
         }
 
         return 'El comprobante al que se quiere imputar el pago pertenece a otra cuenta corriente (de otra moneda). '
