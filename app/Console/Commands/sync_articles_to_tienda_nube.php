@@ -5,57 +5,43 @@ namespace App\Console\Commands;
 use App\Models\SyncToTNArticle;
 use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\DB;
 
 class sync_articles_to_tienda_nube extends Command
 {
-    /**
-     * The name and signature of the console command.
-     *
-     * @var string
-     */
     protected $signature = 'sync_articles_to_tienda_nube';
 
-    /**
-     * The console command description.
-     *
-     * @var string
-     */
-    protected $description = 'Command description';
+    protected $description = 'Sincroniza los artículos pendientes hacia Tienda Nube';
 
-    /**
-     * Create a new command instance.
-     *
-     * @return void
-     */
-    public function __construct()
-    {
-        parent::__construct();
-    }
-
-    /**
-     * Execute the console command.
-     *
-     * @return int
-     */
     public function handle()
     {
-
-        $sync_articles = SyncToTNArticle::where('user_id', config('app.USER_ID'))
-                            ->where('status', 'pendiente')
-                            ->get();
-
-        $this->info(count($sync_articles).' sincronizaciones');
-
-        $service = new TiendaNubeSyncArticleService();
-
-        $index = 0;
-        foreach ($sync_articles as $sync) {
-            $service->sync_article($sync);
-            $index++;
-            $this->info($index.' subidos');
+        $userId = (int) config('app.USER_ID');
+        $lockKey = 'tn-sync:'.sha1(DB::connection()->getDatabaseName().':'.$userId);
+        if ((int) DB::selectOne('SELECT GET_LOCK(?, 0) AS tomado', [$lockKey])->tomado !== 1) {
+            return 0;
         }
-        $this->comment('Listo');
 
-        return 0;
+        try {
+            if (SyncToTNArticle::owner_rate_limited($userId)) {
+                return 0;
+            }
+
+            $syncs = SyncToTNArticle::pendingForOwner($userId)->orderBy('id')->get();
+            $this->info(count($syncs).' sincronizaciones');
+
+            $service = new TiendaNubeSyncArticleService();
+            foreach ($syncs as $sync) {
+                if (!$service->sync_article($sync)) {
+                    $this->comment('Tienda Nube limitó las consultas. Se detuvo este lote.');
+                    return 0;
+                }
+            }
+
+            $this->comment('Listo');
+
+            return 0;
+        } finally {
+            DB::select('SELECT RELEASE_LOCK(?)', [$lockKey]);
+        }
     }
 }
