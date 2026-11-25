@@ -169,6 +169,13 @@ class Tareas_del_asistente_estado_real_Test extends TareasDelAsistenteConModeloT
      */
     public function tras_cancelar_el_turno_siguiente_la_ve_cancelada()
     {
+        // Precondición (misión onboarding-conversacional-whatsapp): el primer mensaje por WhatsApp de un dueño SIN
+        // historial arranca el onboarding y crea su propia tarea (activa). Este test habla de la tarea del dueño, así
+        // que el dueño ya le había escrito antes al canal (mensaje viejo), como en OnboardingTestCase::con_historial_de_whatsapp.
+        $previa = $this->conversacion_whatsapp(now()->subDays(40));
+        $mensaje_previo = $this->mensaje($previa, 'user', 'listo', ['contenido' => 'Hola, probando']);
+        DB::table('ai_messages')->where('id', $mensaje_previo->id)->update(['created_at' => now()->subDays(40), 'updated_at' => now()->subDays(40)]);
+
         $tarea = $this->tarea_del_asistente(['titulo' => 'Aviso de reposición']);
 
         $this->el_dueno_escribe('Hola, ¿qué tengo programado?');

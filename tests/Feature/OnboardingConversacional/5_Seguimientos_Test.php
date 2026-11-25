@@ -109,6 +109,50 @@ class Seguimientos_Test extends OnboardingTestCase
     }
 
     /**
+     * Convivencia con el estado real del asistente (test 39 de AsistenteWhatsapp): el dueño con el onboarding en
+     * curso (su propia tarea de seguimiento, área `onboarding`) crea una tarea suya y la cancela. En el turno
+     * siguiente el modelo tiene que verla «cancelada hace», sin aviso activo propio, y el onboarding sigue vivo:
+     * cancelar la tarea del dueño no es pausar el onboarding.
+     *
+     * @group onboarding-conversacional
+     * @test
+     */
+    public function test_cancelar_una_tarea_propia_convive_con_el_onboarding_en_curso()
+    {
+        $this->el_dueno_escribe('Hola, ¿andás?');
+
+        $this->assertSame('en_curso', $this->onboarding()->ia_onboarding_estado);
+        $this->assertCount(1, $this->tareas_de_onboarding('activa'), 'Precondición: el onboarding tiene su seguimiento activo.');
+
+        $propia = $this->tarea_del_asistente(['titulo' => 'Aviso de reposición']);
+
+        $cancelacion = $this->herramienta('cancelar_tarea_del_asistente', ['tarea_id' => $propia->id]);
+
+        $this->assertFalse($cancelacion['error'], $cancelacion['texto']);
+
+        $this->el_dueno_escribe('Gracias, ¿y ahora?');
+
+        $system = $this->system_del_ultimo_pedido();
+
+        $linea_propia = '';
+
+        foreach (explode("\n", $system) as $linea) {
+            if (strpos($linea, '[id ' . $propia->id . ']') !== false) {
+                $linea_propia = $linea;
+            }
+        }
+
+        $this->assertNotSame('', $linea_propia, 'La tarea cancelada tiene que figurar en el estado que ve el modelo.');
+        $this->assertStringContainsString('«Aviso de reposición»', $linea_propia);
+        $this->assertStringContainsString('cancelada hace', $linea_propia);
+        $this->assertStringNotContainsString('(activa)', $linea_propia, 'La tarea propia cancelada no puede figurar como viva.');
+
+        $this->assertSame('cancelada', $this->estado_de_tarea($propia->id));
+        $this->assertCount(1, $this->tareas_de_onboarding('activa'), 'El seguimiento del onboarding sigue activo.');
+        $this->assertSame('en_curso', $this->onboarding()->ia_onboarding_estado, 'Cancelar una tarea propia no pausa el onboarding.');
+    }
+
+    /**
      * Con el tope de tareas activas lleno no hay seguimiento, pero el turno contesta igual y no hay excepción.
      *
      * @group onboarding-conversacional
