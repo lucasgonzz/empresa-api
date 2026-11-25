@@ -33,6 +33,7 @@ use App\Http\Controllers\Helpers\asistente_ia\FormatoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\FotosDeLaConversacionIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\LinkDePdfIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\MencionesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\OnboardingCierreFalsoIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PedidoDeAyudaASoporteIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\PermisosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProgresoIaHelper;
@@ -368,9 +369,11 @@ class AsistenteIaService
      *   - 'anotacion' (A5): «Me lo anoto» sin un guardar_en_contexto ok;
      *   - 'promesa' (A4): «Reviso y te confirmo», «Dame un momento»;
      *   - 'solo_anotacion' (P4 de la misión asistente-mejoras-4-dias, V22): «Me lo anoto.» y nada más, cuando la
-     *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento.
+     *     persona pidió o preguntó algo. Va al final: no tiene aviso que reemplace, solo el reintento;
+     *   - 'onboarding_cierre' (misión onboarding-pausa-y-temas-20261125): «ya no me quedan preguntas» con el
+     *     onboarding en curso y temas que faltan según la base.
      */
-    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion'];
+    const GUARDAS_DE_VERACIDAD = ['carga_sin_propuesta', 'soporte', 'anotacion', 'promesa', VentaConDatosInventadosIaHelper::GUARDA, 'solo_anotacion', OnboardingCierreFalsoIaHelper::GUARDA];
 
     /**
      * Los pares (tipo, id, texto) que dejaron las tools de la respuesta que se está generando, sin
@@ -1786,7 +1789,7 @@ class AsistenteIaService
 
                     $messages[] = [
                         'role'    => 'user',
-                        'content' => $this->nota_de_veracidad($guarda_de_veracidad, $tools),
+                        'content' => $this->nota_de_veracidad($guarda_de_veracidad, $tools, $conversation),
                     ];
 
                     /* Armar una carga es decisión del Profundo, como en cualquier turno que toca una carga. */
@@ -4877,6 +4880,12 @@ CONFIRMACION;
                 || VentaConDatosInventadosIaHelper::afirma_otro_total($saneado, $assistant_message);
         }
 
+        /* Onboarding: «ya no me quedan preguntas» con temas que faltan en la base (sólo con el onboarding en curso). */
+        if ($guarda === OnboardingCierreFalsoIaHelper::GUARDA) {
+            return OnboardingCierreFalsoIaHelper::afirma_que_termino($saneado)
+                && OnboardingCierreFalsoIaHelper::faltan_temas(User::find($conversation->user_id));
+        }
+
         return false;
     }
 
@@ -4885,9 +4894,10 @@ CONFIRMACION;
      *
      * @param  string  $guarda
      * @param  array<int, array<string, mixed>>  $tools
+     * @param  AiConversation|null  $conversation  La del turno (la guarda del onboarding lee de ahí al dueño).
      * @return string
      */
-    protected function nota_de_veracidad($guarda, array $tools): string
+    protected function nota_de_veracidad($guarda, array $tools, $conversation = null): string
     {
         if ($guarda === 'soporte') {
             return PedidoDeAyudaASoporteIaHelper::nota_para_reintentar($this->codigo_de_la_herramienta(PedidoDeAyudaASoporteIaHelper::HERRAMIENTA));
@@ -4909,6 +4919,10 @@ CONFIRMACION;
             return VentaConDatosInventadosIaHelper::nota_para_reintentar();
         }
 
+        if ($guarda === OnboardingCierreFalsoIaHelper::GUARDA) {
+            return OnboardingCierreFalsoIaHelper::nota_para_reintentar(User::find($conversation->user_id));
+        }
+
         return CargaSinPropuestaIaHelper::nota_para_reintentar();
     }
 
@@ -4923,6 +4937,12 @@ CONFIRMACION;
     {
         if ($guarda === VentaConDatosInventadosIaHelper::GUARDA && $assistant_message instanceof AiMessage) {
             return VentaConDatosInventadosIaHelper::texto_honesto($texto, $assistant_message);
+        }
+
+        if ($guarda === OnboardingCierreFalsoIaHelper::GUARDA) {
+            $conversacion_del_turno = $assistant_message instanceof AiMessage ? AiConversation::find($assistant_message->ai_conversation_id) : null;
+
+            return OnboardingCierreFalsoIaHelper::texto_honesto($texto, is_null($conversacion_del_turno) ? null : User::find($conversacion_del_turno->user_id));
         }
 
         if ($guarda === 'soporte') {

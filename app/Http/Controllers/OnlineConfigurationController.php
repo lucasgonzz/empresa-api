@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\AvisosDelDuenoIaHelper;
 use App\Exceptions\MailRechazadoPorElServidorException;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Services\Mail\PruebaDeCorreoService;
@@ -208,6 +209,29 @@ class OnlineConfigurationController extends Controller
         $model->notificar_pedido_al_cliente         = $request->boolean('notificar_pedido_al_cliente', $model->notificar_pedido_al_cliente ?? true);
         $model->avisar_ingreso_stock_por_mail       = $request->boolean('avisar_ingreso_stock_por_mail', $model->avisar_ingreso_stock_por_mail ?? true);
 
+        // Ajuste de los carritos por stock (misión carritos-ajuste-stock, 25/11/2026). Las tres opciones son
+        // booleanos prendidos por defecto: sólo se asignan si la columna existe (un deploy que sube el código
+        // antes de migrar no rompe) y, si el PUT no trae la clave (una pantalla vieja), conservan su valor.
+        foreach (['ajustar_carritos_por_stock', 'avisar_ajuste_carrito_por_mail', 'avisar_puede_agotarse'] as $opcion_de_carritos) {
+            if (Schema::hasColumn('online_configurations', $opcion_de_carritos)) {
+                $model->$opcion_de_carritos = $request->boolean($opcion_de_carritos, $model->$opcion_de_carritos ?? true);
+            }
+        }
+
+        // Misión whatsapp-aviso-pedido (25/11/2026): casilla «Recibir por WhatsApp el aviso de pedido nuevo de tu
+        // asistente personal». Booleano NOT NULL con default true: si la clave no viene (pantalla abierta desde
+        // antes del deploy) se conserva el valor actual y nunca se pisa con null. Sólo se guarda si la columna
+        // existe (una base a medio actualizar no rompe el guardado de la configuración).
+        $casilla_aviso_pedido_antes = null;
+        $hay_casilla_aviso_pedido   = Schema::hasColumn('online_configurations', 'notificar_pedido_por_whatsapp');
+
+        if ($hay_casilla_aviso_pedido) {
+            // Valor que tenía antes de este guardado (null si el modelo todavía no la trae cargada).
+            $casilla_aviso_pedido_antes = (bool) ($model->notificar_pedido_por_whatsapp ?? true);
+
+            $model->notificar_pedido_por_whatsapp = $request->boolean('notificar_pedido_por_whatsapp', $casilla_aviso_pedido_antes);
+        }
+
         // mail_password es write-only: solo se pisa si viene con contenido. Si el request no
         // trae el campo o llega vacio (la UI lo muestra siempre en blanco por seguridad), se
         // conserva la contraseña ya guardada en vez de borrarla.
@@ -239,6 +263,14 @@ class OnlineConfigurationController extends Controller
         $model->zippin_enabled  = $request->boolean('zippin_enabled', $model->zippin_enabled ?? false);
 
         $model->save();
+
+        // Misión whatsapp-aviso-pedido: al pasar la casilla de apagada a prendida el aviso arranca desde ese
+        // momento (cursor en el último pedido): lo que entró mientras estaba apagada no se avisa. La lógica
+        // vive en el helper; acá sólo se detecta la transición.
+        if ($hay_casilla_aviso_pedido && !$casilla_aviso_pedido_antes && $model->notificar_pedido_por_whatsapp) {
+            AvisosDelDuenoIaHelper::al_prender_desde_la_configuracion($model->user_id);
+        }
+
         $this->sendAddModelNotification('OnlineConfiguration', $model->id);
         // $this->fullModel() ya devuelve el modelo con mail_password oculto por el $hidden del
         // modelo (Eloquent lo excluye al serializar a JSON), asi que nunca se filtra por esta via.

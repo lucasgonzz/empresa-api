@@ -3,6 +3,7 @@
 namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\OnboardingDelNegocioIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TareasDelAsistenteIaHelper;
 use App\Models\AiConversation;
 use App\Models\User;
@@ -210,7 +211,19 @@ class HerramientasDeTareasDelAsistente
                 break;
 
             case self::CANCELAR:
-                $datos = TareasDelAsistenteIaHelper::cancelar($owner, $input);
+
+                /*
+                 * 🔴 El recordatorio del onboarding lo maneja el sistema (se cancela solo al llegar a los 32 temas). En
+                 * demo3 el modelo lo canceló al cruzar los 13 esenciales creyendo que había terminado y el onboarding
+                 * quedó pausado sin que el dueño lo pidiera. Si pide cancelarlo se le rechaza con el avance real;
+                 * «no me preguntes más» es conocimiento_del_negocio «pausar» y «otro día» es reprogramar.
+                 */
+                $nota_del_onboarding = OnboardingDelNegocioIaHelper::nota_de_cancelacion($owner, isset($input['tarea_id']) ? $input['tarea_id'] : null);
+
+                $datos = is_null($nota_del_onboarding)
+                    ? TareasDelAsistenteIaHelper::cancelar($owner, $input)
+                    : ['error' => $nota_del_onboarding];
+
                 break;
 
             case self::HORARIOS:

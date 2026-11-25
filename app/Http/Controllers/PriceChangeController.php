@@ -31,19 +31,29 @@ class PriceChangeController extends Controller
             $models->pluck('id')->all(),
             $ver_costo
         );
-        $salida = $models->map(function ($model) use ($ver_costo, $nombres, $ofertas_por_cambio) {
+        // Si el negocio (dueño) trabaja con listas de precio. Se resuelve UNA vez, fuera del map,
+        // para no consultar al dueño por cada fila del historial.
+        $usa_listas = UserHelper::uses_listas_de_precio($usuario);
+        $salida = $models->map(function ($model) use ($ver_costo, $nombres, $ofertas_por_cambio, $usa_listas) {
             $dato = $model->toArray();
             // Siempre un array (vacío si el cambio no vino de ninguna oferta).
             $dato['provider_offers'] = isset($ofertas_por_cambio[$model->id]) ? $ofertas_por_cambio[$model->id] : [];
             $dato['empleado_nombre'] = $nombres[$model->employee_id] ?? null;
             if (!$ver_costo) {
-                // En cuentas con listas el precio general puede ser el costo sin
-                // margen. Los precios públicos están en price_types/cambios_listas.
-                unset($dato['cost'], $dato['price'], $dato['final_price'], $dato['precio_final_anterior']);
+                // cost y price se ocultan siempre a quien no ve costos.
+                unset($dato['cost'], $dato['price']);
+                // En cuentas CON listas el precio general puede ser el costo sin margen, así que
+                // final_price y precio_final_anterior también se ocultan: los precios públicos
+                // están en price_types/cambios_listas. En cuentas SIN listas final_price es el
+                // precio público de siempre (lo muestra la columna «Precio Final» de la SPA) y
+                // se devuelve tal cual.
+                if ($usa_listas) {
+                    unset($dato['final_price'], $dato['precio_final_anterior']);
+                }
                 // Compatibilidad con la SPA anterior: una única lista Precio final
                 // tiene una foto pública propia, independiente del costo general.
                 $listas = $dato['price_types'] ?? [];
-                if (count($listas) === 1 && !empty($listas[0]['es_precio_final'])) {
+                if ($usa_listas && count($listas) === 1 && !empty($listas[0]['es_precio_final'])) {
                     $dato['final_price'] = $listas[0]['pivot']['final_price'];
                 }
             }
