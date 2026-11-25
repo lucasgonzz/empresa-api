@@ -15,8 +15,8 @@
 				<!-- Logo -->
 				<tr>
 					<td align="center" style="padding:32px 32px 8px 32px;">
-						@if (!is_null($logo_url))
-							<img src="{{ $logo_url }}" alt="{{ $company_name }}" style="max-height:52px; max-width:220px; display:block; border:0;">
+						@if (!is_null($logo))
+							<img src="{{ $message->embedData($logo['bytes'], $logo['name'], $logo['mime']) }}" alt="{{ $company_name }}" style="max-height:52px; max-width:220px; display:block; border:0;">
 						@else
 							<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:20px; font-weight:600; color:#111827;">{{ $company_name }}</div>
 						@endif
@@ -38,9 +38,9 @@
 					<td style="padding:24px 32px 0 32px; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;">
 						<table width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb; border-radius:12px; overflow:hidden;">
 							<tr>
-								@if (!is_null($image_url))
+								@if (!is_null($image))
 								<td width="112" valign="top" style="padding:16px 0 16px 16px;">
-									<img src="{{ $image_url }}" alt="{{ $article_name }}" width="96" height="96" style="width:96px; height:96px; object-fit:cover; border-radius:10px; border:1px solid #f3f4f6; display:block;">
+									<img src="{{ $message->embedData($image['bytes'], 'article.png', $image['mime']) }}" alt="{{ $article_name }}" width="96" height="96" style="width:96px; height:96px; object-fit:cover; border-radius:10px; border:1px solid #f3f4f6; display:block;">
 								</td>
 								@endif
 								<td valign="middle" style="padding:16px;">
@@ -58,7 +58,7 @@
 				<tr>
 					<td align="center" style="padding:28px 32px 36px 32px;">
 						@if (!is_null($article_url))
-							<a href="{{ $article_url }}" style="display:inline-block; padding:13px 28px; background-color:{{ $accent_color }}; color:#ffffff; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:15px; font-weight:600; text-decoration:none; border-radius:8px;">Ver artículo</a>
+							<a href="{{ $article_url }}" style="display:inline-block; padding:13px 28px; background-color:{{ $accent_color }}; color:{{ $cta_text_color }}; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:15px; font-weight:600; text-decoration:none; border-radius:8px;">Ver artículo</a>
 						@endif
 					</td>
 				</tr>

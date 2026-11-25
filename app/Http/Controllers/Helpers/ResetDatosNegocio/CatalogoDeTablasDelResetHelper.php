@@ -83,7 +83,13 @@ class CatalogoDeTablasDelResetHelper
         'meli_order_tags', 'meli_orders', 'mercado_pago_qr_cobros', 'messages', 'mostrador_accesos', 'mostrador_memorias',
         'mostrador_reportes', 'movimiento_cajas', 'movimiento_entre_cajas', 'movimiento_punto_consumos',
         'movimiento_puntos', 'nota_credito_descriptions', 'offer_suggestion_lines', 'offer_suggestions',
-        'order_combo', 'order_productions', 'order_promocion_vinoteca', 'order_stock_reservations', 'order_surchage',
+        'order_combo',
+        // order_communication_deliveries (misión tienda-compra-comunicaciones, 19/11/2026): un registro por cada envío de
+        // comunicación de un pedido de la tienda (order_id, canal, tipo y hash del destinatario) para no mandarlo dos
+        // veces (idempotencia). Es historial operativo del cliente. Si sobreviviera al reset, el nuevo pedido N° 1 chocaría
+        // con las filas viejas del mismo order_id y la idempotencia suprimiría sus correos; por eso se vacía junto con orders.
+        'order_communication_deliveries',
+        'order_productions', 'order_promocion_vinoteca', 'order_stock_reservations', 'order_surchage',
         'orders', 'pagado_por', 'payment_card_infos', 'payment_plan_cuotas', 'payment_plans', 'payments',
         'pdf_links', 'pending_completeds', 'pendings', 'platelets', 'price_change_price_type', 'price_changes',
         'price_type_sub_category', 'price_update_run_articles', 'price_update_runs', 'prices_lists', 'print_jobs',

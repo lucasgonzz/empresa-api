@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\ChequeHelper;
+use App\Http\Controllers\Helpers\caja\CajaVisibilidadHelper;
 use App\Http\Controllers\Helpers\caja\MovimientoCajaHelper;
 use App\Models\AperturaCaja;
 use App\Models\Caja;
@@ -71,6 +72,16 @@ class MovimientoCajaController extends Controller
         if (is_null($apertura)) {
 
             return response()->json(['message' => self::MENSAJE_APERTURA_NO_ENCONTRADA], 404);
+        }
+
+        // Misión cajas-permisos-claros: un empleado que no ve la caja en Tesorería no lee sus movimientos.
+        $auth_user = $this->user(false);
+        $caja_de_la_apertura = Caja::where('id', $apertura->caja_id)->withAll()->first();
+
+        if (!is_null($auth_user) && !is_null($caja_de_la_apertura)
+            && !CajaVisibilidadHelper::ve_en_tesoreria($caja_de_la_apertura, $auth_user)) {
+
+            return response()->json(['message' => AperturaCajaController::MENSAJE_CAJA_NO_VISIBLE], 403);
         }
 
         $models = MovimientoCaja::where('apertura_caja_id', $apertura->id)

@@ -14,6 +14,7 @@ use App\Models\User;
 use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
 use App\Services\CupoEmbeddingsDePrueba;
+use App\Services\EmbeddingsCredencialCorte;
 use Carbon\Carbon;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\DB;
@@ -137,6 +138,20 @@ class GenerateArticleEmbeddings extends Command
          */
         if (trim((string) config('services.openai.api_key')) === '') {
             $this->warn('articles:generate-embeddings: no hay OPENAI_API_KEY configurada. No se despacha ningún job hasta que se cargue.');
+            return 0;
+        }
+
+        /*
+         * 🔴 Corte por credencial rechazada (misión embeddings-corte-credencial-20261123). Si OpenAI ya
+         * rechazó la clave (401/403 con cuerpo de OpenAI, o 429 sin crédito), no se abre tanda ni se
+         * despacha un solo job hasta que venza el corte (EMBEDDINGS_CORTE_MINUTOS, default 60) o alguien lo
+         * cierre con `php artisan cache:forget embeddings_credencial_rechazada`. Va DESPUÉS del gate de la
+         * extensión y de la guarda de la clave (que siguen como estaban) y ANTES de tocar la base. Es la
+         * misma forma que la pausa global de más arriba, sólo que esta se activa sola. Los artículos
+         * quedan pendientes: la primera pasada con el corte vencido toma los mismos.
+         */
+        if (EmbeddingsCredencialCorte::abierto()) {
+            $this->warn('articles:generate-embeddings: OpenAI rechazó la credencial y hay un corte abierto (se reintenta solo al vencer; para reintentar antes: php artisan cache:forget '.EmbeddingsCredencialCorte::CLAVE.'). No se despacha ningún job.');
             return 0;
         }
 

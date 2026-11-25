@@ -6,6 +6,7 @@ use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Http\Controllers\Helpers\WhatsappBotConexionHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
+use App\Http\Controllers\Helpers\WhatsappCoexistenciaHelper;
 use App\Http\Controllers\Helpers\WhatsappPhoneHelper;
 use App\Http\Controllers\Helpers\WhatsappReactionHelper;
 use App\Models\User;
@@ -82,7 +83,18 @@ class WhatsappBotController extends Controller
         // Todo el procesamiento nuevo (persistencia, estados) va protegido: un error acá
         // nunca debe hacer perder el 200 hacia Kapso ni frenar el reintento de otros eventos.
         try {
-            if ($event_type === 'whatsapp.message.received') {
+            // 🔴 Coexistencia (misión whatsapp-coexistencia-ecos): se rutea por `message.kapso.origin` ANTES de todo
+            // lo demás. `business_app` = eco de lo que el dueño escribió desde el celular; `history_sync` = historial
+            // importado. Ninguno puede entrar como entrante nuevo: el agente contestaría mensajes viejos y una
+            // reacción vieja valoraría una respuesta del agente. Sólo `received`/`sent`: los estados siguen su camino de siempre.
+            $origin = isset($payload['message']['kapso']['origin']) ? strtolower(trim((string) $payload['message']['kapso']['origin'])) : '';
+            $es_mensaje = in_array($event_type, ['whatsapp.message.received', 'whatsapp.message.sent'], true);
+
+            if ($es_mensaje && $origin === 'business_app') {
+                WhatsappCoexistenciaHelper::registrar_eco($config, $payload);
+            } elseif ($es_mensaje && $origin === 'history_sync') {
+                WhatsappCoexistenciaHelper::registrar_historial($config, $payload, $event_type);
+            } elseif ($event_type === 'whatsapp.message.received') {
                 $this->handle_message_received($config, $payload);
             } elseif (in_array($event_type, self::DELIVERY_STATUS_EVENTS, true)) {
                 WhatsappChatHelper::handle_delivery_status_event($event_type, $payload);

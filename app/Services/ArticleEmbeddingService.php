@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Exceptions\EmbeddingsCredencialRechazadaException;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Models\Article;
 use Illuminate\Http\Client\PendingRequest;
@@ -122,6 +123,9 @@ class ArticleEmbeddingService
      *
      * @return array<int, float> Array de floats con las 1536 dimensiones del vector.
      *
+     * @throws EmbeddingsCredencialRechazadaException Si OpenAI rechazó la credencial (401/403 con cuerpo de
+     *         error de OpenAI, o 429 `insufficient_quota`) o ya hay un corte abierto por un rechazo anterior.
+     *         Subclase de \RuntimeException; el job NO la reintenta.
      * @throws \RuntimeException Si la API responde con error o el payload es inesperado.
      */
     public function generate_embedding(string $text, $user_id = null, $proceso = null, $referencia_id = null): array
@@ -130,6 +134,21 @@ class ArticleEmbeddingService
         $text = trim($text);
         if ($text === '') {
             throw new \RuntimeException('ArticleEmbeddingService: el texto para embeddear no puede estar vacío.');
+        }
+
+        /*
+         * 🔴 CORTE POR CREDENCIAL RECHAZADA (misión embeddings-corte-credencial-20261123). Va ANTES de
+         * reservar cupo de prueba y de armar el cliente: con el corte abierto no se llama a OpenAI ni se
+         * gasta nada. Pasa por acá también la búsqueda del bot (`search_similar_articles`), que por eso
+         * respeta el mismo corte y también puede abrirlo.
+         */
+        $corte = EmbeddingsCredencialCorte::estado();
+        if ($corte !== null) {
+            throw new EmbeddingsCredencialRechazadaException(
+                'ArticleEmbeddingService: error HTTP '.(int) ($corte['status'] ?? 0).' en OpenAI.'
+                .(! empty($corte['mensaje']) ? ' '.$corte['mensaje'] : '')
+                .' (corte de credencial abierto desde '.(string) ($corte['desde'] ?? '?').'; no se llamó a OpenAI.)'
+            );
         }
 
         $http = $this->build_http_client();
@@ -156,10 +175,22 @@ class ArticleEmbeddingService
                 $error_msg = (string) $error_body['error']['message'];
             }
 
-            throw new \RuntimeException(
-                'ArticleEmbeddingService: error HTTP '.$response->status().' en OpenAI.'
-                .($error_msg !== '' ? ' '.$error_msg : '')
-            );
+            $mensaje_de_error = 'ArticleEmbeddingService: error HTTP '.$response->status().' en OpenAI.'
+                .($error_msg !== '' ? ' '.$error_msg : '');
+
+            /*
+             * 🔴 Un 401/403 con cuerpo de OpenAI o un 429 `insufficient_quota` es PERMANENTE: se abre el
+             * corte y se lanza la excepción específica, que el job NO reintenta. Un 403/401 sin ese cuerpo
+             * (HTML de un proxy/WAF), un 5xx, un timeout o un 429 de rate limit NO abren nada y siguen el
+             * camino de siempre (RuntimeException → reintento). Ver EmbeddingsCredencialCorte.
+             */
+            if (EmbeddingsCredencialCorte::debe_abrir((int) $response->status(), $error_body)) {
+                EmbeddingsCredencialCorte::abrir((int) $response->status(), $error_msg);
+
+                throw new EmbeddingsCredencialRechazadaException($mensaje_de_error);
+            }
+
+            throw new \RuntimeException($mensaje_de_error);
         }
 
         /*
