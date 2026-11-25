@@ -225,6 +225,19 @@ class CurrentAcountHelper {
     static function notaCredito($credit_account_id, $haber, $description, $model_name, $model_id, $sale_id = null, $items = null, $descriptions = null, $to_pay_id = null) {
 
         /*
+         * Por acá pasan TODAS las NC: ninguna puede nacer con Haber negativo (NC N°267 de la cuenta 5377).
+         * Sólo negativos o no numéricos: el 0 sigue pasando porque Vender, devoluciones e importaciones
+         * pueden llegar con total 0 y no se midieron. Clave `cuenta_corriente`: los catch de los llamadores
+         * la re-lanzan como 422 con rollback.
+         */
+        if (!is_numeric($haber)) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['cuenta_corriente' => 'El monto de una nota de crédito tiene que ser un número (llegó '.(is_scalar($haber) ? (string) $haber : json_encode($haber)).'). No se registró la nota de crédito.']);
+        }
+        if ((float) $haber < 0) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['cuenta_corriente' => 'Una nota de crédito no puede tener un monto negativo (llegó '.$haber.'). No se registró la nota de crédito.']);
+        }
+
+        /*
          * Candado de la cuenta corriente (misión cuenta-corriente-carrera-y-velocidad, 23/9/2026).
          * Los llamadores que escriben desde un request ya lo tomaron al abrir su transacción
          * (Devoluciones, la NC de monto libre, la edición de venta): acá es gratis. Va igual en el
