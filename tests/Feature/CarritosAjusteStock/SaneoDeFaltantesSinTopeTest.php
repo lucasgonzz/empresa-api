@@ -49,16 +49,19 @@ class SaneoDeFaltantesSinTopeTest extends AuditoriaStockTestCase
      * Arma la tienda con `ignorar_stock` prendido y un carrito activo con un renglón 0/2 con la casilla dada.
      *
      * @param int $casilla Valor de completar_al_reponer (0 o 1).
+     * @param array $configuracion Flags de la tienda (por defecto ignorar_stock = 1).
+     * @param float $stock Stock inicial del artículo.
+     * @param float $faltante Faltante del renglón.
      * @return array ['articulo', 'line_id', 'cart_id', 'cart_updated_at']
      */
-    protected function armar_escenario($casilla)
+    protected function armar_escenario($casilla, $configuracion = ['ignorar_stock' => 1], $stock = 10, $faltante = 2)
     {
         $user = $this->usuario();
 
         OnlineConfiguration::where('user_id', $user->id)->delete();
-        OnlineConfiguration::create(['user_id' => $user->id, 'ignorar_stock' => 1]);
+        OnlineConfiguration::create(array_merge(['user_id' => $user->id], $configuracion));
 
-        $articulo = $this->crear_articulo('zz Saneo sin tope ' . uniqid(), ['stock' => 10]);
+        $articulo = $this->crear_articulo('zz Saneo sin tope ' . uniqid(), ['stock' => $stock]);
 
         $buyer = Buyer::create([
             'name'    => 'Comprador ' . uniqid(),
@@ -78,7 +81,7 @@ class SaneoDeFaltantesSinTopeTest extends AuditoriaStockTestCase
             'article_id'          => $articulo->id,
             'variant_id'          => null,
             'amount'              => 0,
-            'amount_insuficiente' => 2,
+            'amount_insuficiente' => $faltante,
             'price'               => 100,
             'cost'                => 0,
             'created_at'          => now(),
@@ -101,14 +104,16 @@ class SaneoDeFaltantesSinTopeTest extends AuditoriaStockTestCase
      * Movimiento de stock real por el endpoint.
      *
      * @param \App\Models\Article $articulo
+     * @param float $cantidad Positiva ingresa, negativa egresa.
+     * @param string $concepto Concepto de stock.
      * @return void
      */
-    protected function mover_stock($articulo)
+    protected function mover_stock($articulo, $cantidad = 1, $concepto = 'Ingreso manual')
     {
         $this->postJson('api/stock-movement', [
             'model_id'                     => $articulo->id,
-            'amount'                       => 1,
-            'concepto_stock_movement_name' => 'Ingreso manual',
+            'amount'                       => $cantidad,
+            'concepto_stock_movement_name' => $concepto,
         ])->assertStatus(201);
     }
 
@@ -156,5 +161,28 @@ class SaneoDeFaltantesSinTopeTest extends AuditoriaStockTestCase
 
         $cart = DB::table('carts')->where('id', $e['cart_id'])->first();
         $this->assertEquals($e['cart_updated_at']->toDateTimeString(), (string) $cart->updated_at, 'No toca carts.updated_at.');
+    }
+
+    /**
+     * Excepción del saneo (alineada con tienda-api, CA17): con consultas activas
+     * (`permitir_pedidos_sin_stock` sin `ignorar_stock`) y stock exactamente 0, un renglón 0/5 con la casilla
+     * marcada SIGUE esperando stock: no se sanea, aunque el tope de la tienda sea null en ese caso.
+     *
+     * Falla hoy porque el saneo lo deja en 5/0 (aserción de cantidad y faltante del renglón).
+     *
+     * @test
+     */
+    public function test_con_consultas_activas_y_stock_cero_el_renglon_sigue_esperando_stock()
+    {
+        $e = $this->armar_escenario(1, ['ignorar_stock' => 0, 'permitir_pedidos_sin_stock' => 1], 1, 5);
+
+        // Una venta de 1 deja el stock en exactamente 0.
+        $this->mover_stock($e['articulo'], -1, 'Venta');
+
+        $linea = DB::table('article_cart')->where('id', $e['line_id'])->first();
+        $this->assertEquals(0.0, (float) $linea->amount, 'El renglón sigue sin unidades.');
+        $this->assertEquals(5.0, (float) $linea->amount_insuficiente, 'El faltante se conserva.');
+
+        Bus::assertNotDispatched(self::JOB_DE_MAIL);
     }
 }
