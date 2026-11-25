@@ -59,6 +59,11 @@ class OnlineConfiguration extends Model
         'notificar_pedido_al_negocio' => 'boolean',
         'notificar_pedido_al_cliente' => 'boolean',
         'avisar_ingreso_stock_por_mail' => 'boolean',
+        // Ajuste de los carritos de la tienda cuando baja el stock (misión carritos-ajuste-stock, 25/11/2026):
+        // ajustar los carritos, avisar por mail al comprador y avisar en el carrito que el producto puede agotarse.
+        'ajustar_carritos_por_stock' => 'boolean',
+        'avisar_ajuste_carrito_por_mail' => 'boolean',
+        'avisar_puede_agotarse' => 'boolean',
         // Muestra u oculta el texto "Stock disponible" en la ficha del articulo de la tienda.
         'mostrar_stock_disponible' => 'boolean',
         // Muestra u oculta la seccion "Novedades" del home de la tienda.
