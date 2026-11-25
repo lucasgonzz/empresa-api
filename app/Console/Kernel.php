@@ -144,7 +144,9 @@ class Kernel extends ConsoleKernel
 
         // Worker vivo del turno del asistente en el shared (misión asistente-whatsapp-velocidad, D7).
         // Sin --stop-when-empty: queda esperando con --sleep=1, que es lo que lo diferencia del de
-        // `default`. En VPS la cola es null y no se programa nada.
+        // `default`. En VPS la cola es null y no se programa nada, salvo que la instancia prenda
+        // QUEUE_ASISTENTE_WORKER_VPS (misión asistente-cola-vps): ahí rige esa opción y no
+        // `scheduler_worker`, y el evento de abajo es el mismo que el del shared.
         //
         // SIN withoutOverlapping y con --max-time=65 (Enmienda 8): con el mutex, un turno que cruzaba el
         // arranque del minuto hacía saltear ese tick y no había worker hasta el minuto siguiente (hueco

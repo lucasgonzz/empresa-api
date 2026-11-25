@@ -463,11 +463,30 @@ class IaAppHelper
      * Lo resuelve la memoria del negocio (AgenteContextoHelper::estado_cuestionario()).
      *
      * @param  \App\Models\User|null  $dueno
-     * @return array{completado: bool, salteado: bool, completado_en: string|null}
+     * @return array{completado: bool, salteado: bool, completado_en: string|null, onboarding?: array}
      */
     public static function cuestionario($dueno): array
     {
-        return AgenteContextoHelper::estado_cuestionario($dueno);
+        $estado = AgenteContextoHelper::estado_cuestionario($dueno);
+
+        /*
+         * Misión onboarding-conversacional-whatsapp (contrato C2, aditivo): cómo viene el onboarding por WhatsApp, para
+         * que la app no le muestre «Conozcámonos» a quien ya contó lo esencial. Una app vieja ignora la clave; si
+         * falla, la clave no va y la app se comporta como siempre.
+         */
+        try {
+
+            if (OnboardingDelNegocioIaHelper::aplica($dueno)) {
+
+                $estado['onboarding'] = OnboardingDelNegocioIaHelper::estado_para_la_app($dueno);
+            }
+
+        } catch (\Throwable $e) {
+
+            Log::warning('IaAppHelper: no se pudo leer el onboarding del dueño', ['owner_id' => is_null($dueno) ? null : $dueno->id, 'error' => $e->getMessage()]);
+        }
+
+        return $estado;
     }
 
     /**

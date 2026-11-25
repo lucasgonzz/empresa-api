@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Exceptions\EmbeddingsCredencialRechazadaException;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\BusquedaHibridaDeArticulosHelper;
 use App\Models\Article;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
@@ -914,6 +915,156 @@ class ArticleEmbeddingService
         }
 
         return $this->search_similar_articles_in_php($query_embedding, $user_id, $limit);
+    }
+
+    /**
+     * Búsqueda híbrida para el agente de WhatsApp: los artículos cuyo NOMBRE contiene la palabra de
+     * producto que pidió el cliente, más el top vectorial de siempre (misión agente-busqueda-hibrida).
+     *
+     * 🔴 Hasta esta misión el agente recibía sólo `search_similar_articles`: la palabra "bordeadora"
+     * no pesaba y llegaban cortacercos sin ninguna de las bordeadoras del negocio. El orden y las
+     * reglas (igualdad de palabra entera con singular/plural, alternancia por palabra, la similitud
+     * sólo ordena dentro de cada cola, 5 vectoriales garantizados) están en
+     * `BusquedaHibridaDeArticulosHelper`. Orden interno: embedding → top vectorial (compacta lo
+     * pendiente) → candidatos → pre-orden y corte → similitudes → orden final → fusión.
+     *
+     * Una sola llamada a OpenAI: el mismo embedding sirve para el top vectorial y las similitudes. Si
+     * `generate_embedding` lanza (corte de credencial), lanza lo mismo que la búsqueda vectorial, antes
+     * de cualquier query léxica. Sin palabra de producto o sin candidatos devuelve exactamente los
+     * primeros `$limit` del top vectorial (lo que devolvía `search_similar_articles`).
+     *
+     * @param string $query   Texto crudo de los mensajes pendientes del cliente.
+     * @param int    $user_id Dueño del catálogo.
+     * @param int    $limit   Cantidad máxima de resultados.
+     *
+     * @return Collection stdClass con id, name, final_price, stock, bar_code, slug y online: la misma
+     *                    forma que `search_similar_articles`.
+     *
+     * @throws \RuntimeException Si generate_embedding() falla.
+     */
+    public function search_hybrid_articles(string $query, int $user_id, int $limit = 8): Collection
+    {
+        $query_embedding = $this->generate_embedding($query, $user_id, self::PROCESO_BUSQUEDA);
+
+        // Top vectorial con margen para la fusión: sus primeros $limit son el top-$limit de siempre.
+        $margen = $limit + BusquedaHibridaDeArticulosHelper::LEXICOS_MAX;
+
+        if ($this->uses_pgvector()) {
+            $vector_string = '['.implode(',', $query_embedding).']';
+
+            $vectoriales = collect(DB::select(
+                'SELECT id, name, final_price, stock, bar_code, slug, online
+                 FROM articles
+                 WHERE user_id = ?
+                   AND status = ?
+                   AND deleted_at IS NULL
+                   AND embedding IS NOT NULL
+                 ORDER BY embedding <=> ?::vector, id
+                 LIMIT ?',
+                [$user_id, 'active', $vector_string, $margen]
+            ));
+        } else {
+            $vectoriales = $this->search_similar_articles_in_php($query_embedding, $user_id, $margen);
+        }
+
+        $palabras = BusquedaHibridaDeArticulosHelper::palabras_de_producto($query);
+        $encajes  = BusquedaHibridaDeArticulosHelper::coincidencias(
+            BusquedaHibridaDeArticulosHelper::candidatos($user_id, $palabras),
+            $palabras
+        );
+
+        if (empty($encajes)) {
+            return $vectoriales->take($limit)->values();
+        }
+
+        // Pre-orden sin vectores y corte: sobreviven los mejores por nivel y cobertura, no los de id bajo.
+        $sobrevivientes = array_slice(
+            BusquedaHibridaDeArticulosHelper::ordenar($encajes),
+            0,
+            max(0, (int) BusquedaHibridaDeArticulosHelper::$tope_candidatos_con_vector)
+        );
+
+        $similitudes = $this->similitudes_de_ids(
+            array_column($sobrevivientes, 'id'),
+            $query_embedding,
+            $user_id
+        );
+
+        $lexicos = BusquedaHibridaDeArticulosHelper::ordenar($sobrevivientes, $similitudes);
+
+        $ids = BusquedaHibridaDeArticulosHelper::fusionar(
+            $lexicos,
+            $vectoriales->pluck('id')->map(function ($id) {
+                return (int) $id;
+            })->all(),
+            $limit
+        );
+
+        // Datos de cada id: los vectoriales ya los traen; los léxicos se leen de una sola vez.
+        $filas = [];
+        foreach ($vectoriales as $fila) {
+            $filas[(int) $fila->id] = $fila;
+        }
+
+        $faltantes = array_values(array_diff($ids, array_keys($filas)));
+
+        if (! empty($faltantes)) {
+            $leidos = DB::table('articles')
+                ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'slug', 'online')
+                ->whereIn('id', $faltantes)
+                ->get();
+
+            foreach ($leidos as $fila) {
+                $filas[(int) $fila->id] = $fila;
+            }
+        }
+
+        $resultado = [];
+        foreach ($ids as $id) {
+            if (isset($filas[$id])) {
+                $resultado[] = $filas[$id];
+            }
+        }
+
+        return collect($resultado);
+    }
+
+    /**
+     * Similitud de coseno (producto punto de vectores normalizados) entre la consulta y el vector
+     * compacto fresco de cada artículo dado. Sin compacto fresco vale 0. Se llama DESPUÉS del top
+     * vectorial, que ya compactó lo pendiente. Va por tandas para no armar un IN gigante.
+     *
+     * @param array<int, int>   $ids             Ids de artículos.
+     * @param array<int, float> $query_embedding Vector de la consulta, completo.
+     * @param int               $user_id         Dueño (filtro de aislamiento).
+     *
+     * @return array<int, float> id => similitud.
+     */
+    protected function similitudes_de_ids(array $ids, array $query_embedding, int $user_id): array
+    {
+        $consulta    = $this->vector_normalizado($query_embedding);
+        $similitudes = [];
+
+        if (is_null($consulta) || empty($ids)) {
+            return $similitudes;
+        }
+
+        foreach (array_chunk($ids, 500) as $tanda) {
+            $filas = $this->articulos_del_dueno($user_id)
+                ->join('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
+                ->whereRaw($this->condicion_compacto_fresco())
+                ->whereIn('a.id', $tanda)
+                ->select('a.id', 'e.vector')
+                ->get();
+
+            foreach ($filas as $fila) {
+                $vector = array_values(unpack('g*', $fila->vector));
+
+                $similitudes[(int) $fila->id] = $this->producto_punto($consulta, $vector);
+            }
+        }
+
+        return $similitudes;
     }
 
     /**

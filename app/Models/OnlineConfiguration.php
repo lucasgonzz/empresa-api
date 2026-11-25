@@ -49,6 +49,8 @@ class OnlineConfiguration extends Model
         'article_description_font_size' => 'integer',
         // Master switch de correo propio por cliente (prompt 358).
         'mail_enabled' => 'boolean',
+        // Leyenda de descuento por medio de pago en la tienda (misión tienda-cobro-tarjeta, 24/11/2026).
+        'mostrar_leyenda_de_descuento' => 'boolean',
         'mail_port' => 'integer',
         // Cast nativo de Laravel: encripta/desencripta automaticamente con la APP_KEY al leer y
         // escribir el atributo. Verificado soportado en esta version de Laravel (8.75).
@@ -57,6 +59,14 @@ class OnlineConfiguration extends Model
         'notificar_pedido_al_negocio' => 'boolean',
         'notificar_pedido_al_cliente' => 'boolean',
         'avisar_ingreso_stock_por_mail' => 'boolean',
+        // Ajuste de los carritos de la tienda cuando baja el stock (misión carritos-ajuste-stock, 25/11/2026):
+        // ajustar los carritos, avisar por mail al comprador y avisar en el carrito que el producto puede agotarse.
+        'ajustar_carritos_por_stock' => 'boolean',
+        'avisar_ajuste_carrito_por_mail' => 'boolean',
+        'avisar_puede_agotarse' => 'boolean',
+        // Misión whatsapp-aviso-pedido (25/11/2026): recibir por WhatsApp (asistente personal) el aviso de pedido nuevo.
+        // Sólo tiene efecto con la extensión Agentes de IA; default 1 en la base.
+        'notificar_pedido_por_whatsapp' => 'boolean',
         // Muestra u oculta el texto "Stock disponible" en la ficha del articulo de la tienda.
         'mostrar_stock_disponible' => 'boolean',
         // Muestra u oculta la seccion "Novedades" del home de la tienda.

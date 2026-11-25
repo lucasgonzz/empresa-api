@@ -71,6 +71,7 @@ class ProgresoIaHelper
         'pedir_imagen'                              => 'Pidiendo la imagen…',
         'leer_contexto'                             => 'Repasando lo que sé del negocio…',
         'guardar_en_contexto'                       => 'Anotándolo…',
+        'conocimiento_del_negocio'                  => 'Repasando lo que sé de tu negocio…',
         'confirmar_carga_pendiente'                 => 'Registrando…',
         'cancelar_carga_pendiente'                  => 'Cancelando…',
         // Misión agente-mejoras-uso-real (29/10/2026, §4 E3): el Excel y el pedido a soporte.
