@@ -124,7 +124,9 @@ class AndreaniClient
                 ->timeout($timeout)
                 ->get($url);
         } catch (\Throwable $e) {
-            Log::warning('AndreaniClient: sin respuesta de Andreani en GET ' . $path . ': ' . $e->getMessage());
+            // 🔴 Solo la ruta (sin query) y el tipo de error: el mensaje de Guzzle trae la URL completa, con el número
+            // de cliente y el contrato del comercio, y no se loguea.
+            Log::warning('AndreaniClient: sin respuesta de Andreani en GET ' . $path . ' (' . get_class($e) . ')');
 
             throw new AndreaniException('No pudimos comunicarnos con Andreani. Probá de nuevo en un rato.', 0, [], $e);
         }
