@@ -453,4 +453,101 @@ class Pivotes_huerfanos_y_signo_Test extends TestCase
         $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $m['D2']->id)->where('haber_id', $fantasma_y)->count());
         $this->assertEquals(1, DB::table('pagado_por')->where('debe_id', $fantasma_x)->where('haber_id', $m['P']->id)->count());
     }
+
+    /** Cantidad de movimientos que hace saltar el límite de 65.535 placeholders de MariaDB con la guarda vieja (4 por id). */
+    const CUENTA_GRANDE = 16400;
+
+    /**
+     * Cuenta con N débitos cargados en lote (más un pago, un huérfano y, si se pide, un cruce con otra cuenta).
+     * Devuelve [cuenta, ids de débitos, pago, cuenta_x, débito de x].
+     */
+    protected function cuenta_grande($con_credito)
+    {
+        $cuenta = $this->cuenta();
+        $filas = [];
+        for ($i = 0; $i < self::CUENTA_GRANDE; $i++) {
+            $filas[] = ['credit_account_id' => $cuenta->id, 'client_id' => $cuenta->model_id, 'user_id' => $cuenta->user_id,
+                'moneda_id' => 1, 'debe' => 10, 'haber' => null, 'pagandose' => 0, 'is_provisorio' => 0,
+                'detalle' => 'Débito masivo', 'status' => 'sin_pagar', 'created_at' => '2026-01-01 10:00:00', 'updated_at' => '2026-01-01 10:00:00'];
+        }
+        foreach (array_chunk($filas, 1000) as $lote) {
+            DB::table('current_acounts')->insert($lote);
+        }
+        $debitos = CurrentAcount::where('credit_account_id', $cuenta->id)->orderBy('id')->pluck('id')->all();
+        $pago = $this->movimiento($cuenta, null, 25, '2026-03-01 10:00:00');
+        if ($con_credito) {
+            $this->movimiento($cuenta, -50, null, '2026-02-01 10:00:00');
+        }
+        $cuenta_x = $this->cuenta();
+        $dx = $this->movimiento($cuenta_x, 100, null, '2026-01-10 10:00:00');
+        return [$cuenta, $debitos, $pago, $cuenta_x, $dx];
+    }
+
+    /** Cuenta los placeholders de cada consulta que dispara $accion (el límite de MariaDB es 65.535: error 1390). */
+    protected function max_bindings($accion)
+    {
+        $max = 0;
+        DB::listen(function ($query) use (&$max) { $max = max($max, count($query->bindings)); });
+        $accion();
+        return $max;
+    }
+
+    /** QA U5 (MAYOR): la guarda de vínculos de la vía sin créditos no puede depender de la cantidad de movimientos. */
+    public function test_la_guarda_de_vinculos_sin_creditos_funciona_con_una_cuenta_enorme()
+    {
+        list($cuenta, $debitos, $pago, $cuenta_x, $dx) = $this->cuenta_grande(false);
+        $fantasma = $this->id_inexistente();
+        $this->pivote($fantasma, $pago->id, 25);
+        $huerfanos = [];
+        $max = $this->max_bindings(function () use ($cuenta, &$huerfanos) { $huerfanos = CreditosHistoricosHelper::verificar_vinculos($cuenta); });
+        $this->assertSame([['debe_id' => $fantasma, 'haber_id' => $pago->id, 'pagado' => 25.0]], $huerfanos);
+        $this->assertLessThan(100, $max, 'La cantidad de placeholders no puede crecer con los movimientos de la cuenta.');
+    }
+
+    /** Mismo defecto en la vía con créditos: plan() y aplicar() sobre una cuenta enorme, con huérfano tolerado. */
+    public function test_el_plan_y_la_aplicacion_con_creditos_funcionan_con_una_cuenta_enorme()
+    {
+        list($cuenta, $debitos, $pago, $cuenta_x, $dx) = $this->cuenta_grande(true);
+        $fantasma = $this->id_inexistente();
+        $this->pivote($fantasma, $pago->id, 25);
+        $plan = null;
+        $max = $this->max_bindings(function () use ($cuenta, &$plan) { $plan = CreditosHistoricosHelper::plan($cuenta); });
+        $this->assertSame([['debe_id' => $fantasma, 'haber_id' => $pago->id, 'pagado' => 25.0]], $plan['pivotes_huerfanos']);
+        $this->assertLessThan(100, $max, 'La cantidad de placeholders no puede crecer con los movimientos de la cuenta.');
+        DB::beginTransaction();
+        try {
+            $max = $this->max_bindings(function () use ($cuenta) { CreditosHistoricosHelper::aplicar($cuenta); });
+            $this->assertLessThan(1000, $max, 'El borrado de aplicar() tampoco puede crecer con los movimientos.');
+            $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $fantasma)->count());
+        } finally {
+            DB::rollBack();
+        }
+    }
+
+    /** Aislamiento en cuenta enorme: un cruce con otra cuenta, de cualquiera de los dos lados, se rechaza y no se borra nada. */
+    public function test_el_cruce_y_el_provisorio_se_rechazan_en_una_cuenta_enorme_por_ambos_lados()
+    {
+        list($cuenta, $debitos, $pago, $cuenta_x, $dx) = $this->cuenta_grande(false);
+        $px = $this->movimiento($cuenta_x, null, 30, '2026-02-01 10:00:00');
+        $provisorio = $this->movimiento($cuenta, null, 5, '2026-03-02 10:00:00', ['is_provisorio' => 1]);
+        $casos = [
+            'cruce del lado deuda' => [[$debitos[0], $px->id, 30], 'imputaciones vinculadas con otra cuenta', '#'.$px->id],
+            'cruce del lado pago' => [[$dx->id, $pago->id, 25], 'imputaciones vinculadas con otra cuenta', '#'.$dx->id],
+            'provisorio' => [[$debitos[1], $provisorio->id, 5], 'imputaciones vinculadas con un movimiento provisorio', '#'.$provisorio->id],
+        ];
+        foreach ($casos as $nombre => $caso) {
+            list($fila, $texto, $id) = $caso;
+            $this->pivote($fila[0], $fila[1], $fila[2]);
+            try {
+                CreditosHistoricosHelper::verificar_vinculos($cuenta);
+                $this->fail('Tenía que rechazar: '.$nombre);
+            } catch (ValidationException $e) {
+                $mensaje = $e->errors()['cuenta_corriente'][0];
+                $this->assertStringContainsString($texto, $mensaje, $nombre);
+                $this->assertStringContainsString($id, $mensaje, $nombre);
+            }
+            $this->assertEquals(1, DB::table('pagado_por')->where('debe_id', $fila[0])->where('haber_id', $fila[1])->count(), $nombre);
+            DB::table('pagado_por')->where('debe_id', $fila[0])->where('haber_id', $fila[1])->delete();
+        }
+    }
 }
