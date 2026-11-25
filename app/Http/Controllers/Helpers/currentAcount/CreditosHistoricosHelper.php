@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Helpers\currentAcount;
 
 use App\Models\CurrentAcount;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
 
 /** Imputa un crédito económico ya registrado; nunca lo convierte en cobro ni en NC fiscal. */
@@ -23,14 +24,7 @@ class CreditosHistoricosHelper
         }
         $movimientos->loadMissing('sale', 'provider_order');
         $ids = $movimientos->filter(function ($movimiento) { return !(int) $movimiento->is_provisorio; })->pluck('id');
-        $ajenos = DB::table('pagado_por')->where(function ($q) use ($ids) {
-            $q->whereIn('debe_id', $ids)->whereNotIn('haber_id', $ids);
-        })->orWhere(function ($q) use ($ids) {
-            $q->whereIn('haber_id', $ids)->whereNotIn('debe_id', $ids);
-        })->exists();
-        if ($ajenos) {
-            throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con otra cuenta, moneda o un movimiento provisorio. Pedile a soporte que revise esos vínculos; no cargues otro pago para cambiar los estados.']);
-        }
+        $pivotes_huerfanos = self::vinculos_ajenos($cuenta, $ids);
         $debitos = [];
         $fuentes = [];
         $estados = [];
@@ -132,7 +126,62 @@ class CreditosHistoricosHelper
         return ['estados' => $estados, 'imputaciones' => $imputaciones,
             'credito_total' => $credito_total / 100, 'saldo_economico' => $saldo / 100,
             'pendiente' => $pendiente / 100, 'remanente' => $remanente / 100,
-            'arrastre_legado' => $arrastre_legado / 100, 'destinos_ignorados' => $destinos_ignorados];
+            'arrastre_legado' => $arrastre_legado / 100, 'destinos_ignorados' => $destinos_ignorados,
+            'pivotes_huerfanos' => $pivotes_huerfanos];
+    }
+
+    /**
+     * Vínculos `pagado_por` con una sola punta en esta cuenta. Devuelve los HUÉRFANOS (la otra punta ya no
+     * existe) y lanza si hay un cruce real.
+     *
+     * 🔴 Huérfano y cruce real NO se tratan igual, aunque la consulta los encuentre juntos:
+     *  - Huérfano: resto de un borrado viejo (antes de 76ca74d3 el borrado no desenganchaba el pivote). Nada
+     *    se puede imputar a una fila que no existe, y aplicar() ya borra todo pivote con una punta en la
+     *    cuenta antes de reinsertar el plan, así que descartarlo no escribe nada que no se escribiera ya.
+     *    Se informa en `pivotes_huerfanos` y no bloquea (ticket 171: San Cayetano 119 y 2471).
+     *  - Cruce real (otra cuenta, otro titular, otra moneda, sin cuenta o un provisorio): la otra punta SÍ
+     *    existe. Ignorarlo no es inocuo: aplicar() borraría el pivote de la OTRA cuenta y le dejaría estados
+     *    mal. Se rechaza, ahora diciendo qué movimientos y qué cuenta, y NO se borra nada (el throw va antes
+     *    del delete de aplicar()). Si hay cruce y huérfano juntos gana el cruce.
+     * Se informa la primera fila no huérfana en orden (debe_id, haber_id) para que el mensaje sea estable.
+     *
+     * @param  \App\Models\CreditAccount  $cuenta
+     * @param  \Illuminate\Support\Collection  $ids  Ids de los movimientos no provisorios de la cuenta.
+     * @return array<int,array{debe_id:int,haber_id:int,pagado:float}>
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    private static function vinculos_ajenos($cuenta, $ids)
+    {
+        $filas = DB::table('pagado_por')->where(function ($q) use ($ids) {
+            $q->whereIn('debe_id', $ids)->whereNotIn('haber_id', $ids);
+        })->orWhere(function ($q) use ($ids) {
+            $q->whereIn('haber_id', $ids)->whereNotIn('debe_id', $ids);
+        })->orderBy('debe_id')->orderBy('haber_id')->get(['debe_id', 'haber_id', 'pagado']);
+        if ($filas->isEmpty()) {
+            return [];
+        }
+        $propios = array_flip($ids->all());
+        $otras = $filas->map(function ($fila) use ($propios) {
+            return isset($propios[$fila->debe_id]) ? (int) $fila->haber_id : (int) $fila->debe_id;
+        })->all();
+        $existentes = DB::table('current_acounts')->whereIn('id', $otras)->get(['id', 'credit_account_id', 'is_provisorio'])->keyBy('id');
+        $huerfanos = [];
+        foreach ($filas as $fila) {
+            $propia = isset($propios[$fila->debe_id]) ? (int) $fila->debe_id : (int) $fila->haber_id;
+            $otra = isset($propios[$fila->debe_id]) ? (int) $fila->haber_id : (int) $fila->debe_id;
+            if (!$existentes->has($otra)) {
+                $huerfanos[] = ['debe_id' => (int) $fila->debe_id, 'haber_id' => (int) $fila->haber_id, 'pagado' => (float) $fila->pagado];
+                continue;
+            }
+            $destino = $existentes->get($otra);
+            $cierre = 'Pedile a soporte que revise esos vínculos; no cargues otro pago para cambiar los estados.';
+            if (!is_null($destino->credit_account_id) && (int) $destino->credit_account_id === (int) $cuenta->id && (int) $destino->is_provisorio) {
+                throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con un movimiento provisorio: el movimiento #'.$propia.' está imputado con el provisorio #'.$otra.'. '.$cierre]);
+            }
+            $de_cuenta = is_null($destino->credit_account_id) ? 'de un movimiento sin cuenta corriente' : 'de la cuenta corriente #'.$destino->credit_account_id;
+            throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con otra cuenta: el movimiento #'.$propia.' está imputado con el #'.$otra.' '.$de_cuenta.'. '.$cierre]);
+        }
+        return $huerfanos;
     }
 
     /** Requiere transacción y candado del dueño. No modifica saldo, economía, comisiones ni puntos. */
@@ -147,6 +196,10 @@ class CreditosHistoricosHelper
         // Validar todo antes de borrar una imputación o cambiar un estado.
         $plan = self::plan($cuenta, $movimientos);
         $ids = $movimientos->filter(function ($movimiento) { return !(int) $movimiento->is_provisorio; })->pluck('id');
+        if (!empty($plan['pivotes_huerfanos'])) {
+            // Rastro del descarte (sólo ids, sin importes de terceros): el borrado de abajo se lleva estos pivotes.
+            Log::info('Créditos históricos: se descartan pivotes huérfanos de la cuenta '.$cuenta->id.': '.json_encode(array_map(function ($p) { return [$p['debe_id'], $p['haber_id']]; }, $plan['pivotes_huerfanos'])));
+        }
         DB::table('pagado_por')->whereIn('debe_id', $ids)->orWhereIn('haber_id', $ids)->delete();
         foreach ($plan['estados'] as $estado) {
             DB::table('current_acounts')->where('id', $estado['id'])->update(['status' => $estado['status'], 'pagandose' => $estado['pagandose']]);
@@ -261,6 +314,12 @@ class CreditosHistoricosHelper
                 || (int) $compra->user_id !== (int) $cuenta->user_id) {
                 self::error($movimiento, 'está vinculado a una compra que no coincide con esta cuenta, titular o moneda. Pedile a soporte que revise la compra vinculada');
             }
+        }
+        // Haber negativo que no es el saldo inicial legado: dato con el signo invertido (NC N°267 de la cuenta 5377).
+        // Mensaje propio para que soporte lo distinga de las otras incompatibilidades; conserva el fragmento
+        // "importes incompatibles" del texto histórico.
+        if (is_numeric($movimiento->haber) && (float) $movimiento->haber < 0 && !self::es_saldo_inicial_legado($movimiento)) {
+            self::error($movimiento, 'tiene importes incompatibles en Debe y Haber: el Haber es negativo ('.number_format((float) $movimiento->haber, 2, ',', '.').'), una nota de crédito o pago con el signo invertido. Revisá el signo del comprobante con soporte antes de recalcular');
         }
         if ((!is_null($movimiento->debe) && !is_numeric($movimiento->debe)) || (!is_null($movimiento->haber) && !is_numeric($movimiento->haber)) || ((float) $movimiento->haber < 0 && !self::es_saldo_inicial_legado($movimiento)) || (!is_null($movimiento->debe) && (float) $movimiento->haber != 0)) {
             self::error($movimiento, 'tiene importes incompatibles en Debe y Haber. Revisá el comprobante con soporte antes de recalcular');
