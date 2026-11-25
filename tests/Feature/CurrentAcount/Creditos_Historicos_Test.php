@@ -202,18 +202,15 @@ class Creditos_Historicos_Test extends TestCase
 
     public function test_destinos_invalidos_anclas_y_moneda_cruzada_se_rechazan_sin_reasignar()
     {
-        foreach (['dirigido_ajeno', 'dirigido_credito', 'dirigido_singleton_conflicto', 'lista_invalida', 'ancla_cero', 'debe_cero_haber', 'moneda', 'venta_moneda', 'pivote_ajeno', 'pivote_provisorio'] as $caso) {
+        foreach (['dirigido_credito', 'dirigido_singleton_conflicto', 'lista_invalida', 'ancla_cero', 'debe_cero_haber', 'moneda', 'venta_moneda', 'pivote_ajeno', 'pivote_provisorio'] as $caso) {
             $cuenta = $this->cuenta();
             $debito = $this->movimiento($cuenta, 100, null, '2026-01-01 10:00:00');
             $credito = $this->movimiento($cuenta, -50, null, '2026-02-01 10:00:00');
             $pago = $this->movimiento($cuenta, null, 25, '2026-03-01 10:00:00');
-            if ($caso === 'dirigido_ajeno' || $caso === 'pivote_ajeno') {
+            // Ticket 171 (P4): 'dirigido_ajeno' salió de esta lista; ahora se ignora (ver CA8 más abajo).
+            if ($caso === 'pivote_ajeno') {
                 $ajeno = $this->movimiento($this->cuenta(2), 100, null, '2026-01-01 10:00:00');
-                if ($caso === 'dirigido_ajeno') {
-                    $pago->update(['to_pay_id' => $ajeno->id]);
-                } else {
-                    $debito->pagado_por()->attach($ajeno->id, ['pagado' => 1, 'total_pago' => 1]);
-                }
+                $debito->pagado_por()->attach($ajeno->id, ['pagado' => 1, 'total_pago' => 1]);
             } elseif ($caso === 'dirigido_credito') {
                 $pago->update(['to_pay_id' => $credito->id]);
             } elseif ($caso === 'dirigido_singleton_conflicto') {
@@ -380,5 +377,159 @@ class Creditos_Historicos_Test extends TestCase
         $this->assertEquals(60, $b->fresh()->pagandose);
         $this->assertEquals(100, $cuenta->fresh()->saldo);
         $this->assertEquals(40, $otra->fresh()->saldo);
+    }
+
+    /**
+     * Fixture "Ajeno" (ticket 171, Unidad 1b): cuenta A (cliente, pesos) con D1 100, D2 200, un crédito de -50 y un pago P de 25
+     * (su `to_pay_id` según $destino: null, 'ajeno' = débito DX de otra cuenta del mismo tipo y moneda, 'inexistente');
+     * cuenta X de otro cliente con DX 100 sin pagar. Devuelve [cuenta A, movimientos por clave, cuenta X, DX].
+     */
+    protected function cuenta_ajeno($destino = null)
+    {
+        $cuenta = $this->cuenta();
+        $m = [];
+        $m['D1'] = $this->movimiento($cuenta, 100, null, '2026-01-01 10:00:00');
+        $m['D2'] = $this->movimiento($cuenta, 200, null, '2026-01-15 10:00:00');
+        $m['C'] = $this->movimiento($cuenta, -50, null, '2026-02-01 10:00:00');
+        $m['P'] = $this->movimiento($cuenta, null, 25, '2026-03-01 10:00:00');
+        $cuenta_x = $this->cuenta();
+        $dx = $this->movimiento($cuenta_x, 100, null, '2026-01-10 10:00:00');
+        if ($destino === 'ajeno') {
+            $m['P']->update(['to_pay_id' => $dx->id]);
+        } elseif ($destino === 'inexistente') {
+            $m['P']->update(['to_pay_id' => CurrentAcount::max('id') + 1000]);
+        }
+        $cuenta->update(['saldo' => 225]);
+        return [$cuenta, $m, $cuenta_x, $dx];
+    }
+
+    /** Pivotes de los movimientos dados como [debe_id, haber_id, pagado], ordenados, para comparar exactos. */
+    protected function pivotes_de($movimientos)
+    {
+        $ids = array_map(function ($mov) { return $mov->id; }, $movimientos);
+        return DB::table('pagado_por')->whereIn('debe_id', $ids)->orderBy('debe_id')->orderBy('haber_id')
+            ->get(['debe_id', 'haber_id', 'pagado'])->map(function ($r) { return [(int) $r->debe_id, (int) $r->haber_id, (float) $r->pagado]; })->all();
+    }
+
+    /** Plan() con los ids reemplazados por la clave del movimiento, para comparar dos fixtures con ids distintos. */
+    protected function plan_normalizado($plan, $m)
+    {
+        $claves = [];
+        foreach ($m as $clave => $mov) {
+            $claves[$mov->id] = $clave;
+        }
+        $estados = [];
+        foreach ($plan['estados'] as $estado) {
+            $estados[$claves[$estado['id']]] = [$estado['status'], $estado['pagandose']];
+        }
+        ksort($estados);
+        $imputaciones = [];
+        foreach ($plan['imputaciones'] as $imputacion) {
+            $imputaciones[] = [$claves[$imputacion['debe_id']], $claves[$imputacion['haber_id']], $imputacion['pagado']];
+        }
+        return [$estados, $imputaciones];
+    }
+
+    /** CA8: un destino de otra cuenta se ignora y el pago entra en orden, igual que en el motor normal. */
+    public function test_destino_de_otra_cuenta_se_ignora_y_sigue_el_orden_como_el_motor_normal()
+    {
+        list($cuenta_base, $m_base) = $this->cuenta_ajeno(null);
+
+        list($cuenta, $m, $cuenta_x, $dx) = $this->cuenta_ajeno('ajeno');
+        $foto_x = $this->foto($cuenta_x);
+        $this->getJson('api/check-saldos/'.$cuenta->id)->assertStatus(200);
+        $this->assertEquals([[$m['D1']->id, $m['C']->id, 50.0], [$m['D1']->id, $m['P']->id, 25.0]], $this->pivotes_de($m));
+        $this->assertSame('pagandose', $m['D1']->fresh()->status);
+        $this->assertEquals(75, $m['D1']->fresh()->pagandose);
+        $this->assertSame('sin_pagar', $m['D2']->fresh()->status);
+        $this->assertEquals(0, $m['D2']->fresh()->pagandose);
+        $this->assertEquals(225, $cuenta->fresh()->saldo);
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertSame([['haber_id' => $m['P']->id, 'destino_id' => $dx->id]], $plan['destinos_ignorados']);
+        $this->assertEquals($dx->id, $m['P']->fresh()->to_pay_id, 'El destino guardado no se reescribe.');
+        $this->assertEquals($foto_x, $this->foto($cuenta_x), 'La cuenta dueña del destino no se toca.');
+        $this->assertSame('sin_pagar', $dx->fresh()->status);
+        $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $dx->id)->count());
+        $plan_base = CreditosHistoricosHelper::plan($cuenta_base);
+        $this->assertSame([], $plan_base['destinos_ignorados'], 'Sin destinos fuera de la cuenta la clave existe y está vacía.');
+        $this->assertEquals($this->plan_normalizado($plan_base, $m_base), $this->plan_normalizado($plan, $m), 'Paridad con to_pay_id NULL.');
+    }
+
+    /** CA10: destino inexistente, y lista con un destino ajeno y uno válido (el válido va primero). */
+    public function test_destino_inexistente_y_lista_con_destino_ajeno()
+    {
+        list($cuenta, $m) = $this->cuenta_ajeno('inexistente');
+        $inexistente = (int) $m['P']->fresh()->to_pay_id;
+        $this->getJson('api/check-saldos/'.$cuenta->id)->assertStatus(200);
+        $this->assertEquals([[$m['D1']->id, $m['C']->id, 50.0], [$m['D1']->id, $m['P']->id, 25.0]], $this->pivotes_de($m));
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertSame([['haber_id' => $m['P']->id, 'destino_id' => $inexistente]], $plan['destinos_ignorados']);
+        $this->assertEquals($inexistente, $m['P']->fresh()->to_pay_id);
+
+        list($cuenta, $m, $cuenta_x, $dx) = $this->cuenta_ajeno(null);
+        $foto_x = $this->foto($cuenta_x);
+        $m['P']->update(['to_pay_id' => $dx->id, 'to_pay_ids' => [$dx->id, $m['D2']->id]]);
+        $this->getJson('api/check-saldos/'.$cuenta->id)->assertStatus(200);
+        $this->assertEquals([[$m['D1']->id, $m['C']->id, 50.0], [$m['D2']->id, $m['P']->id, 25.0]], $this->pivotes_de($m));
+        $this->assertEquals(25, $m['D2']->fresh()->pagandose);
+        $this->assertEquals(50, $m['D1']->fresh()->pagandose);
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertSame([['haber_id' => $m['P']->id, 'destino_id' => $dx->id]], $plan['destinos_ignorados']);
+        $this->assertEquals($foto_x, $this->foto($cuenta_x));
+    }
+
+    /** CA11: lo que no es un destino ajeno o inexistente sigue rechazado, sin escribir en A ni en X. */
+    public function test_destinos_de_la_misma_cuenta_que_no_son_deuda_siguen_rechazados()
+    {
+        foreach (['credito', 'otro_pago', 'saldo_inicial_legado', 'provisorio', 'ajeno_con_pivote', 'singleton_conflicto', 'lista_ilegible'] as $caso) {
+            list($cuenta, $m, $cuenta_x, $dx) = $this->cuenta_ajeno(null);
+            $esperado = '#'.$m['P']->id;
+            if ($caso === 'credito') {
+                $m['P']->update(['to_pay_id' => $m['C']->id]);
+            } elseif ($caso === 'otro_pago') {
+                $otro = $this->movimiento($cuenta, null, 10, '2026-02-15 10:00:00');
+                $m['P']->update(['to_pay_id' => $otro->id]);
+            } elseif ($caso === 'saldo_inicial_legado') {
+                $legado = $this->movimiento($cuenta, null, -99.70, '2024-10-01 11:26:13', ['detalle' => 'Saldo inicial', 'status' => 'pago_from_client']);
+                $m['P']->update(['to_pay_id' => $legado->id]);
+            } elseif ($caso === 'provisorio') {
+                $provisorio = $this->movimiento($cuenta, 100, null, '2026-02-20 10:00:00', ['is_provisorio' => 1]);
+                $m['P']->update(['to_pay_id' => $provisorio->id]);
+            } elseif ($caso === 'ajeno_con_pivote') {
+                $m['P']->update(['to_pay_id' => $dx->id]);
+                $dx->pagado_por()->attach($m['P']->id, ['pagado' => 1, 'total_pago' => 25]);
+                $esperado = 'imputaciones vinculadas con otra cuenta';
+            } elseif ($caso === 'singleton_conflicto') {
+                $m['P']->update(['to_pay_id' => $m['D1']->id, 'to_pay_ids' => [$dx->id]]);
+                $esperado = 'dos destinos distintos';
+            } else {
+                $m['P']->update(['to_pay_ids' => 'selección ilegible']);
+            }
+            $foto = $this->foto($cuenta);
+            $foto_x = $this->foto($cuenta_x);
+            $respuesta = $this->getJson('api/check-saldos/'.$cuenta->id);
+            $respuesta->assertStatus(422);
+            $this->assertStringContainsString($esperado, $respuesta->json('message'), $caso);
+            $this->assertStringContainsString('soporte', $respuesta->json('message'), $caso);
+            $this->assertEquals($foto, $this->foto($cuenta), $caso.' no debe alterar la cuenta.');
+            $this->assertEquals($foto_x, $this->foto($cuenta_x), $caso.' no debe alterar la cuenta del destino.');
+        }
+    }
+
+    /** CA12: un destino en la cuenta en dólares del mismo cliente se ignora sin mezclar monedas. */
+    public function test_destino_en_la_cuenta_de_otra_moneda_se_ignora_sin_mezclar_monedas()
+    {
+        list($cuenta, $m) = $this->cuenta_ajeno(null);
+        $cuenta_usd = CreditAccount::create(['model_name' => 'client', 'model_id' => $cuenta->model_id,
+            'moneda_id' => 2, 'user_id' => 500, 'saldo' => 100]);
+        $d_usd = $this->movimiento($cuenta_usd, 100, null, '2026-01-10 10:00:00');
+        $m['P']->update(['to_pay_id' => $d_usd->id]);
+        $foto_usd = $this->foto($cuenta_usd);
+        $this->getJson('api/check-saldos/'.$cuenta->id)->assertStatus(200);
+        $this->assertEquals([[$m['D1']->id, $m['C']->id, 50.0], [$m['D1']->id, $m['P']->id, 25.0]], $this->pivotes_de($m));
+        $this->assertEquals(0, DB::table('pagado_por')->where('debe_id', $d_usd->id)->count());
+        $this->assertEquals($foto_usd, $this->foto($cuenta_usd));
+        $plan = CreditosHistoricosHelper::plan($cuenta);
+        $this->assertSame([['haber_id' => $m['P']->id, 'destino_id' => $d_usd->id]], $plan['destinos_ignorados']);
     }
 }
