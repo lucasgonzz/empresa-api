@@ -6,12 +6,20 @@ use App\Http\Controllers\Helpers\MessageHelper;
 use App\Models\Article;
 use App\Models\ArticleCart;
 use App\Models\Cart;
+use App\Models\OnlineConfiguration;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 class CartArticleAmountInsificienteHelper {
 	
     static function checkCartsAmounts($article) {
         // $article = Article::find($article_id);
+
+        // Si la tienda del comercio no pone tope de cantidad para este articulo, no hay nada que recortar ni avisar.
+        if (!self::tienda_pone_tope_de_cantidad($article)) {
+            return;
+        }
+
         $articles_cart = ArticleCart::where('article_id', $article->id)
                             		->get();
 
@@ -64,6 +72,45 @@ class CartArticleAmountInsificienteHelper {
 
         	}
         }
+    }
+
+    /**
+     * Indica si la tienda del dueno del articulo pone tope de cantidad en el carrito.
+     * Mismo criterio que tienda-api (ConsultaStockHelper::clasificar): con ignorar_stock prendido,
+     * con stock null (y stock_null_equal_0 apagado) o en modo Consultar (permitir_pedidos_sin_stock
+     * prendido e ignorar_stock apagado) con stock exactamente 0, no hay tope. Sin configuracion
+     * online se conserva el comportamiento de siempre (hay tope).
+     *
+     * @param  \App\Models\Article $article Articulo cuyo stock se acaba de mover.
+     * @return bool true si la tienda limita la cantidad al stock.
+     */
+    static function tienda_pone_tope_de_cantidad($article) {
+        // Configuracion online del dueno del articulo.
+        $config = OnlineConfiguration::where('user_id', $article->user_id)->first();
+
+        if (is_null($config)) {
+            return true;
+        }
+
+        // Las columnas nuevas pueden no existir en bases viejas.
+        $ignorar_stock = Schema::hasColumn('online_configurations', 'ignorar_stock')
+                            && (int) $config->ignorar_stock == 1;
+        $permitir_sin_stock = Schema::hasColumn('online_configurations', 'permitir_pedidos_sin_stock')
+                            && (int) $config->permitir_pedidos_sin_stock == 1;
+
+        if ($ignorar_stock) {
+            return false;
+        }
+
+        if (is_null($article->stock)) {
+            return (int) $config->stock_null_equal_0 == 1;
+        }
+
+        if ($permitir_sin_stock && (float) $article->stock == 0) {
+            return false;
+        }
+
+        return true;
     }
 
 }
