@@ -62,7 +62,11 @@ class OnboardingDelNegocioIaHelper
     /** Largo máximo del bloque que viaja al modelo. */
     const LARGO_MAXIMO_DEL_BLOQUE = 2500;
 
-    /** Cuántos temas faltantes se le muestran al modelo. */
+    /**
+     * Cuántos temas faltantes se le muestran al modelo CON su destino y su pregunta, como máximo (los próximos en
+     * orden). Las claves de TODOS los que faltan viajan aparte, en una línea: el modelo sólo puede marcar lo que ve
+     * (demo3: con 5 visibles marcaba 5 por mensaje aunque el dueño contara 15).
+     */
     const FALTANTES_EN_EL_BLOQUE = 5;
 
     /** Lo que hace el asistente cuando lo despierta el recordatorio (≤ 1000 caracteres: lo valida el motor). */
@@ -367,8 +371,7 @@ class OnboardingDelNegocioIaHelper
 
         self::actualizar_cursor($dueno);
 
-        /* Quien retoma es el dueño: una tarea cancelada de antes no es una pausa nueva (ignorar_cancelada). */
-        self::agendar_seguimiento($dueno, $conversacion_id, true);
+        self::agendar_seguimiento($dueno, $conversacion_id);
 
         return ['ok' => true, 'estado' => self::EN_CURSO, 'nota' => 'Retomado: seguí con la pregunta que dice <onboarding_del_negocio>.'];
     }
@@ -411,12 +414,104 @@ class OnboardingDelNegocioIaHelper
             return 'Con esto ya conocés todo lo que necesitabas: cerrá con un resumen corto de lo que entendiste del negocio y preguntale si es así.';
         }
 
-        if (!empty($resultado['cruzo_esenciales'])) {
+        /*
+         * El progreso sale de las filas de la base, no de lo que el modelo cree: «Ya tenés lo esencial» sin el conteo
+         * de lo que falta lo hizo creer que había terminado (demo3, msg 192). Antes de cruzar los 13 esenciales el
+         * texto NO dice «lo esencial».
+         */
+        if (is_null($estado) || $estado === self::COMPLETO) {
 
-            return 'Ya tenés lo esencial; seguí con el resto sin apuro, de a una.';
+            return '';
         }
 
-        return '';
+        $aviso = self::linea_de_progreso($dueno);
+
+        if (!empty($resultado['cruzo_esenciales'])) {
+
+            $aviso = 'Ya tenés lo esencial, pero todavía no terminaste: no canceles nada y seguí con el resto, de a una. ' . $aviso;
+        }
+
+        return $aviso;
+    }
+
+    /**
+     * El avance real del onboarding, leído de la base: cuántos temas llevan, cuántos esenciales y la lista (en el
+     * orden en que se preguntan) de los que faltan.
+     *
+     * @param  \App\Models\User  $dueno
+     * @return array{listos: int, total: int, esenciales_listos: int, esenciales_total: int, faltantes: array<int,string>}
+     */
+    public static function progreso(User $dueno): array
+    {
+        $conocimiento = ConocimientoDelNegocioIaHelper::estado($dueno);
+        $cuentas = $conocimiento['cuentas'];
+
+        $faltantes = [];
+
+        foreach (ConocimientoDelNegocioIaHelper::orden_de_preguntas() as $clave) {
+
+            if ($conocimiento['temas'][$clave]['estado'] === ConocimientoDelNegocioIaHelper::FALTA) {
+
+                $faltantes[] = $clave;
+            }
+        }
+
+        return [
+            'listos'            => (int) $cuentas['total'] - count($faltantes),
+            'total'             => (int) $cuentas['total'],
+            'esenciales_listos' => (int) $cuentas['esenciales_listos'],
+            'esenciales_total'  => (int) $cuentas['esenciales_total'],
+            'faltantes'         => $faltantes,
+        ];
+    }
+
+    /**
+     * «Llevás X de 32 temas (E de 13 esenciales). Faltan: …» con los números de la base.
+     *
+     * @param  \App\Models\User  $dueno
+     * @return string
+     */
+    public static function linea_de_progreso(User $dueno): string
+    {
+        $avance = self::progreso($dueno);
+
+        return 'Llevás ' . $avance['listos'] . ' de ' . $avance['total'] . ' temas (' . $avance['esenciales_listos'] . ' de ' . $avance['esenciales_total'] . ' esenciales).'
+            . (count($avance['faltantes']) ? ' Faltan: ' . implode(', ', $avance['faltantes']) . '.' : '')
+            . ' Si en este mensaje te contó alguno, marcalo con temas.';
+    }
+
+    /**
+     * El recordatorio del onboarding lo maneja el sistema: si el modelo pide cancelar una tarea de esa área, esta es la
+     * nota con la que se le rechaza (el avance real y qué hacer según lo que pidió el dueño). null si la tarea no es
+     * del onboarding de este dueño (cualquier otra se cancela como siempre).
+     *
+     * @param  \App\Models\User  $dueno
+     * @param  mixed  $tarea_id
+     * @return string|null
+     */
+    public static function nota_de_cancelacion(User $dueno, $tarea_id)
+    {
+        if (!is_numeric($tarea_id) || (int) $tarea_id <= 0) {
+
+            return null;
+        }
+
+        $es_del_onboarding = AiTareaDelAsistente::where('owner_id', (int) $dueno->id)
+            ->where('id', (int) $tarea_id)
+            ->where('area', self::AREA)
+            ->whereIn('estado', [AiTareaDelAsistente::ESTADO_ACTIVA, AiTareaDelAsistente::ESTADO_PAUSADA])
+            ->exists();
+
+        if (!$es_del_onboarding || self::estado_de($dueno) === self::COMPLETO) {
+
+            return null;
+        }
+
+        $avance = self::progreso($dueno);
+
+        return 'Ese es el recordatorio para conocer el negocio: lo maneja el sistema y se cancela solo cuando están los ' . $avance['total'] . ' temas. Llevás ' . $avance['listos'] . ' de ' . $avance['total']
+            . (count($avance['faltantes']) ? ' (faltan: ' . implode(', ', $avance['faltantes']) . ')' : '')
+            . '. Si el dueño pidió que no le preguntes más, usá conocimiento_del_negocio accion "pausar"; si pidió otro día, reprogramalo con reprogramar_tarea_del_asistente.';
     }
 
     /**
@@ -469,18 +564,19 @@ class OnboardingDelNegocioIaHelper
      * Deja programado, como mucho, UN recordatorio de onboarding. Idempotente. Reglas, en orden:
      *   1. si ya hay una tarea de onboarding activa o pausada, no hace nada (respeta lo que el dueño reprogramó:
      *      «hoy no, el viernes» lo resuelve el modelo con reprogramar_tarea_del_asistente sobre esa tarea);
-     *   2. si la última quedó cancelada (la canceló el dueño a través del modelo), pasa a `pausado_por_el_dueno`
-     *      y no crea nada;
+     *   2. (sin regla de «cancelada»: una tarea de onboarding cancelada NO es una pausa. `pausado_por_el_dueno` sólo
+     *      lo escribe `pausar()`, a pedido del dueño. 🔴 Antes acá una tarea cancelada pausaba el onboarding, pero la
+     *      puede cancelar cualquiera —en demo3 la canceló el modelo al cruzar los 13 esenciales, creyendo que había
+     *      terminado— y el helper deducía una intención del dueño de un efecto. No «simplificar» volviendo a inferirla.);
      *   3. cuenta las ejecuciones sin respuesta (posteriores al último mensaje del dueño): 0 → +1 día, 1 → +3,
      *      2 → +7 y 3 → `pausado_sin_respuesta` sin crear nada;
      *   4. si el motor rechaza la tarea (por ejemplo, 10 tareas activas) loguea y sigue sin seguimiento.
      *
      * @param  \App\Models\User  $dueno
      * @param  int|null  $conversacion_id
-     * @param  bool  $ignorar_cancelada  true cuando el dueño pidió retomar (la cancelación vieja ya no cuenta).
-     * @return string  Qué pasó: ya_hay | pausado_por_el_dueno | pausado_sin_respuesta | agendada | error | no_aplica.
+     * @return string  Qué pasó: ya_hay | pausado_sin_respuesta | agendada | error | no_aplica.
      */
-    public static function agendar_seguimiento(User $dueno, $conversacion_id = null, $ignorar_cancelada = false): string
+    public static function agendar_seguimiento(User $dueno, $conversacion_id = null): string
     {
         if (!self::aplica($dueno) || self::estado_de($dueno) !== self::EN_CURSO) {
 
@@ -495,15 +591,6 @@ class OnboardingDelNegocioIaHelper
         if ($hay) {
 
             return 'ya_hay';
-        }
-
-        $ultima = AiTareaDelAsistente::where('owner_id', (int) $dueno->id)->where('area', self::AREA)->orderBy('id', 'desc')->first();
-
-        if (!$ignorar_cancelada && !is_null($ultima) && $ultima->estado === AiTareaDelAsistente::ESTADO_CANCELADA) {
-
-            DB::table('users')->where('id', (int) $dueno->id)->update(['ia_onboarding_estado' => self::PAUSADO_POR_EL_DUENO]);
-
-            return self::PAUSADO_POR_EL_DUENO;
         }
 
         $ultimo_mensaje = self::ultimo_mensaje_del_dueno($dueno);
@@ -746,7 +833,7 @@ class OnboardingDelNegocioIaHelper
 
         if ($es_primer_turno) {
 
-            $lineas[] = 'Es el PRIMER mensaje que te manda por WhatsApp: seguramente quiere probar que andás. Contestale que le llega todo bien (o lo que te pidió), presentate en una línea, contale que querés conocer su negocio para ayudarlo mejor y que puede contestarte con audios largos, hablando como le salga, y hacé la primera pregunta. Corto: es WhatsApp.';
+            $lineas[] = 'Es el PRIMER mensaje que te manda por WhatsApp: seguramente quiere probar que andás. Contestale lo que pidió, presentate en una línea, contale que querés conocer su negocio y que puede contestarte con audios largos, y hacé la primera pregunta. Corto: es WhatsApp.';
         }
 
         $en_curso = self::linea_de_pregunta_en_curso($owner, $catalogo);
@@ -773,24 +860,22 @@ class OnboardingDelNegocioIaHelper
         }
 
         $lineas[] = '- Nunca guardes números que el sistema calcula (ventas, stock, saldos).';
+        $lineas[] = '- La tarea de seguimiento la maneja el sistema: no la canceles.';
         $lineas[] = 'Faltan (en este orden):';
 
-        $mostrados = 0;
+        $faltantes = [];
 
         foreach (ConocimientoDelNegocioIaHelper::orden_de_preguntas() as $clave) {
 
-            if ($conocimiento['temas'][$clave]['estado'] !== ConocimientoDelNegocioIaHelper::FALTA) {
+            if ($conocimiento['temas'][$clave]['estado'] === ConocimientoDelNegocioIaHelper::FALTA) {
 
-                continue;
+                $faltantes[] = $clave;
             }
+        }
 
-            if ($mostrados >= self::FALTANTES_EN_EL_BLOQUE) {
+        if (count($faltantes)) {
 
-                break;
-            }
-
-            $lineas[] = '- ' . $clave . ' → ' . $catalogo[$clave]['destino'] . ': ' . $catalogo[$clave]['pregunta'];
-            $mostrados++;
+            $clave_de_faltantes = 'Claves que faltan (usalas en temas): ' . implode(', ', $faltantes);
         }
 
         $del_formulario = [];
@@ -803,16 +888,44 @@ class OnboardingDelNegocioIaHelper
             }
         }
 
-        if (count($del_formulario)) {
+        /*
+         * Los próximos temas se muestran en detalle (hasta FALTANTES_EN_EL_BLOQUE); los demás van sólo por clave,
+         * TODOS en una línea. Si con la lista completa no entra en el largo máximo (el primer turno lleva una
+         * línea larga de más), se muestran menos en detalle: la lista de claves nunca se recorta.
+         */
+        $bloque = '';
 
-            $lineas[] = 'Ya te contó en la app: ' . implode(', ', $del_formulario) . '. No se lo vuelvas a preguntar.';
+        for ($en_detalle = min(self::FALTANTES_EN_EL_BLOQUE, count($faltantes)); $en_detalle >= 0; $en_detalle--) {
+
+            $armado = $lineas;
+
+            /* El primero ya tiene su pregunta en «Pregunta en curso»; el segundo lleva la suya; los otros, sólo el destino. */
+            foreach (array_slice($faltantes, 0, $en_detalle) as $posicion => $clave) {
+
+                $armado[] = '- ' . $clave . ' → ' . $catalogo[$clave]['destino'] . ($posicion === 1 ? ': ' . $catalogo[$clave]['pregunta'] : '');
+            }
+
+            if (isset($clave_de_faltantes)) {
+
+                $armado[] = $clave_de_faltantes;
+            }
+
+            if (count($del_formulario)) {
+
+                $armado[] = 'Ya te contó en la app: ' . implode(', ', $del_formulario) . '. No se lo vuelvas a preguntar.';
+            }
+
+            $armado[] = '</onboarding_del_negocio>';
+
+            $bloque = implode("\n", $armado);
+
+            if (mb_strlen($bloque) <= self::LARGO_MAXIMO_DEL_BLOQUE) {
+
+                return $bloque;
+            }
         }
 
-        $lineas[] = '</onboarding_del_negocio>';
-
-        $bloque = implode("\n", $lineas);
-
-        return mb_strlen($bloque) > self::LARGO_MAXIMO_DEL_BLOQUE ? mb_substr($bloque, 0, self::LARGO_MAXIMO_DEL_BLOQUE - 26) . "\n</onboarding_del_negocio>" : $bloque;
+        return mb_substr($bloque, 0, self::LARGO_MAXIMO_DEL_BLOQUE - 26) . "\n</onboarding_del_negocio>";
     }
 
     /**
