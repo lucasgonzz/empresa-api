@@ -144,12 +144,16 @@ class CarritosSinControlDeStockTest extends AuditoriaStockTestCase
     }
 
     /**
-     * CA2 (sin regresión): con control de stock el carrito se recorta al stock y se avisa.
+     * CA2: con control de stock el carrito se recorta al stock, pero ya no se crea el Message
+     * `cart_amount_updated` (misión carritos-ajuste-stock, §2.1 y §2.6 del plan): el aviso pasa al
+     * carrito y al mail, que se despacha como `ProcessSendCartAdjustedMail`.
      *
      * @test
      */
-    public function test_con_control_de_stock_el_carrito_se_recorta_y_avisa()
+    public function test_con_control_de_stock_el_carrito_se_recorta_sin_message()
     {
+        \Illuminate\Support\Facades\Bus::fake();
+
         $this->configurar_tienda(['ignorar_stock' => 0, 'permitir_pedidos_sin_stock' => 0]);
 
         $articulo = $this->crear_articulo('zz Carrito con control de stock', ['stock' => 3]);
@@ -166,7 +170,8 @@ class CarritosSinControlDeStockTest extends AuditoriaStockTestCase
 
         $this->assertEquals(2.0, (float) $renglon->amount);
         $this->assertEquals(3.0, (float) $renglon->amount_insuficiente);
-        $this->assertEquals(1, $this->avisos($buyer_id));
+        \Illuminate\Support\Facades\Bus::assertDispatched(\App\Jobs\ProcessSendCartAdjustedMail::class);
+        $this->assertEquals(0, $this->avisos($buyer_id));
     }
 
     /**
@@ -214,11 +219,12 @@ class CarritosSinControlDeStockTest extends AuditoriaStockTestCase
     }
 
     /**
-     * CA5: sin fila de online_configurations para el dueño se conserva el recorte de siempre.
+     * CA5 (regla 1 de §2.1 de carritos-ajuste-stock): sin fila de online_configurations para el dueño
+     * no hay tienda: no se toca el carrito ni se avisa.
      *
      * @test
      */
-    public function test_sin_configuracion_online_recorta_como_antes()
+    public function test_sin_configuracion_online_no_toca_el_carrito()
     {
         OnlineConfiguration::where('user_id', $this->usuario()->id)->delete();
 
@@ -230,8 +236,8 @@ class CarritosSinControlDeStockTest extends AuditoriaStockTestCase
 
         $renglon = $this->renglon($article_cart_id);
 
-        $this->assertEquals(2.0, (float) $renglon->amount);
-        $this->assertEquals(3.0, (float) $renglon->amount_insuficiente);
-        $this->assertEquals(1, $this->avisos($buyer_id));
+        $this->assertEquals(5.0, (float) $renglon->amount);
+        $this->assertEquals(0.0, (float) $renglon->amount_insuficiente);
+        $this->assertEquals(0, $this->avisos($buyer_id));
     }
 }
