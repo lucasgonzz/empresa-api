@@ -844,9 +844,9 @@ class OnboardingDelNegocioIaHelper
         }
 
         $lineas[] = 'Cómo:';
-        $lineas[] = '- Charlá, no encuestes. Una pregunta por mensaje (dos como mucho si van juntas), con tus palabras y ejemplos de su rubro. Voseo, tono cálido y descontracturado, como un socio que recién llega.';
-        $lineas[] = '- Si te escribió por otra cosa, primero resolvé lo que pidió; al final, si viene al caso, una pregunta.';
-        $lineas[] = '- Invitalo a contestarte con audios largos, sin orden ni formato, como si se lo contara a una persona. Cuando llegue un audio largo, sacá todo lo que sirva: puede responder varios temas de una.';
+        $lineas[] = '- Charlá, no encuestes. Una pregunta por mensaje (dos como mucho si van juntas), con tus palabras y ejemplos de su rubro. Voseo, cálido y descontracturado, como un socio que recién llega.';
+        $lineas[] = '- Si te escribió por otra cosa, primero resolvé eso; al final, si viene al caso, una pregunta.';
+        $lineas[] = '- Invitalo a contestarte con audios largos, sin orden ni formato. De un audio largo sacá todo lo que sirva: puede responder varios temas de una.';
 
         if ($desatendido) {
 
@@ -891,11 +891,14 @@ class OnboardingDelNegocioIaHelper
         /*
          * Los próximos temas se muestran en detalle (hasta FALTANTES_EN_EL_BLOQUE); los demás van sólo por clave,
          * TODOS en una línea. Si con la lista completa no entra en el largo máximo (el primer turno lleva una
-         * línea larga de más), se muestran menos en detalle: la lista de claves nunca se recorta.
+         * línea larga de más), se muestran menos en detalle: la lista de claves nunca se recorta. Siempre queda al menos
+         * el tema en curso con su archivo («- historia → archivo»): con el formulario (4 temas sembrados) y un id de
+         * tarea de 5 a 7 dígitos el bloque rozaba el máximo y, sin ese piso, el recorte del final se lo llevaba.
+         * El texto fijo se mantiene corto para que ese piso entre con margen.
          */
         $bloque = '';
 
-        for ($en_detalle = min(self::FALTANTES_EN_EL_BLOQUE, count($faltantes)); $en_detalle >= 0; $en_detalle--) {
+        for ($en_detalle = min(self::FALTANTES_EN_EL_BLOQUE, count($faltantes)); $en_detalle >= min(1, count($faltantes)); $en_detalle--) {
 
             $armado = $lineas;
 
