@@ -38,6 +38,13 @@ class EnvioController extends Controller
     const MENSAJE_SIN_ZIPNOVA = 'El pedido no tiene una forma de envío de Zipnova elegida.';
 
     /**
+     * Mensaje del 422 cuando el pedido va por Andreani directo (misión envios-andreani, 25/11/2026). En esta etapa
+     * el ERP no genera la orden ni la etiqueta por la API de Andreani: el comercio carga el envío a mano en el
+     * portal de Andreani con los datos del botón Envío. Decirle "no tiene forma de envío de Zipnova" sería confuso.
+     */
+    const MENSAJE_POR_ANDREANI = 'Este pedido va por Andreani: cargalo en el portal de Andreani con los datos del botón Envío.';
+
+    /**
      * POST envio/generar/{order_id}: genera el envío del pedido en Zipnova.
      *
      * 🔴 Crear el envío en Zipnova es lo que le COBRA el envío al comercio. Por eso, desde la
@@ -71,6 +78,10 @@ class EnvioController extends Controller
 
         if (is_null($order)) {
             return response()->json(['message' => 'El pedido no existe.'], 404);
+        }
+
+        if ($order->envio_va_por_andreani()) {
+            return response()->json(['message' => self::MENSAJE_POR_ANDREANI], 422);
         }
 
         if (!$order->envio_va_por_zipnova()) {
