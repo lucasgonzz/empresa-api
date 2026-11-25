@@ -68,6 +68,9 @@ class Aviso_de_pedido_inmediato_Test extends RecordatoriosTestCase
     /** @var \Closure Lo que contesta el admin AHORA (se cambia dentro de un test). */
     protected $respuesta_del_admin;
 
+    /** @var array Los pedidos HTTP que llegaron al admin de prueba (se anotan adentro del stub: Http::recorded() no registra los que terminan en excepción). */
+    protected $intentos_al_admin = [];
+
     /** @var array Los contextos de los logs `Aviso de pedido al asistente`, en orden. */
     protected $logs_del_aviso = [];
 
@@ -101,6 +104,8 @@ class Aviso_de_pedido_inmediato_Test extends RecordatoriosTestCase
 
         Http::fake([
             'admin.test/*' => function ($request) {
+                $this->intentos_al_admin[] = $request;
+
                 return call_user_func($this->respuesta_del_admin, $request);
             },
             '*'            => Http::response(['error' => 'host sin stub'], 599),
@@ -239,10 +244,12 @@ class Aviso_de_pedido_inmediato_Test extends RecordatoriosTestCase
     {
         $posts = [];
 
-        foreach (Http::recorded()->all() as $par) {
+        // Laravel 8 sólo registra en Http::recorded() los pedidos que tuvieron respuesta: un timeout (el stub lanza
+        // ConnectionException) no queda. Por eso los intentos se anotan adentro del stub del admin.
+        foreach ($this->intentos_al_admin as $pedido_http) {
 
-            if (strpos($par[0]->url(), '/api/inbound/asistente/pedido-nuevo') !== false) {
-                $posts[] = $par[0];
+            if (strpos($pedido_http->url(), '/api/inbound/asistente/pedido-nuevo') !== false) {
+                $posts[] = $pedido_http;
             }
         }
 
