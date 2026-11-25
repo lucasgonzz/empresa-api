@@ -150,7 +150,7 @@ SUMMARY;
     /**
      * Cantidad de artículos del catálogo (RAG) que se incluyen en el mensaje del cliente.
      */
-    private const RAG_LIMIT = 5;
+    private const RAG_LIMIT = 8;
 
     /**
      * Cantidad de mensajes de historial que se usan para el resumen del chat. Es más largo
@@ -533,7 +533,7 @@ RULE;
             if ($pending_customer_messages !== '') {
                 $embedding_service = new ArticleEmbeddingService();
                 $articles = $embedding_service
-                    ->search_similar_articles($pending_customer_messages, (int) $chat->user_id, self::RAG_LIMIT)
+                    ->search_hybrid_articles($pending_customer_messages, (int) $chat->user_id, self::RAG_LIMIT)
                     ->all();
             }
 
@@ -1595,7 +1595,12 @@ RULE;
     private const CATALOG_HEADER = '[Nota interna del sistema, el cliente no la ve] Resultado de buscar la consulta'
         .' del cliente en el catálogo del negocio. Usá solo los productos que sirven para lo que pidió. Los que'
         .' no sirven no los nombres, ni siquiera para decir que no sirven: el cliente no ve esta lista y para'
-        .' él no existen. No hables de la búsqueda ni de "los productos que aparecen".';
+        .' él no existen. No hables de la búsqueda ni de "los productos que aparecen".'
+        // Misión agente-busqueda-hibrida: la lista es una selección (producto por nombre + los más parecidos),
+        // no el catálogo entero. La fórmula es la de CATALOG_EMPTY y FIXED_RULES ("lo consultás y le confirmás"),
+        // que es la que detecta CONSULTA_PROMISE_PATTERN: va AL FINAL para no romper el comienzo que fija el test 28.
+        .' Es una selección del catálogo, no el catálogo completo: si lo que pidió no está en la lista, no digas'
+        .' que no lo tienen; pedí un dato más o decile que lo consultás y le confirmás.';
 
     /**
      * Bloque de catálogo cuando la búsqueda no trajo nada.

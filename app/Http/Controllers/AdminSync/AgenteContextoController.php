@@ -7,6 +7,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
+use App\Http\Controllers\Helpers\asistente_ia\OnboardingDelNegocioIaHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -25,6 +26,9 @@ use Illuminate\Http\Request;
  * Errores, todos con `{code, message}` (el 401 lleva además `error: unauthorized`, como el precedente):
  *   401 `clave_invalida` · 409 `sin_dueno` (sin USER_ID en una base compartida) · 409 `sin_extension`.
  * Un cliente viejo sin esta ruta responde 404, que el admin ignora con log.
+ *
+ * Misión onboarding-conversacional-whatsapp: se suma GET api/admin-sync/agente-contexto/estado → el estado del
+ * formulario «Conozcámonos» y del onboarding por WhatsApp (contrato C1), con los mismos errores.
  */
 class AgenteContextoController extends Controller
 {
@@ -72,5 +76,47 @@ class AgenteContextoController extends Controller
             'creada'   => (bool) $resultado['creada'],
             'archivos' => (int) $resultado['archivos'],
         ], 200);
+    }
+
+    /**
+     * GET api/admin-sync/agente-contexto/estado (contrato C1 de la misión onboarding-conversacional-whatsapp).
+     *
+     * El admin pregunta si el dueño ya contó su negocio (por el formulario de la app o por WhatsApp) para marcar solo
+     * el hito `onboarding_completado`. Mismos errores y misma clave estricta que `inicializar`; sólo lee.
+     *
+     * @param  Request  $request
+     * @return JsonResponse
+     */
+    public function estado(Request $request): JsonResponse
+    {
+        if (!$this->clave_valida($request)) {
+
+            return response()->json([
+                'code'    => 'clave_invalida',
+                'error'   => 'unauthorized',
+                'message' => 'Falta la clave del admin o no es la de este cliente.',
+            ], 401);
+        }
+
+        $dueno = AsistenteCanalHelper::dueno();
+
+        if (is_null($dueno)) {
+
+            return response()->json([
+                'code'    => 'sin_dueno',
+                'message' => 'No se pudo resolver el dueño de esta instancia. '
+                           . 'Si la base la comparten varios comercios, falta USER_ID en el .env de este frente.',
+            ], 409);
+        }
+
+        if (!AgentesIaHelper::tiene($dueno)) {
+
+            return response()->json([
+                'code'    => 'sin_extension',
+                'message' => 'Este comercio no tiene activa la extensión Agentes de IA.',
+            ], 409);
+        }
+
+        return response()->json(OnboardingDelNegocioIaHelper::estado_para_admin($dueno), 200);
     }
 }

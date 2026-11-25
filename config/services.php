@@ -421,6 +421,15 @@ return [
         'embeddings_omitir_importacion' => filter_var(env('EMBEDDINGS_OMITIR_IMPORTACION', false), FILTER_VALIDATE_BOOLEAN),
 
         /*
+         * Minutos que dura el corte automático de embeddings cuando OpenAI rechaza la credencial
+         * (401/403 con cuerpo de OpenAI, o 429 sin crédito; misión embeddings-corte-credencial-20261123).
+         * Pasado ese tiempo la siguiente pasada del comando vuelve a probar sola. Mismo motivo que arriba
+         * para estar acá: con config:cache env() fuera de config/ devuelve el default. Ver
+         * EmbeddingsCredencialCorte (incluye la salida manual con `cache:forget`).
+         */
+        'embeddings_corte_minutos' => (int) env('EMBEDDINGS_CORTE_MINUTOS', 60),
+
+        /*
          * Modelo con que se pasan a texto los audios del dueño en la app «ComercioCity IA» (misión
          * app-ia-y-memoria, 29/10/2026): el mensaje de audio y el dictado del cuestionario. Misma clave que
          * los embeddings. Ver TranscripcionDeAudioIaHelper.

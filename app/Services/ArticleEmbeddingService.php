@@ -2,7 +2,9 @@
 
 namespace App\Services;
 
+use App\Exceptions\EmbeddingsCredencialRechazadaException;
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\asistente_ia\BusquedaHibridaDeArticulosHelper;
 use App\Models\Article;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Support\Collection;
@@ -122,6 +124,9 @@ class ArticleEmbeddingService
      *
      * @return array<int, float> Array de floats con las 1536 dimensiones del vector.
      *
+     * @throws EmbeddingsCredencialRechazadaException Si OpenAI rechazó la credencial (401/403 con cuerpo de
+     *         error de OpenAI, o 429 `insufficient_quota`) o ya hay un corte abierto por un rechazo anterior.
+     *         Subclase de \RuntimeException; el job NO la reintenta.
      * @throws \RuntimeException Si la API responde con error o el payload es inesperado.
      */
     public function generate_embedding(string $text, $user_id = null, $proceso = null, $referencia_id = null): array
@@ -130,6 +135,21 @@ class ArticleEmbeddingService
         $text = trim($text);
         if ($text === '') {
             throw new \RuntimeException('ArticleEmbeddingService: el texto para embeddear no puede estar vacío.');
+        }
+
+        /*
+         * 🔴 CORTE POR CREDENCIAL RECHAZADA (misión embeddings-corte-credencial-20261123). Va ANTES de
+         * reservar cupo de prueba y de armar el cliente: con el corte abierto no se llama a OpenAI ni se
+         * gasta nada. Pasa por acá también la búsqueda del bot (`search_similar_articles`), que por eso
+         * respeta el mismo corte y también puede abrirlo.
+         */
+        $corte = EmbeddingsCredencialCorte::estado();
+        if ($corte !== null) {
+            throw new EmbeddingsCredencialRechazadaException(
+                'ArticleEmbeddingService: error HTTP '.(int) ($corte['status'] ?? 0).' en OpenAI.'
+                .(! empty($corte['mensaje']) ? ' '.$corte['mensaje'] : '')
+                .' (corte de credencial abierto desde '.(string) ($corte['desde'] ?? '?').'; no se llamó a OpenAI.)'
+            );
         }
 
         $http = $this->build_http_client();
@@ -156,10 +176,22 @@ class ArticleEmbeddingService
                 $error_msg = (string) $error_body['error']['message'];
             }
 
-            throw new \RuntimeException(
-                'ArticleEmbeddingService: error HTTP '.$response->status().' en OpenAI.'
-                .($error_msg !== '' ? ' '.$error_msg : '')
-            );
+            $mensaje_de_error = 'ArticleEmbeddingService: error HTTP '.$response->status().' en OpenAI.'
+                .($error_msg !== '' ? ' '.$error_msg : '');
+
+            /*
+             * 🔴 Un 401/403 con cuerpo de OpenAI o un 429 `insufficient_quota` es PERMANENTE: se abre el
+             * corte y se lanza la excepción específica, que el job NO reintenta. Un 403/401 sin ese cuerpo
+             * (HTML de un proxy/WAF), un 5xx, un timeout o un 429 de rate limit NO abren nada y siguen el
+             * camino de siempre (RuntimeException → reintento). Ver EmbeddingsCredencialCorte.
+             */
+            if (EmbeddingsCredencialCorte::debe_abrir((int) $response->status(), $error_body)) {
+                EmbeddingsCredencialCorte::abrir((int) $response->status(), $error_msg);
+
+                throw new EmbeddingsCredencialRechazadaException($mensaje_de_error);
+            }
+
+            throw new \RuntimeException($mensaje_de_error);
         }
 
         /*
@@ -883,6 +915,156 @@ class ArticleEmbeddingService
         }
 
         return $this->search_similar_articles_in_php($query_embedding, $user_id, $limit);
+    }
+
+    /**
+     * Búsqueda híbrida para el agente de WhatsApp: los artículos cuyo NOMBRE contiene la palabra de
+     * producto que pidió el cliente, más el top vectorial de siempre (misión agente-busqueda-hibrida).
+     *
+     * 🔴 Hasta esta misión el agente recibía sólo `search_similar_articles`: la palabra "bordeadora"
+     * no pesaba y llegaban cortacercos sin ninguna de las bordeadoras del negocio. El orden y las
+     * reglas (igualdad de palabra entera con singular/plural, alternancia por palabra, la similitud
+     * sólo ordena dentro de cada cola, 5 vectoriales garantizados) están en
+     * `BusquedaHibridaDeArticulosHelper`. Orden interno: embedding → top vectorial (compacta lo
+     * pendiente) → candidatos → pre-orden y corte → similitudes → orden final → fusión.
+     *
+     * Una sola llamada a OpenAI: el mismo embedding sirve para el top vectorial y las similitudes. Si
+     * `generate_embedding` lanza (corte de credencial), lanza lo mismo que la búsqueda vectorial, antes
+     * de cualquier query léxica. Sin palabra de producto o sin candidatos devuelve exactamente los
+     * primeros `$limit` del top vectorial (lo que devolvía `search_similar_articles`).
+     *
+     * @param string $query   Texto crudo de los mensajes pendientes del cliente.
+     * @param int    $user_id Dueño del catálogo.
+     * @param int    $limit   Cantidad máxima de resultados.
+     *
+     * @return Collection stdClass con id, name, final_price, stock, bar_code, slug y online: la misma
+     *                    forma que `search_similar_articles`.
+     *
+     * @throws \RuntimeException Si generate_embedding() falla.
+     */
+    public function search_hybrid_articles(string $query, int $user_id, int $limit = 8): Collection
+    {
+        $query_embedding = $this->generate_embedding($query, $user_id, self::PROCESO_BUSQUEDA);
+
+        // Top vectorial con margen para la fusión: sus primeros $limit son el top-$limit de siempre.
+        $margen = $limit + BusquedaHibridaDeArticulosHelper::LEXICOS_MAX;
+
+        if ($this->uses_pgvector()) {
+            $vector_string = '['.implode(',', $query_embedding).']';
+
+            $vectoriales = collect(DB::select(
+                'SELECT id, name, final_price, stock, bar_code, slug, online
+                 FROM articles
+                 WHERE user_id = ?
+                   AND status = ?
+                   AND deleted_at IS NULL
+                   AND embedding IS NOT NULL
+                 ORDER BY embedding <=> ?::vector, id
+                 LIMIT ?',
+                [$user_id, 'active', $vector_string, $margen]
+            ));
+        } else {
+            $vectoriales = $this->search_similar_articles_in_php($query_embedding, $user_id, $margen);
+        }
+
+        $palabras = BusquedaHibridaDeArticulosHelper::palabras_de_producto($query);
+        $encajes  = BusquedaHibridaDeArticulosHelper::coincidencias(
+            BusquedaHibridaDeArticulosHelper::candidatos($user_id, $palabras),
+            $palabras
+        );
+
+        if (empty($encajes)) {
+            return $vectoriales->take($limit)->values();
+        }
+
+        // Pre-orden sin vectores y corte: sobreviven los mejores por nivel y cobertura, no los de id bajo.
+        $sobrevivientes = array_slice(
+            BusquedaHibridaDeArticulosHelper::ordenar($encajes),
+            0,
+            max(0, (int) BusquedaHibridaDeArticulosHelper::$tope_candidatos_con_vector)
+        );
+
+        $similitudes = $this->similitudes_de_ids(
+            array_column($sobrevivientes, 'id'),
+            $query_embedding,
+            $user_id
+        );
+
+        $lexicos = BusquedaHibridaDeArticulosHelper::ordenar($sobrevivientes, $similitudes);
+
+        $ids = BusquedaHibridaDeArticulosHelper::fusionar(
+            $lexicos,
+            $vectoriales->pluck('id')->map(function ($id) {
+                return (int) $id;
+            })->all(),
+            $limit
+        );
+
+        // Datos de cada id: los vectoriales ya los traen; los léxicos se leen de una sola vez.
+        $filas = [];
+        foreach ($vectoriales as $fila) {
+            $filas[(int) $fila->id] = $fila;
+        }
+
+        $faltantes = array_values(array_diff($ids, array_keys($filas)));
+
+        if (! empty($faltantes)) {
+            $leidos = DB::table('articles')
+                ->select('id', 'name', 'final_price', 'stock', 'bar_code', 'slug', 'online')
+                ->whereIn('id', $faltantes)
+                ->get();
+
+            foreach ($leidos as $fila) {
+                $filas[(int) $fila->id] = $fila;
+            }
+        }
+
+        $resultado = [];
+        foreach ($ids as $id) {
+            if (isset($filas[$id])) {
+                $resultado[] = $filas[$id];
+            }
+        }
+
+        return collect($resultado);
+    }
+
+    /**
+     * Similitud de coseno (producto punto de vectores normalizados) entre la consulta y el vector
+     * compacto fresco de cada artículo dado. Sin compacto fresco vale 0. Se llama DESPUÉS del top
+     * vectorial, que ya compactó lo pendiente. Va por tandas para no armar un IN gigante.
+     *
+     * @param array<int, int>   $ids             Ids de artículos.
+     * @param array<int, float> $query_embedding Vector de la consulta, completo.
+     * @param int               $user_id         Dueño (filtro de aislamiento).
+     *
+     * @return array<int, float> id => similitud.
+     */
+    protected function similitudes_de_ids(array $ids, array $query_embedding, int $user_id): array
+    {
+        $consulta    = $this->vector_normalizado($query_embedding);
+        $similitudes = [];
+
+        if (is_null($consulta) || empty($ids)) {
+            return $similitudes;
+        }
+
+        foreach (array_chunk($ids, 500) as $tanda) {
+            $filas = $this->articulos_del_dueno($user_id)
+                ->join('article_compact_embeddings as e', 'e.article_id', '=', 'a.id')
+                ->whereRaw($this->condicion_compacto_fresco())
+                ->whereIn('a.id', $tanda)
+                ->select('a.id', 'e.vector')
+                ->get();
+
+            foreach ($filas as $fila) {
+                $vector = array_values(unpack('g*', $fila->vector));
+
+                $similitudes[(int) $fila->id] = $this->producto_punto($consulta, $vector);
+            }
+        }
+
+        return $similitudes;
     }
 
     /**

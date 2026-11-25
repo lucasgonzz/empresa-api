@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Helpers\article;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
+use App\Services\EmbeddingsCredencialCorte;
 use Carbon\Carbon;
 
 /**
@@ -37,8 +38,13 @@ use Carbon\Carbon;
 class ArticleEmbeddingsEstadoHelper {
 
     /**
+     * El campo `credencial_rechazada` es opcional y compatible hacia atrás (misión
+     * embeddings-corte-credencial-20261123): `{desde, status}` mientras OpenAI tenga la credencial
+     * rechazada y la generación esté cortada (EmbeddingsCredencialCorte), `null` si no. Es de la
+     * instalación, no del comercio: el corte vive en el Cache de la instalación. El front todavía no lo muestra.
+     *
      * @param  int  $user_id
-     * @return array{sin_generar:int, pendiente:int, generandose:int}
+     * @return array{sin_generar:int, pendiente:int, generandose:int, credencial_rechazada:?array}
      */
     static function estado($user_id) {
 
@@ -66,10 +72,17 @@ class ArticleEmbeddingsEstadoHelper {
             })
             ->count();
 
+        // Corte por credencial rechazada: sólo `desde` y `status`; el mensaje de OpenAI no sale de la API.
+        $corte = EmbeddingsCredencialCorte::estado();
+
         return [
             'sin_generar' => $sin_generar,
             'pendiente'   => $pendiente,
             'generandose' => self::generandose($user_id),
+            'credencial_rechazada' => $corte === null ? null : [
+                'desde'  => isset($corte['desde']) ? $corte['desde'] : null,
+                'status' => isset($corte['status']) ? (int) $corte['status'] : null,
+            ],
         ];
     }
 

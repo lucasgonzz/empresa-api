@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
 use App\Http\Controllers\Helpers\asistente_ia\CuestionarioDeInicioIaHelper;
+use App\Http\Controllers\Helpers\asistente_ia\OnboardingDelNegocioIaHelper;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
@@ -146,6 +147,12 @@ class IaCuestionarioController extends Controller
         $estado = AgenteContextoHelper::estado_cuestionario($owner);
         $estado['respuestas']   = CuestionarioDeInicioIaHelper::respuestas($owner);
         $estado['preferencias'] = CuestionarioDeInicioIaHelper::preferencias($owner);
+
+        // Misión onboarding-conversacional-whatsapp (contrato C2, aditivo): cómo viene el onboarding por WhatsApp.
+        if (OnboardingDelNegocioIaHelper::aplica($owner)) {
+
+            $estado['onboarding'] = OnboardingDelNegocioIaHelper::estado_para_la_app($owner);
+        }
 
         return $estado;
     }
