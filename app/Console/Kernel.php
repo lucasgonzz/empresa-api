@@ -168,18 +168,17 @@ class Kernel extends ConsoleKernel
         // Sincronización de artículos pendientes hacia Tienda Nube solo si tiene la extensión.
         //
         // El when() es la misma consulta con la que arranca el comando (sync_to_t_n_articles del
-        // dueño en 'pendiente'), pero hecha acá, en el proceso de schedule:run: con la extensión
-        // activa y nada pendiente, antes se arrancaba un artisan por minuto para imprimir
-        // "0 sincronizaciones". Con algo pendiente el comando corre exactamente igual que antes.
+        // dueño en 'pendiente'), con el mismo enfriamiento por HTTP 429. El filtro vive en
+        // schedule:run para evitar un proceso artisan adicional cuando el lote debe esperar.
         if ($company_owner && UserHelper::hasExtencion('usa_tienda_nube', $company_owner)) {
             $schedule->command('sync_articles_to_tienda_nube')
                 ->everyMinute()
                 ->withoutOverlapping(15)
                 ->when(function () {
                     return $this->gate_de_datos(function () {
-                        return SyncToTNArticle::where('user_id', config('app.USER_ID'))
-                            ->where('status', 'pendiente')
-                            ->exists();
+                        $userId = (int) config('app.USER_ID');
+                        return SyncToTNArticle::pendingForOwner($userId)->exists()
+                            && !SyncToTNArticle::owner_rate_limited($userId);
                     });
                 });
         }
