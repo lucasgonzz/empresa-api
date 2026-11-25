@@ -131,6 +131,22 @@ class CreditosHistoricosHelper
     }
 
     /**
+     * Solo lectura. La vía de checkPagos() sin créditos no pasa por plan(), pero su borrado de imputaciones se
+     * llevaría igual un cruce real (San Cayetano 427: #18320>#18338 de la cuenta 3867). Misma guarda, mismo mensaje.
+     * Devuelve los huérfanos (no bloquean) y lanza si hay un cruce real o un provisorio, en cualquiera de los dos lados.
+     *
+     * @param  \App\Models\CreditAccount  $cuenta
+     * @return array<int,array{debe_id:int,haber_id:int,pagado:float}>
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    static function verificar_vinculos($cuenta)
+    {
+        $ids = CurrentAcount::where('credit_account_id', $cuenta->id)->get(['id', 'is_provisorio'])
+            ->filter(function ($movimiento) { return !(int) $movimiento->is_provisorio; })->pluck('id');
+        return self::vinculos_ajenos($cuenta, $ids);
+    }
+
+    /**
      * Vínculos `pagado_por` con una sola punta en esta cuenta. Devuelve los HUÉRFANOS (la otra punta ya no
      * existe) y lanza si hay un cruce real.
      *
@@ -144,6 +160,7 @@ class CreditosHistoricosHelper
      *    mal. Se rechaza, ahora diciendo qué movimientos y qué cuenta, y NO se borra nada (el throw va antes
      *    del delete de aplicar()). Si hay cruce y huérfano juntos gana el cruce.
      * Se informa la primera fila no huérfana en orden (debe_id, haber_id) para que el mensaje sea estable.
+     * Lo usa también la vía sin créditos de checkPagos() (verificar_vinculos), que no pasa por plan().
      *
      * @param  \App\Models\CreditAccount  $cuenta
      * @param  \Illuminate\Support\Collection  $ids  Ids de los movimientos no provisorios de la cuenta.

@@ -986,6 +986,10 @@ class CurrentAcountHelper {
             return;
         }
 
+        // Sin créditos no se pasa por plan(), pero el borrado de abajo se llevaría igual un cruce real con otra
+        // cuenta (ticket 171, San Cayetano 427): misma guarda que la vía con créditos; lanza antes de escribir.
+        \App\Http\Controllers\Helpers\currentAcount\CreditosHistoricosHelper::verificar_vinculos($credit_account);
+
         $debitos = CurrentAcount::orderBy('created_at', 'ASC')
                                 ->orderBy('id', 'ASC')
                                 ->where('credit_account_id', $credit_account_id)
