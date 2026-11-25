@@ -157,7 +157,7 @@ class CuestionarioDeInicioIaHelper
         $respuestas = self::normalizar($datos);
         $fecha      = now()->format('d/m/Y');
 
-        return DB::transaction(function () use ($dueno, $respuestas, $fecha) {
+        $guardado = DB::transaction(function () use ($dueno, $respuestas, $fecha) {
 
             $escritos = [];
             $avisos   = [];
@@ -186,6 +186,22 @@ class CuestionarioDeInicioIaHelper
                 'avisos'     => $avisos,
             ];
         });
+
+        /*
+         * Misión onboarding-conversacional-whatsapp: lo que el dueño acaba de contar en «Conozcámonos» queda marcado
+         * como sabido, para que el asistente no se lo vuelva a preguntar por WhatsApp. Fuera de la transacción: si
+         * falla, el formulario ya quedó guardado y sólo se loguea.
+         */
+        try {
+
+            ConocimientoDelNegocioIaHelper::sembrar_desde_cuestionario($dueno->fresh());
+
+        } catch (\Throwable $e) {
+
+            \Illuminate\Support\Facades\Log::warning('CuestionarioDeInicioIaHelper: no se pudo sembrar el conocimiento del negocio', ['owner_id' => $dueno->id, 'error' => $e->getMessage()]);
+        }
+
+        return $guardado;
     }
 
     /**
