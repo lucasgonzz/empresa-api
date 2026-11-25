@@ -1911,6 +1911,11 @@ Route::middleware('admin.api.key')
         // tiene la extensión. Un cliente viejo sin esta ruta responde 404 y el admin lo ignora con log.
         Route::put('agente-contexto/inicializar', 'AdminSync\\AgenteContextoController@inicializar');
 
+        // Misión onboarding-conversacional-whatsapp (contrato C1): si el dueño ya contó su negocio (formulario de la
+        // app o los temas esenciales por WhatsApp). Sólo lee; misma clave estricta y mismos errores que `inicializar`.
+        // Un cliente viejo sin esta ruta responde 404 y el admin lo ignora.
+        Route::get('agente-contexto/estado', 'AdminSync\\AgenteContextoController@estado');
+
         // El canje del pase del centro de recursos (misión centro-de-recursos-clientes, 13/10/2026,
         // contrato C3): el admin lo llama cuando la página le manda un pase que este sistema emitió en
         // POST centro-recursos/pase. Lo marca usado (una sola vez, vence a los 5 minutos) y devuelve el

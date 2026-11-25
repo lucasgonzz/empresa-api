@@ -55,6 +55,13 @@ class AsistenteController extends Controller
     /** Techo del texto de un mensaje, igual que el del chat de la pantalla (AiConversationController). */
     const MAX_TEXTO = 4000;
 
+    /**
+     * Techo del texto cuando el mensaje es un AUDIO (ya transcripto por Kapso), contrato C3 de la misión
+     * onboarding-conversacional-whatsapp: una nota de voz de unos 5 minutos son ~4.500 caracteres y con el techo de
+     * texto se perdía con un 422. El texto y la imagen siguen en MAX_TEXTO.
+     */
+    const MAX_TEXTO_AUDIO = 12000;
+
     private const SEGUNDOS_DE_RESERVA_WHATSAPP = 120;
 
     /** Los tres tipos de mensaje que manda el admin. `audio` llega ya transcripto por Kapso. */
@@ -164,12 +171,14 @@ class AsistenteController extends Controller
 
         $texto = trim((string) $request->input('texto'));
 
-        if (mb_strlen($texto) > self::MAX_TEXTO) {
-
-            return response()->json(['message' => 'El mensaje supera los ' . self::MAX_TEXTO . ' caracteres.'], 422);
-        }
-
         $tipo = (string) $request->input('tipo', 'texto');
+
+        $maximo = $tipo === 'audio' ? self::MAX_TEXTO_AUDIO : self::MAX_TEXTO;
+
+        if (mb_strlen($texto) > $maximo) {
+
+            return response()->json(['message' => 'El mensaje supera los ' . $maximo . ' caracteres.'], 422);
+        }
 
         if (!in_array($tipo, self::TIPOS, true)) {
 

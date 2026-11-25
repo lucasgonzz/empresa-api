@@ -4,6 +4,7 @@ namespace App\Services\AsistenteIa;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\AgenteContextoHelper;
+use App\Http\Controllers\Helpers\asistente_ia\ConocimientoDelNegocioIaHelper;
 use App\Models\AiConversation;
 use App\Models\User;
 
@@ -86,6 +87,11 @@ class HerramientasDeContexto
                         'seccion'   => [
                             'type'        => 'string',
                             'description' => 'Opcional: el título de una sección «## …» del archivo (por ejemplo "Lo que le importa hoy" en el contexto maestro). La operación se aplica solo a esa sección; si no existe, se crea.',
+                        ],
+                        'temas'     => [
+                            'type'        => 'array',
+                            'items'       => ['type' => 'string'],
+                            'description' => 'Opcional, sólo cuando estás conociendo el negocio del dueño (<onboarding_del_negocio>): las claves de los temas que esta respuesta del dueño dejó respondidos (pueden ser varios si contó mucho de una). Quedan marcados y no se los volvés a preguntar.',
                         ],
                     ],
                     'required'   => ['ruta', 'operacion', 'contenido', 'motivo'],
@@ -208,7 +214,7 @@ class HerramientasDeContexto
             return ['ok' => false, 'code' => $resultado['code'], 'error' => $resultado['error']];
         }
 
-        return [
+        $datos = [
             'ok'          => true,
             'ruta'        => $resultado['archivo']['ruta'],
             'version'     => $resultado['archivo']['version'],
@@ -224,6 +230,36 @@ class HerramientasDeContexto
                 ? 'Ya estaba en la memoria así: no cambió nada.'
                 : 'Quedó en la memoria. Contáselo al dueño con un "Me lo anoto." y seguí con lo que te pidió.',
         ];
+
+        /*
+         * Misión onboarding-conversacional-whatsapp: `temas` es opcional. Sin él la respuesta es la de siempre, clave
+         * por clave (también para el MCP). Con él, la escritura ya está hecha y las claves se marcan como sabidas;
+         * una clave desconocida NO hace fallar nada: vuelve en `temas_desconocidos` con la lista de las válidas.
+         */
+        if (isset($input['temas']) && is_array($input['temas']) && count($input['temas'])) {
+
+            try {
+
+                $marca = ConocimientoDelNegocioIaHelper::marcar($owner, $input['temas'], 'sabido', 'agente', $conversation->id);
+
+                if (count($marca['desconocidos'])) {
+
+                    $datos['temas_desconocidos'] = $marca['desconocidos'];
+                    $datos['claves_validas'] = ConocimientoDelNegocioIaHelper::claves();
+                }
+
+                if ($marca['aviso'] !== '') {
+
+                    $datos['aviso_onboarding'] = $marca['aviso'];
+                }
+
+            } catch (\Throwable $e) {
+
+                \Illuminate\Support\Facades\Log::warning('HerramientasDeContexto: no se pudieron marcar los temas', ['owner_id' => $owner->id, 'error' => $e->getMessage()]);
+            }
+        }
+
+        return $datos;
     }
 
     /**
