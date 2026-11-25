@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
+use App\Jobs\EnviarPedidoDeImagenAlAdminJob;
 use App\Models\Order;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -151,7 +152,7 @@ class AvisoInmediatoDePedidoIaHelper
             return 'canal_no_conectado';
         }
 
-        if (trim((string) config('services.admin_api.url')) === '') {
+        if (EnviarPedidoDeImagenAlAdminJob::base_del_admin() === '') {
 
             return 'sin_admin_configurado';
         }
@@ -183,7 +184,8 @@ class AvisoInmediatoDePedidoIaHelper
 
         try {
 
-            $url = rtrim((string) config('services.admin_api.url'), '/') . self::RUTA_DEL_ADMIN;
+            /* La base sin el `/api` del final (hay clientes con ADMIN_API_URL cargada de las dos formas): la normalización que ya usa el pedido de imágenes. */
+            $url = EnviarPedidoDeImagenAlAdminJob::base_del_admin() . self::RUTA_DEL_ADMIN;
 
             $respuesta = Http::acceptJson()
                 ->withHeaders(['X-Admin-Api-Key' => config('services.admin_api.inbound_key')])
