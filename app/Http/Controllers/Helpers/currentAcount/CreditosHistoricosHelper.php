@@ -23,8 +23,7 @@ class CreditosHistoricosHelper
                 ->orderBy('created_at')->orderBy('id')->get();
         }
         $movimientos->loadMissing('sale', 'provider_order');
-        $ids = $movimientos->filter(function ($movimiento) { return !(int) $movimiento->is_provisorio; })->pluck('id');
-        $pivotes_huerfanos = self::vinculos_ajenos($cuenta, $ids);
+        $pivotes_huerfanos = self::vinculos_ajenos($cuenta);
         $debitos = [];
         $fuentes = [];
         $estados = [];
@@ -134,6 +133,9 @@ class CreditosHistoricosHelper
      * Solo lectura. La vía de checkPagos() sin créditos no pasa por plan(), pero su borrado de imputaciones se
      * llevaría igual un cruce real (San Cayetano 427: #18320>#18338 de la cuenta 3867). Misma guarda, mismo mensaje.
      * Devuelve los huérfanos (no bloquean) y lanza si hay un cruce real o un provisorio, en cualquiera de los dos lados.
+     * Alcance: sólo protege los caminos que pasan por checkPagos() (recálculo completo). Un pago con
+     * `current_date = 1` (el cobro de todos los días de la SPA) no recalcula ni borra imputaciones de la cuenta:
+     * no ejecuta esta guarda y puede aceptar el cobro aunque la cuenta tenga un cruce. No es un rechazo universal.
      *
      * @param  \App\Models\CreditAccount  $cuenta
      * @return array<int,array{debe_id:int,haber_id:int,pagado:float}>
@@ -141,9 +143,7 @@ class CreditosHistoricosHelper
      */
     static function verificar_vinculos($cuenta)
     {
-        $ids = CurrentAcount::where('credit_account_id', $cuenta->id)->get(['id', 'is_provisorio'])
-            ->filter(function ($movimiento) { return !(int) $movimiento->is_provisorio; })->pluck('id');
-        return self::vinculos_ajenos($cuenta, $ids);
+        return self::vinculos_ajenos($cuenta);
     }
 
     /**
@@ -162,41 +162,51 @@ class CreditosHistoricosHelper
      * Se informa la primera fila no huérfana en orden (debe_id, haber_id) para que el mensaje sea estable.
      * Lo usa también la vía sin créditos de checkPagos() (verificar_vinculos), que no pasa por plan().
      *
+     * 🔴 La consulta se resuelve en la base con joins contra los movimientos de la cuenta: NO se le pasan los
+     * ids de la cuenta como lista (whereIn/whereNotIn). Con 4 listas de N ids MariaDB rechaza la sentencia
+     * ("1390 too many placeholders", máx. 65.535) en cuentas de 16.384 movimientos o más, y antes de eso es
+     * una consulta enorme. Los bindings de acá son constantes (el id de la cuenta), crezca lo que crezca N.
+     * "Propio" = movimiento de esta cuenta y no provisorio (mismo criterio que plan()).
+     *
      * @param  \App\Models\CreditAccount  $cuenta
-     * @param  \Illuminate\Support\Collection  $ids  Ids de los movimientos no provisorios de la cuenta.
      * @return array<int,array{debe_id:int,haber_id:int,pagado:float}>
      * @throws \Illuminate\Validation\ValidationException
      */
-    private static function vinculos_ajenos($cuenta, $ids)
+    private static function vinculos_ajenos($cuenta)
     {
-        $filas = DB::table('pagado_por')->where(function ($q) use ($ids) {
-            $q->whereIn('debe_id', $ids)->whereNotIn('haber_id', $ids);
-        })->orWhere(function ($q) use ($ids) {
-            $q->whereIn('haber_id', $ids)->whereNotIn('debe_id', $ids);
-        })->orderBy('debe_id')->orderBy('haber_id')->get(['debe_id', 'haber_id', 'pagado']);
-        if ($filas->isEmpty()) {
-            return [];
+        $filas = [];
+        // Una consulta por punta propia: la fila del pivote sale una sola vez porque sólo una punta es propia.
+        foreach (['debe_id' => 'haber_id', 'haber_id' => 'debe_id'] as $punta_propia => $punta_otra) {
+            $consulta = DB::table('pagado_por as pp')
+                ->join('current_acounts as propio', 'propio.id', '=', 'pp.'.$punta_propia)
+                ->leftJoin('current_acounts as otro', 'otro.id', '=', 'pp.'.$punta_otra)
+                ->where('propio.credit_account_id', $cuenta->id)
+                ->whereRaw('COALESCE(propio.is_provisorio, 0) = 0')
+                ->whereNotNull('pp.'.$punta_otra)
+                // La otra punta no es propia: no existe (huérfano), es de otra cuenta, sin cuenta o provisoria.
+                ->whereRaw('NOT (COALESCE(otro.credit_account_id, 0) = ? AND COALESCE(otro.is_provisorio, 0) = 0)', [(int) $cuenta->id])
+                ->select('pp.debe_id', 'pp.haber_id', 'pp.pagado', 'otro.id as otro_id', 'otro.credit_account_id as otro_cuenta', 'otro.is_provisorio as otro_provisorio');
+            foreach ($consulta->get() as $fila) {
+                $fila->propia = (int) $fila->{$punta_propia};
+                $fila->otra = (int) $fila->{$punta_otra};
+                $filas[] = $fila;
+            }
         }
-        $propios = array_flip($ids->all());
-        $otras = $filas->map(function ($fila) use ($propios) {
-            return isset($propios[$fila->debe_id]) ? (int) $fila->haber_id : (int) $fila->debe_id;
-        })->all();
-        $existentes = DB::table('current_acounts')->whereIn('id', $otras)->get(['id', 'credit_account_id', 'is_provisorio'])->keyBy('id');
+        usort($filas, function ($a, $b) {
+            return [(int) $a->debe_id, (int) $a->haber_id] <=> [(int) $b->debe_id, (int) $b->haber_id];
+        });
         $huerfanos = [];
         foreach ($filas as $fila) {
-            $propia = isset($propios[$fila->debe_id]) ? (int) $fila->debe_id : (int) $fila->haber_id;
-            $otra = isset($propios[$fila->debe_id]) ? (int) $fila->haber_id : (int) $fila->debe_id;
-            if (!$existentes->has($otra)) {
+            if (is_null($fila->otro_id)) {
                 $huerfanos[] = ['debe_id' => (int) $fila->debe_id, 'haber_id' => (int) $fila->haber_id, 'pagado' => (float) $fila->pagado];
                 continue;
             }
-            $destino = $existentes->get($otra);
             $cierre = 'Pedile a soporte que revise esos vínculos; no cargues otro pago para cambiar los estados.';
-            if (!is_null($destino->credit_account_id) && (int) $destino->credit_account_id === (int) $cuenta->id && (int) $destino->is_provisorio) {
-                throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con un movimiento provisorio: el movimiento #'.$propia.' está imputado con el provisorio #'.$otra.'. '.$cierre]);
+            if (!is_null($fila->otro_cuenta) && (int) $fila->otro_cuenta === (int) $cuenta->id && (int) $fila->otro_provisorio) {
+                throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con un movimiento provisorio: el movimiento #'.$fila->propia.' está imputado con el provisorio #'.$fila->otra.'. '.$cierre]);
             }
-            $de_cuenta = is_null($destino->credit_account_id) ? 'de un movimiento sin cuenta corriente' : 'de la cuenta corriente #'.$destino->credit_account_id;
-            throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con otra cuenta: el movimiento #'.$propia.' está imputado con el #'.$otra.' '.$de_cuenta.'. '.$cierre]);
+            $de_cuenta = is_null($fila->otro_cuenta) ? 'de un movimiento sin cuenta corriente' : 'de la cuenta corriente #'.$fila->otro_cuenta;
+            throw ValidationException::withMessages(['cuenta_corriente' => 'Esta cuenta tiene imputaciones vinculadas con otra cuenta: el movimiento #'.$fila->propia.' está imputado con el #'.$fila->otra.' '.$de_cuenta.'. '.$cierre]);
         }
         return $huerfanos;
     }
@@ -217,7 +227,13 @@ class CreditosHistoricosHelper
             // Rastro del descarte (sólo ids, sin importes de terceros): el borrado de abajo se lleva estos pivotes.
             Log::info('Créditos históricos: se descartan pivotes huérfanos de la cuenta '.$cuenta->id.': '.json_encode(array_map(function ($p) { return [$p['debe_id'], $p['haber_id']]; }, $plan['pivotes_huerfanos'])));
         }
-        DB::table('pagado_por')->whereIn('debe_id', $ids)->orWhereIn('haber_id', $ids)->delete();
+        // Borrado por lotes: whereIn con todos los ids de la cuenta supera los 65.535 placeholders de MariaDB (1390)
+        // en cuentas de ~32.000 movimientos. Cada lote es una sentencia independiente dentro de la misma transacción.
+        foreach ($ids->chunk(400) as $lote_ids) {
+            DB::table('pagado_por')->where(function ($q) use ($lote_ids) {
+                $q->whereIn('debe_id', $lote_ids)->orWhereIn('haber_id', $lote_ids);
+            })->delete();
+        }
         foreach ($plan['estados'] as $estado) {
             DB::table('current_acounts')->where('id', $estado['id'])->update(['status' => $estado['status'], 'pagandose' => $estado['pagandose']]);
         }
