@@ -132,6 +132,11 @@ class AndreaniIntegracionController extends Controller
      */
     public function cotizar_prueba(Request $request)
     {
+        // El operador puede pegar " x5000-abc ": se limpia (sin espacios ni guiones, en mayúsculas) ANTES de validar el largo.
+        if (is_scalar($request->input('zipcode'))) {
+            $request->merge(['zipcode' => strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string) $request->input('zipcode')))]);
+        }
+
         $invalido = $this->validar($request, ['zipcode' => 'required|string|min:4|max:8']);
 
         if (!is_null($invalido)) {

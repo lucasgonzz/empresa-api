@@ -14,7 +14,7 @@ use Tests\EmpresaTestCase;
  * código postal tiene que mandarle a Andreani el CP numérico de 4 dígitos aunque el operador pegue un CPA
  * ("X5000ABC", como lo devuelve Google Places): Andreani responde 400 al CPA.
  *
- * PHP 7.4: nada de sintaxis de PHP 8 (match, nullsafe, funciones str_*, argumentos nombrados).
+ * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
  */
 class IntegracionesAndreaniCpaTest extends EmpresaTestCase
 {
@@ -97,7 +97,7 @@ class IntegracionesAndreaniCpaTest extends EmpresaTestCase
         $this->fakear_andreani_que_rechaza_el_cpa();
         $this->conectar_andreani();
 
-        $respuesta = $this->postJson('/api/integraciones/andreani/cotizar-prueba', ['zipcode' => 'X5000ABC'])->assertStatus(200);
+        $respuesta = $this->postJson('/api/integraciones/andreani/cotizar-prueba', ['zipcode' => ' x5000-abc '])->assertStatus(200);
 
         $keys = [];
         foreach ($respuesta->json('cotizacion.opciones') as $opcion) {
