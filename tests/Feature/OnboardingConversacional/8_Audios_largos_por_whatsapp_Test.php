@@ -20,8 +20,8 @@ class Audios_largos_por_whatsapp_Test extends OnboardingTestCase
      */
     public function test_audio_de_9000_entra_entero()
     {
-        $texto = str_repeat('Contame mucho sobre el negocio. ', 281);
-        $texto = mb_substr($texto, 0, 9000);
+        // Exactamente 9.000 caracteres y sin espacios al final (el controlador hace trim del texto).
+        $texto = mb_substr(str_repeat('Contame mucho sobre el negocio. ', 300), 0, 8999) . 'x';
 
         $respuesta = $this->mandar(['texto' => $texto, 'tipo' => 'audio'])->assertStatus(202);
 

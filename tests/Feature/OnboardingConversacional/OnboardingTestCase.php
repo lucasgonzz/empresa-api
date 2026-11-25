@@ -73,12 +73,18 @@ abstract class OnboardingTestCase extends TareasDelAsistenteConModeloTestCase
 
         $this->modelo_contesta('Dale, te cuento.');
 
-        $conversacion = AiConversation::create([
+        $datos_de_la_conversacion = [
             'user_id'         => $this->comercio->id,
             'auth_user_id'    => $persona->id,
-            'origen'          => $canal === 'whatsapp' ? AiConversation::ORIGEN_WHATSAPP : null,
             'last_message_at' => now(),
-        ]);
+        ];
+
+        // Sólo WhatsApp fija el origen: en los demás canales manda el default de la columna (`usuario`).
+        if ($canal === 'whatsapp') {
+            $datos_de_la_conversacion['origen'] = AiConversation::ORIGEN_WHATSAPP;
+        }
+
+        $conversacion = AiConversation::create($datos_de_la_conversacion);
 
         $datos = ['contenido' => $texto, 'canal' => $canal];
 
@@ -118,6 +124,32 @@ abstract class OnboardingTestCase extends TareasDelAsistenteConModeloTestCase
         $this->assertCount($antes + 1, $ejecuciones, 'El comando despertó la tarea de onboarding.');
 
         (new ResponderMensajeChatIaJob($ejecuciones[count($ejecuciones) - 1]->ai_message_id))->handle();
+    }
+
+    /**
+     * Ejecuta una herramienta como la pide el modelo (la de la clase madre) y deja la escena como la deja un turno
+     * real: la clase madre abre una conversación con un `assistant` PENDIENTE que nadie cierra, y el POST del
+     * siguiente mensaje del dueño se suma a esa última conversación de WhatsApp y queda detrás de ese pendiente
+     * (el turno no corre). Acá el pendiente se cierra, como si la herramienta hubiera sido parte de un turno terminado.
+     *
+     * @param  string  $nombre
+     * @param  array  $input
+     * @param  \App\Models\User|null  $persona
+     * @return array{error: bool, texto: string, datos: array|null}
+     */
+    protected function herramienta($nombre, array $input = [], $persona = null)
+    {
+        $resultado = parent::herramienta($nombre, $input, $persona);
+
+        $conversaciones = DB::table('ai_conversations')->where('user_id', $this->comercio->id)->pluck('id')->all();
+
+        DB::table('ai_messages')
+            ->whereIn('ai_conversation_id', $conversaciones)
+            ->where('rol', 'assistant')
+            ->where('estado', 'pendiente')
+            ->update(['estado' => 'listo', 'contenido' => 'Hecho.']);
+
+        return $resultado;
     }
 
     /**
