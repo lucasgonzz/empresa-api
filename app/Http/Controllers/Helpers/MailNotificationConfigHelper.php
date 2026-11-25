@@ -50,4 +50,40 @@ class MailNotificationConfigHelper
             return false;
         }
     }
+
+    /**
+     * Indica si el cliente tiene habilitado el mail al comprador cuando se le ajusta el carrito por falta o
+     * reposición de stock (misión carritos-ajuste-stock). Mismo patrón que avisarIngresoStock: false si no se
+     * puede resolver, porque preferimos no mandar un mail a mandarlo sin que el cliente lo haya habilitado.
+     *
+     * @param int|null $user_id Id del owner. Si es null se resuelve por UserHelper::userId().
+     * @return bool
+     */
+    static function avisarAjusteCarrito($user_id = null) {
+        try {
+            // Si no vino un user_id explicito, se resuelve por el usuario autenticado.
+            if (is_null($user_id)) {
+                $user_id = UserHelper::userId();
+            }
+
+            // Configuracion online del cliente (una por owner).
+            $configuration = OnlineConfiguration::where('user_id', $user_id)->first();
+
+            if (is_null($configuration)) {
+                Log::info('MailNotificationConfigHelper: sin online_configuration, no se envian avisos de carrito', [
+                    'user_id' => $user_id,
+                ]);
+                return false;
+            }
+
+            // Una base sin migrar no tiene la columna: el atributo viene null y el aviso queda apagado.
+            return (bool) $configuration->avisar_ajuste_carrito_por_mail;
+        } catch (\Exception $e) {
+            Log::error('MailNotificationConfigHelper: error resolviendo la config del aviso de carrito, no se envian avisos', [
+                'user_id' => $user_id,
+                'error'   => $e->getMessage(),
+            ]);
+            return false;
+        }
+    }
 }

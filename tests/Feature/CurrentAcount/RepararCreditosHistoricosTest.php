@@ -340,4 +340,61 @@ class RepararCreditosHistoricosTest extends EmpresaTestCase
         $this->assertFileDoesNotExist(base_path('respaldo-prohibido.json'));
         $this->assertEquals($antes, $this->foto($cuenta));
     }
+
+    /** @test */
+    public function test_simulacion_con_saldo_inicial_legado_no_falla_ni_escribe()
+    {
+        // Ticket 171: saldo inicial importado en 2024 con Haber negativo + crédito histórico (fixture "Cabaña").
+        $usuario = $this->app['auth']->user()->id;
+        $cliente = Client::create(['name' => 'Prueba saldo inicial legado', 'user_id' => $usuario, 'saldo_pesos' => 0]);
+        $cuenta = CreditAccount::create(['model_name' => 'client', 'model_id' => $cliente->id,
+            'moneda_id' => 1, 'user_id' => $usuario, 'saldo' => 399.70]);
+        $comunes = ['client_id' => $cliente->id, 'user_id' => $usuario, 'moneda_id' => 1,
+            'credit_account_id' => $cuenta->id, 'is_provisorio' => 0, 'pagandose' => 0];
+        $filas = [
+            ['detalle' => 'Saldo inicial', 'debe' => null, 'haber' => -99.70, 'saldo' => 99.70, 'status' => 'pago_from_client', 'created_at' => '2024-10-01 11:26:13'],
+            ['detalle' => 'Venta', 'debe' => 1000, 'saldo' => 1099.70, 'status' => 'sin_pagar', 'created_at' => '2024-11-01 10:00:00'],
+            ['detalle' => 'Pago', 'haber' => 1000, 'saldo' => 99.70, 'status' => 'pago_from_client', 'created_at' => '2024-11-10 10:00:00'],
+            ['detalle' => 'Crédito histórico', 'debe' => -200, 'saldo' => -100.30, 'status' => 'sin_pagar', 'created_at' => '2025-01-01 10:00:00'],
+            ['detalle' => 'Venta', 'debe' => 500, 'saldo' => 399.70, 'status' => 'sin_pagar', 'created_at' => '2025-02-01 10:00:00'],
+        ];
+        foreach ($filas as $fila) {
+            CurrentAcount::create(array_merge($comunes, $fila, ['updated_at' => $fila['created_at']]));
+        }
+        $antes = $this->foto($cuenta);
+        list($codigo, $salida) = $this->correr($cuenta);
+        $this->assertSame(0, $codigo, $salida);
+        $this->assertStringContainsString('"saldo_economico":399.7', $salida);
+        $this->assertEquals($antes, $this->foto($cuenta), 'La simulación no escribe.');
+    }
+
+    /** @test */
+    public function test_simulacion_con_destino_de_otra_cuenta_no_falla_ni_escribe()
+    {
+        // Ticket 171 (Unidad 1b): un pago con to_pay_id a una deuda de otra cuenta se ignora; la simulación no falla ni escribe.
+        $usuario = $this->app['auth']->user()->id;
+        $cliente = Client::create(['name' => 'Prueba destino ajeno A', 'user_id' => $usuario, 'saldo_pesos' => 0]);
+        $otro = Client::create(['name' => 'Prueba destino ajeno X', 'user_id' => $usuario, 'saldo_pesos' => 0]);
+        $cuenta = CreditAccount::create(['model_name' => 'client', 'model_id' => $cliente->id,
+            'moneda_id' => 1, 'user_id' => $usuario, 'saldo' => 225]);
+        $cuenta_x = CreditAccount::create(['model_name' => 'client', 'model_id' => $otro->id,
+            'moneda_id' => 1, 'user_id' => $usuario, 'saldo' => 100]);
+        $comunes = ['user_id' => $usuario, 'moneda_id' => 1, 'is_provisorio' => 0, 'pagandose' => 0];
+        $crear = function ($cuenta_destino, $cliente_destino, $fila) use ($comunes) {
+            return CurrentAcount::create(array_merge($comunes, ['client_id' => $cliente_destino->id,
+                'credit_account_id' => $cuenta_destino->id], $fila, ['updated_at' => $fila['created_at']]));
+        };
+        $dx = $crear($cuenta_x, $otro, ['detalle' => 'Venta de otro cliente', 'debe' => 100, 'saldo' => 100, 'status' => 'sin_pagar', 'created_at' => '2026-01-10 10:00:00']);
+        $crear($cuenta, $cliente, ['detalle' => 'Venta', 'debe' => 100, 'saldo' => 100, 'status' => 'sin_pagar', 'created_at' => '2026-01-01 10:00:00']);
+        $crear($cuenta, $cliente, ['detalle' => 'Venta', 'debe' => 200, 'saldo' => 300, 'status' => 'sin_pagar', 'created_at' => '2026-01-15 10:00:00']);
+        $crear($cuenta, $cliente, ['detalle' => 'Crédito histórico', 'debe' => -50, 'saldo' => 250, 'status' => 'sin_pagar', 'created_at' => '2026-02-01 10:00:00']);
+        $crear($cuenta, $cliente, ['detalle' => 'Pago', 'haber' => 25, 'saldo' => 225, 'status' => 'pago_from_client', 'created_at' => '2026-03-01 10:00:00', 'to_pay_id' => $dx->id]);
+        $antes = $this->foto($cuenta);
+        $antes_x = $this->foto($cuenta_x);
+        list($codigo, $salida) = $this->correr($cuenta);
+        $this->assertSame(0, $codigo, $salida);
+        $this->assertStringContainsString('"saldo_economico":225', $salida);
+        $this->assertEquals($antes, $this->foto($cuenta), 'La simulación no escribe.');
+        $this->assertEquals($antes_x, $this->foto($cuenta_x), 'La cuenta del destino no se toca.');
+    }
 }

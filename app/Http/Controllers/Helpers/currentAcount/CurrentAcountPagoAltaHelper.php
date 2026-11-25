@@ -86,6 +86,20 @@ class CurrentAcountPagoAltaHelper {
          */
         CuentaCorrienteLock::bloquear($pedido->model_name, $pedido->model_id);
 
+        /*
+         * Ningún pago nace con Haber negativo, venga de donde venga. La pantalla ya rechaza la fila negativa con su
+         * mensaje (CurrentAcountPagoMonedaHelper::validar_y_normalizar); el endoso de cheques y el asistente de IA
+         * arman sus filas solos y llegaban hasta acá sin chequeo. Va antes de tocar cajas y de crear el pago.
+         *
+         * 🔴 No alcanza con mirar get_haber(): valor_de_la_fila_en_la_cuenta() vale 0 para una fila con monto <= 0,
+         * así que una fila de -10 daba un pago con haber 0 pero con el saldo restando `$pedido->haber` (-10) y un
+         * movimiento de caja de -10. Por eso se mira cada fila, el `haber` del pedido y el total.
+         */
+        $negativo = self::monto_negativo_del_pedido($pedido);
+        if (!is_null($negativo)) {
+            throw \Illuminate\Validation\ValidationException::withMessages(['cuenta_corriente' => 'El total del pago no puede ser negativo (llegó '.$negativo.'). Revisá los montos de las formas de pago; no se registró el pago.']);
+        }
+
         \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::validar_cajas_para_operacion(
             \App\Http\Controllers\Helpers\caja\MovimientoCajaHelper::cajas_del_payload($pedido->current_acount_payment_methods)
         );
@@ -282,6 +296,33 @@ class CurrentAcountPagoAltaHelper {
         }
 
         return count($normalizados) >= 2 ? $normalizados : null;
+    }
+
+    /**
+     * Primer importe negativo que trae el pedido de pago (una fila de forma de pago, su `haber` o el total
+     * calculado), o null si ninguno lo es. Una fila sin monto numérico no cuenta: eso lo decide quien arma el pedido.
+     *
+     * @param  object  $pedido  El pedido normalizado por pedido().
+     * @return float|null
+     */
+    private static function monto_negativo_del_pedido($pedido) {
+
+        foreach ($pedido->current_acount_payment_methods as $fila) {
+
+            if (isset($fila['amount']) && is_numeric($fila['amount']) && (float) $fila['amount'] < 0) {
+
+                return (float) $fila['amount'];
+            }
+        }
+
+        if (is_numeric($pedido->haber) && (float) $pedido->haber < 0) {
+
+            return (float) $pedido->haber;
+        }
+
+        $total = self::get_haber($pedido);
+
+        return $total < 0 ? (float) $total : null;
     }
 
     /**
