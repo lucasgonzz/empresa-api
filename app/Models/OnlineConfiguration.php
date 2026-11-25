@@ -64,6 +64,9 @@ class OnlineConfiguration extends Model
         'ajustar_carritos_por_stock' => 'boolean',
         'avisar_ajuste_carrito_por_mail' => 'boolean',
         'avisar_puede_agotarse' => 'boolean',
+        // Misión whatsapp-aviso-pedido (25/11/2026): recibir por WhatsApp (asistente personal) el aviso de pedido nuevo.
+        // Sólo tiene efecto con la extensión Agentes de IA; default 1 en la base.
+        'notificar_pedido_por_whatsapp' => 'boolean',
         // Muestra u oculta el texto "Stock disponible" en la ficha del articulo de la tienda.
         'mostrar_stock_disponible' => 'boolean',
         // Muestra u oculta la seccion "Novedades" del home de la tienda.

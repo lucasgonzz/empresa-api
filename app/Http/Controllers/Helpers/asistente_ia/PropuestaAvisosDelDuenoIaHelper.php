@@ -126,11 +126,25 @@ class PropuestaAvisosDelDuenoIaHelper
             if ($nuevas['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO) {
                 $columnas['agente_aviso_pedidos_desde'] = null;
                 $columnas['agente_aviso_pedidos_cursor'] = null;
-            } elseif ($actuales['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO) {
-                /* Recién al prenderlo arranca el cursor: cambiar solo las horas o el modo no lo reinicia. */
+            } elseif ($actuales['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO || is_null($actuales['pedidos_desde'])) {
+                /*
+                 * Recién al prenderlo arranca el cursor: cambiar solo las horas o el modo no lo reinicia. También
+                 * arranca si venía «al toque» sólo por la casilla de la tienda (sin `desde`): las horas fijas lo necesitan.
+                 */
                 $columnas['agente_aviso_pedidos_desde'] = $ahora->format('Y-m-d H:i:s');
                 $columnas['agente_aviso_pedidos_cursor'] = AvisosDelDuenoIaHelper::ultimo_id('orders');
             }
+        }
+
+        /*
+         * Misión whatsapp-aviso-pedido: el chat y la casilla de la tienda dicen lo mismo. Pedidos apagados deja la
+         * casilla en 0; «al toque» u «horas», en 1. Sólo si existe la columna y la fila de la tienda del dueño (no
+         * se inventa la fila).
+         */
+        if ($cambian_los_pedidos && AvisosDelDuenoIaHelper::hay_casilla()) {
+            DB::table('online_configurations')
+                ->where('user_id', $contexto->owner_id)
+                ->update(['notificar_pedido_por_whatsapp' => $nuevas['pedidos'] === AvisosDelDuenoIaHelper::PEDIDOS_APAGADO ? 0 : 1]);
         }
 
         if ($nuevas['stock_cero'] !== $actuales['stock_cero']) {
