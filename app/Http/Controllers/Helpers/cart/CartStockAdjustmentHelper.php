@@ -18,6 +18,8 @@ use Illuminate\Support\Facades\Schema;
  *    cantidad al tope y guarda la diferencia en `amount_insuficiente` (RECORTE, con mail al comprador);
  *  - si ya había un faltante, la casilla `completar_al_reponer` sigue marcada y ahora entra más, sube la cantidad
  *    hasta lo pedido originalmente o hasta el tope (RESTAURACIÓN, con mail);
+ *  - si el renglón no tiene tope (ignorar_stock, etc.) y arrastra un faltante viejo, lo sanea en silencio
+ *    (casilla marcada: la cantidad vuelve a lo pedido; desmarcada: se descarta el faltante), sin mail ni Message;
  *  - en cualquier otro caso no escribe ni avisa (un aviso sin cambio de estado era el defecto del código viejo).
  *
  * Cada carrito se evalúa contra el stock completo, sin repartirlo entre carritos. No crea ningún `Message`.
@@ -121,6 +123,11 @@ class CartStockAdjustmentHelper
             // actividad del comprador (si no, los carritos abandonados parecerían activos para siempre).
             DB::table('article_cart')->where('id', $line->id)->update($change['update']);
 
+            // Saneo de un faltante viejo sin tope: se escribe pero no se avisa a nadie.
+            if (!empty($change['silent'])) {
+                continue;
+            }
+
             // 4) Mail: sólo si el comercio lo tiene prendido y el carrito es de un comprador con mail válido.
             if (is_null($send_mail)) {
                 $send_mail = MailNotificationConfigHelper::avisarAjusteCarrito($article->user_id);
@@ -156,18 +163,38 @@ class CartStockAdjustmentHelper
      * @param object $line Renglón (amount, amount_insuficiente y, si existe, completar_al_reponer).
      * @param float|null $limit Tope del renglón (null = la tienda no lo limita).
      * @param bool $has_checkbox_column Si la base tiene article_cart.completar_al_reponer.
-     * @return array|null null si no hay nada que escribir; si no, ['type', 'requested_amount', 'new_amount', 'update'].
+     * @return array|null null si no hay nada que escribir; si no, ['type', 'requested_amount', 'new_amount', 'update'] (y 'silent' => true si es un saneo sin aviso).
      */
     private static function calculate_change($line, $limit, $has_checkbox_column)
     {
-        // Sin tope la tienda deja comprar cualquier cantidad: no se toca nada.
-        if (is_null($limit)) {
-            return null;
-        }
-
         // Cantidad actual, faltante actual y cantidad que el comprador pidió originalmente (X).
         $amount = (float) $line->amount;
         $missing = is_null($line->amount_insuficiente) ? 0.0 : (float) $line->amount_insuficiente;
+
+        // Sin tope la tienda deja comprar cualquier cantidad: no se recorta nada. Pero un faltante viejo
+        // (de cuando sí había tope, o de la tienda de Únicas) no puede quedar colgado: se sanea en silencio
+        // (sin mail ni Message). Casilla marcada o columna ausente: la cantidad vuelve a lo pedido;
+        // casilla desmarcada: el faltante se descarta y la cantidad queda como está.
+        if (is_null($limit)) {
+            if ($missing <= 0) {
+                return null;
+            }
+
+            $checkbox_on = $has_checkbox_column ? (int) $line->completar_al_reponer === 1 : true;
+            $restored_amount = $checkbox_on ? $amount + $missing : $amount;
+
+            return [
+                'type'             => 'saneado',
+                'requested_amount' => $amount + $missing,
+                'new_amount'       => $restored_amount,
+                'silent'           => true,
+                'update'           => [
+                    'amount'              => $restored_amount,
+                    'amount_insuficiente' => 0,
+                ],
+            ];
+        }
+
         $requested = $amount + $missing;
 
         // Casilla del comprador (sin columna, o renglón de una tienda vieja: marcada).
