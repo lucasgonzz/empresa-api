@@ -105,6 +105,9 @@ class CartStockAdjustmentHelper
         // Topes ya calculados en este movimiento, por variante (el tope sólo depende del renglón).
         $limits = [];
 
+        // Variantes cuyo renglón sin tope está esperando stock (consultas activas y disponible 0), por variante.
+        $waiting = [];
+
         foreach ($lines as $line) {
             $variant_key = is_null($line->variant_id) ? 'none' : (string) $line->variant_id;
 
@@ -112,7 +115,19 @@ class CartStockAdjustmentHelper
                 $limits[$variant_key] = StoreStockLimitHelper::limit_for_line($configuration, $article->id, $line->variant_id);
             }
 
-            $change = self::calculate_change($line, $limits[$variant_key], $has_checkbox_column);
+            // Excepción del saneo (igual que tienda-api): con consultas activas y disponible exactamente 0
+            // el renglón sin tope está esperando stock y no se sanea. Sólo se calcula si hace falta.
+            $waiting_for_stock = false;
+            if (is_null($limits[$variant_key]) && (float) $line->amount_insuficiente > 0) {
+                if (!array_key_exists($variant_key, $waiting)) {
+                    $available = StoreStockLimitHelper::available($configuration, $article->id, $line->variant_id);
+                    $waiting[$variant_key] = StoreStockLimitHelper::consultas_active($configuration)
+                        && !is_null($available) && $available == 0;
+                }
+                $waiting_for_stock = $waiting[$variant_key];
+            }
+
+            $change = self::calculate_change($line, $limits[$variant_key], $has_checkbox_column, $waiting_for_stock);
 
             // 3) Sin cambio de estado: ni escritura ni mail.
             if (is_null($change)) {
@@ -163,9 +178,10 @@ class CartStockAdjustmentHelper
      * @param object $line Renglón (amount, amount_insuficiente y, si existe, completar_al_reponer).
      * @param float|null $limit Tope del renglón (null = la tienda no lo limita).
      * @param bool $has_checkbox_column Si la base tiene article_cart.completar_al_reponer.
+     * @param bool $waiting_for_stock true si, sin tope, el renglón espera stock (consultas activas y disponible 0): no se sanea.
      * @return array|null null si no hay nada que escribir; si no, ['type', 'requested_amount', 'new_amount', 'update'] (y 'silent' => true si es un saneo sin aviso).
      */
-    private static function calculate_change($line, $limit, $has_checkbox_column)
+    private static function calculate_change($line, $limit, $has_checkbox_column, $waiting_for_stock = false)
     {
         // Cantidad actual, faltante actual y cantidad que el comprador pidió originalmente (X).
         $amount = (float) $line->amount;
@@ -176,7 +192,7 @@ class CartStockAdjustmentHelper
         // (sin mail ni Message). Casilla marcada o columna ausente: la cantidad vuelve a lo pedido;
         // casilla desmarcada: el faltante se descarta y la cantidad queda como está.
         if (is_null($limit)) {
-            if ($missing <= 0) {
+            if ($missing <= 0 || $waiting_for_stock) {
                 return null;
             }
 
