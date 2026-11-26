@@ -1732,6 +1732,16 @@ Route::middleware('admin.api.key:siempre')
         // esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
         Route::get('agentes-ia', 'AdminSync\\AgentesIaController@show');
         Route::put('agentes-ia', 'AdminSync\\AgentesIaController@update');
+        // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026, contrato §4.1): el
+        // admin prende y libera el estado durante el pipeline y pide el OK a los usuarios conectados. `siempre` por el
+        // mismo motivo que las de arriba: prender `actualizando` bloquea a todo el comercio hasta 240 minutos, y «no
+        // hay clave cargada» no puede significar «pasá». Sin `user_id`, el dueño es el de la instancia (USER_ID o el
+        // único dueño; 409 `dueno_no_resoluble` si no se puede). Están en el `$except` del `down`. Un cliente viejo
+        // contesta 404 y el admin lo lee como «esta versión no tiene el aviso».
+        Route::get('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@show');
+        Route::put('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@update');
+        Route::post('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@pedir');
+        Route::delete('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@cancelar');
         // Conexión de WhatsApp (Kapso) del cliente (misión kapso-secretos-fuera-del-navegador, 17/11/2026): único camino que
         // escribe phone_number_id / kapso_api_key / webhook_secret (el dueño ya no puede). `siempre`: el PUT ESCRIBE secretos.
         // La respuesta nunca incluye los secretos. 409 sin dueño resoluble; un cliente viejo sin la ruta responde 404/405.
@@ -1801,14 +1811,6 @@ Route::middleware('admin.api.key')
         // el nombre y el teléfono el admin ya los tiene en `clients`, y esta ruta responde sin
         // validar el header mientras ADMIN_SYNC_REQUIRE_API_KEY siga apagado.
         Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
-        // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026, contrato §4.1): el
-        // admin prende y libera el estado durante el pipeline y pide el OK a los usuarios conectados. Estas dos
-        // rutas están en el `$except` del `down` (PreventRequestsDuringMaintenance). Un cliente viejo contesta
-        // 404 y el admin lo lee como "esta versión no tiene el aviso".
-        Route::get('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@show');
-        Route::put('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@update');
-        Route::post('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@pedir');
-        Route::delete('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@cancelar');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Importación desde el ticket de soporte durante la prueba gratuita (misión cruzada
@@ -1991,11 +1993,15 @@ Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 // y a quien ya tiene sesión iniciada se la reescribiría y le renovaría la cookie en un pedido que no
 // tiene nada que ver con su sesión. El resto del grupo `api` (throttle, bindings y
 // DemoSessionVigente, que tolera pedidos sin sesión) sigue aplicándose.
+Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
+
 // Estado del aviso de actualización para la pantalla de login, SIN sesión (misión aviso-actualizacion-sistema,
 // 25/11/2026): 200 `{estado}` o la marca 503 si se está actualizando. Responde `libre` si no puede resolver el dueño.
-Route::get('actualizacion-del-sistema/publico', 'ActualizacionDelSistemaController@publico');
-
-Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
+// 🔴 `withoutMiddleware` de EnsureFrontendRequestsAreStateful por el mismo motivo que `version-activa`: la mira cualquier
+// visitante cada pocos segundos mientras tiene el login abierto, y ese middleware de Sanctum arrancaría una sesión y
+// plantaría una cookie en cada pedido anónimo.
+Route::get('actualizacion-del-sistema/publico', 'ActualizacionDelSistemaController@publico')
+    ->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);

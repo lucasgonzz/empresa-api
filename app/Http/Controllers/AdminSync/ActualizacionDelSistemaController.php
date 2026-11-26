@@ -92,7 +92,7 @@ class ActualizacionDelSistemaController extends Controller
 
     /**
      * Esqueleto común de los cuatro endpoints: valida la entrada (422 `validacion`), resuelve el dueño
-     * (422 `owner_no_encontrado`), comprueba que las tablas existan (409 `tabla_pendiente`) y ejecuta la
+     * (422 `owner_no_encontrado` con `user_id` explícito; 409 `dueno_no_resoluble` sin él y sin USER_ID), comprueba que las tablas existan (409 `tabla_pendiente`) y ejecuta la
      * operación del helper.
      *
      * @param \Illuminate\Http\Request $request
@@ -108,13 +108,26 @@ class ActualizacionDelSistemaController extends Controller
             return response()->json(['error' => 'validacion', 'message' => $mensaje], 422);
         }
 
-        $owner_id = ActualizacionDelSistemaHelper::resolver_owner_del_admin($request->input('user_id'));
+        $user_id = $request->input('user_id');
+        $owner_id = ActualizacionDelSistemaHelper::resolver_owner_del_admin($user_id);
 
         if (is_null($owner_id)) {
+            // Un `user_id` explícito que no es dueño es un error del pedido (422). Sin `user_id` y sin poder
+            // decidir el dueño de la instancia (varios dueños y sin USER_ID) es 409, igual que el resto de
+            // admin-sync: nunca se elige "el primero".
+            if (!is_null($user_id) && $user_id !== '') {
+                return response()->json([
+                    'error'   => 'owner_no_encontrado',
+                    'message' => 'No se encontró el dueño al que aplicar el estado de actualización.',
+                ], 422);
+            }
+
             return response()->json([
-                'error'   => 'owner_no_encontrado',
-                'message' => 'No se encontró el dueño al que aplicar el estado de actualización.',
-            ], 422);
+                'error'   => 'dueno_no_resoluble',
+                'code'    => 'dueno_no_resoluble',
+                'message' => 'No se pudo resolver el dueño de esta instancia. '
+                           . 'Si la base la comparten varios comercios, falta USER_ID en el .env de este frente.',
+            ], 409);
         }
 
         if (!ActualizacionDelSistemaHelper::tabla_disponible()) {

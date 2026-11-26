@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Events\ActualizacionDelSistemaCambio;
+use App\Http\Controllers\Helpers\asistente_ia\AsistenteCanalHelper;
 use App\Models\ActualizacionDelSistema;
 use App\Models\ActualizacionDispositivo;
 use App\Models\User;
@@ -627,7 +628,7 @@ class ActualizacionDelSistemaHelper
 
     /**
      * El dueño sobre el que opera el admin: el `user_id` explícito (que tiene que ser un dueño) o, si no
-     * viene, la cuenta principal de la instalación.
+     * viene, el dueño de la instancia (`owner_de_la_instancia()`, la misma fuente que usa el GET público).
      *
      * @param mixed $user_id `user_id` del cuerpo (ya validado como entero positivo) o null.
      * @return int|null Id del dueño, o null si no se puede resolver.
@@ -640,9 +641,7 @@ class ActualizacionDelSistemaHelper
             return is_null($owner) ? null : (int) $owner->id;
         }
 
-        $owner = User::whereNull('owner_id')->orderBy('id')->first();
-
-        return is_null($owner) ? null : (int) $owner->id;
+        return self::owner_de_la_instancia();
     }
 
     /**
@@ -1105,22 +1104,22 @@ class ActualizacionDelSistemaHelper
     */
 
     /**
-     * El dueño de la instancia para el GET público: `app.USER_ID` y, si no está, el único dueño de la base.
-     * Con varios dueños y sin `USER_ID` no se puede saber de quién es la pantalla: null (se contesta `libre`).
+     * El dueño de ESTA instancia: la ÚNICA fuente de resolución del aviso (admin-sync sin `user_id` y GET
+     * público). Es la misma regla del resto de `admin-sync` (`AsistenteCanalHelper::dueno()`):
+     * `config('app.USER_ID')` y, si no está, el único dueño de la base. Con varios dueños y sin `USER_ID`
+     * no se puede saber a cuál le habla el admin y se devuelve null: NUNCA "el primero" (en una base de 51
+     * comercios bloquearía al equivocado).
      *
-     * @return int|null
+     * El middleware y el login resuelven el dueño del USUARIO (`owner_id_de($user)`): ése es el comercio al que
+     * efectivamente se le corta la sesión, y coincide con el de la instancia en cualquier instalación sana.
+     *
+     * @return int|null Id del dueño, o null si no se puede decidir sin ambigüedad.
      */
     public static function owner_de_la_instancia()
     {
-        $configurado = (int) config('app.USER_ID');
+        $dueno = AsistenteCanalHelper::dueno();
 
-        if ($configurado > 0) {
-            return $configurado;
-        }
-
-        $duenos = User::whereNull('owner_id')->orderBy('id')->limit(2)->pluck('id');
-
-        return $duenos->count() === 1 ? (int) $duenos->first() : null;
+        return is_null($dueno) ? null : (int) $dueno->id;
     }
 
     /**
