@@ -118,6 +118,11 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
+    // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026, contrato §4.3):
+    // `estado` es el polling de 60 s del SPA (registra la presencia de la computadora) y `respuesta` el
+    // Aceptar / "Ahora no" del pedido de OK. Con el sistema bloqueado ni llegan: el middleware ya contestó la marca.
+    Route::get('actualizacion-del-sistema/estado', 'ActualizacionDelSistemaController@estado');
+    Route::post('actualizacion-del-sistema/respuesta', 'ActualizacionDelSistemaController@respuesta');
     // Candado de sesión por pestaña (misión candado-sesion-por-pestana, 19/9/2026): la pestaña
     // nueva que perdió el candado estricto (get_user() respondió 403 con
     // misma_sesion_otra_pestana: true) lo reclama sin volver a pedir credenciales -ya hay
@@ -1796,6 +1801,14 @@ Route::middleware('admin.api.key')
         // el nombre y el teléfono el admin ya los tiene en `clients`, y esta ruta responde sin
         // validar el header mientras ADMIN_SYNC_REQUIRE_API_KEY siga apagado.
         Route::get('contacto-dueno/{user_id?}', 'AdminSync\\ContactoDuenoController@show');
+        // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026, contrato §4.1): el
+        // admin prende y libera el estado durante el pipeline y pide el OK a los usuarios conectados. Estas dos
+        // rutas están en el `$except` del `down` (PreventRequestsDuringMaintenance). Un cliente viejo contesta
+        // 404 y el admin lo lee como "esta versión no tiene el aviso".
+        Route::get('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@show');
+        Route::put('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@update');
+        Route::post('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@pedir');
+        Route::delete('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@cancelar');
         Route::post('ai-excel-import/analyze', 'AdminSync\\AiExcelImportController@analyze');
         Route::post('ai-excel-import/import', 'AdminSync\\AiExcelImportController@import');
         // Importación desde el ticket de soporte durante la prueba gratuita (misión cruzada
@@ -1978,6 +1991,10 @@ Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 // y a quien ya tiene sesión iniciada se la reescribiría y le renovaría la cookie en un pedido que no
 // tiene nada que ver con su sesión. El resto del grupo `api` (throttle, bindings y
 // DemoSessionVigente, que tolera pedidos sin sesión) sigue aplicándose.
+// Estado del aviso de actualización para la pantalla de login, SIN sesión (misión aviso-actualizacion-sistema,
+// 25/11/2026): 200 `{estado}` o la marca 503 si se está actualizando. Responde `libre` si no puede resolver el dueño.
+Route::get('actualizacion-del-sistema/publico', 'ActualizacionDelSistemaController@publico');
+
 Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
