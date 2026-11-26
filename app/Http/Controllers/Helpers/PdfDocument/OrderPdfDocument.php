@@ -378,6 +378,10 @@ class OrderPdfDocument implements PdfDocumentSource
      * línea de importe se rotula "Subtotal": lo que termina pagando el comprador todavía no está
      * cerrado. Va con guion y no con raya: FPDF pasa el texto a Latin-1 y la raya saldría "?".
      *
+     * Misión truvari-carrito-entrega-pago (26/11/2026): con una forma propia que no es a convenir,
+     * si el pedido trae la foto de lo cobrado (`envio_zona_precio`) se imprime esa: "Gratis" si es 0
+     * y el importe si es mayor. Sin foto se lee el precio vivo de la forma, como antes.
+     *
      * @return string|null
      */
     public function texto_envio()
@@ -392,6 +396,15 @@ class OrderPdfDocument implements PdfDocumentSource
                 $nombre = trim((string) $zona->name);
 
                 return ($nombre !== '' ? $nombre.' - ' : '').'A convenir';
+            }
+            // Lo que se cobró (foto del pedido, `envio_zona_precio`) manda sobre el precio vivo de la forma:
+            // 0 es "Gratis". Sin foto (pedido viejo o tienda vieja) se lee el precio de la forma, como siempre.
+            if (is_numeric($this->order->envio_zona_precio)) {
+                if ((float) $this->order->envio_zona_precio <= 0) {
+                    return 'Gratis';
+                }
+
+                return '$'.Numbers::price((float) $this->order->envio_zona_precio);
             }
             $envio = (float) $zona->price;
         }

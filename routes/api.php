@@ -118,6 +118,11 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     
     // User
     Route::get('user', 'CommonLaravel\AuthController@get_user');
+    // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026, contrato §4.3):
+    // `estado` es el polling de 60 s del SPA (registra la presencia de la computadora) y `respuesta` el
+    // Aceptar / "Ahora no" del pedido de OK. Con el sistema bloqueado ni llegan: el middleware ya contestó la marca.
+    Route::get('actualizacion-del-sistema/estado', 'ActualizacionDelSistemaController@estado');
+    Route::post('actualizacion-del-sistema/respuesta', 'ActualizacionDelSistemaController@respuesta');
     // Candado de sesión por pestaña (misión candado-sesion-por-pestana, 19/9/2026): la pestaña
     // nueva que perdió el candado estricto (get_user() respondió 403 con
     // misma_sesion_otra_pestana: true) lo reclama sin volver a pedir credenciales -ya hay
@@ -812,6 +817,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     /*
      * Importación asistida por Claude IA (artículos, clientes, proveedores).
      *  - POST /ai-excel-import/analyze              : encola el análisis del Excel (grupo 291, prompt 02) y devuelve el uuid de la corrida
+     *  - POST /ai-excel-import/inspeccionar-filas   : hojas y última fila con contenido de un .xlsx que el navegador no pudo leer (zip64); no guarda ni importa nada
      *  - GET  /ai-excel-import/analysis/{uuid}      : consulta estado/resultado de la corrida encolada por /analyze o /get-recomendacion
      *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
      *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor (sin releer el Excel si ya hay un análisis previo, grupo 291 prompt 03)
@@ -823,6 +829,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
      *  - POST /ai-excel-import/analysis/{uuid}/descartar : saca la corrida de la lista de pendientes
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+    Route::post('/ai-excel-import/inspeccionar-filas', 'AiExcelImportController@inspeccionarFilas');
     /*
      * Va ANTES de /analysis/{uuid}: si se declara después, "analysis-en-curso" no
      * matchea ninguna ruta propia y cae en el patrón de arriba solo si comparten
@@ -1727,6 +1734,16 @@ Route::middleware('admin.api.key:siempre')
         // esta ruta responde 404/405 y el admin lo muestra como «versión vieja».
         Route::get('agentes-ia', 'AdminSync\\AgentesIaController@show');
         Route::put('agentes-ia', 'AdminSync\\AgentesIaController@update');
+        // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026, contrato §4.1): el
+        // admin prende y libera el estado durante el pipeline y pide el OK a los usuarios conectados. `siempre` por el
+        // mismo motivo que las de arriba: prender `actualizando` bloquea a todo el comercio hasta 240 minutos, y «no
+        // hay clave cargada» no puede significar «pasá». Sin `user_id`, el dueño es el de la instancia (USER_ID o el
+        // único dueño; 409 `dueno_no_resoluble` si no se puede). Están en el `$except` del `down`. Un cliente viejo
+        // contesta 404 y el admin lo lee como «esta versión no tiene el aviso».
+        Route::get('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@show');
+        Route::put('actualizacion-del-sistema', 'AdminSync\\ActualizacionDelSistemaController@update');
+        Route::post('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@pedir');
+        Route::delete('actualizacion-del-sistema/pedido', 'AdminSync\\ActualizacionDelSistemaController@cancelar');
         // Conexión de WhatsApp (Kapso) del cliente (misión kapso-secretos-fuera-del-navegador, 17/11/2026): único camino que
         // escribe phone_number_id / kapso_api_key / webhook_secret (el dueño ya no puede). `siempre`: el PUT ESCRIBE secretos.
         // La respuesta nunca incluye los secretos. 409 sin dueño resoluble; un cliente viejo sin la ruta responde 404/405.
@@ -1979,6 +1996,14 @@ Route::get('informe-compartido/{token}', 'MostradorController@compartido');
 // tiene nada que ver con su sesión. El resto del grupo `api` (throttle, bindings y
 // DemoSessionVigente, que tolera pedidos sin sesión) sigue aplicándose.
 Route::get('version-activa', 'VersionActivaController@show')->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
+
+// Estado del aviso de actualización para la pantalla de login, SIN sesión (misión aviso-actualizacion-sistema,
+// 25/11/2026): 200 `{estado}` o la marca 503 si se está actualizando. Responde `libre` si no puede resolver el dueño.
+// 🔴 `withoutMiddleware` de EnsureFrontendRequestsAreStateful por el mismo motivo que `version-activa`: la mira cualquier
+// visitante cada pocos segundos mientras tiene el login abierto, y ese middleware de Sanctum arrancaría una sesión y
+// plantaría una cookie en cada pedido anónimo.
+Route::get('actualizacion-del-sistema/publico', 'ActualizacionDelSistemaController@publico')
+    ->withoutMiddleware([\Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class]);
 
 // Reporte de errores del SPA (sin auth — puede ocurrir antes del login)
 Route::post('internal/report-front-error', [\App\Http\Controllers\Internal\ErrorReportController::class, 'store']);

@@ -120,6 +120,9 @@ class ExcelSheetInspector
     /** Tipo de relacion OOXML de una hoja de datos (las chartsheets tienen otro). */
     const TIPO_RELACION_WORKSHEET = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet';
 
+    /** Tipo de relacion OOXML de la tabla de shared strings. */
+    const TIPO_RELACION_SHARED_STRINGS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings';
+
     /**
      * Tamano (bytes sin comprimir) hasta el cual la hoja se recorre igual para verificar
      * el <dimension>. Ver ultima_fila_de_la_hoja().
@@ -163,6 +166,224 @@ class ExcelSheetInspector
         }
 
         return $filas;
+    }
+
+    /**
+     * Ultima fila declarada Y ultima fila con contenido, por hoja, en una sola pasada.
+     *
+     * "Fila con contenido" = al menos una celda cuyo texto, tras trim, no es vacio. Es la
+     * misma regla con la que el navegador calcula la ultima fila (celdas con valor no
+     * vacio), de modo que este metodo sirve de respaldo cuando SheetJS no puede leer el
+     * archivo (por ejemplo un zip64 con tamanos en 0xFFFFFFFF en el local header). Las
+     * filas que quedaron con formato, las celdas solo con estilo y los shared strings en
+     * blanco NO cuentan: por eso "filas" (declarada) y "ultima_fila_con_contenido" pueden
+     * diferir.
+     *
+     * Nunca lanza: una hoja que no abre da ceros y un zip ilegible da null. No cambia
+     * filas_por_hoja(), que sigue siendo la fuente del selector de hojas post-analisis.
+     *
+     * @param  string $excel_path
+     * @return array|null  [indice_hoja => ['filas' => int, 'ultima_fila_con_contenido' => int]];
+     *                     null si el zip no se pudo leer
+     */
+    public static function filas_con_contenido_por_hoja($excel_path)
+    {
+        try {
+            $rutas = self::rutas_de_hojas($excel_path);
+
+            if ($rutas === null) {
+                return null;
+            }
+
+            /* Set de indices de shared strings en blanco; se arma una sola vez para todas las hojas. */
+            $blancos = self::indices_de_shared_strings_en_blanco($excel_path);
+
+            $resultado = [];
+
+            foreach ($rutas as $indice => $ruta_interna) {
+                $resultado[$indice] = ($ruta_interna === null)
+                    ? ['filas' => 0, 'ultima_fila_con_contenido' => 0]
+                    : self::escanear_hoja_con_contenido($excel_path, $ruta_interna, $blancos);
+            }
+
+            return $resultado;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /**
+     * Recorre una hoja una sola vez y devuelve su ultima fila declarada y la ultima con
+     * contenido. Cuando una fila ya tiene contenido salta el resto de sus celdas con
+     * next('row'), lo que mantiene barato el recorrido en hojas de decenas de miles de filas.
+     *
+     * @param  string $excel_path
+     * @param  string $ruta_interna
+     * @param  array  $blancos  [indice shared string => true] de los shared strings en blanco
+     * @return array  ['filas' => int, 'ultima_fila_con_contenido' => int]
+     */
+    protected static function escanear_hoja_con_contenido($excel_path, $ruta_interna, array $blancos)
+    {
+        $vacio = ['filas' => 0, 'ultima_fila_con_contenido' => 0];
+
+        $lector = self::abrir_hoja($excel_path, $ruta_interna);
+
+        if ($lector === null) {
+            return $vacio;
+        }
+
+        /* Fila final de <dimension> (si declara un rango de mas de una fila). */
+        $dimension = 0;
+        /* Mayor numero de fila visto en un <row>. */
+        $maxima_fila = 0;
+        /* Ultima fila que tuvo contenido. */
+        $ultima_con_contenido = 0;
+        /* Fila fisica del <row> en el que estamos parados. */
+        $fila_actual = 0;
+        /* Tipo (atributo t) de la celda en curso. */
+        $tipo_celda = '';
+        /* false cuando next('row') ya nos dejo parados en el proximo <row> sin consumirlo. */
+        $hay_que_leer = true;
+
+        try {
+            while (true) {
+                if ($hay_que_leer && !@$lector->read()) {
+                    break;
+                }
+                $hay_que_leer = true;
+
+                if ($lector->nodeType !== \XMLReader::ELEMENT) {
+                    continue;
+                }
+
+                $nombre = $lector->localName;
+
+                if ($nombre === 'dimension') {
+                    $fila_final = self::fila_final_del_rango((string) $lector->getAttribute('ref'));
+                    $dimension = ($fila_final > 1) ? $fila_final : 0;
+                } elseif ($nombre === 'row') {
+                    $r = $lector->getAttribute('r');
+                    $fila_actual = ($r !== null && ctype_digit((string) $r)) ? (int) $r : $fila_actual + 1;
+                    if ($fila_actual > $maxima_fila) {
+                        $maxima_fila = $fila_actual;
+                    }
+                } elseif ($nombre === 'c') {
+                    $tipo_celda = (string) $lector->getAttribute('t');
+                } elseif ($nombre === 'v' || $nombre === 't') {
+                    $texto = $lector->readString();
+
+                    /* Un shared string cuyo texto es blanco no es contenido. */
+                    $es_blanco_compartido = ($tipo_celda === 's' && $nombre === 'v' && isset($blancos[(int) $texto]));
+
+                    if (trim($texto) !== '' && !$es_blanco_compartido && $fila_actual > $ultima_con_contenido) {
+                        $ultima_con_contenido = $fila_actual;
+
+                        /* Con la fila ya marcada, se saltea el resto y se queda parado en el proximo <row>. */
+                        if (@$lector->next('row')) {
+                            $hay_que_leer = false;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            /* Hoja ilegible a mitad de camino: se informa lo que se alcanzo a ver. */
+        }
+
+        $lector->close();
+
+        return [
+            'filas'                     => ($dimension > $maxima_fila) ? $dimension : $maxima_fila,
+            'ultima_fila_con_contenido' => $ultima_con_contenido,
+        ];
+    }
+
+    /**
+     * Indices (0-based, orden de aparicion de <si>) de los shared strings cuyo texto
+     * completo es vacio tras trim. Streaming; la memoria es proporcional a la cantidad de
+     * blancos, no al tamano de la tabla. Sin tabla de strings devuelve un set vacio.
+     *
+     * @param  string $excel_path
+     * @return array  [int indice => true]
+     */
+    protected static function indices_de_shared_strings_en_blanco($excel_path)
+    {
+        $blancos = [];
+
+        $lector = self::abrir_hoja($excel_path, self::ruta_de_shared_strings($excel_path));
+
+        if ($lector === null) {
+            return $blancos;
+        }
+
+        /* Indice del <si> en curso (arranca en -1: el primero es el 0). */
+        $indice = -1;
+
+        while (@$lector->read()) {
+            if ($lector->nodeType === \XMLReader::ELEMENT && $lector->localName === 'si') {
+                $indice++;
+
+                if (trim($lector->readString()) === '') {
+                    $blancos[$indice] = true;
+                }
+            }
+        }
+
+        $lector->close();
+
+        return $blancos;
+    }
+
+    /**
+     * Ruta interna de la parte de shared strings: la que declara workbook.xml.rels con la
+     * relacion de tipo sharedStrings, o xl/sharedStrings.xml si no hay relacion.
+     *
+     * @param  string $excel_path
+     * @return string
+     */
+    protected static function ruta_de_shared_strings($excel_path)
+    {
+        $por_defecto = 'xl/sharedStrings.xml';
+
+        $zip = new \ZipArchive();
+
+        if ($zip->open($excel_path) !== true) {
+            return $por_defecto;
+        }
+
+        $rels_xml = $zip->getFromName('xl/_rels/workbook.xml.rels');
+
+        $zip->close();
+
+        if ($rels_xml === false || $rels_xml === '') {
+            return $por_defecto;
+        }
+
+        $lector = new \XMLReader();
+
+        if (@$lector->XML($rels_xml, null, LIBXML_NONET) !== true) {
+            return $por_defecto;
+        }
+
+        $ruta = $por_defecto;
+
+        while (@$lector->read()) {
+            if ($lector->nodeType !== \XMLReader::ELEMENT || $lector->localName !== 'Relationship') {
+                continue;
+            }
+
+            $destino = (string) $lector->getAttribute('Target');
+
+            if ((string) $lector->getAttribute('Type') === self::TIPO_RELACION_SHARED_STRINGS && $destino !== '') {
+                $ruta = self::normalizar_ruta_interna($destino);
+                break;
+            }
+        }
+
+        $lector->close();
+
+        return $ruta;
     }
 
     /**

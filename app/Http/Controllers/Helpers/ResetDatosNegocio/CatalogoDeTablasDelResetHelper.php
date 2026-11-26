@@ -163,6 +163,11 @@ class CatalogoDeTablasDelResetHelper
      * @var array<int, string>
      */
     const TABLAS_DE_SISTEMA = [
+        // Aviso de actualización del sistema (misión aviso-actualizacion-sistema, 25/11/2026): estado operativo del
+        // pipeline de actualización y presencia de computadoras. No son datos del negocio y no apuntan a ids de
+        // negocio; son del mismo orden que `mantenimientos`, `installed_versions` y `version_session_transfers`.
+        // Vaciarlas en un reset borraría el estado `actualizando` de una actualización en curso.
+        'actualizacion_dispositivos', 'actualizaciones_del_sistema',
         'ai_token_usages', 'cache', 'cache_locks', 'centro_recursos_pases', 'demo_eventos', 'demo_ingreso_tokens',
         'demo_tracking_config', 'errors', 'geocoder_counters', 'image_service_calls', 'installed_versions', 'local_actividad_eventos',
         'mantenimientos', 'migrations', 'oauth_states', 'password_resets', 'personal_access_tokens', 'prueba_config',

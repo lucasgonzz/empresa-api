@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\DeliveryZoneHelper;
 use App\Http\Controllers\Helpers\TenenciaDeLaTiendaHelper;
 use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Models\DeliveryZone;
@@ -53,6 +54,9 @@ class DeliveryZoneController extends Controller
             $atributos['costo_a_convenir'] = $costo_a_convenir ? 1 : 0;
         }
 
+        // Envío gratis por monto o por combo (vacío si la base todavía no tiene las columnas).
+        $atributos = array_merge($atributos, DeliveryZoneHelper::atributos_de_envio_gratis($request, null, $costo_a_convenir));
+
         $model = DeliveryZone::create($atributos);
         $this->sendAddModelNotification('delivery_zone', $model->id);
         return response()->json(['model' => $this->fullModel('DeliveryZone', $model->id)], 201);
@@ -98,6 +102,11 @@ class DeliveryZoneController extends Controller
 
         if ($hay_columna) {
             $model->costo_a_convenir = $costo_a_convenir ? 1 : 0;
+        }
+
+        // Envío gratis por monto o por combo: conserva lo guardado si el request no trae las claves.
+        foreach (DeliveryZoneHelper::atributos_de_envio_gratis($request, $model, $costo_a_convenir) as $columna => $valor) {
+            $model->{$columna} = $valor;
         }
 
         $model->save();

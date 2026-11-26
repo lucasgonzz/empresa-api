@@ -67,6 +67,13 @@ class Kernel extends HttpKernel
              * temprano propio: en un cliente real no toca nada.
              */
             \App\Http\Middleware\PruebaVencida::class,
+            /**
+             * Bloqueo mientras el sistema se actualiza (misión aviso-actualizacion-sistema, 25/11/2026): con el
+             * estado del dueño en `actualizando` cierra la sesión y contesta la marca 503 `sistema_actualizando`.
+             * Va al final, igual que PruebaVencida, porque necesita la sesión que Sanctum ya estableció; saltea
+             * el acceso maestro, el de soporte y `api/admin-sync/*`.
+             */
+            \App\Http\Middleware\BloqueoPorActualizacion::class,
         ],
     ];
 

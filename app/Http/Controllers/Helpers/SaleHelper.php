@@ -110,6 +110,11 @@ class SaleHelper extends Controller {
             if ($pedido && $pedido->reserva_stock_web && !$pedido->reserva_stock_web_consumida) {
                 return true;
             }
+            // Pedido eliminado: la venta en revisión nunca descontó stock, así que su primera
+            // confirmación debe descontar la cantidad completa (igual que con el pedido vivo).
+            if (!$pedido) {
+                return true;
+            }
         }
         if ($request->confirmed && $sale->checked) {
             return true;

@@ -6,6 +6,7 @@ use App\Http\Controllers\CommonLaravel\Helpers\ImportHelper;
 use App\Http\Controllers\Helpers\import\article\ExcelDuplicateStats;
 use App\Http\Controllers\Helpers\import\article\InitExcelImport;
 use App\Http\Controllers\Helpers\import\article\ProviderImportMappingHelper;
+use App\Http\Controllers\Helpers\import\excel\ExcelWorkbookReader;
 use App\Http\Controllers\Helpers\import\relaciones\EquivalenciasResolver;
 use App\Imports\ClientImport;
 use App\Imports\ProviderImport;
@@ -34,6 +35,49 @@ use Maatwebsite\Excel\Facades\Excel;
  */
 class AiExcelImportController extends Controller
 {
+    /**
+     * Detecta en el servidor las hojas de un .xlsx y su última fila con contenido.
+     *
+     * Es el respaldo del navegador cuando SheetJS no puede leer el archivo (por ejemplo un
+     * zip64). No guarda el archivo (lee el temporal de PHP), no crea ninguna corrida de
+     * análisis y no escribe en la base. Sin $request->validate(): los errores salen como
+     * 422 con un "message" limpio, sin rutas del servidor.
+     *
+     * Multipart, campo "excel_file". Respuesta: {"hojas":[{"indice","nombre","filas","ultima_fila_con_contenido"}]}.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function inspeccionarFilas(Request $request)
+    {
+        $archivo = $request->file('excel_file');
+        if (!$archivo instanceof UploadedFile || !$archivo->isValid()) {
+            return response()->json([
+                'message' => 'Se requiere un archivo Excel válido en el campo "excel_file".',
+            ], 422);
+        }
+
+        /* Sólo .xlsx: el inspector lee el zip de OOXML, no el formato BIFF de .xls. */
+        $extension = strtolower($archivo->getClientOriginalExtension());
+        if ($extension !== 'xlsx') {
+            return response()->json([
+                'message' => 'La detección de filas en el servidor sólo lee archivos .xlsx.',
+            ], 422);
+        }
+
+        try {
+            $hojas = ExcelWorkbookReader::hojas_con_filas($archivo->getRealPath());
+        } catch (\Throwable $e) {
+            Log::warning('AiExcelImportController@inspeccionarFilas: no se pudo leer el archivo', [
+                'message' => $e->getMessage(),
+            ]);
+
+            return response()->json(['message' => ExcelWorkbookReader::MENSAJE_ARCHIVO_ILEGIBLE], 422);
+        }
+
+        return response()->json(['hojas' => $hojas], 200);
+    }
+
     /**
      * Encola el análisis de un archivo Excel con la IA de Claude (grupo 291, prompt 02).
      *
