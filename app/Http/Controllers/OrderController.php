@@ -8,6 +8,7 @@ use App\Http\Controllers\CommonLaravel\ImageController;
 use App\Http\Controllers\Helpers\LimiteCreditoHelper;
 use App\Http\Controllers\Helpers\OrderHelper;
 use App\Http\Controllers\Helpers\Order\CreateSaleOrderHelper;
+use App\Http\Controllers\Helpers\Order\DeleteOrderHelper;
 use App\Http\Controllers\Helpers\Order\OrderStatusHelper;
 use App\Http\Controllers\Helpers\PdfDocument\OrderPdfDocument;
 use App\Http\Controllers\Helpers\currentAcount\CuentaCorrienteLock;
@@ -545,19 +546,16 @@ class OrderController extends Controller
             return $ajeno;
         }
 
-        $model = DB::transaction(function () use ($id) {
-            ReservaStockWebHelper::bloquear_configuracion($this->userId());
-            $pedido = Order::where('id', $id)->lockForUpdate()->firstOrFail();
-            $venta_viva = Sale::where('order_id', $id)->lockForUpdate()->first();
-            $cancelado_sin_egreso = $pedido->order_status && $pedido->order_status->name === 'Cancelado'
-                && !$venta_viva && !$pedido->reserva_stock_web_egreso;
-            if ($pedido->reserva_stock_web && !$cancelado_sin_egreso && ($pedido->reserva_stock_web_consumida || $venta_viva)) {
-                throw \Illuminate\Validation\ValidationException::withMessages(['order' => 'Cancelá el pedido antes de eliminarlo: ya tiene un egreso o una venta vinculada.']);
-            }
-            ReservaStockWebHelper::cancelar($pedido);
-            $pedido->delete();
-            return $pedido;
-        });
+        // Sólo el dueño, los empleados con admin_access o quienes tengan el permiso order.delete.
+        if (!$this->tiene_permiso('order.delete')) {
+            return response()->json(['message' => 'No tenés permiso para eliminar pedidos de la tienda.'], 403);
+        }
+
+        // La lógica de negocio (reserva, egreso, venta intacta) vive en el helper.
+        $model = DeleteOrderHelper::eliminar_pedido($id, $this->userId());
+        if (!$model) {
+            return response()->json(['message' => 'El pedido no existe o no es de tu cuenta.'], 404);
+        }
         ImageController::deleteModelImages($model);
         $this->sendDeleteModelNotification('Order', $model->id);
         return response(null);
@@ -723,5 +721,21 @@ class OrderController extends Controller
      */
     protected function registro_ajeno_o_404($id) {
         return TenenciaDeLaTiendaHelper::respuesta_si_no_es_del_dueno(Order::class, $id, $this->userId(), 'El pedido no existe o no es de tu cuenta.');
+    }
+
+    /**
+     * ¿El usuario autenticado tiene este permiso? El dueño y los empleados con `admin_access`
+     * pueden todo (mismo patrón que DepositMovementController::tiene_permiso()).
+     *
+     * @param  string  $slug  Slug del permiso (ej: 'order.delete').
+     * @return bool
+     */
+    private function tiene_permiso($slug) {
+
+        if ($this->is_admin()) {
+            return true;
+        }
+
+        return $this->user(false)->permissions->contains('slug', $slug);
     }
 }
