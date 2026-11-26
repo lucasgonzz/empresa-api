@@ -886,4 +886,101 @@ class Busqueda_hibrida_del_agente_Test extends TestCase
         $this->assertCount(8, $hibrido);
         $this->assertLessThan(1500, $lexica_ms, 'La parte léxica con 15.000 candidatos tiene que quedar bajo 1.500 ms.');
     }
+
+    // ── Misión agente-medidas-decimales: "2,5", "2.5" y "2,50" son la misma medida ───────────────
+
+    /**
+     * El decimal es UN token: sin esto "cable de 2,5" se partía en `2` y `5` y los cables 1X2,50
+     * (que el negocio tiene en stock) quedaban detrás de acero galvanizado 2 MM y morsas de 5".
+     *
+     * @return array<int, array>
+     */
+    public function medidas_decimales_con_sus_tokens()
+    {
+        return [
+            'coma'                       => ['2,5', ['2d5']],
+            'punto'                      => ['2.5', ['2d5']],
+            'cable con 1X2,50'           => ['CABLE UNIPOLAR 1X2,50 MM NEGRO', ['cable', 'unipolar', '1x', '2d5', 'mm', 'negro']],
+            'pegado a la unidad'         => ['cable 2,5mm', ['cable', '2d5', 'mm']],
+            'cero adelante'              => ['0,9', ['0d9']],
+            'fraccion en cero'           => ['2,0', ['2']],
+            'tres decimales son miles'   => ['HIDROLAVADORA 1.400 W', ['hidrolavadora', '1', '400', 'w']],
+            'barra no es decimal'        => ['3/4', ['3', '4']],
+        ];
+    }
+
+    /**
+     * @dataProvider medidas_decimales_con_sus_tokens
+     * @group whatsapp
+     * @test
+     */
+    public function los_decimales_son_un_solo_token($texto, $esperados)
+    {
+        $this->assertSame($esperados, BusquedaHibridaDeArticulosHelper::tokens($texto));
+    }
+
+    /**
+     * Con las palabras de "cable de 2,5": los cables 2,50 suman cobertura 2 (cable + medida) y el
+     * acero galvanizado de 2 MM baja a 1 (ya no coincide con un "2" suelto).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function la_medida_decimal_suma_cobertura_entera()
+    {
+        $palabras = BusquedaHibridaDeArticulosHelper::palabras_de_producto('cable de 2,5');
+        $this->assertSame(['cable', '2d5'], $palabras);
+
+        $filas = [
+            (object) ['id' => 1, 'name' => 'CABLE PARALELO 2X2,50 MM'],
+            (object) ['id' => 2, 'name' => 'CABLE UNIPOLAR 1X2,50 MM NEGRO'],
+            (object) ['id' => 3, 'name' => 'CABLE ACERO GALVANIZADO 2 MM. 1 X 19'],
+        ];
+
+        $cobertura = [];
+        foreach (BusquedaHibridaDeArticulosHelper::coincidencias($filas, $palabras) as $encaje) {
+            $cobertura[$encaje['name']] = $encaje['cobertura'];
+        }
+
+        $this->assertSame(2, $cobertura['CABLE PARALELO 2X2,50 MM']);
+        $this->assertSame(2, $cobertura['CABLE UNIPOLAR 1X2,50 MM NEGRO']);
+        $this->assertSame(1, $cobertura['CABLE ACERO GALVANIZADO 2 MM. 1 X 19']);
+    }
+
+    /**
+     * Caso original de Ferretotal (26/11): el cliente pide "cable de 2,5" y el agente ofrecía sólo el
+     * cable de silicona porque los 6 léxicos del grupo combinado eran acero/metro/morsa y los 2
+     * vectoriales, ruido. El UNIPOLAR 1X2,50 (379 en stock) tiene que llegar al modelo.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function el_cable_de_2_coma_5_llega_al_modelo_con_los_unipolares()
+    {
+        $silicona  = 'CABLE SILIC.PARA ALTA TEMPERATURA 1 X 2.5 MM2';
+        $unipolar  = 'CABLE UNIPOLAR 1X2,50 MM MARRON';
+        $consulta  = 'Hola, necesito 15 metros de cable de 2,5 para una instalación fija en una pared';
+
+        $this->articulo('CABLE ACERO GALVANIZADO 2.5 MM. 1 X 19', 0.10, ['final_price' => 500, 'stock' => 0]);
+        $this->articulo($silicona, 0.10, ['final_price' => 3616.05, 'stock' => 7]);
+        $this->articulo('CABLE ACERO GALVANIZADO 2 MM. 1 X 19', 0.10);
+        $this->articulo('CABLE ACERO GALVANIZADO 5 MM. 6 X 7', 0.10);
+        $this->articulo('METRO PLASTICO PLEGABLE DE 2 MT', 0.10);
+        $this->articulo('MORSA FIJA CON YUNQUE 5"', 0.10);
+        $this->articulo($unipolar, 0.50, ['final_price' => 1181.03, 'stock' => 379.5]);
+
+        $ruido = ['TERMOMETRO DIGITAL', 'LINTERNA RECARGABLE', 'CINTA METRICA', 'BALDE DE OBRA', 'GUANTE DE LATEX', 'SOGA TRENZADA', 'LONA REFORZADA', 'CANDADO REDONDO'];
+        foreach ($ruido as $i => $nombre) {
+            $this->articulo($nombre, 0.99 - $i * 0.01);
+        }
+
+        $this->fingir_deepseek_y_openai('Tenemos cable unipolar.');
+
+        $nombres = $this->nombres($this->servicio()->search_hybrid_articles($consulta, $this->comercio->id, 8));
+        $this->assertContains($unipolar, $nombres, 'El unipolar de 2,50 tiene que estar entre los 8 que llegan al modelo.');
+
+        $resultado = (new WhatsappBotAiService())->simular_respuesta($this->comercio->id, $consulta);
+        $this->assertSame('Tenemos cable unipolar.', $resultado['body']);
+        $this->assertStringContainsString($unipolar . ' | Precio: $1.181,03 | Stock: 379', $this->payload_de_chat());
+    }
 }
