@@ -76,6 +76,54 @@ class ExcelWorkbookReader
     }
 
     /**
+     * Hojas del libro con su ultima fila declarada y su ultima fila con contenido.
+     *
+     * Nombres e indices salen de OpenSpout (misma fuente que usa la importacion), sin leer
+     * filas; las cantidades las da ExcelSheetInspector en streaming. Sirve para detectar la
+     * ultima fila en el servidor cuando el navegador no puede leer el archivo.
+     *
+     * @param  string $excel_path
+     * @return array  [['indice' => 0, 'nombre' => 'Lista', 'filas' => 8, 'ultima_fila_con_contenido' => 5], ...]
+     *
+     * @throws \RuntimeException  mensaje limpio si el archivo no abre o no tiene hojas
+     */
+    public static function hojas_con_filas($excel_path)
+    {
+        $reader = self::abrir_reader($excel_path, true);
+
+        /* Nombres e indices de las hojas, sin tocar sus filas. */
+        $hojas = [];
+
+        foreach ($reader->getSheetIterator() as $sheet) {
+            $hojas[] = ['indice' => $sheet->getIndex(), 'nombre' => $sheet->getName()];
+        }
+
+        $reader->close();
+
+        $conteos = ExcelSheetInspector::filas_con_contenido_por_hoja($excel_path);
+
+        if ($conteos === null || count($hojas) === 0) {
+            throw new \RuntimeException(self::MENSAJE_ARCHIVO_ILEGIBLE);
+        }
+
+        /* Se completa cada hoja con sus cantidades; un indice sin dato queda en cero. */
+        $resultado = [];
+
+        foreach ($hojas as $hoja) {
+            $indice = $hoja['indice'];
+
+            $resultado[] = [
+                'indice'                    => $indice,
+                'nombre'                    => $hoja['nombre'],
+                'filas'                     => isset($conteos[$indice]) ? $conteos[$indice]['filas'] : 0,
+                'ultima_fila_con_contenido' => isset($conteos[$indice]) ? $conteos[$indice]['ultima_fila_con_contenido'] : 0,
+            ];
+        }
+
+        return $resultado;
+    }
+
+    /**
      * Resuelve el indice 0-based de hoja a usar.
      *
      * Prioridad: nombre exacto -> indice en rango -> 0. El nombre gana porque el indice

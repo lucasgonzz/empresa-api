@@ -817,6 +817,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     /*
      * Importación asistida por Claude IA (artículos, clientes, proveedores).
      *  - POST /ai-excel-import/analyze              : encola el análisis del Excel (grupo 291, prompt 02) y devuelve el uuid de la corrida
+     *  - POST /ai-excel-import/inspeccionar-filas   : hojas y última fila con contenido de un .xlsx que el navegador no pudo leer (zip64); no guarda ni importa nada
      *  - GET  /ai-excel-import/analysis/{uuid}      : consulta estado/resultado de la corrida encolada por /analyze o /get-recomendacion
      *  - POST /ai-excel-import/import               : lanza la importación con el mapeo confirmado por el usuario
      *  - POST /ai-excel-import/refresh-provider-stats : recalcula conteos de códigos existentes al cambiar proveedor (sin releer el Excel si ya hay un análisis previo, grupo 291 prompt 03)
@@ -828,6 +829,7 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
      *  - POST /ai-excel-import/analysis/{uuid}/descartar : saca la corrida de la lista de pendientes
      */
     Route::post('/ai-excel-import/analyze', 'AiExcelImportController@analyze');
+    Route::post('/ai-excel-import/inspeccionar-filas', 'AiExcelImportController@inspeccionarFilas');
     /*
      * Va ANTES de /analysis/{uuid}: si se declara después, "analysis-en-curso" no
      * matchea ninguna ruta propia y cae en el patrón de arriba solo si comparten
