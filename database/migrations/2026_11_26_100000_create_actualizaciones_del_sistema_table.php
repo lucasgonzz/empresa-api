@@ -20,7 +20,7 @@ use Illuminate\Support\Facades\Schema;
 class CreateActualizacionesDelSistemaTable extends Migration
 {
     /**
-     * Crea la tabla si todavía no existe (idempotente: la base la comparten dos frentes).
+     * Crea la tabla si todavía no existe (idempotente, porque la base la comparten dos frentes).
      *
      * @return void
      */

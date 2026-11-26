@@ -44,7 +44,7 @@ use Illuminate\Support\Facades\Log;
  * sesión de la base puede no ser la de la aplicación. Se escribe y se lee con la misma zona, así que es
  * consistente de punta a punta.
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4 estricto: nada de la sintaxis de PHP 8 (ni match, ni operador nullsafe, ni funciones str_*_with, ni argumentos con nombre).
  */
 class ActualizacionDelSistemaHelper
 {
