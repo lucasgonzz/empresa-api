@@ -1152,7 +1152,8 @@ class RepararCreditosHistoricos extends Command
         if (DB::table('pagado_por')->where('debe_id', $haber_id)->where('haber_id', $debe_id)->lockForUpdate()->count() > 0) {
             throw new RuntimeException('Existen imputaciones en sentido inverso entre los dos movimientos (H como débito de D): forma no prevista, requiere decisión. No se escribió nada.');
         }
-        $ids_par = array_column($filas_par, 'id');
+        // IDs como enteros: el driver puede devolverlos como texto y la comparación con --pivotes es estricta.
+        $ids_par = array_map('intval', array_column($filas_par, 'id'));
 
         // Imputaciones propias de D: todo lo que le queda debe venir de haberes de su misma cuenta.
         $propias_d = DB::table('pagado_por as pp')->leftJoin('current_acounts as ha', 'ha.id', '=', 'pp.haber_id')
@@ -1213,6 +1214,11 @@ class RepararCreditosHistoricos extends Command
             throw new RuntimeException($error_de_cadena);
         }
 
+        // Foto "esperada" construida ANTES de escribir, desde la base tal como está: sin las filas del par y con D en su
+        // estado nuevo (en memoria). Armarla después compararía la base consigo misma y no detectaría nada.
+        $cambios = $cambia_estado ? [$debe_id => ['status' => $status_nuevo, 'pagandose' => $pagandose_nuevo]] : [];
+        $fotos_esperadas = $this->fotos_vinculos($ids_cuentas, $duenios, $ids_par, $cambios);
+
         // Escritura 1: se borran exactamente las filas del par.
         $borradas = DB::table('pagado_por')->whereIn('id', $ids_par)->where('debe_id', $debe_id)->where('haber_id', $haber_id)->delete();
         if ($borradas !== count($ids_par)) {
@@ -1238,9 +1244,8 @@ class RepararCreditosHistoricos extends Command
         if ($this->saldos_vinculos($ids_cuentas, $duenios) !== $saldos_antes) {
             throw new RuntimeException('Cambió un saldo (de un movimiento, de una cuenta o de un dueño). Se revierte la transacción.');
         }
-        $cambios = $cambia_estado ? [$debe_id => ['status' => $status_nuevo, 'pagandose' => $pagandose_nuevo]] : [];
         $fotos_despues = $this->fotos_vinculos($ids_cuentas, $duenios);
-        if ($fotos_despues !== $this->fotos_vinculos($ids_cuentas, $duenios, $ids_par, $cambios)) {
+        if ($fotos_despues !== $fotos_esperadas) {
             throw new RuntimeException('Cambió algo más que las filas del par y el estado de D (movimientos, saldos, dueño, comisiones o puntos). Se revierte la transacción.');
         }
         $debe_despues = (array) DB::table('current_acounts')->where('id', $debe_id)->first();
