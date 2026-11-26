@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\CommonLaravel;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Helpers\ActualizacionDelSistemaHelper;
 use App\Http\Controllers\Helpers\DemoIngresoTokenHelper;
 use App\Http\Controllers\Helpers\MostradorHelper;
 use App\Http\Controllers\Helpers\PriceTypeHelper;
@@ -82,6 +83,19 @@ class AuthController extends Controller
                 Auth::logout();
 
                 return PruebaHelper::respuesta_vencida($owner_id);
+            }
+
+            /*
+             * Sistema en actualización (misión aviso-actualizacion-sistema, 25/11/2026): la credencial es
+             * correcta pero no se puede ingresar mientras el estado del dueño sea `actualizando`. Va DESPUÉS de
+             * `Auth::attempt` (una credencial inválida se contesta igual que siempre, sin revelar el estado) y
+             * ANTES del candado de sesión única (un login cortado no puede tomarlo). El acceso maestro entra por
+             * la rama de arriba (`loginLucas`) y no pasa por acá: el humo del pipeline sigue entrando.
+             */
+            if (ActualizacionDelSistemaHelper::bloquea_el_ingreso(Auth::user())) {
+                Auth::logout();
+
+                return ActualizacionDelSistemaHelper::respuesta_marca_de_login();
             }
             
             if ($this->checkUserLastActivity()) {
@@ -173,6 +187,13 @@ class AuthController extends Controller
                 Auth::logout();
 
                 return PruebaHelper::respuesta_vencida($owner_id);
+            }
+
+            // Sistema en actualización: mismo corte que en login(), antes de tocar el candado del otro dispositivo.
+            if (ActualizacionDelSistemaHelper::bloquea_el_ingreso($auth_user)) {
+                Auth::logout();
+
+                return ActualizacionDelSistemaHelper::respuesta_marca_de_login();
             }
 
             /**
@@ -493,6 +514,17 @@ class AuthController extends Controller
 
             if ($candidate) {
                 Auth::login($candidate, false);
+
+                /*
+                 * Sistema en actualización: la transferencia de sesión entre versiones también es un ingreso y
+                 * se corta igual que login(). La transferencia del acceso maestro (`master_login_bypass`) no:
+                 * es la que usa el humo del pipeline.
+                 */
+                if (!$transfer['master_login_bypass'] && ActualizacionDelSistemaHelper::bloquea_el_ingreso($candidate)) {
+                    Auth::logout();
+
+                    return ActualizacionDelSistemaHelper::respuesta_marca_de_login();
+                }
 
                 if ($es_transferencia_de_demo) {
                     session()->put('demo_ingreso_token_id', $transfer['demo_ingreso_token_id']);
