@@ -29,7 +29,7 @@ use Tests\TestCase;
  * Motivo esperado del rojo ANTES de la implementación: las rutas no existen (404) y la tabla
  * `actualizaciones_del_sistema` tampoco.
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4 estricto: nada de la sintaxis de PHP 8 (ni match, ni operador nullsafe, ni funciones str_*_with, ni argumentos con nombre).
  */
 class AdminSyncActualizacionTest extends TestCase
 {

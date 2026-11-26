@@ -27,7 +27,7 @@ use Tests\TestCase;
  * (todo test inserta el estado con `DB::table`, que es el contrato §4.2 que también lee tienda-api).
  *
  * DatabaseTransactions (no RefreshDatabase): la base de testing del slot ya está sembrada (dueño 500).
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4 estricto: nada de la sintaxis de PHP 8 (ni match, ni operador nullsafe, ni funciones str_*_with, ni argumentos con nombre).
  */
 class BloqueoDeIngresoTest extends TestCase
 {

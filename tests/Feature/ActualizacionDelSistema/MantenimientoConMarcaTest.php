@@ -25,7 +25,7 @@ use Tests\TestCase;
  * Motivo esperado del rojo ANTES de la implementación: la respuesta del `down` es el 503 genérico sin la
  * marca, y las rutas del admin no existen.
  *
- * PHP 7.4: sin match, sin ?->, sin str_contains, sin argumentos nombrados.
+ * PHP 7.4 estricto: nada de la sintaxis de PHP 8 (ni match, ni operador nullsafe, ni funciones str_*_with, ni argumentos con nombre).
  */
 class MantenimientoConMarcaTest extends TestCase
 {
