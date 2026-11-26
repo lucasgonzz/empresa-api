@@ -76,6 +76,13 @@ class BusquedaHibridaDeArticulosHelper
      * Lista ordenada, con repetidos y con TODO (conectores, letras sueltas, números). "P/BORDEADORA"
      * → `p`, `bordeadora`. Ningún token tiene `%`, `_` ni `\`, así que el LIKE no necesita escape.
      *
+     * Un decimal de 1 o 2 dígitos es UN token: "2,5", "2.5" y "2,50" → `2d5`; "1X2,50" → `1x`, `2d5`;
+     * "2,5mm" → `2d5`, `mm`; "2,0" → `2`. Se parte antes que nada porque "cable de 2,5" se tokenizaba
+     * como `2` y `5` y los cables 1X2,50 quedaban detrás de acero de 2 MM y morsas de 5" (Ferretotal,
+     * 26/11/2026). Con 3 dígitos de fracción ("1.400 W") es un separador de miles y se parte como
+     * siempre. No se compactan las medidas con "x" ("60 x 60" sigue siendo tres tokens). Consulta y
+     * nombres pasan por acá, así que los dos lados normalizan igual: no tocar uno sin el otro.
+     *
      * @param string $texto
      * @return array<int, string>
      */
@@ -86,7 +93,14 @@ class BusquedaHibridaDeArticulosHelper
             'á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'ñ' => 'n',
         ]);
 
-        $partes = preg_split('/[^a-z0-9]+/', $sin_tildes, -1, PREG_SPLIT_NO_EMPTY);
+        // La fracción sin ceros finales: "2,50" y "2,5" deben dar el mismo token; "2,0" queda en "2".
+        $con_decimales = preg_replace_callback('/(\d+)[.,](\d{1,2})(?!\d)/', function ($m) {
+            $fraccion = rtrim($m[2], '0');
+
+            return ' ' . $m[1] . ($fraccion === '' ? '' : 'd' . $fraccion) . ' ';
+        }, $sin_tildes);
+
+        $partes = preg_split('/[^a-z0-9]+/', $con_decimales === null ? $sin_tildes : $con_decimales, -1, PREG_SPLIT_NO_EMPTY);
 
         return $partes === false ? [] : $partes;
     }

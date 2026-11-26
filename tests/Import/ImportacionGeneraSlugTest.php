@@ -276,6 +276,9 @@ class ImportacionGeneraSlugTest extends ImportTestCase
     {
         $a1 = $this->seed['A1'];
 
+        // Sembrado: el alta ahora completa el slug (observer creating); se fuerza NULL directo en la tabla.
+        \Illuminate\Support\Facades\DB::table('articles')->where('id', $a1->id)->update(['slug' => null]);
+
         $this->assertNull($this->recargar('A1')->slug, 'El escenario sembrado tiene que arrancar con slug NULL.');
 
         $import = $this->importar_xlsx($this->xlsx([
@@ -387,6 +390,9 @@ class ImportacionGeneraSlugTest extends ImportTestCase
         $a2 = $this->seed['A2'];
 
         Article::where('id', $a1->id)->update(['slug' => 'art-unico-prov-a']);
+
+        // Sembrado: el alta ahora completa el slug (observer creating); se fuerza NULL directo en la tabla.
+        \Illuminate\Support\Facades\DB::table('articles')->where('id', $a2->id)->update(['slug' => null]);
 
         $this->assertNull($this->recargar('A2')->slug);
 

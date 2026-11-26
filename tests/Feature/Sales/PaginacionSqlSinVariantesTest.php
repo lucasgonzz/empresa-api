@@ -63,7 +63,10 @@ class PaginacionSqlSinVariantesTest extends TestCase
         DB::enableQueryLog();
         $respuesta = $this->postJson('api/global-search/article?page=2', [
             'query_value' => 'tornillo', 'props' => ['name'], 'contexto' => 'vender', 'per_page' => 7,
-        ])->assertStatus(200)->assertJsonPath('models.total', 3000)->assertJsonCount(7, 'models.data');
+        // Cambio de contrato (misión busqueda-vender-conteo-acotado-siempre, 26/11/2026): el total de
+        // Vender se acota SIEMPRE, también con criterio largo. Página 2 de 7: tope = 7 + 7*20 = 147, así
+        // que con 3000 coincidencias el piso informado es 148 y la bandera avisa que no es el total.
+        ])->assertStatus(200)->assertJsonPath('models.total', 148)->assertJsonPath('total_es_minimo', true)->assertJsonCount(7, 'models.data');
         $sql = collect(DB::getQueryLog())->pluck('query');
         DB::disableQueryLog();
         $this->assertSame(14, $recuperados, 'Solo siete modelos livianos y siete completos; los otros 2993 no se hidratan.');

@@ -2,11 +2,13 @@
 
 namespace App\Observers;
 
+use App\Http\Controllers\Helpers\ArticleHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Services\ArticleEmbeddingDispatcher;
 use App\Models\Article;
 use App\Models\ImportStatus;
 use App\Models\User;
+use Illuminate\Support\Str;
 
 /**
  * Observer del modelo Article para mantener los embeddings vectoriales actualizados.
@@ -125,6 +127,39 @@ class ArticleObserver
     public static function terminar_semilla(): void
     {
         self::$semilla_en_curso = false;
+    }
+
+    /**
+     * Alta de artículo (antes de insertar): si no trae slug, se lo calcula del nombre.
+     *
+     * Hay varios caminos de alta que hacen `Article::create` / `new Article` sin slug (clonado, API
+     * externa, Tienda Nube, Mercado Libre...). Sin slug la tienda no puede abrir la ficha, así que se
+     * completa acá, en un solo lugar, con la misma regla del ABM (`ArticleHelper::slug`: único por
+     * dueño). Quien ya trae slug no se toca. Si el nombre no da ningún slug (vacío o sólo símbolos) o
+     * falta el dueño, se deja como está: nunca se corta el alta por esto.
+     *
+     * @param Article $article Artículo que está por insertarse.
+     *
+     * @return void
+     */
+    public function creating(Article $article): void
+    {
+        // Ya trae slug propio: se respeta.
+        if (!is_null($article->slug) && $article->slug !== '') {
+            return;
+        }
+
+        // Sin dueño no hay contra qué calcular la unicidad.
+        if (is_null($article->user_id)) {
+            return;
+        }
+
+        // Nombre sin ningún carácter aprovechable: no hay slug posible.
+        if (Str::slug((string) $article->name) === '') {
+            return;
+        }
+
+        $article->slug = ArticleHelper::slug($article->name, null, $article->user_id);
     }
 
     /**

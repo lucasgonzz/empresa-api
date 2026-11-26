@@ -67,6 +67,10 @@ class WhatsappBotConfig extends Model
         // string y un '0' string es truthy en PHP. NO se lee directo para decidir si se simula:
         // se pasa siempre por `esta_en_modo_demostracion()`.
         'envio_simulado' => 'boolean',
+        // Si el agente deja de informar costos de envío y totales y los deriva al equipo (misión
+        // truvari-envio-coherente v2). Se castea a booleano por el mismo motivo que los otros toggles: un '0'
+        // string es truthy en PHP y prendería el filtro en TODOS los negocios.
+        'derivar_cotizacion_envio' => 'boolean',
     ];
 
     /*
