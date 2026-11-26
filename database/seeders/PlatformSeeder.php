@@ -101,5 +101,20 @@ class PlatformSeeder extends Seeder
                 'extra_config'  => null,
             ]
         );
+
+        // Andreani directo, misión envios-andreani (25/11/2026): la fila que ancla el conector de envíos de
+        // cada comercio. Igual que Zipnova no hay app de ComercioCity: el comercio carga su número de cliente y
+        // sus contratos, así que `client_id`/`client_secret` van en null. La migración
+        // `asegurar_plataforma_andreani` crea la misma fila en los upgrades, donde corren migraciones y no
+        // seeders.
+        Platform::query()->updateOrCreate(
+            ['slug' => Platform::SLUG_ANDREANI],
+            [
+                'name'          => 'Andreani',
+                'client_id'     => null,
+                'client_secret' => null,
+                'extra_config'  => null,
+            ]
+        );
     }
 }

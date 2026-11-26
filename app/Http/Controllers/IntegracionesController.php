@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Controllers\Helpers\AndreaniCredentialsHelper;
 use App\Http\Controllers\Helpers\ZipnovaCredentialsHelper;
 use App\Models\Platform;
 use App\Models\PlatformConnector;
@@ -59,6 +60,7 @@ class IntegracionesController extends Controller
                 'grupo' => self::GRUPO_TIENDA_ONLINE,
             ],
             self::entrada_zipnova(),
+            self::entrada_andreani(),
         ];
     }
 
@@ -74,6 +76,21 @@ class IntegracionesController extends Controller
         return [
             'slug'  => Platform::SLUG_ZIPNOVA,
             'name'  => 'Zipnova',
+            'grupo' => self::GRUPO_TIENDA_ONLINE,
+        ];
+    }
+
+    /**
+     * Entrada de Andreani en el catálogo (misión envios-andreani, 25/11/2026). Está aparte por el mismo motivo
+     * que Zipnova: `AndreaniIntegracionController` responde `{integracion}` con esta misma forma.
+     *
+     * @return array<string, string>
+     */
+    public static function entrada_andreani()
+    {
+        return [
+            'slug'  => Platform::SLUG_ANDREANI,
+            'name'  => 'Andreani',
             'grupo' => self::GRUPO_TIENDA_ONLINE,
         ];
     }
@@ -116,6 +133,20 @@ class IntegracionesController extends Controller
     }
 
     /**
+     * El item de Andreani del comercio, tal como lo devuelve `index()`. Lo usan los endpoints de
+     * `AndreaniIntegracionController` para responder con la tarjeta ya actualizada.
+     *
+     * @param int $user_id Comercio (owner).
+     * @return array<string, mixed>
+     */
+    public static function integracion_andreani($user_id)
+    {
+        $connector = PlatformConnector::find_for_user_and_slug((int) $user_id, Platform::SLUG_ANDREANI);
+
+        return self::item(self::entrada_andreani(), $connector);
+    }
+
+    /**
      * Un item del listado: la entrada del catálogo más el estado del conector. Para Zipnova
      * conectado suma `config`; para el resto son exactamente las seis claves que la SPA consume.
      *
@@ -133,7 +164,7 @@ class IntegracionesController extends Controller
         // plano) figuraría conectado y después TODO fallaría con "no tiene Zipnova conectado":
         // mejor que la tarjeta pida las credenciales de nuevo. Es lo mismo que decide
         // `ZipnovaCredentialsHelper::credentials()` al leerlo.
-        if ($integracion['slug'] === Platform::SLUG_ZIPNOVA && $estado['connected']) {
+        if (in_array($integracion['slug'], [Platform::SLUG_ZIPNOVA, Platform::SLUG_ANDREANI], true) && $estado['connected']) {
             $estado['connected'] = self::token_descifrable($connector);
         }
 
@@ -155,6 +186,10 @@ class IntegracionesController extends Controller
 
         if ($integracion['slug'] === Platform::SLUG_ZIPNOVA && $estado['connected']) {
             $item['config'] = self::config_publica_de_zipnova($connector);
+        }
+
+        if ($integracion['slug'] === Platform::SLUG_ANDREANI && $estado['connected']) {
+            $item['config'] = self::config_publica_de_andreani($connector);
         }
 
         return $item;
@@ -239,6 +274,35 @@ class IntegracionesController extends Controller
             'declarar_valor'     => (bool) $config['declarar_valor'],
             'envio_gratis_desde' => $config['envio_gratis_desde'],
             'webhook_registrado' => !empty($config['webhook_id']),
+            'conectado_en'       => $config['conectado_en'],
+        ];
+    }
+
+    /**
+     * La parte de `extra_config` del conector de Andreani que la tarjeta necesita, con los defaults aplicados
+     * (`AndreaniCredentialsHelper::config_desde_conector()`), más el número de cliente.
+     *
+     * Lista cerrada, clave por clave, igual que la de Zipnova. 🔴 Nunca el `access_token`: en la etapa 2 lleva el
+     * usuario y la contraseña de la API de Andreani; a la tarjeta le alcanza con `api_cargada`, que dice si están.
+     *
+     * @param PlatformConnector $connector Conector de Andreani conectado.
+     * @return array<string, mixed>
+     */
+    protected static function config_publica_de_andreani(PlatformConnector $connector)
+    {
+        $config = AndreaniCredentialsHelper::config_desde_conector($connector);
+        $credentials = AndreaniCredentialsHelper::credentials((int) $connector->user_id);
+
+        return [
+            'cliente'            => is_null($connector->platform_user_id) ? null : (string) $connector->platform_user_id,
+            'contrato_domicilio' => $config['contrato_domicilio'],
+            'contrato_sucursal'  => $config['contrato_sucursal'],
+            'sucursal_origen'    => $config['sucursal_origen'],
+            'bulto_default'      => $config['bulto_default'],
+            'declarar_valor'     => (bool) $config['declarar_valor'],
+            'envio_gratis_desde' => $config['envio_gratis_desde'],
+            'ofrecer_en_tienda'  => (bool) $config['ofrecer_en_tienda'],
+            'api_cargada'        => !is_null($credentials['api']),
             'conectado_en'       => $config['conectado_en'],
         ];
     }

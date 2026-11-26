@@ -1,0 +1,13 @@
+{
+    "pesoAforado": "350000.00",
+    "tarifaSinIva": {
+        "seguroDistribucion": "20.00",
+        "distribucion": "624.22",
+        "total": "644.22"
+    },
+    "tarifaConIva": {
+        "seguroDistribucion": "24.20",
+        "distribucion": "755.31",
+        "total": "779.51"
+    }
+}

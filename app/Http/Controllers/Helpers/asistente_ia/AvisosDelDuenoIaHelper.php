@@ -627,7 +627,7 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
-     * Cómo le llega el pedido al comprador: «Envío por correo» (Zipnova), «Envío propio: <zona>», «Envío a
+     * Cómo le llega el pedido al comprador: «Envío por Andreani» (Andreani directo), «Envío por correo» (Zipnova), «Envío propio: <zona>», «Envío a
      * domicilio» (sin zona) o «Retiro por local».
      *
      * @param  \App\Models\Order  $pedido
@@ -635,6 +635,12 @@ class AvisosDelDuenoIaHelper
      */
     protected static function entrega_del_pedido(Order $pedido): string
     {
+        // Andreani directo (misión envios-andreani, 25/11/2026): va antes que `deliver` para que no salga como «Envío a domicilio».
+        if ($pedido->envio_va_por_andreani()) {
+
+            return 'Envío por Andreani';
+        }
+
         if ($pedido->envio_va_por_zipnova()) {
 
             return 'Envío por correo';

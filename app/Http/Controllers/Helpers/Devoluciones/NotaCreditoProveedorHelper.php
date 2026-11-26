@@ -130,6 +130,27 @@ class NotaCreditoProveedorHelper {
 
             return response()->json(['message' => $e->getMessage(), 'devolucion_excedida' => true], 422);
 
+        } catch (\Illuminate\Validation\ValidationException $e) {
+
+            DB::rollBack();
+
+            /*
+                🔴 La ValidationException `cuenta_corriente` la lanza CurrentAcountHelper::notaCredito() para un
+                monto negativo o no numérico (misión cc-pivotes-huerfanos-signo, ticket 171). Sin este catch la
+                tragaba el `catch (\Throwable)` de abajo y la devolución respondía 500 sin motivo. Se re-lanza
+                como hace DevolucionesController::store: Laravel la convierte en 422 con el mensaje. Cualquier
+                otra ValidationException sigue el camino de siempre (report + 500).
+            */
+            if (isset($e->errors()['cuenta_corriente'])) {
+                throw $e;
+            }
+
+            Log::info('Error en nota de credito a proveedor');
+
+            report($e);
+
+            return response(null, 500);
+
         } catch (\Throwable $e) {
 
             DB::rollBack();

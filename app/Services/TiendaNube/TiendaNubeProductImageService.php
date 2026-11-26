@@ -65,6 +65,11 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
                     }
                     $data = $response->json();
                     $this->validate_remote_image($data, $article);
+                    // Conservá el ID del POST antes del GET. Un inventario posterior
+                    // vacío no autoriza reenviar una imagen ya aceptada.
+                    $this->assert_lock_owned($key);
+                    $image->tn_pending_image_confirmation = $this->pending_confirmation_key($article, $data['id']);
+                    $image->save();
                     $remote = $this->remote_images($article);
                     if (!collect($remote)->contains(function ($item) use ($data) { return (string) $item['id'] === (string) $data['id']; })) {
                         throw new \RuntimeException('Tienda Nube no confirmó la imagen '.$image->id.' en el producto.');
@@ -75,6 +80,9 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
                 $image->tienda_nube_image_id = $row['remote_id'];
                 // Lectura compatible de ambas columnas, sin dejar dos verdades diferentes.
                 $image->tiendanube_image_id = $row['remote_id'];
+                if ($image->tn_pending_image_confirmation !== null) {
+                    $image->tn_pending_image_confirmation = null;
+                }
                 $image->save();
                 $row['action'] = 'confirmada';
             }
@@ -103,6 +111,9 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
         $all = [];
         for ($page = 1; $page <= 3; $page++) {
             $response = $this->http_without_throw_on_error_status()->get($this->endpoint($article), ['page' => $page, 'per_page' => 100]);
+            if ($response->status() === 429) {
+                throw new TiendaNubeImageRateLimitException($response->header('Retry-After'));
+            }
             if (!$response->successful() || !is_array(json_decode($response->body()))) {
                 throw new \RuntimeException('No se pudo consultar las imágenes remotas (HTTP '.$response->status().').');
             }
@@ -141,6 +152,18 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
         }
     }
 
+    protected function pending_confirmation_key(Article $article, $imageId): string
+    {
+        return $this->store_id.':'.$article->tiendanube_product_id.':'.$imageId;
+    }
+
+    protected function pending_confirmation_id(Article $article, Image $image): ?string
+    {
+        $prefix = $this->pending_confirmation_key($article, '');
+        $checkpoint = (string) $image->tn_pending_image_confirmation;
+        return strpos($checkpoint, $prefix) === 0 ? substr($checkpoint, strlen($prefix)) : null;
+    }
+
     protected function inventory(Article $article, $images, array $remote): array
     {
         $rows = [];
@@ -154,6 +177,10 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
                 $hash = $this->image_hash($image->hosting_url);
                 $row['sha256'] = $hash;
                 $ids = array_values(array_unique(array_filter([(string) $image->tienda_nube_image_id, (string) $image->tiendanube_image_id])));
+                $pendingId = $this->pending_confirmation_id($article, $image);
+                if ($pendingId !== null) {
+                    $ids = [$pendingId];
+                }
                 if (count($ids) > 1) {
                     $row['action'] = 'ambigua';
                     $row['reason'] = 'Los marcadores de la foto son discordantes; revisar antes de reconciliar.';
@@ -162,9 +189,16 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
                 }
                 $matches = [];
                 foreach ($remote as $item) {
-                    if (in_array((string) $item['id'], $ids, true) || $item['src'] === $image->hosting_url) {
+                    if (in_array((string) $item['id'], $ids, true)
+                        || ($pendingId === null && $item['src'] === $image->hosting_url)) {
                         $matches[(string) $item['id']] = $item;
                     }
+                }
+                if (count($matches) === 0 && $pendingId !== null) {
+                    $row['action'] = 'ambigua';
+                    $row['reason'] = 'Tienda Nube aceptó la foto '.$pendingId.' pero todavía no la lista.';
+                    $rows[] = $row;
+                    continue;
                 }
                 if (count($matches) === 0) {
                     foreach ($remote as $item) {
@@ -255,7 +289,10 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
         }
         try {
             $image->refresh();
-            $ids = array_values(array_unique(array_filter([$image->tienda_nube_image_id, $image->tiendanube_image_id])));
+            $pendingId = $this->pending_confirmation_id($article, $image);
+            $ids = $pendingId !== null ? [$pendingId] : array_values(array_unique(array_filter([
+                (string) $image->tienda_nube_image_id, (string) $image->tiendanube_image_id,
+            ])));
             if (count($ids) === 0) {
                 $this->assert_lock_owned($key);
                 if ($deleteLocal) { $deleteLocal(); }
@@ -268,6 +305,9 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
             $exists = collect($remote)->contains(function ($item) use ($ids) { return (string) $item['id'] === (string) $ids[0]; });
             $this->assert_lock_owned($key);
             if (!$exists) {
+                if ($pendingId !== null) {
+                    throw new \RuntimeException('Tienda Nube aceptó la foto pero todavía no la lista; revisar antes de eliminar.');
+                }
                 $image->tienda_nube_image_id = null;
                 $image->tiendanube_image_id = null;
                 $image->save();
@@ -281,6 +321,9 @@ class TiendaNubeProductImageService extends BaseTiendaNubeService
             $this->assert_lock_owned($key);
             $image->tienda_nube_image_id = null;
             $image->tiendanube_image_id = null;
+            if ($pendingId !== null) {
+                $image->tn_pending_image_confirmation = null;
+            }
             $image->save();
             if ($deleteLocal) { $deleteLocal(); }
         } finally {

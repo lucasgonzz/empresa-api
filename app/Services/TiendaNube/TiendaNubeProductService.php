@@ -80,7 +80,8 @@ class TiendaNubeProductService extends BaseTiendaNubeService
         Log::info($payload);
 
         $endpoint = "/{$this->store_id}/products";
-        $response = $this->http()->post($endpoint, $payload);
+        // Un timeout puede haber creado el producto. Repetir el alta duplicaría el SKU.
+        $response = $this->http_without_throw_on_error_status()->post($endpoint, $payload)->throw();
 
         if ($response->successful()) {
             $data = $response->json();

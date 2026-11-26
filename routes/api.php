@@ -900,6 +900,14 @@ Route::middleware(['auth:sanctum', \App\Http\Middleware\DiagnosticoConexion::cla
     Route::post('integraciones/zipnova/origenes', 'ZipnovaIntegracionController@origenes');
     Route::post('integraciones/zipnova/cotizar-prueba', 'ZipnovaIntegracionController@cotizar_prueba');
 
+    // Andreani directo, misión envios-andreani (25/11/2026): el comercio carga su número de cliente y sus
+    // contratos (la cotización es pública, sin usuario ni contraseña). Las cuatro responden `{integracion}` con la
+    // misma forma que un item de `integraciones`, salvo `cotizar-prueba` que responde `{cotizacion}`.
+    Route::post('integraciones/andreani/conectar', 'AndreaniIntegracionController@conectar');
+    Route::post('integraciones/andreani/disconnect', 'AndreaniIntegracionController@disconnect');
+    Route::put('integraciones/andreani/config', 'AndreaniIntegracionController@config');
+    Route::post('integraciones/andreani/cotizar-prueba', 'AndreaniIntegracionController@cotizar_prueba');
+
     // Envío del pedido de la tienda (misión zipnova-envios): generar en Zipnova, ver, sincronizar,
     // cancelar y etiqueta. `generar` responde el PEDIDO completo (con `envio` por withAll); el
     // resto, el envío. Todo scopeado por el comercio autenticado (404 si es de otro).

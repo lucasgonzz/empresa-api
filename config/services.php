@@ -708,6 +708,22 @@ return [
     ],
 
     /**
+     * Andreani directo, misión envios-andreani (25/11/2026): segunda opción de envío por correo de la tienda, al
+     * lado de Zipnova. Sin credenciales a nivel instancia: cada comercio carga SU número de cliente y sus
+     * contratos (`platform_connectors`). Lo único configurable es cómo llegar a la API pública de tarifas y
+     * sucursales (`AndreaniClient`, único lector): host, timeout y verificación SSL.
+     */
+    'andreani' => [
+        // Host de la API pública (tarifas v1, sucursales v2).
+        'base_url'         => env('ANDREANI_BASE_URL', 'https://apis.andreani.com'),
+        // Segundos máximos de espera. Un solo intento: si Andreani tarda no puede frenar nada de Zipnova.
+        'timeout'          => (int) env('ANDREANI_TIMEOUT', 15),
+        // Verificación del certificado (true salvo que el PHP local no encuentre el bundle).
+        'guzzle_verify'    => filter_var(env('ANDREANI_GUZZLE_VERIFY_SSL', true), FILTER_VALIDATE_BOOLEAN),
+        'guzzle_ca_bundle' => env('ANDREANI_GUZZLE_CA_BUNDLE', ''),
+    ],
+
+    /**
      * Credenciales de AFIP SDK (app.afipsdk.com), usadas por AfipSdk::__construct() para pedir
      * el token de autorizacion (TA) via WebService. Antes estaban escritas literalmente en
      * AfipSdk.php (grupo 220, prompt 02); el repositorio es publico, asi que ahora se leen del

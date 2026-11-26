@@ -220,4 +220,25 @@ class Order extends Model
 
         return $proveedor === '' || strtolower($proveedor) === Envio::PROVEEDOR_ZIPNOVA;
     }
+
+    /**
+     * True si el pedido va por Andreani directo (misión envios-andreani, 25/11/2026): el comprador eligió una
+     * opción de Andreani en la tienda (`envio_opcion` con algo adentro) y el proveedor guardado es `andreani`.
+     *
+     * En esta etapa el ERP NO genera la orden ni la etiqueta por la API de Andreani: el pedido queda «A despachar
+     * en Andreani» y el comercio lo carga a mano en el portal. Es el complemento de `envio_va_por_zipnova()`, que
+     * ya deja afuera cualquier proveedor que no sea Zipnova: un pedido es de uno u otro, nunca de los dos.
+     *
+     * @return bool
+     */
+    function envio_va_por_andreani() {
+
+        if (!is_array($this->envio_opcion) || count($this->envio_opcion) === 0) {
+            return false;
+        }
+
+        $proveedor = is_null($this->envio_proveedor) ? '' : trim((string) $this->envio_proveedor);
+
+        return strtolower($proveedor) === Platform::SLUG_ANDREANI;
+    }
 }

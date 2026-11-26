@@ -1,0 +1,163 @@
+[
+  {
+    "id": 10245,
+    "idgla_integra": 0,
+    "idgla_alertran": 0,
+    "codigo": "COR",
+    "numero": "245",
+    "descripcion": "CORDOBA - RECANALIZACION",
+    "canal": "B2C",
+    "direccion": {
+      "calle": "Colectora Au.9 Córdoba-Rosario",
+      "numero": "0",
+      "provincia": "Cordoba",
+      "localidad": "Toledo",
+      "region": "Centro",
+      "pais": "Argentina",
+      "codigoPostal": "5123"
+    },
+    "coordenadas": {
+      "latitud": "-31.419714",
+      "longitud": "-64.103349"
+    },
+    "horarioDeAtencion": "Lunes a viernes de 08:00 a 18:00 – Sábados de 08:00 a 13:00Hs",
+    "datosAdicionales": {
+      "seHaceAtencionAlCliente": false,
+      "tipo": "SUCURSAL",
+      "tipoPd3": "No aplica",
+      "admiteEnvios": true,
+      "entregaEnvios": true,
+      "conBuzonInteligente": false
+    },
+    "telefonos": [
+      ""
+    ],
+    "codigosPostalesAtendidos": [
+      "5000",
+      "5004"
+    ]
+  },
+  {
+    "id": 20009,
+    "idgla_integra": 0,
+    "idgla_alertran": 0,
+    "codigo": "009",
+    "numero": "9",
+    "descripcion": "CORDOBA",
+    "canal": "B2B",
+    "direccion": {
+      "calle": "",
+      "numero": "",
+      "provincia": "Cordoba",
+      "localidad": "Cordoba",
+      "region": "Centro",
+      "pais": "Argentina",
+      "codigoPostal": "5000"
+    },
+    "coordenadas": {
+      "latitud": "-31.4198",
+      "longitud": "-64.0905"
+    },
+    "horarioDeAtencion": "",
+    "datosAdicionales": {
+      "seHaceAtencionAlCliente": false,
+      "tipo": "",
+      "tipoPd3": "No aplica",
+      "admiteEnvios": false,
+      "entregaEnvios": false,
+      "conBuzonInteligente": false
+    },
+    "telefonos": [
+      "0351-467-9200"
+    ],
+    "codigosPostalesAtendidos": [
+      "2430",
+      "2436",
+      "4296",
+      "4298",
+      "4525"
+    ]
+  },
+  {
+    "id": 30008,
+    "idgla_integra": 10158,
+    "idgla_alertran": 20009,
+    "codigo": "CAU",
+    "numero": "8",
+    "descripcion": "CORDOBA (AU9)",
+    "canal": "DMS",
+    "direccion": {
+      "calle": "Au9 Km 695",
+      "numero": "0",
+      "provincia": "Cordoba",
+      "localidad": "Cordoba",
+      "region": "Centro",
+      "pais": "Argentina",
+      "codigoPostal": "5123"
+    },
+    "coordenadas": {
+      "latitud": "-31.421503",
+      "longitud": "-64.09124"
+    },
+    "horarioDeAtencion": "De Lunes a Viernes de 08:00hs a 18:00hs;Sábados de 08:00hs a 13:00hs;",
+    "datosAdicionales": {
+      "seHaceAtencionAlCliente": true,
+      "tipo": "Unidad Operativa de Procesamiento",
+      "tipoPd3": "No aplica",
+      "admiteEnvios": false,
+      "entregaEnvios": false,
+      "conBuzonInteligente": false
+    },
+    "telefonos": [
+      ""
+    ],
+    "codigosPostalesAtendidos": [
+      "2430",
+      "2436",
+      "4296",
+      "4298",
+      "4525"
+    ]
+  },
+  {
+    "id": 40476,
+    "idgla_integra": 10158,
+    "idgla_alertran": 0,
+    "codigo": "76",
+    "numero": "476",
+    "descripcion": "Córdoba",
+    "canal": "CDS",
+    "direccion": {
+      "calle": "Au 9 Km 695",
+      "numero": " 695",
+      "provincia": "Córdoba",
+      "localidad": "Córdoba",
+      "region": "",
+      "pais": "Argentina",
+      "codigoPostal": "5000"
+    },
+    "coordenadas": {
+      "latitud": "-31.421000",
+      "longitud": "-64.089800"
+    },
+    "horarioDeAtencion": "L/V 8:00 a 17:00 hs.",
+    "datosAdicionales": {
+      "seHaceAtencionAlCliente": true,
+      "tipo": "De Terceros Compartida",
+      "tipoPd3": "No aplica",
+      "admiteEnvios": true,
+      "entregaEnvios": true,
+      "conBuzonInteligente": false
+    },
+    "telefonos": [
+      "+5493515377809"
+    ],
+    "codigosPostalesAtendidos": [
+      "2430",
+      "2436",
+      "4296",
+      "4298",
+      "4525"
+    ]
+  }
+]

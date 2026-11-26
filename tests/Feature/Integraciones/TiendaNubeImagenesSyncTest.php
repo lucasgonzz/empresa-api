@@ -6,6 +6,7 @@ use App\Jobs\ProcessSyncArticleImageToTiendaNube;
 use App\Models\Article;
 use App\Models\Image;
 use App\Models\SyncToTNArticle;
+use App\Notifications\GlobalNotification;
 use App\Services\TiendaNube\TiendaNubeImageService;
 use App\Services\TiendaNube\TiendaNubeProductImageService;
 use App\Services\TiendaNube\TiendaNubeProductService;
@@ -13,6 +14,7 @@ use App\Services\TiendaNube\TiendaNubeSyncArticleService;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Storage;
 use Tests\EmpresaTestCase;
 
@@ -27,6 +29,11 @@ class TiendaNubeImagenesSyncTest extends EmpresaTestCase
     protected $confirm = true;
     protected $getBody = null;
     protected $getStatus = 200;
+    protected $imageGets = 0;
+    protected $rateLimitOnGet = null;
+    protected $retryAfter = null;
+    protected $productPosts = 0;
+    protected $failProductPost = false;
     protected $remotePages = null;
     protected $timeoutOnce = false;
     protected $failPostAt = null;
@@ -46,8 +53,16 @@ class TiendaNubeImagenesSyncTest extends EmpresaTestCase
                 return Http::response($body, $this->urlStatus, ['Content-Type' => 'image/png']);
             }
             if ($request->method() === 'GET' && strpos($request->url(), '/images') !== false) {
+                $this->imageGets++;
+                if ($this->rateLimitOnGet === $this->imageGets || $this->getStatus === 429) {
+                    $headers = $this->retryAfter === null ? [] : ['Retry-After' => $this->retryAfter];
+                    return Http::response([], 429, $headers);
+                }
                 parse_str((string) parse_url($request->url(), PHP_URL_QUERY), $query);
                 $body = $this->remotePages === null ? $this->remote : ($this->remotePages[$query['page'] ?? 1] ?? []);
+                if (strpos($request->url(), '/products/7654322/') !== false) {
+                    $body = [];
+                }
                 return Http::response($this->getBody === null ? $body : $this->getBody, $this->getStatus);
             }
             if ($request->method() === 'POST' && substr($request->url(), -7) === '/images') {
@@ -67,6 +82,10 @@ class TiendaNubeImagenesSyncTest extends EmpresaTestCase
                 return Http::response($this->invalidPost ? ['src' => 'incompleta'] : $data, $this->apiStatus);
             }
             if ($request->method() === 'POST') {
+                $this->productPosts++;
+                if ($this->failProductPost) {
+                    throw new \Illuminate\Http\Client\ConnectionException('Respuesta perdida después de crear');
+                }
                 return Http::response(['id' => 7654321, 'variants' => [['id' => 8765432]], 'handle' => ['es' => 'foto']], 201);
             }
             if ($request->method() === 'PUT') {
@@ -81,6 +100,7 @@ class TiendaNubeImagenesSyncTest extends EmpresaTestCase
         foreach ($this->evidence as $path) {
             if (is_file($path)) { unlink($path); }
         }
+        $this->travelBack();
         putenv('TN_USER_ID');
         putenv('CARGAR_IMAGENES_DE_ARTICULOS_A_TIENDA_NUBE');
         unset($_ENV['TN_USER_ID'], $_ENV['CARGAR_IMAGENES_DE_ARTICULOS_A_TIENDA_NUBE']);
@@ -227,6 +247,215 @@ class TiendaNubeImagenesSyncTest extends EmpresaTestCase
         $this->assertSame('error', $sync->fresh()->status);
         $this->assertTrue((bool) $article->fresh()->needs_sync_with_tn);
         $this->assertCount(0, $this->posts);
+    }
+
+    protected function enqueue_for_command(Article $article): SyncToTNArticle
+    {
+        config(['app.USER_ID' => $article->user_id]);
+
+        return SyncToTNArticle::create([
+            'article_id' => $article->id,
+            'user_id' => $article->user_id,
+            'status' => 'pendiente',
+        ]);
+    }
+
+    public function test_429_difiere_lote_hasta_retry_after_y_recupera_alta_sin_duplicar()
+    {
+        Notification::fake();
+        $this->travelTo(now()->startOfSecond());
+        $article = $this->article(true);
+        $image = $this->photo($article);
+        $sync = $this->enqueue_for_command($article);
+        $secondArticle = $this->article();
+        $secondArticle->tiendanube_product_id = 7654322;
+        $secondArticle->save();
+        $second = $this->enqueue_for_command($secondArticle);
+        $this->rateLimitOnGet = 1;
+        $this->retryAfter = '150';
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('pendiente', $sync->fresh()->status);
+        $this->assertSame(now()->addSeconds(150)->toDateTimeString(), $sync->fresh()->rate_limited_until);
+        $this->assertSame('pendiente', $second->fresh()->status);
+        $this->assertNull($second->fresh()->attempted_at);
+        $this->assertSame(1, $this->imageGets);
+        $this->assertSame(1, $this->productPosts);
+        $this->assertCount(0, $this->posts);
+        $this->assertTrue((bool) $article->fresh()->needs_sync_with_tn);
+        $this->assertEquals(1250, $article->fresh()->final_price);
+        Notification::assertNothingSent();
+
+        $this->travel(149)->seconds();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame(1, $this->imageGets);
+
+        $this->travel(1)->seconds();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('exitosa', $sync->fresh()->status);
+        $this->assertSame('exitosa', $second->fresh()->status);
+        $this->assertSame(1, $this->productPosts);
+        $this->assertCount(1, $this->posts);
+        $this->assertEquals(401, $image->fresh()->tiendanube_image_id);
+        $this->assertFalse((bool) $article->fresh()->needs_sync_with_tn);
+        Notification::assertNothingSent();
+    }
+
+    public function test_429_despues_del_post_confirma_id_sin_enviar_otra_imagen()
+    {
+        $this->travelTo(now()->startOfSecond());
+        $article = $this->article();
+        $image = $this->photo($article, 1, ['tienda_nube_image_id' => 700, 'tiendanube_image_id' => 700]);
+        $sync = $this->enqueue_for_command($article);
+        $this->rateLimitOnGet = 2;
+        $this->retryAfter = now()->addSeconds(90)->utc()->format(DATE_RFC7231);
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('pendiente', $sync->fresh()->status);
+        $this->assertSame(now()->addSeconds(90)->toDateTimeString(), $sync->fresh()->rate_limited_until);
+        $this->assertSame('401', substr($image->fresh()->tn_pending_image_confirmation, -3));
+        $this->assertEquals(700, $image->fresh()->tiendanube_image_id);
+        $this->assertCount(1, $this->posts);
+
+        // Una edición posterior sigue usando los datos locales actuales.
+        $article->stock = 17;
+        $article->save();
+        $this->remote[0]['src'] = 'https://photos.test/transformada/2.png';
+        $this->travel(90)->seconds();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('exitosa', $sync->fresh()->status);
+        $this->assertEquals(401, $image->fresh()->tiendanube_image_id);
+        $this->assertNull($image->fresh()->tn_pending_image_confirmation);
+        $this->assertCount(1, $this->posts);
+        $variant = collect($this->puts)->last(function ($payload) { return isset($payload['stock']); });
+        $this->assertSame(17, $variant['stock']);
+    }
+
+    public function test_inventario_vacio_despues_de_post_y_429_no_autoriza_otra_carga()
+    {
+        Notification::fake();
+        $this->travelTo(now()->startOfSecond());
+        $article = $this->article();
+        $image = $this->photo($article);
+        $sync = $this->enqueue_for_command($article);
+        $this->rateLimitOnGet = 2;
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('pendiente', $sync->fresh()->status);
+        $this->remote = [];
+        $this->travel(60)->seconds();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+
+        $this->assertCount(1, $this->posts);
+        $this->assertSame('error', $sync->fresh()->status);
+        $this->assertStringContainsString('todavía no la lista', $sync->fresh()->error_message);
+        $this->assertNull($image->fresh()->tiendanube_image_id);
+        $this->assertNotNull($image->fresh()->tn_pending_image_confirmation);
+        Notification::assertSentTimes(GlobalNotification::class, 1);
+    }
+
+    public function test_429_persistente_agota_el_limite_y_agrupa_avisos()
+    {
+        Notification::fake();
+        $this->travelTo(now()->startOfSecond());
+        $first = $this->enqueue_for_command($this->article());
+        $second = $this->enqueue_for_command($this->article());
+        $this->getStatus = 429;
+        $this->retryAfter = 'Wed +2 years';
+
+        foreach ([60, 120, 240] as $delay) {
+            $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+            $this->assertSame('pendiente', $first->fresh()->status);
+            $this->assertSame(now()->addSeconds($delay)->toDateTimeString(), $first->fresh()->rate_limited_until);
+            $this->assertNull($second->fresh()->attempted_at);
+            Notification::assertNothingSent();
+            $this->travel($delay)->seconds();
+        }
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('error', $first->fresh()->status);
+        $this->assertStringContainsString('HTTP 429', $first->fresh()->error_message_crudo);
+        $this->assertSame(4, $this->imageGets);
+        Notification::assertSentTimes(GlobalNotification::class, 1);
+
+        $this->travel(479)->seconds();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame(4, $this->imageGets);
+        $this->travel(1)->seconds();
+
+        foreach ([60, 120, 240] as $delay) {
+            $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+            $this->travel($delay)->seconds();
+        }
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('error', $second->fresh()->status);
+        $this->assertSame(8, $this->imageGets);
+        $this->assertCount(0, $this->posts);
+        Notification::assertSentTimes(GlobalNotification::class, 1);
+    }
+
+    public function test_retry_after_mayor_a_24_horas_aplica_enfriamiento_sin_reprogramar_la_fila()
+    {
+        Notification::fake();
+        $this->travelTo(now()->startOfSecond());
+        $first = $this->enqueue_for_command($this->article());
+        $second = $this->enqueue_for_command($this->article());
+        $this->getStatus = 429;
+        $this->retryAfter = '90000';
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('error', $first->fresh()->status);
+        $this->assertSame(now()->addSeconds(90000)->toDateTimeString(), $first->fresh()->rate_limited_until);
+        $this->travel(24)->hours();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame(1, $this->imageGets);
+
+        $this->getStatus = 200;
+        $this->travel(1)->hours();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame(2, $this->imageGets);
+        $this->assertSame('error', $first->fresh()->status);
+        $this->assertSame('exitosa', $second->fresh()->status);
+        Notification::assertSentTimes(GlobalNotification::class, 1);
+    }
+
+    public function test_reintento_diferido_no_recrea_producto_si_perdio_el_vinculo()
+    {
+        Notification::fake();
+        $this->travelTo(now()->startOfSecond());
+        $article = $this->article();
+        $sync = $this->enqueue_for_command($article);
+        $this->rateLimitOnGet = 1;
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('pendiente', $sync->fresh()->status);
+        $article->tiendanube_product_id = null;
+        $article->save();
+
+        $this->travel(60)->seconds();
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->assertSame('error', $sync->fresh()->status);
+        $this->assertStringContainsString('perdió su vínculo', $sync->fresh()->error_message);
+        $this->assertSame(0, $this->productPosts);
+        $this->assertSame(1, $this->imageGets);
+    }
+
+    public function test_alta_incierta_no_repite_post_de_producto_ni_reprograma_la_fila()
+    {
+        Notification::fake();
+        $article = $this->article(true);
+        $sync = $this->enqueue_for_command($article);
+        $this->failProductPost = true;
+
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+        $this->artisan('sync_articles_to_tienda_nube')->assertExitCode(0);
+
+        $this->assertSame(1, $this->productPosts);
+        $this->assertSame('error', $sync->fresh()->status);
+        $this->assertStringContainsString('Respuesta perdida', $sync->fresh()->error_message);
+        $this->assertNull($article->fresh()->tiendanube_product_id);
+        $this->assertSame(0, $this->imageGets);
+        Notification::assertSentTimes(GlobalNotification::class, 1);
     }
 
     public function test_fallo_api_no_repite_post_ni_guarda_marcador()

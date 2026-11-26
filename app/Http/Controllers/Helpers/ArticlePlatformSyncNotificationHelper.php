@@ -45,6 +45,16 @@ class ArticlePlatformSyncNotificationHelper
         );
     }
 
+    public static function notify_tienda_nube_rate_limit(int $userId): void
+    {
+        self::notify_sync_failed(
+            $userId,
+            'Tienda Nube limitó la sincronización de imágenes',
+            'Sincronizaciones pendientes de revisión',
+            'Los artículos se guardaron en Gestión. Revisá las sincronizaciones con error en el menú de Tienda Nube.'
+        );
+    }
+
     /**
      * Notifica error al sincronizar un artículo hacia Mercado Libre.
      *

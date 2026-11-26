@@ -261,6 +261,30 @@ class Gates_del_schedule_Test extends EmpresaTestCase
         $this->assertTrue($this->arrancaria($evento), 'Con una pendiente el comando tiene que correr.');
     }
 
+    public function test_sync_tienda_nube_no_arranca_durante_el_limite_del_dueno()
+    {
+        $this->dar_extension('usa_tienda_nube');
+        SyncToTNArticle::where('user_id', $this->owner->id)->delete();
+
+        $rateLimited = SyncToTNArticle::create([
+            'article_id' => 1,
+            'user_id' => $this->owner->id,
+            'status' => 'error',
+            'rate_limited_until' => now()->addMinute(),
+            'rate_limit_attempts' => 4,
+        ]);
+        SyncToTNArticle::create([
+            'article_id' => 2,
+            'user_id' => $this->owner->id,
+            'status' => 'pendiente',
+        ]);
+        $event = $this->evento('sync_articles_to_tienda_nube');
+
+        $this->assertFalse($this->arrancaria($event));
+        $rateLimited->update(['rate_limited_until' => now()->subSecond()]);
+        $this->assertTrue($this->arrancaria($event));
+    }
+
     /**
      * Mismo contrato para Mercado Libre.
      *
