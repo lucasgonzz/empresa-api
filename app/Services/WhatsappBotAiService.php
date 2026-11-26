@@ -3,6 +3,7 @@
 namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
+use App\Http\Controllers\Helpers\CotizacionEnvioGuardHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\User;
@@ -388,6 +389,20 @@ SUMMARY;
     private const FOLLOW_UP_NOTE_LIMIT = 200;
 
     /**
+     * Nota de seguimiento cuando el filtro de cotizaciones saca un envío o un total (misión
+     * truvari-envio-coherente v2). Sola, abre la consulta; con un pedido o una consulta del modelo, se suma a su
+     * detalle con ` · `.
+     */
+    private const COTIZACION_NOTA = 'Cotizar envío y total';
+
+    /**
+     * Capa de prompt que acompaña al filtro de cotizaciones (sólo con `derivar_cotizacion_envio` prendida). 🔴 Baja
+     * la cantidad de recortes, pero NO es la garantía: la garantía es `CotizacionEnvioGuardHelper`, que mira el
+     * texto que sale y no depende de que el modelo obedezca ni de que marque.
+     */
+    private const COTIZACION_RULE = 'No informes costo de envío, peaje, envío gratis ni totales con envío. Si el cliente lo pide, decile que el costo de envío y el total los confirma el equipo y terminá con [CONSULTA:cotizar envío y total].';
+
+    /**
      * Consigna de las marcas de seguimiento. Va justo después de la consigna de la foto y antes de las capas
      * opcionales (ver `build_system_prompt()`). Cuenta qué es la marca (algo que el sistema saca del mensaje) sin nombrar «una persona del
      * negocio» ni «el negocio»: la regla fija de hablar en nombre del negocio manda, y una frase así es
@@ -591,6 +606,14 @@ RULE;
             ]);
 
             $resultado = $this->split_markers($this->extract_text($body));
+
+            // Opción por negocio, apagada de fábrica: sin ella no se llama al filtro y el resultado es el de siempre.
+            // Va acá, en el único lugar que produce el texto, para cubrir al job, a «Sugerir respuesta» y al
+            // simulador sin que ninguno tenga que acordarse.
+            if ((bool) $config->derivar_cotizacion_envio) {
+                $resultado = $this->derivar_cotizacion($resultado, $chat);
+            }
+
             if ($resultado['body'] === '') {
                 // El modelo contestó, pero la respuesta entera eran marcadores ([FOTO:...] y/o una marca de
                 // seguimiento): no queda texto para un consumidor que espera un cuerpo (el botón "Sugerir
@@ -613,6 +636,57 @@ RULE;
             ]);
             return $this->empty_response('excepcion');
         }
+    }
+
+    /**
+     * Saca del cuerpo las oraciones que cotizan un envío o un total (`CotizacionEnvioGuardHelper`) y deja el chat
+     * como consulta para el equipo. El pedido gana a la consulta, igual que en `split_markers()`: con un
+     * `[PEDIDO]` el seguimiento queda 'pedido' y la nota suma el aviso.
+     *
+     * 🔴 La nota del modelo se recorta, no el aviso: si el detalle ya llena el tope, lo que se pierde son los
+     * últimos caracteres del detalle, nunca «cotizar envío y total».
+     *
+     * @param array{body: string, bar_code: string, follow_up: string, follow_up_note: string} $resultado
+     *
+     * @return array{body: string, bar_code: string, follow_up: string, follow_up_note: string}
+     */
+    private function derivar_cotizacion(array $resultado, WhatsappChat $chat): array
+    {
+        $revision = CotizacionEnvioGuardHelper::revisar($resultado['body']);
+
+        if (! $revision['derivo']) {
+            return $resultado;
+        }
+
+        Log::channel('daily')->info('WhatsappBotAiService: se derivó una cotización de envío o total al equipo.', [
+            'chat_id' => $chat->id,
+            'frases'  => $revision['frases'],
+        ]);
+
+        $resultado['body'] = $revision['body'];
+
+        if ($resultado['follow_up'] === '') {
+            $resultado['follow_up']      = WhatsappChat::FOLLOW_UP_CONSULTA;
+            $resultado['follow_up_note'] = self::COTIZACION_NOTA;
+
+            return $resultado;
+        }
+
+        $nota = $resultado['follow_up_note'];
+        if ($nota === '') {
+            $resultado['follow_up_note'] = self::COTIZACION_NOTA;
+
+            return $resultado;
+        }
+
+        $sufijo = ' · ' . mb_strtolower(self::COTIZACION_NOTA, 'UTF-8');
+        $cupo   = self::FOLLOW_UP_NOTE_LIMIT - mb_strlen($sufijo, 'UTF-8');
+        if (mb_strlen($nota, 'UTF-8') > $cupo) {
+            $nota = rtrim(mb_substr($nota, 0, $cupo, 'UTF-8')) . '…';
+        }
+        $resultado['follow_up_note'] = $nota . $sufijo;
+
+        return $resultado;
     }
 
     /**
@@ -1283,6 +1357,12 @@ RULE;
         $capa_objetivo = (new AgentObjectivePromptBuilder())->capa_del_objetivo($config, $this->owner_user($config), $horarios);
         if ($capa_objetivo !== '') {
             $blocks[] = $capa_objetivo;
+        }
+
+        // Derivar cotizaciones de envío (misión truvari-envio-coherente v2): opcional, apagada de fábrica y AL
+        // FINAL, como las otras capas opcionales, para que el prompt de antes quede como prefijo del de después.
+        if ((bool) $config->derivar_cotizacion_envio) {
+            $blocks[] = self::COTIZACION_RULE;
         }
 
         return implode("\n\n", $blocks);
