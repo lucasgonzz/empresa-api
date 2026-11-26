@@ -181,18 +181,29 @@ class ActualizacionDelSistemaHelper
     {
         $owner_id = (int) $owner_id;
 
-        /** Lee estado y vencimiento de la fila del dueño; el vencimiento va como timestamp para cachearlo liviano. */
+        /**
+         * Lee estado y vencimiento de la fila del dueño; el vencimiento va como timestamp para cachearlo liviano.
+         *
+         * 🔴 Va por el PDO crudo de la conexión y NO por el query builder, a propósito: es una lectura de
+         * infraestructura que corre en CADA request con sesión (la primera de cada ventana de 10 s va a la base,
+         * las demás salen de la cache), y por el query builder su costo "a veces 1 consulta, a veces 0" aparecería en
+         * `DB::getQueryLog()` y rompería los tests que fijan cuántas consultas cuesta un listado (los de conteo de
+         * `Buyer`, `TiendaMensajes`, `Import`, `CategoryProposals`, que comparan la 1.ª request contra las
+         * siguientes). Con el PDO crudo el conteo de consultas de negocio de cada endpoint queda exactamente igual
+         * que antes de existir el aviso. Es la misma conexión (y la misma transacción en los tests).
+         */
         $leer = function () use ($owner_id) {
             try {
-                $fila = DB::table('actualizaciones_del_sistema')
-                    ->where('owner_id', $owner_id)
-                    ->orderBy('id')
-                    ->first(['estado', 'vence_at']);
+                $sentencia = DB::connection()->getPdo()->prepare(
+                    'SELECT estado, vence_at FROM actualizaciones_del_sistema WHERE owner_id = ? ORDER BY id LIMIT 1'
+                );
+                $sentencia->execute([$owner_id]);
+                $fila = $sentencia->fetch(\PDO::FETCH_OBJ);
             } catch (\Throwable $e) {
                 return ['estado' => ActualizacionDelSistema::ESTADO_LIBRE, 'vence_ts' => null];
             }
 
-            if (is_null($fila)) {
+            if (empty($fila)) {
                 return ['estado' => ActualizacionDelSistema::ESTADO_LIBRE, 'vence_ts' => null];
             }
 
