@@ -24,8 +24,7 @@ use Tests\EmpresaTestCase;
  * Los dueños A y B son usuarios nuevos y propios de cada test, así los conteos son exactos aunque el
  * fixture tenga artículos. Los nombres empiezan con `ZZ ` para no chocar con el fixture.
  *
- * IMPORTANTE (PHP 7.4): no usar match, str_contains, nullsafe (?->), argumentos nombrados, union
- * types, promocion de constructor, readonly, enum ni #[...].
+ * IMPORTANTE: PHP 7.4 estricto, sin sintaxis de PHP 8 (ver .mision/RESTRICCIONES.md).
  */
 class CompletarSlugsDeArticulosTest extends EmpresaTestCase
 {
