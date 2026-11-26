@@ -19,6 +19,13 @@ namespace App\Http\Controllers\Helpers;
  * palabras de arriba. Cada hueco que aparezca se cierra agregando su patrón y su test; la capa de prompt y la
  * revisión humana del chat (consulta para el equipo) son parte de la defensa, no un adorno.
  *
+ * Límites conocidos de la segmentación (2º rechazo del QA): la lista de abreviaturas que no cortan la oración es
+ * cerrada («Av.», «Gral.», «Sta.», «aprox.»…); una abreviatura que no esté, seguida de mayúscula, vuelve a cortar
+ * y el importe puede quedar suelto. Un rótulo («Costo de envío:») sólo se une con la línea siguiente si el rótulo
+ * mismo habla de envío o de total, y con el valor en la línea de al lado (no si hay una línea en blanco entre
+ * ambos). Una oración que sólo trae el importe y cuyo envío se nombró en la oración anterior («Hacemos envíos.
+ * Sale $X.») no se relaciona: pasa. Un importe en una línea sin rótulo ni palabra de envío en ninguna oración vecina no se puede reconocer.
+ *
  * 🔴 NO SE «SIMPLIFICA» A UNA MARCA DEL MODELO (`[COTIZACION:…]` y similares): una garantía que depende de que
  * el modelo marque bien es la misma garantía que ya falló. Este filtro mira el TEXTO que sale, no lo que el
  * modelo dijo que estaba haciendo. Tampoco lleva cifras, localidades ni nombres de negocio: la política
@@ -37,9 +44,9 @@ class CotizacionEnvioGuardHelper
 
     /**
      * Palabras de envío. `\b` y /u: «envío» con y sin tilde, plural, los recargos que viajan con él y los sinónimos
-     * de traslado de mercadería (domicilio, delivery, reparto…). Un sinónimo nuevo se suma acá.
+     * de traslado de mercadería (domicilio, delivery, entrega, reparto…). Un sinónimo nuevo se suma acá.
      */
-    const PATRON_ENVIO = '/\b(?:env[ií]os?|fletes?|peajes?|recargos?|despachos?|domicilio|delivery|traslados?|repart(?:o|os|a|en)|acarreos?|transporte)\b/iu';
+    const PATRON_ENVIO = '/\b(?:env[ií]os?|fletes?|peajes?|recargos?|despachos?|domicilio|delivery|traslados?|entregas?|repart(?:o|os|a|en)|acarreos?|transporte)\b/iu';
 
     /** Afirmaciones de gratuidad (con una palabra de envío en la oración, o la de «por nuestra cuenta», que sola alcanza). */
     const PATRON_GRATUIDAD = '/\b(?:gratis|gratuit[oa]s?|sin\s+(?:cargo|costo|recargo|adicional)|bonificad[oa]s?|libre\s+de\s+(?:costo|cargo)|no\s+(?:tiene|tendr[aá]|tendr[ií]a|conlleva|lleva|implica)\s+(?:ning[uú]n\s+)?(?:costo|cargo|recargo|adicional)|no\s+(?:le\s+|te\s+|les\s+|se\s+)?cobr(?:amos|a|an|ar[aá]|ar[ií]amos|e|o))\b/iu';
@@ -59,8 +66,20 @@ class CotizacionEnvioGuardHelper
     /** Una línea que es sólo un importe con su formato de viñeta o negrita («- *$X*»): una cifra sin rótulo. */
     const PATRON_LINEA_SOLO_IMPORTE = '/^[\s\-*_•·▪◦>~`–—:]*(?:\$\s*)?\d[\d.,]*[\s*_`]*(?:pesos|ars)?[\s.*_`]*$/iu';
 
-    /** La palabra «total» (también «totales»). */
-    const PATRON_TOTAL = '/\btotal(?:es)?\b/iu';
+    /**
+     * La palabra «total» (también «totales») y sus equivalentes: «precio final», «a pagar». Es amplio a propósito:
+     * un «precio final» de un producto suelto también se deriva (un falso positivo cuesta una demora).
+     */
+    const PATRON_TOTAL = '/\b(?:total(?:es)?|final(?:es)?|a\s+pagar)\b/iu';
+
+    /** Cuentas escritas a la vista: «$A + $B = $C». Un importe pegado a un `+` o a un `=`. */
+    const PATRON_ARITMETICA = '/(?:\$\s*\d[\d.,]*\s*[+=]|[+=]\s*\$\s*\d)/u';
+
+    /**
+     * Un importe seguido de «más» como adicional («son $X más»). No toca «$X más IVA» ni «más barato»:
+     * «más» sólo cuenta si cierra la oración o le sigue un importe, el peaje o el envío.
+     */
+    const PATRON_IMPORTE_ADICIONAL = '/(?:\$\s*\d[\d.,]*|\d\s*pesos)\s*(?:m[aá]s|adicionales?|extra)(?=\s*(?:[.,;!?)]|$)|\s+(?:\$|peaje|env))/iu';
 
     /**
      * Importe «fuerte»: no se confunde con una cantidad. `$` seguido de un número (con o sin punto de miles y
@@ -87,8 +106,14 @@ class CotizacionEnvioGuardHelper
     /** Contexto de compra que vuelve umbral a una comparación «blanda». */
     const PATRON_CONTEXTO_COMPRA = '/\b(?:compr(?:a|as|ás|es|ando)|pedidos?|gast(?:a|as|ás|ando)|monto|importe)\b/iu';
 
-    /** Corte en oraciones: salto de línea (se conserva) o espacio después de un cierre de oración. */
-    const PATRON_CORTE = '/(\n+|(?<=[.!?…])[ \t]+)/u';
+    /**
+     * Corte en oraciones: salto de línea (se conserva) o espacio después de un cierre de oración. Un punto que
+     * cierra una abreviatura («Av.», «Gral.», «Sta.», «aprox.», una inicial suelta como «J. M. Paz») NO corta:
+     * si cortara, el importe quedaría en una oración sin la palabra de envío y pasaría el filtro. Cada
+     * lookbehind es de largo fijo (PCRE lo exige). Una abreviatura nueva se suma acá. Si una oración termina en
+     * una de estas palabras («…hasta las 18 hs. Luego…») las dos oraciones se evalúan juntas: es el lado seguro.
+     */
+    const PATRON_CORTE = '/(\n+|(?<=[.!?…])(?<!\b\p{L}\.)(?<!\bav\.)(?<!\bavda\.)(?<!\bgral\.)(?<!\bsta\.)(?<!\bsto\.)(?<!\bcnel\.)(?<!\btte\.)(?<!\bpte\.)(?<!\bpres\.)(?<!\bdr\.)(?<!\bdra\.)(?<!\bing\.)(?<!\blic\.)(?<!\bprof\.)(?<!\bsr\.)(?<!\bsra\.)(?<!\bsrta\.)(?<!\bbv\.)(?<!\bblvd\.)(?<!\bpje\.)(?<!\bctra\.)(?<!\bcno\.)(?<!\bdto\.)(?<!\bmza\.)(?<!\burb\.)(?<!\bkm\.)(?<!\bdpto\.)(?<!\bdepto\.)(?<!\besq\.)(?<!\btel\.)(?<!\bnro\.)(?<!\bn°\.)(?<!\baprox\.)(?<!\bapr\.)(?<!\bhs\.)(?<!\bmáx\.)(?<!\bmín\.)(?<!\bmax\.)(?<!\bmin\.)(?<!\bc\/u\.)(?<!\bud\.)(?<!\buds\.)(?<!\bvs\.)(?<!\bcp\.)[ \t]+)/iu';
 
     /**
      * Revisa el cuerpo que está por salir. Sin ninguna oración de cotización devuelve el texto tal cual, byte por
@@ -119,6 +144,8 @@ class CotizacionEnvioGuardHelper
         for ($i = 0, $total = count($partes); $i < $total; $i += 2) {
             $unidades[] = [$partes[$i], isset($partes[$i + 1]) ? $partes[$i + 1] : ''];
         }
+
+        $unidades = self::unir_rotulos($unidades);
 
         $conservadas = [];
         $frases      = 0;
@@ -164,6 +191,46 @@ class CotizacionEnvioGuardHelper
     }
 
     /**
+     * Une un rótulo que termina en «:» con la línea que le sigue («Costo de envío:» + «$X (localidad)»): por
+     * separado, el valor no tiene la palabra de envío y pasaría. El rótulo tiene que hablar de envío o de total, y
+     * entonces también absorbe las viñetas que le siguen («Opciones de envío:» + «- Domicilio: $X» + «- Express: $Y»).
+     *
+     * @param  array<int, array{0: string, 1: string}>  $unidades  [texto, separador que le sigue]
+     * @return array<int, array{0: string, 1: string}>
+     */
+    private static function unir_rotulos(array $unidades): array
+    {
+        $unidos = [];
+
+        for ($i = 0, $total = count($unidades); $i < $total; $i++) {
+            list($texto, $separador) = $unidades[$i];
+
+            // Sólo se une un rótulo que habla de envío o de total: «Le detallo:» no arrastra a su vecino y la
+            // viñeta de abajo se evalúa sola, como siempre.
+            $habla_de_cotizacion = preg_match(self::PATRON_ENVIO, $texto) || preg_match(self::PATRON_TOTAL, $texto);
+
+            if (! $habla_de_cotizacion || ! preg_match('/:\s*$/u', $texto) || strpos($separador, "\n") === false || $i + 1 >= $total) {
+                $unidos[] = [$texto, $separador];
+                continue;
+            }
+
+            do {
+                $i++;
+                $texto .= $separador . $unidades[$i][0];
+                $separador = $unidades[$i][1];
+                $sigue_vineta = $habla_de_cotizacion
+                    && $i + 1 < $total
+                    && strpos($separador, "\n") !== false
+                    && preg_match('/^\s*[-*•·▪◦]/u', $unidades[$i + 1][0]);
+            } while ($sigue_vineta);
+
+            $unidos[] = [$texto, $separador];
+        }
+
+        return $unidos;
+    }
+
+    /**
      * ¿La oración cotiza un envío o un total? Cualquiera de estas condiciones alcanza:
      *  (a) habla de envío (o peaje, flete…) y trae un importe o afirma gratuidad (cubre «envío gratis» sin importe);
      *  (b) dice «total» y trae un importe;
@@ -188,6 +255,11 @@ class CotizacionEnvioGuardHelper
 
         // «Lo paga el negocio» no necesita la palabra de envío: «Eso corre por nuestra cuenta» ya es una promesa.
         if (preg_match(self::PATRON_A_CARGO_DEL_NEGOCIO, $oracion)) {
+            return true;
+        }
+
+        // Cuentas a la vista y «$X más» como adicional: no hace falta ninguna palabra de envío.
+        if (preg_match(self::PATRON_ARITMETICA, $oracion) || preg_match(self::PATRON_IMPORTE_ADICIONAL, $oracion)) {
             return true;
         }
 
