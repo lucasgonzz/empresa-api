@@ -879,11 +879,11 @@ class SearchController extends Controller
                 }]);
             }
 
-            // Con un criterio de hasta 3 caracteres el total se cuenta con tope (ver
+            // Con un criterio de cualquier largo el total se cuenta con tope (ver
             // VenderSearchHelper::pagina_sql_con_total_acotado); `total_es_minimo` le avisa al
             // frontend que ese número es un piso. Con la extensión de variantes devuelve null y
             // el total sigue siendo exacto (camino de expansión).
-            $pagina_acotada = VenderSearchHelper::pagina_sql_con_total_acotado($light_query, $per_page, $page_actual, $query_value);
+            $pagina_acotada = VenderSearchHelper::pagina_sql_con_total_acotado($light_query, $per_page, $page_actual);
             $pagina_sql = $pagina_acotada ? $pagina_acotada['paginador'] : null;
             $total_es_minimo = $pagina_acotada ? $pagina_acotada['total_es_minimo'] : false;
             $light_articles = $pagina_sql ? $pagina_sql->getCollection() : $light_query->get();
