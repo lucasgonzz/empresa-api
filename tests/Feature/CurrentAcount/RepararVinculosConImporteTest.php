@@ -214,7 +214,7 @@ class RepararVinculosConImporteTest extends EmpresaTestCase
     }
 
     /** Opciones de una aplicación completa con los ids del par y el respaldo indicado. */
-    private function aplicar_en(array $e, string $ruta, array $ids = null): array
+    private function aplicar_en(array $e, string $ruta, ?array $ids = null): array
     {
         return ['--aplicar' => true, '--pivotes' => implode(',', $ids === null ? $e['par'] : $ids), '--respaldo' => $ruta];
     }
