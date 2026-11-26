@@ -47,27 +47,19 @@ class VenderSearchHelper
     }
 
     /**
-     * Hasta cuántos caracteres (sin espacios de los costados) un criterio se considera "corto".
-     * Un criterio así ("ma", "mar") matchea con una fracción enorme del catálogo (en un catálogo de
-     * 560.000 artículos, "ma" coincide con 200.000): contarlas todas cuesta lo mismo que recorrer la
-     * tabla entera y el número exacto no le sirve a nadie.
-     */
-    const CRITERIO_CORTO_MAX_CARACTERES = 3;
-
-    /**
-     * Con un criterio corto, cuántas páginas "por delante de la que se está mirando" se cuentan. El
+     * Cuántas páginas "por delante de la que se está mirando" se cuentan. El
      * total que se informa es, como mucho, `offset + per_page * PAGINAS_DE_TOPE + 1`; al avanzar de
      * página el tope se corre con ella, así que ningún artículo queda inalcanzable.
      */
     const PAGINAS_DE_TOPE = 20;
 
     /**
-     * Igual que `pagina_sql_si_no_expande`, pero para un criterio CORTO el total no se cuenta exacto
-     * sino con tope (ver `PAGINAS_DE_TOPE`), y se devuelve la bandera `total_es_minimo` para que el
-     * frontend muestre "Más de N" en vez de un número que no es el total.
-     *
-     * Criterio largo (más de `CRITERIO_CORTO_MAX_CARACTERES`): exactamente lo de siempre
-     * (`paginate()`, COUNT exacto), bandera false. Criterio corto:
+     * Igual que `pagina_sql_si_no_expande`, pero el total no se cuenta exacto sino con tope (ver
+     * `PAGINAS_DE_TOPE`), con criterios de CUALQUIER largo, y se devuelve la bandera
+     * `total_es_minimo` para que el frontend muestre "Más de N" en vez de un número que no es el
+     * total. (Antes sólo se acotaba con criterios de hasta 3 caracteres; un criterio largo como
+     * "amort" también coincide con decenas de miles de artículos en un catálogo grande y su COUNT
+     * exacto costaba ~2,4 s.) Pasos:
      *   1. Se trae la página primero, con el orden ya puesto (lo resuelve el índice, sin filesort).
      *   2. Si la página no se llenó (y tiene filas, o es la primera), el total es `offset + filas`:
      *      exacto y sin ningún COUNT.
@@ -75,7 +67,7 @@ class VenderSearchHelper
      *      `SELECT 1 ... LIMIT tope + 1` sin ORDER BY. Si llega a `tope + 1` el total es ese piso y
      *      la bandera es true; si no, el conteo es exacto.
      * Una consulta con GROUP BY / HAVING / UNION / DISTINCT no se puede contar así: va por el camino
-     * exacto.
+     * exacto (bandera false).
      *
      * Devuelve null en las mismas condiciones que `pagina_sql_si_no_expande` (extensión
      * article_variants activa): quien llama sigue con el camino de expansión.
@@ -83,20 +75,18 @@ class VenderSearchHelper
      * @param \Illuminate\Database\Eloquent\Builder $query     Consulta liviana con el WHERE completo.
      * @param int    $per_page  Filas por página.
      * @param int    $page      Página pedida (>= 1).
-     * @param string $criterio  Criterio de texto de la búsqueda (query_value).
      * @return array|null ['paginador' => \Illuminate\Pagination\LengthAwarePaginator, 'total_es_minimo' => bool]
      */
-    public static function pagina_sql_con_total_acotado($query, $per_page, $page, $criterio)
+    public static function pagina_sql_con_total_acotado($query, $per_page, $page)
     {
         if (UserHelper::hasExtencion('article_variants')) {
             return null;
         }
 
-        $es_criterio_corto = mb_strlen(trim((string) $criterio)) <= self::CRITERIO_CORTO_MAX_CARACTERES;
         $base = (clone $query)->toBase();
         $se_puede_acotar = empty($base->groups) && empty($base->havings) && empty($base->unions) && empty($base->distinct);
 
-        if (! $es_criterio_corto || ! $se_puede_acotar) {
+        if (! $se_puede_acotar) {
             return [
                 'paginador' => self::pagina_sql_si_no_expande($query, $per_page, $page),
                 'total_es_minimo' => false,

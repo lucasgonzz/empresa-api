@@ -179,24 +179,109 @@ class Busqueda_Vender_Criterio_Corto_Total_Acotado_Test extends TestCase
     }
 
     /**
-     * CA-A5: criterio largo (>3 caracteres) conserva el COUNT exacto de siempre y la bandera false.
+     * Misión busqueda-vender-conteo-acotado-siempre, CA1/CA2 (cambio de contrato pedido por Lucas el
+     * 26/11/2026: antes un criterio largo contaba EXACTO aunque hubiera más coincidencias que el tope;
+     * en Servian "amort" -> 26.844 coincidencias tardaba ~2,4 s en el COUNT). Ahora el conteo se acota
+     * para criterios de cualquier largo: más coincidencias que el tope -> piso tope + 1 y bandera true.
      *
      * @return void
      */
-    public function test_criterio_largo_conserva_count_exacto()
+    public function test_criterio_largo_con_mas_coincidencias_que_el_tope_devuelve_total_minimo()
     {
-        $this->sembrar(60, 'Martillo');
+        $esperados = $this->sembrar(60, 'Amortiguador');
 
         DB::enableQueryLog();
-        $this->buscar('martillo', 1, 2)
-            ->assertJsonPath('models.total', 60)
-            ->assertJsonPath('models.last_page', 30)
-            ->assertJsonPath('total_es_minimo', false);
+        $uno = $this->buscar('amort', 1, 2)
+            ->assertJsonPath('models.total', 41)
+            ->assertJsonPath('models.last_page', 21)
+            ->assertJsonPath('total_es_minimo', true);
         $log = DB::getQueryLog();
         DB::disableQueryLog();
 
-        $this->assertTrue($this->log_contiene($log, '/select count\(\*\) as aggregate from `articles`/i'), 'Falta el COUNT exacto del criterio largo.');
-        $this->assertFalse($this->log_contiene($log, '/limit 41/i'), 'El criterio largo no debe usar el tope.');
+        $this->assertSame(array_slice($esperados, 0, 2), array_column($uno->json('models.data'), 'id'));
+        $this->assertTrue($this->log_contiene($log, '/limit 41/i'), 'El criterio largo debe contar con tope (LIMIT tope + 1).');
+        $this->assertFalse($this->log_contiene($log, '/select count\(\*\) as aggregate from `articles`/i'), 'No debe quedar un COUNT exacto sobre articles.');
+    }
+
+    /**
+     * CA2: criterio largo con menos coincidencias que el tope (página llena) -> total exacto, false.
+     *
+     * @return void
+     */
+    public function test_criterio_largo_por_debajo_del_tope_es_exacto()
+    {
+        $this->sembrar(5, 'Amortiguador');
+
+        $this->buscar('amort', 1, 2)
+            ->assertJsonPath('models.total', 5)
+            ->assertJsonPath('models.last_page', 3)
+            ->assertJsonPath('total_es_minimo', false);
+    }
+
+    /**
+     * CA3: criterio largo con la página incompleta -> total deducido de la página, sin ningún COUNT.
+     *
+     * @return void
+     */
+    public function test_criterio_largo_con_pagina_incompleta_no_cuenta()
+    {
+        $this->sembrar(3, 'Amortiguador');
+
+        DB::enableQueryLog();
+        $this->buscar('amort', 1, 50)
+            ->assertJsonPath('models.total', 3)
+            ->assertJsonPath('total_es_minimo', false)
+            ->assertJsonCount(3, 'models.data');
+        $log = DB::getQueryLog();
+        DB::disableQueryLog();
+
+        $this->assertFalse($this->log_contiene($log, '/count\(\*\) as aggregate/i'), 'Con la página incompleta el total sale de la propia página.');
+    }
+
+    /**
+     * CA5: con criterio largo, avanzar de página corre el tope y no deja artículos inalcanzables;
+     * recorrer siguiendo last_page devuelve los 60 ids sin repetidos y en orden.
+     *
+     * @return void
+     */
+    public function test_criterio_largo_recorre_todas_las_paginas_y_la_21_da_el_total_exacto()
+    {
+        $esperados = $this->sembrar(60, 'Amortiguador');
+
+        $final = $this->buscar('amort', 21)
+            ->assertJsonPath('models.total', 60)
+            ->assertJsonPath('total_es_minimo', false);
+        $this->assertSame(array_slice($esperados, 40, 2), array_column($final->json('models.data'), 'id'));
+
+        $vistos = [];
+        $pagina = 1;
+        $ultima = 1;
+        while ($pagina <= $ultima && $pagina < 100) {
+            $respuesta = $this->buscar('amort', $pagina);
+            $vistos = array_merge($vistos, array_column($respuesta->json('models.data'), 'id'));
+            $ultima = (int) $respuesta->json('models.last_page');
+            $pagina++;
+        }
+        $this->assertSame($esperados, $vistos);
+    }
+
+    /**
+     * CA4: con la extensión article_variants activa el criterio largo sigue por el camino exacto.
+     *
+     * @return void
+     */
+    public function test_criterio_largo_con_variantes_no_cambia()
+    {
+        $this->sembrar(60, 'Amortiguador');
+        $extension = ExtencionEmpresa::firstOrCreate(['slug' => 'article_variants'], ['name' => 'article_variants']);
+        $this->dueno->extencions()->syncWithoutDetaching([$extension->id]);
+        $this->dueno->load('extencions');
+        $this->app['auth']->forgetGuards();
+        $this->actingAs($this->dueno, 'web');
+
+        $this->buscar('amort', 1)
+            ->assertJsonPath('models.total', 60)
+            ->assertJsonPath('total_es_minimo', false);
     }
 
     /**
