@@ -236,6 +236,8 @@ class Promocion_sin_whatsapp_ni_direccion_de_tienda_Test extends EmpresaTestCase
 
         $oculto = $this->articulo_de_la_promo('ZZE Bomba oculta', 0, 'zze-bomba-oculta');
         $sin_slug = $this->articulo_de_la_promo('ZZE Bomba sin slug', 1, '');
+        // Sembrado: el alta ahora completa el slug (observer creating); se fuerza vacío directo en la tabla.
+        \Illuminate\Support\Facades\DB::table('articles')->where('id', $sin_slug->id)->update(['slug' => '']);
 
         list($conversation, $assistant) = $this->vuelta('mandales la promo');
 

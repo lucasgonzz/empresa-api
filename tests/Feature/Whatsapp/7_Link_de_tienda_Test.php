@@ -255,6 +255,8 @@ class Link_de_tienda_Test extends TestCase
         $this->comercio->save();
 
         $this->articulo_vectorizado('Tornillo sin slug', null);
+        // Sembrado: el alta ahora completa el slug (observer creating); se fuerza NULL directo en la tabla.
+        DB::table('articles')->where('user_id', $this->comercio->id)->where('name', 'Tornillo sin slug')->update(['slug' => null]);
 
         (new WhatsappBotAiService())->generate_response($this->chat, $this->config);
 

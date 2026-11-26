@@ -214,6 +214,9 @@ class ArticuloSlugAlGuardarTest extends EmpresaTestCase
     {
         $articulo = $this->crear_articulo('ZZ Slug Sin slug', null);
 
+        // Sembrado: el alta ahora completa el slug (observer creating); se fuerza NULL directo en la tabla.
+        \Illuminate\Support\Facades\DB::table('articles')->where('id', $articulo->id)->update(['slug' => null]);
+
         $this->assertNull($this->slug_de($articulo->id));
 
         $this->guardar_por_endpoint($articulo->id, 'ZZ Slug Sin slug');
