@@ -1476,7 +1476,10 @@ class ArticlePricesHelper {
             || (
                 !is_null($final_nuevo)
                 && !is_null($anterior_final)
-                && abs(round((float) $final_nuevo, 2) - round((float) $anterior_final, 2)) < 0.000001
+                // 🔴 Numbers::cuantizar y no round(): en PHP 8.4 (VPS) un precio calculado en x,xx5 baja un
+                // centavo (3417.6449999999995 -> 3417.64) y el guardado sin cambios lo tomaba por un cambio
+                // de precio: pisaba el «precio anterior» de la lista (caso 17338 de Ferretotal).
+                && abs(Numbers::cuantizar($final_nuevo, 2) - Numbers::cuantizar($anterior_final, 2)) < 0.000001
             );
 
         return $sin_cambio ? $anterior_previus : $anterior_final;

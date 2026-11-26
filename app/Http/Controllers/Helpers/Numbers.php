@@ -15,6 +15,70 @@ class Numbers {
     }
 
 	/**
+	 * Redondea un importe calculado como lo hacía `round()` en PHP 7.4/8.3 (mitad hacia arriba, lejos de cero).
+	 *
+	 * 🔴 PHP 8.4 dejó de «pre-redondear» en `round()`: un precio calculado que cae en x,xx5 y trae el
+	 * error de un ulp del float (2278.43 + 2278.43*50/100 = 3417.6449999999995) baja un centavo
+	 * (3417.64) donde 7.4 y MySQL daban 3417.65. Caso Ferretotal (PHP 8.4): el guardado sin cambios
+	 * creía que el precio de la lista había cambiado y pisaba el «precio anterior».
+	 *
+	 * Esto reproduce el algoritmo de `_php_math_round()` de 7.4: antes de redondear a `$decimales` se
+	 * pre-redondea a 15 CIFRAS SIGNIFICATIVAS (precision_places = 14 - floor(log10(|valor|))), que es
+	 * lo que absorbe el ruido de float. Un pre-redondeo a decimales fijos (round($v, 9)) NO sirve: desde
+	 * 2^21 (~2,1 millones) el ulp del float supera 1e-9 y 3671822.4549999991 (costo 2098184.26, margen
+	 * 75) bajaba un centavo. NO simplificar a `round($valor, $decimales)` ni a un decimal fijo, ni
+	 * sumar un epsilon: el epsilon fijo sube importes genuinamente menores al medio centavo.
+	 *
+	 * Alcance de la equivalencia con 7.4: verificada para el rango de decimales que usa el sistema (2).
+	 * NO vale para $decimales >= 23 (medido: 2042 diferencias en 8980 casos). El tope de -60 en
+	 * precision_places no es idéntico al de 7.4 (que usa INT_MIN+1): coinciden sólo en magnitudes reales.
+	 *
+	 * Límite (como 7.4, con 2 decimales): con 15 cifras significativas, un valor que difiere del medio centavo en
+	 * menos de ~1e-15 relativo (en 1e6, menos de ~1e-9) sube; lo demás se comporta como `round()`.
+	 * En magnitudes >= 1e15 el valor se devuelve tal cual, como 7.4.
+	 *
+	 * @param  mixed $valor     Número o texto numérico. No acepta null: quien llama ya lo filtra.
+	 * @param  int   $decimales Decimales finales (2 para importes).
+	 * @return float
+	 */
+	static function cuantizar($valor, $decimales = 2) {
+		$valor     = (float) $valor;
+		$decimales = (int) $decimales;
+
+		if ($valor == 0.0 || !is_finite($valor) || $decimales < 0) {
+			return round($valor, $decimales);
+		}
+
+		$precision_places = 14 - (int) floor(log10(abs($valor)));
+		$f1 = pow(10.0, $decimales);
+
+		if ($precision_places > $decimales && $precision_places - 15 < $decimales) {
+			// Pre-redondeo a 15 cifras significativas (réplica de php_round_get_basic + php_round_helper de 7.4; el tope -60 no es el INT_MIN+1 de 7.4).
+			$use_precision = $precision_places < -60 ? -60 : $precision_places;
+			$tmp = $use_precision >= 0 ? $valor * pow(10.0, $use_precision) : $valor / pow(10.0, -$use_precision);
+			$tmp = self::mitad_hacia_arriba($tmp);
+			$use_precision = $decimales - $use_precision;
+			if ($use_precision < -60) {
+				$use_precision = -60;
+			}
+			$tmp = $tmp / pow(10.0, abs($use_precision));
+		} else {
+			$tmp = $valor * $f1;
+			if (abs($tmp) >= 1e15) {
+				return $valor;
+			}
+		}
+
+		$tmp = self::mitad_hacia_arriba($tmp);
+		return $tmp / $f1;
+	}
+
+	/** Redondeo al entero con la mitad lejos de cero (php_round_helper, PHP_ROUND_HALF_UP). */
+	private static function mitad_hacia_arriba($valor) {
+		return $valor >= 0.0 ? floor($valor + 0.5) : ceil($valor - 0.5);
+	}
+
+	/**
 	 * Formatea un precio para mostrar en pantalla.
 	 * 
 	 * Para moneda_id = 2 (USD) siempre se muestran dos decimales,
