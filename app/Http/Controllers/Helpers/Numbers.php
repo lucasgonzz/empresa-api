@@ -15,6 +15,27 @@ class Numbers {
     }
 
 	/**
+	 * Redondea un importe calculado como lo hacía `round()` en PHP 7.4/8.3.
+	 *
+	 * 🔴 PHP 8.4 dejó de «pre-redondear» en `round()`: un precio calculado que cae en x,xx5 y trae el
+	 * error de un ulp del float (2278.43 + 2278.43*50/100 = 3417.6449999999995) baja un centavo
+	 * (3417.64) donde 7.4 y MySQL daban 3417.65. Caso Ferretotal (PHP 8.4): el guardado sin cambios
+	 * creía que el precio de la lista había cambiado y pisaba el «precio anterior». Primero se
+	 * absorbe ese error redondeando a 9 decimales y recién después se cuantiza. NO simplificar a
+	 * `round($valor, $decimales)`: vuelve el centavo de menos en los clientes con PHP 8.4.
+	 *
+	 * Límite medido: un valor genuinamente entre x,xx4999999995 y x,xx5 (diferencia < 5e-10, que ningún
+	 * precio con costo en centavos produce) sube; lo demás se comporta igual que `round()`.
+	 *
+	 * @param  mixed $valor     Número o texto numérico. No acepta null: quien llama ya lo filtra.
+	 * @param  int   $decimales Decimales finales (2 para importes).
+	 * @return float
+	 */
+	static function cuantizar($valor, $decimales = 2) {
+		return round(round((float) $valor, 9), $decimales);
+	}
+
+	/**
 	 * Formatea un precio para mostrar en pantalla.
 	 * 
 	 * Para moneda_id = 2 (USD) siempre se muestran dos decimales,

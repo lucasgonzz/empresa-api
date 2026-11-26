@@ -1015,7 +1015,10 @@ class ArticleHelper {
             ) {
                 $final_price = (float) $current_final_price;
             } else {
-                $final_price = round((float) $final_price, 2);
+                // 🔴 Numbers::cuantizar y no round(): en PHP 8.4 un precio calculado en x,xx5
+                // (3417.6449999999995) bajaba a 3417.64 contra el 3417.65 guardado, registraba un cambio
+                // de precio y pisaba previus_final_price. Ver Numbers::cuantizar().
+                $final_price = Numbers::cuantizar($final_price, 2);
             }
         }
 
