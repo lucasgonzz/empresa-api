@@ -266,7 +266,7 @@ class WhatsappBotController extends Controller
      * omitidos se ignoran (nunca se borra ni se persiste una máscara). `is_active` sí lo edita el dueño. Los campos de
      * configuración funcional del agente (agent_personality, agent_skills,
      * ai_enabled_default, auto_send_sale_pdf, ai_vision_enabled, chat_simulation_enabled,
-     * agent_objective, agent_objective_detail; grupo 137, Prompt 07, más las misiones
+     * derivar_cotizacion_envio, agent_objective, agent_objective_detail; grupo 137, Prompt 07, más las misiones
      * personalizacion-agente-whatsapp y objetivo-agente-whatsapp) se editan desde
      * la pantalla de Configuración del módulo WhatsApp, solo visible para el dueño. Ambas
      * pantallas pegan al mismo endpoint pero cada una manda solo sus propios campos: cada campo
@@ -332,6 +332,9 @@ class WhatsappBotController extends Controller
             // Si el dueño habilitó el botón de simular mensajes del cliente en la conversación
             // y en la bandeja (misión personalizacion-agente-whatsapp, addendum Parte B).
             'chat_simulation_enabled'  => 'sometimes|boolean',
+            // Si el agente deja de informar envíos y totales y los deriva al equipo (misión
+            // truvari-envio-coherente v2). Apagado de fábrica.
+            'derivar_cotizacion_envio' => 'sometimes|boolean',
             // Objetivo de la conversación (misión objetivo-agente-whatsapp): una clave de la lista
             // cerrada, o null/'' para "sin objetivo". El detalle son indicaciones libres del dueño.
             'agent_objective'          => 'sometimes|nullable|string|in:' . implode(',', WhatsappBotConfig::OBJETIVOS),
@@ -400,6 +403,13 @@ class WhatsappBotController extends Controller
         // con otro campo. Las dos pantallas de configuración pegan a este mismo endpoint.
         if ($request->has('chat_simulation_enabled')) {
             $data['chat_simulation_enabled'] = (bool) $request->chat_simulation_enabled;
+        }
+
+        // Derivar cotizaciones de envío y totales al equipo (misión truvari-envio-coherente v2). Su propio `if`,
+        // por el mismo motivo que los de arriba: las pantallas que pegan a este endpoint no mandan este campo
+        // y no tienen que pisarlo con `false`.
+        if ($request->has('derivar_cotizacion_envio')) {
+            $data['derivar_cotizacion_envio'] = (bool) $request->derivar_cotizacion_envio;
         }
 
         // Objetivo de la conversación (misión objetivo-agente-whatsapp). Cada uno en su propio `if`,
