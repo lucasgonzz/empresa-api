@@ -364,10 +364,13 @@ class RepararVinculosConImporteTest extends EmpresaTestCase
         $this->assertSame(0600, fileperms($ruta) & 0777);
         // Tras la corrección, el modo hermano ya no ve nada del par: ni en cero ni con importe (en B).
         foreach ([$e['a'], $e['b']] as $cuenta) {
-            $this->assertSame(0, Artisan::call('cuenta_corriente:reparar_creditos_historicos',
-                ['--cuenta' => $cuenta->id, '--vinculos-en-cero' => true]), Artisan::output());
+            // Artisan::output() vacía el buffer al leerlo: se lee una sola vez.
+            $codigo = Artisan::call('cuenta_corriente:reparar_creditos_historicos',
+                ['--cuenta' => $cuenta->id, '--vinculos-en-cero' => true]);
+            $salida_cero = Artisan::output();
+            $this->assertSame(0, $codigo, $salida_cero);
             $json = null;
-            foreach (explode("\n", trim(Artisan::output())) as $linea) {
+            foreach (explode("\n", trim($salida_cero)) as $linea) {
                 $decodificado = json_decode($linea, true);
                 if (is_array($decodificado) && isset($decodificado['cero'])) {
                     $json = $decodificado;
