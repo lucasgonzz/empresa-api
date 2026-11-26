@@ -22,9 +22,18 @@ namespace App\Http\Controllers\Helpers;
  * Límites conocidos de la segmentación (2º rechazo del QA): la lista de abreviaturas que no cortan la oración es
  * cerrada («Av.», «Gral.», «Sta.», «aprox.»…); una abreviatura que no esté, seguida de mayúscula, vuelve a cortar
  * y el importe puede quedar suelto. Un rótulo («Costo de envío:») sólo se une con la línea siguiente si el rótulo
- * mismo habla de envío o de total, y con el valor en la línea de al lado (no si hay una línea en blanco entre
- * ambos). Una oración que sólo trae el importe y cuyo envío se nombró en la oración anterior («Hacemos envíos.
- * Sale $X.») no se relaciona: pasa. Un importe en una línea sin rótulo ni palabra de envío en ninguna oración vecina no se puede reconocer.
+ * mismo habla de envío o de total, (con «:» aunque lo envuelva negrita; la línea en blanco entre ambos no
+ * impide la unión).
+ *
+ * Contexto de envío entre oraciones (3er rechazo del QA): la oración o línea inmediatamente anterior que habla de
+ * envío o de total le da contexto a la siguiente SI ésta trae un importe y no tiene sujeto propio («Hacemos
+ * envíos. Sale $X.», «Te sale $X», «El costo es $X», «Son $X», un importe solo). Un rótulo corto de costo sin punto
+ * («Costo de envío») también une «Localidad: $X». Es local y conservador: sólo la vecina inmediata. Límites:
+ * (1) un envío nombrado dos oraciones atrás («Hacemos envíos. Tenemos Fernet. Sale $X.») no llega; (2) una
+ * oración con sujeto propio que en realidad es el envío («La entrega a Río Cuarto sale $X» sí, por la palabra
+ * entrega; «Llevarlo sale $X», no) depende de la palabra de envío; (3) falsos positivos: «Hacemos envíos. Son
+ * $X las 2 botellas.» o «Sale el Fernet $X» se derivan porque arrancan sin sujeto. Un valor en otra
+ * forma sin rótulo ni palabra de envío en ninguna vecina no se puede reconocer.
  *
  * 🔴 NO SE «SIMPLIFICA» A UNA MARCA DEL MODELO (`[COTIZACION:…]` y similares): una garantía que depende de que
  * el modelo marque bien es la misma garantía que ya falló. Este filtro mira el TEXTO que sale, no lo que el
@@ -107,6 +116,20 @@ class CotizacionEnvioGuardHelper
     const PATRON_CONTEXTO_COMPRA = '/\b(?:compr(?:a|as|ás|es|ando)|pedidos?|gast(?:a|as|ás|ando)|monto|importe)\b/iu';
 
     /**
+     * Oración o línea que continúa el costo de la anterior sin nombrarlo (3º rechazo del QA): arranca con un verbo
+     * de costo sin sujeto («Sale $X», «Te sale $X», «Cuesta $X», «Son $X», «Queda en $X»), con un sujeto genérico
+     * («El costo es $X», «El valor…») o con el importe mismo. Un sujeto propio («El Fernet sale $X», «Cada botella
+     * sale $X») NO entra: es un precio de catálogo.
+     */
+    const PATRON_CONTINUACION_DE_COSTO = '/^[\s*_\-•·▪◦>]*(?:(?:te\s+|le\s+|les\s+|se\s+|me\s+)?(?:sal(?:e|en|dr[ií]a|dr[aá])|cuest(?:a|an)|val(?:e|en|dr[ií]a)|qued(?:a|an|ar[ií]a|ar[aá])|son|es|ser[ií]a|ser[aá]|cobramos|cobra|cobran|asciende|suma)\b|(?:el|la)\s+(?:costo|valor|importe|tarifa|monto|precio)\s+(?:es|ser[ií]a|ser[aá]|son|sale|queda|est[aá])\b|(?:\$\s*)?\d)/iu';
+
+    /** Un valor en forma «Localidad: $X» (una línea corta con dos puntos y el importe). Sólo bajo un rótulo de costo. */
+    const PATRON_LINEA_ROTULADA = '/^[\s*_\-•·▪◦>]*[^.!?:$\n]{1,40}:[\s*_]*\$\s*\d/u';
+
+    /** Palabras que vuelven «de costo» a un rótulo corto de envío: sólo con ellas se une una línea «Localidad: $X». */
+    const PATRON_ROTULO_DE_COSTO = '/\b(?:costos?|precios?|tarifas?|valor(?:es)?|importes?|total(?:es)?|cu[aá]nto|a\s+pagar)\b/iu';
+
+    /**
      * Corte en oraciones: salto de línea (se conserva) o espacio después de un cierre de oración. Un punto que
      * cierra una abreviatura («Av.», «Gral.», «Sta.», «aprox.», una inicial suelta como «J. M. Paz») NO corta:
      * si cortara, el importe quedaría en una oración sin la palabra de envío y pasaría el filtro. Cada
@@ -150,10 +173,17 @@ class CotizacionEnvioGuardHelper
         $conservadas = [];
         $frases      = 0;
 
+        $previo = '';
+
         foreach ($unidades as $unidad) {
             list($texto, $separador) = $unidad;
 
-            if (trim($texto) === '' || ! self::es_cotizacion($texto)) {
+            // `$previo` es la unidad anterior TAL COMO LLEGÓ (aunque se haya sacado): el contexto de envío vale
+            // para la vecina inmediata, no más lejos.
+            $anterior = $previo;
+            $previo   = $texto;
+
+            if (trim($texto) === '' || ! self::es_cotizacion($texto, $anterior)) {
                 $conservadas[] = [$texto, $separador];
                 continue;
             }
@@ -209,7 +239,7 @@ class CotizacionEnvioGuardHelper
             // viñeta de abajo se evalúa sola, como siempre.
             $habla_de_cotizacion = preg_match(self::PATRON_ENVIO, $texto) || preg_match(self::PATRON_TOTAL, $texto);
 
-            if (! $habla_de_cotizacion || ! preg_match('/:\s*$/u', $texto) || strpos($separador, "\n") === false || $i + 1 >= $total) {
+            if (! $habla_de_cotizacion || ! preg_match('/:[\s*_]*$/u', $texto) || strpos($separador, "\n") === false || $i + 1 >= $total) {
                 $unidos[] = [$texto, $separador];
                 continue;
             }
@@ -236,13 +266,22 @@ class CotizacionEnvioGuardHelper
      *  (b) dice «total» y trae un importe;
      *  (c) compara contra un umbral de compra y trae un importe («como supera los $…»).
      *
+     *  (d) contexto de la vecina de arriba (3º rechazo del QA): si la oración o línea anterior habla de envío o de
+     *      total y ésta trae un importe y continúa su costo sin sujeto propio («Hacemos envíos. Sale $X.»), se
+     *      cuenta como cotización. Falso positivo esperable: «Hacemos envíos. Son $X las 2 botellas.»
+     *
      * @param  string  $oracion
+     * @param  string  $anterior  Oración o línea inmediatamente anterior, tal como llegó ('' si no hay).
      * @return bool
      */
-    private static function es_cotizacion(string $oracion): bool
+    private static function es_cotizacion(string $oracion, string $anterior = ''): bool
     {
         $importe = (bool) preg_match(self::PATRON_IMPORTE, $oracion);
         $numero  = $importe || (bool) preg_match(self::PATRON_NUMERO_PELADO, $oracion);
+
+        if ($importe && self::continua_costo_de_la_anterior($oracion, $anterior)) {
+            return true;
+        }
 
         if (preg_match(self::PATRON_ENVIO, $oracion)
             && ($numero || preg_match(self::PATRON_GRATUIDAD, $oracion))) {
@@ -290,5 +329,35 @@ class CotizacionEnvioGuardHelper
         }
 
         return false;
+    }
+
+    /**
+     * ¿La oración continúa el costo de envío o de total que nombró la anterior? Contexto LOCAL: sólo la vecina
+     * inmediata, y sólo si la actual no trae sujeto propio. Un precio de catálogo con sujeto («El Fernet sale
+     * $X») queda afuera. Con un rótulo corto sin punto final que habla de costo («Costo de envío») también se
+     * une una línea «Localidad: $X». No cruza dos oraciones: «Hacemos envíos. Tenemos Fernet. Sale $X.» pasa.
+     *
+     * @param  string  $oracion
+     * @param  string  $anterior
+     * @return bool
+     */
+    private static function continua_costo_de_la_anterior(string $oracion, string $anterior): bool
+    {
+        $anterior = trim($anterior);
+
+        if ($anterior === '' || ! (preg_match(self::PATRON_ENVIO, $anterior) || preg_match(self::PATRON_TOTAL, $anterior))) {
+            return false;
+        }
+
+        if (preg_match(self::PATRON_CONTINUACION_DE_COSTO, ltrim($oracion))) {
+            return true;
+        }
+
+        $sin_formato = trim($anterior, " \t*_");
+        $es_rotulo   = mb_strlen($sin_formato) <= 60
+            && ! preg_match('/[.!?]$/u', $sin_formato)
+            && preg_match(self::PATRON_ROTULO_DE_COSTO, $sin_formato);
+
+        return $es_rotulo && preg_match(self::PATRON_LINEA_ROTULADA, $oracion);
     }
 }
