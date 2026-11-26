@@ -397,8 +397,8 @@ SUMMARY;
 
     /**
      * Capa de prompt que acompaña al filtro de cotizaciones (sólo con `derivar_cotizacion_envio` prendida). 🔴 Baja
-     * la cantidad de recortes, pero NO es la garantía: la garantía es `CotizacionEnvioGuardHelper`, que mira el
-     * texto que sale y no depende de que el modelo obedezca ni de que marque.
+     * la cantidad de recortes, pero no alcanza sola: la red es `CotizacionEnvioGuardHelper`, que mira el
+     * texto que sale y no depende de que el modelo obedezca ni de que marque (aun así es un filtro por patrones: no es una garantía absoluta).
      */
     private const COTIZACION_RULE = 'No informes costo de envío, peaje, envío gratis ni totales con envío. Si el cliente lo pide, decile que el costo de envío y el total los confirma el equipo y terminá con [CONSULTA:cotizar envío y total].';
 

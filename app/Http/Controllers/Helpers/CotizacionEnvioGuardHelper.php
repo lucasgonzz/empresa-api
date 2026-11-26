@@ -9,8 +9,15 @@ namespace App\Http\Controllers\Helpers;
  * 🔴 POR QUÉ EXISTE: el agente es UNA llamada al modelo, sin herramientas ni carrito. Las cantidades, la localidad y
  * las tarifas sólo viven en texto libre, así que cuando el modelo «calcula» un envío o un total lo hace de
  * cabeza y puede contradecirse en el mismo mensaje (caso real: dos totales y una comparación falsa contra un
- * umbral). Mientras no haya un dato estructurado ni reglas comerciales confirmadas por el dueño, lo único que
- * garantiza que el cliente no reciba un monto inventado es no informar ninguno.
+ * umbral). Mientras no haya un dato estructurado ni reglas comerciales confirmadas por el dueño, lo que se puede
+ * hacer es reducir el riesgo: sacar del texto las oraciones que cotizan un envío o un total.
+ *
+ * 🔴 NO ES UNA GARANTÍA ABSOLUTA. Es un filtro por patrones sobre texto libre: lo que no reconoce, pasa. Ya dejó
+ * pasar formas que nadie había previsto (el total del pedido sin la palabra «total», «delivery», «traslado»,
+ * «no tiene costo», una viñeta con el importe solo). Quedan sin cubrir, por ejemplo, un importe escrito en
+ * palabras sin «mil» («tres quinientos»), una gratuidad dicha con otras palabras y un total sin ninguna de las
+ * palabras de arriba. Cada hueco que aparezca se cierra agregando su patrón y su test; la capa de prompt y la
+ * revisión humana del chat (consulta para el equipo) son parte de la defensa, no un adorno.
  *
  * 🔴 NO SE «SIMPLIFICA» A UNA MARCA DEL MODELO (`[COTIZACION:…]` y similares): una garantía que depende de que
  * el modelo marque bien es la misma garantía que ya falló. Este filtro mira el TEXTO que sale, no lo que el
@@ -28,11 +35,29 @@ class CotizacionEnvioGuardHelper
     /** Frase impersonal a propósito: encaja con «usted» y con «vos». No es un texto de negocio. */
     const FRASE_FIJA = 'El costo de envío y el total final los confirma el equipo en breve.';
 
-    /** Palabras de envío. `\b` y /u: «envío» con y sin tilde, plural, y los recargos que viajan con él. */
-    const PATRON_ENVIO = '/\b(?:env[ií]os?|fletes?|peajes?|recargos?|despachos?)\b/iu';
+    /**
+     * Palabras de envío. `\b` y /u: «envío» con y sin tilde, plural, los recargos que viajan con él y los sinónimos
+     * de traslado de mercadería (domicilio, delivery, reparto…). Un sinónimo nuevo se suma acá.
+     */
+    const PATRON_ENVIO = '/\b(?:env[ií]os?|fletes?|peajes?|recargos?|despachos?|domicilio|delivery|traslados?|repart(?:o|os|a|en)|acarreos?|transporte)\b/iu';
 
-    /** Afirmaciones de gratuidad. */
-    const PATRON_GRATUIDAD = '/\b(?:gratis|gratuit[oa]s?|sin\s+(?:cargo|costo)|bonificad[oa]s?)\b/iu';
+    /** Afirmaciones de gratuidad (con una palabra de envío en la oración, o la de «por nuestra cuenta», que sola alcanza). */
+    const PATRON_GRATUIDAD = '/\b(?:gratis|gratuit[oa]s?|sin\s+(?:cargo|costo|recargo|adicional)|bonificad[oa]s?|libre\s+de\s+(?:costo|cargo)|no\s+(?:tiene|tendr[aá]|tendr[ií]a|conlleva|lleva|implica)\s+(?:ning[uú]n\s+)?(?:costo|cargo|recargo|adicional)|no\s+(?:le\s+|te\s+|les\s+|se\s+)?cobr(?:amos|a|an|ar[aá]|ar[ií]amos|e|o))\b/iu';
+
+    /** «Por nuestra cuenta» y similares: afirman que lo paga el negocio. Alcanzan sin la palabra de envío. */
+    const PATRON_A_CARGO_DEL_NEGOCIO = '/\b(?:por\s+(?:nuestra|mi)\s+cuenta|a\s+(?:nuestro|mi)\s+cargo|a\s+cargo\s+(?:nuestro|del\s+(?:local|negocio|comercio)))\b/iu';
+
+    /** Palabras que nombran lo que se paga entero: el pedido, la compra, la cuenta. */
+    const PATRON_PEDIDO = '/\b(?:pedidos?|compras?|cuentas?|[oó]rdenes|orden|presupuestos?|facturas?|todo\s+junto|con\s+todo)\b/iu';
+
+    /** Verbos con los que se dice cuánto da el pedido («quedaría en», «sale», «suma», «asciende a»). */
+    const PATRON_RESULTADO = '/\b(?:qued(?:a|an|ar[ií]a|ar[ií]an|ar[aá]|ar[aá]n)|sal(?:e|en|dr[ií]a|dr[ií]an|dr[aá]|dr[aá]n)|result(?:a|an|ar[ií]a|ar[aá])|sum(?:a|an|ar[ií]a)|asciende|ascender[ií]a|da|dan|ser[ií]a|ser[ií]an|ser[aá]|ser[aá]n|es\s+de|ser[ií]a\s+de)\b/iu';
+
+    /** Verbos de pagar: «tendría que abonar $…» es un total aunque no diga «total». */
+    const PATRON_PAGAR = '/\b(?:abon(?:ar|a|ás|as|aría|arías|ando)|pag(?:ar|a|ás|as|aría|arías|ando))\b/iu';
+
+    /** Una línea que es sólo un importe con su formato de viñeta o negrita («- *$X*»): una cifra sin rótulo. */
+    const PATRON_LINEA_SOLO_IMPORTE = '/^[\s\-*_•·▪◦>~`–—:]*(?:\$\s*)?\d[\d.,]*[\s*_`]*(?:pesos|ars)?[\s.*_`]*$/iu';
 
     /** La palabra «total» (también «totales»). */
     const PATRON_TOTAL = '/\btotal(?:es)?\b/iu';
@@ -158,6 +183,26 @@ class CotizacionEnvioGuardHelper
         }
 
         if ($numero && preg_match(self::PATRON_TOTAL, $oracion)) {
+            return true;
+        }
+
+        // «Lo paga el negocio» no necesita la palabra de envío: «Eso corre por nuestra cuenta» ya es una promesa.
+        if (preg_match(self::PATRON_A_CARGO_DEL_NEGOCIO, $oracion)) {
+            return true;
+        }
+
+        // Una línea que es sólo un importe («- *$X*») es una cifra sin rótulo: no se puede saber qué es.
+        if ($importe && preg_match(self::PATRON_LINEA_SOLO_IMPORTE, trim($oracion))) {
+            return true;
+        }
+
+        // Total del pedido sin la palabra «total»: «el pedido quedaría en $X», «la compra suma $X».
+        // El subtotal de un producto («las 2 botellas serían $34.000») no nombra el pedido y no entra.
+        if ($importe && preg_match(self::PATRON_PEDIDO, $oracion) && preg_match(self::PATRON_RESULTADO, $oracion)) {
+            return true;
+        }
+
+        if ($importe && preg_match(self::PATRON_PAGAR, $oracion)) {
             return true;
         }
 
