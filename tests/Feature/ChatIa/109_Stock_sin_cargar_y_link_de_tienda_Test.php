@@ -129,6 +129,8 @@ class Stock_sin_cargar_y_link_de_tienda_Test extends TestCase
         $publicado = $this->articulo(['name' => 'Nieto Senetiner Brut Nature p109', 'stock' => 9, 'online' => 1, 'slug' => 'nieto-senetiner-brut-nature-p109']);
         $this->articulo(['name' => 'Sin publicar p109', 'stock' => 3, 'online' => 0, 'slug' => 'sin-publicar-p109']);
         $this->articulo(['name' => 'Sin slug p109', 'stock' => 3, 'online' => 1, 'slug' => '']);
+        // Sembrado: el alta ahora completa el slug (observer creating); se fuerza vacío directo en la tabla.
+        DB::table('articles')->where('user_id', $this->comercio->id)->where('name', 'Sin slug p109')->update(['slug' => '']);
 
         $fila = $this->fila_de('Nieto Senetiner Brut Nature p109');
 
