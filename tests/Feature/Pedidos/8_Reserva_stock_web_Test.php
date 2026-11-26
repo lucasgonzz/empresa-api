@@ -162,6 +162,18 @@ class Reserva_stock_web_Test extends EmpresaTestCase
     }
 
     /** @test */
+    public function activar_sin_verificacion_de_soporte_explica_que_hay_que_pedirla_a_comerciocity()
+    {
+        $config = $this->configuracion();
+        $config->update(['reservar_stock_pedidos_web' => false, 'reserva_stock_tienda_url' => null, 'reserva_stock_tienda_protocolo' => 0]);
+        $respuesta = $this->guardado_config($config, true);
+        $respuesta->assertStatus(422);
+        // El mensaje debe decirle al dueño a quién pedirle la verificación (no sólo "verificá").
+        $this->assertStringContainsString('soporte de ComercioCity', $respuesta->json('errors.reservar_stock_pedidos_web.0'));
+        $this->assertFalse($config->fresh()->reservar_stock_pedidos_web);
+    }
+
+    /** @test */
     public function un_empleado_no_puede_prender_ni_apagar_reservas()
     {
         list($pedido) = $this->reservado();
