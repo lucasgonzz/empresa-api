@@ -29,7 +29,11 @@ class Numbers {
 	 * 75) bajaba un centavo. NO simplificar a `round($valor, $decimales)` ni a un decimal fijo, ni
 	 * sumar un epsilon: el epsilon fijo sube importes genuinamente menores al medio centavo.
 	 *
-	 * Límite (igual que 7.4): con 15 cifras significativas, un valor que difiere del medio centavo en
+	 * Alcance de la equivalencia con 7.4: verificada para el rango de decimales que usa el sistema (2).
+	 * NO vale para $decimales >= 23 (medido: 2042 diferencias en 8980 casos). El tope de -60 en
+	 * precision_places no es idéntico al de 7.4 (que usa INT_MIN+1): coinciden sólo en magnitudes reales.
+	 *
+	 * Límite (como 7.4, con 2 decimales): con 15 cifras significativas, un valor que difiere del medio centavo en
 	 * menos de ~1e-15 relativo (en 1e6, menos de ~1e-9) sube; lo demás se comporta como `round()`.
 	 * En magnitudes >= 1e15 el valor se devuelve tal cual, como 7.4.
 	 *
@@ -49,7 +53,7 @@ class Numbers {
 		$f1 = pow(10.0, $decimales);
 
 		if ($precision_places > $decimales && $precision_places - 15 < $decimales) {
-			// Pre-redondeo a 15 cifras significativas (idéntico a php_round_get_basic + php_round_helper de 7.4).
+			// Pre-redondeo a 15 cifras significativas (réplica de php_round_get_basic + php_round_helper de 7.4; el tope -60 no es el INT_MIN+1 de 7.4).
 			$use_precision = $precision_places < -60 ? -60 : $precision_places;
 			$tmp = $use_precision >= 0 ? $valor * pow(10.0, $use_precision) : $valor / pow(10.0, -$use_precision);
 			$tmp = self::mitad_hacia_arriba($tmp);
