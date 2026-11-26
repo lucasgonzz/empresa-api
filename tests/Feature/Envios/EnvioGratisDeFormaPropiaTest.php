@@ -298,6 +298,9 @@ class EnvioGratisDeFormaPropiaTest extends EmpresaTestCase
             if (in_array(true, $estaban, true) && is_file(database_path('migrations/' . self::MIGRACION . '.php'))) {
                 $this->instanciar_migracion()->up();
             }
+            // El DDL confirmó la transacción del test, pero Laravel sigue contando su nivel: se lo
+            // reinicia a 0 (sin savepoints colgados) y recién ahí se abre la que cierra el tearDown.
+            DB::connection()->rollBack(0);
             DB::beginTransaction();
         }
     }
