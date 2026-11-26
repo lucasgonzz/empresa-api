@@ -22,8 +22,7 @@ use Illuminate\Console\Command;
  *     php artisan articles:completar-slugs --aplicar          # escribe en todos los dueños
  *     php artisan articles:completar-slugs --aplicar --user_id=500
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union types,
- * promoción de constructor, readonly, enum ni #[...].
+ * IMPORTANTE: PHP 7.4 estricto, sin sintaxis de PHP 8 (ver .mision/RESTRICCIONES.md).
  */
 class CompletarSlugsDeArticulos extends Command
 {

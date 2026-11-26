@@ -22,8 +22,7 @@ use Illuminate\Support\Str;
  *   - la escritura re-condiciona "slug vacío", así no pisa un slug que otro proceso puso en el medio;
  *   - un nombre del que no sale ningún slug (vacío o sólo símbolos) se saltea y se cuenta aparte.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe (?->), argumentos nombrados, union types,
- * promoción de constructor, readonly, enum ni #[...].
+ * IMPORTANTE: PHP 7.4 estricto, sin sintaxis de PHP 8 (ver .mision/RESTRICCIONES.md).
  */
 class ArticleSlugBackfillHelper
 {
