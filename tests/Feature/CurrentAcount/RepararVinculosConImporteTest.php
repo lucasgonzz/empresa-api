@@ -662,6 +662,59 @@ class RepararVinculosConImporteTest extends EmpresaTestCase
     }
 
     /** @test */
+    public function ca9_una_escritura_ajena_al_par_dentro_de_la_transaccion_se_detecta_y_se_revierte()
+    {
+        // Prueba la aserción de fotos de verdad: justo después del DELETE del par se inyecta, en la misma transacción,
+        // otra escritura (un movimiento de B, la deuda D2 de A, una comisión). El comando debe abortar y revertir todo.
+        $usuario = $this->app['auth']->user()->id;
+        $e = $this->escenario();
+        $venta = Sale::create(['client_id' => $e['a']->model_id, 'user_id' => $usuario,
+            'moneda_id' => 1, 'total' => 75330, 'terminada' => 1]);
+        DB::table('current_acounts')->where('id', $e['d'])->update(['sale_id' => $venta->id]);
+        $vendedor = Seller::create(['name' => 'Vendedor inyección', 'user_id' => $usuario,
+            'num' => (int) Seller::where('user_id', $usuario)->max('num') + 1]);
+        $comision = DB::table('seller_commissions')->insertGetId(['sale_id' => $venta->id,
+            'seller_id' => $vendedor->id, 'user_id' => $usuario, 'debe' => 100, 'status' => 'inactive']);
+        $inyecciones = [
+            'detalle de un movimiento de B' => function () use ($e) {
+                DB::table('current_acounts')->where('id', $e['mb'][0])->update(['detalle' => 'Tocado por fuera']);
+            },
+            'estado de otra deuda de A' => function () use ($e) {
+                DB::table('current_acounts')->where('id', $e['d2'])->update(['status' => 'pagado']);
+            },
+            'comisión de la venta de D' => function () use ($comision) {
+                DB::table('seller_commissions')->where('id', $comision)->update(['status' => 'active']);
+            },
+        ];
+        $antes_a = $this->foto($e['a']);
+        $antes_b = $this->foto($e['b']);
+        $dependencias = $this->dependencias($e, $venta->id);
+        $activa = null;
+        $disparada = false;
+        DB::listen(function ($consulta) use (&$activa, &$disparada, &$inyecciones) {
+            if ($activa !== null && !$disparada && preg_match('/^\s*delete\s+from\s+`pagado_por`/i', $consulta->sql)) {
+                $disparada = true;
+                $inyecciones[$activa]();
+            }
+        });
+        foreach (array_keys($inyecciones) as $nombre) {
+            $activa = $nombre;
+            $disparada = false;
+            $ruta = $this->carpeta.DIRECTORY_SEPARATOR.'no-debe-existir.json';
+            list($codigo, $salida) = $this->correr($e, $this->aplicar_en($e, $ruta));
+            $this->assertTrue($disparada, $nombre.': la inyección no se ejecutó');
+            $this->assertSame(1, $codigo, $nombre.': '.$salida);
+            $this->assertStringContainsString('Cambió algo más', $salida, $nombre);
+            $this->assertFalse(file_exists($ruta), $nombre);
+            // Todo revertido: incluida la escritura inyectada y el borrado del par.
+            $this->assertSame(5, DB::table('pagado_por')->whereIn('id', $e['par'])->count(), $nombre);
+            $this->assertEquals($antes_a, $this->foto($e['a']), $nombre);
+            $this->assertEquals($antes_b, $this->foto($e['b']), $nombre);
+            $this->assertEquals($dependencias, $this->dependencias($e, $venta->id), $nombre);
+        }
+    }
+
+    /** @test */
     public function ca10_comisiones_y_puntos_de_la_venta_de_d_quedan_intactos()
     {
         $e = $this->escenario();
