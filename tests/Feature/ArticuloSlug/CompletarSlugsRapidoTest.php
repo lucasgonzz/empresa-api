@@ -282,4 +282,66 @@ class CompletarSlugsRapidoTest extends EmpresaTestCase
         $this->assertSame(0, $segunda['pendientes']);
         $this->assertSame(0, $segunda['completados']);
     }
+
+    /**
+     * Carrera con altas concurrentes (hallazgo del Revisor): el comando corre con el sistema arriba,
+     * así que entre una tanda y la siguiente puede entrar un alta por ABM con `ArticleHelper::slug`.
+     * Se reproduce con 1001 pendientes del mismo nombre (dos tandas) y un alta por ABM justo después
+     * de escribir la primera tanda; el alta toma el primer sufijo que el barrido todavía no escribió.
+     * No tiene que quedar ningún slug repetido en el dueño.
+     *
+     * El hook `$despues_de_tanda` es la costura de test del helper (null en producción).
+     *
+     * @return void
+     */
+    public function test_un_alta_por_abm_entre_tandas_no_deja_slugs_duplicados()
+    {
+        $a = $this->crear_dueno('A');
+
+        $filas = [];
+        for ($i = 0; $i < 1001; $i++) {
+            $filas[] = ['name' => 'ZZ Coca', 'slug' => null];
+        }
+        $this->sembrar_lote($a->id, $filas);
+
+        // Id del artículo dado de alta "concurrentemente" y cuántas veces se disparó el hook.
+        $alta_id = null;
+        $disparos = 0;
+        $dueno_id = $a->id;
+
+        ArticleSlugBackfillHelper::$despues_de_tanda = function () use (&$alta_id, &$disparos, $dueno_id) {
+            $disparos++;
+            if ($disparos > 1) {
+                return;
+            }
+            // Alta por ABM: la misma regla que usa el guardado de artículos.
+            $slug = ArticleHelper::slug('ZZ Coca', null, $dueno_id);
+            $alta_id = DB::table('articles')->insertGetId([
+                'user_id' => $dueno_id, 'name' => 'ZZ Coca', 'slug' => $slug, 'status' => 'active',
+                'iva_id' => 2, 'created_at' => self::UPDATED_AT_VIEJO, 'updated_at' => self::UPDATED_AT_VIEJO,
+            ]);
+        };
+
+        try {
+            ArticleSlugBackfillHelper::procesar(true, $a->id);
+        } finally {
+            ArticleSlugBackfillHelper::$despues_de_tanda = null;
+        }
+
+        $this->assertNotNull($alta_id, 'El hook tiene que haberse disparado entre tandas.');
+
+        $duplicados = DB::table('articles')
+                        ->where('user_id', $a->id)
+                        ->whereNull('deleted_at')
+                        ->select('slug', DB::raw('COUNT(*) AS cantidad'))
+                        ->groupBy('slug')
+                        ->havingRaw('COUNT(*) > 1')
+                        ->pluck('cantidad', 'slug')
+                        ->all();
+
+        $this->assertSame([], $duplicados, 'Slugs repetidos: ' . json_encode($duplicados));
+        $this->assertSame(0, DB::table('articles')->where('user_id', $a->id)->where(function ($q) {
+            $q->whereNull('slug')->orWhere('slug', '');
+        })->count(), 'Todos los pendientes quedan completados.');
+    }
 }

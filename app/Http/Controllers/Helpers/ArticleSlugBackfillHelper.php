@@ -72,6 +72,15 @@ class ArticleSlugBackfillHelper
     const CANTIDAD_EJEMPLOS = 5;
 
     /**
+     * Costura de test: función que se invoca después de escribir cada tanda de artículos (sin
+     * argumentos). Sirve para simular un alta por ABM entre una tanda y la siguiente. En producción
+     * es siempre null.
+     *
+     * @var callable|null
+     */
+    public static $despues_de_tanda = null;
+
+    /**
      * Procesa todos los dueños (SÓLO owners: `owner_id IS NULL`) o uno solo si se indica `$user_id`.
      *
      * @param bool $aplicar true escribe los slugs; false sólo cuenta (modo reporte).
@@ -194,6 +203,11 @@ class ArticleSlugBackfillHelper
 
             if ($aplicar && !empty($a_escribir)) {
                 $resultado['completados'] += self::escribir_slugs($a_escribir);
+            }
+
+            // Costura de test (null en producción).
+            if ($aplicar && !is_null(self::$despues_de_tanda)) {
+                call_user_func(self::$despues_de_tanda);
             }
         });
 
