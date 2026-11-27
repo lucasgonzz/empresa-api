@@ -767,6 +767,13 @@ class EjecutorAccionesIaHelper {
              */
             case AiMessageAction::TIPO_RENOMBRE_MASIVO:
                 return \App\Http\Controllers\Helpers\asistente_ia\PropuestaRenombreMasivoIaHelper::ejecutar($contexto, $accion);
+
+            /*
+             * Misión asistente-diario-20261121 (M1): destacar un artículo en la tienda. Ver
+             * PropuestaDestacadoArticuloIaHelper.
+             */
+            case AiMessageAction::TIPO_DESTACADO_ARTICULO:
+                return PropuestaDestacadoArticuloIaHelper::ejecutar($contexto, $accion);
         }
 
         throw new AccionIaException(422, 'Esta tarjeta no se puede confirmar.');

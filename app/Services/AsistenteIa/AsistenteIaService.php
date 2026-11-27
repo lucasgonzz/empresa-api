@@ -2525,6 +2525,10 @@ class AsistenteIaService
         if ($con_acciones && \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::activa($owner)) {
             $bloque_de_carga .= "\n".\App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::instrucciones()."\n";
         }
+        // Misión asistente-diario-20261121 (A1): reglas de un pedido a proveedor en una vinoteca (no dependen del alta de bebidas).
+        if ($con_acciones && \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::disponible($owner)) {
+            $bloque_de_carga .= "\n".\App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::instrucciones_de_pedido_a_proveedor()."\n";
+        }
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -3719,6 +3723,15 @@ VENTA_CONFIRMA;
   detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
   digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
   detalle.campos_guardados: no cambies un campo por otro (una razón social no es un domicilio).
+- 🔴 El precio de venta de un artículo se calcula por costo y margen: para cambiar lo que se vende
+  se edita `cost` (el costo) o el margen, NUNCA el campo de precio manual (`price`) de un artículo que
+  se calcula por costo y margen: no mueve lo que se vende y la tarjeta quedaría diciendo algo que no
+  pasó. Si el dueño dice que NO trabaja con listas de precio y que_puedo_cargar / `listas_de_precio`
+  dice que el negocio no las usa, no le ofrezcas listas ni margenes_por_lista: el margen va en
+  `percentage_gain` del artículo.
+- Destacar un artículo en la tienda (la estrella del Listado) o sacarlo de los destacados se hace con
+  proponer_destacado_articulo (articulo y destacado true/false): deja SIEMPRE una tarjeta para confirmar. Si
+  el artículo ya estaba así, la herramienta te lo dice y no hay tarjeta. Nunca digas que no se puede.
 - Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
   por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
   preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar

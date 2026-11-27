@@ -508,4 +508,98 @@ class AltaBebidasTest extends EmpresaTestCase
         $this->assertStringNotContainsString('no quedaron guardadas', $texto);
         $this->assertEquals(6, Article::where('name', $this->datos['name'])->firstOrFail()->unidades_por_bulto);
     }
+
+    /**
+     * Misión asistente-diario-20261121 (A2): una cerveza (no vino) puede ir SIN bodega y SIN proveedor cuando el
+     * dueño lo dijo; sale con tarjeta que lo muestra, y el artículo queda sin ninguno de los dos.
+     */
+    public function test_cerveza_sin_bodega_ni_proveedor_sale_con_tarjeta_y_se_crea_sin_ellos()
+    {
+        $datos = $this->datos;
+        unset($datos['bodega_id'], $datos['provider_id'], $datos['cepa_id']);
+        $r = HerramientasDeCarga::ejecutar('proponer_alta', ['entidad' => 'article', 'datos' => array_merge($datos,
+            ['bebida' => ['es_vino' => false, 'botellas_por_caja' => 12, 'sin_imagen' => true, 'sin_bodega' => true, 'sin_proveedor' => true]])],
+            $this->conversacion, $this->mensaje);
+        $this->assertFalse($r['is_error'], $r['content']);
+        $accion = $this->accion();
+        $this->assertArrayNotHasKey('bodega_id', $accion->datos['payload']);
+        $this->assertArrayNotHasKey('provider_id', $accion->datos['payload']);
+        $renglones = array_column($accion->presentacion['renglones'], 'valor', 'etiqueta');
+        $this->assertSame('Sin bodega', $renglones['Bodega']);
+        $this->assertSame('Sin proveedor', $renglones['Proveedor']);
+        $this->confirmar($accion->id)->assertStatus(200);
+        $a = Article::where('user_id', $this->dueno->id)->where('name', $this->datos['name'])->firstOrFail();
+        $this->assertNull($a->bodega_id);
+        $this->assertNull($a->provider_id);
+    }
+
+    /** A2: un vino sin bodega sigue pidiendo bodega, aunque el dueño diga «sin bodega». */
+    public function test_vino_sin_bodega_sigue_pidiendo_bodega()
+    {
+        $datos = $this->datos;
+        unset($datos['bodega_id']);
+        $r = HerramientasDeCarga::ejecutar('proponer_alta', ['entidad' => 'article', 'datos' => array_merge($datos,
+            ['bebida' => ['es_vino' => true, 'botellas_por_caja' => 6, 'sin_imagen' => true, 'sin_bodega' => true]])],
+            $this->conversacion, $this->mensaje);
+        $respuesta = json_decode($r['content'], true);
+        $this->assertArrayHasKey('faltan', $respuesta);
+        $this->assertContains('bodega existente', $respuesta['faltan']);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $this->conversacion->id)->count());
+    }
+
+    /** A2: un vino puede ir sin proveedor si el dueño lo dice; la bodega y la cepa siguen. */
+    public function test_vino_sin_proveedor_declarado_no_pide_proveedor()
+    {
+        $datos = $this->datos;
+        unset($datos['provider_id']);
+        $r = HerramientasDeCarga::ejecutar('proponer_alta', ['entidad' => 'article', 'datos' => array_merge($datos,
+            ['bebida' => ['es_vino' => true, 'botellas_por_caja' => 6, 'sin_imagen' => true, 'sin_proveedor' => true]])],
+            $this->conversacion, $this->mensaje);
+        $this->assertFalse($r['is_error'], $r['content']);
+        $this->assertArrayNotHasKey('faltan', json_decode($r['content'], true));
+        $this->assertSame(1, AiMessageAction::where('ai_conversation_id', $this->conversacion->id)->count());
+    }
+
+    /** A2: sin las claves nuevas, una bebida sin bodega ni proveedor sigue pidiendo ambos (compatibilidad). */
+    public function test_sin_las_claves_nuevas_sigue_pidiendo_proveedor_y_bodega()
+    {
+        $datos = $this->datos;
+        unset($datos['bodega_id'], $datos['provider_id'], $datos['cepa_id']);
+        $r = HerramientasDeCarga::ejecutar('proponer_alta', ['entidad' => 'article', 'datos' => array_merge($datos,
+            ['bebida' => ['es_vino' => false, 'botellas_por_caja' => 12, 'sin_imagen' => true]])],
+            $this->conversacion, $this->mensaje);
+        $respuesta = json_decode($r['content'], true);
+        $this->assertArrayHasKey('faltan', $respuesta);
+        $this->assertContains('proveedor existente', $respuesta['faltan']);
+        $this->assertContains('bodega existente', $respuesta['faltan']);
+    }
+
+    /** A2: decir «sin proveedor» y mandar uno a la vez es una contradicción: no se carga nada. */
+    public function test_sin_proveedor_con_proveedor_mandado_es_contradiccion()
+    {
+        $r = $this->proponer(['cepa_id' => null], ['es_vino' => false, 'sin_proveedor' => true]);
+        $this->assertArrayHasKey('error', $r);
+        $this->assertSame(0, AiMessageAction::where('ai_conversation_id', $this->conversacion->id)->count());
+    }
+
+    /**
+     * Misión asistente-diario-20261121 (A1): el prompt de carga de un negocio con Vinoteca trae las reglas del
+     * pedido a proveedor (costo base, un pedido entero, listado al final) y la regla general de no escribir el
+     * precio manual; un negocio SIN vinoteca no recibe las de vinoteca.
+     */
+    public function test_el_prompt_trae_las_reglas_del_pedido_a_proveedor_solo_con_vinoteca()
+    {
+        $servicio = new \App\Services\AsistenteIa\AsistenteIaService();
+        $prompt = $servicio->build_system_prompt($this->conversacion, $this->dueno->fresh(), true, false);
+        $this->assertStringContainsString('es el COSTO BASE por unidad', $prompt);
+        $this->assertStringContainsString('UNA sola confirmación', $prompt);
+        $this->assertStringContainsString('PRECIO DE VENTA final por unidad', $prompt);
+        $this->assertStringContainsString('NUNCA el campo de precio manual', $prompt);
+        $this->assertStringContainsString('el margen va en', $prompt);
+
+        $this->dueno->extencions()->detach(ExtencionEmpresa::where('slug', 'vinoteca')->value('id'));
+        $sin = $servicio->build_system_prompt($this->conversacion, $this->dueno->fresh(), true, false);
+        $this->assertStringNotContainsString('es el COSTO BASE por unidad', $sin);
+        $this->assertStringContainsString('NUNCA el campo de precio manual', $sin);
+    }
 }
