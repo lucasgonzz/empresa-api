@@ -381,7 +381,9 @@ class T191_Foto_a_medida_Test extends TestCase
     public function la_herramienta_va_al_final_y_queda_fuera_del_mcp()
     {
         $this->assertTrue(HerramientasDeCarga::maneja('ajustar_foto_a_medida'));
-        $this->assertSame('ajustar_foto_a_medida', array_slice(HerramientasDeCarga::nombres(), -1)[0]);
+        // asistente-diario-20261121 agrega proponer_destacado_articulo detrás: la foto a medida pasa a ser la anteúltima.
+        $this->assertSame('ajustar_foto_a_medida', array_slice(HerramientasDeCarga::nombres(), -2, 1)[0]);
+        $this->assertSame('proponer_destacado_articulo', array_slice(HerramientasDeCarga::nombres(), -1)[0]);
         $this->assertContains('ajustar_foto_a_medida', McpHerramientasHelper::EXCLUIDAS);
         $this->assertFalse(McpHerramientasHelper::existe('ajustar_foto_a_medida'));
     }

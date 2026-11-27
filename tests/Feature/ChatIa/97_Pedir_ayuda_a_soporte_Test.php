@@ -287,13 +287,15 @@ class Pedir_ayuda_a_soporte_Test extends EmpresaTestCase
             ['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda'],
             // Fichas verificadas añade una herramienta detrás, sin modificar este prefijo, y los avisos del
             // dueño (C2, 13/11/2026) otra más; quitar_foto_articulo (asistente-mejoras-4-dias, P6, 16/11/2026) va al final de todo.
-            array_slice($nombres, -9, 3)
+            array_slice($nombres, -10, 3)
         );
-        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -6, 3));
+        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -7, 3));
         // asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock por lote va al final de todo.
-        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -3, 1));
+        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -4, 1));
         // asistente-diario-20261119 (rama C, A4 y M3): el renombre masivo y la foto a medida van al final de todo.
-        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -2));
+        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -3, 2));
+        // asistente-diario-20261121: proponer_destacado_articulo va al final de todo.
+        $this->assertSame(['proponer_destacado_articulo'], array_slice($nombres, -1));
 
         $descripcion = '';
         foreach (HerramientasDeCarga::definiciones() as $definicion) {
