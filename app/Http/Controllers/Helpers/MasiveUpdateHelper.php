@@ -84,7 +84,7 @@ class MasiveUpdateHelper
      *
      * Es el cuerpo que tenía UpdateController::update() (misión asistente-masivas-imagenes-y-remito,
      * 19/9/2026), movido acá para que la pantalla y el asistente encolen por EL MISMO camino: mismo
-     * guard de "al menos un filtro efectivo", mismo tope de 3000, misma `criteria_json`, mismo
+     * guard de "al menos un filtro efectivo", el tope por artículos (EjecucionPorTandasHelper::MAXIMO_ARTICULOS; 3000 en el resto), misma `criteria_json`, mismo
      * historial y misma reversión. El controller solo traduce el request y la respuesta:
      * `response()->json($r['body'], $r['status'])`. Ninguna respuesta observable del endpoint cambia.
      *
@@ -110,9 +110,16 @@ class MasiveUpdateHelper
      * @param  callable|null  $filtro_extra
      * @param  array|null  $used_filters_manual  Solo sin $from_filter: el criterio legible que
      *                                           reemplaza a "Seleccion manual" en el historial.
+     * @param  array  $opciones  Opcionales (misión masiva-sin-tope-confirmar-75), todas booleanas:
+     *                           `check_inventory_percentage` pide el freno de negocio (sólo artículos): si la
+     *                           selección alcanza MÁS del 75% del inventario activo del dueño devuelve 422
+     *                           `requires_confirmation` sin encolar nada; `confirmed_massive` es la
+     *                           confirmación de la persona y saltea ese freno. Sin `check_inventory_percentage`
+     *                           (el asistente de IA, que tiene su propia tarjeta, y las pantallas viejas) no
+     *                           cambia nada.
      * @return array  ['status' => 200|422, 'body' => array]
      */
-    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null, $used_filters_manual = null)
+    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null, $used_filters_manual = null, array $opciones = [])
     {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
@@ -223,10 +230,14 @@ class MasiveUpdateHelper
                     return self::respuesta_de_encolado(422, ['message' => 'No se permite actualizar por filtro si no hay criterios de filtrado.']);
                 }
                 // Una sola lectura de IDs congela la selección; ni OFFSET ni relaciones de 30000 modelos.
-                $seleccionados = $query->setEagerLoads([])->limit(3000)->pluck('articles.id')->all();
+                // Se lee un id de más que el techo para saber si lo superó sin traer todo el conjunto.
+                $seleccionados = $query->setEagerLoads([])->limit(EjecucionPorTandasHelper::MAXIMO_ARTICULOS + 1)->pluck('articles.id')->all();
                 $models = collect();
-                if (count($seleccionados) >= 3000) {
-                    return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar 3000 registros']);
+                if (count($seleccionados) > EjecucionPorTandasHelper::MAXIMO_ARTICULOS) {
+                    // Se cuenta el total real (la lectura de IDs se corta en el techo + 1) para decirle a la persona de cuánto se pasó.
+                    $total_real = (clone $query)->setEagerLoads([])->count('articles.id');
+                    Log::info('NO se permitio actualizar por filtro: ' . $total_real . ' artículos superan el tope.');
+                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido($total_real, 'artículos', EjecucionPorTandasHelper::MAXIMO_ARTICULOS)]);
                 }
                 if (is_callable($filtro_extra)) {
                     // El callback sólo usa id/images; no cargar embeddings, precios ni withAll.
@@ -278,8 +289,8 @@ class MasiveUpdateHelper
                 ]);
             }
             if ($model_name === 'article') {
-                if (count($models_id) >= 3000) {
-                    return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar ' . count($models_id) . ' registros']);
+                if (count($models_id) > EjecucionPorTandasHelper::MAXIMO_ARTICULOS) {
+                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models_id), 'artículos', EjecucionPorTandasHelper::MAXIMO_ARTICULOS)]);
                 }
                 $propios = array_fill_keys(Article::where('user_id', $owner_id)->whereIn('id', $models_id)->pluck('id')->all(), true);
                 if (count($propios) < count($models_id)) {
@@ -308,9 +319,11 @@ class MasiveUpdateHelper
                 ];
         }
 
-        if (count($models) >= 3000) {
+        // Los artículos ya se acotaron arriba contra su techo técnico; el resto de los modelos se resuelve
+        // con find() uno por uno en un solo job (sin tandas) y conserva el tope de 3000.
+        if ($model_name !== 'article' && count($models) >= 3000) {
             Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);
-            return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar '.count($models).' registros']);
+            return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models), 'registros', 2999)]);
         }
 
         $resolved_models_id = [];
@@ -324,6 +337,16 @@ class MasiveUpdateHelper
             return self::respuesta_de_encolado(422, [
                 'message' => 'No hay registros para actualizar',
             ]);
+        }
+
+        // Freno de negocio: más del 75% del inventario activo pide confirmación antes de crear nada.
+        if ($model_name === 'article'
+            && !empty($opciones['check_inventory_percentage'])
+            && empty($opciones['confirmed_massive'])) {
+            $confirmacion = self::confirmacion_por_inventario($owner_id, $resolved_models_id);
+            if ($confirmacion !== null) {
+                return $confirmacion;
+            }
         }
 
         $criteria = [
@@ -364,6 +387,68 @@ class MasiveUpdateHelper
     }
 
     /**
+     * Decide si una masiva de artículos alcanza MÁS del 75% del inventario del dueño y, si es así,
+     * arma la respuesta 422 que le pide a la pantalla que confirme.
+     *
+     * Inventario = artículos del dueño con status `active` y no eliminados (SoftDeletes), que es lo que
+     * muestra y filtra el listado; el conteo de "alcanzados" usa la misma definición, así que el
+     * porcentaje nunca pasa de 100 aunque una selección manual traiga inactivos. La comparación es en
+     * enteros (count * 4 > total * 3): exactamente 75% NO pide confirmación. Sin umbral mínimo de
+     * inventario: el pedido es literal y la confirmación es un clic.
+     *
+     * @param  int  $owner_id  Dueño de la cuenta.
+     * @param  int[]  $ids  Ids resueltos de la selección congelada.
+     * @return array|null  Respuesta de encolado (422) o null si no hace falta confirmar.
+     */
+    protected static function confirmacion_por_inventario($owner_id, array $ids)
+    {
+        // Inventario activo del dueño (el SoftDeletes del modelo excluye los eliminados).
+        $total = Article::where('user_id', $owner_id)->where('status', 'active')->count();
+        if ($total <= 0) {
+            return null;
+        }
+        // Activos alcanzados por la selección.
+        $alcanzados = Article::where('user_id', $owner_id)->where('status', 'active')->whereIn('id', $ids)->count();
+        if ($alcanzados * 4 <= $total * 3) {
+            return null;
+        }
+        $porcentaje = round($alcanzados * 100 / $total, 1);
+        // Entero sin decimales ("80%"); con decimal, coma ("92,4%").
+        $porcentaje_texto = floor($porcentaje) == $porcentaje
+            ? number_format($porcentaje, 0, ',', '.')
+            : number_format($porcentaje, 1, ',', '.');
+        $mensaje = 'Esta actualización afecta el ' . $porcentaje_texto . '% de tu inventario ('
+            . number_format($alcanzados, 0, ',', '.') . ' de ' . number_format($total, 0, ',', '.')
+            . ' artículos). ¿Confirmás que querés seguir?';
+        return self::respuesta_de_encolado(422, [
+            'requires_confirmation' => true,
+            'code'                  => 'confirmar_porcentaje_inventario',
+            'percentage'            => $porcentaje,
+            'count'                 => $alcanzados,
+            'total'                 => $total,
+            'message'               => $mensaje,
+        ]);
+    }
+
+    /**
+     * Arma el mensaje claro cuando una actualización masiva supera el tope de registros por vez.
+     *
+     * El máximo viene por parámetro porque no es el mismo para todos los modelos (los artículos
+     * tienen un techo técnico propio) y el texto tiene que decirle a la persona el número real.
+     *
+     * @param  int  $cantidad  Registros que alcanzaba la selección o el filtro.
+     * @param  string  $unidad  Nombre en plural de lo que se iba a actualizar.
+     * @param  int  $maximo  Máximo de registros permitido por actualización masiva.
+     * @return string
+     */
+    protected static function mensaje_tope_excedido($cantidad, $unidad, $maximo)
+    {
+        return 'No se pudo actualizar: la selección alcanza ' . number_format((int) $cantidad, 0, ',', '.') . ' ' . $unidad
+            . ' y el máximo permitido por actualización masiva es ' . number_format((int) $maximo, 0, ',', '.') . '. '
+            . 'Acotá el filtro (por ejemplo por categoría, proveedor o rango de código) y repetí la acción por tandas.';
+    }
+
+    /**
      * @param  int  $status
      * @param  array  $body
      * @return array
@@ -388,8 +473,8 @@ class MasiveUpdateHelper
         $criteria = ['revert_of_masive_update_id' => $parent_masive_update->id];
         if (EjecucionPorTandasHelper::es_de_articulos($parent_masive_update)) {
             $criteria['resolved_models_id'] = DB::table('masive_update_article')->where('masive_update_id', $parent_masive_update->id)
-                ->orderBy('id')->limit(3000)->pluck('id')->all();
-            if (count($criteria['resolved_models_id']) >= 3000) {
+                ->orderBy('id')->limit(EjecucionPorTandasHelper::MAXIMO_ARTICULOS + 1)->pluck('id')->all();
+            if (count($criteria['resolved_models_id']) > EjecucionPorTandasHelper::MAXIMO_ARTICULOS) {
                 throw new \RuntimeException('La reversión supera el límite de registros.');
             }
             $criteria = EjecucionPorTandasHelper::inicializar($criteria);
@@ -551,6 +636,8 @@ class MasiveUpdateHelper
         );
 
         if (count($models) >= 3000) {
+            // Camino viejo (modelos que no son artículos, ya cortado en el encolado): se conserva el texto
+            // original porque un test del área (ProcesosEnSegundoPlano) fija que menciona "3000" sin separador.
             throw new Exception('No se permitio actualizar ' . count($models) . ' registros');
         }
 
