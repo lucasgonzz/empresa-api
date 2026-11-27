@@ -31,7 +31,8 @@ class AltaBebidasIaHelper
          * excepción va acá, en la misma oración.
          */
         return 'Esto aplica SOLO al alta de bebidas (proponer_alta) y a su stock inicial; NUNCA a ventas, presupuestos ni pedidos: ahí la cantidad son unidades de venta del artículo y "una caja" es 1 (con presentación, el precio ya es el de la caja). '
-            .'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
+            .'Alta completa de bebidas activa: para BEBIDAS mandá dentro de datos la clave bebida como objeto {es_vino: booleano, botellas_por_caja: entero, cajas: entero opcional, cajas_confirmadas: booleano, sin_imagen: booleano opcional, sin_bodega: booleano opcional, sin_proveedor: booleano opcional} de proponer_alta. Los accesorios, insumos y otros artículos siguen por el alta genérica SIN bebida. Reuní nombre, proveedor y bodega EXISTENTES, costo, IVA y margen según listas. '
+            .'Si el dueño dice «sin bodega» o «sin proveedor», mandá bebida.sin_bodega=true / bebida.sin_proveedor=true (booleanos opcionales) y NO vuelvas a preguntar por eso ni crees una bodega o un proveedor para sortearlo; sin_bodega vale solo para bebidas que NO son vino (un vino siempre lleva bodega y cepa), sin_proveedor vale también para vinos. Con esas claves no mandes provider_id ni bodega_id. Una sola tarjeta de confirmación (que muestra «Sin bodega» / «Sin proveedor»); si el dueño dice «no me preguntes más», armá la tarjeta en ese mismo turno con lo que hay. '
             .'El tipo de bebida se guarda en categoría/subcategoría de Crear; nunca en marca ni en un campo inventado. '
             .'Mandá bebida.es_vino booleano; solo vinos llevan cepa EXISTENTE. Nunca crees proveedor, bodega o cepa sin consentimiento. '
             .'Presentación es la cantidad de unidades de VENTA y puede cambiar el precio según la configuración: usa el mismo cálculo de Crear. Preguntá si corresponde vender por botella (1) o por presentación. '
@@ -43,6 +44,20 @@ class AltaBebidasIaHelper
             .'Si no hay coincidencia verificada, informalo y mandá bebida.sin_imagen=true para mostrar ese límite. '
             .'Una única propuesta muestra datos, conversión y depósito; SIEMPRE requiere confirmación, incluso en modo directo. '
             .'La foto encontrada en INTERNET nunca va dentro del alta (el artículo se crea sin ella): cuando la persona confirme el alta, proponé la foto APARTE con proponer_foto_articulo (articulo_id del alta e imagen_id de foto_aparte), que la muestra y espera su propio sí. Nunca la pongas sin preguntar.';
+    }
+
+    /**
+     * Misión asistente-diario-20261121 (A1): reglas para cargar el pedido a un proveedor en un negocio con la
+     * extensión Vinoteca (precio por botella = costo base, pedido entero tras una confirmación, listado de
+     * lo que subió o bajó). Es texto de prompt: no cambia ninguna cuenta del sistema.
+     *
+     * @return string
+     */
+    public static function instrucciones_de_pedido_a_proveedor(): string
+    {
+        return 'Pedido a proveedor en una vinoteca: el «precio por botella» o «por unidad» que da el dueño de un pedido es el COSTO BASE por unidad: se edita `cost` (proponer_edicion) y el stock que llega en cajas va con proponer_stock_en_deposito. Si dijo «el costo base», NO preguntes si es costo o precio de venta. '
+            .'Un pedido con varios renglones cuyo detalle ya está claro se carga entero tras UNA sola confirmación de los casos ambiguos: no vuelvas a preguntar lo que el dueño ya contestó. '
+            .'Si pide el listado de lo que bajó o subió de precio y en qué porcentaje, armalo AL TERMINAR (después de aplicar costo y margen) con el PRECIO DE VENTA final por unidad de cada artículo, no con el costo, comparándolo contra el precio anterior que leíste ANTES de editar.';
     }
 
     /**
@@ -59,6 +74,19 @@ class AltaBebidasIaHelper
         }
         $foto = FotosDeLaConversacionIaHelper::por_id($contexto, $imagen_id);
         return !is_null($foto) && !FotosDeLaConversacionIaHelper::la_mando_el_dueno($foto);
+    }
+
+    /**
+     * true si la bebida trae la clave booleana indicada en true (p. ej. sin_bodega, sin_proveedor).
+     * Solo el booleano true cuenta: un texto o un número no declaran nada (conservador).
+     *
+     * @param  array  $bebida  El objeto bebida de la propuesta.
+     * @param  string  $clave  La clave a mirar.
+     * @return bool
+     */
+    public static function declarado(array $bebida, string $clave): bool
+    {
+        return isset($bebida[$clave]) && $bebida[$clave] === true;
     }
 
     public static function heredar(ContextoDeCargaIa $contexto, $reemplaza_a, $bebida): array
@@ -78,8 +106,25 @@ class AltaBebidasIaHelper
         }
         $p = $validado['payload'];
         $faltan = [];
-        foreach (['name' => 'nombre', 'provider_id' => 'proveedor existente', 'bodega_id' => 'bodega existente',
-            'cost' => 'costo', 'category_id' => 'tipo de bebida (categoría)', 'presentacion' => 'presentación de venta'] as $k => $nombre) {
+        /*
+         * Misión asistente-diario-20261121 (A2): el dueño puede decir «sin bodega» / «sin proveedor». ArticleController
+         * no exige ninguno de los dos, así que una bebida que NO es vino puede ir sin bodega, y cualquier bebida (vino
+         * incluido) sin proveedor. Se declara con bebida.sin_bodega / bebida.sin_proveedor (booleanos opcionales).
+         * Sin esas claves todo se comporta como antes. Un vino conserva la exigencia de bodega.
+         */
+        $sin_proveedor = self::declarado($bebida, 'sin_proveedor');
+        $sin_bodega = self::declarado($bebida, 'sin_bodega') && isset($bebida['es_vino']) && $bebida['es_vino'] === false;
+        if ($sin_proveedor && !empty($p['provider_id'])) {
+            return RespuestaDeCargaIa::error('Dijiste «sin proveedor» pero mandaste un proveedor. Reenviá sin una de las dos cosas. No se cargó nada.');
+        }
+        if ($sin_bodega && !empty($p['bodega_id'])) {
+            return RespuestaDeCargaIa::error('Dijiste «sin bodega» pero mandaste una bodega. Reenviá sin una de las dos cosas. No se cargó nada.');
+        }
+        $requeridos = ['name' => 'nombre', 'provider_id' => 'proveedor existente', 'bodega_id' => 'bodega existente',
+            'cost' => 'costo', 'category_id' => 'tipo de bebida (categoría)', 'presentacion' => 'presentación de venta'];
+        if ($sin_proveedor) unset($requeridos['provider_id']);
+        if ($sin_bodega) unset($requeridos['bodega_id']);
+        foreach ($requeridos as $k => $nombre) {
             if (!array_key_exists($k, $p) || PropuestaGenericaIaHelper::vacio($p[$k])) {
                 $faltan[] = $nombre;
             }
@@ -129,10 +174,15 @@ class AltaBebidasIaHelper
             : self::texto_sin_cajas((int) $botellas, false, PermisosIaHelper::tiene_extencion($contexto->owner, 'articulos_con_propiedades_de_distribuidora'));
         $renglones = [
             ['etiqueta' => 'Tipo de bebida', 'valor' => $bebida['es_vino'] ? 'Vino' : 'Otra bebida (sin cepa)'],
+        ];
+        // A2: la tarjeta deja explícito lo que va vacío por decisión del dueño.
+        if ($sin_proveedor) $renglones[] = ['etiqueta' => 'Proveedor', 'valor' => 'Sin proveedor'];
+        if ($sin_bodega) $renglones[] = ['etiqueta' => 'Bodega', 'valor' => 'Sin bodega'];
+        $renglones = array_merge($renglones, [
             ['etiqueta' => 'Botellas por caja logística', 'valor' => (string) (int) $botellas],
             ['etiqueta' => 'Caja logística', 'valor' => $texto_de_la_caja],
             ['etiqueta' => 'Precio por presentación', 'valor' => 'La presentación de venta es '.(float) $p['presentacion'].' y puede cambiar el precio según la configuración; se usa el mismo cálculo de Crear.'],
-        ];
+        ]);
         if (isset($bebida['cajas'])) {
             $cajas = $bebida['cajas'];
             if (!is_numeric($cajas) || (float) $cajas <= 0 || (float) $cajas != (int) $cajas || (float) $cajas > 1000000

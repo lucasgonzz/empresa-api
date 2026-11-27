@@ -8,6 +8,7 @@ use App\Models\Article;
 use App\Models\Iva;
 use App\Models\ProviderOrderScan;
 use App\Services\Compras\CodigosDeProveedor;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Intervention\Image\ImageManager;
@@ -2219,7 +2220,7 @@ class EscaneoFacturaCompraService
                     'article_id'         => null,
                     'criterio'           => null,
                     'nombre_en_catalogo' => null,
-                    'candidatos'         => $this->buscar_candidatos($articulo['nombre'], $owner_id),
+                    'candidatos'         => $this->buscar_candidatos($articulo['nombre'], $owner_id, [$articulo['codigo_proveedor'], $articulo['bar_code']]),
                 ];
             }
 
@@ -2234,34 +2235,55 @@ class EscaneoFacturaCompraService
     }
 
     /**
-     * Hasta tres artículos del catálogo con nombre parecido, para que el usuario pueda
-     * elegir a mano cuando el matcheo exacto no encontró nada.
+     * Los artículos del catálogo que se le ofrecen al usuario cuando el matcheo exacto no encontró nada: primero
+     * los que tienen un código que EMPIEZA IGUAL que el leído (hasta cuatro) y después hasta tres con nombre parecido.
      *
-     * Se busca por las primeras dos palabras del nombre leído: es lo que sobrevive a un OCR
+     * Los de nombre: se busca por las primeras dos palabras del nombre leído, que es lo que sobrevive a un OCR
      * mediocre en el final del renglón ("MARTILLO ACERO 500G MANGO FIBRA" leído como
      * "MARTILLO ACERO 500G MANG0 F1BRA" sigue empezando igual).
      *
+     * Los de código (misión asistente-diario-recuperacion-20261127, CA4): ver buscar_candidatos_por_codigo().
+     * Nunca se marca `encontrado` ni se asocia solo: son sugerencias y la decisión sigue en la revisión.
+     *
      * @param  string|null  $nombre
      * @param  int          $owner_id
+     * @param  array        $codigos  Los códigos leídos del renglón (proveedor y barras); los vacíos se ignoran.
      * @return array
      */
-    protected function buscar_candidatos($nombre, int $owner_id): array
+    protected function buscar_candidatos($nombre, int $owner_id, array $codigos = []): array
     {
+        $candidatos = [];
+
+        // Ids ya ofrecidos, para no repetir un artículo que entra por código y por nombre.
+        $ya_ofrecidos = [];
+
+        foreach ($codigos as $codigo) {
+
+            foreach ($this->buscar_candidatos_por_codigo($codigo, $owner_id, $ya_ofrecidos) as $candidato) {
+
+                $ya_ofrecidos[] = $candidato['article_id'];
+                $candidatos[] = $candidato;
+            }
+        }
+
+        // Como mucho cuatro por código, aunque vengan dos códigos (proveedor y barras).
+        $candidatos = array_slice($candidatos, 0, self::MAX_CANDIDATOS_POR_CODIGO);
+
         if (is_null($nombre) || trim($nombre) === '') {
-            return [];
+            return $candidatos;
         }
 
         $palabras = preg_split('/\s+/', trim($nombre));
 
         if (!is_array($palabras) || count($palabras) === 0) {
-            return [];
+            return $candidatos;
         }
 
         $primeras = implode(' ', array_slice($palabras, 0, 2));
 
         if (mb_strlen($primeras) < 3) {
             /* Un fragmento de dos letras trae medio catálogo: no ayuda a nadie. */
-            return [];
+            return $candidatos;
         }
 
         $encontrados = Article::where('user_id', $owner_id)
@@ -2269,14 +2291,98 @@ class EscaneoFacturaCompraService
             ->limit(3)
             ->get();
 
-        $candidatos = [];
-
         foreach ($encontrados as $candidato) {
+
+            if (in_array((int) $candidato->id, array_map('intval', array_column($candidatos, 'article_id')), true)) {
+                continue;
+            }
+
             $candidatos[] = [
                 'article_id'    => (int) $candidato->id,
                 'nombre'        => $candidato->name,
                 'provider_code' => $candidato->provider_code,
                 'motivo'        => 'nombre parecido',
+            ];
+        }
+
+        return $candidatos;
+    }
+
+    /** Cuántos candidatos por código parecido se ofrecen como mucho (CA4). */
+    const MAX_CANDIDATOS_POR_CODIGO = 4;
+
+    /**
+     * Los artículos del dueño cuyo código de proveedor (el del artículo o el de la relación artículo-proveedor) o
+     * de barras es el código leído SEGUIDO DE UN SEPARADOR (espacio, guión, barra o punto): «A9548» ofrece
+     * «A9548 6» y «A9548-2», no «A95481» (que es otro código).
+     *
+     * 🔴 Es sólo una sugerencia: nunca marca `encontrado` ni asocia solo. Con un código corto como A9112 hay varios
+     * artículos con el mismo comienzo y elegir uno sería adivinar; la decisión queda en la revisión.
+     * Un código de menos de 3 caracteres no se busca (traería medio catálogo).
+     *
+     * @param  mixed  $codigo      El código leído (puede venir null o vacío).
+     * @param  int    $owner_id
+     * @param  array  $excluir     Ids de artículo que ya se ofrecieron.
+     * @return array  Candidatos con la forma de siempre: article_id, nombre, provider_code, motivo.
+     */
+    protected function buscar_candidatos_por_codigo($codigo, int $owner_id, array $excluir = []): array
+    {
+        $codigo = is_null($codigo) ? '' : trim((string) $codigo);
+
+        if (mb_strlen($codigo) < 3) {
+            return [];
+        }
+
+        // Los comodines de LIKE del código leído se escapan: un «_» o un «%» del OCR no es un comodín.
+        $base = addcslashes($codigo, '%_\\');
+
+        $patrones = [];
+
+        foreach ([' ', '-', '/', '.'] as $separador) {
+            $patrones[] = $base . $separador . '%';
+        }
+
+        $articulos = Article::where('user_id', $owner_id)
+            ->where(function ($por_codigo) use ($patrones, $owner_id) {
+
+                foreach ($patrones as $patron) {
+
+                    $por_codigo->orWhere('provider_code', 'LIKE', $patron)
+                        ->orWhere('bar_code', 'LIKE', $patron);
+                }
+
+                // El código por proveedor vive en la relación artículo-proveedor (CodigosDeProveedor).
+                $por_codigo->orWhereExists(function ($relacion) use ($patrones, $owner_id) {
+
+                    $relacion->select(DB::raw(1))->from('article_provider')
+                        ->join('providers', 'providers.id', '=', 'article_provider.provider_id')
+                        ->whereColumn('article_provider.article_id', 'articles.id')
+                        ->where('providers.user_id', $owner_id)
+                        ->whereNull('providers.deleted_at')
+                        ->where(function ($pivote) use ($patrones) {
+
+                            foreach ($patrones as $patron) {
+                                $pivote->orWhere('article_provider.provider_code', 'LIKE', $patron);
+                            }
+                        });
+                });
+            })
+            ->when(count($excluir), function ($consulta) use ($excluir) {
+                $consulta->whereNotIn('id', $excluir);
+            })
+            ->orderBy('id')
+            ->limit(self::MAX_CANDIDATOS_POR_CODIGO)
+            ->get();
+
+        $candidatos = [];
+
+        foreach ($articulos as $articulo) {
+
+            $candidatos[] = [
+                'article_id'    => (int) $articulo->id,
+                'nombre'        => $articulo->name,
+                'provider_code' => $articulo->provider_code,
+                'motivo'        => 'código que empieza igual',
             ];
         }
 

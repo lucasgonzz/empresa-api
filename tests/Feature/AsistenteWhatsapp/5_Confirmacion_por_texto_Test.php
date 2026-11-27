@@ -146,7 +146,9 @@ class Confirmacion_por_texto_Test extends AsistenteWhatsappTestCase
          * proponer_ajuste_de_stock_por_lote al final: una más. El renombre masivo y la foto a medida
          * (asistente-diario-20261119, rama C, A4 y M3) agregan dos más al final.
          */
-        $this->assertCount(54, $nombres, 'Cincuenta y una comunes más las tres del canal de WhatsApp.');
+        // asistente-diario-20261121 suma proponer_destacado_articulo al final: una común más.
+        $this->assertCount(55, $nombres, 'Cincuenta y dos comunes más las tres del canal de WhatsApp.');
+        $this->assertContains('proponer_destacado_articulo', $nombres);
         $this->assertContains('proponer_renombre_masivo', $nombres);
         $this->assertContains('ajustar_foto_a_medida', $nombres);
         $this->assertContains('proponer_ajuste_de_stock_por_lote', $nombres);

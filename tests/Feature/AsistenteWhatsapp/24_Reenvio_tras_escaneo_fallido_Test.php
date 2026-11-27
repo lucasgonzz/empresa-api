@@ -188,16 +188,18 @@ class Reenvio_tras_escaneo_fallido_Test extends ComprasDelAgenteTestCase
             // (asistente-truvari-pedidos-fallidos, C2, 13/11/2026) suman proponer_avisos_por_whatsapp al final.
             // Quitar fotos (asistente-mejoras-4-dias, P6, 16/11/2026) suma quitar_foto_articulo al final.
             // El ajuste de stock por lote (asistente-diario-20261116, rama B) suma una más al final.
-            array_slice($nombres, -12, 3)
+            array_slice($nombres, -13, 3)
         );
         $this->assertSame(
             ['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda'],
-            array_slice($nombres, -9, 3)
+            array_slice($nombres, -10, 3)
         );
-        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -6, 3));
-        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -3, 1));
+        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -7, 3));
+        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -4, 1));
         // asistente-diario-20261119 (rama C, A4 y M3): el renombre masivo y la foto a medida van al final de todo.
-        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -2));
+        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -3, 2));
+        // asistente-diario-20261121: proponer_destacado_articulo va al final de todo.
+        $this->assertSame(['proponer_destacado_articulo'], array_slice($nombres, -1));
 
         foreach (['proponer_compra_sin_articulos', 'proponer_cambio_de_proveedor_de_compra', 'proponer_reintento_de_escaneo'] as $nombre) {
             $this->assertContains($nombre, McpHerramientasHelper::nombres(), $nombre . ' no está en el MCP');

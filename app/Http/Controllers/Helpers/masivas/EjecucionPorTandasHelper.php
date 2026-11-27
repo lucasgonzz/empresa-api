@@ -24,6 +24,15 @@ class EjecucionPorTandasHelper
 {
     const CLAVE_GLOBAL = 'cc:masivas-articulos:v2:capacidad:0';
     const MAX_DESPACHOS = 3;
+    /**
+     * Techo técnico de artículos por actualización masiva (misión masiva-sin-tope-confirmar-75).
+     * No es un freno de negocio (ese es la confirmación por porcentaje del inventario): protege que los
+     * `whereIn` por id queden bajo los 65.535 placeholders de PDO y que el snapshot, que se reescribe en
+     * cada tanda, no crezca sin control. Es la única fuente: MasiveUpdateHelper la usa también.
+     */
+    const MAXIMO_ARTICULOS = 50000;
+    /** Segundos de vencimiento por tanda: cubre el shared hosting (1 tanda por minuto) con 50% de margen. */
+    const SEGUNDOS_POR_TANDA = 90;
     private static $procesador_inservible = false;
 
     public static function es_de_articulos($modelo): bool
@@ -45,11 +54,28 @@ class EjecucionPorTandasHelper
             && ($criterio['tandas']['version'] ?? null) === 2 ? $criterio['tandas'] : null;
     }
 
+    /**
+     * Segundos que tiene una masiva de $cantidad artículos para terminar.
+     *
+     * Con la cantidad de hoy (hasta 4.000 artículos, 80 tandas) da exactamente el vencimiento de siempre
+     * (`deadline_segundos`, 7200); por encima crece a razón de SEGUNDOS_POR_TANDA por tanda. Sin esto una
+     * masiva grande (27.580 artículos = 552 tandas) vencería a mitad de camino aunque se quite el tope.
+     *
+     * @param int $cantidad Artículos de la selección congelada.
+     * @return int
+     */
+    public static function segundos_de_vencimiento(int $cantidad): int
+    {
+        $base = self::opcion('deadline_segundos', 7200, 1, 7200);
+        $tandas = (int) ceil($cantidad / self::opcion('tamanio', 50, 1, 50));
+        return max($base, $tandas * self::SEGUNDOS_POR_TANDA);
+    }
+
     public static function inicializar(array $criterio): array
     {
         $ahora = now()->timestamp;
         $criterio['tandas'] = ['version' => 2, 'cursor' => 0, 'generacion' => 0, 'inicio' => $ahora,
-            'deadline' => $ahora + self::opcion('deadline_segundos', 7200, 1, 7200),
+            'deadline' => $ahora + self::segundos_de_vencimiento(count($criterio['resolved_models_id'] ?? [])),
             'no_antes' => $ahora, 'ultimo_despacho' => $ahora, 'despachos' => 1];
         return $criterio;
     }
@@ -162,10 +188,10 @@ class EjecucionPorTandasHelper
                     }
                     if ($masiva->action === 'revert') {
                         $criterio['resolved_models_id'] = DB::table('masive_update_article')
-                            ->where('masive_update_id', $masiva->parent_masive_update_id)->orderBy('id')->limit(3000)->pluck('id')->all();
+                            ->where('masive_update_id', $masiva->parent_masive_update_id)->orderBy('id')->limit(self::MAXIMO_ARTICULOS + 1)->pluck('id')->all();
                     }
-                    if (empty($criterio['resolved_models_id']) || count($criterio['resolved_models_id']) >= 3000) {
-                        throw new \RuntimeException('La selección anterior no tiene un snapshot válido de menos de 3000 registros.');
+                    if (empty($criterio['resolved_models_id']) || count($criterio['resolved_models_id']) > self::MAXIMO_ARTICULOS) {
+                        throw new \RuntimeException('La selección anterior no tiene un snapshot válido.');
                     }
                     $criterio['resolved_models_id'] = array_values(array_unique(array_map('intval', $criterio['resolved_models_id'])));
                     $criterio = self::inicializar_legacy($masiva, $criterio);
@@ -304,9 +330,9 @@ class EjecucionPorTandasHelper
             }
         }
         $ids = $criterio['resolved_models_id'] ?? null;
-        if (!is_array($ids) || count($ids) < 1 || count($ids) >= 3000 || $estado['cursor'] > count($ids)
+        if (!is_array($ids) || count($ids) < 1 || count($ids) > self::MAXIMO_ARTICULOS || $estado['cursor'] > count($ids)
             || $estado['despachos'] < 1 || $estado['despachos'] > self::MAX_DESPACHOS
-            || $estado['deadline'] <= $estado['inicio'] || $estado['deadline'] > $estado['inicio'] + 7200
+            || $estado['deadline'] <= $estado['inicio'] || $estado['deadline'] > $estado['inicio'] + self::segundos_de_vencimiento(count($ids))
             || $estado['no_antes'] < $estado['inicio'] || $estado['ultimo_despacho'] < $estado['inicio']
             || $estado['ultimo_despacho'] > $estado['deadline'] + 120 || $estado['no_antes'] > $estado['deadline'] + 3720) {
             throw new \RuntimeException('El snapshot o los límites del checkpoint son inválidos.');
@@ -374,9 +400,9 @@ class EjecucionPorTandasHelper
                         $criterio = json_decode($masiva->criteria_json, true);
                         if ($masiva->action === 'revert') {
                             $criterio['resolved_models_id'] = DB::table('masive_update_article')->where('masive_update_id', $masiva->parent_masive_update_id)
-                                ->orderBy('id')->limit(3000)->pluck('id')->all();
+                                ->orderBy('id')->limit(self::MAXIMO_ARTICULOS + 1)->pluck('id')->all();
                         }
-                        if (empty($criterio['resolved_models_id']) || count($criterio['resolved_models_id']) >= 3000) {
+                        if (empty($criterio['resolved_models_id']) || count($criterio['resolved_models_id']) > self::MAXIMO_ARTICULOS) {
                             MasiveUpdateHelper::mark_failed($masiva, 'La operación anterior no tiene selección recuperable.');
                             return null;
                         }
@@ -428,7 +454,7 @@ class EjecucionPorTandasHelper
         }
         $criterio = self::inicializar($criterio);
         $criterio['tandas']['inicio'] = $masiva->created_at->timestamp;
-        $criterio['tandas']['deadline'] = $masiva->created_at->timestamp + self::opcion('deadline_segundos', 7200, 1, 7200);
+        $criterio['tandas']['deadline'] = $masiva->created_at->timestamp + self::segundos_de_vencimiento(count($criterio['resolved_models_id'] ?? []));
         return $criterio;
     }
 

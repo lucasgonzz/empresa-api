@@ -799,7 +799,8 @@ class Acciones_service_y_job_Test extends TestCase
         // asistente-mejoras-4-dias (P6, 16/11/2026) agrega quitar_foto_articulo al final.
         // asistente-diario-20261116 (rama B, 30/10 #2) agrega proponer_ajuste_de_stock_por_lote al final.
         // asistente-diario-20261119 (rama C, A4 y M3) agrega proponer_renombre_masivo y ajustar_foto_a_medida al final.
-        $this->assertCount(51, HerramientasDeCarga::definiciones());
+        // asistente-diario-20261121 agrega proponer_destacado_articulo al final (recuperación 27/11: censo al día, 51 -> 52).
+        $this->assertCount(52, HerramientasDeCarga::definiciones());
 
         // Y cada misión va al FINAL de lo que había, en su orden: el array es el prefijo del caché
         // de prompt. Las siete de asistente-masivas-imagenes-y-remito...
@@ -896,6 +897,8 @@ class Acciones_service_y_job_Test extends TestCase
                 // asistente-diario-20261119 (rama C, A4 y M3), al final de todo.
                 'proponer_renombre_masivo',
                 'ajustar_foto_a_medida',
+                // asistente-diario-20261121, al final de todo.
+                'proponer_destacado_articulo',
             ],
             array_slice(HerramientasDeCarga::nombres(), 39)
         );

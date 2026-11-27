@@ -447,14 +447,16 @@ class Promo_para_reenviar_y_comprobante_al_dueno_Test extends EmpresaTestCase
             ['armar_texto_de_promocion', 'proponer_cuotas_tienda'],
             // Fichas verificadas se añade detrás de cuotas: el prefijo de promo/cuotas queda intacto.
             // Los avisos del dueño (C2, 13/11/2026) se suman detrás de las fichas.
-            array_slice($nombres, -8, 2), // quitar_foto_articulo (asistente-mejoras-4-dias, P6, 16/11/2026) va al final de todo.
+            array_slice($nombres, -9, 2), // quitar_foto_articulo (asistente-mejoras-4-dias, P6, 16/11/2026) va al final de todo.
             'Las herramientas posteriores se agregan detrás del prefijo de promo y cuotas.'
         );
-        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -6, 3));
+        $this->assertSame(['proponer_descripcion_verificada', 'proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -7, 3));
         // asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock por lote va al final de todo.
-        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -3, 1));
+        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -4, 1));
         // asistente-diario-20261119 (rama C, A4 y M3): el renombre masivo y la foto a medida van al final de todo.
-        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -2));
+        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -3, 2));
+        // asistente-diario-20261121: proponer_destacado_articulo va al final de todo.
+        $this->assertSame(['proponer_destacado_articulo'], array_slice($nombres, -1));
         $this->assertTrue(HerramientasDeCarga::maneja('armar_texto_de_promocion'));
         $this->assertFalse(HerramientasDeCarga::es_de_carga('armar_texto_de_promocion'), 'No es una carga: no escala al Profundo.');
         $this->assertStringContainsString("case 'armar_texto_de_promocion':", file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php')));

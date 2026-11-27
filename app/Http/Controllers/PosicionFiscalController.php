@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\contabilidad\PosicionFiscalHelper;
+use App\Http\Controllers\Helpers\RangoFechasReporteHelper;
 use Illuminate\Http\Request;
 
 /**
@@ -39,6 +40,13 @@ class PosicionFiscalController extends Controller
 
         $desde = $request->input('desde');
         $hasta = $request->input('hasta');
+
+        // Soporte t177: rango inválido → 422 en castellano (antes era 500 o una fecha corrida).
+        $rango_invalido = RangoFechasReporteHelper::validar($desde, $hasta);
+
+        if (!is_null($rango_invalido)) {
+            return $rango_invalido;
+        }
 
         $posicion_fiscal = [
             'posicion_iva'             => PosicionFiscalHelper::posicion_iva($user_id, $desde, $hasta),
