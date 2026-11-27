@@ -35,7 +35,7 @@ use Tests\TestCase;
  * Los vectores de prueba son de 3 dimensiones y distintos por artículo: si el job mezclara los `index`, el artículo recibiría el
  * vector de otro y se vería.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types ni enum.
  *
  * @group whatsapp
  */

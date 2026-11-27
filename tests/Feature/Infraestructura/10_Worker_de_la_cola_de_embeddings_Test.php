@@ -37,7 +37,7 @@ use Tests\TestCase;
  * 🔴 `Queue::fake()` queda activo (como en 9_Worker_del_asistente_en_vps_Test): contar pendientes por la fachada `Queue` devolvería 0
  * aunque haya filas en `jobs`. El conteo tiene que mirar la tabla (o Redis) directamente.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types ni enum.
  *
  * @group infraestructura
  */
@@ -363,7 +363,7 @@ class Worker_de_la_cola_de_embeddings_Test extends TestCase
     /**
      * CA12 (sin extensión / interruptor / vuelta atrás). El evento se registra si el interruptor está prendido Y el dueño tiene
      * `agentes_ia`, O si quedan pendientes en la cola:
-     *   - sin extensión y cola vacía: ninguno (control: con la extensión, sí);
+     *   - sin extensión y cola vacía: ninguno (con la extensión, en cambio, sí);
      *   - con extensión pero interruptor apagado y cola vacía: ninguno;
      *   - interruptor apagado y un job pendiente en `default_embeddings`: sí (vuelta atrás sin huérfanos);
      *   - sin extensión pero con un job pendiente: sí;

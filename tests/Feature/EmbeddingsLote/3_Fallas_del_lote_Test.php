@@ -35,7 +35,7 @@ use Tests\Fakes\HttpFactorySinSalida;
  * acumulan y gana el primero). Los jobs se corren a mano con `handle()` resuelto por el contenedor; sin cola ni worker.
  * Las excepciones que se esperan se capturan con try/catch porque el código bajo prueba las tiene que dejar subir (o no).
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types ni enum.
  *
  * @group whatsapp
  */

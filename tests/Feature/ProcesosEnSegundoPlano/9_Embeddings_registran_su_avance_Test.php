@@ -47,7 +47,7 @@ use Tests\TestCase;
  * Con el trait `AfterCommitComoEnProduccion` la transacción base de la suite no cuenta, igual que en producción: el aviso de un proceso
  * sale en el acto (ver 8_Aviso_despues_del_commit_Test).
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types ni enum.
  *
  * @group procesos-en-segundo-plano
  */
@@ -380,7 +380,7 @@ class Embeddings_registran_su_avance_Test extends TestCase
     }
 
     /**
-     * CA13 (observer). Una edición suelta de un artículo (observer: job de UN artículo, sin tanda) nunca crea un proceso, y el job que
+     * CA13 (observer). Una edición suelta de un artículo (el observer encola el job de UN artículo, sin tanda) nunca crea un proceso, y el job que
      * la procesa tampoco.
      *
      * @group procesos-en-segundo-plano

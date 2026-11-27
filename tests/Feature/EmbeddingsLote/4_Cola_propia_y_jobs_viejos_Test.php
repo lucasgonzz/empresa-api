@@ -38,7 +38,7 @@ use Tests\TestCase;
  * de transacciones se reemplaza por uno vacío (si no, el despacho quedaría colgado de la transacción del test y nunca llegaría a
  * `jobs`). Sin OpenAI real: `Http::fake` y el freno de `tests/TestCase.php`.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types ni enum.
  *
  * @group whatsapp
  */

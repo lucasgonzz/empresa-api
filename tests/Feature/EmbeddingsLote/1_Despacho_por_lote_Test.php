@@ -37,7 +37,7 @@ use Tests\TestCase;
  * Los artículos se crean ANTES de dar la extensión `agentes_ia`: con el gate de los observers cerrado nadie los encola ni los
  * marca, que es el estado de un catálogo recién importado.
  *
- * IMPORTANTE (PHP 7.4): sin match, str_contains, ?->, argumentos nombrados, union types ni enum.
+ * IMPORTANTE (PHP 7.4): sin match, str_contains, nullsafe, argumentos nombrados, union types ni enum.
  *
  * @group whatsapp
  */
@@ -117,7 +117,7 @@ class Despacho_por_lote_Test extends TestCase
     }
 
     /**
-     * Crea artículos activos del comercio (pendientes: sin vector ni fecha de generación).
+     * Crea artículos activos del comercio (pendientes, sin vector ni fecha de generación).
      *
      * @param int    $cantidad
      * @param string $prefijo  Para que los nombres no se parezcan entre escenarios.
@@ -259,7 +259,7 @@ class Despacho_por_lote_Test extends TestCase
 
     /**
      * CA2 (marca). `dispatch_batch_if_not_queued([a,b,c])` con `b` ya marcado hace 1 min devuelve 2 y el lote lleva [a,c]; repetir
-     * la llamada devuelve 0 y no empuja nada; con `b` marcado hace 13 h (vencida: el TTL es 12 h) lo incluye.
+     * la llamada devuelve 0 y no empuja nada; con `b` marcado hace 13 h (vencida porque el TTL es de 12 h) lo incluye.
      *
      * @group whatsapp
      * @test
