@@ -226,7 +226,10 @@ class MasiveUpdateHelper
                 $seleccionados = $query->setEagerLoads([])->limit(3000)->pluck('articles.id')->all();
                 $models = collect();
                 if (count($seleccionados) >= 3000) {
-                    return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar 3000 registros']);
+                    // Se cuenta el total real (la lectura de IDs se corta en 3000) para decirle a la persona de cuánto se pasó.
+                    $total_real = (clone $query)->setEagerLoads([])->count('articles.id');
+                    Log::info('NO se permitio actualizar por filtro: ' . $total_real . ' artículos superan el tope.');
+                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido($total_real, 'artículos', 2999)]);
                 }
                 if (is_callable($filtro_extra)) {
                     // El callback sólo usa id/images; no cargar embeddings, precios ni withAll.
@@ -279,7 +282,7 @@ class MasiveUpdateHelper
             }
             if ($model_name === 'article') {
                 if (count($models_id) >= 3000) {
-                    return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar ' . count($models_id) . ' registros']);
+                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models_id), 'artículos', 2999)]);
                 }
                 $propios = array_fill_keys(Article::where('user_id', $owner_id)->whereIn('id', $models_id)->pluck('id')->all(), true);
                 if (count($propios) < count($models_id)) {
@@ -310,7 +313,7 @@ class MasiveUpdateHelper
 
         if (count($models) >= 3000) {
             Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);
-            return self::respuesta_de_encolado(422, ['message' => 'No se permitio actualizar '.count($models).' registros']);
+            return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models), 'registros', 2999)]);
         }
 
         $resolved_models_id = [];
@@ -361,6 +364,24 @@ class MasiveUpdateHelper
             'masive_update_id' => $masive_update->id,
             'queued_count' => count($resolved_models_id),
         ]);
+    }
+
+    /**
+     * Arma el mensaje claro cuando una actualización masiva supera el tope de registros por vez.
+     *
+     * El máximo viene por parámetro porque no es el mismo para todos los modelos (los artículos
+     * tienen un techo técnico propio) y el texto tiene que decirle a la persona el número real.
+     *
+     * @param  int  $cantidad  Registros que alcanzaba la selección o el filtro.
+     * @param  string  $unidad  Nombre en plural de lo que se iba a actualizar.
+     * @param  int  $maximo  Máximo de registros permitido por actualización masiva.
+     * @return string
+     */
+    protected static function mensaje_tope_excedido($cantidad, $unidad, $maximo)
+    {
+        return 'No se pudo actualizar: la selección alcanza ' . number_format((int) $cantidad, 0, ',', '.') . ' ' . $unidad
+            . ' y el máximo permitido por actualización masiva es ' . number_format((int) $maximo, 0, ',', '.') . '. '
+            . 'Acotá el filtro (por ejemplo por categoría, proveedor o rango de código) y repetí la acción por tandas.';
     }
 
     /**
@@ -551,6 +572,8 @@ class MasiveUpdateHelper
         );
 
         if (count($models) >= 3000) {
+            // Camino viejo (modelos que no son artículos, ya cortado en el encolado): se conserva el texto
+            // original porque un test del área (ProcesosEnSegundoPlano) fija que menciona "3000" sin separador.
             throw new Exception('No se permitio actualizar ' . count($models) . ' registros');
         }
 
