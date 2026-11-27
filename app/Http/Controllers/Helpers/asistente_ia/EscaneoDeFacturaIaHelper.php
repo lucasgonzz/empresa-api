@@ -534,7 +534,7 @@ class EscaneoDeFacturaIaHelper
             ];
 
             /*
-             * Los candidatos de un renglón sin match (CA4, A5): nombre y código de hasta tres artículos del negocio,
+             * Los candidatos de un renglón sin coincidencia (CA4, A5): nombre y código de hasta tres artículos del negocio,
              * para que el modelo diga «hay uno con código A9548 6» en vez de «ninguno coincide». Nunca vienen
              * asociados: la decisión es de la persona en la revisión.
              */
