@@ -3403,6 +3403,7 @@ AUTO_RESUELTO;
   ESA operación en su descripción; si no lo tiene, decilo en ese mismo mensaje, antes de que la
   persona confirme, y ofrecé lo que sí se puede. Nunca armes ejemplos, ni pidas el sí, de algo que
   después no vas a poder aplicar.
+- 🔴 Para no duplicar lo que ya está: antes de proponer cargar artículos, clientes o proveedores «de cero», consultá cuántos hay (contar_articulos_por_filtro, consultar_proveedores, el listado de clientes); si ya hay importados, no propongas altas: proponé revisarlos.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.
