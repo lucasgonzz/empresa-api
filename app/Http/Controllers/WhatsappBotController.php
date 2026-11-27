@@ -45,17 +45,35 @@ class WhatsappBotController extends Controller
      * cualquier error de procesamiento interno se loguea pero no cambia la respuesta HTTP.
      *
      * 🔴 Misión agentes-ia-extension-unica (22/10/2026): el bot de WhatsApp es de la extensión `agentes_ia`.
-     * Acá NO hay sesión, así que el dueño se resuelve sin `Auth`: es el dueño de la configuración activa del
-     * bot (`$config->user_id`, el mismo comercio para el que `process_inbound()` persiste el chat). En una
+     * Acá NO hay sesión, así que el dueño se resuelve sin `Auth`: es el dueño de la configuración resuelta por
+     * `phone_number_id` (`$config->user_id`, el mismo comercio para el que `process_inbound()` persiste el chat). En una
      * instancia normal es idéntico a `config('app.USER_ID')`; si la base fuera compartida, es el comercio
      * correcto y no el primero que aparezca. Sin la extensión se responde **200 sin procesar y sin encolar nada**
      * (Kapso reintenta ante cualquier otro código; un 403 o un 404 lo dejaría reintentando para siempre). La
      * firma inválida sigue contestando 401 como siempre: la extensión se mira DESPUÉS de autenticar a Kapso.
+     *
+     * 🔴 Misión whatsapp-canal-independiente (27/11/2026): `is_active` = el AGENTE contesta solo; el canal SIEMPRE recibe.
+     * Con el agente apagado igual se persisten entrantes, estados, ecos y reacciones y se emite `WhatsappChatUpdated`;
+     * no se agenda ni se manda nada de IA (lo frenan el scheduler y los jobs). La firma se exige siempre y un
+     * `webhook_secret` vacío nunca autentica.
      */
     public function receive(Request $request): JsonResponse
     {
-        $config = WhatsappBotConfig::where('is_active', true)->first();
+        // 🔴 La config se resuelve por `phone_number_id`, NUNCA por `is_active` (misión whatsapp-canal-independiente):
+        // con el agente apagado el canal tiene que seguir recibiendo entrantes y estados de entrega. Quien frena al
+        // agente es `WhatsappAgentScheduler`/`can_generate_ai()`, no esta puerta. Se decodifica acá sólo para leer
+        // el número; la firma se valida sobre el cuerpo crudo antes de procesar nada.
+        $payload_crudo = json_decode($request->getContent(), true);
+        $config = WhatsappBotConexionHelper::config_del_webhook(is_array($payload_crudo) ? $payload_crudo : []);
         if (! $config) {
+            return response()->json(['ok' => true], 200);
+        }
+
+        // Una fila sin secreto no puede autenticar a nadie (una firma calculada con clave vacía sería válida). Se
+        // contesta 200 y no 401 para que Kapso no reintente para siempre (mismo criterio que el docblock de arriba).
+        if (trim((string) $config->webhook_secret) === '') {
+            Log::channel('daily')->warning('WhatsappBotController: conexión sin webhook_secret, se descarta el evento.');
+
             return response()->json(['ok' => true], 200);
         }
 
@@ -477,7 +495,7 @@ class WhatsappBotController extends Controller
      *     lee lo que el agente contestó sin que se le haya mandado nada a nadie.
      *
      * 🔴 La config se resuelve SIEMPRE por el usuario autenticado, nunca con el atajo
-     * mono-tenant del webhook (`where('is_active', true)->first()`). Eso es lo único que
+     * mono-tenant del webhook (`WhatsappBotConexionHelper::config_del_webhook()`). Eso es lo único que
      * impide que el dueño de una empresa inyecte mensajes en la cuenta de otra.
      *
      * La ruta lleva además un `throttle` propio y bajo (ver `routes/api.php`): cada llamada
@@ -583,6 +601,11 @@ class WhatsappBotController extends Controller
      */
     private function verify_signature(Request $request, WhatsappBotConfig $config): bool
     {
+        // Defensa en profundidad: con secreto vacío `hash_hmac` igual calcula una firma «válida».
+        if (trim((string) $config->webhook_secret) === '') {
+            return false;
+        }
+
         $signature = (string) ($request->header('X-Kapso-Signature') ?: $request->header('X-Webhook-Signature'));
         if ($signature === '') {
             return false;
