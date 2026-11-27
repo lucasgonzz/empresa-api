@@ -5,6 +5,7 @@ namespace Tests\Feature\Whatsapp;
 use App\Http\Controllers\Helpers\DuplicarRecetaHelper;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Jobs\GenerateArticleEmbeddingsBatchJob;
 use App\Models\Article;
 use App\Models\Description;
 use App\Models\EmbeddingRun;
@@ -240,6 +241,21 @@ class Embeddings_un_solo_job_Test extends TestCase
     }
 
     /**
+     * Devuelve los GenerateArticleEmbeddingsBatchJob empujados que llevan a un artículo entre sus ids.
+     * Desde la misión embeddings-lote-cola el COMANDO ya no empuja un job por artículo sino lotes
+     * (los observers siguen empujando el job de un artículo: ver jobs_empujados_de()).
+     *
+     * @param int $article_id
+     * @return \Illuminate\Support\Collection
+     */
+    protected function lotes_con_articulo($article_id)
+    {
+        return Queue::pushed(GenerateArticleEmbeddingsBatchJob::class, function ($lote) use ($article_id) {
+            return in_array((int) $article_id, array_map('intval', $lote->get_article_ids()), true);
+        });
+    }
+
+    /**
      * Escenario común a CA2 y CA7: el artículo A queda con el job del observer (marcado, sin
      * run) y el artículo B queda pendiente SIN marca (se creó antes de dar la extensión, así
      * que ningún observer lo encoló). `Queue::fake()` queda puesto y SIN re-fakear.
@@ -333,8 +349,14 @@ class Embeddings_un_solo_job_Test extends TestCase
             'El único job de A es el del observer, que no pertenece a ninguna tanda.'
         );
 
-        $jobs_de_b = $this->jobs_empujados_de($articulo_b->id);
-        $this->assertSame(1, $jobs_de_b->count(), 'B estaba pendiente y sin marca: el scheduler le encola un job.');
+        $this->assertSame(
+            0,
+            $this->lotes_con_articulo($articulo_a->id)->count(),
+            'A ya tenía un job pendiente: el scheduler tampoco lo mete en un lote.'
+        );
+
+        $jobs_de_b = $this->lotes_con_articulo($articulo_b->id);
+        $this->assertSame(1, $jobs_de_b->count(), 'B estaba pendiente y sin marca: el scheduler lo encola en un lote.');
 
         $tanda = EmbeddingRun::where('user_id', $this->comercio->id)->first();
         $this->assertNotNull($tanda, 'El scheduler abre una tanda para lo que sí despacha.');
@@ -570,13 +592,14 @@ class Embeddings_un_solo_job_Test extends TestCase
         $this->assertNotNull($tanda, 'Precondición: el comando abrió una tanda.');
 
         // El job de la tanda (el de B), corrido a mano con OpenAI fingido.
-        $job_de_b = $this->jobs_empujados_de($articulo_b->id)->first();
-        $this->assertNotNull($job_de_b, 'Precondición: B tiene su job.');
+        $job_de_b = $this->lotes_con_articulo($articulo_b->id)->first();
+        $this->assertNotNull($job_de_b, 'Precondición: B tiene su job (el lote que lo lleva).');
 
         $this->fingir_openai();
         Event::fake([\App\Events\ArticleEmbeddingsBatchGenerated::class]);
 
-        $job_de_b->handle(app(ArticleEmbeddingService::class));
+        // El contenedor resuelve las dependencias de handle() (el job de lote delega en su procesador).
+        app()->call([$job_de_b, 'handle']);
         (new FinalizeEmbeddingRun($tanda->id))->handle();
 
         $tanda = EmbeddingRun::find($tanda->id);
@@ -692,7 +715,8 @@ class Embeddings_un_solo_job_Test extends TestCase
         $permitido = $raiz_app . DIRECTORY_SEPARATOR . 'Services' . DIRECTORY_SEPARATOR . 'ArticleEmbeddingDispatcher.php';
 
         // Formas de encolar: ::dispatch*, ::withChain, new GenerateArticleEmbeddingJob, dispatch(new ...).
-        $patron = '/GenerateArticleEmbeddingJob\s*::\s*(dispatch\w*|withChain)\b|new\s+\\\\?(?:App\\\\Jobs\\\\)?GenerateArticleEmbeddingJob\b/';
+        // Misión embeddings-lote-cola (CA18): la guardia cubre también GenerateArticleEmbeddingsBatchJob.
+        $patron = '/GenerateArticleEmbedding(?:Job|sBatchJob)\s*::\s*(dispatch\w*|withChain)\b|new\s+\\\\?(?:App\\\\Jobs\\\\)?GenerateArticleEmbedding(?:Job|sBatchJob)\b/';
 
         $infractores = [];
 
@@ -729,7 +753,7 @@ class Embeddings_un_solo_job_Test extends TestCase
         $this->assertSame(
             [],
             $infractores,
-            'Estos archivos de app/ encolan GenerateArticleEmbeddingJob sin pasar por ArticleEmbeddingDispatcher: '
+            'Estos archivos de app/ encolan GenerateArticleEmbeddingJob o GenerateArticleEmbeddingsBatchJob sin pasar por ArticleEmbeddingDispatcher: '
             . implode(', ', $infractores)
         );
     }

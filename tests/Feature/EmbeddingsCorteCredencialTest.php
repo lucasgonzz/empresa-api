@@ -7,6 +7,7 @@ use App\Exceptions\EmbeddingsCredencialRechazadaException;
 use App\Http\Controllers\Helpers\article\ArticleEmbeddingsEstadoHelper;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Jobs\GenerateArticleEmbeddingsBatchJob;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
 use App\Models\ExtencionEmpresa;
@@ -14,6 +15,7 @@ use App\Models\User;
 use App\Observers\ArticleObserver;
 use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
+use App\Services\ColaDeEmbeddings;
 use Illuminate\Foundation\Testing\DatabaseTransactions;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
@@ -242,6 +244,27 @@ class EmbeddingsCorteCredencialTest extends TestCase
     }
 
     /**
+     * Respuesta de éxito para un pedido por lote: un vector por cada texto que viaja en `input`
+     * (el lote real de OpenAI devuelve tantos embeddings como entradas; con un solo vector fijo el
+     * procesador no podría asignarle el suyo a cada artículo).
+     *
+     * @return callable Recibe el pedido HTTP y devuelve la respuesta.
+     */
+    protected function openai_exito_por_lote()
+    {
+        return function ($request) {
+            $entradas = $request['input'];
+            $datos = [];
+
+            foreach ((array) $entradas as $indice => $texto) {
+                $datos[] = ['index' => $indice, 'embedding' => [0.5, 0.25, 0.125]];
+            }
+
+            return Http::response(['data' => $datos, 'usage' => ['prompt_tokens' => 7]], 200);
+        };
+    }
+
+    /**
      * Fábrica HTTP limpia con UNA respuesta para OpenAI. Los stubs de `Http::fake()` se acumulan y
      * gana el primero, así que cada cambio de respuesta arranca de una fábrica nueva (con el freno de
      * internet puesto: `HttpFactorySinSalida`, ver tests/TestCase.php).
@@ -300,6 +323,31 @@ class EmbeddingsCorteCredencialTest extends TestCase
     }
 
     /**
+     * Ids de los artículos que viajan dentro de los GenerateArticleEmbeddingsBatchJob que hay en la
+     * tabla `jobs` (misión embeddings-lote-cola: el comando ya no deja un job por artículo sino lotes
+     * de hasta 100; la cantidad de artículos se lee del propio job con `get_article_ids()`).
+     *
+     * @return int[]
+     */
+    protected function articulos_en_lotes()
+    {
+        $ids = [];
+
+        foreach (DB::table('jobs')->get() as $fila) {
+            $payload = json_decode($fila->payload, true);
+
+            if (($payload['displayName'] ?? '') !== GenerateArticleEmbeddingsBatchJob::class) {
+                continue;
+            }
+
+            $job = unserialize($payload['data']['command']);
+            $ids = array_merge($ids, $job->get_article_ids());
+        }
+
+        return $ids;
+    }
+
+    /**
      * Mueve el reloj y corre UNA ronda de `queue:work` sobre la cola `database` hasta que no quede
      * ningún job disponible. Anota requests, filas por clase y `failed_jobs` en la bitácora.
      *
@@ -316,6 +364,8 @@ class EmbeddingsCorteCredencialTest extends TestCase
 
         Artisan::call('queue:work', [
             'connection'       => 'database',
+            // Los jobs de embeddings viven en su cola propia (`<cola base>_embeddings`), no en `default`.
+            '--queue'          => ColaDeEmbeddings::nombre(),
             '--stop-when-empty' => true,
             '--sleep'          => 0,
             '--memory'         => 4096,
@@ -381,15 +431,22 @@ class EmbeddingsCorteCredencialTest extends TestCase
         $this->assertSame(0, Artisan::call('articles:generate-embeddings'));
 
         // ── Centinela por clase: lo que dejó el comando, ANTES de procesar nada ──
+        // Ahora el comando agrupa en lotes de 100: 50 artículos = 1 lote (y ningún job por artículo).
         $this->assertSame(
-            self::CANTIDAD,
-            $this->jobs_de(GenerateArticleEmbeddingJob::class),
-            'CENTINELA: el comando debería dejar 50 GenerateArticleEmbeddingJob en `jobs` (cola database real). '
+            1,
+            $this->jobs_de(GenerateArticleEmbeddingsBatchJob::class),
+            'CENTINELA: el comando debería dejar 1 GenerateArticleEmbeddingsBatchJob en `jobs` (cola database real). '
             . 'Con 0 y 1 Finalize el afterCommit quedó colgado; con total 0 la cola es sync: el fixture está mal, frenar. '
             . json_encode($this->jobs_por_clase())
         );
+        $this->assertSame(0, $this->jobs_de(GenerateArticleEmbeddingJob::class), 'CENTINELA: ya no se despacha un job por artículo.');
+        $this->assertEqualsCanonicalizing(
+            $ids,
+            $this->articulos_en_lotes(),
+            'CENTINELA: el lote contiene exactamente los 50 artículos pendientes.'
+        );
         $this->assertSame(1, $this->jobs_de(FinalizeEmbeddingRun::class), 'CENTINELA: debería haber 1 FinalizeEmbeddingRun.');
-        $this->assertSame(self::CANTIDAD + 1, DB::table('jobs')->count(), 'CENTINELA: 51 filas en total.');
+        $this->assertSame(2, DB::table('jobs')->count(), 'CENTINELA: 2 filas en total (el lote y el finalizador).');
 
         $finalizador = null;
         foreach (DB::table('jobs')->get() as $fila) {
@@ -428,6 +485,7 @@ class EmbeddingsCorteCredencialTest extends TestCase
         $this->assertSame(0, DB::table('failed_jobs')->count(), '0 filas en failed_jobs: el rechazo de credencial no se re-lanza. ' . $this->diag());
         $this->assertSame(0, DB::table('jobs')->count(), 'La cola `database` queda vacía (ni reintentos ni finalizador pendiente). ' . json_encode($this->jobs_por_clase()));
         $this->assertSame(0, $this->jobs_de(GenerateArticleEmbeddingJob::class));
+        $this->assertSame(0, $this->jobs_de(GenerateArticleEmbeddingsBatchJob::class));
         $this->assertSame(0, $this->jobs_de(FinalizeEmbeddingRun::class));
 
         $tanda = EmbeddingRun::where('user_id', $this->comercio->id)->orderBy('id')->first();
@@ -513,6 +571,7 @@ class EmbeddingsCorteCredencialTest extends TestCase
 
         $this->assertSame(1, $this->pedidos_enviados(), 'Tras R1 sólo salió el pedido que abrió el corte. ' . $this->diag());
         $this->assertSame(0, $this->jobs_de(GenerateArticleEmbeddingJob::class), 'Tras R1 no queda ningún Generate (ni reintentos). ' . $this->diag());
+        $this->assertSame(0, $this->jobs_de(GenerateArticleEmbeddingsBatchJob::class), 'Tras R1 no queda ningún lote (ni reintentos). ' . $this->diag());
         $this->assertSame(1, $this->jobs_de(FinalizeEmbeddingRun::class), 'Tras R1 queda sólo el finalizador. ' . $this->diag());
         $this->assertSame(
             0,
@@ -616,7 +675,7 @@ class EmbeddingsCorteCredencialTest extends TestCase
         // +61 min desde la última ronda: vence el TTL de 60 min. OpenAI vuelve sano.
         $despues = $this->t0->copy()->addSeconds(183)->addMinutes(61);
         Carbon::setTestNow($despues);
-        $this->openai_responde(Http::response($this->cuerpo_exito(), 200));
+        $this->openai_responde($this->openai_exito_por_lote());
 
         $this->assertFalse(Cache::has(self::CLAVE_CORTE), 'Vencido el TTL el corte se cierra solo.');
 
@@ -631,7 +690,10 @@ class EmbeddingsCorteCredencialTest extends TestCase
             $this->assertNotNull($fila->embedding_generated_at);
             $this->assertNull($fila->embedding_queued_at);
         }
-        $this->assertSame(self::CANTIDAD, $this->pedidos_enviados(), 'Un pedido por artículo tras reabrir. ' . $this->diag());
+        // El lote de 50 sale en UN solo pedido que lleva los 50 textos (antes: un pedido por artículo).
+        $this->assertSame(1, $this->pedidos_enviados(), 'Un solo pedido por lote tras reabrir. ' . $this->diag());
+        $enviados = Http::recorded()->first()[0];
+        $this->assertCount(self::CANTIDAD, $enviados['input'], 'El pedido lleva los 50 textos, uno por artículo.');
         $this->assertSame(0, DB::table('failed_jobs')->count());
         $this->assertFalse(Cache::has(self::CLAVE_CORTE), 'El corte sigue cerrado.');
         Event::assertDispatched(ArticleEmbeddingsBatchGenerated::class, 1);
@@ -846,7 +908,12 @@ class EmbeddingsCorteCredencialTest extends TestCase
 
         $this->assertFalse(Cache::has(self::CLAVE_CORTE));
         Artisan::call('articles:generate-embeddings');
-        Queue::assertPushed(GenerateArticleEmbeddingJob::class, 1);
+        Queue::assertPushed(GenerateArticleEmbeddingsBatchJob::class, 1);
+        $this->assertSame(
+            1,
+            $this->cantidad_de_articulos_en_lotes(),
+            'El comando despacha los artículos pendientes agrupados en un job de lote (1 en total).'
+        );
     }
 
     /**
@@ -924,5 +991,23 @@ class EmbeddingsCorteCredencialTest extends TestCase
         }
 
         Queue::assertNothingPushed();
+    }
+
+    /**
+     * Suma los artículos que viajan en todos los GenerateArticleEmbeddingsBatchJob empujados al fake.
+     * Antes el comando empujaba un GenerateArticleEmbeddingJob por artículo; ahora los agrupa por lote
+     * (misión embeddings-lote-cola) y la cantidad de artículos se lee de `get_article_ids()`.
+     *
+     * @return int
+     */
+    protected function cantidad_de_articulos_en_lotes()
+    {
+        $cantidad = 0;
+
+        foreach (Queue::pushed(GenerateArticleEmbeddingsBatchJob::class) as $lote) {
+            $cantidad += count($lote->get_article_ids());
+        }
+
+        return $cantidad;
     }
 }

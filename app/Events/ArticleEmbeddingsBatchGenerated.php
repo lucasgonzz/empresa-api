@@ -44,15 +44,26 @@ class ArticleEmbeddingsBatchGenerated implements ShouldBroadcastNow
     public $origen;
 
     /**
-     * @param int    $user_id   ID del usuario dueño de la instancia (el del canal).
-     * @param int    $generados Artículos que quedaron con un vector NUEVO escrito.
-     * @param string $origen    De dónde salió la tanda: scheduler | importacion | manual.
+     * Si la tanda tuvo un proceso visible en "Procesos en segundo plano" (misión embeddings-lote-cola).
+     * Con proceso, el aviso ya lo da esa pantalla y la SPA no muestra el toast (evita el duplicado);
+     * el evento se sigue emitiendo porque el dashboard de WhatsApp lo usa para refrescar.
+     *
+     * @var bool
      */
-    public function __construct($user_id, $generados, $origen)
+    public $con_proceso;
+
+    /**
+     * @param int    $user_id     ID del usuario dueño de la instancia (el del canal).
+     * @param int    $generados   Artículos que quedaron con un vector NUEVO escrito.
+     * @param string $origen      De dónde salió la tanda: scheduler | importacion | manual.
+     * @param bool   $con_proceso Opcional (default false): la tanda tuvo un proceso visible.
+     */
+    public function __construct($user_id, $generados, $origen, $con_proceso = false)
     {
-        $this->user_id   = $user_id;
-        $this->generados = $generados;
-        $this->origen    = $origen;
+        $this->user_id     = $user_id;
+        $this->generados   = $generados;
+        $this->origen      = $origen;
+        $this->con_proceso = (bool) $con_proceso;
     }
 
     /**
@@ -89,12 +100,13 @@ class ArticleEmbeddingsBatchGenerated implements ShouldBroadcastNow
     /**
      * Payload que recibe el frontend.
      *
-     * Solo `generados` y `origen`, y nada más a propósito: `salteados` y `fallados` quedan en
+     * Sólo `generados`, `origen` y `con_proceso` (campo opcional agregado por la misión embeddings-lote-cola: una
+     * SPA que no lo conoce lo ignora), y nada más a propósito: `salteados` y `fallados` quedan en
      * `embedding_runs` para diagnosticar desde la base, pero no viajan. Al dueño de la
      * ferretería no le sirve saber que 300 artículos se saltearon porque no habían cambiado —
      * lo único que le dice algo es cuántos quedaron actualizados.
      *
-     * 🔴 Estas dos claves, el nombre del canal y el de broadcastAs son un CONTRATO ya consumido
+     * 🔴 `generados` y `origen`, el nombre del canal y el de broadcastAs son un CONTRATO ya consumido
      * por empresa-spa/src/mixins/broadcast.js. Si se renombra cualquiera de los cuatro, el toast
      * no aparece nunca y no salta ningún error en ninguno de los dos lados: Echo se suscribe
      * feliz a un canal por el que no habla nadie.
@@ -104,8 +116,9 @@ class ArticleEmbeddingsBatchGenerated implements ShouldBroadcastNow
     public function broadcastWith()
     {
         return [
-            'generados' => (int) $this->generados,
-            'origen'    => (string) $this->origen,
+            'generados'   => (int) $this->generados,
+            'origen'      => (string) $this->origen,
+            'con_proceso' => (bool) $this->con_proceso,
         ];
     }
 }

@@ -358,9 +358,19 @@ class Worker_del_asistente_en_vps_Test extends AsistenteWhatsappTestCase
             $this->assertTrue($evento->runInBackground);
 
             foreach ($this->eventos_programados() as $programado) {
+                $comando_programado = (string) $programado->command;
+
+                // Misión embeddings-lote-cola (CA12): en VPS con `agentes_ia` el schedule programa además el
+                // worker de la cola propia de embeddings (`queue:work --queue=<cola>_embeddings
+                // --stop-when-empty`), que es legítimo y lo exige el test 10_. La prohibición sigue en pie
+                // para cualquier OTRO evento `--stop-when-empty` (en particular el worker de `default`).
+                if (strpos($comando_programado, 'queue:work') !== false && strpos($comando_programado, '_embeddings') !== false) {
+                    continue;
+                }
+
                 $this->assertStringNotContainsString(
                     '--stop-when-empty',
-                    (string) $programado->command,
+                    $comando_programado,
                     'Con scheduler_worker=false el worker de default (--stop-when-empty) sigue sin programarse.'
                 );
             }

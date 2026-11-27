@@ -3,6 +3,7 @@
 namespace App\Console\Commands;
 
 use App\Exceptions\CupoEmbeddingsDePruebaException;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Http\Controllers\Helpers\UserHelper;
 use App\Http\Controllers\Helpers\PruebaHelper;
 use App\Jobs\FinalizeEmbeddingRun;
@@ -11,6 +12,7 @@ use App\Models\EmbeddingRun;
 use App\Models\ImportacionDePrueba;
 use App\Models\ImportStatus;
 use App\Models\User;
+use App\Services\ArticleEmbeddingBatchProcessor;
 use App\Services\ArticleEmbeddingDispatcher;
 use App\Services\ArticleEmbeddingService;
 use App\Services\CupoEmbeddingsDePrueba;
@@ -38,6 +40,22 @@ use Illuminate\Support\Facades\Schema;
 class GenerateArticleEmbeddings extends Command
 {
     /**
+     * Pendientes a partir de los cuales la tanda se muestra en "Procesos en segundo plano" (misión
+     * embeddings-lote-cola): un lote entero. Por debajo termina en un solo lote y sería ruido (el
+     * scheduler cada 30 minutos suele encontrar pocos artículos).
+     *
+     * @var int
+     */
+    const UMBRAL_PROCESO_VISIBLE = ArticleEmbeddingBatchProcessor::TAMANO_LOTE;
+
+    /**
+     * Tipo del proceso visible de la tanda (columna `background_processes.tipo`).
+     *
+     * @var string
+     */
+    const TIPO_PROCESO = 'embeddings_articulos';
+
+    /**
      * Nombre y firma del comando Artisan.
      * La opción --all fuerza regenerar embeddings incluso para artículos que ya los tienen.
      *
@@ -58,7 +76,9 @@ class GenerateArticleEmbeddings extends Command
 
     /**
      * Ejecuta el comando: verifica extensión activa, importaciones en curso y despacha
-     * GenerateArticleEmbeddingJob para cada artículo pendiente en chunks de 50.
+     * GenerateArticleEmbeddingsBatchJob por cada lote de hasta 100 artículos pendientes (una sola llamada
+     * a OpenAI por lote). Si hay 100 pendientes o más, además abre un proceso visible en "Procesos en
+     * segundo plano".
      *
      * @return int Código de salida (0 = éxito).
      */
@@ -226,7 +246,7 @@ class GenerateArticleEmbeddings extends Command
         }
 
         $mode_label = $regenerate_all ? 'todos (--all)' : 'pendientes';
-        $this->info("articles:generate-embeddings: despachando jobs para {$total} artículos ({$mode_label})...");
+        $this->info("articles:generate-embeddings: despachando lotes para {$total} artículos ({$mode_label})...");
 
         /*
          * Guarda anti-solapamiento. El scheduler corre esto cada 30 minutos y una importación
@@ -254,6 +274,10 @@ class GenerateArticleEmbeddings extends Command
 
             $run_abierta->status = 'vencida';
             $run_abierta->save();
+
+            // Su proceso visible (si tenía) se cierra igual: nadie más lo va a cerrar, el finalizador de
+            // esa tanda ya se dio por vencido o murió con ella.
+            FinalizeEmbeddingRun::cerrar_proceso_visible($run_abierta, 'vencida');
         }
 
         /*
@@ -279,27 +303,55 @@ class GenerateArticleEmbeddings extends Command
             ]);
         }
 
-        // Contador de jobs despachados para mostrar progreso.
+        /*
+         * Proceso visible en "Procesos en segundo plano" (misión embeddings-lote-cola). Se crea ACÁ, recién
+         * creada la tanda y ANTES de despachar: con una cola `sync` o `database` los lotes ya corren
+         * mientras se despacha, y el primero que termine tiene que encontrar el proceso para avanzarlo.
+         * Sólo si hay un lote o más de pendientes; los observers (una edición suelta) nunca lo crean.
+         * Nace `pendiente` ("En espera del procesador") y pasa a `en_proceso` con el primer avance.
+         */
+        $proceso = null;
+        if ($total >= self::UMBRAL_PROCESO_VISIBLE) {
+            $proceso = BackgroundProcessHelper::iniciar($user_id, self::TIPO_PROCESO, 'Preparando búsqueda inteligente de artículos', [
+                'total'      => $total,
+                'unidad'     => 'artículos',
+                'status'     => 'pendiente',
+                'etapa'      => 'En espera del procesador',
+                'detalle'    => $this->detalle_del_proceso((string) $this->option('origen')),
+                'referencia' => $run,
+            ]);
+        }
+
+        // Cantidad de ARTÍCULOS despachados (no de jobs: `total_jobs` cuenta artículos desde esta misión).
         $dispatched = 0;
 
-        // Procesar en chunks de 50 para evitar cargar todo en memoria.
-        $query->chunkById(50, function ($articles) use (&$dispatched, $run) {
-            foreach ($articles as $article) {
-                // Sólo cuenta lo realmente despachado: si el artículo ya tenía un job vigente
-                // (de un observer o de otro proceso) se saltea, y total_jobs tiene que coincidir
-                // con los jobs que van a reportar a la tanda o FinalizeEmbeddingRun no cierra.
-                if (ArticleEmbeddingDispatcher::dispatch_if_not_queued((int) $article->id, (int) $run->id)) {
-                    $dispatched++;
-                }
-            }
-            $this->info("  {$dispatched} jobs despachados...");
+        // Se procesa de a un lote de artículos para no cargar todo en memoria y para que cada
+        // despacho sea UN job con una sola llamada a OpenAI.
+        $query->chunkById(ArticleEmbeddingBatchProcessor::TAMANO_LOTE, function ($articles) use (&$dispatched, $run) {
+            // Sólo cuenta lo realmente reclamado: los artículos que ya tenían un job vigente (de un
+            // observer o de otro proceso) no entran al lote, y total_jobs tiene que coincidir con lo que
+            // va a reportar a la tanda o FinalizeEmbeddingRun no cierra.
+            $dispatched += ArticleEmbeddingDispatcher::dispatch_batch_if_not_queued(
+                $articles->pluck('id')->map(function ($id) {
+                    return (int) $id;
+                })->all(),
+                (int) $run->id
+            );
+
+            $this->info("  {$dispatched} artículos despachados...");
         });
 
-        // Cierre del despacho: recién ahora `total_jobs` es definitivo y el finalizador tiene
-        // permitido comparar contadores.
+        // Cierre del despacho: recién ahora `total_jobs` es definitivo (cuenta ARTÍCULOS) y el
+        // finalizador tiene permitido comparar contadores.
         $run->total_jobs = $dispatched;
         $run->status     = 'en_proceso';
         $run->save();
+
+        // Si se despachó menos de lo contado (otro proceso ya había reclamado artículos), el total del
+        // proceso visible se corrige. Sólo en ese caso: avanzar() lo saca de "pendiente".
+        if (! is_null($proceso) && $dispatched !== $total) {
+            BackgroundProcessHelper::avanzar($proceso, null, ['total' => $dispatched]);
+        }
 
         /*
          * El finalizador es el que cuenta cuántos vectores se escribieron DE VERDAD y avisa. No
@@ -310,9 +362,30 @@ class GenerateArticleEmbeddings extends Command
             ->delay(Carbon::now()->addSeconds(10));
 
         // El id va al output para poder ir a mirar la fila cuando el aviso no aparezca.
-        $this->info("articles:generate-embeddings: listo. {$dispatched} jobs en cola (tanda {$run->id}).");
+        $this->info("articles:generate-embeddings: listo. {$dispatched} artículos en cola (tanda {$run->id}).");
 
         return 0;
+    }
+
+    /**
+     * Texto de detalle del proceso visible según de dónde salió la tanda.
+     *
+     * @param string $origen scheduler | importacion | prueba | manual.
+     *
+     * @return string
+     */
+    private function detalle_del_proceso(string $origen): string
+    {
+        switch ($origen) {
+            case 'importacion':
+                return 'Artículos de la importación';
+            case 'prueba':
+                return 'Catálogo de la prueba';
+            case 'scheduler':
+                return 'Artículos nuevos o modificados';
+            default:
+                return 'Pedido manual';
+        }
     }
 
     /**

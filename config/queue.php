@@ -71,6 +71,30 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Cola propia de los embeddings de artículos (shared y VPS)
+    |--------------------------------------------------------------------------
+    |
+    | Misión embeddings-lote-cola. Los embeddings (los lotes que arma el comando, el job de un
+    | artículo de los observers y el finalizador de la tanda) iban a `default` y, con miles de
+    | artículos, la tapaban: las actualizaciones masivas, las imágenes y las exportaciones
+    | esperaban detrás. Con esto prendido todo eso va a `<cola>_embeddings` (con QUEUE_NAME sin
+    | setear: `default_embeddings`) y lo atiende un worker que lanza el scheduler de la propia
+    | instancia cada minuto sólo si hay jobs pendientes (App\Console\Kernel). A diferencia de la
+    | cola del asistente en el VPS, nace PRENDIDA y no depende de supervisor: en el VPS cada
+    | cliente ya tiene el programa `_schedule` que corre `schedule:run`, así que no hay que tocar
+    | ninguna configuración de servidor.
+    |
+    | Para volver atrás, en este orden: 1) QUEUE_EMBEDDINGS_WORKER=false (los jobs nuevos vuelven a
+    | `default`; el worker sigue programado mientras queden jobs en `_embeddings`); 2) recién con
+    | `_embeddings` vacía, bajar de versión. Al revés quedarían jobs huérfanos.
+    | filter_var y no (bool): "false" y "0" tienen que apagarla.
+    |
+    */
+
+    'embeddings_worker' => filter_var(env('QUEUE_EMBEDDINGS_WORKER', true), FILTER_VALIDATE_BOOLEAN),
+
+    /*
+    |--------------------------------------------------------------------------
     | Queue Connections
     |--------------------------------------------------------------------------
     |
