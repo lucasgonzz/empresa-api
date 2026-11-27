@@ -673,6 +673,86 @@ class Escaneo_en_segundo_plano_Test extends EmpresaTestCase
         );
     }
 
+    /**
+     * Misión asistente-diario-recuperacion-20261127, CA4 (A5 del informe de la semana).
+     *
+     * 🔴 EL CASO REAL (Pescamayorista, msgs 373-405). La factura trae el código «A9548» y el catálogo
+     * lo tiene como «A9548 6» (el código de proveedor con un sufijo): el match exacto no lo encuentra
+     * y los candidatos eran sólo por nombre, así que el asistente dijo «ninguno coincide».
+     *
+     * Lo que se fija: el renglón sigue `sin_match` (JAMÁS se asocia solo: con A9112 hay cuatro
+     * artículos y elegir uno sería adivinar), pero los `candidatos` suman, ANTES que los de nombre, los
+     * artículos cuyo código (legado o de bar_code) EMPIEZA con el código leído seguido de un separador,
+     * con el `motivo` «código que empieza igual». Un código que sólo comparte el prefijo sin separador
+     * («A95481») no entra. El job no crea artículos.
+     *
+     * @test
+     * @return void
+     */
+    public function un_codigo_sin_match_propone_los_que_empiezan_igual_sin_asociar()
+    {
+        $otro_proveedor = $this->proveedor(TestingFerreteriaSeeder::PROVIDER_OTRO);
+
+        $polaris = Article::create([
+            'name'          => 'Reel Polaris 6000 u210',
+            'user_id'       => $this->owner->id,
+            'status'        => 'active',
+            'provider_id'   => $otro_proveedor->id,
+            'provider_code' => 'A9548 6',
+        ]);
+
+        $parecido_sin_separador = Article::create([
+            'name'          => 'Otro u210',
+            'user_id'       => $this->owner->id,
+            'status'        => 'active',
+            'provider_id'   => $otro_proveedor->id,
+            'provider_code' => 'A95481',
+        ]);
+
+        $articulos = [
+            [
+                'fila'             => 1,
+                'pagina'           => 1,
+                'bar_code'         => null,
+                'codigo_proveedor' => 'A9548',
+                'nombre'           => 'QQ SIN NOMBRE PARECIDO',
+                'cantidad'         => 3,
+                'costo_unitario'   => 1000,
+                'campos_dudosos'   => [],
+            ],
+        ];
+
+        $this->fake_de_anthropic($this->json_de_factura(['articulos' => $articulos]));
+
+        $scan = $this->escaneo();
+        $this->foto($scan, 1);
+
+        $scan = $this->correr_el_job($scan);
+
+        $this->assertEquals('listo', $scan->estado);
+
+        $renglon = $scan->resultado['articulos'][0];
+
+        /* Nunca se asocia solo. */
+        $this->assertEquals('sin_match', $renglon['match']['estado']);
+        $this->assertNull($renglon['match']['article_id']);
+        $this->assertFalse($renglon['crear_en_catalogo']);
+
+        $ids = array_column($renglon['match']['candidatos'], 'article_id');
+
+        $this->assertContains((int) $polaris->id, $ids, 'El de código «A9548 6» tiene que venir como candidato.');
+        $this->assertNotContains((int) $parecido_sin_separador->id, $ids, '«A95481» no empieza con «A9548» + separador.');
+
+        $candidato = $renglon['match']['candidatos'][array_search((int) $polaris->id, $ids)];
+
+        $this->assertSame('código que empieza igual', $candidato['motivo']);
+        $this->assertSame('A9548 6', $candidato['provider_code']);
+        $this->assertSame('Reel Polaris 6000 u210', $candidato['nombre']);
+
+        /* El job no creó nada. */
+        $this->assertEquals(0, Article::where('name', 'QQ SIN NOMBRE PARECIDO')->count());
+    }
+
     /* ------------------------------------------------------------------ *
      *  9. Confianzas clampeadas
      * ------------------------------------------------------------------ */
