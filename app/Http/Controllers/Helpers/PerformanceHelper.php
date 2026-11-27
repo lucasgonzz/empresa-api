@@ -296,7 +296,13 @@ class PerformanceHelper
 
         foreach ($pagos as $pago) {
 
-            if ($pago->credit_account->moneda_id == 2) {
+            // Soporte t177: los pagos viejos pueden no tener cuenta corriente (credit_account_id NULL).
+            // Sin cuenta se cuentan como pesos, igual que hace ContabilidadRepository
+            // (aplicar_filtro_moneda_current_acount). Si se "simplifica" a ->credit_account->moneda_id,
+            // buscar ese período en Reportes devuelve "Server Error".
+            $cuenta_del_pago = $pago->credit_account;
+
+            if (!is_null($cuenta_del_pago) && $cuenta_del_pago->moneda_id == 2) {
 
                 $this->total_pagado_a_proveedores_usd += $pago->haber;
             } else {
@@ -1087,7 +1093,11 @@ class PerformanceHelper
         foreach ($pagos as $pago) {
 
             // Log::info('Pago de '.$pago->client->name.' por '.$pago->haber);
-            if ($pago->credit_account->moneda_id == 2) {
+            // Soporte t177: un cobro viejo puede no tener cuenta corriente (credit_account_id NULL);
+            // sin cuenta se cuenta como pesos (mismo criterio que ContabilidadRepository).
+            $cuenta_del_pago = $pago->credit_account;
+
+            if (!is_null($cuenta_del_pago) && $cuenta_del_pago->moneda_id == 2) {
 
                 // Log::info('DOLARES');
 
@@ -1150,6 +1160,20 @@ class PerformanceHelper
                 $suma_payment_methods = null;
 
                 $this->ingresos_cuenta_corriente[3]['total'] += $pago->haber;
+
+                // Soporte t177: el $employee_id del cobro puede no ser un empleado del dueño (usuario
+                // borrado, 0). Se inicializa su fila igual que en la rama con métodos de pago de
+                // arriba; sin esto, "Undefined offset" tira el reporte entero. La plata no se descarta:
+                // ya entró a ingresos_cuenta_corriente[3] y PaymentMethodsHelper::set_users_relation
+                // omite después a quien no es empleado.
+                if (!isset($this->users_payment_methods[$employee_id])) {
+
+                    $this->users_payment_methods[$employee_id] = [
+                        'user_id'           => $employee_id,
+                        'total_vendido'     => 0,
+                        'payment_methods'   => $this->get_payment_methods(),
+                    ];
+                }
 
                 $this->users_payment_methods[$employee_id]['payment_methods'][3]['total'] += $pago->haber;
             }

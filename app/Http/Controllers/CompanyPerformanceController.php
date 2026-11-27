@@ -9,6 +9,7 @@ namespace App\Http\Controllers;
 use App\Http\Controllers\Helpers\CompanyPerformanceHelper;
 use App\Http\Controllers\Helpers\CompanyPerformanceUsersAddressesPaymentMethodsHelper as PaymentMethodsHelper;
 use App\Http\Controllers\Helpers\PerformanceHelper;
+use App\Http\Controllers\Helpers\RangoFechasReporteHelper;
 use App\Models\CompanyPerformance;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -30,6 +31,16 @@ class CompanyPerformanceController extends Controller
 
             /* Cuando no hay fin se interpreta como un único día */
             $fecha_fin = !is_null($fin) ? $fin : $inicio;
+
+            /* Soporte t177: fechas inválidas, "Desde" posterior a "Hasta" o más de 366 días → 422 en
+               castellano en lugar del 500 "Server Error" (el reporte legado carga todo en memoria y
+               un rango enorme lo mata). Los reportes contables nuevos no tienen este tope. */
+            $rango_invalido = RangoFechasReporteHelper::validar($inicio, $fecha_fin, RangoFechasReporteHelper::MAX_DIAS_GRAFICOS);
+
+            if (!is_null($rango_invalido)) {
+
+                return $rango_invalido;
+            }
 
             $helper = new CompanyPerformanceHelper();
 
