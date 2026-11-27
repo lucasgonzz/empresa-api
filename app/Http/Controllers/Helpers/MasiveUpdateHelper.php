@@ -84,7 +84,7 @@ class MasiveUpdateHelper
      *
      * Es el cuerpo que tenía UpdateController::update() (misión asistente-masivas-imagenes-y-remito,
      * 19/9/2026), movido acá para que la pantalla y el asistente encolen por EL MISMO camino: mismo
-     * guard de "al menos un filtro efectivo", mismo tope de 3000, misma `criteria_json`, mismo
+     * guard de "al menos un filtro efectivo", el tope por artículos (EjecucionPorTandasHelper::MAXIMO_ARTICULOS; 3000 en el resto), misma `criteria_json`, mismo
      * historial y misma reversión. El controller solo traduce el request y la respuesta:
      * `response()->json($r['body'], $r['status'])`. Ninguna respuesta observable del endpoint cambia.
      *
@@ -223,13 +223,14 @@ class MasiveUpdateHelper
                     return self::respuesta_de_encolado(422, ['message' => 'No se permite actualizar por filtro si no hay criterios de filtrado.']);
                 }
                 // Una sola lectura de IDs congela la selección; ni OFFSET ni relaciones de 30000 modelos.
-                $seleccionados = $query->setEagerLoads([])->limit(3000)->pluck('articles.id')->all();
+                // Se lee un id de más que el techo para saber si lo superó sin traer todo el conjunto.
+                $seleccionados = $query->setEagerLoads([])->limit(EjecucionPorTandasHelper::MAXIMO_ARTICULOS + 1)->pluck('articles.id')->all();
                 $models = collect();
-                if (count($seleccionados) >= 3000) {
-                    // Se cuenta el total real (la lectura de IDs se corta en 3000) para decirle a la persona de cuánto se pasó.
+                if (count($seleccionados) > EjecucionPorTandasHelper::MAXIMO_ARTICULOS) {
+                    // Se cuenta el total real (la lectura de IDs se corta en el techo + 1) para decirle a la persona de cuánto se pasó.
                     $total_real = (clone $query)->setEagerLoads([])->count('articles.id');
                     Log::info('NO se permitio actualizar por filtro: ' . $total_real . ' artículos superan el tope.');
-                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido($total_real, 'artículos', 2999)]);
+                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido($total_real, 'artículos', EjecucionPorTandasHelper::MAXIMO_ARTICULOS)]);
                 }
                 if (is_callable($filtro_extra)) {
                     // El callback sólo usa id/images; no cargar embeddings, precios ni withAll.
@@ -281,8 +282,8 @@ class MasiveUpdateHelper
                 ]);
             }
             if ($model_name === 'article') {
-                if (count($models_id) >= 3000) {
-                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models_id), 'artículos', 2999)]);
+                if (count($models_id) > EjecucionPorTandasHelper::MAXIMO_ARTICULOS) {
+                    return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models_id), 'artículos', EjecucionPorTandasHelper::MAXIMO_ARTICULOS)]);
                 }
                 $propios = array_fill_keys(Article::where('user_id', $owner_id)->whereIn('id', $models_id)->pluck('id')->all(), true);
                 if (count($propios) < count($models_id)) {
@@ -311,7 +312,9 @@ class MasiveUpdateHelper
                 ];
         }
 
-        if (count($models) >= 3000) {
+        // Los artículos ya se acotaron arriba contra su techo técnico; el resto de los modelos se resuelve
+        // con find() uno por uno en un solo job (sin tandas) y conserva el tope de 3000.
+        if ($model_name !== 'article' && count($models) >= 3000) {
             Log::info('NO se permitio actualizar los '.count($models).' '.$model_name);
             return self::respuesta_de_encolado(422, ['message' => self::mensaje_tope_excedido(count($models), 'registros', 2999)]);
         }
@@ -409,8 +412,8 @@ class MasiveUpdateHelper
         $criteria = ['revert_of_masive_update_id' => $parent_masive_update->id];
         if (EjecucionPorTandasHelper::es_de_articulos($parent_masive_update)) {
             $criteria['resolved_models_id'] = DB::table('masive_update_article')->where('masive_update_id', $parent_masive_update->id)
-                ->orderBy('id')->limit(3000)->pluck('id')->all();
-            if (count($criteria['resolved_models_id']) >= 3000) {
+                ->orderBy('id')->limit(EjecucionPorTandasHelper::MAXIMO_ARTICULOS + 1)->pluck('id')->all();
+            if (count($criteria['resolved_models_id']) > EjecucionPorTandasHelper::MAXIMO_ARTICULOS) {
                 throw new \RuntimeException('La reversión supera el límite de registros.');
             }
             $criteria = EjecucionPorTandasHelper::inicializar($criteria);
