@@ -20,15 +20,26 @@ class CupoEmbeddingsDePrueba
      * El scheduler consulta antes de encolar. La reserva efectiva se hace justo
      * antes del HTTP y queda registrada aunque muera el worker.
      *
+     * Misión embeddings-lote-cola: un pedido por LOTE lleva varios textos y cada uno puede costar hasta
+     * el tope por llamada, así que reserva `$llamadas × tope` y verifica el presupuesto contra esa
+     * reserva entera. Con el default (1) es exactamente el comportamiento de siempre.
+     *
+     * @param int  $owner_id Dueño de la instancia.
+     * @param bool $reservar true para dejar la reserva hecha; false sólo consulta.
+     * @param int  $llamadas Cantidad de textos del pedido (1 = un solo texto).
+     *
      * @throws CupoEmbeddingsDePruebaException
      */
-    public static function comprobar(int $owner_id, bool $reservar = false): ?int
+    public static function comprobar(int $owner_id, bool $reservar = false, int $llamadas = 1): ?int
     {
+        // Tokens a reservar para este pedido: el tope por llamada de cada texto.
+        $a_reservar = self::MAX_TOKENS_POR_LLAMADA * max(1, $llamadas);
+
         if (!PruebaHelper::puede_haber_prueba()) {
             return null;
         }
 
-        $resultado = DB::transaction(function () use ($owner_id, $reservar) {
+        $resultado = DB::transaction(function () use ($owner_id, $reservar, $a_reservar) {
             $prueba = PruebaConfig::where('owner_id', $owner_id)->lockForUpdate()->first();
             if ($prueba === null) {
                 return null;
@@ -55,13 +66,13 @@ class CupoEmbeddingsDePrueba
                 $prueba->save();
             }
 
-            if ((int) $prueba->embeddings_tokens_usados + self::MAX_TOKENS_POR_LLAMADA > self::TOPE_TOKENS) {
+            if ((int) $prueba->embeddings_tokens_usados + $a_reservar > self::TOPE_TOKENS) {
                 // Devolver la excepción permite commitear el consumo histórico antes de propagarla.
                 return new CupoEmbeddingsDePruebaException('Se alcanzó el presupuesto de embeddings de la prueba gratuita.');
             }
 
             if ($reservar) {
-                $prueba->increment('embeddings_tokens_usados', self::MAX_TOKENS_POR_LLAMADA);
+                $prueba->increment('embeddings_tokens_usados', $a_reservar);
             }
 
             return $reservar ? (int) $prueba->id : null;
@@ -74,9 +85,23 @@ class CupoEmbeddingsDePrueba
         return $resultado;
     }
 
-    public static function conciliar(?int $prueba_id, int $tokens_cobrados): void
+    /**
+     * Ajusta la reserva hecha por comprobar() contra lo que OpenAI cobró de verdad (0 si rechazó el
+     * pedido y no cobró nada). Con `$llamadas` > 1 (pedido por lote) la reserva fue de
+     * `$llamadas × tope`, y es contra eso que se concilia.
+     *
+     * @param int|null $prueba_id       Id de la prueba que devolvió comprobar() (null = sin reserva).
+     * @param int      $tokens_cobrados Tokens cobrados por el pedido entero.
+     * @param int      $llamadas        Cantidad de textos que se reservaron (1 = un solo texto).
+     *
+     * @return void
+     */
+    public static function conciliar(?int $prueba_id, int $tokens_cobrados, int $llamadas = 1): void
     {
-        if ($prueba_id === null || $tokens_cobrados === self::MAX_TOKENS_POR_LLAMADA) {
+        // Lo que se había reservado para este pedido.
+        $reservado = self::MAX_TOKENS_POR_LLAMADA * max(1, $llamadas);
+
+        if ($prueba_id === null || $tokens_cobrados === $reservado) {
             return;
         }
 
@@ -84,7 +109,7 @@ class CupoEmbeddingsDePrueba
         try {
             PruebaConfig::whereKey($prueba_id)->increment(
                 'embeddings_tokens_usados',
-                $tokens_cobrados - self::MAX_TOKENS_POR_LLAMADA
+                $tokens_cobrados - $reservado
             );
         } catch (\Throwable $exception) {
             // La reserva ya quedó guardada. Un fallo al ajustarla no amerita otra llamada paga.
