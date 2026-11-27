@@ -29,7 +29,15 @@ class UpdateController extends Controller
             $request->update_form,
             $request->models_id,
             $this->userId(true),
-            $this->userId(false)
+            $this->userId(false),
+            null,
+            null,
+            // Freno de negocio de la pantalla (misión masiva-sin-tope-confirmar-75): el indicador es
+            // opt-in para que una pantalla vieja, que no sabe mostrar la confirmación, no se bloquee.
+            [
+                'check_inventory_percentage' => $request->boolean('check_inventory_percentage'),
+                'confirmed_massive'          => $request->boolean('confirmed_massive'),
+            ]
         );
 
         return response()->json($resultado['body'], $resultado['status']);

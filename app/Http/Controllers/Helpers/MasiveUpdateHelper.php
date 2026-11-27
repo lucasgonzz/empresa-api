@@ -110,9 +110,16 @@ class MasiveUpdateHelper
      * @param  callable|null  $filtro_extra
      * @param  array|null  $used_filters_manual  Solo sin $from_filter: el criterio legible que
      *                                           reemplaza a "Seleccion manual" en el historial.
+     * @param  array  $opciones  Opcionales (misión masiva-sin-tope-confirmar-75), todas booleanas:
+     *                           `check_inventory_percentage` pide el freno de negocio (sólo artículos): si la
+     *                           selección alcanza MÁS del 75% del inventario activo del dueño devuelve 422
+     *                           `requires_confirmation` sin encolar nada; `confirmed_massive` es la
+     *                           confirmación de la persona y saltea ese freno. Sin `check_inventory_percentage`
+     *                           (el asistente de IA, que tiene su propia tarjeta, y las pantallas viejas) no
+     *                           cambia nada.
      * @return array  ['status' => 200|422, 'body' => array]
      */
-    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null, $used_filters_manual = null)
+    public static function encolar_actualizacion($model_name, $from_filter, $filter_form, $update_form, $models_id, $owner_id, $auth_user_id, $filtro_extra = null, $used_filters_manual = null, array $opciones = [])
     {
         $models = [];
         $formated_model_name = GeneralHelper::getModelName($model_name);
@@ -332,6 +339,16 @@ class MasiveUpdateHelper
             ]);
         }
 
+        // Freno de negocio: más del 75% del inventario activo pide confirmación antes de crear nada.
+        if ($model_name === 'article'
+            && !empty($opciones['check_inventory_percentage'])
+            && empty($opciones['confirmed_massive'])) {
+            $confirmacion = self::confirmacion_por_inventario($owner_id, $resolved_models_id);
+            if ($confirmacion !== null) {
+                return $confirmacion;
+            }
+        }
+
         $criteria = [
             'from_filter' => $from_filter,
             'used_filters' => $used_filters,
@@ -366,6 +383,50 @@ class MasiveUpdateHelper
             'message' => 'La actualización masiva se está procesando en segundo plano',
             'masive_update_id' => $masive_update->id,
             'queued_count' => count($resolved_models_id),
+        ]);
+    }
+
+    /**
+     * Decide si una masiva de artículos alcanza MÁS del 75% del inventario del dueño y, si es así,
+     * arma la respuesta 422 que le pide a la pantalla que confirme.
+     *
+     * Inventario = artículos del dueño con status `active` y no eliminados (SoftDeletes), que es lo que
+     * muestra y filtra el listado; el conteo de "alcanzados" usa la misma definición, así que el
+     * porcentaje nunca pasa de 100 aunque una selección manual traiga inactivos. La comparación es en
+     * enteros (count * 4 > total * 3): exactamente 75% NO pide confirmación. Sin umbral mínimo de
+     * inventario: el pedido es literal y la confirmación es un clic.
+     *
+     * @param  int  $owner_id  Dueño de la cuenta.
+     * @param  int[]  $ids  Ids resueltos de la selección congelada.
+     * @return array|null  Respuesta de encolado (422) o null si no hace falta confirmar.
+     */
+    protected static function confirmacion_por_inventario($owner_id, array $ids)
+    {
+        // Inventario activo del dueño (el SoftDeletes del modelo excluye los eliminados).
+        $total = Article::where('user_id', $owner_id)->where('status', 'active')->count();
+        if ($total <= 0) {
+            return null;
+        }
+        // Activos alcanzados por la selección.
+        $alcanzados = Article::where('user_id', $owner_id)->where('status', 'active')->whereIn('id', $ids)->count();
+        if ($alcanzados * 4 <= $total * 3) {
+            return null;
+        }
+        $porcentaje = round($alcanzados * 100 / $total, 1);
+        // Entero sin decimales ("80%"); con decimal, coma ("92,4%").
+        $porcentaje_texto = floor($porcentaje) == $porcentaje
+            ? number_format($porcentaje, 0, ',', '.')
+            : number_format($porcentaje, 1, ',', '.');
+        $mensaje = 'Esta actualización afecta el ' . $porcentaje_texto . '% de tu inventario ('
+            . number_format($alcanzados, 0, ',', '.') . ' de ' . number_format($total, 0, ',', '.')
+            . ' artículos). ¿Confirmás que querés seguir?';
+        return self::respuesta_de_encolado(422, [
+            'requires_confirmation' => true,
+            'code'                  => 'confirmar_porcentaje_inventario',
+            'percentage'            => $porcentaje,
+            'count'                 => $alcanzados,
+            'total'                 => $total,
+            'message'               => $mensaje,
         ]);
     }
 
