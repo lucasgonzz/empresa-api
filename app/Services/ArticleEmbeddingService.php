@@ -223,7 +223,7 @@ class ArticleEmbeddingService
      *   EmbeddingsCredencialRechazadaException (el job NO la reintenta).
      * - Cualquier otra cosa lanza \RuntimeException con el STATUS HTTP COMO CÓDIGO (`getCode()`): así el
      *   procesador de lotes distingue un 400/413/422 (texto inválido: aísla y reintenta cada artículo
-     *   solo) de un 429 de rate limit o un 5xx (transitorio: reintenta el lote entero).
+     *   solo) de un 429 de rate limit o un 5xx (transitorio, reintenta el lote entero).
      *
      * @param \Illuminate\Http\Client\Response $response Respuesta con error (`failed()` es true).
      * @param int|null $reserva  Id de la prueba con tokens reservados, o null si no hay reserva.
@@ -432,7 +432,7 @@ class ArticleEmbeddingService
     /**
      * Reparte `$total` tokens entre textos de largos `$largos`, proporcional al largo, por RESTO MAYOR
      * y con aritmética entera (sin errores de redondeo): cada texto recibe el piso de su cuota exacta y
-     * el sobrante se da de a 1 a las fracciones más altas (desempate: la posición más baja). La suma es
+     * el sobrante se da de a 1 a las fracciones más altas (desempata la posición más baja). La suma es
      * EXACTAMENTE `$total`, que es lo que OpenAI cobró.
      *
      * Un largo cero (no debería pasar: el procesador no manda textos vacíos) pesa 1 para que el
