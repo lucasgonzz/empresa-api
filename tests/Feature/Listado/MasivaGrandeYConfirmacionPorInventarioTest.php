@@ -359,10 +359,11 @@ class MasivaGrandeYConfirmacionPorInventarioTest extends TestCase
         $this->assertSame(80, $respuesta->json('count'));
         $this->assertSame(100, $respuesta->json('total'));
         $this->assertSame(0, $this->masivas_del_dueno());
+    }
 
+    public function test_por_filtro_informa_el_porcentaje_con_decimal()
+    {
         // 93 de 110 activos: 84,545...% se informa con un decimal y coma.
-        $dueno_decimal = $this->nuevo_dueno();
-        $this->dueno = $dueno_decimal;
         $proveedor_b = $this->proveedor('proveedor B');
         $this->articulos(93, ['provider_id' => $proveedor_b->id]);
         $this->articulos(17);
