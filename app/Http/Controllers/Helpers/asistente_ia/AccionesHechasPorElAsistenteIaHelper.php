@@ -107,6 +107,8 @@ class AccionesHechasPorElAsistenteIaHelper
         AiMessageAction::TIPO_ACTUALIZACION_MASIVA => 'actualización masiva',
         // Misión asistente-diario-20261119 (rama C, A4).
         AiMessageAction::TIPO_RENOMBRE_MASIVO      => 'renombre masivo',
+        // Misión asistente-diario-20261121 (M1).
+        AiMessageAction::TIPO_DESTACADO_ARTICULO   => 'destacado de artículo',
     ];
 
     /**

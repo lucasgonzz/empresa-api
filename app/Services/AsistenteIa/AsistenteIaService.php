@@ -2525,6 +2525,10 @@ class AsistenteIaService
         if ($con_acciones && \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::activa($owner)) {
             $bloque_de_carga .= "\n".\App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::instrucciones()."\n";
         }
+        // Misión asistente-diario-20261121 (A1): reglas de un pedido a proveedor en una vinoteca (no dependen del alta de bebidas).
+        if ($con_acciones && \App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::disponible($owner)) {
+            $bloque_de_carga .= "\n".\App\Http\Controllers\Helpers\asistente_ia\AltaBebidasIaHelper::instrucciones_de_pedido_a_proveedor()."\n";
+        }
 
         /*
          * Misión asistente-ventas-y-fotos (21/9/2026): quién es la persona que escribe. VA DESPUÉS
@@ -3362,6 +3366,10 @@ AUTO_RESUELTO;
   renglones reconocidos y sin match, datos dudosos) como "lo que leyó el escaneo", que se confirma al
   revisarlo en Compras. Si está en proceso, decí que todavía se está leyendo. Nunca digas que no podés
   saber qué trae la factura: consultá el escaneo.
+  Antes de decir que algo «quedó cargado» o de indicar pasar una compra a «Recibido», leé la compra
+  y el escaneo (articulos_en_la_compra y aplicado): con 0 artículos no indiques «Recibido»; decí que
+  la compra está vacía (pasarla a Recibido no carga stock) y ofrecé cargar el stock con las
+  herramientas de stock. Nunca afirmes un resultado sin el dato de una herramienta que lo muestre.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma
@@ -3395,6 +3403,7 @@ AUTO_RESUELTO;
   ESA operación en su descripción; si no lo tiene, decilo en ese mismo mensaje, antes de que la
   persona confirme, y ofrecé lo que sí se puede. Nunca armes ejemplos, ni pidas el sí, de algo que
   después no vas a poder aplicar.
+- 🔴 Para no duplicar lo que ya está: antes de proponer cargar artículos, clientes o proveedores «de cero», consultá cuántos hay (contar_articulos_por_filtro, consultar_proveedores, el listado de clientes); si ya hay importados, no propongas altas: proponé revisarlos.
 - Diseños de PDF: mirá consultar_disenos_de_pdf antes de proponer un cambio. Si la persona
   no dijo dónde va la columna nueva (al final, al principio, antes o después de cuál),
   preguntale. La herramienta acomoda los anchos sola y te dice qué achicó: contáselo.
@@ -3719,6 +3728,15 @@ VENTA_CONFIRMA;
   detalle.precio_de_venta_texto (si quedó sin precio, decilo y pedí el costo y el margen); nunca
   digas que el precio "no se calculó". Y lo que quedó guardado contalo con las etiquetas de
   detalle.campos_guardados: no cambies un campo por otro (una razón social no es un domicilio).
+- 🔴 El precio de venta de un artículo se calcula por costo y margen: para cambiar lo que se vende
+  se edita `cost` (el costo) o el margen, NUNCA el campo de precio manual (`price`) de un artículo que
+  se calcula por costo y margen: no mueve lo que se vende y la tarjeta quedaría diciendo algo que no
+  pasó. Si el dueño dice que NO trabaja con listas de precio y que_puedo_cargar / `listas_de_precio`
+  dice que el negocio no las usa, no le ofrezcas listas ni margenes_por_lista: el margen va en
+  `percentage_gain` del artículo.
+- Destacar un artículo en la tienda (la estrella del Listado) o sacarlo de los destacados se hace con
+  proponer_destacado_articulo (articulo y destacado true/false): deja SIEMPRE una tarjeta para confirmar. Si
+  el artículo ya estaba así, la herramienta te lo dice y no hay tarjeta. Nunca digas que no se puede.
 - Para editar o borrar, primero se ubica el registro por su nombre (las ventas y los gastos,
   por su número). Si hay varios que encajan, la herramienta devuelve "faltan" con las opciones:
   preguntá cuál, ofreciéndolas por su nombre, y volvé a llamar con el nombre exacto. Al editar
