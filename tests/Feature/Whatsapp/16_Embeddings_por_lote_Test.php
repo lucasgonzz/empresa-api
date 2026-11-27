@@ -5,6 +5,7 @@ namespace Tests\Feature\Whatsapp;
 use App\Events\ArticleEmbeddingsBatchGenerated;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Jobs\GenerateArticleEmbeddingsBatchJob;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
 use App\Models\ExtencionEmpresa;
@@ -256,7 +257,12 @@ class Embeddings_por_lote_Test extends TestCase
         $this->assertEquals(0, (int) $tanda->terminados, 'Todavía no terminó ningún job.');
         $this->assertNull($tanda->notificado_at, 'Y nadie notificó nada todavía.');
 
-        Queue::assertPushed(GenerateArticleEmbeddingJob::class, 3);
+        Queue::assertPushed(GenerateArticleEmbeddingsBatchJob::class, 1);
+        $this->assertSame(
+            3,
+            $this->cantidad_de_articulos_en_lotes(),
+            'El comando despacha los artículos pendientes agrupados en un job de lote (3 en total).'
+        );
         Queue::assertPushed(FinalizeEmbeddingRun::class, 1);
     }
 
@@ -674,6 +680,7 @@ class Embeddings_por_lote_Test extends TestCase
             'Con una tanda viva no se abre otra.'
         );
         Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+        Queue::assertNotPushed(GenerateArticleEmbeddingsBatchJob::class);
 
         // Y ahora la misma tanda, pero vieja: deja de bloquear y se la marca vencida.
         $this->envejecer_tanda($abierta, FinalizeEmbeddingRun::MINUTOS_PARA_VENCER + 5);
@@ -691,7 +698,12 @@ class Embeddings_por_lote_Test extends TestCase
             EmbeddingRun::where('user_id', $this->comercio->id)->count(),
             'Y recién ahí se abre la tanda nueva.'
         );
-        Queue::assertPushed(GenerateArticleEmbeddingJob::class, 1);
+        Queue::assertPushed(GenerateArticleEmbeddingsBatchJob::class, 1);
+        $this->assertSame(
+            1,
+            $this->cantidad_de_articulos_en_lotes(),
+            'El comando despacha los artículos pendientes agrupados en un job de lote (1 en total).'
+        );
     }
 
     /**
@@ -744,5 +756,23 @@ class Embeddings_por_lote_Test extends TestCase
             EmbeddingRun::find($tanda->id)->status,
             'Un job muerto no deja la tanda colgada: cierra por contadores, no por vencimiento.'
         );
+    }
+
+    /**
+     * Suma los artículos que viajan en todos los GenerateArticleEmbeddingsBatchJob empujados al fake.
+     * Antes el comando empujaba un GenerateArticleEmbeddingJob por artículo; ahora los agrupa por lote
+     * (misión embeddings-lote-cola) y la cantidad de artículos se lee de `get_article_ids()`.
+     *
+     * @return int
+     */
+    protected function cantidad_de_articulos_en_lotes()
+    {
+        $cantidad = 0;
+
+        foreach (Queue::pushed(GenerateArticleEmbeddingsBatchJob::class) as $lote) {
+            $cantidad += count($lote->get_article_ids());
+        }
+
+        return $cantidad;
     }
 }

@@ -3,7 +3,10 @@
 namespace App\Jobs;
 
 use App\Events\ArticleEmbeddingsBatchGenerated;
+use App\Http\Controllers\Helpers\BackgroundProcessHelper;
 use App\Models\EmbeddingRun;
+use App\Services\ArticleEmbeddingBatchProcessor;
+use App\Services\ColaDeEmbeddings;
 use Carbon\Carbon;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -67,6 +70,17 @@ class FinalizeEmbeddingRun implements ShouldQueue
     const MINUTOS_PARA_VENCER = 20;
 
     /**
+     * Segundos de plazo que suma cada lote de `ArticleEmbeddingBatchProcessor::TAMANO_LOTE` artículos de
+     * la tanda al plazo de vencimiento (misión embeddings-lote-cola).
+     *
+     * 🔴 Con los 20 minutos fijos una tanda de 22.700 artículos "vencía" aunque siguiera avanzando
+     * (con un solo worker, 227 lotes tardan bastante más). Ahora el plazo es el MAYOR entre
+     * MINUTOS_PARA_VENCER y `ceil(total_jobs / 100) × 30 s`: 22.700 artículos → 114 minutos, y una tanda
+     * chica sigue venciendo a los 20.
+     */
+    const SEGUNDOS_POR_LOTE = 30;
+
+    /**
      * Segundos de espera cuando la tanda todavía no cerró.
      *
      * 🔴 En la práctica esto NO son quince segundos, son hasta un minuto largo, y conviene
@@ -90,6 +104,10 @@ class FinalizeEmbeddingRun implements ShouldQueue
      */
     public function __construct(int $embedding_run_id)
     {
+        // Cola propia de embeddings (misión embeddings-lote-cola): todo lo de embeddings, el finalizador
+        // incluido, deja de pasar por `default`. Null (= `default`) si el interruptor está apagado.
+        $this->queue = ColaDeEmbeddings::cola_para_despachar();
+
         $this->embedding_run_id = $embedding_run_id;
     }
 
@@ -208,7 +226,11 @@ class FinalizeEmbeddingRun implements ShouldQueue
             return Carbon::parse($run->updated_at)->addMinutes(60);
         }
 
-        return Carbon::parse($run->created_at)->addMinutes(self::MINUTOS_PARA_VENCER);
+        // Plazo base y plazo proporcional al tamaño de la tanda (30 s por cada lote de artículos).
+        $segundos_base = self::MINUTOS_PARA_VENCER * 60;
+        $segundos_por_tamano = (int) ceil(((int) $run->total_jobs) / ArticleEmbeddingBatchProcessor::TAMANO_LOTE) * self::SEGUNDOS_POR_LOTE;
+
+        return Carbon::parse($run->created_at)->addSeconds(max($segundos_base, $segundos_por_tamano));
     }
 
     /**
@@ -231,6 +253,10 @@ class FinalizeEmbeddingRun implements ShouldQueue
         $run->notificado_at  = Carbon::now();
         $run->save();
 
+        // Cierra el proceso visible de la tanda (si lo tiene) ANTES del corte por origen `prueba`: el
+        // comerciante ve el proceso terminado aunque el aviso no se emita. Devuelve si había proceso.
+        $con_proceso = self::cerrar_proceso_visible($run, $status);
+
         /*
          * Cero generados y no se avisa nada. Es el corazón de todo esto: la corrida agendada
          * cada treinta minutos encuentra artículos "pendientes" por el filtro
@@ -251,11 +277,74 @@ class FinalizeEmbeddingRun implements ShouldQueue
             return;
         }
 
+        // `con_proceso` le dice a la SPA que el aviso ya lo da la pantalla de procesos y no muestre el
+        // toast (el evento se sigue emitiendo: el dashboard de WhatsApp lo usa para refrescar).
         broadcast(new ArticleEmbeddingsBatchGenerated(
             $run->user_id,
             (int) $run->generados,
-            (string) $run->origen
+            (string) $run->origen,
+            $con_proceso
         ));
+    }
+
+    /**
+     * Cierra el proceso de "Procesos en segundo plano" de la tanda, si lo tiene (misión
+     * embeddings-lote-cola): lo crea el comando para las tandas de 100 artículos o más.
+     *
+     *  - Sin vectores nuevos y con fallados → `fallar` con un mensaje que tranquiliza (se reintenta solo).
+     *  - Cualquier otro caso → `completar` con `{preparados, al_dia, con_error}` y, si quedaron
+     *    artículos sin terminar (la tanda venció), además `pendientes` y la etapa que explica que se
+     *    completan en la pasada siguiente. Vencer no es fallar: el proceso se completa con lo que haya.
+     *
+     * `completar` y `fallar` son idempotentes y nunca lanzan; encontrar el proceso tampoco. Es público y
+     * estático porque también lo usa el comando `articles:generate-embeddings` al marcar vencida a una
+     * tanda vieja (su proceso tiene que cerrarse igual).
+     *
+     * @param EmbeddingRun $run    Tanda ya guardada como cerrada.
+     * @param string       $status 'completada' | 'vencida'.
+     *
+     * @return bool true si la tanda tenía un proceso visible (abierto o ya cerrado).
+     */
+    public static function cerrar_proceso_visible(EmbeddingRun $run, string $status): bool
+    {
+        // Se busca también el cerrado: `con_proceso` tiene que ser true aunque otro lo haya cerrado antes.
+        $proceso = BackgroundProcessHelper::por_referencia($run, false);
+
+        if (is_null($proceso)) {
+            return false;
+        }
+
+        // Números finales de la tanda, con los nombres que lee el comerciante.
+        $resultado = [
+            'preparados' => (int) $run->generados,
+            'al_dia'     => (int) $run->salteados,
+            'con_error'  => (int) $run->fallados,
+        ];
+
+        // Artículos que nunca llegaron a terminar (sólo hay si la tanda venció).
+        $pendientes = max(0, (int) $run->total_jobs - (int) $run->terminados);
+
+        if ((int) $run->generados < 1 && (int) $run->fallados > 0) {
+            BackgroundProcessHelper::fallar(
+                $proceso,
+                'No se pudo preparar la búsqueda inteligente; el sistema lo reintenta solo.',
+                $resultado
+            );
+
+            return true;
+        }
+
+        if ($status === 'vencida' && $pendientes > 0) {
+            $resultado['pendientes'] = $pendientes;
+
+            BackgroundProcessHelper::completar($proceso, $resultado, 'Lo que faltó se completa en la próxima pasada');
+
+            return true;
+        }
+
+        BackgroundProcessHelper::completar($proceso, $resultado);
+
+        return true;
     }
 
     /**
@@ -266,13 +355,16 @@ class FinalizeEmbeddingRun implements ShouldQueue
      * cada quince segundos se comería el presupuesto y moriría antes de poder cerrar nada. Es
      * el mismo patrón que usa FinalizeArticleImport cuando le faltan chunks.
      *
+     * La cola NO se copia de esta instancia: la instancia nueva la toma de ColaDeEmbeddings en su
+     * constructor. Así un finalizador viejo serializado en `default` (queue null) se muda solo a la cola
+     * propia en su primer re-despacho.
+     *
      * @return void
      */
     protected function volver_a_intentar(): void
     {
         self::dispatch($this->embedding_run_id)
             ->delay(Carbon::now()->addSeconds(self::SEGUNDOS_DE_ESPERA))
-            ->onConnection($this->connection)
-            ->onQueue($this->queue);
+            ->onConnection($this->connection);
     }
 }

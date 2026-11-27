@@ -143,14 +143,7 @@ class ArticleEmbeddingService
          * gasta nada. Pasa por acá también la búsqueda del bot (`search_similar_articles`), que por eso
          * respeta el mismo corte y también puede abrirlo.
          */
-        $corte = EmbeddingsCredencialCorte::estado();
-        if ($corte !== null) {
-            throw new EmbeddingsCredencialRechazadaException(
-                'ArticleEmbeddingService: error HTTP '.(int) ($corte['status'] ?? 0).' en OpenAI.'
-                .(! empty($corte['mensaje']) ? ' '.$corte['mensaje'] : '')
-                .' (corte de credencial abierto desde '.(string) ($corte['desde'] ?? '?').'; no se llamó a OpenAI.)'
-            );
-        }
+        $this->verificar_corte_de_credencial();
 
         $http = $this->build_http_client();
         $reserva = $proceso === self::PROCESO_ARTICULOS
@@ -163,35 +156,7 @@ class ArticleEmbeddingService
         ]);
 
         if ($response->failed()) {
-            // Solo se libera la reserva si OpenAI rechazó la llamada de forma explícita.
-            if ($reserva !== null && in_array($response->status(), [400, 401, 403, 404, 413, 422, 429], true)) {
-                CupoEmbeddingsDePrueba::conciliar($reserva, 0);
-            }
-
-            // Extraer mensaje de error de OpenAI si está disponible.
-            $error_body  = $response->json();
-            $error_msg   = '';
-
-            if (is_array($error_body) && isset($error_body['error']['message'])) {
-                $error_msg = (string) $error_body['error']['message'];
-            }
-
-            $mensaje_de_error = 'ArticleEmbeddingService: error HTTP '.$response->status().' en OpenAI.'
-                .($error_msg !== '' ? ' '.$error_msg : '');
-
-            /*
-             * 🔴 Un 401/403 con cuerpo de OpenAI o un 429 `insufficient_quota` es PERMANENTE: se abre el
-             * corte y se lanza la excepción específica, que el job NO reintenta. Un 403/401 sin ese cuerpo
-             * (HTML de un proxy/WAF), un 5xx, un timeout o un 429 de rate limit NO abren nada y siguen el
-             * camino de siempre (RuntimeException → reintento). Ver EmbeddingsCredencialCorte.
-             */
-            if (EmbeddingsCredencialCorte::debe_abrir((int) $response->status(), $error_body)) {
-                EmbeddingsCredencialCorte::abrir((int) $response->status(), $error_msg);
-
-                throw new EmbeddingsCredencialRechazadaException($mensaje_de_error);
-            }
-
-            throw new \RuntimeException($mensaje_de_error);
+            $this->lanzar_por_respuesta_fallida($response, $reserva, 1);
         }
 
         /*
@@ -221,6 +186,307 @@ class ArticleEmbeddingService
         }
 
         return $embedding;
+    }
+
+    /**
+     * Lanza la excepción del corte por credencial rechazada si hay uno abierto (misión
+     * embeddings-corte-credencial-20261123). Es la guarda que comparten `generate_embedding()` y
+     * `generate_embeddings_batch()`: va ANTES de reservar cupo de prueba y de armar el cliente HTTP,
+     * así que con el corte abierto no se llama a OpenAI ni se gasta nada.
+     *
+     * @return void
+     *
+     * @throws EmbeddingsCredencialRechazadaException Si hay un corte abierto.
+     */
+    protected function verificar_corte_de_credencial(): void
+    {
+        // Estado del corte (null si no hay ninguno abierto).
+        $corte = EmbeddingsCredencialCorte::estado();
+
+        if ($corte !== null) {
+            throw new EmbeddingsCredencialRechazadaException(
+                'ArticleEmbeddingService: error HTTP '.(int) ($corte['status'] ?? 0).' en OpenAI.'
+                .(! empty($corte['mensaje']) ? ' '.$corte['mensaje'] : '')
+                .' (corte de credencial abierto desde '.(string) ($corte['desde'] ?? '?').'; no se llamó a OpenAI.)'
+            );
+        }
+    }
+
+    /**
+     * Traduce una respuesta fallida de OpenAI a la excepción que corresponde y la lanza. Es el manejo
+     * de error que comparten `generate_embedding()` (un texto) y `generate_embeddings_batch()` (una
+     * lista): se extrajo para no duplicarlo y que los dos abran el corte de credencial igual.
+     *
+     * - Libera la reserva del cupo de prueba SÓLO si OpenAI rechazó el pedido de forma explícita
+     *   (4xx de la lista); con un 5xx o un timeout el resultado es incierto y la reserva se mantiene.
+     * - 401/403 con cuerpo de OpenAI o 429 `insufficient_quota` es PERMANENTE: abre el corte y lanza
+     *   EmbeddingsCredencialRechazadaException (el job NO la reintenta).
+     * - Cualquier otra cosa lanza \RuntimeException con el STATUS HTTP COMO CÓDIGO (`getCode()`): así el
+     *   procesador de lotes distingue un 400/413/422 (texto inválido: aísla y reintenta cada artículo
+     *   solo) de un 429 de rate limit o un 5xx (transitorio, reintenta el lote entero).
+     *
+     * @param \Illuminate\Http\Client\Response $response Respuesta con error (`failed()` es true).
+     * @param int|null $reserva  Id de la prueba con tokens reservados, o null si no hay reserva.
+     * @param int      $llamadas Cantidad de textos del pedido (la reserva fue de `llamadas × tope`).
+     *
+     * @return void
+     *
+     * @throws EmbeddingsCredencialRechazadaException
+     * @throws \RuntimeException
+     */
+    protected function lanzar_por_respuesta_fallida($response, $reserva, int $llamadas): void
+    {
+        // Solo se libera la reserva si OpenAI rechazó la llamada de forma explícita.
+        if ($reserva !== null && in_array($response->status(), [400, 401, 403, 404, 413, 422, 429], true)) {
+            CupoEmbeddingsDePrueba::conciliar($reserva, 0, $llamadas);
+        }
+
+        // Extraer mensaje de error de OpenAI si está disponible.
+        $error_body = $response->json();
+        $error_msg  = '';
+
+        if (is_array($error_body) && isset($error_body['error']['message'])) {
+            $error_msg = (string) $error_body['error']['message'];
+        }
+
+        $mensaje_de_error = 'ArticleEmbeddingService: error HTTP '.$response->status().' en OpenAI.'
+            .($error_msg !== '' ? ' '.$error_msg : '');
+
+        /*
+         * 🔴 Un 401/403 con cuerpo de OpenAI o un 429 `insufficient_quota` es PERMANENTE: se abre el
+         * corte y se lanza la excepción específica, que el job NO reintenta. Un 403/401 sin ese cuerpo
+         * (HTML de un proxy/WAF), un 5xx, un timeout o un 429 de rate limit NO abren nada y siguen el
+         * camino de siempre (RuntimeException → reintento). Ver EmbeddingsCredencialCorte.
+         */
+        if (EmbeddingsCredencialCorte::debe_abrir((int) $response->status(), $error_body)) {
+            EmbeddingsCredencialCorte::abrir((int) $response->status(), $error_msg);
+
+            throw new EmbeddingsCredencialRechazadaException($mensaje_de_error);
+        }
+
+        throw new \RuntimeException($mensaje_de_error, (int) $response->status());
+    }
+
+    /**
+     * Genera los vectores de una LISTA de textos con UN solo pedido a OpenAI (misión
+     * embeddings-lote-cola). Es la versión por lote de `generate_embedding()` para indexar el
+     * catálogo: 22 mil artículos pasan de 22 mil pedidos a unos 227.
+     *
+     * Mismo orden de guardas que el método de un texto: corte de credencial → cupo de prueba → POST.
+     * El `input` viaja como lista (OpenAI acepta hasta 2048 entradas y ~300 mil tokens por pedido; el
+     * procesador manda 100 como mucho) y la respuesta trae un `data[]` con un `index` por texto que
+     * NO tiene por qué venir en orden: cada vector se devuelve en la posición de su texto. Si un
+     * elemento no trae `index` se usa su posición.
+     *
+     * 🔴 EL CONSUMO SE REGISTRA DE A UNA FILA POR ARTÍCULO. OpenAI devuelve un solo
+     * `usage.prompt_tokens` para todo el pedido; para no perder el "consumo por artículo"
+     * (`ai_token_usages.referencia_id`) se reparte proporcional al largo de cada texto (ver
+     * `repartir_tokens()`), exacto: la suma de las filas es lo que OpenAI cobró. Con un lote de uno
+     * queda idéntico a antes (una fila con todo el consumo). Un pedido pagado y después descartado
+     * (p. ej. vector ausente) igual registra: se pagó.
+     *
+     * Cupo de prueba: reserva `cantidad de textos × tope por llamada` y concilia contra eso.
+     *
+     * @param array<int, string> $textos         Textos no vacíos, en el orden de los artículos.
+     * @param int                $user_id        Dueño al que se le imputa el consumo.
+     * @param array<int, int>    $referencia_ids Id del artículo de cada texto (misma cantidad y orden).
+     *
+     * @return array<int, array<int, float>> Un vector por texto, en el mismo orden que `$textos`.
+     *
+     * @throws EmbeddingsCredencialRechazadaException Credencial rechazada o corte abierto.
+     * @throws \App\Exceptions\CupoEmbeddingsDePruebaException Sin cupo en la prueba gratuita.
+     * @throws \RuntimeException Error de la API (con el status como código) o respuesta inesperada.
+     */
+    public function generate_embeddings_batch(array $textos, int $user_id, array $referencia_ids): array
+    {
+        // Sin textos no hay nada que pedir (el procesador ya filtra los vacíos).
+        $textos         = array_values($textos);
+        $referencia_ids = array_values($referencia_ids);
+
+        if (empty($textos)) {
+            return [];
+        }
+
+        // Cantidad de textos del pedido: define la reserva del cupo de prueba.
+        $cantidad = count($textos);
+
+        $this->verificar_corte_de_credencial();
+
+        // Timeout de 60 s (el de un texto es 30): el pedido lleva hasta 100 textos.
+        $http    = $this->build_http_client(60);
+        $reserva = CupoEmbeddingsDePrueba::comprobar($user_id, true, $cantidad);
+
+        $response = $http->post(self::OPENAI_EMBEDDINGS_URL, [
+            'model' => self::EMBEDDING_MODEL,
+            'input' => $textos,
+        ]);
+
+        if ($response->failed()) {
+            $this->lanzar_por_respuesta_fallida($response, $reserva, $cantidad);
+        }
+
+        // La llamada salió bien (se pagó): se registra el consumo repartido antes de validar nada.
+        $this->registrar_consumo_repartido($response->json(), $user_id, $textos, $referencia_ids);
+
+        $tokens = $response->json('usage.prompt_tokens');
+        if ($reserva !== null && is_int($tokens) && $tokens > 0) {
+            CupoEmbeddingsDePrueba::conciliar($reserva, $tokens, $cantidad);
+        }
+
+        // Vectores por índice de entrada.
+        $data    = $response->json('data');
+        $vectores = [];
+
+        if (is_array($data)) {
+            foreach (array_values($data) as $posicion => $elemento) {
+                if (! is_array($elemento)) {
+                    continue;
+                }
+
+                $indice = isset($elemento['index']) && is_int($elemento['index']) ? $elemento['index'] : $posicion;
+
+                if (isset($elemento['embedding']) && is_array($elemento['embedding']) && ! empty($elemento['embedding'])) {
+                    $vectores[$indice] = $elemento['embedding'];
+                }
+            }
+        }
+
+        // Un vector ausente para cualquier índice es un error del lote entero (no se adivina).
+        $resultado = [];
+        for ($i = 0; $i < $cantidad; $i++) {
+            if (! isset($vectores[$i])) {
+                throw new \RuntimeException(
+                    'ArticleEmbeddingService: respuesta inesperada de OpenAI; falta el vector del texto '.$i.' del lote.'
+                );
+            }
+
+            $resultado[] = $vectores[$i];
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * Registra el consumo de un pedido por lote repartiéndolo entre sus artículos: una fila de
+     * `ai_token_usages` por artículo (`referencia_id` = artículo), con el `usage.prompt_tokens` único
+     * de OpenAI repartido por `repartir_tokens()`. Misma traducción de campos que `registrar_consumo()`.
+     *
+     * Si OpenAI no mandó `usage.prompt_tokens` se deja UN solo aviso por lote (no uno por artículo:
+     * ensuciaría el log de un catálogo de miles) y las filas se registran en cero.
+     *
+     * @param mixed              $body           Respuesta ya decodificada de OpenAI.
+     * @param int                $user_id        Dueño al que se le imputa.
+     * @param array<int, string> $textos         Textos enviados (su largo es el peso del reparto).
+     * @param array<int, int>    $referencia_ids Artículo de cada texto, en el mismo orden.
+     *
+     * @return void
+     */
+    protected function registrar_consumo_repartido($body, int $user_id, array $textos, array $referencia_ids): void
+    {
+        if (empty($user_id)) {
+            return;
+        }
+
+        $body  = is_array($body) ? $body : [];
+        $usage = isset($body['usage']) && is_array($body['usage']) ? $body['usage'] : [];
+
+        // Mismo criterio que registrar_consumo(): el último punto donde se ve que `prompt_tokens` no vino.
+        if (! isset($usage['prompt_tokens'])) {
+            Log::channel('daily')->warning(
+                'ArticleEmbeddingService: OpenAI respondió sin usage.prompt_tokens; el consumo del lote se registra en cero.',
+                [
+                    'proceso'          => self::PROCESO_ARTICULOS,
+                    'claves_recibidas' => array_keys($usage),
+                ]
+            );
+        }
+
+        // Largo de cada texto (el peso del reparto) y total de tokens a repartir.
+        $largos = [];
+        foreach ($textos as $texto) {
+            $largos[] = mb_strlen((string) $texto);
+        }
+        $total_de_tokens = isset($usage['prompt_tokens']) ? (int) $usage['prompt_tokens'] : 0;
+        $repartido       = $this->repartir_tokens($largos, $total_de_tokens);
+
+        // Modelo tal como lo devolvió OpenAI; si no vino, el que pedimos.
+        $modelo = isset($body['model']) && (string) $body['model'] !== '' ? (string) $body['model'] : self::EMBEDDING_MODEL;
+
+        foreach ($referencia_ids as $posicion => $article_id) {
+            AiTokenUsageHelper::registrar([
+                'user_id'   => $user_id,
+                'proceso'   => self::PROCESO_ARTICULOS,
+                'proveedor' => self::PROVEEDOR,
+                'modelo'    => $modelo,
+                'usage'     => [
+                    'input_tokens'                => (int) ($repartido[$posicion] ?? 0),
+                    'output_tokens'               => 0,
+                    'cache_creation_input_tokens' => 0,
+                    'cache_read_input_tokens'     => 0,
+                ],
+                'referencia_id' => (int) $article_id,
+            ]);
+        }
+    }
+
+    /**
+     * Reparte `$total` tokens entre textos de largos `$largos`, proporcional al largo, por RESTO MAYOR
+     * y con aritmética entera (sin errores de redondeo): cada texto recibe el piso de su cuota exacta y
+     * el sobrante se da de a 1 a las fracciones más altas (desempata la posición más baja). La suma es
+     * EXACTAMENTE `$total`, que es lo que OpenAI cobró.
+     *
+     * Un largo cero (no debería pasar: el procesador no manda textos vacíos) pesa 1 para que el
+     * reparto no divida por cero. Con un solo texto devuelve `[$total]`.
+     *
+     * @param array<int, int> $largos Largo en caracteres de cada texto (`mb_strlen`).
+     * @param int             $total  Tokens a repartir (`usage.prompt_tokens`).
+     *
+     * @return array<int, int> Tokens de cada texto, en el mismo orden.
+     */
+    protected function repartir_tokens(array $largos, int $total): array
+    {
+        $largos = array_values($largos);
+
+        // Peso mínimo 1 por texto.
+        foreach ($largos as $posicion => $largo) {
+            $largos[$posicion] = max(1, (int) $largo);
+        }
+
+        // Suma de los pesos: denominador de todas las cuotas.
+        $suma = array_sum($largos);
+
+        if (empty($largos) || $suma < 1 || $total < 1) {
+            return array_fill(0, count($largos), 0);
+        }
+
+        // Piso de la cuota de cada texto y fracción que sobró (resto de la división entera).
+        $pisos  = [];
+        $restos = [];
+
+        foreach ($largos as $posicion => $largo) {
+            $pisos[$posicion]  = intdiv($total * $largo, $suma);
+            $restos[$posicion] = ($total * $largo) % $suma;
+        }
+
+        // Tokens que quedaron sin asignar por los pisos: se dan de a 1 a los restos más altos.
+        $sobrante   = $total - array_sum($pisos);
+        $posiciones = array_keys($largos);
+
+        usort($posiciones, function ($x, $y) use ($restos) {
+            if ($restos[$x] === $restos[$y]) {
+                return $x - $y;
+            }
+
+            return $restos[$y] - $restos[$x];
+        });
+
+        for ($i = 0; $i < $sobrante; $i++) {
+            $pisos[$posiciones[$i]]++;
+        }
+
+        ksort($pisos);
+
+        return array_values($pisos);
     }
 
     /**
@@ -1418,9 +1684,11 @@ class ArticleEmbeddingService
      * SupportAiSuggestionService::build_http_client() en admin-api,
      * necesario en entornos Windows/WAMP donde el CA bundle suele fallar.
      *
+     * @param int $timeout Segundos de espera del pedido (30 para un texto; 60 para un lote).
+     *
      * @return PendingRequest
      */
-    protected function build_http_client(): PendingRequest
+    protected function build_http_client(int $timeout = 30): PendingRequest
     {
         // Clave de API de OpenAI configurada en services.openai.api_key.
         $api_key = (string) config('services.openai.api_key', '');
@@ -1428,7 +1696,7 @@ class ArticleEmbeddingService
         $http = Http::withHeaders([
             'Authorization' => 'Bearer '.$api_key,
             'Content-Type'  => 'application/json',
-        ])->timeout(30);
+        ])->timeout($timeout);
 
         // Usar la misma configuración TLS que Anthropic para consistencia entre entornos.
         $verify_ssl = (bool) config('services.anthropic.verify_ssl', true);

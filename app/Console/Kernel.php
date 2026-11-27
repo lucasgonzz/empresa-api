@@ -165,6 +165,36 @@ class Kernel extends ConsoleKernel
                 ->runInBackground();
         }
 
+        // Worker de la cola propia de embeddings, en shared Y en VPS (misión embeddings-lote-cola).
+        //
+        // Los embeddings de artículos (lotes del comando, job de un artículo de los observers y el
+        // finalizador de la tanda) van a `<cola>_embeddings` para no tapar a `default`. El consumidor es
+        // ESTE scheduler en todos los entornos y no supervisor: en el shared el cron corre schedule:run y
+        // en el VPS cada cliente ya tiene el programa `_schedule` con cc-schedule-runner.sh, así que la
+        // cola nueva llega con el código, sin tocar supervisor. Por eso va FUERA del `if` del shared de
+        // más arriba.
+        //
+        // 🔴 Tres decisiones que no son obvias:
+        //  - `exec` con PREFIJO_CIERRE_DE_CANDADOS_HEREDADOS y no `command()`: en el shared un worker de
+        //    hasta 20 minutos retendría el flock del cron y haría saltear el schedule:run siguiente
+        //    entero, incluido el worker de `default` (informe 20261121-asistente-whatsapp-velocidad).
+        //  - withoutOverlapping(25) > --max-time=1200 (20 min): UN solo worker de embeddings por
+        //    instancia (cuida el rate limit de OpenAI) y debajo del SIGKILL de 30 min de Hostinger.
+        //  - when(hay pendientes): no arranca un artisan por minuto si no hay nada (el motivo por el que
+        //    el VPS apagó el worker de `default` del scheduler, ver config/queue.php).
+        // Se registra si el interruptor está prendido y el dueño tiene agentes_ia, o si quedan jobs
+        // pendientes en la cola propia (vuelta atrás sin huérfanos).
+        $cola_embeddings = \App\Services\ColaDeEmbeddings::cola_para_el_schedule($company_owner);
+        if ($cola_embeddings !== null) {
+            $schedule->exec(\App\Services\ColaDeEmbeddings::comando_del_worker($cola_embeddings))
+                ->everyMinute()
+                ->withoutOverlapping(\App\Services\ColaDeEmbeddings::MINUTOS_DEL_MUTEX)
+                ->runInBackground()
+                ->when(function () use ($cola_embeddings) {
+                    return \App\Services\ColaDeEmbeddings::hay_pendientes($cola_embeddings);
+                });
+        }
+
         // Sincronización de artículos pendientes hacia Tienda Nube solo si tiene la extensión.
         //
         // El when() es la misma consulta con la que arranca el comando (sync_to_t_n_articles del

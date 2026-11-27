@@ -3,12 +3,14 @@
 namespace App\Services;
 
 use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Jobs\GenerateArticleEmbeddingsBatchJob;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Único punto de entrada para encolar GenerateArticleEmbeddingJob (misión embedding-un-solo-job).
+ * Único punto de entrada para encolar GenerateArticleEmbeddingJob (misión embedding-un-solo-job) y, desde la
+ * misión embeddings-lote-cola, también GenerateArticleEmbeddingsBatchJob (el lote que arma el comando).
  *
  * Garantiza que cada artículo tenga, como mucho, UN job de embedding pendiente. Lo hace con una
  * marca en la base (`articles.embedding_queued_at`) que se reclama con un UPDATE condicional
@@ -83,7 +85,11 @@ class ArticleEmbeddingDispatcher
         }
 
         try {
-            Bus::dispatch(new GenerateArticleEmbeddingJob($article_id, $embedding_run_id));
+            // Cola propia de embeddings (o null = cola por defecto si el interruptor está apagado).
+            $job = new GenerateArticleEmbeddingJob($article_id, $embedding_run_id);
+            $job->onQueue(ColaDeEmbeddings::cola_para_despachar());
+
+            Bus::dispatch($job);
         } catch (\Throwable $exception) {
             // No quedó ningún job: se libera para no dejar el artículo trabado hasta el vencimiento.
             self::release($article_id);
@@ -92,6 +98,69 @@ class ArticleEmbeddingDispatcher
         }
 
         return true;
+    }
+
+    /**
+     * Encola UN job de lote con los artículos que todavía no tienen un job vigente (misión
+     * embeddings-lote-cola). Es lo que usa el comando `articles:generate-embeddings`: arma bloques de
+     * `ArticleEmbeddingBatchProcessor::TAMANO_LOTE` y los despacha por acá.
+     *
+     * Misma garantía que `dispatch_if_not_queued()`, con la misma regla de orden: consulta el corte por
+     * credencial ANTES de reclamar ninguna marca (con el corte abierto no marca ni despacha nada), y
+     * reclama la marca de CADA artículo con el mismo UPDATE atómico de siempre —uno por id: es lo que da
+     * la idempotencia exacta, un artículo con job vigente simplemente no entra al lote—. Con los
+     * reclamados despacha UN `GenerateArticleEmbeddingsBatchJob`. Si el despacho lanza, libera los que
+     * reclamó (los que ya tenían marca de otro job no se tocan) y re-lanza la excepción.
+     *
+     * @param int[]    $article_ids      IDs candidatos, en el orden en que deben viajar.
+     * @param int|null $embedding_run_id ID de la tanda a la que reportar, o null si no hay tanda.
+     *
+     * @return int Cantidad de artículos reclamados (los que quedaron en el lote); 0 si no se despachó nada.
+     */
+    public static function dispatch_batch_if_not_queued(array $article_ids, ?int $embedding_run_id = null): int
+    {
+        // Con el corte abierto no se reclama ni se despacha nada (ver dispatch_if_not_queued).
+        if (EmbeddingsCredencialCorte::abierto()) {
+            return 0;
+        }
+
+        // Momento a partir del cual una marca se considera vencida.
+        $expired_before = Carbon::now()->subMinutes(self::QUEUED_MARK_TTL_MINUTES);
+
+        // IDs cuya marca se reclamó con éxito (los que efectivamente viajan en el lote).
+        $reclamados = [];
+
+        foreach ($article_ids as $article_id) {
+            $article_id = (int) $article_id;
+
+            // Reclamo atómico por artículo: sólo una de varias llamadas simultáneas afecta la fila.
+            $claimed = DB::table('articles')
+                ->where('id', $article_id)
+                ->where(function ($query) use ($expired_before) {
+                    $query->whereNull('embedding_queued_at')
+                        ->orWhere('embedding_queued_at', '<', $expired_before);
+                })
+                ->update(['embedding_queued_at' => Carbon::now()]);
+
+            if ($claimed > 0) {
+                $reclamados[] = $article_id;
+            }
+        }
+
+        if (empty($reclamados)) {
+            return 0;
+        }
+
+        try {
+            Bus::dispatch(new GenerateArticleEmbeddingsBatchJob($reclamados, $embedding_run_id));
+        } catch (\Throwable $exception) {
+            // No quedó ningún job: se liberan SÓLO los que se reclamaron acá.
+            self::release_batch($reclamados);
+
+            throw $exception;
+        }
+
+        return count($reclamados);
     }
 
     /**
@@ -106,6 +175,44 @@ class ArticleEmbeddingDispatcher
         DB::table('articles')
             ->where('id', $article_id)
             ->update(['embedding_queued_at' => null]);
+    }
+
+    /**
+     * Libera la marca de "encolado" de varios artículos de una (el job de lote lo hace al empezar).
+     * Un solo UPDATE; sin ids no hace nada.
+     *
+     * @param int[] $article_ids IDs de los artículos.
+     *
+     * @return void
+     */
+    public static function release_batch(array $article_ids): void
+    {
+        if (empty($article_ids)) {
+            return;
+        }
+
+        DB::table('articles')
+            ->whereIn('id', array_map('intval', $article_ids))
+            ->update(['embedding_queued_at' => null]);
+    }
+
+    /**
+     * Pone la marca de "encolado" a varios artículos de una, sin condiciones (el job de lote lo usa
+     * cuando va a reintentar: el reintento pendiente cubre a todos los del lote).
+     *
+     * @param int[] $article_ids IDs de los artículos.
+     *
+     * @return void
+     */
+    public static function mark_batch_as_queued(array $article_ids): void
+    {
+        if (empty($article_ids)) {
+            return;
+        }
+
+        DB::table('articles')
+            ->whereIn('id', array_map('intval', $article_ids))
+            ->update(['embedding_queued_at' => Carbon::now()]);
     }
 
     /**
