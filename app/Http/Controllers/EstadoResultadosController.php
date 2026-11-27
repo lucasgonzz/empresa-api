@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\contabilidad\EstadoResultadosHelper;
+use App\Http\Controllers\Helpers\RangoFechasReporteHelper;
 use Illuminate\Http\Request;
 
 /**
@@ -35,6 +36,13 @@ class EstadoResultadosController extends Controller
      */
     public function index(Request $request)
     {
+        // Soporte t177: rango inválido → 422 en castellano (antes era 500 o una fecha corrida).
+        $rango_invalido = RangoFechasReporteHelper::validar($request->input('desde'), $request->input('hasta'));
+
+        if (!is_null($rango_invalido)) {
+            return $rango_invalido;
+        }
+
         // Filtros opcionales por línea (ventas, costo de mercadería, gastos, comisiones): se arman
         // acá y se pasan intactos al helper, que los reenvía tal cual a ContabilidadRepository.
         $filtros_extra = [];
