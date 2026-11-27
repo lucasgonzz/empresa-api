@@ -43,7 +43,9 @@ class Cursor_y_reanudacion_Test extends OnboardingTestCase
         $bloque = $this->bloque_de_onboarding();
 
         $this->assertStringContainsString('Pregunta en curso: historia', $bloque);
-        $this->assertStringContainsString('Se la hiciste el 23/11', $bloque);
+        // asistente-diario-recuperacion-20261127 (P1, opción A): el sistema no sabe si la pregunta llegó a hacerse (el
+        // cursor_desde es cuándo CAMBIÓ el cursor), así que dice «Pendiente desde» en vez de afirmar «Se la hiciste».
+        $this->assertStringContainsString('Pendiente desde el 23/11', $bloque);
 
         // Contesta la historia: el cursor salta a la siguiente y la fecha es nueva.
         $this->el_agente_guarda(['historia'], 'dueno/perfil.md');

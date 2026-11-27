@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Controllers\Helpers\contabilidad\ContabilidadRepository;
 use App\Http\Controllers\Helpers\contabilidad\FlujoCajaHelper;
+use App\Http\Controllers\Helpers\RangoFechasReporteHelper;
 use Illuminate\Http\Request;
 
 /**
@@ -74,6 +75,14 @@ class ReporteDetalleController extends Controller
         $desde = $request->input('desde');
         $hasta = $request->input('hasta');
         $moneda = $request->input('moneda', 'pesos');
+
+        // Soporte t177: el modal de detalle usa el mismo selector de rango; un rango inválido → 422 en
+        // castellano (antes era 500 o una fecha corrida).
+        $rango_invalido = RangoFechasReporteHelper::validar($desde, $hasta);
+
+        if (!is_null($rango_invalido)) {
+            return $rango_invalido;
+        }
 
         // Paginación (regla 03): page nunca menor a 1, per_page acotado entre 1 y el tope duro.
         $page = max(1, (int) $request->input('page', 1));

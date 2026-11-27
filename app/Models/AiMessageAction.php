@@ -263,6 +263,13 @@ class AiMessageAction extends Model
      */
     const TIPO_RENOMBRE_MASIVO = 'renombre_masivo';
 
+    /**
+     * Misión asistente-diario-20261121 (M1): DESTACAR (o quitar el destacado de) UN artículo en la tienda, el
+     * mismo efecto que la estrella del Listado (`articles.featured`). Ver PropuestaDestacadoArticuloIaHelper.
+     * 🔴 Nunca se auto-confirma.
+     */
+    const TIPO_DESTACADO_ARTICULO = 'destacado_articulo';
+
     protected $guarded = [];
 
     /**

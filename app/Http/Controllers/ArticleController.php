@@ -1110,15 +1110,8 @@ class ArticleController extends Controller
 
     function setFeatured($id) {
         $model = Article::find($id);
-        if (!is_null($model->featured)) {
-            $model->featured = null;
-        } else {
-            $models_featured = Article::where('user_id', $this->userId())
-                                        ->whereNotNull('featured')
-                                        ->get();
-            $model->featured = count($models_featured) + 1;
-        }
-        $model->save();
+        // Misión asistente-diario-20261121 (M1): la cuenta del orden vive en el helper, que usa también el asistente.
+        \App\Http\Controllers\Helpers\article\DestacadoDeArticuloHelper::alternar($model, $this->userId());
         return response()->json(['model' => $this->fullModel('Article', $model->id)], 200);
     }
 

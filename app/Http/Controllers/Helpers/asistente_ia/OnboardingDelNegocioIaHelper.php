@@ -3,10 +3,14 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
+use App\Models\AiConocimientoDelNegocio;
 use App\Models\AiConversation;
 use App\Models\AiMessage;
 use App\Models\AiTareaDelAsistente;
 use App\Models\AiTareaDelAsistenteEjecucion;
+use App\Models\Article;
+use App\Models\Client;
+use App\Models\Provider;
 use App\Models\User;
 use App\Services\AsistenteIa\HerramientasDeTareasDelAsistente;
 use Carbon\Carbon;
@@ -70,7 +74,7 @@ class OnboardingDelNegocioIaHelper
     const FALTANTES_EN_EL_BLOQUE = 5;
 
     /** Lo que hace el asistente cuando lo despierta el recordatorio (≤ 1000 caracteres: lo valida el motor). */
-    const INSTRUCCION = 'Retomá la charla para conocer el negocio del dueño: saludalo corto, recordale en una línea en qué quedaron y hacé UNA sola pregunta de los temas que faltan (están en <onboarding_del_negocio>). Recordale que puede contestarte con un audio, contándolo como le salga. Si hoy no puede, que te diga cuándo.';
+    const INSTRUCCION = 'Retomá la charla para conocer el negocio del dueño: saludalo corto, recordale en una línea lo último que te contó (está en <onboarding_del_negocio>) y hacé UNA sola pregunta de los temas que faltan (están en <onboarding_del_negocio>). Recordale que puede contestarte con un audio, contándolo como le salga. Si hoy no puede, que te diga cuándo.';
 
     /* ─────────────────────────────── lectura ─────────────────────────────── */
 
@@ -829,12 +833,15 @@ class OnboardingDelNegocioIaHelper
 
         $lineas = [];
         $lineas[] = '<onboarding_del_negocio>';
-        $lineas[] = 'Tu primer objetivo con este dueño es conocer su negocio a fondo. Llevás ' . $listos . ' de ' . $cuentas['total'] . ' temas (' . $cuentas['esenciales_listos'] . ' de ' . $cuentas['esenciales_total'] . ' esenciales). Tu tarea de seguimiento: ' . $seguimiento . '.';
+        $lineas[] = 'Objetivo: conocer su negocio a fondo. Llevás ' . $listos . ' de ' . $cuentas['total'] . ' temas (' . $cuentas['esenciales_listos'] . ' de ' . $cuentas['esenciales_total'] . ' esenciales). Seguimiento: ' . $seguimiento . '.';
 
         if ($es_primer_turno) {
 
-            $lineas[] = 'Es el PRIMER mensaje que te manda por WhatsApp: seguramente quiere probar que andás. Contestale lo que pidió, presentate en una línea, contale que querés conocer su negocio y que puede contestarte con audios largos, y hacé la primera pregunta. Corto: es WhatsApp.';
+            $lineas[] = 'Es el PRIMER mensaje por WhatsApp: contestale, presentate en una línea, contale que querés conocer su negocio (puede mandarte audios largos) y hacé la primera pregunta. Corto.';
         }
+
+        // Lo que el sistema ya tiene cargado: antes de proponer altas «de cero» hay que saber qué hay (M18).
+        $lineas[] = self::linea_de_lo_ya_cargado($owner);
 
         $en_curso = self::linea_de_pregunta_en_curso($owner, $catalogo);
 
@@ -843,10 +850,17 @@ class OnboardingDelNegocioIaHelper
             $lineas[] = $en_curso;
         }
 
+        // Lo último que contó el dueño: de ahí sale el «en qué quedaron» de una charla retomada (M17).
+        $ultimo = self::linea_de_lo_ultimo_que_conto($conocimiento);
+
+        if ($ultimo !== '') {
+
+            $lineas[] = $ultimo;
+        }
+
         $lineas[] = 'Cómo:';
-        $lineas[] = '- Charlá, no encuestes. Una pregunta por mensaje (dos como mucho si van juntas), con tus palabras y ejemplos de su rubro. Voseo, cálido y descontracturado, como un socio que recién llega.';
-        $lineas[] = '- Si te escribió por otra cosa, primero resolvé eso; al final, si viene al caso, una pregunta.';
-        $lineas[] = '- Invitalo a contestarte con audios largos, sin orden ni formato. De un audio largo sacá todo lo que sirva: puede responder varios temas de una.';
+        $lineas[] = '- Charlá, no encuestes: una pregunta por mensaje (dos si van juntas), con tus palabras y ejemplos de su rubro. Voseo, cálido. Si escribió por otra cosa, resolvé eso primero.';
+        $lineas[] = '- Invitalo a mandar audios largos: de uno sacá todo, puede responder varios temas.';
 
         if ($desatendido) {
 
@@ -854,13 +868,18 @@ class OnboardingDelNegocioIaHelper
 
         } else {
 
-            $lineas[] = '- Guardá cada respuesta con guardar_en_contexto en el archivo que dice cada tema y pasá en "temas" las claves que quedaron respondidas (pueden ser varias). Si un tema no aplica o no quiere contestarlo, conocimiento_del_negocio con accion "omitir". Si no sabe qué contestar, ayudalo a pensarlo.';
-            $lineas[] = '- Antes de preguntar un tema, si el índice muestra que su archivo ya tiene algo, abrilo: si ya está, marcalo con temas y no lo preguntes.';
-            $lineas[] = '- "Hoy no" o "preguntame el viernes a la tarde": reprogramá la tarea' . (is_null($tarea) ? '' : ' #' . $tarea->id) . ' con reprogramar_tarea_del_asistente. "No me preguntes más": conocimiento_del_negocio accion "pausar".';
+            $lineas[] = '- Guardá cada respuesta con guardar_en_contexto (archivo del tema) y "temas" con las claves respondidas, pueden ser varias. Si un tema no aplica o no quiere contestarlo: conocimiento_del_negocio accion "omitir". Si no sabe, ayudalo a pensarlo.';
+            $lineas[] = '- Si el archivo del tema ya tiene algo (mirá el índice), marcalo con temas y no lo preguntes.';
+            $lineas[] = '- "Hoy no"/"preguntame el viernes": reprogramá la tarea' . (is_null($tarea) ? '' : ' #' . $tarea->id) . ' con reprogramar_tarea_del_asistente. "No me preguntes más": conocimiento_del_negocio accion "pausar".';
         }
 
-        $lineas[] = '- Nunca guardes números que el sistema calcula (ventas, stock, saldos).';
-        $lineas[] = '- La tarea de seguimiento la maneja el sistema: no la canceles.';
+        // Las cuatro reglas de la conversación real (A6, San Blas 26/11): encaje, plata, datos y cortesías.
+        $lineas[] = '- Si la respuesta no encaja con la pregunta, sumala donde encaja o repreguntá.';
+        $lineas[] = '- Plata (fiado, señas, cambios): repetí en UNA frase lo que entendiste y guardá con su sí; si es ambiguo, repreguntá con opciones, nunca un «no te entendí» solo.';
+        $lineas[] = '- Anotá y repetí sólo lo que dijo, sin agregar datos.';
+        $lineas[] = '- Cerrada la tanda, ante una cortesía contestá una sola vez, corto: no te despidas en cada mensaje.';
+        $lineas[] = '- No guardes números que calcula el sistema (ventas, stock, saldos).';
+        $lineas[] = '- La tarea la maneja el sistema: no la canceles.';
         $lineas[] = 'Faltan (en este orden):';
 
         $faltantes = [];
@@ -957,7 +976,61 @@ class OnboardingDelNegocioIaHelper
             return $base . ' Hacé ésta.';
         }
 
-        return $base . ' Se la hiciste el ' . $desde->format('d/m') . ' y no la contestó: retomá desde ahí con una línea («la otra vez te preguntaba…»), sin empezar de cero.';
+        /*
+         * 🔴 `cursor_desde` es cuándo CAMBIÓ el cursor (al marcar el tema anterior), no cuándo se hizo la pregunta: en San Blas
+         * pasó a la siguiente al cerrar la tanda, y al día siguiente el bloque afirmó «Se la hiciste» de algo que nunca se preguntó.
+         * Lo único que se sabe es desde cuándo está pendiente.
+         */
+        return $base . ' Pendiente desde el ' . $desde->format('d/m') . ' (puede que no se la hayas llegado a hacer): hacela con tus palabras, sin decir que ya se la preguntaste.';
+    }
+
+    /**
+     * «Lo último que te contó: <clave> (dd/mm)»: el último tema que el dueño contó (sabido, por fecha de marca), o ''
+     * si todavía no contó ninguno. Es el dato del «en qué quedaron» cuando el recordatorio retoma la charla en una
+     * conversación nueva, sin el historial.
+     *
+     * @param  array  $conocimiento  ConocimientoDelNegocioIaHelper::estado().
+     * @return string
+     */
+    protected static function linea_de_lo_ultimo_que_conto(array $conocimiento): string
+    {
+        $ultima_clave = null;
+        $ultima_fecha = null;
+
+        foreach ($conocimiento['temas'] as $clave => $tema) {
+
+            // Sólo lo que contó (sabido, aunque ya esté viejo): no lo omitido, lo que falta ni lo que vino del formulario de la app.
+            if (!in_array($tema['estado'], [AiConocimientoDelNegocio::ESTADO_SABIDO, ConocimientoDelNegocioIaHelper::VIEJO], true) || empty($tema['marcado_at']) || $tema['fuente'] === 'cuestionario') {
+
+                continue;
+            }
+
+            $marcado = Carbon::parse($tema['marcado_at']);
+
+            if (is_null($ultima_fecha) || $marcado->gt($ultima_fecha)) {
+
+                $ultima_clave = $clave;
+                $ultima_fecha = $marcado;
+            }
+        }
+
+        return is_null($ultima_clave) ? '' : 'Lo último que te contó: ' . $ultima_clave . ' (' . $ultima_fecha->format('d/m') . ').';
+    }
+
+    /**
+     * «Ya cargado: N artículos activos, M clientes, P proveedores.»: lo que el negocio ya tiene en el sistema, contado
+     * en el momento (M18, Plazoleta 26/11: el asistente propuso cargar el catálogo «de cero» sobre uno ya importado).
+     *
+     * @param  \App\Models\User  $owner
+     * @return string
+     */
+    protected static function linea_de_lo_ya_cargado(User $owner): string
+    {
+        $articulos = Article::where('user_id', (int) $owner->id)->where('status', 'active')->count();
+        $clientes = Client::where('user_id', (int) $owner->id)->count();
+        $proveedores = Provider::where('user_id', (int) $owner->id)->count();
+
+        return 'Ya cargado: ' . $articulos . ' artículos activos, ' . $clientes . ' clientes, ' . $proveedores . ' proveedores';
     }
 
     /* ─────────────────────────────── estados hacia afuera ─────────────────────────────── */

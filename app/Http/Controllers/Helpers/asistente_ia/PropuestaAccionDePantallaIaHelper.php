@@ -11,6 +11,9 @@ use App\Models\AiMessage;
 use App\Models\AiMessageAction;
 use App\Models\Budget;
 use App\Models\Client;
+use App\Models\Order;
+use App\Models\ProviderOrder;
+use App\Models\ProviderOrderStatus;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -108,6 +111,20 @@ class PropuestaAccionDePantallaIaHelper
         if (!PermisosIaHelper::es_admin($persona)) {
 
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
+        }
+
+        // Un pedido de la tienda se lee por el N° que ve el dueño, no por su id (A3, ver pedido_resuelto()).
+        if (preg_match(self::RUTA_DE_PEDIDO, Catalogo::normalizar_ruta($ruta), $m_pedido)) {
+
+            $pedido = self::pedido_resuelto($contexto, $m_pedido[1], $parametros, 'No consulté nada.');
+
+            if (RespuestaDeCargaIa::es_negativa($pedido)) {
+
+                return $pedido;
+            }
+
+            $ruta = 'api/order/{order}';
+            $parametros = ['order' => $pedido['id']];
         }
 
         $resuelta = self::resolver_para($contexto, 'GET', $ruta, $parametros, $consulta);
@@ -221,6 +238,21 @@ class PropuestaAccionDePantallaIaHelper
             $ruta = 'api/budget/{budget}';
             $parametros = ['budget' => $resuelto['id']];
             $descripcion = $resuelto['descripcion'];
+        }
+
+        // Un pedido de la tienda se resuelve por el N° que ve el dueño y la tarjeta muestra N° e id (A3, ver pedido_resuelto()).
+        if (preg_match(self::RUTA_DE_PEDIDO, Catalogo::normalizar_ruta($ruta), $m)) {
+
+            $resuelto = self::pedido_resuelto($contexto, $m[1], $parametros, 'No se borró nada.');
+
+            if (RespuestaDeCargaIa::es_negativa($resuelto)) {
+
+                return $resuelto;
+            }
+
+            $ruta = 'api/order/{order}';
+            $parametros = ['order' => $resuelto['id']];
+            $descripcion = 'Borrar ' . $resuelto['descripcion'];
         }
 
         // El aviso de la tarjeta viaja también en la respuesta (armar_tarjeta lo suma como `aviso`).
@@ -429,6 +461,200 @@ class PropuestaAccionDePantallaIaHelper
     }
 
     /**
+     * `DELETE|GET api/order/{order}`, con el {param} literal o con el número metido en la ruta.
+     */
+    const RUTA_DE_PEDIDO = '#^api/order/(\{[A-Za-z_]+\}|\d+)$#';
+
+    /**
+     * El pedido de la tienda que se quiere leer o borrar, resuelto del dueño, o la respuesta negativa (misión
+     * asistente-diario-recuperacion-20261127, CA2, A3 del informe de la semana).
+     *
+     * 🔴 EL CASO REAL (Truvari, msgs 831-836). «Dame el detalle del pedido N° 78» devolvió el pedido N° 77 y
+     * «borralo» ejecutó `DELETE api/order/78` anunciando «el pedido N° 77»: el dueño ve el N° (`orders.num`, el
+     * que dice el aviso de pedido nuevo) y el asistente pasaba ese número al router como si fuera el id. Es el
+     * mismo patrón que el presupuesto (borrado_de_presupuesto(), B8):
+     *
+     *  - `parametros.numero` va SOLO por el N° que ve la persona y `parametros.id` SOLO por id.
+     *  - `parametros.order` (o el número metido en la ruta) puede ser cualquiera de los dos: si es el N° de uno
+     *    y el id de OTRO, se pregunta, nombrando los dos; nunca se adivina cuál se toca.
+     *  - El N° visible es `num` y, si el pedido no lo tiene, su id (igual que el aviso de pedido nuevo).
+     *  - Sólo pedidos del dueño: uno de otro negocio no existe para esta herramienta.
+     *  - La descripción la arma el sistema: «el pedido N° 78 (id 79) de <comprador> ($ total)», lo que la persona
+     *    tiene que leer antes de confirmar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $de_la_ruta  El {param} literal o el número que vino en la ruta.
+     * @param  array  $parametros
+     * @param  string  $cierre  Lo que se aclara al final de un error («No se borró nada.»).
+     * @return array{id: int, numero: int, descripcion: string}|array
+     */
+    protected static function pedido_resuelto(ContextoDeCargaIa $contexto, $de_la_ruta, array $parametros, $cierre)
+    {
+        // Lo que dijo la persona, según de dónde viene: sólo uno de los tres se usa.
+        $por_numero = null;
+        $por_id = null;
+        $cualquiera = null;
+
+        if (isset($parametros['numero']) && is_numeric($parametros['numero'])) {
+
+            $por_numero = (int) $parametros['numero'];
+
+        } elseif (isset($parametros['id']) && is_numeric($parametros['id'])) {
+
+            $por_id = (int) $parametros['id'];
+
+        } elseif (isset($parametros['order']) && is_numeric($parametros['order'])) {
+
+            $cualquiera = (int) $parametros['order'];
+
+        } elseif (ctype_digit((string) $de_la_ruta)) {
+
+            $cualquiera = (int) $de_la_ruta;
+        }
+
+        if (is_null($por_numero) && is_null($por_id) && is_null($cualquiera)) {
+
+            return RespuestaDeCargaIa::faltan(['el N° del pedido de la tienda (va en parametros como {"numero": N}; el id sólo si una consulta te lo devolvió, como {"id": N})']);
+        }
+
+        // Los pedidos del dueño: nunca los de otro negocio.
+        $del_dueno = function () use ($contexto) {
+            return Order::where('user_id', $contexto->owner_id);
+        };
+
+        // El pedido cuyo N° VISIBLE es $numero: su `num` o, si no tiene, su id (como el aviso de pedido nuevo).
+        $con_numero_visible = function ($numero) use ($del_dueno) {
+
+            $pedido = $del_dueno()->where('num', $numero)->orderBy('id', 'DESC')->first();
+
+            if (is_null($pedido)) {
+
+                $pedido = $del_dueno()->where('id', $numero)->where(function ($sin_num) {
+                    $sin_num->whereNull('num')->orWhere('num', 0);
+                })->first();
+            }
+
+            return $pedido;
+        };
+
+        if (!is_null($por_numero)) {
+
+            $pedido = $con_numero_visible($por_numero);
+
+        } elseif (!is_null($por_id)) {
+
+            $pedido = $del_dueno()->where('id', $por_id)->first();
+
+        } else {
+
+            $con_ese_numero = $con_numero_visible($cualquiera);
+            $con_ese_id = $del_dueno()->where('id', $cualquiera)->first();
+
+            if (!is_null($con_ese_numero) && !is_null($con_ese_id) && (int) $con_ese_numero->id !== (int) $con_ese_id->id) {
+
+                return RespuestaDeCargaIa::error(
+                    'El ' . $cualquiera . ' puede ser dos pedidos distintos: el N° ' . $cualquiera . ' (id ' . (int) $con_ese_numero->id . ', de ' . self::comprador_del_pedido($con_ese_numero)
+                    . ') o el que tiene id ' . $cualquiera . ', que es el N° ' . self::numero_visible_del_pedido($con_ese_id) . ' (de ' . self::comprador_del_pedido($con_ese_id) . '). '
+                    . $cierre . ' Volvé a llamar con parametros {"numero": N} si es el número que ve la persona, o {"id": N} si es el id que devolvió una consulta.'
+                );
+            }
+
+            $pedido = !is_null($con_ese_numero) ? $con_ese_numero : $con_ese_id;
+        }
+
+        if (is_null($pedido)) {
+
+            $buscado = !is_null($por_numero) ? $por_numero : (!is_null($por_id) ? $por_id : $cualquiera);
+
+            return RespuestaDeCargaIa::error('No encontré el pedido N° ' . $buscado . ' entre los de este negocio. ' . $cierre);
+        }
+
+        return [
+            'id'          => (int) $pedido->id,
+            'numero'      => self::numero_visible_del_pedido($pedido),
+            'descripcion' => 'el pedido N° ' . self::numero_visible_del_pedido($pedido) . ' (id ' . (int) $pedido->id . ') de ' . self::comprador_del_pedido($pedido)
+                . ' (' . FormatoIaHelper::monto((float) $pedido->total) . ')',
+        ];
+    }
+
+    /**
+     * El N° de un pedido como lo ve el dueño: su `num` o, si no tiene, su id (igual que AvisosDelDuenoIaHelper).
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return int
+     */
+    protected static function numero_visible_del_pedido($pedido)
+    {
+        return empty($pedido->num) ? (int) $pedido->id : (int) $pedido->num;
+    }
+
+    /**
+     * El comprador de un pedido de la tienda (nombre y apellido), o «un comprador» si no se lo conoce.
+     *
+     * @param  \App\Models\Order  $pedido
+     * @return string
+     */
+    protected static function comprador_del_pedido($pedido)
+    {
+        $comprador = $pedido->buyer;
+
+        $nombre = is_null($comprador) ? '' : trim(trim((string) $comprador->name) . ' ' . trim((string) $comprador->surname));
+
+        return $nombre === '' ? 'un comprador' : $nombre;
+    }
+
+    /**
+     * El freno de «pasar a Recibido» una compra que no tiene artículos (misión
+     * asistente-diario-recuperacion-20261127, CA3, A4 del informe de la semana).
+     *
+     * 🔴 EL CASO REAL (Pescamayorista, msgs 373-405). Una compra con escaneo quedó SIN renglones (confirmar un
+     * escaneo saltea los renglones sin artículo asociado ni alta) y el asistente le indicó al dueño pasarla a
+     * «Recibido»: una compra recibida sin artículos no carga stock y nadie se entera. Acá sólo se frena el
+     * PASO a Recibido (la compra todavía no estaba Recibida) de una compra del dueño sin ningún artículo: el
+     * resto de las ediciones de una compra no se toca. El estado se busca por NOMBRE, nunca por id.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $parametros_ligados  Los {param} que ligó el router (el id de la compra).
+     * @param  array  $cuerpo
+     * @return array|null  La respuesta negativa si hay que frenar; null si sigue.
+     */
+    protected static function compra_vacia_a_recibido(ContextoDeCargaIa $contexto, array $parametros_ligados, array $cuerpo)
+    {
+        if (!isset($cuerpo['provider_order_status_id']) || !is_numeric($cuerpo['provider_order_status_id'])) {
+
+            return null;
+        }
+
+        $id_de_recibido = ProviderOrderStatus::where('name', 'Recibido')->value('id');
+
+        if (is_null($id_de_recibido) || (int) $cuerpo['provider_order_status_id'] !== (int) $id_de_recibido) {
+
+            return null;
+        }
+
+        $ligado = reset($parametros_ligados);
+        $compra_id = is_object($ligado) ? (int) $ligado->id : (int) $ligado;
+
+        $compra = ProviderOrder::where('user_id', $contexto->owner_id)->where('id', $compra_id)->first();
+
+        // La tenencia ya la miró el router/verificador; una compra que no se encuentra no se frena acá.
+        if (is_null($compra) || (int) $compra->provider_order_status_id === (int) $id_de_recibido) {
+
+            return null;
+        }
+
+        if ($compra->articles()->count() > 0) {
+
+            return null;
+        }
+
+        return RespuestaDeCargaIa::error(
+            'La compra N° ' . $compra->num . ' no tiene artículos: pasarla a Recibido no carga stock. No se cambió nada. '
+            . 'Primero hay que cargarle los artículos (desde la revisión del escaneo en Compras o con las herramientas de stock).'
+        );
+    }
+
+    /**
      * Lo común a las dos propuestas: las validaciones, la tarjeta y la respuesta.
      *
      * @param  ContextoDeCargaIa  $contexto
@@ -500,6 +726,16 @@ class PropuestaAccionDePantallaIaHelper
             } catch (ValidationException $e) {
                 $errores = $e->errors();
                 return RespuestaDeCargaIa::error(reset($errores)[0]);
+            }
+        }
+
+        // Pasar a «Recibido» una compra sin artículos no carga stock: se frena antes de dejar tarjeta (A4, CA3).
+        if ($declaracion['accion'] === 'ProviderOrderController@update') {
+
+            $compra_vacia = self::compra_vacia_a_recibido($contexto, $resuelta['parametros'], $cuerpo);
+
+            if (RespuestaDeCargaIa::es_negativa($compra_vacia)) {
+                return $compra_vacia;
             }
         }
 

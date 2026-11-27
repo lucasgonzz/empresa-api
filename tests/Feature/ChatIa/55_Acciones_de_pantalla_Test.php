@@ -524,18 +524,20 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
          */
         $this->assertSame(
             ['que_acciones_de_pantalla_hay', 'consultar_por_pantalla', 'proponer_accion_de_pantalla', 'proponer_borrado_por_pantalla'],
-            array_slice($nombres, -19, 4)
+            array_slice($nombres, -20, 4)
         );
         $this->assertSame(
             ['proponer_envio_de_comprobante', 'proponer_recordatorios_de_cobro', 'proponer_promocion_por_whatsapp'],
-            array_slice($nombres, -15, 3)
+            array_slice($nombres, -16, 3)
         );
-        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -9, 4));
-        $this->assertSame(['proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -5, 2));
+        $this->assertSame(['pedir_ayuda_a_soporte', 'armar_texto_de_promocion', 'proponer_cuotas_tienda', 'proponer_descripcion_verificada'], array_slice($nombres, -10, 4));
+        $this->assertSame(['proponer_avisos_por_whatsapp', 'quitar_foto_articulo'], array_slice($nombres, -6, 2));
         // asistente-diario-20261116 (rama B, 30/10 #2): el ajuste de stock por lote va al final de todo.
-        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -3, 1));
+        $this->assertSame(['proponer_ajuste_de_stock_por_lote'], array_slice($nombres, -4, 1));
         // asistente-diario-20261119 (rama C, A4 y M3): el renombre masivo y la foto a medida van al final de todo.
-        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -2));
+        $this->assertSame(['proponer_renombre_masivo', 'ajustar_foto_a_medida'], array_slice($nombres, -3, 2));
+        // asistente-diario-20261121: proponer_destacado_articulo va al final de todo (corre los offsets -1).
+        $this->assertSame(['proponer_destacado_articulo'], array_slice($nombres, -1));
 
         $contenido = file_get_contents(app_path('Services/AsistenteIa/HerramientasDeCarga.php'));
 
@@ -546,7 +548,7 @@ class Acciones_de_pantalla_Test extends EmpresaTestCase
         }
 
         // Las cuatro de pantalla y el primer envío que el chequeo anterior también cubría.
-        foreach (array_slice($nombres, -18, 5) as $nombre) {
+        foreach (array_slice($nombres, -19, 5) as $nombre) {
             $this->assertStringContainsString("case '" . $nombre . "':", $contenido, $nombre);
             $this->assertTrue(HerramientasDeCarga::maneja($nombre), $nombre);
             $this->assertContains($nombre, HerramientasDeCarga::nombres(true), $nombre . ' tiene que estar también en el canal de WhatsApp');
