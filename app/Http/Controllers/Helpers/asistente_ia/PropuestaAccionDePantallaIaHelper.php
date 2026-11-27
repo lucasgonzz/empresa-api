@@ -12,6 +12,8 @@ use App\Models\AiMessageAction;
 use App\Models\Budget;
 use App\Models\Client;
 use App\Models\Order;
+use App\Models\ProviderOrder;
+use App\Models\ProviderOrderStatus;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -602,6 +604,57 @@ class PropuestaAccionDePantallaIaHelper
     }
 
     /**
+     * El freno de «pasar a Recibido» una compra que no tiene artículos (misión
+     * asistente-diario-recuperacion-20261127, CA3, A4 del informe de la semana).
+     *
+     * 🔴 EL CASO REAL (Pescamayorista, msgs 373-405). Una compra con escaneo quedó SIN renglones (confirmar un
+     * escaneo saltea los renglones sin artículo asociado ni alta) y el asistente le indicó al dueño pasarla a
+     * «Recibido»: una compra recibida sin artículos no carga stock y nadie se entera. Acá sólo se frena el
+     * PASO a Recibido (la compra todavía no estaba Recibida) de una compra del dueño sin ningún artículo: el
+     * resto de las ediciones de una compra no se toca. El estado se busca por NOMBRE, nunca por id.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $parametros_ligados  Los {param} que ligó el router (el id de la compra).
+     * @param  array  $cuerpo
+     * @return array|null  La respuesta negativa si hay que frenar; null si sigue.
+     */
+    protected static function compra_vacia_a_recibido(ContextoDeCargaIa $contexto, array $parametros_ligados, array $cuerpo)
+    {
+        if (!isset($cuerpo['provider_order_status_id']) || !is_numeric($cuerpo['provider_order_status_id'])) {
+
+            return null;
+        }
+
+        $id_de_recibido = ProviderOrderStatus::where('name', 'Recibido')->value('id');
+
+        if (is_null($id_de_recibido) || (int) $cuerpo['provider_order_status_id'] !== (int) $id_de_recibido) {
+
+            return null;
+        }
+
+        $ligado = reset($parametros_ligados);
+        $compra_id = is_object($ligado) ? (int) $ligado->id : (int) $ligado;
+
+        $compra = ProviderOrder::where('user_id', $contexto->owner_id)->where('id', $compra_id)->first();
+
+        // La tenencia ya la miró el router/verificador; una compra que no se encuentra no se frena acá.
+        if (is_null($compra) || (int) $compra->provider_order_status_id === (int) $id_de_recibido) {
+
+            return null;
+        }
+
+        if ($compra->articles()->count() > 0) {
+
+            return null;
+        }
+
+        return RespuestaDeCargaIa::error(
+            'La compra N° ' . $compra->num . ' no tiene artículos: pasarla a Recibido no carga stock. No se cambió nada. '
+            . 'Primero hay que cargarle los artículos (desde la revisión del escaneo en Compras o con las herramientas de stock).'
+        );
+    }
+
+    /**
      * Lo común a las dos propuestas: las validaciones, la tarjeta y la respuesta.
      *
      * @param  ContextoDeCargaIa  $contexto
@@ -673,6 +726,16 @@ class PropuestaAccionDePantallaIaHelper
             } catch (ValidationException $e) {
                 $errores = $e->errors();
                 return RespuestaDeCargaIa::error(reset($errores)[0]);
+            }
+        }
+
+        // Pasar a «Recibido» una compra sin artículos no carga stock: se frena antes de dejar tarjeta (A4, CA3).
+        if ($declaracion['accion'] === 'ProviderOrderController@update') {
+
+            $compra_vacia = self::compra_vacia_a_recibido($contexto, $resuelta['parametros'], $cuerpo);
+
+            if (RespuestaDeCargaIa::es_negativa($compra_vacia)) {
+                return $compra_vacia;
             }
         }
 

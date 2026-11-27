@@ -190,6 +190,15 @@ class EscaneoDeFacturaIaHelper
              * .env) no hay link, y el modelo no tiene que armar uno por su cuenta.
              */
             'url'                => is_null($base) ? null : $base . $ruta,
+            /*
+             * Lo que la compra TIENE de verdad (CA3, A4 del informe del 27/11): un escaneo «revisado» no dice
+             * cuántos renglones quedaron en la compra, y «quedaron cargados» a ciegas hizo creer que una compra
+             * vacía tenía stock por recibir. El estado de la compra va por NOMBRE (nunca por id).
+             */
+            'compra_estado'          => (is_null($compra) || is_null($compra->provider_order_status)) ? null : $compra->provider_order_status->name,
+            'articulos_en_la_compra' => is_null($compra) ? null : (int) $compra->articles()->count(),
+            // Lo que el confirmar de la revisión asentó (agregados / creados / omitidos), o null si no hay registro.
+            'aplicado'               => is_array($scan->aplicado) ? $scan->aplicado : null,
         ];
 
         if ($estado === self::ESTADO_EN_PROCESO) {
@@ -237,7 +246,7 @@ class EscaneoDeFacturaIaHelper
          */
         if ($estado === self::ESTADO_REVISADO) {
 
-            $datos['mensaje'] = 'Este escaneo ya fue revisado y confirmado en la compra: los renglones son los que quedaron cargados.';
+            $datos['mensaje'] = self::mensaje_de_revisado($datos);
 
         } elseif ($estado === self::ESTADO_DESCARTADO) {
 
@@ -249,6 +258,56 @@ class EscaneoDeFacturaIaHelper
         }
 
         return $datos;
+    }
+
+    /**
+     * Lo que se le dice al modelo de un escaneo ya revisado y confirmado, SIN afirmar que quedó cargado lo que
+     * no se cargó (CA3, A4 del informe de la semana).
+     *
+     * Confirmar un escaneo saltea en silencio cada renglón sin artículo asociado y sin alta (decisión 3 de Lucas) y
+     * aun así lo marca confirmado: puede haber cargado 0. Por eso el mensaje sale de lo que se asentó de verdad
+     * (`aplicado`) y de lo que la compra tiene hoy (`articulos_en_la_compra`), no del estado del escaneo.
+     *
+     * @param  array  $datos  Lo que `detalle()` lleva armado hasta acá (aplicado y articulos_en_la_compra).
+     * @return string
+     */
+    protected static function mensaje_de_revisado(array $datos): string
+    {
+        $aplicado = isset($datos['aplicado']) && is_array($datos['aplicado']) ? $datos['aplicado'] : null;
+
+        $en_la_compra = isset($datos['articulos_en_la_compra']) ? (int) $datos['articulos_en_la_compra'] : null;
+
+        // Renglones que el confirmar cargó (agregados a la compra o dados de alta); null si no quedó el registro.
+        $cargados = is_null($aplicado) ? null : (int) (isset($aplicado['articulos_agregados']) ? $aplicado['articulos_agregados'] : 0) + (int) (isset($aplicado['articulos_creados']) ? $aplicado['articulos_creados'] : 0);
+
+        $omitidos = is_null($aplicado) || !isset($aplicado['articulos_omitidos']) ? 0 : (int) $aplicado['articulos_omitidos'];
+
+        if ($en_la_compra === 0 || $cargados === 0) {
+
+            $mensaje = 'Este escaneo ya fue revisado y confirmado, pero se cerró SIN cargar ningún renglón en la compra'
+                . ($omitidos > 0 ? ' (' . $omitidos . ' renglones omitidos: no tenían artículo asociado ni alta)' : '');
+
+            if ($en_la_compra === 0) {
+
+                return $mensaje . '. La compra no tiene artículos: pasarla a «Recibido» no carga stock. No le digas a la persona que quedó cargado ni que la pase a Recibido: '
+                    . 'decile que está vacía y ofrecé cargar el stock con las herramientas de stock.';
+            }
+
+            // La compra ya traía artículos de antes: lo leído no se sumó, pero la compra no está vacía.
+            return $mensaje . '. Lo que se leyó no se sumó a la compra: no digas que quedó cargado. La compra tiene hoy '
+                . (is_null($en_la_compra) ? 'una cantidad de artículos que no se pudo leer' : $en_la_compra . ' artículos') . '.';
+        }
+
+        if (!is_null($cargados)) {
+
+            return 'Este escaneo ya fue revisado y confirmado: se cargaron ' . $cargados . ' renglones en la compra'
+                . ($omitidos > 0 ? ' y ' . $omitidos . ' quedaron afuera (sin artículo asociado ni alta)' : '')
+                . '. La compra tiene hoy ' . $en_la_compra . ' artículos.';
+        }
+
+        // Un escaneo viejo, sin registro de lo asentado: sólo se afirma lo que se ve en la compra.
+        return 'Este escaneo ya fue revisado y confirmado en la compra, que tiene hoy ' . (is_null($en_la_compra) ? 'una cantidad de artículos que no se pudo leer' : $en_la_compra . ' artículos')
+            . '. Los renglones de abajo son los que dejó la revisión, no una prueba de lo que quedó cargado: confirmalo con la compra.';
     }
 
     /**

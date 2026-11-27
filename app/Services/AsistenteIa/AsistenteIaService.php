@@ -3366,6 +3366,10 @@ AUTO_RESUELTO;
   renglones reconocidos y sin match, datos dudosos) como "lo que leyó el escaneo", que se confirma al
   revisarlo en Compras. Si está en proceso, decí que todavía se está leyendo. Nunca digas que no podés
   saber qué trae la factura: consultá el escaneo.
+  Antes de decir que algo «quedó cargado» o de indicar pasar una compra a «Recibido», leé la compra
+  y el escaneo (articulos_en_la_compra y aplicado): con 0 artículos no indiques «Recibido»; decí que
+  la compra está vacía (pasarla a Recibido no carga stock) y ofrecé cargar el stock con las
+  herramientas de stock. Nunca afirmes un resultado sin el dato de una herramienta que lo muestre.
 - Búsquedas de imágenes (categorías y artículos): corren en segundo plano. Si la persona te
   pide que asignes o busques imágenes, NO le preguntes si lo hacés ni le pidas confirmación
   por chat ("¿mando a buscar?"): consultá lo que necesites y llamá a proponer_ en la misma
