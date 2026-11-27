@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Models\WhatsappBotConfig;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Lo que comparten las dos puertas que escriben la conexión de WhatsApp (Kapso) del comercio — misión
@@ -56,6 +57,62 @@ class WhatsappBotConexionHelper
         }
 
         return null;
+    }
+
+    /**
+     * Resuelve la configuración que le corresponde a un webhook de Kapso SIN mirar `is_active`.
+     *
+     * 🔴 Misión whatsapp-canal-independiente (27/11/2026): `is_active` es la llave del AGENTE (genera y manda
+     * respuestas solo), no la del canal. Antes `receive()` elegía `where('is_active', true)->first()` y, con el
+     * agente apagado, contestaba 200 y descartaba entrantes y estados de entrega sin dejar ni una línea de log.
+     * No volver a filtrar por `is_active` acá: apagar el agente no puede apagar la bandeja.
+     *
+     * Regla (se prefiere no resolver antes que adivinar un comercio ajeno):
+     *   1. Si el payload trae `phone_number_id` (raíz o `conversation`, mismo orden que Coexistencia) y UNA sola
+     *      fila lo tiene → esa fila, activa o no. Dos filas con el mismo número → null (no se adivina).
+     *   2. Si trae uno que no coincide con ninguna fila → sólo se usa la fila si la tabla tiene exactamente una
+     *      (instancia de un solo comercio con el número desactualizado). Con varias → null.
+     *   3. Si no trae ninguno (payloads viejos) → la única fila de la tabla; con varias, la única activa; si no
+     *      queda una sola candidata → null.
+     *
+     * @param  array  $payload  Payload ya decodificado del webhook.
+     * @return WhatsappBotConfig|null
+     */
+    public static function config_del_webhook(array $payload): ?WhatsappBotConfig
+    {
+        $pnid = '';
+        if (isset($payload['phone_number_id']) && is_scalar($payload['phone_number_id']) && trim((string) $payload['phone_number_id']) !== '') {
+            $pnid = trim((string) $payload['phone_number_id']);
+        } elseif (isset($payload['conversation']['phone_number_id']) && is_scalar($payload['conversation']['phone_number_id'])) {
+            $pnid = trim((string) $payload['conversation']['phone_number_id']);
+        }
+
+        if ($pnid !== '') {
+            $coincidentes = WhatsappBotConfig::where('phone_number_id', $pnid)->limit(2)->get();
+            if ($coincidentes->count() === 1) {
+                return $coincidentes->first();
+            }
+            if ($coincidentes->count() > 1) {
+                Log::channel('daily')->warning('WhatsappBotConexionHelper: el phone_number_id del webhook está en más de una configuración, se ignora.');
+
+                return null;
+            }
+
+            Log::channel('daily')->warning('WhatsappBotConexionHelper: el phone_number_id del webhook no coincide con ninguna configuración.');
+
+            $todas = WhatsappBotConfig::limit(2)->get();
+
+            return $todas->count() === 1 ? $todas->first() : null;
+        }
+
+        $todas = WhatsappBotConfig::limit(2)->get();
+        if ($todas->count() === 1) {
+            return $todas->first();
+        }
+
+        $activas = WhatsappBotConfig::where('is_active', true)->limit(2)->get();
+
+        return $activas->count() === 1 ? $activas->first() : null;
     }
 
     /**
