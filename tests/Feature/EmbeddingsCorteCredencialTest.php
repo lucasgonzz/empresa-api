@@ -7,6 +7,7 @@ use App\Exceptions\EmbeddingsCredencialRechazadaException;
 use App\Http\Controllers\Helpers\article\ArticleEmbeddingsEstadoHelper;
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Jobs\GenerateArticleEmbeddingsBatchJob;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
 use App\Models\ExtencionEmpresa;
@@ -846,7 +847,12 @@ class EmbeddingsCorteCredencialTest extends TestCase
 
         $this->assertFalse(Cache::has(self::CLAVE_CORTE));
         Artisan::call('articles:generate-embeddings');
-        Queue::assertPushed(GenerateArticleEmbeddingJob::class, 1);
+        Queue::assertPushed(GenerateArticleEmbeddingsBatchJob::class, 1);
+        $this->assertSame(
+            1,
+            $this->cantidad_de_articulos_en_lotes(),
+            'El comando despacha los artículos pendientes agrupados en un job de lote (1 en total).'
+        );
     }
 
     /**
@@ -924,5 +930,23 @@ class EmbeddingsCorteCredencialTest extends TestCase
         }
 
         Queue::assertNothingPushed();
+    }
+
+    /**
+     * Suma los artículos que viajan en todos los GenerateArticleEmbeddingsBatchJob empujados al fake.
+     * Antes el comando empujaba un GenerateArticleEmbeddingJob por artículo; ahora los agrupa por lote
+     * (misión embeddings-lote-cola) y la cantidad de artículos se lee de `get_article_ids()`.
+     *
+     * @return int
+     */
+    protected function cantidad_de_articulos_en_lotes()
+    {
+        $cantidad = 0;
+
+        foreach (Queue::pushed(GenerateArticleEmbeddingsBatchJob::class) as $lote) {
+            $cantidad += count($lote->get_article_ids());
+        }
+
+        return $cantidad;
     }
 }

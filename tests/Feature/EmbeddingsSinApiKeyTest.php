@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Jobs\FinalizeEmbeddingRun;
 use App\Jobs\GenerateArticleEmbeddingJob;
+use App\Jobs\GenerateArticleEmbeddingsBatchJob;
 use App\Models\Article;
 use App\Models\EmbeddingRun;
 use App\Models\ExtencionEmpresa;
@@ -135,6 +136,7 @@ class EmbeddingsSinApiKeyTest extends TestCase
 
         $this->assertSame(0, $exit, 'Sin clave no es un error del comando: sale limpio para no ensuciar el log del scheduler.');
         Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+        Queue::assertNotPushed(GenerateArticleEmbeddingsBatchJob::class);
         Queue::assertNotPushed(FinalizeEmbeddingRun::class);
         $this->assertSame(0, EmbeddingRun::where('user_id', $this->comercio->id)->count(), 'Sin clave no se abre ninguna tanda.');
         $this->assertStringContainsString('OPENAI_API_KEY', Artisan::output());
@@ -155,6 +157,7 @@ class EmbeddingsSinApiKeyTest extends TestCase
         Artisan::call('articles:generate-embeddings');
 
         Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+        Queue::assertNotPushed(GenerateArticleEmbeddingsBatchJob::class);
         $this->assertStringContainsString('OPENAI_API_KEY', Artisan::output());
     }
 
@@ -172,7 +175,12 @@ class EmbeddingsSinApiKeyTest extends TestCase
 
         Artisan::call('articles:generate-embeddings');
 
-        Queue::assertPushed(GenerateArticleEmbeddingJob::class, 1);
+        Queue::assertPushed(GenerateArticleEmbeddingsBatchJob::class, 1);
+        $this->assertSame(
+            1,
+            $this->cantidad_de_articulos_en_lotes(),
+            'El comando despacha los artículos pendientes agrupados en un job de lote (1 en total).'
+        );
         Queue::assertPushed(FinalizeEmbeddingRun::class, 1);
         $this->assertSame(1, EmbeddingRun::where('user_id', $this->comercio->id)->count());
         $this->assertStringNotContainsString('OPENAI_API_KEY', Artisan::output());
@@ -194,6 +202,7 @@ class EmbeddingsSinApiKeyTest extends TestCase
 
         $this->assertSame(0, $exit);
         Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+        Queue::assertNotPushed(GenerateArticleEmbeddingsBatchJob::class);
         $this->assertStringNotContainsString('OPENAI_API_KEY', Artisan::output());
     }
 
@@ -216,7 +225,26 @@ class EmbeddingsSinApiKeyTest extends TestCase
         ]);
 
         Queue::assertNotPushed(GenerateArticleEmbeddingJob::class);
+        Queue::assertNotPushed(GenerateArticleEmbeddingsBatchJob::class);
         Queue::assertNotPushed(FinalizeEmbeddingRun::class);
         $this->assertStringContainsString('OPENAI_API_KEY', Artisan::output());
+    }
+
+    /**
+     * Suma los artículos que viajan en todos los GenerateArticleEmbeddingsBatchJob empujados al fake.
+     * Antes el comando empujaba un GenerateArticleEmbeddingJob por artículo; ahora los agrupa por lote
+     * (misión embeddings-lote-cola) y la cantidad de artículos se lee de `get_article_ids()`.
+     *
+     * @return int
+     */
+    protected function cantidad_de_articulos_en_lotes()
+    {
+        $cantidad = 0;
+
+        foreach (Queue::pushed(GenerateArticleEmbeddingsBatchJob::class) as $lote) {
+            $cantidad += count($lote->get_article_ids());
+        }
+
+        return $cantidad;
     }
 }
