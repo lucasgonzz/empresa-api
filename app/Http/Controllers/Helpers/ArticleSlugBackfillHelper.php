@@ -26,10 +26,13 @@ use Illuminate\Support\Str;
  * (~1 artículo/seg en Servian). Ahora, por dueño, se cargan UNA vez los slugs tomados en un conjunto en
  * memoria, se calcula cada slug nuevo contra ese conjunto con la MISMA regla (base, base-1, base-2...,
  * cada candidato desde la base) y se escribe por tandas con un solo UPDATE ... CASE. El resultado es
- * idéntico al secuencial. Límites conocidos (aceptados): si otro proceso CREA artículos del dueño
- * mientras corre el barrido, el conjunto no los ve (no hay índice único: el ABM sigue su camino y el
- * backfill se corre con el sistema en mantenimiento); y si una escritura es rechazada porque otro
- * proceso ya puso slug, el candidato queda "gastado" en el conjunto (deja un hueco, nunca un duplicado).
+ * idéntico al secuencial cuando nadie más escribe. El comando corre con el sistema en línea (después
+ * de `artisan up`), así que el ABM puede dar de alta artículos mientras barre: por eso, antes de
+ * escribir CADA tanda, se confirma contra la base que los slugs candidatos siguen libres y se
+ * recalculan los que otro proceso tomó (`confirmar_slugs_libres`). Límites conocidos (aceptados): no
+ * hay índice único, así que queda la ventana de milisegundos entre esa confirmación y el UPDATE; y si
+ * una escritura es rechazada porque otro proceso ya puso slug, el candidato queda "gastado" en el
+ * conjunto (deja un hueco, nunca un duplicado).
  *
  * IMPORTANTE: PHP 7.4 estricto, sin sintaxis de PHP 8 (ver .mision/RESTRICCIONES.md).
  */
@@ -163,9 +166,12 @@ class ArticleSlugBackfillHelper
                         });
 
         // chunkById pagina por id (id > último): escribir el slug de una fila no desplaza las siguientes.
-        $consulta->chunkById(self::TAMANO_TANDA_ARTICULOS, function ($articulos) use (&$resultado, &$tomados, &$proximo_sufijo, $aplicar, $cupo_ejemplos) {
+        $consulta->chunkById(self::TAMANO_TANDA_ARTICULOS, function ($articulos) use (&$resultado, &$tomados, &$proximo_sufijo, $aplicar, $cupo_ejemplos, $owner_id) {
             // Pares id => slug a escribir en esta tanda.
             $a_escribir = [];
+
+            // Base de slug de cada artículo de la tanda (id => base), para poder recalcular.
+            $bases = [];
 
             foreach ($articulos as $articulo) {
                 // Base del slug: la misma función que usa el ABM.
@@ -198,10 +204,14 @@ class ArticleSlugBackfillHelper
 
                 if ($aplicar) {
                     $a_escribir[(int) $articulo->id] = $slug;
+                    $bases[(int) $articulo->id] = $base;
                 }
             }
 
             if ($aplicar && !empty($a_escribir)) {
+                // Antes de escribir, confirmar contra la base que nadie tomó estos slugs mientras tanto.
+                $a_escribir = self::confirmar_slugs_libres($owner_id, $a_escribir, $bases, $tomados, $proximo_sufijo);
+
                 $resultado['completados'] += self::escribir_slugs($a_escribir);
             }
 
@@ -212,6 +222,85 @@ class ArticleSlugBackfillHelper
         });
 
         return $resultado;
+    }
+
+    /**
+     * Confirma contra la base que los slugs candidatos de una tanda siguen libres y recalcula los que no.
+     *
+     * El comando corre con el sistema en línea (después de `artisan up`), así que entre una tanda y
+     * la siguiente el ABM puede dar de alta un artículo con `ArticleHelper::slug` y quedarse con un
+     * slug que el conjunto en memoria creía libre. Los candidatos de la tanda todavía no están
+     * escritos, así que cualquier coincidencia en la base es de un artículo ajeno al barrido: se suma
+     * al conjunto en memoria y ese artículo se recalcula con la misma regla (base, base-1...). Se
+     * repite hasta que no haya coincidencias (normalmente 1 consulta por tanda, 2 si hubo carrera).
+     * Queda la ventana mínima entre esta consulta y el UPDATE, inevitable sin índice único.
+     *
+     * @param int $owner_id Dueño de los artículos.
+     * @param array $a_escribir Mapa article_id => slug candidato.
+     * @param array $bases Mapa article_id => base de slug.
+     * @param array $tomados Conjunto de slugs tomados (por referencia).
+     * @param array $proximo_sufijo Mapa base => próximo sufijo (por referencia).
+     * @return array Mapa article_id => slug confirmado.
+     */
+    protected static function confirmar_slugs_libres($owner_id, array $a_escribir, array $bases, array &$tomados, array &$proximo_sufijo)
+    {
+        // Ids a verificar en esta vuelta (la primera vuelta verifica toda la tanda).
+        $a_verificar = array_keys($a_escribir);
+
+        while (!empty($a_verificar)) {
+            // Slugs candidatos de los ids a verificar.
+            $candidatos = [];
+            foreach ($a_verificar as $article_id) {
+                $candidatos[] = $a_escribir[$article_id];
+            }
+
+            // Candidatos que ya existen en artículos vivos del dueño (tomados por otro proceso).
+            $existentes = DB::table('articles')
+                            ->where('user_id', $owner_id)
+                            ->whereNull('deleted_at')
+                            ->whereIn('slug', $candidatos)
+                            ->pluck('slug')
+                            ->all();
+
+            if (empty($existentes)) {
+                break;
+            }
+
+            // Claves de los slugs que quedaron tomados: pasan al conjunto en memoria.
+            $conflictivos = [];
+            foreach ($existentes as $slug_existente) {
+                $clave = self::clave_de_slug($slug_existente);
+                $tomados[$clave] = true;
+                $conflictivos[$clave] = true;
+            }
+
+            // Se recalculan sólo los artículos cuyo candidato quedó tomado.
+            $a_verificar = self::ids_a_recalcular($a_escribir, $conflictivos);
+
+            foreach ($a_verificar as $article_id) {
+                $a_escribir[$article_id] = self::calcular_slug($bases[$article_id], $tomados, $proximo_sufijo, true);
+            }
+        }
+
+        return $a_escribir;
+    }
+
+    /**
+     * Ids cuyo candidato está entre los slugs conflictivos.
+     *
+     * @param array $a_escribir Mapa article_id => slug candidato.
+     * @param array $conflictivos Mapa clave_normalizada => true.
+     * @return array Lista de ids.
+     */
+    protected static function ids_a_recalcular(array $a_escribir, array $conflictivos)
+    {
+        $ids = [];
+        foreach ($a_escribir as $article_id => $slug) {
+            if (isset($conflictivos[self::clave_de_slug($slug)])) {
+                $ids[] = $article_id;
+            }
+        }
+        return $ids;
     }
 
     /**
