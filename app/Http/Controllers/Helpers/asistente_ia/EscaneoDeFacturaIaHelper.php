@@ -532,11 +532,55 @@ class EscaneoDeFacturaIaHelper
                 'articulo_del_negocio' => self::valor($match, 'nombre_en_catalogo'),
                 'campos_dudosos'       => isset($articulo['campos_dudosos']) && is_array($articulo['campos_dudosos']) ? array_values($articulo['campos_dudosos']) : [],
             ];
+
+            /*
+             * Los candidatos de un renglón sin match (CA4, A5): nombre y código de hasta tres artículos del negocio,
+             * para que el modelo diga «hay uno con código A9548 6» en vez de «ninguno coincide». Nunca vienen
+             * asociados: la decisión es de la persona en la revisión.
+             */
+            $candidatos = self::candidatos_del_match($match);
+
+            if (count($candidatos)) {
+
+                $renglones[count($renglones) - 1]['candidatos'] = $candidatos;
+            }
         }
 
         $omitidos = count($articulos) > self::TOPE_RENGLONES ? count($articulos) - self::TOPE_RENGLONES : 0;
 
         return [$renglones, $omitidos];
+    }
+
+    /**
+     * Los candidatos de un renglón sin match, con la forma corta que se le da al modelo (hasta tres).
+     *
+     * @param  array  $match  El bloque `match` del renglón.
+     * @return array<int, array{nombre: mixed, provider_code: mixed, motivo: mixed}>
+     */
+    protected static function candidatos_del_match(array $match): array
+    {
+        if (!isset($match['candidatos']) || !is_array($match['candidatos'])) {
+
+            return [];
+        }
+
+        $candidatos = [];
+
+        foreach (array_slice($match['candidatos'], 0, 3) as $candidato) {
+
+            if (!is_array($candidato)) {
+
+                continue;
+            }
+
+            $candidatos[] = [
+                'nombre'        => self::valor($candidato, 'nombre'),
+                'provider_code' => self::valor($candidato, 'provider_code'),
+                'motivo'        => self::valor($candidato, 'motivo'),
+            ];
+        }
+
+        return $candidatos;
     }
 
     /**
