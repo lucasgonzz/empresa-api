@@ -23,6 +23,7 @@ class ArticlePdfController extends Controller
             'mostrar_precio_anterior' => 'boolean',
             'texto_personalizado' => 'nullable|string',
             'motrar_fecha_impresion' => 'boolean',
+            'mostrar_precio_efectivo' => 'boolean',
         ];
     }
 
@@ -57,6 +58,8 @@ class ArticlePdfController extends Controller
             'mostrar_precio_anterior' => $request->boolean('mostrar_precio_anterior'),
             'texto_personalizado' => $request->texto_personalizado,
             'motrar_fecha_impresion' => $request->boolean('motrar_fecha_impresion'),
+            // Formato "pagando en efectivo o transferencia": apagado si el campo no viene.
+            'mostrar_precio_efectivo' => $request->boolean('mostrar_precio_efectivo'),
             'user_id' => $this->userId(),
         ]);
 
@@ -94,6 +97,13 @@ class ArticlePdfController extends Controller
         $model->mostrar_precio_anterior = $request->boolean('mostrar_precio_anterior');
         $model->texto_personalizado = $request->texto_personalizado;
         $model->motrar_fecha_impresion = $request->boolean('motrar_fecha_impresion');
+        /*
+         * Sólo se toca si el campo viene en el request: un SPA viejo en caché (o un PUT parcial)
+         * no manda `mostrar_precio_efectivo` y no puede apagar una opción que el cliente prendió.
+         */
+        if ($request->has('mostrar_precio_efectivo')) {
+            $model->mostrar_precio_efectivo = $request->boolean('mostrar_precio_efectivo');
+        }
         $model->save();
 
         return response()->json(['model' => $this->fullModel('ArticlePdf', $model->id)], 200);
