@@ -52,7 +52,7 @@ class OnlineConfigurationController extends Controller
                 }
                 if ($nuevo) {
                     if ((int) $model->reserva_stock_tienda_protocolo !== 1 || !$model->reserva_stock_tienda_url) {
-                        throw \Illuminate\Validation\ValidationException::withMessages(['reservar_stock_pedidos_web' => 'Primero verificá la compatibilidad de la tienda con el equipo de soporte.']);
+                        throw \Illuminate\Validation\ValidationException::withMessages(['reservar_stock_pedidos_web' => 'Esta tienda todavía no está verificada para reservar stock. Pedile al soporte de ComercioCity que la verifique y después volvé a activar esta opción.']);
                     }
                     \App\Http\Controllers\Helpers\Order\ReservaStockWebHelper::comprobar_tienda($model->reserva_stock_tienda_url, $model->user_id);
                 } else {
