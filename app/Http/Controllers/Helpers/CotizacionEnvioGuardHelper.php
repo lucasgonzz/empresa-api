@@ -139,14 +139,29 @@ class CotizacionEnvioGuardHelper
     const PATRON_CORTE = '/(\n+|(?<=[.!?…])(?<!\b\p{L}\.)(?<!\bav\.)(?<!\bavda\.)(?<!\bgral\.)(?<!\bsta\.)(?<!\bsto\.)(?<!\bcnel\.)(?<!\btte\.)(?<!\bpte\.)(?<!\bpres\.)(?<!\bdr\.)(?<!\bdra\.)(?<!\bing\.)(?<!\blic\.)(?<!\bprof\.)(?<!\bsr\.)(?<!\bsra\.)(?<!\bsrta\.)(?<!\bbv\.)(?<!\bblvd\.)(?<!\bpje\.)(?<!\bctra\.)(?<!\bcno\.)(?<!\bdto\.)(?<!\bmza\.)(?<!\burb\.)(?<!\bkm\.)(?<!\bdpto\.)(?<!\bdepto\.)(?<!\besq\.)(?<!\btel\.)(?<!\bnro\.)(?<!\bn°\.)(?<!\baprox\.)(?<!\bapr\.)(?<!\bhs\.)(?<!\bmáx\.)(?<!\bmín\.)(?<!\bmax\.)(?<!\bmin\.)(?<!\bc\/u\.)(?<!\bud\.)(?<!\buds\.)(?<!\bvs\.)(?<!\bcp\.)[ \t]+)/iu';
 
     /**
+     * Los importes con su cifra (con signo $, con puntos de miles, «N pesos», «N mil», «ARS N»): el grupo captura
+     * el número. Sirve para comparar lo que dijo el modelo con lo que dijo el comercio (misión
+     * asistente-diario-20261128, P8b); no reemplaza a PATRON_IMPORTE, que es el que decide si hay cotización.
+     */
+    const PATRON_CIFRA_DEL_IMPORTE = '/(?:\$\s*|\bars\s*)(\d[\d.,]*)|\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?)\b|\b(\d+(?:[.,]\d+)?)\s*(?:pesos|ars|lucas|mil)\b/iu';
+
+    /**
      * Revisa el cuerpo que está por salir. Sin ninguna oración de cotización devuelve el texto tal cual, byte por
      * byte, con `derivo = false`.
      *
+     * Misión asistente-diario-20261128 (P8): lo que el COMERCIO ya dijo en el chat (una persona del negocio, no la IA)
+     * es información del negocio y no una cotización inventada por el modelo. Una oración que el filtro sacaría se
+     * CONSERVA si repite una gratuidad que dijo el comercio o si todos sus importes son los que el comercio dijo
+     * para el envío; un importe distinto sigue derivándose. Y la frase fija no se suma si el texto que quedó ya dice
+     * que el equipo confirma el envío y el total (si no, se leía dos veces).
+     *
      * @param  string  $cuerpo  Texto ya sin marcadores internos.
+     * @param  array<int, string>  $dichos_del_negocio  Textos de los mensajes que escribió una persona del negocio en
+     *                                                  este chat (vacío = el filtro de siempre).
      * @return array{body: string, derivo: bool, frases: int}
      *         `frases` es la cantidad de oraciones sacadas.
      */
-    public static function revisar(string $cuerpo): array
+    public static function revisar(string $cuerpo, array $dichos_del_negocio = []): array
     {
         $sin_cambios = ['body' => $cuerpo, 'derivo' => false, 'frases' => 0];
 
@@ -183,7 +198,7 @@ class CotizacionEnvioGuardHelper
             $anterior = $previo;
             $previo   = $texto;
 
-            if (trim($texto) === '' || ! self::es_cotizacion($texto, $anterior)) {
+            if (trim($texto) === '' || ! self::es_cotizacion($texto, $anterior) || self::lo_dijo_el_comercio($texto, $dichos_del_negocio)) {
                 $conservadas[] = [$texto, $separador];
                 continue;
             }
@@ -213,11 +228,122 @@ class CotizacionEnvioGuardHelper
         $resto = preg_replace('/[ \t]+\n/', "\n", $resto);
         $resto = trim((string) preg_replace('/\n{3,}/', "\n\n", (string) $resto));
 
+        // La frase fija sólo se suma si lo que quedó no dice ya lo mismo (P8a): si no, el cliente la leía dos veces.
+        $ya_lo_dice = $resto !== '' && self::ya_dice_que_lo_confirma_el_equipo($conservadas);
+
         return [
-            'body'   => $resto === '' ? self::FRASE_FIJA : $resto . "\n\n" . self::FRASE_FIJA,
+            'body'   => $resto === '' ? self::FRASE_FIJA : ($ya_lo_dice ? $resto : $resto . "\n\n" . self::FRASE_FIJA),
             'derivo' => true,
             'frases' => $frases,
         ];
+    }
+
+    /**
+     * ¿Alguna oración que quedó ya dice que el equipo confirma el envío o el total? Una forma de «confirmar», «el
+     * equipo» y una palabra de envío o de total en la MISMA oración («el costo de envío y el total final los
+     * confirma el equipo»). Con eso la frase fija sobra.
+     *
+     * @param  array<int, array{0: string, 1: string}>  $unidades  [texto, separador] de lo que quedó.
+     * @return bool
+     */
+    private static function ya_dice_que_lo_confirma_el_equipo(array $unidades): bool
+    {
+        foreach ($unidades as $unidad) {
+
+            $texto = $unidad[0];
+
+            if (preg_match('/\bconfirm\w*/iu', $texto)
+                && preg_match('/\bequipo\b/iu', $texto)
+                && (preg_match(self::PATRON_ENVIO, $texto) || preg_match(self::PATRON_TOTAL, $texto))) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * ¿La oración que el filtro sacaría repite lo que ya dijo una persona del negocio en este chat?
+     *
+     * (a) Una gratuidad (sin ningún importe) si algún dicho del comercio afirma gratuidad de un envío.
+     * (b) Un importe de envío si TODOS sus importes están en algún dicho del comercio que habla de envío. Exige al
+     *     menos un importe: una gratuidad del modelo NO se rescata con un dicho que sólo fija un importe (y un total
+     *     no se rescata con un importe de envío).
+     *
+     * @param  string  $oracion
+     * @param  array<int, string>  $dichos_del_negocio
+     * @return bool
+     */
+    private static function lo_dijo_el_comercio(string $oracion, array $dichos_del_negocio): bool
+    {
+        if (! count($dichos_del_negocio)) {
+            return false;
+        }
+
+        $importes = self::cifras_de_los_importes($oracion);
+
+        // Si quedó algún importe que no se pudo leer como cifra («siete mil»), no se puede comparar: se deriva.
+        $sin_cifras = preg_replace(self::PATRON_CIFRA_DEL_IMPORTE, ' ', $oracion);
+
+        $importe_ilegible = (bool) preg_match(self::PATRON_IMPORTE, (string) $sin_cifras);
+
+        foreach ($dichos_del_negocio as $dicho) {
+
+            $dicho = (string) $dicho;
+
+            if (! preg_match(self::PATRON_ENVIO, $dicho)) {
+                continue;
+            }
+
+            // (a) La gratuidad que repite lo que dijo el comercio.
+            if (! count($importes) && ! $importe_ilegible
+                && preg_match(self::PATRON_GRATUIDAD, $oracion) && preg_match(self::PATRON_GRATUIDAD, $dicho)) {
+                return true;
+            }
+
+            // (b) El importe del envío que dijo el comercio, todos y sólo ésos.
+            if (count($importes) && ! $importe_ilegible
+                && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion)
+                && ! count(array_diff($importes, self::cifras_de_los_importes($dicho)))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Las cifras (sólo dígitos) de los importes de un texto: «$1.500» y «1500 pesos» dan «1500».
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    private static function cifras_de_los_importes(string $texto): array
+    {
+        $cifras = [];
+
+        if (preg_match_all(self::PATRON_CIFRA_DEL_IMPORTE, $texto, $encontrados, PREG_SET_ORDER)) {
+
+            foreach ($encontrados as $encontrado) {
+
+                $numero = '';
+
+                for ($i = 1; $i <= 3; $i++) {
+                    if (isset($encontrado[$i]) && $encontrado[$i] !== '') {
+                        $numero = $encontrado[$i];
+                    }
+                }
+
+                $cifra = preg_replace('/\D/', '', $numero);
+
+                if ($cifra !== '') {
+                    $cifras[] = $cifra;
+                }
+            }
+        }
+
+        return $cifras;
     }
 
     /**
