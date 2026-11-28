@@ -154,7 +154,7 @@ class DatosDelCompradorIaHelper
     }
 
     /**
-     * El nombre del cliente del sistema al que está vinculado el comprador (vivo: uno borrado llega como null),
+     * El nombre del cliente del sistema al que está vinculado el comprador (si el cliente está borrado llega como null),
      * o null si no está vinculado.
      *
      * @param  \App\Models\Order  $pedido
