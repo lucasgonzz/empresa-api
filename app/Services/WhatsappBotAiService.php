@@ -566,7 +566,7 @@ RULE;
             $promos_layer = WhatsappAgentPromosHelper::for_turn($history, $pending_customer_messages, (int) $chat->user_id, $owner_user);
             $strict_mode  = $promos_layer['mode'] === 'strict';
             if ($strict_mode) {
-                $articles = WhatsappAgentPromosHelper::keep_strict_articles($articles);
+                $articles = WhatsappAgentPromosHelper::keep_strict_articles($articles, $promos_layer['free_words']);
             }
 
             // Productos de los que ya se venía hablando (ticket 172): «¿me pasás la foto?» no trae el producto
@@ -583,7 +583,7 @@ RULE;
                 $carried_articles = array_slice($carried_articles, 0, max(0, WhatsappTurnCatalogHelper::CARRIED_MAX - count($articles)));
                 // Modo estricto: tampoco se arrastran los productos del turno anterior que no son mix ni combo.
                 if ($strict_mode) {
-                    $carried_articles = WhatsappAgentPromosHelper::keep_strict_articles($carried_articles);
+                    $carried_articles = WhatsappAgentPromosHelper::keep_strict_articles($carried_articles, $promos_layer['free_words']);
                 }
             }
 

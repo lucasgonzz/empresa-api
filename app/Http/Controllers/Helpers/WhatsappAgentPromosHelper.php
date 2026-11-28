@@ -61,11 +61,13 @@ class WhatsappAgentPromosHelper
      * @param int                            $user_id  Dueño del chat (aislamiento entre negocios).
      * @param \App\Models\User|null          $owner_user Dueño, con sus extensiones.
      *
-     * @return array{mode: string, block: string}
+     * @return array{mode: string, block: string, free_words: array} `free_words`: palabras de producto de los
+     *         mensajes pendientes SIN disparadora estricta (sólo con el modo derivado del texto pendiente);
+     *         el service se las pasa a `keep_strict_articles` para no sacar lo que el cliente pidió además del mix.
      */
     public static function for_turn($history, $pending, $user_id, $owner_user): array
     {
-        $empty = ['mode' => '', 'block' => ''];
+        $empty = ['mode' => '', 'block' => '', 'free_words' => []];
 
         // Sin dueño no se sabe qué módulos tiene.
         if (is_null($owner_user)) {
@@ -81,13 +83,18 @@ class WhatsappAgentPromosHelper
 
         $pending = (string) $pending;
 
-        // Modo por el texto pendiente; si no dispara, por el intercambio anterior.
+        // Modo por el texto pendiente; si no dispara, por los mensajes ENTRANTES (`in`) del intercambio
+        // anterior. El texto saliente (agente, operador, campaña) nunca activa el modo (CA14): sólo sirve
+        // para la coincidencia de nombres cuando el modo ya vino de un entrante.
         $mode            = self::mode_of_text($pending);
         $previous        = self::previous_exchange_text($history);
         $from_previous   = false;
-        if ($mode === '' && $previous !== '') {
-            $mode = self::mode_of_text($previous);
-            $from_previous = ($mode !== '');
+        if ($mode === '') {
+            $previous_incoming = self::previous_exchange_text($history, true);
+            if ($previous_incoming !== '') {
+                $mode = self::mode_of_text($previous_incoming);
+                $from_previous = ($mode !== '');
+            }
         }
 
         if ($mode === '') {
@@ -101,9 +108,13 @@ class WhatsappAgentPromosHelper
             $found = self::matching($pending . "\n" . $previous, $user_id, $with_promos, $with_combos);
         }
 
+        // Palabras libres (CA15): sólo si el modo salió del texto pendiente; con el modo derivado del
+        // intercambio anterior se filtra como siempre.
+        $free_words = ($mode === 'strict' && ! $from_previous) ? self::free_words_of($pending) : [];
+
         if (empty($found['entries'])) {
             // Modo estricto: se avisa que no hay coincidencia; modo suave: el turno queda como hoy.
-            return ['mode' => $mode, 'block' => $mode === 'strict' ? self::NONE : ''];
+            return ['mode' => $mode, 'block' => $mode === 'strict' ? self::NONE : '', 'free_words' => $free_words];
         }
 
         $entries = $found['entries'];
@@ -131,18 +142,20 @@ class WhatsappAgentPromosHelper
             $block .= "\n" . self::RULE_STRICT;
         }
 
-        return ['mode' => $mode, 'block' => $block];
+        return ['mode' => $mode, 'block' => $block, 'free_words' => $free_words];
     }
 
     /**
-     * En modo estricto deja sólo los artículos cuyo nombre trae «mix» o «combo» como palabra.
+     * En modo estricto deja los artículos cuyo nombre trae «mix» o «combo» como palabra y, además, los que
+     * coinciden (misma palabra) con alguna palabra libre: lo que el cliente pidió en un mensaje aparte del mix.
      * Acepta objetos o arrays (lo que devuelve la búsqueda y lo que arrastra el turno anterior).
      *
      * @param array $articles
+     * @param array $free_words Palabras libres que devolvió `for_turn` (vacío = sólo mix/combo, como antes).
      *
      * @return array Mismos elementos, sin los ajenos al pedido, con índices renumerados.
      */
-    public static function keep_strict_articles(array $articles): array
+    public static function keep_strict_articles(array $articles, array $free_words = []): array
     {
         $kept = [];
 
@@ -154,7 +167,9 @@ class WhatsappAgentPromosHelper
                 $name = (is_object($article) && isset($article->name)) ? $article->name : '';
             }
 
-            if (self::has_word_of((string) $name, self::STRICT_WORDS)) {
+            // Es mix/combo por nombre, o el cliente nombró algo de su nombre en un mensaje aparte.
+            if (self::has_word_of((string) $name, self::STRICT_WORDS)
+                || (! empty($free_words) && self::has_word_of((string) $name, $free_words))) {
                 $kept[] = $article;
             }
         }
@@ -209,14 +224,49 @@ class WhatsappAgentPromosHelper
     }
 
     /**
+     * Palabras libres del texto pendiente: palabras de producto (sólo letras) de los mensajes pendientes
+     * que NO traen disparadora estricta. Los pendientes se parten por línea (el service los une con «\n»).
+     * Si el mix y el vino van en el mismo mensaje no hay palabras libres (limitación aceptada).
+     *
+     * @param string $pending
+     *
+     * @return array<int, string>
+     */
+    protected static function free_words_of(string $pending): array
+    {
+        $words = [];
+
+        foreach (preg_split('/\R/u', $pending) as $line) {
+            // Un mensaje con disparadora estricta no aporta palabras libres.
+            if (self::mode_of_text($line) === 'strict') {
+                continue;
+            }
+
+            foreach (BusquedaHibridaDeArticulosHelper::palabras_de_producto($line) as $word) {
+                if (! BusquedaHibridaDeArticulosHelper::es_de_letras($word)) {
+                    continue;
+                }
+                if (in_array($word, self::SOFT_WORDS, true) || in_array($word, $words, true)) {
+                    continue;
+                }
+                $words[] = $word;
+            }
+        }
+
+        return $words;
+    }
+
+    /**
      * Texto del intercambio anterior a los entrantes pendientes: el bloque `out` inmediatamente anterior
      * más el bloque `in` previo a ese `out`. Vacío si el historial termina en `out` o no hay intercambio.
      *
      * @param \Illuminate\Support\Collection $history
+     * @param bool                           $only_incoming Si es true devuelve sólo el bloque `in` previo (la
+     *                                                      disparadora se lee únicamente de entrantes).
      *
      * @return string
      */
-    protected static function previous_exchange_text($history): string
+    protected static function previous_exchange_text($history, bool $only_incoming = false): string
     {
         $count = $history->count();
 
@@ -234,7 +284,10 @@ class WhatsappAgentPromosHelper
         // Bloque `out` anterior y, antes de él, el bloque `in`.
         $bodies = [];
         while ($index >= 0 && $history->get($index)->direction !== 'in') {
-            array_unshift($bodies, trim((string) $history->get($index)->body));
+            // Los salientes sólo cuentan para la coincidencia de nombres, nunca para el modo.
+            if (! $only_incoming) {
+                array_unshift($bodies, trim((string) $history->get($index)->body));
+            }
             $index--;
         }
         while ($index >= 0 && $history->get($index)->direction === 'in') {
