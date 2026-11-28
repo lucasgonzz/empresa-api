@@ -66,4 +66,31 @@ class CotizacionEnvioGuardHelperRonda2Test extends TestCase
 
         $this->assertFalse($r['derivo']);
     }
+
+    /**
+     * Revisión 2 C: una oración del MODELO no se clasifica: todo importe suyo es costo de envío. Con palabras como
+     * pedido, compra, hasta o total en la frase, el $80.000 del mínimo de compra del comercio no la rescata.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function un_importe_del_modelo_es_costo_aunque_hable_del_pedido_o_la_compra()
+    {
+        $frases = [
+            'El envío de tu pedido sale $80.000.',
+            'El envío de tu compra sale $80.000.',
+            'Para tu pedido, el envío sale $80.000.',
+            'El envío hasta tu casa sale $80.000.',
+            'El envío del pedido es de $80.000.',
+            'Como tu pedido supera $80.000 el envío es sin cargo.',
+        ];
+
+        foreach ($frases as $frase) {
+
+            $r = CotizacionEnvioGuardHelper::revisar($frase, [self::DICHO_285]);
+
+            $this->assertTrue($r['derivo'], 'Tiene que derivarse: ' . $frase);
+            $this->assertStringNotContainsString('$80.000', $r['body'], 'El importe no puede salir: ' . $frase);
+        }
+    }
 }
