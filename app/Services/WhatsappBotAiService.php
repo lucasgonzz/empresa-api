@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\CotizacionEnvioGuardHelper;
+use App\Http\Controllers\Helpers\WhatsappAgentPromosHelper;
 use App\Http\Controllers\Helpers\WhatsappTurnCatalogHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
@@ -560,6 +561,14 @@ RULE;
                     ->all();
             }
 
+            // Capa de mixes, combos y promos (ticket 190): modo ('' | 'soft' | 'strict') y bloque de nota del turno.
+            // En modo estricto (el cliente dijo «mix» o «combo») los artículos ajenos al pedido no llegan al modelo.
+            $promos_layer = WhatsappAgentPromosHelper::for_turn($history, $pending_customer_messages, (int) $chat->user_id, $owner_user);
+            $strict_mode  = $promos_layer['mode'] === 'strict';
+            if ($strict_mode) {
+                $articles = WhatsappAgentPromosHelper::keep_strict_articles($articles, $promos_layer['free_words']);
+            }
+
             // Productos de los que ya se venía hablando (ticket 172): «¿me pasás la foto?» no trae el producto
             // por sí solo. Van DESPUÉS de la búsqueda actual, sin repetidos, hasta CARRIED_MAX en total.
             $carried_articles = [];
@@ -572,6 +581,10 @@ RULE;
                     (int) $chat->user_id
                 );
                 $carried_articles = array_slice($carried_articles, 0, max(0, WhatsappTurnCatalogHelper::CARRIED_MAX - count($articles)));
+                // Modo estricto: tampoco se arrastran los productos del turno anterior que no son mix ni combo.
+                if ($strict_mode) {
+                    $carried_articles = WhatsappAgentPromosHelper::keep_strict_articles($carried_articles, $promos_layer['free_words']);
+                }
             }
 
             // Todo lo que ve el modelo este turno y cuáles de esos artículos tienen foto (un solo criterio).
@@ -584,7 +597,7 @@ RULE;
             $system_prompt = $this->build_system_prompt($config);
             // El `$config` viaja hasta el armado del payload porque ahí se decide si las
             // imágenes entrantes van como bloques de visión o como texto (`ai_vision_enabled`).
-            $messages = $this->build_messages_payload($history, $articles, $owner_user, $config, $carried_articles, $photo_urls);
+            $messages = $this->build_messages_payload($history, $articles, $owner_user, $config, $carried_articles, $photo_urls, $promos_layer['block'], $strict_mode);
 
             /*
              * Si el payload terminó llevando una foto (visión prendida y el cliente mandó una), se
@@ -1491,10 +1504,14 @@ RULE;
      *                                        anterior (ticket 172), van después de la búsqueda actual.
      * @param array<int,string>                                        $photo_urls id => URL de los artículos
      *                                        con foto cargada, para la marca `Foto: sí|no` de cada línea.
+     * @param string                                                   $promos_block Nota de mixes, combos y
+     *                                        promos del turno (ticket 190); vacía = sin capa (payload de siempre).
+     * @param bool                                                     $strict En modo estricto, sin artículos ni
+     *                                        arrastrados no se manda `CATALOG_EMPTY` (contradiría «no ofrezcas otro producto»).
      *
      * @return array<int, array{role: string, content: string|array}>
      */
-    private function build_messages_payload($history_messages, array $articles, $owner_user = null, $config = null, array $carried_articles = [], array $photo_urls = []): array
+    private function build_messages_payload($history_messages, array $articles, $owner_user = null, $config = null, array $carried_articles = [], array $photo_urls = [], string $promos_block = '', bool $strict = false): array
     {
         // Con el interruptor apagado (el default) no se lee un solo archivo del disco y el
         // payload sale idéntico al de antes de esta misión: la imagen entra como el texto de su
@@ -1542,7 +1559,15 @@ RULE;
             array_shift($turns);
         }
 
-        $catalog_block = $this->build_catalog_block($articles, $owner_user, $carried_articles, $photo_urls);
+        // Bloque final del turno: catálogo de artículos (salvo estricto sin nada que mostrar) y, después,
+        // la nota de promos y combos. Se unen sólo los que no están vacíos.
+        $catalog_block = '';
+        if (! ($strict && empty($articles) && empty($carried_articles))) {
+            $catalog_block = $this->build_catalog_block($articles, $owner_user, $carried_articles, $photo_urls);
+        }
+        if ($promos_block !== '') {
+            $catalog_block = $catalog_block === '' ? $promos_block : $catalog_block . "\n\n" . $promos_block;
+        }
         $last_index = count($turns) - 1;
 
         if ($last_index >= 0 && $turns[$last_index]['role'] === 'user') {
