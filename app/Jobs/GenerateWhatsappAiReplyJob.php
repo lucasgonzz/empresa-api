@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Http\Controllers\Helpers\AgentesIaHelper;
 use App\Http\Controllers\Helpers\WhatsappChatHelper;
+use App\Http\Controllers\Helpers\WhatsappTurnCatalogHelper;
 use App\Models\Article;
 use App\Models\WhatsappChat;
 use App\Models\WhatsappChatMessage;
@@ -209,7 +210,7 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             // re-chequeo del token, que descarta la respuesta entera si el cliente siguió
             // escribiendo. Resolviéndola antes, cada respuesta descartada se llevaría puesta una
             // query al catálogo para nada. Después del re-chequeo, todo lo que se consulta se usa.
-            $extra = $this->resolve_product_photo($chat, $texto, $respuesta['bar_code']);
+            $extra = $this->resolve_product_photo($chat, $texto, $respuesta);
 
             if ($texto === '' && empty($extra)) {
                 // Caso de borde real: el modelo contestó SOLO el marcador y encima no se pudo
@@ -245,6 +246,12 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
             // se resolvió, y una marca de seguimiento no es una foto. Sin marca (el caso normal) esto es [].
             $extra = array_merge($extra, WhatsappChatHelper::follow_up_columns($respuesta['follow_up'], $respuesta['follow_up_note']));
 
+            // Ticket 172: la respuesta recuerda qué artículos vio el modelo, para que el turno siguiente («¿me pasás
+            // la foto?») no pierda de qué producto se venía hablando. Después del chequeo de arriba: no es una foto.
+            if (! empty($respuesta['catalog_article_ids'])) {
+                $extra['ai_catalog_article_ids'] = array_values($respuesta['catalog_article_ids']);
+            }
+
             // El chat se cargó al arrancar el job y la llamada a la IA pudo tardar hasta 60 segundos: en ese lapso una
             // persona pudo apagar el seguimiento («Ya lo atendí») o contestarle al cliente. `store_pending_ai_message()`
             // emite el broadcast con el chat que tiene en la mano, así que sin releerlo reenviaría un `follow_up` viejo
@@ -276,8 +283,10 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
     }
 
     /**
-     * Resuelve la foto del producto que el agente marcó con `[FOTO:<código de barras>]`, para
-     * que la respuesta salga como UNA imagen con epígrafe en lugar de dos mensajes sueltos (D20).
+     * Resuelve la foto del producto que el agente marcó con `[FOTO:<Ref o código de barras>]`, para
+     * que la respuesta salga como UNA imagen con epígrafe en lugar de dos mensajes sueltos (D20). Desde el
+     * ticket 172 puede marcar hasta 4: la primera viaja en `media_url` y las demás en `ai_extra_media_urls`
+     * (se mandan como imágenes sueltas al enviar el borrador).
      *
      * 🔴 ACÁ NO SE RECORTA NADA, Y NO ES UN OLVIDO: el marcador ya vino sacado del texto por
      * `WhatsappBotAiService::generate_response_with_photo()`, que es el único lugar que produce
@@ -300,19 +309,25 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
      * barras se repite entre negocios (es del fabricante, no del comercio), así que sin ese
      * filtro un cliente podría terminar viendo la foto que cargó otra empresa del sistema.
      *
-     * @param WhatsappChat $chat     Chat que se está respondiendo; de acá sale el dueño del catálogo.
-     * @param string       $texto    Cuerpo de la respuesta YA sin marcador; es lo que va a viajar
-     *                               como epígrafe, y por eso es lo que se mide contra el tope.
-     * @param string       $bar_code Código que marcó el agente, o cadena vacía si no marcó ninguno.
+     * @param WhatsappChat $chat      Chat que se está respondiendo; de acá sale el dueño del catálogo.
+     * @param string       $texto     Cuerpo de la respuesta YA sin marcador; es lo que va a viajar
+     *                                como epígrafe, y por eso es lo que se mide contra el tope.
+     * @param array        $respuesta Respuesta del service: `bar_code` (el último código marcado, o vacío) y
+     *                                `photo_article_ids` (artículos del catálogo del turno con foto, en orden).
      *
      * @return array Columnas de medio para `store_pending_ai_message()`. Vacío = la respuesta
      *               sale como texto.
      */
-    private function resolve_product_photo(WhatsappChat $chat, string $texto, string $bar_code): array
+    private function resolve_product_photo(WhatsappChat $chat, string $texto, array $respuesta): array
     {
+        // Código de barras que marcó el agente (camino de compatibilidad) y artículos ya resueltos contra el
+        // catálogo del turno (camino nuevo: sirve aunque el artículo no tenga código de barras).
+        $bar_code          = isset($respuesta['bar_code']) ? (string) $respuesta['bar_code'] : '';
+        $photo_article_ids = isset($respuesta['photo_article_ids']) ? (array) $respuesta['photo_article_ids'] : [];
+
         // Sin marcador no hay nada que resolver: es el 100% de las respuestas de antes de esta
         // misión y tienen que seguir saliendo byte por byte iguales.
-        if ($bar_code === '') {
+        if ($bar_code === '' && empty($photo_article_ids)) {
             return [];
         }
 
@@ -329,44 +344,60 @@ class GenerateWhatsappAiReplyJob implements ShouldQueue
                 return [];
             }
 
-            $article = Article::where('user_id', $chat->user_id)
-                ->where('bar_code', $bar_code)
-                ->with('images')
-                ->first();
+            // Sin ids resueltos se prueba el camino de siempre: el artículo del dueño con ese `bar_code`.
+            if (empty($photo_article_ids)) {
+                $article = Article::where('user_id', $chat->user_id)
+                    ->where('bar_code', $bar_code)
+                    ->first();
 
-            if (is_null($article)) {
-                // Pasa y no es un error del sistema: el modelo puede inventar un código, o
-                // copiar mal uno del catálogo. Se loguea en info porque lo que importa es poder
-                // contar cuán seguido el agente marca un producto que no existe.
-                Log::channel('daily')->info('GenerateWhatsappAiReplyJob: el agente marcó una foto de un artículo que no existe en el catálogo del negocio.', [
-                    'chat_id'  => $this->chat_id,
-                    'bar_code' => $bar_code,
-                ]);
+                if (is_null($article)) {
+                    // Pasa y no es un error del sistema: el modelo puede inventar un código, o copiar mal uno
+                    // del catálogo (o poner la Ref de otro dueño). Se loguea en info para poder contar cuán
+                    // seguido el agente marca un producto que no existe.
+                    Log::channel('daily')->info('GenerateWhatsappAiReplyJob: el agente marcó una foto de un artículo que no existe en el catálogo del negocio.', [
+                        'chat_id'  => $this->chat_id,
+                        'bar_code' => $bar_code,
+                    ]);
 
-                return [];
+                    return [];
+                }
+
+                $photo_article_ids = [(int) $article->id];
             }
 
-            // `hosting_url` es una URL pública absoluta del catálogo (la misma que ve cualquiera
-            // en la tienda del negocio), y por eso esta es la única foto de todo el módulo que
-            // sale por `link` en vez de subirse por multipart (D1): bajarla para volver a
-            // subirla sería pagar dos viajes por un archivo que ya es público a propósito.
-            $image       = $article->images->first();
-            $hosting_url = is_null($image) ? '' : trim((string) $image->hosting_url);
+            // Una sola query y un solo criterio de «tiene foto» (el mismo que `Foto: sí|no` del catálogo): la
+            // imagen marcada `first`, con la URL normalizada. Los que no tienen quedan afuera y el resto sale en
+            // el orden en que el modelo los marcó. `hosting_url` es una URL pública absoluta del catálogo y por
+            // eso sale por `link` en vez de subirse por multipart (D1).
+            $urls_by_id = WhatsappTurnCatalogHelper::photo_urls_by_article_id($photo_article_ids, (int) $chat->user_id);
+            $urls       = [];
+            foreach ($photo_article_ids as $article_id) {
+                if (isset($urls_by_id[(int) $article_id])) {
+                    $urls[] = $urls_by_id[(int) $article_id];
+                }
+            }
 
-            if ($hosting_url === '') {
+            if (empty($urls)) {
                 Log::channel('daily')->info('GenerateWhatsappAiReplyJob: el artículo marcado no tiene foto cargada, la respuesta sale como texto.', [
-                    'chat_id'    => $this->chat_id,
-                    'bar_code'   => $bar_code,
-                    'article_id' => $article->id,
+                    'chat_id'     => $this->chat_id,
+                    'bar_code'    => $bar_code,
+                    'article_ids' => $photo_article_ids,
                 ]);
 
                 return [];
             }
 
-            return [
+            // La primera foto viaja como siempre; las otras (hasta 3) se guardan para mandarlas al enviar.
+            $columns = [
                 'media_type' => 'image',
-                'media_url'  => $hosting_url,
+                'media_url'  => $urls[0],
             ];
+
+            if (count($urls) > 1) {
+                $columns['ai_extra_media_urls'] = array_slice($urls, 1, WhatsappTurnCatalogHelper::PHOTOS_MAX - 1);
+            }
+
+            return $columns;
         } catch (\Throwable $exception) {
             Log::channel('daily')->error('GenerateWhatsappAiReplyJob: excepción al resolver la foto del producto, la respuesta sale como texto.', [
                 'chat_id' => $this->chat_id,
