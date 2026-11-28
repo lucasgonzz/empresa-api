@@ -276,22 +276,38 @@ class CotizacionEnvioGuardHelper
      */
     const PATRON_CONDICION_DE_GRATUIDAD = '/\b(?:si|siempre\s+que|cuando|salvo|excepto|menos|pero|aunque|solo|s[oó]lo|solamente|m[ií]nimo|a\s+partir|desde|hasta|m[aá]s\s+de|menos\s+de|mayor\w*|menor\w*|superior\w*|supera\w*|alcanz\w*|lleg\w*|compras?|pedidos?)\b/iu';
 
-    /** Referencia genérica a la zona del propio cliente («para su zona», «en tu localidad»): no nombra ningún lugar. */
-    const PATRON_ZONA_GENERICA = '/\b(?:su|tu|sus)\s+(?:zona|localidad|domicilio|barrio|ciudad|direcci[oó]n)\b/iu';
+    /** Referencia genérica a la zona del propio cliente («para su zona», «en tu barrio»): no nombra ningún lugar. */
+    const PATRON_ZONA_GENERICA = '/\b(?:su|tu)\s+(?:zona|localidad|barrio)\b/iu';
 
-    /** Palabras que cortan un nombre de lugar y las que, al empezarlo, indican que no es un lugar («tu pedido»). */
-    const PALABRAS_QUE_CORTAN_UN_LUGAR = ['el', 'la', 'los', 'las', 'lo', 'un', 'una', 'y', 'e', 'o', 'u', 'no', 'sin', 'con', 'por', 'que', 'se', 'es', 'son', 'sale', 'salen', 'queda', 'quedan', 'cuesta', 'cuestan', 'vale', 'valen', 'tiene', 'tienen', 'esta', 'estan', 'cobra', 'cobramos', 'cobran', 'del', 'de', 'al', 'a', 'en', 'para', 'hasta', 'hacia', 'desde', 'como', 'si', 'pero', 'asi', 'gratis', 'gratuito', 'costo', 'precio', 'envio', 'envios', 'total', 'sera', 'seria', 'saldria', 'va', 'van', 'tu', 'su', 'mi', 'tus', 'sus', 'mis', 'este', 'esta', 'ese', 'esa', 'esto', 'eso', 'todo', 'toda', 'cada', 'ahi', 'aca', 'aqui', 'breve', 'ahora', 'hoy'];
+    /**
+     * Palabras vacías (lista cerrada, ya sin tildes y en minúsculas): artículos, preposiciones, conectores,
+     * pronombres, verbos genéricos de costo y envío, y el vocabulario de envío, costo y gratuidad. Todo lo demás es
+     * una palabra con contenido (un lugar, un producto, un día…) y tiene que estar en la oración del comercio.
+     */
+    const PALABRAS_VACIAS = [
+        'el', 'la', 'los', 'las', 'lo', 'un', 'una', 'unos', 'unas',
+        'a', 'al', 'ante', 'bajo', 'con', 'contra', 'de', 'del', 'desde', 'en', 'entre', 'hacia', 'hasta', 'para', 'por', 'segun', 'sin', 'sobre', 'tras',
+        'y', 'e', 'o', 'u', 'ni', 'que', 'como', 'si', 'pero', 'asi', 'cuando',
+        'me', 'te', 'se', 'le', 'les', 'nos', 'tu', 'tus', 'su', 'sus', 'mi', 'mis', 'vos', 'usted', 'ustedes', 'yo',
+        'este', 'esta', 'ese', 'esa', 'esto', 'eso',
+        'es', 'son', 'sale', 'salen', 'saldra', 'saldria', 'cuesta', 'cuestan', 'tiene', 'tienen', 'hacemos', 'realizamos', 'hace', 'hacen',
+        'queda', 'quedan', 'vale', 'valen', 'sera', 'seria', 'va', 'van', 'cobra', 'cobramos', 'cobran', 'lleva', 'llevan',
+        'envio', 'envios', 'costo', 'costos', 'cargo', 'gratis', 'gratuito', 'gratuita', 'no', 'precio', 'precios', 'peso', 'pesos',
+        'zona', 'pedido', 'pedidos', 'total', 'final',
+    ];
 
     /**
      * ¿La oración que el filtro sacaría repite lo que ya dijo una persona del negocio en este chat?
      *
-     * Criterio (decisión del Coordinador, rondas 2 y 3): ante la duda, se deriva. Sólo se rescata si:
-     *  (0) es la misma oración del comercio, tal cual (salvo mayúsculas, espacios y puntuación final); o
-     *  (a) afirma gratuidad SIN ninguna cifra, y hay una oración del comercio que habla de envío, afirma gratuidad
-     *      sin condición ni cifra y contiene los lugares que nombra el modelo (o habla de «su zona»); o
-     *  (b) trae importes y NO es una gratuidad: todos sus importes se tratan como costo de envío (en la oración del
-     *      modelo no se clasifica el papel) y cada cifra aparece como costo de envío en UNA oración del comercio que
-     *      habla de envío, SIN condición, y que contiene los lugares que nombra el modelo (o habla de «su zona»).
+     * Criterio mecánico (decisión del Coordinador, ronda 3): ante la duda, se deriva. Sólo se rescata si:
+     *  (0) es la misma oración del comercio, tal cual (salvo mayúsculas, acentos, espacios y puntuación final); o
+     *  (1) existe UNA oración del comercio que habla de envío y no tiene condición ni excepción (si, supera,
+     *      mínimo, desde, hasta, compra, pedido…), y además
+     *  (2) cada cifra del modelo está en esa oración como costo de envío (en la oración del modelo no se clasifica el
+     *      papel: todo importe suyo es costo; una gratuidad con cifra se deriva siempre), y
+     *  (3) TODAS las palabras con contenido de la oración del modelo (las que no son palabras vacías: lugares,
+     *      productos, días…) están entre las palabras de esa oración del comercio. Excepción única: si la oración del
+     *      comercio habla de «su zona» sin nombrar lugares, (3) no se exige.
      * Un total no se rescata con un importe de envío.
      *
      * @param  string  $oracion  La oración del modelo.
@@ -318,8 +334,8 @@ class CotizacionEnvioGuardHelper
         $es_importe   = count($importes) && ! preg_match(self::PATRON_GRATUIDAD, $oracion)
             && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion);
 
-        $zonas    = self::zonas_nombradas($oracion);
-        $textual  = self::normalizar_oracion($oracion);
+        $textual   = self::normalizar_oracion($oracion);
+        $con_contenido = self::palabras_con_contenido($oracion);
 
         foreach ($dichos_del_negocio as $dicho) {
 
@@ -336,18 +352,23 @@ class CotizacionEnvioGuardHelper
                     return true;
                 }
 
+                // (1) Habla de envío y no trae condición.
                 if (! ($es_gratuidad || $es_importe) || ! preg_match(self::PATRON_ENVIO, $frase)
-                    || ! self::zonas_en_la_frase($zonas, $frase)
                     || preg_match(self::PATRON_CONDICION_DE_GRATUIDAD, $frase)) {
                     continue;
                 }
 
-                // (a) Gratuidad sin condición ni cifra en la oración del comercio.
+                // (3) Todas las palabras con contenido del modelo están en la oración del comercio (o ésta habla de «su zona»).
+                if (! preg_match(self::PATRON_ZONA_GENERICA, $frase) && count(array_diff($con_contenido, self::palabras_de($frase)))) {
+                    continue;
+                }
+
+                // (2) Gratuidad sin cifra en la oración del comercio.
                 if ($es_gratuidad && preg_match(self::PATRON_GRATUIDAD, $frase) && ! count(self::importes_con_papel($frase))) {
                     return true;
                 }
 
-                // (b) Cada cifra del modelo, como costo, en esta misma oración del comercio.
+                // (2) Cada cifra del modelo, como costo, en esta misma oración del comercio.
                 if ($es_importe && self::importes_incluidos($importes, self::importes_con_papel($frase))) {
                     return true;
                 }
@@ -355,6 +376,31 @@ class CotizacionEnvioGuardHelper
         }
 
         return false;
+    }
+
+    /**
+     * Todas las palabras de un texto (letras, en minúsculas y sin tildes; las cifras no cuentan).
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    private static function palabras_de(string $texto): array
+    {
+        preg_match_all('/\p{L}+/u', self::sin_acentos(mb_strtolower($texto)), $encontradas);
+
+        return array_values(array_unique($encontradas[0]));
+    }
+
+    /**
+     * Las palabras de un texto que no son palabras vacías (PALABRAS_VACIAS): lo que dice la oración más allá del
+     * armazón de «el envío sale…».
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    private static function palabras_con_contenido(string $texto): array
+    {
+        return array_values(array_diff(self::palabras_de($texto), self::PALABRAS_VACIAS));
     }
 
     /**
@@ -449,78 +495,6 @@ class CotizacionEnvioGuardHelper
             }
 
             if (! $esta) {
-                return false;
-            }
-        }
-
-        return true;
-    }
-
-    /**
-     * Los lugares que nombra la oración del modelo, sin importar mayúsculas ni acentos: lo que sigue a «a», «al»,
-     * «en», «para», «hacia», «hasta», «de» o «del» («la calera», «el interior», «otra provincia»), sin el artículo.
-     * Lo que no es un lugar («tu pedido») se ignora; lo que no es un lugar pero no se puede distinguir se incluye, y
-     * entonces la oración se deriva (ante la duda, derivar).
-     *
-     * @param  string  $oracion
-     * @return array<int, string>  En minúsculas y sin acentos.
-     */
-    private static function zonas_nombradas(string $oracion): array
-    {
-        $zonas = [];
-
-        $texto = self::sin_acentos(mb_strtolower($oracion));
-
-        if (! preg_match_all('/\b(?:a|al|en|para|hacia|hasta|del|de)\s+(\p{L}+(?:\s+\p{L}+){0,3})/u', $texto, $encontradas)) {
-            return $zonas;
-        }
-
-        foreach ($encontradas[1] as $candidato) {
-
-            $palabras = preg_split('/\s+/', $candidato, -1, PREG_SPLIT_NO_EMPTY);
-
-            // Un artículo al principio no cuenta: «a la calera» es «calera».
-            if (count($palabras) && in_array($palabras[0], ['la', 'el', 'los', 'las'], true)) {
-                array_shift($palabras);
-            }
-
-            $lugar = [];
-
-            foreach ($palabras as $palabra) {
-
-                if (in_array($palabra, self::PALABRAS_QUE_CORTAN_UN_LUGAR, true)) {
-                    break;
-                }
-
-                $lugar[] = $palabra;
-            }
-
-            if (count($lugar)) {
-                $zonas[] = implode(' ', $lugar);
-            }
-        }
-
-        return $zonas;
-    }
-
-    /**
-     * ¿Cada lugar que nombró el modelo está en la oración del comercio? Si la oración del comercio habla de «su
-     * zona» (sin nombrar lugares), vale para cualquier zona del cliente.
-     *
-     * @param  array<int, string>  $zonas  Ya normalizadas (zonas_nombradas()).
-     * @param  string  $frase
-     * @return bool
-     */
-    private static function zonas_en_la_frase(array $zonas, string $frase): bool
-    {
-        if (! count($zonas) || preg_match(self::PATRON_ZONA_GENERICA, $frase)) {
-            return true;
-        }
-
-        $normalizada = self::sin_acentos(mb_strtolower($frase));
-
-        foreach ($zonas as $zona) {
-            if (mb_strpos($normalizada, $zona) === false) {
                 return false;
             }
         }
