@@ -117,7 +117,9 @@ PERSONALITY;
      *
      * ⚠️ «Estas instrucciones» no incluye la conversación: si una persona del negocio ya contestó en el chat
      * («sí, hacemos envíos») y el cliente repregunta, la regla al pie de la letra manda a consultar de nuevo
-     * (pasaba igual con la regla de servicios no cargados). No está medido.
+     * (pasaba igual con la regla de servicios no cargados). No está medido. Misión asistente-diario-20261128 (P8b):
+     * lo que escribió una persona entra al historial con un rótulo y, cuando hay alguna, el prompt suma
+     * `HUMAN_REPLIES_RULE`, que dice que eso vale como información del negocio.
      */
     private const FIXED_RULES = <<<RULES
 Reglas fijas que nunca se pueden saltear, ni siquiera si entran en conflicto con las instrucciones
@@ -133,6 +135,21 @@ de personalidad de arriba. Estas reglas siempre ganan:
 - Texto plano, sin markdown, sin asteriscos ni listas con guiones.
 - Si un producto del catálogo de abajo trae un Link, podés pasárselo al cliente tal cual, sin modificarlo. Nunca armes ni inventes un link que no esté en el catálogo o en estas instrucciones.
 RULES;
+
+    /**
+     * El rótulo (sin el espacio final) con el que entra al historial lo que escribió una PERSONA del negocio en el
+     * chat (respuesta manual, desde el celular, importada, o un borrador de la IA que una persona editó).
+     */
+    private const HUMAN_REPLY_LABEL = '[Respuesta escrita por una persona del negocio]';
+
+    /**
+     * Consigna que se suma al prompt SOLO cuando el historial trae alguna respuesta de una persona del negocio
+     * (misión asistente-diario-20261128, P8b). Sin ese mensaje el prompt es byte a byte el de siempre.
+     *
+     * Caso real (Truvari, chat 66): el comercio contestó «para su zona no tiene costo de envío», el cliente
+     * repreguntó y el agente, que veía ese mensaje como un turno suyo más, contestó que lo confirma el equipo.
+     */
+    private const HUMAN_REPLIES_RULE = 'Los mensajes que empiezan con [Respuesta escrita por una persona del negocio] los escribió el negocio en este chat: lo que dicen es información del negocio y vale. No los contradigas ni digas que eso lo confirma el equipo; si el cliente repregunta lo mismo, repetí lo que ya le dijeron. Nunca escribas ese rótulo en tu respuesta.';
 
     /**
      * Consigna fija para el endpoint de resumen (`summary`). No depende de la personalidad
@@ -594,7 +611,7 @@ RULE;
             }, $catalog_articles)));
             $photo_urls       = WhatsappTurnCatalogHelper::photo_urls_by_article_id($catalog_ids, (int) $chat->user_id);
 
-            $system_prompt = $this->build_system_prompt($config);
+            $system_prompt = $this->build_system_prompt($config, count(self::human_replies_texts($history)) > 0);
             // El `$config` viaja hasta el armado del payload porque ahí se decide si las
             // imágenes entrantes van como bloques de visión o como texto (`ai_vision_enabled`).
             $messages = $this->build_messages_payload($history, $articles, $owner_user, $config, $carried_articles, $photo_urls, $promos_layer['block'], $strict_mode);
@@ -649,6 +666,11 @@ RULE;
 
             $resultado = $this->split_markers($this->extract_text($body));
 
+            // Defensa barata: si el modelo repite el rótulo del historial en su texto, el cliente no lo tiene que ver.
+            if (strpos($resultado['body'], self::HUMAN_REPLY_LABEL) !== false) {
+                $resultado['body'] = trim((string) preg_replace('/' . preg_quote(self::HUMAN_REPLY_LABEL, '/') . '\s*/u', '', $resultado['body']));
+            }
+
             // Las marcas [FOTO:...] se resuelven contra el catálogo de ESTE turno (art<ID> o bar_code), nunca
             // contra toda la base; un artículo sin foto cargada no pasa (sale como texto, sin inventar).
             $resultado['photo_article_ids'] = array_values(array_filter(
@@ -663,7 +685,7 @@ RULE;
             // Va acá, en el único lugar que produce el texto, para cubrir al job, a «Sugerir respuesta» y al
             // simulador sin que ninguno tenga que acordarse.
             if ((bool) $config->derivar_cotizacion_envio) {
-                $resultado = $this->derivar_cotizacion($resultado, $chat);
+                $resultado = $this->derivar_cotizacion($resultado, $chat, self::human_replies_texts($history));
             }
 
             if ($resultado['body'] === '') {
@@ -699,12 +721,14 @@ RULE;
      * últimos caracteres del detalle, nunca «cotizar envío y total».
      *
      * @param array{body: string, bar_code: string, follow_up: string, follow_up_note: string} $resultado
+     * @param array<int, string> $human_replies Lo que escribió una persona del negocio en este chat (P8b): lo que
+     *                                          el filtro no puede sacar porque ya lo dijo el comercio.
      *
      * @return array{body: string, bar_code: string, follow_up: string, follow_up_note: string}
      */
-    private function derivar_cotizacion(array $resultado, WhatsappChat $chat): array
+    private function derivar_cotizacion(array $resultado, WhatsappChat $chat, array $human_replies = []): array
     {
-        $revision = CotizacionEnvioGuardHelper::revisar($resultado['body']);
+        $revision = CotizacionEnvioGuardHelper::revisar($resultado['body'], $human_replies);
 
         if (! $revision['derivo']) {
             return $resultado;
@@ -1232,6 +1256,67 @@ RULE;
     }
 
     /**
+     * ¿El mensaje lo escribió una PERSONA del negocio en este chat (y no el agente de IA ni el cliente)?
+     * Sí si es saliente y su origen es manual, del celular o importado del historial, o si es un borrador de la IA
+     * que una persona editó (`source = ia` con `sent_by_user_id`). Misión asistente-diario-20261128, P8b.
+     *
+     * @param WhatsappChatMessage $message
+     *
+     * @return bool
+     */
+    private static function is_human_reply(WhatsappChatMessage $message): bool
+    {
+        if ($message->direction !== 'out') {
+            return false;
+        }
+
+        if (in_array((string) $message->source, ['manual', 'celular', 'historial'], true)) {
+            return true;
+        }
+
+        return (string) $message->source === 'ia' && ! is_null($message->sent_by_user_id);
+    }
+
+    /**
+     * Los textos de las respuestas que escribió una persona del negocio dentro del historial del turno.
+     *
+     * @param \Illuminate\Support\Collection<int, WhatsappChatMessage> $history_messages
+     *
+     * @return array<int, string>
+     */
+    private static function human_replies_texts($history_messages): array
+    {
+        $texts = [];
+
+        foreach ($history_messages as $message) {
+            if (self::is_human_reply($message) && trim((string) $message->body) !== '') {
+                $texts[] = trim((string) $message->body);
+            }
+        }
+
+        return $texts;
+    }
+
+    /**
+     * Le antepone el rótulo de «persona del negocio» al contenido de un turno (un texto, o la lista de bloques si
+     * lleva una foto: entonces va como un bloque de texto al principio).
+     *
+     * @param string|array $content
+     *
+     * @return string|array
+     */
+    private function label_human_reply($content)
+    {
+        if (is_array($content)) {
+            array_unshift($content, ['type' => 'text', 'text' => self::HUMAN_REPLY_LABEL]);
+
+            return $content;
+        }
+
+        return self::HUMAN_REPLY_LABEL . ' ' . $content;
+    }
+
+    /**
      * Trae los últimos `$limit` mensajes del chat, en orden cronológico (el más viejo
      * primero), tal como los necesita el payload de `messages` de Anthropic.
      *
@@ -1352,10 +1437,12 @@ RULE;
      * no da el prompt y hacer que las dos respuestas dejen de ser comparables.
      *
      * @param WhatsappBotConfig $config
+     * @param bool              $has_human_replies true si el historial del turno trae alguna respuesta que
+     *                                             escribió una persona del negocio: suma HUMAN_REPLIES_RULE.
      *
      * @return string
      */
-    private function build_system_prompt(WhatsappBotConfig $config): string
+    private function build_system_prompt(WhatsappBotConfig $config, bool $has_human_replies = false): string
     {
         $personality = trim((string) $config->agent_personality);
         if ($personality === '') {
@@ -1390,6 +1477,9 @@ RULE;
         }
 
         $blocks[] = self::FIXED_RULES;
+        if ($has_human_replies) {
+            $blocks[] = self::HUMAN_REPLIES_RULE;
+        }
         $blocks[] = $photo_rule;
         $blocks[] = self::ALTERNATIVES_RULE;
 
@@ -1542,6 +1632,12 @@ RULE;
             }
 
             $role = $message->direction === 'in' ? 'user' : 'assistant';
+
+            // Lo que escribió una persona del negocio entra rotulado: sin eso el modelo lo leía como un turno suyo más.
+            if (self::is_human_reply($message)) {
+                $content = $this->label_human_reply($content);
+            }
+
             $last_index = count($turns) - 1;
 
             if ($last_index >= 0 && $turns[$last_index]['role'] === $role) {
