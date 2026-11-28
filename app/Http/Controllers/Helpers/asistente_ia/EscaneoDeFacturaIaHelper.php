@@ -142,11 +142,51 @@ class EscaneoDeFacturaIaHelper
     {
         $desde = Carbon::now()->subHours(self::HORAS_ULTIMO_ESCANEO);
 
+        // Primero el último escaneo cuya compra existe: un escaneo huérfano (su compra se borró) no figura «cargado».
+        $con_compra_viva = self::ultimo_escaneo_que_cumple($owner_id, $conversation, $desde, true);
+
+        if (!is_null($con_compra_viva)) {
+
+            return $con_compra_viva;
+        }
+
+        // Si no hay ninguno con compra viva, el último a secas: detalle() dice que la compra se borró.
+        return self::ultimo_escaneo_que_cumple($owner_id, $conversation, $desde, false);
+    }
+
+    /**
+     * El último escaneo de la conversación en la ventana y, si no hay, el último del dueño; con
+     * `$solo_con_compra_viva` se saltean los que quedaron sin compra (la compra se borró).
+     *
+     * @param  int  $owner_id
+     * @param  \App\Models\AiConversation|null  $conversation
+     * @param  \Carbon\Carbon  $desde  Inicio de la ventana.
+     * @param  bool  $solo_con_compra_viva
+     * @return \App\Models\ProviderOrderScan|null
+     */
+    protected static function ultimo_escaneo_que_cumple($owner_id, $conversation, $desde, $solo_con_compra_viva)
+    {
+        // Restricción común: sin compra asociada (nunca tuvo) o con la compra existente en la tabla.
+        $filtro_de_compra = function ($consulta) use ($solo_con_compra_viva) {
+
+            if ($solo_con_compra_viva) {
+
+                $consulta->where(function ($viva) {
+                    $viva->whereNull('provider_order_id')
+                        ->orWhereIn('provider_order_id', function ($compras) {
+                            $compras->select('id')->from('provider_orders');
+                        });
+                });
+            }
+
+            return $consulta;
+        };
+
         if (!is_null($conversation)) {
 
-            $de_la_charla = ProviderOrderScan::where('user_id', $owner_id)
+            $de_la_charla = $filtro_de_compra(ProviderOrderScan::where('user_id', $owner_id)
                                                 ->where('ai_conversation_id', (int) $conversation->id)
-                                                ->where('created_at', '>=', $desde)
+                                                ->where('created_at', '>=', $desde))
                                                 ->orderBy('id', 'DESC')
                                                 ->first();
 
@@ -156,8 +196,8 @@ class EscaneoDeFacturaIaHelper
             }
         }
 
-        return ProviderOrderScan::where('user_id', $owner_id)
-                                    ->where('created_at', '>=', $desde)
+        return $filtro_de_compra(ProviderOrderScan::where('user_id', $owner_id)
+                                    ->where('created_at', '>=', $desde))
                                     ->orderBy('id', 'DESC')
                                     ->first();
     }
@@ -200,6 +240,15 @@ class EscaneoDeFacturaIaHelper
             // Lo que el confirmar de la revisión asentó (agregados / creados / omitidos), o null si no hay registro.
             'aplicado'               => is_array($scan->aplicado) ? $scan->aplicado : null,
         ];
+
+        // La compra de este escaneo se borró (borrado duro): la factura NO está cargada, aunque el escaneo diga «listo».
+        if (!is_null($scan->provider_order_id) && is_null($compra)) {
+
+            $datos['estado'] = 'compra_borrada';
+            $datos['mensaje'] = 'La compra de esta factura se borró: la factura NO está cargada. Si la quieren cargar, se arma de nuevo.';
+
+            return $datos;
+        }
 
         if ($estado === self::ESTADO_EN_PROCESO) {
 

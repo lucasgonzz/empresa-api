@@ -320,7 +320,9 @@ final class AgentObjectivePromptBuilder
         return [
             'Objetivo de la conversación, que te pidió el negocio: que el cliente te deje el pedido por este chat.',
             'Cuando quiera comprar, armá el pedido con él: qué productos y cuántos de cada uno, y a nombre de quién.'
-                .' Repasale el pedido en un mensaje y decile que se lo confirmamos con el total y los pasos a seguir.'
+                .' Repasale el pedido en un mensaje, un renglón por producto con su cantidad (si pidió lo mismo en varios colores o'
+                .' variantes, un renglón por cada uno con su cantidad, por ejemplo «50 m de cable rojo» y «50 m de cable marrón»),'
+                .' y decile que se lo confirmamos con el total y los pasos a seguir.'
                 .' No lo des por confirmado vos, ni acuerdes el pago, el envío o el retiro.',
             'Priorizá el pedido por acá: no lo invites a pasar por el local salvo que el cliente lo pregunte.',
         ];

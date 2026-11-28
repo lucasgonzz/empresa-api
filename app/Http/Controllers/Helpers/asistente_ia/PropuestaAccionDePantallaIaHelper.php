@@ -113,6 +113,9 @@ class PropuestaAccionDePantallaIaHelper
             return RespuestaDeCargaIa::error(PermisosIaHelper::mensaje_sin_permiso('acciones de pantalla'));
         }
 
+        // El id del pedido leído (si la consulta es de un pedido): al final se le suma el contacto del comprador.
+        $id_del_pedido_leido = null;
+
         // Un pedido de la tienda se lee por el N° que ve el dueño, no por su id (A3, ver pedido_resuelto()).
         if (preg_match(self::RUTA_DE_PEDIDO, Catalogo::normalizar_ruta($ruta), $m_pedido)) {
 
@@ -125,6 +128,7 @@ class PropuestaAccionDePantallaIaHelper
 
             $ruta = 'api/order/{order}';
             $parametros = ['order' => $pedido['id']];
+            $id_del_pedido_leido = (int) $pedido['id'];
         }
 
         $resuelta = self::resolver_para($contexto, 'GET', $ruta, $parametros, $consulta);
@@ -171,13 +175,53 @@ class PropuestaAccionDePantallaIaHelper
             self::deshacer_lo_escrito($nivel);
         }
 
-        return [
+        $devuelve = [
             'ok'        => true,
             'metodo'    => 'GET',
             'ruta'      => $llamada['uri'],
             'status'    => $llamada['status'],
             'respuesta' => $llamada['cuerpo'],
             'recortado' => $llamada['recortado'],
+        ];
+
+        // Misión asistente-diario-20261128 (P2): el contacto del pedido va AL LADO de `respuesta` (no adentro) para
+        // que sobreviva al recorte del cuerpo, y aclara que es el del comprador de la tienda y no el de un cliente.
+        if (!is_null($id_del_pedido_leido) && (int) $llamada['status'] < 400) {
+
+            $devuelve = array_merge($devuelve, self::contacto_del_comprador($contexto, $id_del_pedido_leido));
+        }
+
+        return $devuelve;
+    }
+
+    /**
+     * El bloque `comprador_del_pedido` (nombre, teléfono, mail, dirección de entrega y cliente vinculado) y la nota
+     * que le dice al modelo que ese contacto es el del comprador de la tienda. Vacío si el pedido no se encuentra.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  int  $id_del_pedido  El id del pedido leído.
+     * @return array
+     */
+    protected static function contacto_del_comprador(ContextoDeCargaIa $contexto, $id_del_pedido)
+    {
+        $pedido = Order::with('buyer', 'buyer.comercio_city_client')
+            ->where('user_id', $contexto->owner_id)
+            ->find($id_del_pedido);
+
+        if (is_null($pedido)) {
+
+            return [];
+        }
+
+        return [
+            'comprador_del_pedido' => [
+                'nombre'               => DatosDelCompradorIaHelper::nombre($pedido),
+                'telefono'             => DatosDelCompradorIaHelper::telefono($pedido),
+                'email'                => DatosDelCompradorIaHelper::email($pedido),
+                'direccion_de_entrega' => DatosDelCompradorIaHelper::direccion_de_entrega($pedido),
+                'cliente_del_sistema'  => DatosDelCompradorIaHelper::cliente_vinculado($pedido),
+            ],
+            'nota_del_comprador'   => self::NOTA_DEL_COMPRADOR,
         ];
     }
 
@@ -459,6 +503,9 @@ class PropuestaAccionDePantallaIaHelper
 
         return is_null($nombre) || trim((string) $nombre) === '' ? 'sin cliente' : trim((string) $nombre);
     }
+
+    /** Lo que se le aclara al modelo junto al contacto del comprador de un pedido (misión asistente-diario-20261128, P2). */
+    const NOTA_DEL_COMPRADOR = 'Los datos de contacto de este pedido son los del comprador de la tienda (comprador_del_pedido). Informalos de acá; no los busques en la ficha de clientes, que es otra cosa.';
 
     /**
      * `DELETE|GET api/order/{order}`, con el {param} literal o con el número metido en la ruta.

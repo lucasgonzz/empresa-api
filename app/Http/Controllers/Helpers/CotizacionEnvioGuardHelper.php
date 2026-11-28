@@ -139,14 +139,29 @@ class CotizacionEnvioGuardHelper
     const PATRON_CORTE = '/(\n+|(?<=[.!?…])(?<!\b\p{L}\.)(?<!\bav\.)(?<!\bavda\.)(?<!\bgral\.)(?<!\bsta\.)(?<!\bsto\.)(?<!\bcnel\.)(?<!\btte\.)(?<!\bpte\.)(?<!\bpres\.)(?<!\bdr\.)(?<!\bdra\.)(?<!\bing\.)(?<!\blic\.)(?<!\bprof\.)(?<!\bsr\.)(?<!\bsra\.)(?<!\bsrta\.)(?<!\bbv\.)(?<!\bblvd\.)(?<!\bpje\.)(?<!\bctra\.)(?<!\bcno\.)(?<!\bdto\.)(?<!\bmza\.)(?<!\burb\.)(?<!\bkm\.)(?<!\bdpto\.)(?<!\bdepto\.)(?<!\besq\.)(?<!\btel\.)(?<!\bnro\.)(?<!\bn°\.)(?<!\baprox\.)(?<!\bapr\.)(?<!\bhs\.)(?<!\bmáx\.)(?<!\bmín\.)(?<!\bmax\.)(?<!\bmin\.)(?<!\bc\/u\.)(?<!\bud\.)(?<!\buds\.)(?<!\bvs\.)(?<!\bcp\.)[ \t]+)/iu';
 
     /**
+     * Los importes con su cifra (con signo $, con puntos de miles, «N pesos», «N mil», «ARS N»): el grupo captura
+     * el número. Sirve para comparar lo que dijo el modelo con lo que dijo el comercio (misión
+     * asistente-diario-20261128, P8b); no reemplaza a PATRON_IMPORTE, que es el que decide si hay cotización.
+     */
+    const PATRON_CIFRA_DEL_IMPORTE = '/(?:\$\s*|\bars\s*)(\d[\d.,]*)|\b(\d{1,3}(?:\.\d{3})+(?:,\d+)?)\b|\b(\d+(?:[.,]\d+)?)\s*(?:pesos|ars|lucas|mil)\b/iu';
+
+    /**
      * Revisa el cuerpo que está por salir. Sin ninguna oración de cotización devuelve el texto tal cual, byte por
      * byte, con `derivo = false`.
      *
+     * Misión asistente-diario-20261128 (P8): lo que el COMERCIO ya dijo en el chat (una persona del negocio, no la IA)
+     * es información del negocio y no una cotización inventada por el modelo. Una oración que el filtro sacaría se
+     * CONSERVA si repite una gratuidad que dijo el comercio o si todos sus importes son los que el comercio dijo
+     * para el envío; un importe distinto sigue derivándose. Y la frase fija no se suma si el texto que quedó ya dice
+     * que el equipo confirma el envío y el total (si no, se leía dos veces).
+     *
      * @param  string  $cuerpo  Texto ya sin marcadores internos.
+     * @param  array<int, string>  $dichos_del_negocio  Textos de los mensajes que escribió una persona del negocio en
+     *                                                  este chat (vacío = el filtro de siempre).
      * @return array{body: string, derivo: bool, frases: int}
      *         `frases` es la cantidad de oraciones sacadas.
      */
-    public static function revisar(string $cuerpo): array
+    public static function revisar(string $cuerpo, array $dichos_del_negocio = []): array
     {
         $sin_cambios = ['body' => $cuerpo, 'derivo' => false, 'frases' => 0];
 
@@ -183,7 +198,7 @@ class CotizacionEnvioGuardHelper
             $anterior = $previo;
             $previo   = $texto;
 
-            if (trim($texto) === '' || ! self::es_cotizacion($texto, $anterior)) {
+            if (trim($texto) === '' || ! self::es_cotizacion($texto, $anterior) || self::lo_dijo_el_comercio($texto, $dichos_del_negocio)) {
                 $conservadas[] = [$texto, $separador];
                 continue;
             }
@@ -213,11 +228,278 @@ class CotizacionEnvioGuardHelper
         $resto = preg_replace('/[ \t]+\n/', "\n", $resto);
         $resto = trim((string) preg_replace('/\n{3,}/', "\n\n", (string) $resto));
 
+        // La frase fija sólo se suma si lo que quedó no dice ya lo mismo (P8a): si no, el cliente la leía dos veces.
+        $ya_lo_dice = $resto !== '' && self::ya_dice_que_lo_confirma_el_equipo($conservadas);
+
         return [
-            'body'   => $resto === '' ? self::FRASE_FIJA : $resto . "\n\n" . self::FRASE_FIJA,
+            'body'   => $resto === '' ? self::FRASE_FIJA : ($ya_lo_dice ? $resto : $resto . "\n\n" . self::FRASE_FIJA),
             'derivo' => true,
             'frases' => $frases,
         ];
+    }
+
+    /**
+     * ¿Alguna oración que quedó ya dice que el equipo confirma el envío o el total? Una forma de «confirmar», «el
+     * equipo» y una palabra de envío o de total en la MISMA oración («el costo de envío y el total final los
+     * confirma el equipo»). Con eso la frase fija sobra.
+     *
+     * @param  array<int, array{0: string, 1: string}>  $unidades  [texto, separador] de lo que quedó.
+     * @return bool
+     */
+    private static function ya_dice_que_lo_confirma_el_equipo(array $unidades): bool
+    {
+        foreach ($unidades as $unidad) {
+
+            $texto = $unidad[0];
+
+            if (preg_match('/\bconfirm\w*/iu', $texto)
+                && preg_match('/\bequipo\b/iu', $texto)
+                && (preg_match(self::PATRON_ENVIO, $texto) || preg_match(self::PATRON_TOTAL, $texto))) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Palabras que vuelven un importe un UMBRAL o un total y no el costo del envío («mínimo de compra de $X», «si no
+     * supera los $X», «a partir de $X»). Se miran en el tramo de texto que precede a cada importe.
+     */
+    const PATRON_UMBRAL_DEL_IMPORTE = '/\b(?:m[ií]nimo|m[ií]n|supera\w*|superior\w*|a\s+partir|desde|m[aá]s\s+de|mayor\w*|menor\w*|menos\s+de|hasta|alcanz\w*|lleg\w*|total|compras?|pedidos?|[oó]rdenes|orden)\b/iu';
+
+    /**
+     * Condiciones, umbrales o excepciones que una oración del comercio puede traer («si…», «salvo…», «mínimo de
+     * compra», «supera», «desde», «hasta», «más de», «por pedido»). Una oración del comercio con alguna de ellas NO
+     * habilita a rescatar una afirmación del modelo: el modelo la repetiría sin la condición.
+     */
+    const PATRON_CONDICION_DE_GRATUIDAD = '/\b(?:si|siempre\s+que|cuando|salvo|excepto|menos|pero|aunque|solo|s[oó]lo|solamente|m[ií]nimo|a\s+partir|desde|hasta|m[aá]s\s+de|menos\s+de|mayor\w*|menor\w*|superior\w*|supera\w*|alcanz\w*|lleg\w*|compras?|pedidos?)\b/iu';
+
+    /** Referencia genérica a la zona del propio cliente («para su zona», «en tu barrio»): no nombra ningún lugar. */
+    const PATRON_ZONA_GENERICA = '/\b(?:su|tu)\s+(?:zona|localidad|barrio)\b/iu';
+
+    /**
+     * Palabras vacías (lista cerrada, ya sin tildes y en minúsculas): artículos, preposiciones, conectores,
+     * pronombres, verbos genéricos de costo y envío, y el vocabulario de envío, costo y gratuidad. Todo lo demás es
+     * una palabra con contenido (un lugar, un producto, un día…) y tiene que estar en la oración del comercio.
+     */
+    const PALABRAS_VACIAS = [
+        'el', 'la', 'los', 'las', 'lo', 'un', 'una', 'unos', 'unas',
+        'a', 'al', 'ante', 'bajo', 'con', 'contra', 'de', 'del', 'desde', 'en', 'entre', 'hacia', 'hasta', 'para', 'por', 'segun', 'sin', 'sobre', 'tras',
+        'y', 'e', 'o', 'u', 'ni', 'que', 'como', 'si', 'pero', 'asi', 'cuando',
+        'me', 'te', 'se', 'le', 'les', 'nos', 'tu', 'tus', 'su', 'sus', 'mi', 'mis', 'vos', 'usted', 'ustedes', 'yo',
+        'este', 'esta', 'ese', 'esa', 'esto', 'eso',
+        'es', 'son', 'sale', 'salen', 'saldra', 'saldria', 'cuesta', 'cuestan', 'tiene', 'tienen', 'hacemos', 'realizamos', 'hace', 'hacen',
+        'queda', 'quedan', 'vale', 'valen', 'sera', 'seria', 'va', 'van', 'cobra', 'cobramos', 'cobran', 'lleva', 'llevan',
+        'envio', 'envios', 'costo', 'costos', 'cargo', 'gratis', 'gratuito', 'gratuita', 'no', 'precio', 'precios', 'peso', 'pesos',
+        'zona', 'pedido', 'pedidos', 'total', 'final',
+    ];
+
+    /**
+     * ¿La oración que el filtro sacaría repite lo que ya dijo una persona del negocio en este chat?
+     *
+     * Criterio mecánico (decisión del Coordinador, ronda 3): ante la duda, se deriva. Sólo se rescata si:
+     *  (0) es la misma oración del comercio, tal cual (salvo mayúsculas, acentos, espacios y puntuación final); o
+     *  (1) existe UNA oración del comercio que habla de envío y no tiene condición ni excepción (si, supera,
+     *      mínimo, desde, hasta, compra, pedido…), y además
+     *  (2) cada cifra del modelo está en esa oración como costo de envío (en la oración del modelo no se clasifica el
+     *      papel: todo importe suyo es costo; una gratuidad con cifra se deriva siempre), y
+     *  (3) TODAS las palabras con contenido de la oración del modelo (las que no son palabras vacías: lugares,
+     *      productos, días…) están entre las palabras de esa oración del comercio. Excepción única: si la oración del
+     *      comercio habla de «su zona» sin nombrar lugares, (3) no se exige.
+     * Un total no se rescata con un importe de envío.
+     *
+     * @param  string  $oracion  La oración del modelo.
+     * @param  array<int, string>  $dichos_del_negocio  Mensajes que escribió una persona del negocio.
+     * @return bool
+     */
+    private static function lo_dijo_el_comercio(string $oracion, array $dichos_del_negocio): bool
+    {
+        if (! count($dichos_del_negocio)) {
+            return false;
+        }
+
+        // En la oración del MODELO no se clasifica el papel: todo importe suyo se trata como costo de envío.
+        $importes = self::importes_con_papel($oracion, false);
+
+        // Si quedó algún importe que no se pudo leer como cifra («siete mil»), no se puede comparar: se deriva.
+        $sin_cifras = preg_replace(self::PATRON_CIFRA_DEL_IMPORTE, ' ', $oracion);
+
+        if (preg_match(self::PATRON_IMPORTE, (string) $sin_cifras)) {
+            return false;
+        }
+
+        $es_gratuidad = ! count($importes) && preg_match(self::PATRON_GRATUIDAD, $oracion);
+        $es_importe   = count($importes) && ! preg_match(self::PATRON_GRATUIDAD, $oracion)
+            && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion);
+
+        $textual   = self::normalizar_oracion($oracion);
+        $con_contenido = self::palabras_con_contenido($oracion);
+
+        foreach ($dichos_del_negocio as $dicho) {
+
+            $frases = preg_split(self::PATRON_CORTE, (string) $dicho, -1, PREG_SPLIT_NO_EMPTY);
+
+            if ($frases === false) {
+                continue;
+            }
+
+            foreach ($frases as $frase) {
+
+                // (0) La misma oración que escribió el comercio.
+                if ($textual !== '' && $textual === self::normalizar_oracion($frase)) {
+                    return true;
+                }
+
+                // (1) Habla de envío y no trae condición.
+                if (! ($es_gratuidad || $es_importe) || ! preg_match(self::PATRON_ENVIO, $frase)
+                    || preg_match(self::PATRON_CONDICION_DE_GRATUIDAD, $frase)) {
+                    continue;
+                }
+
+                // (3) Todas las palabras con contenido del modelo están en la oración del comercio (o ésta habla de «su zona»).
+                if (! preg_match(self::PATRON_ZONA_GENERICA, $frase) && count(array_diff($con_contenido, self::palabras_de($frase)))) {
+                    continue;
+                }
+
+                // (2) Gratuidad sin cifra en la oración del comercio.
+                if ($es_gratuidad && preg_match(self::PATRON_GRATUIDAD, $frase) && ! count(self::importes_con_papel($frase))) {
+                    return true;
+                }
+
+                // (2) Cada cifra del modelo, como costo, en esta misma oración del comercio.
+                if ($es_importe && self::importes_incluidos($importes, self::importes_con_papel($frase))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Todas las palabras de un texto (letras, en minúsculas y sin tildes; las cifras no cuentan).
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    private static function palabras_de(string $texto): array
+    {
+        preg_match_all('/\p{L}+/u', self::sin_acentos(mb_strtolower($texto)), $encontradas);
+
+        return array_values(array_unique($encontradas[0]));
+    }
+
+    /**
+     * Las palabras de un texto que no son palabras vacías (PALABRAS_VACIAS): lo que dice la oración más allá del
+     * armazón de «el envío sale…».
+     *
+     * @param  string  $texto
+     * @return array<int, string>
+     */
+    private static function palabras_con_contenido(string $texto): array
+    {
+        return array_values(array_diff(self::palabras_de($texto), self::PALABRAS_VACIAS));
+    }
+
+    /**
+     * La oración en minúsculas, sin acentos, con los espacios colapsados y sin signos al principio ni al final: sirve
+     * para saber si dos oraciones son la misma.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    private static function normalizar_oracion(string $texto): string
+    {
+        $texto = self::sin_acentos(mb_strtolower($texto));
+        $texto = (string) preg_replace('/\s+/u', ' ', $texto);
+
+        return trim($texto, " \t\n\r.!?…¡¿*_-•·");
+    }
+
+    /**
+     * El texto sin tildes ni diéresis (la ñ se conserva), para comparar lugares escritos con o sin acento.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    private static function sin_acentos(string $texto): string
+    {
+        return strtr($texto, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U']);
+    }
+
+    /**
+     * Los importes de una oración con su papel: «costo» (lo que cuesta el envío) o «umbral» (mínimo de compra, tope,
+     * total). El papel sale del tramo de texto entre el importe anterior (o el inicio) y éste.
+     *
+     * @param  string  $texto
+     * @param  bool  $clasificar  false = todo importe es «costo» (así se tratan las oraciones del modelo: una palabra
+     *                         como «pedido» o «hasta» no lo vuelve umbral); true = se distingue (oraciones del comercio).
+     * @return array<int, array{cifra: string, papel: string}>
+     */
+    private static function importes_con_papel(string $texto, bool $clasificar = true): array
+    {
+        $resultado = [];
+
+        if (! preg_match_all(self::PATRON_CIFRA_DEL_IMPORTE, $texto, $encontrados, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+            return $resultado;
+        }
+
+        // Dónde terminó el importe anterior: el tramo que precede al siguiente empieza ahí.
+        $desde = 0;
+
+        foreach ($encontrados as $encontrado) {
+
+            $inicio = $encontrado[0][1];
+            $tramo  = substr($texto, $desde, $inicio - $desde);
+
+            $numero = '';
+
+            for ($i = 1; $i <= 3; $i++) {
+                if (isset($encontrado[$i]) && $encontrado[$i][0] !== '') {
+                    $numero = $encontrado[$i][0];
+                }
+            }
+
+            $cifra = preg_replace('/\D/', '', $numero);
+
+            if ($cifra !== '') {
+                $resultado[] = ['cifra' => $cifra, 'papel' => ($clasificar && preg_match(self::PATRON_UMBRAL_DEL_IMPORTE, $tramo)) ? 'umbral' : 'costo'];
+            }
+
+            $desde = $inicio + strlen($encontrado[0][0]);
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * ¿Todos los importes (cifra y papel) del modelo están entre los de la oración del comercio?
+     *
+     * @param  array<int, array{cifra: string, papel: string}>  $del_modelo
+     * @param  array<int, array{cifra: string, papel: string}>  $del_comercio
+     * @return bool
+     */
+    private static function importes_incluidos(array $del_modelo, array $del_comercio): bool
+    {
+        foreach ($del_modelo as $importe) {
+
+            $esta = false;
+
+            foreach ($del_comercio as $otro) {
+                if ($otro['cifra'] === $importe['cifra'] && $otro['papel'] === $importe['papel']) {
+                    $esta = true;
+                    break;
+                }
+            }
+
+            if (! $esta) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

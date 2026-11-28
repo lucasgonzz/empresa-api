@@ -131,8 +131,11 @@ class AvisosDelDuenoIaHelper
     /** Largo máximo del `resumen` que viaja como variable de la plantilla (el parámetro de Meta admite más). */
     const LARGO_MAXIMO_DEL_RESUMEN = 400;
 
-    /** Cuántos artículos se nombran en el aviso de un pedido (el resto va en «y K más»). */
-    const ARTICULOS_DEL_PEDIDO = 3;
+    /** Cuántos renglones del pedido lista el aviso (el resto va en «… y K artículos más»). */
+    const RENGLONES_DEL_AVISO = 15;
+
+    /** Largo máximo del texto del aviso de un pedido (WhatsApp corta a 4.096 caracteres: se deja margen). */
+    const LARGO_MAXIMO_DEL_AVISO = 3500;
 
     /**
      * true si la base ya tiene las columnas de las preferencias (un upgrade a medio correr no rompe nada).
@@ -586,20 +589,103 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
-     * El mensaje completo del pedido (ventana de 24 h abierta): número, comprador, total, entrega, pago y los
-     * primeros 3 artículos. Queda tal cual en la conversación del dueño, así que si contesta el asistente sabe
-     * de qué pedido habla.
+     * El mensaje completo del pedido (ventana de 24 h abierta): comprador con su contacto, entrega con dirección y
+     * fecha, un renglón por artículo con precio unitario y subtotal, total, pago y observaciones del comprador.
+     * Es lo que necesita el dueño para despachar sin abrir el sistema. Queda tal cual en la conversación del
+     * dueño, así que si contesta el asistente sabe de qué pedido habla.
+     *
+     * Las líneas sin dato se omiten (dirección, fecha, observaciones). Lista hasta RENGLONES_DEL_AVISO renglones y
+     * el texto no pasa de LARGO_MAXIMO_DEL_AVISO caracteres: si pasa, se sacan renglones del final y se suman al
+     * «… y K artículos más».
      *
      * @param  \App\Models\Order  $pedido
      * @return string
      */
     protected static function texto_del_pedido(Order $pedido): string
     {
-        return '🛒 Entró un pedido nuevo en la tienda: *N° ' . self::numero_del_pedido($pedido) . '* de ' . self::comprador($pedido)
-            . ', por ' . self::pesos(OrderHelper::get_total($pedido)) . ".\n"
-            . 'Entrega: ' . self::entrega_del_pedido($pedido) . ' · Pago: ' . self::pago_del_pedido($pedido) . "\n"
-            . self::articulos_del_pedido($pedido) . "\n"
-            . 'Respondeme este mensaje si querés el detalle.';
+        $renglones = self::renglones_del_pedido($pedido);
+
+        // Cuántos renglones se muestran: arranca en el tope y baja de a uno hasta que el texto entra.
+        $visibles = min(count($renglones), self::RENGLONES_DEL_AVISO);
+        $texto = self::armar_texto_del_pedido($pedido, $renglones, $visibles);
+
+        while ($visibles > 0 && mb_strlen($texto) > self::LARGO_MAXIMO_DEL_AVISO) {
+
+            $visibles--;
+            $texto = self::armar_texto_del_pedido($pedido, $renglones, $visibles);
+        }
+
+        // Último recurso (datos enormes aun sin renglones): se corta para no pasar el límite de WhatsApp.
+        if (mb_strlen($texto) > self::LARGO_MAXIMO_DEL_AVISO) {
+
+            $texto = rtrim(mb_substr($texto, 0, self::LARGO_MAXIMO_DEL_AVISO - 1)) . '…';
+        }
+
+        return $texto;
+    }
+
+    /**
+     * Arma el texto del aviso mostrando sólo los primeros `$visibles` renglones.
+     *
+     * @param  \App\Models\Order  $pedido
+     * @param  array<int, array{0: string, 1: mixed, 2: mixed}>  $renglones  [nombre, cantidad, precio unitario].
+     * @param  int  $visibles  Cuántos renglones se listan.
+     * @return string
+     */
+    protected static function armar_texto_del_pedido(Order $pedido, array $renglones, int $visibles): string
+    {
+        $telefono = DatosDelCompradorIaHelper::telefono($pedido);
+        $email = DatosDelCompradorIaHelper::email($pedido);
+
+        // Las líneas del aviso en orden; las que no tienen dato no se agregan.
+        $lineas = [];
+
+        $lineas[] = '🛒 Entró un pedido nuevo en la tienda: *N° ' . self::numero_del_pedido($pedido) . '*';
+        $lineas[] = 'Comprador: ' . DatosDelCompradorIaHelper::nombre($pedido) . ' · Tel. ' . (is_null($telefono) ? 'sin cargar' : $telefono)
+            . (is_null($email) ? '' : ' · ' . $email);
+        $lineas[] = 'Entrega: ' . self::entrega_del_pedido($pedido);
+
+        $direccion = DatosDelCompradorIaHelper::direccion_de_entrega($pedido);
+
+        if ((int) $pedido->deliver === 1) {
+
+            $lineas[] = 'Dirección: ' . (is_null($direccion) ? 'sin cargar' : $direccion);
+        }
+
+        $fecha = DatosDelCompradorIaHelper::fecha_de_entrega($pedido);
+
+        if (!is_null($fecha)) {
+
+            $lineas[] = 'Fecha de entrega: ' . $fecha;
+        }
+
+        $lineas[] = 'Artículos:';
+
+        foreach (array_slice($renglones, 0, $visibles) as $renglon) {
+
+            $subtotal = (float) $renglon[1] * (float) $renglon[2];
+
+            $lineas[] = '• ' . $renglon[0] . ' x' . self::cantidad($renglon[1]) . ' · ' . self::pesos($renglon[2]) . ' c/u = ' . self::pesos($subtotal);
+        }
+
+        $faltan = count($renglones) - $visibles;
+
+        if ($faltan > 0) {
+
+            $lineas[] = '… y ' . $faltan . ' ' . ($faltan === 1 ? 'artículo' : 'artículos') . ' más (respondeme y te paso el resto).';
+        }
+
+        $lineas[] = 'Total: *' . self::pesos(OrderHelper::get_total($pedido)) . '*';
+        $lineas[] = 'Pago: ' . self::pago_del_pedido($pedido);
+
+        $observaciones = DatosDelCompradorIaHelper::observaciones($pedido);
+
+        if (!is_null($observaciones)) {
+
+            $lineas[] = 'Observaciones del comprador: «' . $observaciones . '»';
+        }
+
+        return implode("\n", $lineas);
     }
 
     /**
@@ -673,26 +759,26 @@ class AvisosDelDuenoIaHelper
     }
 
     /**
-     * Los renglones del pedido (artículos en el orden del pivot, combos y promos de vinoteca) como pares
-     * [nombre, cantidad].
+     * Los renglones del pedido (artículos en el orden del pivot, combos y promos de vinoteca) como ternas
+     * [nombre, cantidad, precio unitario].
      *
      * @param  \App\Models\Order  $pedido
-     * @return array<int, array{0: string, 1: mixed}>
+     * @return array<int, array{0: string, 1: mixed, 2: mixed}>
      */
     protected static function renglones_del_pedido(Order $pedido): array
     {
         $renglones = [];
 
         foreach ($pedido->articles as $articulo) {
-            $renglones[] = [self::nombre_corto((string) $articulo->name), $articulo->pivot->amount];
+            $renglones[] = [self::nombre_corto((string) $articulo->name), $articulo->pivot->amount, $articulo->pivot->price];
         }
 
         foreach (ComboEsquemaHelper::combos_del_pedido($pedido) as $combo) {
-            $renglones[] = [self::nombre_corto((string) $combo->name), $combo->pivot->amount];
+            $renglones[] = [self::nombre_corto((string) $combo->name), $combo->pivot->amount, $combo->pivot->price];
         }
 
         foreach ($pedido->promocion_vinotecas as $promocion) {
-            $renglones[] = [self::nombre_corto((string) $promocion->name), $promocion->pivot->amount];
+            $renglones[] = [self::nombre_corto((string) $promocion->name), $promocion->pivot->amount, $promocion->pivot->price];
         }
 
         return $renglones;
@@ -702,33 +788,6 @@ class AvisosDelDuenoIaHelper
     protected static function cantidad_de_renglones(Order $pedido): int
     {
         return count(self::renglones_del_pedido($pedido));
-    }
-
-    /**
-     * «1 artículo: Malbec Reserva x2» o «5 artículos: A x1, B x2, C x1 y 2 más».
-     *
-     * @param  \App\Models\Order  $pedido
-     * @return string
-     */
-    protected static function articulos_del_pedido(Order $pedido): string
-    {
-        $renglones = self::renglones_del_pedido($pedido);
-        $total = count($renglones);
-
-        $nombrados = [];
-
-        foreach (array_slice($renglones, 0, self::ARTICULOS_DEL_PEDIDO) as $renglon) {
-            $nombrados[] = $renglon[0] . ' x' . self::cantidad($renglon[1]);
-        }
-
-        $texto = $total . ' ' . ($total === 1 ? 'artículo' : 'artículos') . ': ' . implode(', ', $nombrados);
-
-        if ($total > self::ARTICULOS_DEL_PEDIDO) {
-
-            $texto .= ' y ' . ($total - self::ARTICULOS_DEL_PEDIDO) . ' más';
-        }
-
-        return $texto;
     }
 
     /* ─────────────────────────────── pedidos por hora fija ─────────────────────────────── */

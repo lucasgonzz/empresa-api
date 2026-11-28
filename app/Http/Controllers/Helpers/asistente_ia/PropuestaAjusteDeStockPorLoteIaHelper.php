@@ -33,8 +33,13 @@ use Illuminate\Support\Facades\Log;
  * stock total) sin copiarlas ni cambiarles la visibilidad. Una segunda copia de esas reglas sería la
  * clase "el mismo invariante con dos criterios" de APRENDER_NO_PARCHEAR.md.
  *
- * El modo es SIEMPRE "fijar": un conteo dice cuánto HAY, no cuánto sumar. Para sumar o restar a un
- * solo artículo sigue estando proponer_stock_en_deposito.
+ * El modo por defecto es "fijar": un conteo dice cuánto HAY. Si la persona dice que se SUMA a lo que hay,
+ * el lote lleva `modo: sumar` (misión asistente-diario-20261128, P4): cada renglón suma su cantidad al stock
+ * del momento de confirmar. Restar a un solo artículo sigue estando en proponer_stock_en_deposito.
+ *
+ * Una corrección NO pierde renglones (P4, caso real conv. 31): la tarjeta nueva hereda los renglones de la que
+ * reemplaza (misma clave o `reemplaza_a`), lo nuevo gana sobre lo heredado del mismo artículo y `quitar: true`
+ * saca uno a propósito. Lo que no se pudo ubicar se guarda en la tarjeta y el resultado del «sí» lo nombra.
  *
  * 🔴 NUNCA se auto-confirma (no está en AUTO_CONFIRMABLES ni en AUTO_CONFIRMABLES_DIRECTO): toca el
  * stock de muchos artículos de un saque, igual que la actualización masiva.
@@ -83,7 +88,7 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
             );
         }
 
-        $lugar = self::lugar_del_ajuste($contexto, EntradaDeCargaIa::texto($input, 'deposito'));
+        $lugar = self::lugar_del_ajuste($contexto, self::deposito_dicho_o_heredado($contexto, $input));
 
         if (RespuestaDeCargaIa::es_negativa($lugar)) {
 
@@ -92,11 +97,58 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
 
         list($deposito, $sin_depositos) = $lugar;
 
-        $esperados = [];
-        $renglones_de_la_tarjeta = [];
+        // La identidad del lote: un lote corregido en el mismo depósito reemplaza la tarjeta anterior.
+        $clave = self::clave(is_null($deposito) ? 0 : (int) $deposito->id);
+
+        $reemplaza_a = EntradaDeCargaIa::valor($input, 'reemplaza_a');
+
+        // Las tarjetas de lote anteriores que esta llamada va a reemplazar (su contenido se hereda).
+        $anteriores = self::tarjetas_anteriores($contexto, $clave, $reemplaza_a);
+
+        // El modo del lote: el que dijo el modelo o, si no dijo ninguno, «sumar» si la tarjeta anterior ya sumaba.
+        $modo = self::modo_del_lote($input, $anteriores['mismas']);
+
+        // El resultado de cada artículo de la tarjeta, por article_id y en orden: primero lo heredado, después lo nuevo.
+        $filas = [];
+        // Los article_id que vinieron de la tarjeta anterior (para contar cuáles se conservaron sin reenviar).
+        $heredados_ids = [];
+        // Lo no ubicado de las tarjetas anteriores, para arrastrarlo (sale de $filas si lo vuelven a mandar).
+        $afuera_heredado = [];
         $quedaron_afuera = [];
         $sin_cambios = [];
         $vistos = [];
+
+        // 1. Lo heredado: los renglones de la(s) tarjeta(s) que se reemplazan, vueltos a resolver contra el stock de hoy.
+        foreach ($anteriores['mismas'] as $anterior) {
+
+            $datos_anteriores = is_array($anterior->datos) ? $anterior->datos : [];
+
+            foreach ((isset($datos_anteriores['esperados']) && is_array($datos_anteriores['esperados'])) ? $datos_anteriores['esperados'] : [] as $esperado) {
+
+                $heredada = self::fila_heredada($contexto, is_array($esperado) ? $esperado : [], $deposito, $sin_depositos);
+
+                if (isset($heredada['afuera'])) {
+
+                    $quedaron_afuera[] = array_merge(['renglon' => 0, 'articulo' => self::como_lo_dijo(['articulo_id' => isset($esperado['article_id']) ? $esperado['article_id'] : 0])], $heredada['afuera']);
+
+                    continue;
+                }
+
+                if (!$heredada['sin_cambio']) {
+
+                    $filas[$heredada['article_id']] = $heredada;
+                    $heredados_ids[$heredada['article_id']] = true;
+                }
+            }
+
+            foreach ((isset($datos_anteriores['quedaron_afuera']) && is_array($datos_anteriores['quedaron_afuera'])) ? $datos_anteriores['quedaron_afuera'] : [] as $afuera) {
+
+                $afuera_heredado[] = $afuera;
+            }
+        }
+
+        // 2. Lo que mandó el modelo en esta llamada: gana sobre lo heredado del mismo artículo.
+        $dichos = [];
 
         foreach (array_values($renglones) as $indice => $renglon) {
 
@@ -106,7 +158,23 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
 
             $dicho = self::como_lo_dijo($renglon);
 
-            $fila = self::resolver_renglon($contexto, $renglon, $numero, $deposito, $sin_depositos);
+            $dichos[mb_strtolower(trim($dicho))] = true;
+
+            // `quitar: true` saca el artículo de lo heredado (si no estaba, no hace nada).
+            if (!empty($renglon['quitar'])) {
+
+                $articulo_a_quitar = self::resolver_articulo($contexto, $renglon, 'qué artículo es el renglón ' . $numero);
+
+                if (!RespuestaDeCargaIa::es_negativa($articulo_a_quitar)) {
+
+                    unset($filas[(int) $articulo_a_quitar->id], $heredados_ids[(int) $articulo_a_quitar->id]);
+                    $vistos[(int) $articulo_a_quitar->id] = $numero;
+                }
+
+                continue;
+            }
+
+            $fila = self::resolver_renglon($contexto, $renglon, $numero, $deposito, $sin_depositos, $modo);
 
             if (isset($fila['afuera'])) {
 
@@ -128,24 +196,61 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
 
             $vistos[$fila['article_id']] = $numero;
 
+            // Lo que mandó la persona pisa lo heredado: ya no cuenta como «conservado sin reenviar».
+            unset($heredados_ids[$fila['article_id']]);
+
             if ($fila['sin_cambio']) {
+
+                // Ya está en ese número: no hace falta moverlo y tampoco queda el valor viejo de la tarjeta anterior.
+                unset($filas[$fila['article_id']]);
 
                 $sin_cambios[] = $fila['nombre'] . ' (ya está en ' . self::numero($fila['final']) . ')';
 
                 continue;
             }
 
+            $filas[$fila['article_id']] = $fila;
+        }
+
+        // Lo no ubicado de las tarjetas anteriores se arrastra, salvo lo que esta llamada volvió a mandar.
+        foreach ($afuera_heredado as $afuera) {
+
+            $texto_afuera = isset($afuera['articulo']) ? mb_strtolower(trim((string) $afuera['articulo'])) : '';
+
+            if ($texto_afuera !== '' && isset($dichos[$texto_afuera])) {
+
+                continue;
+            }
+
+            $quedaron_afuera[] = $afuera;
+        }
+
+        // Los artículos de una tarjeta de OTRO depósito no se mezclan: se avisa que quedaron en la anterior.
+        $fuera_de_la_tarjeta = self::fuera_de_la_tarjeta($contexto, $anteriores['otro_deposito']);
+
+        if (!count($filas)) {
+
+            return self::sin_nada_para_ajustar($quedaron_afuera, $sin_cambios);
+        }
+
+        $esperados = [];
+        $renglones_de_la_tarjeta = [];
+        $heredados = [];
+
+        foreach ($filas as $fila) {
+
             $esperados[] = $fila['esperado'];
 
             $renglones_de_la_tarjeta[] = [
                 'etiqueta' => $fila['nombre'],
-                'valor'    => $fila['antes_texto'] . ' → ' . self::numero($fila['final']),
+                'valor'    => $fila['antes_texto'] . ' → ' . self::numero($fila['final'])
+                    . ($fila['esperado']['modo'] === self::MODO_SUMAR ? ' (suma ' . self::numero($fila['esperado']['cantidad']) . ')' : ''),
             ];
-        }
 
-        if (!count($esperados)) {
+            if (isset($heredados_ids[$fila['article_id']])) {
 
-            return self::sin_nada_para_ajustar($quedaron_afuera, $sin_cambios);
+                $heredados[] = $fila['nombre'];
+            }
         }
 
         $encabezado = [];
@@ -155,38 +260,300 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
             $encabezado[] = ['etiqueta' => 'Depósito', 'valor' => self::nombre_de_deposito($deposito)];
         }
 
-        $encabezado[] = ['etiqueta' => 'Artículos', 'valor' => count($esperados) . ' (queda el stock contado)'];
+        $encabezado[] = ['etiqueta' => 'Artículos', 'valor' => self::texto_de_los_modos($esperados)];
 
         $creada = AccionesIaHelper::crear(
             $contexto,
             $mensaje,
             AiMessageAction::TIPO_AJUSTE_STOCK_LOTE,
-            self::clave(is_null($deposito) ? 0 : (int) $deposito->id),
+            $clave,
             /*
              * Cada `esperado` tiene LA MISMA FORMA que el de la tarjeta de un solo artículo
-             * (proponer_stock_en_deposito / proponer_stock_total), con modo "fijar": al confirmar se
+             * (proponer_stock_en_deposito / proponer_stock_total), con modo "fijar" o "sumar": al confirmar se
              * le pasa tal cual a ejecutar_stock_en_deposito(), que rearma el payload con los números
-             * de ese momento. Ver el 🔴 de ese método.
+             * de ese momento (y en «sumar» recalcula actual + cantidad). Ver el 🔴 de ese método.
+             *
+             * `quedaron_afuera` y `fuera_de_la_tarjeta` se guardan para que el resultado del «sí» los nombre
+             * aunque el modelo no lo cuente (misión asistente-diario-20261128, P4).
              */
-            ['esperados' => $esperados],
+            [
+                'esperados'           => $esperados,
+                'modo'                => self::modo_de_los_esperados($esperados),
+                'quedaron_afuera'     => $quedaron_afuera,
+                'fuera_de_la_tarjeta' => $fuera_de_la_tarjeta,
+            ],
             [
                 'titulo'    => self::TITULO,
                 'renglones' => array_merge($encabezado, $renglones_de_la_tarjeta),
                 'aviso'     => self::aviso_de_la_tarjeta($quedaron_afuera, $sin_cambios),
             ],
-            EntradaDeCargaIa::valor($input, 'reemplaza_a')
+            $reemplaza_a
         );
 
         $resumen = 'Ajuste de stock de ' . count($esperados) . (count($esperados) === 1 ? ' artículo' : ' artículos')
             . (is_null($deposito) ? '' : ' en ' . self::nombre_de_deposito($deposito));
 
-        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, [
+        $extra = [
             'quedaron_afuera' => $quedaron_afuera,
             'sin_cambios'     => $sin_cambios,
+            'heredados'       => $heredados,
             'nota_del_lote'   => count($quedaron_afuera)
                 ? 'La tarjeta lleva solo los renglones que pude ubicar. Contale a la persona cuáles quedaron afuera y por qué (quedaron_afuera), preguntale por esos y armá otra tarjeta con ellos; no digas que el ajuste está completo.'
                 : 'La tarjeta lleva todos los renglones.',
-        ]);
+        ];
+
+        if (count($heredados)) {
+
+            $extra['nota_del_lote'] .= ' La tarjeta conserva ' . count($heredados) . (count($heredados) === 1 ? ' renglón' : ' renglones')
+                . ' de la anterior que no volviste a mandar: ' . implode(', ', $heredados) . '; para sacar uno, mandalo con quitar: true.';
+        }
+
+        if (count($fuera_de_la_tarjeta)) {
+
+            $extra['fuera_de_la_tarjeta'] = $fuera_de_la_tarjeta;
+        }
+
+        return AccionesIaHelper::respuesta_de_propuesta($creada, $resumen, $extra);
+    }
+
+    /**
+     * El depósito de la llamada: el que mandó el modelo o, si no mandó ninguno y corrige una tarjeta de lote con
+     * `reemplaza_a`, el de esa tarjeta (la clave guarda su id de depósito). Así una corrección no vuelve a preguntar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $input
+     * @return string  El texto del depósito ('' si no hay ninguno).
+     */
+    protected static function deposito_dicho_o_heredado(ContextoDeCargaIa $contexto, array $input): string
+    {
+        $dicho = EntradaDeCargaIa::texto($input, 'deposito');
+
+        $reemplaza_a = (int) EntradaDeCargaIa::valor($input, 'reemplaza_a');
+
+        if ($dicho !== '' || $reemplaza_a <= 0) {
+
+            return $dicho;
+        }
+
+        $tarjeta = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+            ->where('tipo', AiMessageAction::TIPO_AJUSTE_STOCK_LOTE)
+            ->where('id', $reemplaza_a)
+            ->first();
+
+        if (is_null($tarjeta) || strpos((string) $tarjeta->clave, 'ajuste_stock_lote:') !== 0) {
+
+            return '';
+        }
+
+        $address_id = (int) substr((string) $tarjeta->clave, strlen('ajuste_stock_lote:'));
+
+        if ($address_id <= 0) {
+
+            return '';
+        }
+
+        foreach (self::depositos_del_dueno($contexto->owner_id) as $deposito) {
+
+            if ((int) $deposito->id === $address_id) {
+
+                return self::nombre_de_deposito($deposito);
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Las tarjetas de lote anteriores que esta llamada va a reemplazar, separadas por depósito.
+     *
+     * Son las `propuesta` de la conversación con la MISMA clave (el reemplazo por clave de `crear()`) y la de id
+     * `reemplaza_a` si es de lote y está `propuesta` o `reemplazada` (el modelo corrige en un mensaje posterior).
+     * 'mismas' son las del mismo depósito (se hereda su contenido, en orden de id); 'otro_deposito' las de otro
+     * (no se mezclan).
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  string  $clave  La clave de esta llamada.
+     * @param  mixed  $reemplaza_a  Id de una tarjeta anterior, o null.
+     * @return array{mismas: array, otro_deposito: array}
+     */
+    protected static function tarjetas_anteriores(ContextoDeCargaIa $contexto, $clave, $reemplaza_a): array
+    {
+        $reemplaza_a = (int) $reemplaza_a;
+
+        $tarjetas = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+            ->where('tipo', AiMessageAction::TIPO_AJUSTE_STOCK_LOTE)
+            ->where(function ($consulta) use ($clave, $reemplaza_a) {
+
+                $consulta->where(function ($por_clave) use ($clave) {
+                    $por_clave->where('clave', $clave)->where('estado', AiMessageAction::ESTADO_PROPUESTA);
+                });
+
+                if ($reemplaza_a > 0) {
+
+                    $consulta->orWhere(function ($por_id) use ($reemplaza_a) {
+                        $por_id->where('id', $reemplaza_a)
+                            ->whereIn('estado', [AiMessageAction::ESTADO_PROPUESTA, AiMessageAction::ESTADO_REEMPLAZADA]);
+                    });
+                }
+            })
+            ->orderBy('id')
+            ->get();
+
+        $resultado = ['mismas' => [], 'otro_deposito' => []];
+
+        foreach ($tarjetas as $tarjeta) {
+
+            // Un conteo vencido (más de HORAS_VENCIMIENTO horas) ya no vale: no se hereda y pisaría el stock de hoy.
+            if ($tarjeta->vencio()) {
+
+                continue;
+            }
+
+            $resultado[(string) $tarjeta->clave === (string) $clave ? 'mismas' : 'otro_deposito'][] = $tarjeta;
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * El modo de esta llamada: el `modo` que mandó el modelo (fijar | sumar) o, si no mandó ninguno, «sumar» si la
+     * tarjeta anterior del mismo lote ya sumaba (la persona ya dijo «se suma»: la siguiente no pasa a cantidades
+     * finales), y «fijar» en cualquier otro caso.
+     *
+     * @param  array  $input
+     * @param  array  $mismas  Las tarjetas anteriores del mismo depósito.
+     * @return string  MODO_FIJAR | MODO_SUMAR
+     */
+    protected static function modo_del_lote(array $input, array $mismas): string
+    {
+        $dicho = mb_strtolower(EntradaDeCargaIa::texto($input, 'modo'));
+
+        if (in_array($dicho, [self::MODO_FIJAR, self::MODO_SUMAR], true)) {
+
+            return $dicho;
+        }
+
+        foreach ($mismas as $anterior) {
+
+            $datos = is_array($anterior->datos) ? $anterior->datos : [];
+
+            if (isset($datos['modo']) && $datos['modo'] === self::MODO_SUMAR) {
+
+                return self::MODO_SUMAR;
+            }
+        }
+
+        return self::MODO_FIJAR;
+    }
+
+    /**
+     * Un renglón de la tarjeta anterior vuelto a resolver contra el stock de hoy, con su propio modo.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $esperado  El `esperado` guardado en la tarjeta anterior.
+     * @param  \App\Models\Address|null  $deposito
+     * @param  bool  $sin_depositos
+     * @return array  Igual que resolver_renglon().
+     */
+    protected static function fila_heredada(ContextoDeCargaIa $contexto, array $esperado, $deposito, $sin_depositos): array
+    {
+        $modo = isset($esperado['modo']) && $esperado['modo'] === self::MODO_SUMAR ? self::MODO_SUMAR : self::MODO_FIJAR;
+
+        return self::resolver_renglon(
+            $contexto,
+            ['articulo_id' => isset($esperado['article_id']) ? (int) $esperado['article_id'] : 0, 'cantidad' => isset($esperado['cantidad']) ? $esperado['cantidad'] : null],
+            0,
+            $deposito,
+            $sin_depositos,
+            $modo
+        );
+    }
+
+    /**
+     * Los artículos de las tarjetas de otro depósito, que no se heredan: [{articulo, motivo}].
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $tarjetas  Tarjetas de lote de otro depósito.
+     * @return array
+     */
+    protected static function fuera_de_la_tarjeta(ContextoDeCargaIa $contexto, array $tarjetas): array
+    {
+        $fuera = [];
+
+        foreach ($tarjetas as $tarjeta) {
+
+            $datos = is_array($tarjeta->datos) ? $tarjeta->datos : [];
+
+            foreach ((isset($datos['esperados']) && is_array($datos['esperados'])) ? $datos['esperados'] : [] as $esperado) {
+
+                $fuera[] = [
+                    'articulo' => self::nombre_para_el_resultado($contexto, isset($esperado['article_id']) ? (int) $esperado['article_id'] : 0),
+                    'motivo'   => 'estaba en la tarjeta anterior de otro depósito',
+                ];
+            }
+        }
+
+        return $fuera;
+    }
+
+    /**
+     * El modo de toda la tarjeta: «fijar», «sumar» o «mixto» (si hay renglones de los dos).
+     *
+     * @param  array  $esperados
+     * @return string
+     */
+    protected static function modo_de_los_esperados(array $esperados): string
+    {
+        $que_suman = 0;
+
+        foreach ($esperados as $esperado) {
+
+            if ($esperado['modo'] === self::MODO_SUMAR) {
+
+                $que_suman++;
+            }
+        }
+
+        if ($que_suman === 0) {
+
+            return self::MODO_FIJAR;
+        }
+
+        return $que_suman === count($esperados) ? self::MODO_SUMAR : 'mixto';
+    }
+
+    /**
+     * El valor de la fila «Artículos» del encabezado: «N (queda el stock contado)», «N (se suma al stock)» o
+     * «N (A se fijan, B se suman)».
+     *
+     * @param  array  $esperados
+     * @return string
+     */
+    protected static function texto_de_los_modos(array $esperados): string
+    {
+        $modo = self::modo_de_los_esperados($esperados);
+
+        if ($modo === self::MODO_FIJAR) {
+
+            return count($esperados) . ' (queda el stock contado)';
+        }
+
+        if ($modo === self::MODO_SUMAR) {
+
+            return count($esperados) . ' (se suma al stock)';
+        }
+
+        $que_suman = 0;
+
+        foreach ($esperados as $esperado) {
+
+            if ($esperado['modo'] === self::MODO_SUMAR) {
+
+                $que_suman++;
+            }
+        }
+
+        return count($esperados) . ' (' . (count($esperados) - $que_suman) . ' se fijan, ' . $que_suman . ' se suman)';
     }
 
     /**
@@ -257,9 +624,10 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
      * @param  int  $numero
      * @param  \App\Models\Address|null  $deposito
      * @param  bool  $sin_depositos
+     * @param  string  $modo  MODO_FIJAR (la cantidad es la final) o MODO_SUMAR (la cantidad se suma al stock de hoy).
      * @return array
      */
-    protected static function resolver_renglon(ContextoDeCargaIa $contexto, array $renglon, $numero, $deposito, $sin_depositos)
+    protected static function resolver_renglon(ContextoDeCargaIa $contexto, array $renglon, $numero, $deposito, $sin_depositos, $modo = self::MODO_FIJAR)
     {
         $articulo = self::resolver_articulo($contexto, $renglon, 'qué artículo es el renglón ' . $numero);
 
@@ -282,7 +650,16 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
             return ['afuera' => ['motivo' => 'la cantidad contada no puede ser negativa']];
         }
 
-        $final = round((float) $cantidad, 2);
+        // Para sumar, la cantidad es lo que se agrega: con 0 no habría nada que hacer.
+        if ($modo === self::MODO_SUMAR && $cantidad <= 0) {
+
+            return ['afuera' => ['motivo' => 'para sumar, la cantidad tiene que ser mayor que 0']];
+        }
+
+        $cantidad_dicha = round((float) $cantidad, 2);
+
+        // En «fijar» la cantidad ya es el stock final; en «sumar» se calcula abajo sobre el stock de hoy.
+        $final = $cantidad_dicha;
 
         $nombre = self::nombre_de_articulo($articulo);
 
@@ -299,19 +676,25 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
 
             $actual = is_null($crudo) ? 0.0 : (float) $crudo;
 
+            if ($modo === self::MODO_SUMAR) {
+
+                // Para mostrar: lo que quedaría hoy. Al confirmar se recalcula sobre el stock de ese momento.
+                $final = round($actual + $cantidad_dicha, 2);
+            }
+
             return [
                 'article_id'  => (int) $articulo->id,
                 'nombre'      => $nombre,
                 'final'       => $final,
                 // Un artículo que no llevaba stock (null) y queda en 0 SÍ cambia: empieza a llevarlo.
-                'sin_cambio'  => !is_null($crudo) && abs($final - $actual) < 0.01,
+                'sin_cambio'  => $modo === self::MODO_FIJAR && !is_null($crudo) && abs($final - $actual) < 0.01,
                 'antes_texto' => is_null($crudo) ? 'sin stock cargado' : self::numero($actual),
                 'esperado'    => [
                     'article_id'    => (int) $articulo->id,
                     'address_id'    => 0,
                     'sin_depositos' => true,
-                    'modo'          => self::MODO_FIJAR,
-                    'cantidad'      => $final,
+                    'modo'          => $modo,
+                    'cantidad'      => $cantidad_dicha,
                     'final'         => $final,
                 ],
             ];
@@ -319,17 +702,23 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
 
         $actual = self::amount_de(self::pivots_del_articulo($articulo->id), $deposito->id);
 
+        if ($modo === self::MODO_SUMAR) {
+
+            // Para mostrar: lo que quedaría hoy. Al confirmar se recalcula sobre el stock de ese momento.
+            $final = round($actual + $cantidad_dicha, 2);
+        }
+
         return [
             'article_id'  => (int) $articulo->id,
             'nombre'      => $nombre,
             'final'       => $final,
-            'sin_cambio'  => abs($final - $actual) < 0.01,
+            'sin_cambio'  => $modo === self::MODO_FIJAR && abs($final - $actual) < 0.01,
             'antes_texto' => self::numero($actual),
             'esperado'    => [
                 'article_id' => (int) $articulo->id,
                 'address_id' => (int) $deposito->id,
-                'modo'       => self::MODO_FIJAR,
-                'cantidad'   => $final,
+                'modo'       => $modo,
+                'cantidad'   => $cantidad_dicha,
                 'final'      => $final,
             ],
         ];
@@ -552,7 +941,7 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
         }
 
         return [
-            'texto'     => self::texto_del_resultado($hechos, $no_hechos),
+            'texto'     => self::texto_del_resultado($hechos, $no_hechos, $accion, $datos),
             'ruta'      => [
                 'name'   => self::RUTA_LISTADO,
                 'params' => new \stdClass(),
@@ -599,9 +988,11 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
      *
      * @param  array  $hechos
      * @param  array  $no_hechos
+     * @param  \App\Models\AiMessageAction  $accion  La tarjeta (su id va en «Quedaron afuera de la tarjeta K»).
+     * @param  array  $datos  Los datos de la tarjeta: `quedaron_afuera` y `fuera_de_la_tarjeta` se nombran al final.
      * @return string
      */
-    protected static function texto_del_resultado(array $hechos, array $no_hechos)
+    protected static function texto_del_resultado(array $hechos, array $no_hechos, AiMessageAction $accion, array $datos)
     {
         $texto = 'Ajusté el stock de ' . count($hechos) . (count($hechos) === 1 ? ' artículo' : ' artículos') . '.';
 
@@ -615,6 +1006,24 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
             }
 
             $texto .= ' NO se ajustaron ' . count($no_hechos) . ': ' . implode('; ', $partes) . '.';
+        }
+
+        // Lo que ni entró a la tarjeta (no se pudo ubicar, o quedó en la tarjeta de otro depósito): se nombra siempre.
+        $afuera = [];
+
+        foreach (['quedaron_afuera', 'fuera_de_la_tarjeta'] as $clave_de_datos) {
+
+            foreach ((isset($datos[$clave_de_datos]) && is_array($datos[$clave_de_datos])) ? $datos[$clave_de_datos] : [] as $fila) {
+
+                $motivo = isset($fila['motivo']) ? rtrim(trim((string) $fila['motivo']), '.') : '';
+
+                $afuera[] = (isset($fila['articulo']) ? (string) $fila['articulo'] : '(sin nombre)') . ($motivo === '' ? '' : ' (' . $motivo . ')');
+            }
+        }
+
+        if (count($afuera)) {
+
+            $texto .= ' Quedaron afuera de la tarjeta ' . (int) $accion->id . ': ' . implode('; ', $afuera) . '.';
         }
 
         return $texto;
