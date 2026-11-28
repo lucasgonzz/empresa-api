@@ -110,7 +110,11 @@ class WhatsappAgentPromosHelper
 
         // Palabras libres (CA15): sólo si el modo salió del texto pendiente; con el modo derivado del
         // intercambio anterior se filtra como siempre.
-        $free_words = ($mode === 'strict' && ! $from_previous) ? self::free_words_of($pending) : [];
+        // CA16: se excluyen las que describen a una promo/combo (nombre del mix), no son un producto aparte.
+        $free_words = [];
+        if ($mode === 'strict' && ! $from_previous) {
+            $free_words = self::free_words_of($pending, self::promo_name_tokens($found['entries'], $user_id, $with_promos, $with_combos));
+        }
 
         if (empty($found['entries'])) {
             // Modo estricto: se avisa que no hay coincidencia; modo suave: el turno queda como hoy.
@@ -229,10 +233,12 @@ class WhatsappAgentPromosHelper
      * Si el mix y el vino van en el mismo mensaje no hay palabras libres (limitación aceptada).
      *
      * @param string $pending
+     * @param array  $excluded_tokens Tokens de nombres de promos/combos: las palabras libres que coinciden
+     *                                (misma_palabra) con alguno se descartan (CA16).
      *
      * @return array<int, string>
      */
-    protected static function free_words_of(string $pending): array
+    protected static function free_words_of(string $pending, array $excluded_tokens = []): array
     {
         $words = [];
 
@@ -249,11 +255,55 @@ class WhatsappAgentPromosHelper
                 if (in_array($word, self::SOFT_WORDS, true) || in_array($word, $words, true)) {
                     continue;
                 }
+                // La palabra describe a una promo/combo (p. ej. «Catena» en «Mix Catena Zapata»): no rescata artículos.
+                foreach ($excluded_tokens as $excluded_token) {
+                    if (BusquedaHibridaDeArticulosHelper::misma_palabra($word, $excluded_token)) {
+                        continue 2;
+                    }
+                }
                 $words[] = $word;
             }
         }
 
         return $words;
+    }
+
+    /**
+     * Tokens de los nombres que describen a las promos/combos del turno: los del bloque si hay
+     * coincidencias; si no las hay (NONE), los de TODAS las promos/combos habilitadas del dueño.
+     *
+     * @param array $entries     Entradas del bloque (`matching`), cada una con su `name`.
+     * @param int   $user_id     Dueño del chat (aislamiento entre negocios).
+     * @param bool  $with_promos El negocio tiene promos (vinoteca).
+     * @param bool  $with_combos El negocio tiene combos.
+     *
+     * @return array<int, string>
+     */
+    protected static function promo_name_tokens(array $entries, int $user_id, bool $with_promos, bool $with_combos): array
+    {
+        // Nombres de las promos/combos que van en el bloque o, sin bloque, todos los del negocio.
+        $names = [];
+        if (! empty($entries)) {
+            foreach ($entries as $entry) {
+                $names[] = (string) $entry['name'];
+            }
+        } else {
+            if ($with_promos) {
+                $names = array_merge($names, PromocionVinoteca::where('user_id', $user_id)->pluck('name')->all());
+            }
+            if ($with_combos) {
+                $names = array_merge($names, Combo::where('user_id', $user_id)->pluck('name')->all());
+            }
+        }
+
+        $tokens = [];
+        foreach ($names as $name) {
+            foreach (BusquedaHibridaDeArticulosHelper::tokens((string) $name) as $token) {
+                $tokens[] = $token;
+            }
+        }
+
+        return $tokens;
     }
 
     /**
