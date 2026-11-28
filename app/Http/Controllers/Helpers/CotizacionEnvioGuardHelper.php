@@ -264,15 +264,31 @@ class CotizacionEnvioGuardHelper
     }
 
     /**
+     * Palabras que vuelven un importe un UMBRAL o un total y no el costo del envío («mínimo de compra de $X», «si no
+     * supera los $X», «a partir de $X»). Se miran en el tramo de texto que precede a cada importe.
+     */
+    const PATRON_UMBRAL_DEL_IMPORTE = '/\b(?:m[ií]nimo|m[ií]n|supera\w*|superior\w*|a\s+partir|desde|m[aá]s\s+de|mayor\w*|menor\w*|menos\s+de|hasta|alcanz\w*|lleg\w*|total|compras?|pedidos?|[oó]rdenes|orden)\b/iu';
+
+    /** Condiciones o excepciones que una afirmación de gratuidad del comercio puede traer («si…», «salvo…», «pero…»). */
+    const PATRON_CONDICION_DE_GRATUIDAD = '/\b(?:si|siempre\s+que|cuando|salvo|excepto|menos|pero|aunque|solo|s[oó]lo|solamente|m[ií]nimo|a\s+partir|desde|superior\w*|supera\w*)\b/iu';
+
+    /** Referencia genérica a la zona del propio cliente («para su zona», «en tu localidad»): no nombra ningún lugar. */
+    const PATRON_ZONA_GENERICA = '/\b(?:su|tu|sus)\s+(?:zona|localidad|domicilio|barrio|ciudad|direcci[oó]n)\b/iu';
+
+    /**
      * ¿La oración que el filtro sacaría repite lo que ya dijo una persona del negocio en este chat?
      *
-     * (a) Una gratuidad (sin ningún importe) si algún dicho del comercio afirma gratuidad de un envío.
-     * (b) Un importe de envío si TODOS sus importes están en algún dicho del comercio que habla de envío. Exige al
-     *     menos un importe: una gratuidad del modelo NO se rescata con un dicho que sólo fija un importe (y un total
-     *     no se rescata con un importe de envío).
+     * Criterio (decisión del Coordinador, ronda 2): sólo se rescata si repite lo que el comercio dijo en UNA MISMA
+     * oración suya; ante la duda, se deriva.
+     *  (a) Gratuidad (sin importes): la oración del comercio afirma gratuidad de un envío SIN condición ni excepción
+     *      («mínimo de compra», «salvo…») y, si el modelo nombra una zona, esa zona está en la misma oración (o la
+     *      oración del comercio habla de «su zona», sin nombrar lugares).
+     *  (b) Importe: cada cifra del modelo está en una oración del comercio que habla de envío y donde esa cifra cumple
+     *      el MISMO papel (costo de envío o umbral; ver importes_con_papel()); y si el modelo nombra una zona, la
+     *      zona está en esa oración (o es la de «su zona»). Un total no se rescata con un importe de envío.
      *
-     * @param  string  $oracion
-     * @param  array<int, string>  $dichos_del_negocio
+     * @param  string  $oracion  La oración del modelo.
+     * @param  array<int, string>  $dichos_del_negocio  Mensajes que escribió una persona del negocio.
      * @return bool
      */
     private static function lo_dijo_el_comercio(string $oracion, array $dichos_del_negocio): bool
@@ -281,32 +297,50 @@ class CotizacionEnvioGuardHelper
             return false;
         }
 
-        $importes = self::cifras_de_los_importes($oracion);
+        $importes = self::importes_con_papel($oracion);
 
         // Si quedó algún importe que no se pudo leer como cifra («siete mil»), no se puede comparar: se deriva.
         $sin_cifras = preg_replace(self::PATRON_CIFRA_DEL_IMPORTE, ' ', $oracion);
 
-        $importe_ilegible = (bool) preg_match(self::PATRON_IMPORTE, (string) $sin_cifras);
+        if (preg_match(self::PATRON_IMPORTE, (string) $sin_cifras)) {
+            return false;
+        }
+
+        $es_gratuidad = ! count($importes) && preg_match(self::PATRON_GRATUIDAD, $oracion);
+        $es_importe   = count($importes) && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion);
+
+        if (! $es_gratuidad && ! $es_importe) {
+            return false;
+        }
+
+        $zonas = self::zonas_nombradas($oracion);
 
         foreach ($dichos_del_negocio as $dicho) {
 
-            $dicho = (string) $dicho;
+            $frases = preg_split(self::PATRON_CORTE, (string) $dicho, -1, PREG_SPLIT_NO_EMPTY);
 
-            if (! preg_match(self::PATRON_ENVIO, $dicho)) {
+            if ($frases === false) {
                 continue;
             }
 
-            // (a) La gratuidad que repite lo que dijo el comercio.
-            if (! count($importes) && ! $importe_ilegible
-                && preg_match(self::PATRON_GRATUIDAD, $oracion) && preg_match(self::PATRON_GRATUIDAD, $dicho)) {
-                return true;
-            }
+            foreach ($frases as $frase) {
 
-            // (b) El importe del envío que dijo el comercio, todos y sólo ésos.
-            if (count($importes) && ! $importe_ilegible
-                && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion)
-                && ! count(array_diff($importes, self::cifras_de_los_importes($dicho)))) {
-                return true;
+                if (! preg_match(self::PATRON_ENVIO, $frase) || ! self::zonas_en_la_frase($zonas, $frase)) {
+                    continue;
+                }
+
+                // (a) Gratuidad sin condición ni importe en la oración del comercio.
+                if ($es_gratuidad
+                    && preg_match(self::PATRON_GRATUIDAD, $frase)
+                    && ! preg_match(self::PATRON_CONDICION_DE_GRATUIDAD, $frase)
+                    && ! count(self::importes_con_papel($frase))) {
+                    return true;
+                }
+
+                // (b) Cada cifra del modelo, con el mismo papel, en esta misma oración del comercio.
+                if ($es_importe && self::importes_incluidos($importes, self::importes_con_papel($frase))) {
+                    return true;
+                }
             }
         }
 
@@ -314,36 +348,120 @@ class CotizacionEnvioGuardHelper
     }
 
     /**
-     * Las cifras (sólo dígitos) de los importes de un texto: «$1.500» y «1500 pesos» dan «1500».
+     * Los importes de una oración con su papel: «costo» (lo que cuesta el envío) o «umbral» (mínimo de compra, tope,
+     * total). El papel sale del tramo de texto entre el importe anterior (o el inicio) y éste.
      *
      * @param  string  $texto
-     * @return array<int, string>
+     * @return array<int, array{cifra: string, papel: string}>
      */
-    private static function cifras_de_los_importes(string $texto): array
+    private static function importes_con_papel(string $texto): array
     {
-        $cifras = [];
+        $resultado = [];
 
-        if (preg_match_all(self::PATRON_CIFRA_DEL_IMPORTE, $texto, $encontrados, PREG_SET_ORDER)) {
+        if (! preg_match_all(self::PATRON_CIFRA_DEL_IMPORTE, $texto, $encontrados, PREG_SET_ORDER | PREG_OFFSET_CAPTURE)) {
+            return $resultado;
+        }
 
-            foreach ($encontrados as $encontrado) {
+        // Dónde terminó el importe anterior: el tramo que precede al siguiente empieza ahí.
+        $desde = 0;
 
-                $numero = '';
+        foreach ($encontrados as $encontrado) {
 
-                for ($i = 1; $i <= 3; $i++) {
-                    if (isset($encontrado[$i]) && $encontrado[$i] !== '') {
-                        $numero = $encontrado[$i];
-                    }
+            $inicio = $encontrado[0][1];
+            $tramo  = substr($texto, $desde, $inicio - $desde);
+
+            $numero = '';
+
+            for ($i = 1; $i <= 3; $i++) {
+                if (isset($encontrado[$i]) && $encontrado[$i][0] !== '') {
+                    $numero = $encontrado[$i][0];
                 }
+            }
 
-                $cifra = preg_replace('/\D/', '', $numero);
+            $cifra = preg_replace('/\D/', '', $numero);
 
-                if ($cifra !== '') {
-                    $cifras[] = $cifra;
+            if ($cifra !== '') {
+                $resultado[] = ['cifra' => $cifra, 'papel' => preg_match(self::PATRON_UMBRAL_DEL_IMPORTE, $tramo) ? 'umbral' : 'costo'];
+            }
+
+            $desde = $inicio + strlen($encontrado[0][0]);
+        }
+
+        return $resultado;
+    }
+
+    /**
+     * ¿Todos los importes (cifra y papel) del modelo están entre los de la oración del comercio?
+     *
+     * @param  array<int, array{cifra: string, papel: string}>  $del_modelo
+     * @param  array<int, array{cifra: string, papel: string}>  $del_comercio
+     * @return bool
+     */
+    private static function importes_incluidos(array $del_modelo, array $del_comercio): bool
+    {
+        foreach ($del_modelo as $importe) {
+
+            $esta = false;
+
+            foreach ($del_comercio as $otro) {
+                if ($otro['cifra'] === $importe['cifra'] && $otro['papel'] === $importe['papel']) {
+                    $esta = true;
+                    break;
                 }
+            }
+
+            if (! $esta) {
+                return false;
             }
         }
 
-        return $cifras;
+        return true;
+    }
+
+    /**
+     * Los lugares que nombra la oración del modelo: palabras con mayúscula después de «a», «en», «para», «hacia» o
+     * «hasta» (un barrio, una ciudad).
+     *
+     * @param  string  $oracion
+     * @return array<int, string>  En minúsculas.
+     */
+    private static function zonas_nombradas(string $oracion): array
+    {
+        $zonas = [];
+
+        if (preg_match_all('/\b(?i:a|en|para|hacia|hasta)\s+((?:\p{Lu}\p{L}*)(?:\s+(?:(?:de|del|la|el)\s+)?\p{Lu}\p{L}*)*)/u', $oracion, $encontradas)) {
+
+            foreach ($encontradas[1] as $zona) {
+                $zonas[] = mb_strtolower(trim($zona));
+            }
+        }
+
+        return $zonas;
+    }
+
+    /**
+     * ¿Cada lugar que nombró el modelo está en la oración del comercio? Si la oración del comercio habla de «su
+     * zona» (sin nombrar lugares), vale para cualquier zona del cliente.
+     *
+     * @param  array<int, string>  $zonas
+     * @param  string  $frase
+     * @return bool
+     */
+    private static function zonas_en_la_frase(array $zonas, string $frase): bool
+    {
+        if (! count($zonas) || preg_match(self::PATRON_ZONA_GENERICA, $frase)) {
+            return true;
+        }
+
+        $en_minuscula = mb_strtolower($frase);
+
+        foreach ($zonas as $zona) {
+            if (mb_strpos($en_minuscula, $zona) === false) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
