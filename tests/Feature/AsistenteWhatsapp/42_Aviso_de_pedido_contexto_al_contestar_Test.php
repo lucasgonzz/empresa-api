@@ -33,11 +33,23 @@ use Illuminate\Support\Facades\DB;
  */
 class Aviso_de_pedido_contexto_al_contestar_Test extends TareasDelAsistenteConModeloTestCase
 {
-    /** El texto exacto del aviso del pedido N° 78 del CA1 (el mismo que fija el test 41). */
-    const TEXTO_DEL_PEDIDO_78 = "🛒 Entró un pedido nuevo en la tienda: *N° 78* de Gabriel Domínguez, por \$188.000.\n"
-        . "Entrega: Retiro por local · Pago: Mercado Pago\n"
-        . "1 artículo: Malbec Reserva x2\n"
-        . "Respondeme este mensaje si querés el detalle.";
+    /**
+     * El texto exacto del aviso del pedido N° 78 del CA1 (el mismo que fija el test 41, en el formato nuevo de la
+     * misión asistente-diario-20261128). Pasó de constante a método porque lleva el email del comprador del test.
+     *
+     * @param  string  $email  El email del comprador del pedido.
+     * @return string
+     */
+    protected function texto_del_pedido_78($email)
+    {
+        return "🛒 Entró un pedido nuevo en la tienda: *N° 78*\n"
+            . "Comprador: Gabriel Domínguez · Tel. sin cargar · " . $email . "\n"
+            . "Entrega: Retiro por local\n"
+            . "Artículos:\n"
+            . "• Malbec Reserva x2 · \$94.000 c/u = \$188.000\n"
+            . "Total: *\$188.000*\n"
+            . "Pago: Mercado Pago";
+    }
 
     /**
      * 🔴 CA12 — El aviso sellado queda en la conversación con su texto completo y, al contestar, el modelo lo ve.
@@ -91,7 +103,7 @@ class Aviso_de_pedido_contexto_al_contestar_Test extends TareasDelAsistenteConMo
         }));
 
         $this->assertCount(1, $items, 'El pedido nuevo se ofrece una sola vez.');
-        $this->assertSame(self::TEXTO_DEL_PEDIDO_78, $items[0]['texto']);
+        $this->assertSame($this->texto_del_pedido_78($comprador->email), $items[0]['texto']);
         $this->assertSame((int) $conversacion->id, $items[0]['ai_conversation_id']);
 
         // El admin lo manda y lo sella: queda como mensaje del asistente en el canal de WhatsApp, con el texto entero.
@@ -102,7 +114,7 @@ class Aviso_de_pedido_contexto_al_contestar_Test extends TareasDelAsistenteConMo
         $this->assertCount(1, $guardado);
         $this->assertSame('assistant', $guardado[0]->rol);
         $this->assertSame(AiMessage::CANAL_WHATSAPP, $guardado[0]->canal);
-        $this->assertSame(self::TEXTO_DEL_PEDIDO_78, $guardado[0]->contenido, 'Queda lo que salió, entero.');
+        $this->assertSame($this->texto_del_pedido_78($comprador->email), $guardado[0]->contenido, 'Queda lo que salió, entero.');
 
         // El dueño contesta citando ese aviso: el turno real le pasa al modelo la conversación con el aviso adentro.
         $this->modelo_contesta('Compró 2 Malbec Reserva por $188.000.');
@@ -123,8 +135,9 @@ class Aviso_de_pedido_contexto_al_contestar_Test extends TareasDelAsistenteConMo
         $visto = implode("\n", $this->textos($pedidos[0]['messages']));
 
         $this->assertStringContainsString('*N° 78*', $visto);
-        $this->assertStringContainsString('Entrega: Retiro por local · Pago: Mercado Pago', $visto);
-        $this->assertStringContainsString('1 artículo: Malbec Reserva x2', $visto);
+        $this->assertStringContainsString('Entrega: Retiro por local', $visto);
+        $this->assertStringContainsString('Pago: Mercado Pago', $visto);
+        $this->assertStringContainsString('• Malbec Reserva x2 · $94.000 c/u = $188.000', $visto);
         $this->assertStringContainsString('¿qué compró?', $visto);
     }
 }

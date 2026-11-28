@@ -45,11 +45,24 @@ use Illuminate\Support\Facades\Schema;
  */
 class Aviso_de_pedido_completo_y_por_defecto_Test extends RecordatoriosTestCase
 {
-    /** El texto exacto del aviso del pedido N° 78 del CA1 (ventana de 24 h abierta). */
-    const TEXTO_DEL_PEDIDO_78 = "🛒 Entró un pedido nuevo en la tienda: *N° 78* de Gabriel Domínguez, por \$188.000.\n"
-        . "Entrega: Retiro por local · Pago: Mercado Pago\n"
-        . "1 artículo: Malbec Reserva x2\n"
-        . "Respondeme este mensaje si querés el detalle.";
+    /**
+     * El texto exacto del aviso del pedido N° 78 del CA1 (ventana de 24 h abierta), en el formato de la misión
+     * asistente-diario-20261128 (CA1/CA3: comprador con contacto, artículos con precio y total en su propia línea).
+     * Pasó de constante a método porque ahora lleva el email del comprador del test (que es único por corrida).
+     *
+     * @param  string  $email  El email del comprador del pedido.
+     * @return string
+     */
+    protected function texto_del_pedido_78($email)
+    {
+        return "🛒 Entró un pedido nuevo en la tienda: *N° 78*\n"
+            . "Comprador: Gabriel Domínguez · Tel. sin cargar · " . $email . "\n"
+            . "Entrega: Retiro por local\n"
+            . "Artículos:\n"
+            . "• Malbec Reserva x2 · \$94.000 c/u = \$188.000\n"
+            . "Total: *\$188.000*\n"
+            . "Pago: Mercado Pago";
+    }
 
     /** El `resumen` exacto del pedido N° 78 del CA1 (ventana cerrada: va como parámetro de la plantilla de tareas). */
     const RESUMEN_DEL_PEDIDO_78 = 'el aviso del pedido N° 78 de la tienda: Gabriel Domínguez, $188.000, retiro por local, pago con Mercado Pago, 1 artículo';
@@ -214,7 +227,7 @@ class Aviso_de_pedido_completo_y_por_defecto_Test extends RecordatoriosTestCase
 
         $item = $this->item_del_pedido($pedido);
 
-        $this->assertSame(self::TEXTO_DEL_PEDIDO_78, $item['texto']);
+        $this->assertSame($this->texto_del_pedido_78($this->comprador->email), $item['texto']);
         $this->assertSame('Pedido N° 78 de la tienda: Gabriel Domínguez, $188.000', $item['detalle']);
         $this->assertSame('recordatorio:pedido_tienda:' . $pedido->id . '-' . Carbon::parse($pedido->created_at)->timestamp, $item['id']);
     }
@@ -222,13 +235,13 @@ class Aviso_de_pedido_completo_y_por_defecto_Test extends RecordatoriosTestCase
     /* ─────────────────────────────── CA2 ─────────────────────────────── */
 
     /**
-     * 🔴 CA2 — Sólo los primeros 3 artículos («… y K más») y cada forma de entrega: envío propio con zona, envío
+     * 🔴 CA2 — Todos los renglones con su precio (hasta 15; el corte se prueba en el test 45) y cada forma de entrega: envío propio con zona, envío
      * a domicilio sin zona, y envío por correo (envio_opcion sin proveedor), que gana sobre `deliver`.
      *
      * @group asistente-whatsapp
      * @test
      */
-    public function muestra_los_primeros_tres_articulos_y_cada_forma_de_entrega()
+    public function muestra_los_renglones_y_cada_forma_de_entrega()
     {
         $this->configuracion_de_la_tienda();
         $this->cursor_de_pedidos_al_dia();
@@ -245,13 +258,16 @@ class Aviso_de_pedido_completo_y_por_defecto_Test extends RecordatoriosTestCase
         $por_correo = $this->pedido(82, [['A', 1000, 1]], ['deliver' => 1, 'envio_opcion' => ['servicio' => 'Correo Argentino']], '2026-10-16 10:03:00');
 
         $texto = $this->item_del_pedido($con_zona)['texto'];
-        $this->assertStringContainsString('por $8.000.', $texto);
-        $this->assertStringContainsString('Entrega: Envío propio: Zona Centro · Pago: no indicado', $texto);
-        $this->assertStringContainsString('5 artículos: A x1, B x2, C x1 y 2 más', $texto);
-        $this->assertStringNotContainsString('D x3', $texto, 'Sólo van los primeros 3 artículos.');
+        $this->assertStringContainsString("Total: *\$8.000*", $texto);
+        $this->assertStringContainsString("Entrega: Envío propio: Zona Centro\n", $texto);
+        $this->assertStringContainsString("\nPago: no indicado", $texto);
+        $this->assertStringContainsString("• A x1 · \$1.000 c/u = \$1.000", $texto);
+        $this->assertStringContainsString("• B x2 · \$2.500 c/u = \$5.000", $texto);
+        $this->assertStringContainsString("• E x10 · \$50 c/u = \$500", $texto, 'Con 5 renglones van todos (el tope es 15).');
+        $this->assertStringNotContainsString('artículos más', $texto);
 
         $this->assertStringContainsString('Entrega: Envío a domicilio', $this->item_del_pedido($sin_zona)['texto']);
-        $this->assertStringContainsString('1 artículo: A x1', $this->item_del_pedido($sin_zona)['texto']);
+        $this->assertStringContainsString('• A x1 · $1.000 c/u = $1.000', $this->item_del_pedido($sin_zona)['texto']);
 
         $this->assertStringContainsString('Entrega: Envío por correo', $this->item_del_pedido($por_correo)['texto']);
     }
