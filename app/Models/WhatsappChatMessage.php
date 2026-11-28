@@ -52,6 +52,11 @@ class WhatsappChatMessage extends Model
         // Tamaño en bytes de la copia local del adjunto. Se castea a entero porque el driver de
         // MySQL devuelve los enteros como string y el front compara contra los topes de tamaño.
         'media_size' => 'integer',
+        // Ids de los artículos del catálogo que vio el modelo al armar esta respuesta del agente (misión
+        // ft-agente-fotos-alternativas-t172): el turno siguiente los relee para recordar de qué se hablaba.
+        'ai_catalog_article_ids' => 'array',
+        // URLs de las fotos 2 a 4 que acompañan a la respuesta del agente (la primera va en `media_url`).
+        'ai_extra_media_urls' => 'array',
     ];
 
     /**
