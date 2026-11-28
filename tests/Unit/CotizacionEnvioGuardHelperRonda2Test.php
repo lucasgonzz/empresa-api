@@ -59,12 +59,11 @@ class CotizacionEnvioGuardHelperRonda2Test extends TestCase
         $this->assertFalse($r['derivo']);
         $this->assertSame($frase, $r['body']);
 
-        // El mínimo de compra dicho como mínimo de compra tampoco es una cotización inventada.
-        $frase = 'Si el pedido no supera los $80.000 el costo de envío es $7.000.';
+        // Una oración del modelo que repite el mínimo de compra junto al costo ya no se rescata (revisión 2 C: en la
+        // oración del modelo todo importe es costo de envío; ante la duda se deriva).
+        $r = CotizacionEnvioGuardHelper::revisar('Si el pedido no supera los $80.000 el costo de envío es $7.000.', [self::DICHO_285]);
 
-        $r = CotizacionEnvioGuardHelper::revisar($frase, [self::DICHO_285]);
-
-        $this->assertFalse($r['derivo']);
+        $this->assertTrue($r['derivo']);
     }
 
     /**
@@ -92,5 +91,57 @@ class CotizacionEnvioGuardHelperRonda2Test extends TestCase
             $this->assertTrue($r['derivo'], 'Tiene que derivarse: ' . $frase);
             $this->assertStringNotContainsString('$80.000', $r['body'], 'El importe no puede salir: ' . $frase);
         }
+    }
+
+    /**
+     * Revisión 2 A: una gratuidad con cifra se deriva siempre; un importe sólo se rescata con una oración del comercio
+     * SIN condición; y un lugar que el modelo nombra tiene que estar en la misma oración del comercio (sin importar
+     * mayúsculas, acentos ni «al»/«del»).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function gratuidad_con_cifra_condiciones_y_lugares_se_derivan()
+    {
+        $frases = [
+            'Tu pedido supera $80.000 así que el envío es gratis.',
+            'Como su pedido supera los $80.000, el envío a La Calera es gratis.',
+            'Su pedido a La Calera supera los $80.000, así que el envío no tiene costo.',
+            'Su pedido supera los $80.000, así que el envío es sin cargo.',
+            'El envío desde $80.000 es sin cargo.',
+            'Si el pedido supera los $80.000 el costo de envío es $7.000.',
+            'Para su zona el envío sale $7.000.',
+            'el envío a la calera sale $7.000.',
+            'El envío al interior sale $7.000.',
+        ];
+
+        foreach ($frases as $frase) {
+
+            $r = CotizacionEnvioGuardHelper::revisar($frase, [self::DICHO_285]);
+
+            $this->assertTrue($r['derivo'], 'Tiene que derivarse: ' . $frase);
+            $this->assertNotSame($frase, $r['body'], 'Tiene que salir con la frase fija: ' . $frase);
+        }
+    }
+
+    /**
+     * Guardas: lo que el comercio dijo, repetido tal cual, no se deriva; tampoco lo de CA17 (gratuidad de «su zona»
+     * sin condición, y el costo dicho una sola vez sin condición).
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function lo_dicho_tal_cual_no_se_deriva()
+    {
+        $r = CotizacionEnvioGuardHelper::revisar(self::DICHO_285, [self::DICHO_285]);
+
+        $this->assertFalse($r['derivo'], 'El texto del comercio repetido tal cual no se deriva.');
+        $this->assertSame(self::DICHO_285, $r['body']);
+
+        $r = CotizacionEnvioGuardHelper::revisar('En Córdoba capital no tiene costo de envío.', ['Para su zona no tiene costo de envio']);
+        $this->assertFalse($r['derivo']);
+
+        $r = CotizacionEnvioGuardHelper::revisar('El envío sale $7.000.', ['el costo de envio es $7.000']);
+        $this->assertFalse($r['derivo']);
     }
 }
