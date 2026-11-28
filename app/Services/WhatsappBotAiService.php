@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Http\Controllers\Helpers\AiTokenUsageHelper;
 use App\Http\Controllers\Helpers\CotizacionEnvioGuardHelper;
+use App\Http\Controllers\Helpers\WhatsappTurnCatalogHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ModelosIaHelper;
 use App\Http\Controllers\Helpers\asistente_ia\ProveedorIaHelper;
 use App\Models\User;
@@ -403,6 +404,13 @@ SUMMARY;
     private const COTIZACION_RULE = 'No informes costo de envío, peaje, envío gratis ni totales con envío. Si el cliente lo pide, decile que el costo de envío y el total los confirma el equipo y terminá con [CONSULTA:cotizar envío y total].';
 
     /**
+     * Consigna de alternativas (ticket 172): ante un pedido genérico («una amoladora») el agente ofrece las
+     * opciones con stock en vez de elegir una sola. Va después de la consigna de la foto y antes de las
+     * marcas internas; el orden por stock de la búsqueda (`BusquedaHibridaDeArticulosHelper`) es su par.
+     */
+    private const ALTERNATIVES_RULE = 'Si el cliente pide un tipo de producto sin elegir uno en particular (por ejemplo "una amoladora"), ofrecele las opciones del catálogo de abajo que sirven para lo que pidió y tienen stock, hasta 4, cada una con su precio, y preguntale cuál prefiere: no elijas una sola por él. No ofrezcas como disponible un producto con Stock: 0.';
+
+    /**
      * Consigna de las marcas de seguimiento. Va justo después de la consigna de la foto y antes de las capas
      * opcionales (ver `build_system_prompt()`). Cuenta qué es la marca (algo que el sistema saca del mensaje) sin nombrar «una persona del
      * negocio» ni «el negocio»: la regla fija de hablar en nombre del negocio manda, y una frase así es
@@ -413,7 +421,7 @@ Marcas internas para que el sistema deje anotado lo que quedó pendiente. Son l�
 - Si el cliente ya dijo que quiere llevar productos concretos (aunque todavía te falte algún dato, como el nombre) y dejás el pedido armado para que se lo confirmen, terminá tu respuesta con una línea que diga exactamente [PEDIDO:<productos y cantidades, y el nombre del cliente si lo dio>].
 - Cada vez que le digas al cliente que vas a consultar, averiguar o confirmar algo que no sabés (por ejemplo "lo consulto y te confirmo"), o si el cliente pide hablar con una persona, esa respuesta tiene que terminar con una línea que diga exactamente [CONSULTA:<qué hay que averiguar, en pocas palabras>].
 - La marca va solo si el texto de ESTA respuesta promete eso. Si tu respuesta saluda, agradece ("de nada"), se despide o contesta con la información que tenés, no pongas ninguna marca, aunque antes hayas prometido algo: lo de antes ya quedó anotado o ya lo atendió una persona.
-Poné como mucho una marca por respuesta, siempre después del texto y en una línea sola. Si también corresponde [FOTO:...], cada marca va en su propia línea. Las únicas marcas que existen son [PEDIDO:...], [CONSULTA:...] y [FOTO:...]: no inventes otras.
+Poné como mucho una marca de [PEDIDO:...] o [CONSULTA:...] por respuesta (las de [FOTO:...] pueden ser varias), siempre después del texto y en una línea sola. Si también corresponde [FOTO:...], cada marca va en su propia línea. Las únicas marcas que existen son [PEDIDO:...], [CONSULTA:...] y [FOTO:...]: no inventes otras.
 RULE;
 
     /**
@@ -552,10 +560,31 @@ RULE;
                     ->all();
             }
 
+            // Productos de los que ya se venía hablando (ticket 172): «¿me pasás la foto?» no trae el producto
+            // por sí solo. Van DESPUÉS de la búsqueda actual, sin repetidos, hasta CARRIED_MAX en total.
+            $carried_articles = [];
+            if ($chat->exists) {
+                $carried_articles = WhatsappTurnCatalogHelper::carried_articles(
+                    WhatsappTurnCatalogHelper::previous_catalog_article_ids($history),
+                    array_map('intval', array_column(array_map(function ($article) {
+                        return (array) $article;
+                    }, $articles), 'id')),
+                    (int) $chat->user_id
+                );
+                $carried_articles = array_slice($carried_articles, 0, max(0, WhatsappTurnCatalogHelper::CARRIED_MAX - count($articles)));
+            }
+
+            // Todo lo que ve el modelo este turno y cuáles de esos artículos tienen foto (un solo criterio).
+            $catalog_articles = array_merge($articles, $carried_articles);
+            $catalog_ids      = array_values(array_filter(array_map(function ($article) {
+                return (int) $this->article_field($article, 'id', 0);
+            }, $catalog_articles)));
+            $photo_urls       = WhatsappTurnCatalogHelper::photo_urls_by_article_id($catalog_ids, (int) $chat->user_id);
+
             $system_prompt = $this->build_system_prompt($config);
             // El `$config` viaja hasta el armado del payload porque ahí se decide si las
             // imágenes entrantes van como bloques de visión o como texto (`ai_vision_enabled`).
-            $messages = $this->build_messages_payload($history, $articles, $owner_user, $config);
+            $messages = $this->build_messages_payload($history, $articles, $owner_user, $config, $carried_articles, $photo_urls);
 
             /*
              * Si el payload terminó llevando una foto (visión prendida y el cliente mandó una), se
@@ -606,6 +635,16 @@ RULE;
             ]);
 
             $resultado = $this->split_markers($this->extract_text($body));
+
+            // Las marcas [FOTO:...] se resuelven contra el catálogo de ESTE turno (art<ID> o bar_code), nunca
+            // contra toda la base; un artículo sin foto cargada no pasa (sale como texto, sin inventar).
+            $resultado['photo_article_ids'] = array_values(array_filter(
+                WhatsappTurnCatalogHelper::resolve_photo_article_ids($resultado['bar_codes'], $catalog_articles),
+                function ($article_id) use ($photo_urls) {
+                    return isset($photo_urls[$article_id]);
+                }
+            ));
+            $resultado['catalog_article_ids'] = array_slice($catalog_ids, 0, WhatsappTurnCatalogHelper::CARRIED_MAX);
 
             // Opción por negocio, apagada de fábrica: sin ella no se llama al filtro y el resultado es el de siempre.
             // Va acá, en el único lugar que produce el texto, para cubrir al job, a «Sugerir respuesta» y al
@@ -715,7 +754,9 @@ RULE;
      *
      * @param string $texto Respuesta cruda del modelo, con marcadores o sin ellos.
      *
-     * @return array{body: string, bar_code: string, follow_up: string, follow_up_note: string}
+     * @return array{body: string, bar_code: string, bar_codes: array<int,string>, follow_up: string, follow_up_note: string}
+     *         `bar_code` es el código marcado más cercano al final (compatibilidad); `bar_codes` son TODOS, en
+     *         el orden en que el modelo los escribió (ticket 172: hasta 4 fotos por respuesta).
      */
     private function split_markers(string $texto): array
     {
@@ -755,8 +796,10 @@ RULE;
 
         // La cola, de a una y en cualquier orden. `split_photo_marker()` devuelve el texto tal cual (byte por
         // byte) cuando no hay foto, y `strip_tail_marker()` también cuando no hay nada que sacar.
-        $bar_code = '';
-        for ($vuelta = 0; $vuelta < 6; $vuelta++) {
+        $bar_code  = '';
+        // Todos los códigos de `[FOTO:...]` que se sacaron, del más cercano al final al más lejano (se invierte al terminar).
+        $bar_codes = [];
+        for ($vuelta = 0; $vuelta < 10; $vuelta++) {
             $foto = $this->split_photo_marker($cuerpo);
 
             // Se mira si el cuerpo CAMBIÓ y no si hay código: un `[FOTO:   ]` con el código en blanco es una
@@ -765,6 +808,9 @@ RULE;
                 // Si hubiera más de una foto, se queda con la última (la más cercana al final).
                 if ($bar_code === '') {
                     $bar_code = $foto['bar_code'];
+                }
+                if ($foto['bar_code'] !== '') {
+                    $bar_codes[] = $foto['bar_code'];
                 }
                 $cuerpo = $foto['body'];
                 continue;
@@ -794,6 +840,8 @@ RULE;
         return [
             'body'           => $cuerpo,
             'bar_code'       => $bar_code,
+            // Todos los códigos marcados, en el orden en que el modelo los escribió (el bucle sacó el último primero).
+            'bar_codes'      => array_reverse($bar_codes),
             'follow_up'      => $follow_up,
             'follow_up_note' => $follow_up_note,
         ];
@@ -1080,7 +1128,11 @@ RULE;
      */
     private function empty_response(string $motivo = ''): array
     {
-        return ['body' => '', 'bar_code' => '', 'follow_up' => '', 'follow_up_note' => '', 'motivo' => $motivo];
+        return [
+            'body' => '', 'bar_code' => '', 'bar_codes' => [], 'follow_up' => '', 'follow_up_note' => '',
+            // Aditivos de la misión del ticket 172: fotos resueltas y artículos que vio el modelo.
+            'photo_article_ids' => [], 'catalog_article_ids' => [], 'motivo' => $motivo,
+        ];
     }
 
     /**
@@ -1301,15 +1353,17 @@ RULE;
         // queda al cliente después de sacarlo termina prolijo, sin un corte en medio de una
         // oración. Y se aclara que no lo mencione, porque si no el modelo tiende a explicarle
         // al cliente que "te mando la foto con el código", que es ruido de implementación.
-        $photo_rule = 'Si estás recomendando UN producto puntual del catálogo de abajo, terminá tu respuesta con'
-            .' una última línea que diga exactamente [FOTO:<código de barras del producto>], sin ningún otro'
-            .' texto en esa línea.'
+        $photo_rule = 'Cada producto del catálogo de abajo trae su Ref y dice si tiene Foto cargada (Foto: sí o Foto: no).'
+            ."\n"
+            .'Si el cliente te pide la foto de uno o varios productos, o si le estás recomendando UN producto puntual'
+            .' que tiene Foto: sí, terminá tu respuesta con una línea por producto que diga exactamente'
+            .' [FOTO:<Ref del producto>], sin ningún otro texto en esa línea. Como mucho 4 líneas así por respuesta.'
             ."\n"
             .'Esa línea es una marca interna del sistema: se saca del mensaje antes de mandárselo al cliente y'
             .' sirve para adjuntarle la foto del producto. No la menciones ni la expliques en el texto.'
             ."\n"
-            .'Poné como mucho una por respuesta, y solo si estás recomendando un producto puntual: si estás'
-            .' listando varios, o no estás recomendando ninguno, no la pongas.';
+            .'Si el cliente pide la foto de un producto que dice Foto: no, decile que de ese producto no tenés una'
+            .' foto cargada, sin prometer que se la mandás. Nunca pongas [FOTO:...] de un producto con Foto: no.';
 
         $blocks = [$personality];
 
@@ -1324,6 +1378,7 @@ RULE;
 
         $blocks[] = self::FIXED_RULES;
         $blocks[] = $photo_rule;
+        $blocks[] = self::ALTERNATIVES_RULE;
 
         // Marcas de seguimiento (misión senal-pedidos-y-consultas-del-agente): es una parte FIJA del prompt, de
         // todos los negocios, con o sin objetivo («lo consulto y te confirmo» lo dice el agente de cualquiera), y
@@ -1432,9 +1487,14 @@ RULE;
      *                                        de acá sale `ai_vision_enabled`. Null = sin visión
      *                                        (o sea, exactamente el comportamiento previo).
      *
+     * @param array                                                    $carried_articles Productos del turno
+     *                                        anterior (ticket 172), van después de la búsqueda actual.
+     * @param array<int,string>                                        $photo_urls id => URL de los artículos
+     *                                        con foto cargada, para la marca `Foto: sí|no` de cada línea.
+     *
      * @return array<int, array{role: string, content: string|array}>
      */
-    private function build_messages_payload($history_messages, array $articles, $owner_user = null, $config = null): array
+    private function build_messages_payload($history_messages, array $articles, $owner_user = null, $config = null, array $carried_articles = [], array $photo_urls = []): array
     {
         // Con el interruptor apagado (el default) no se lee un solo archivo del disco y el
         // payload sale idéntico al de antes de esta misión: la imagen entra como el texto de su
@@ -1482,7 +1542,7 @@ RULE;
             array_shift($turns);
         }
 
-        $catalog_block = $this->build_catalog_block($articles, $owner_user);
+        $catalog_block = $this->build_catalog_block($articles, $owner_user, $carried_articles, $photo_urls);
         $last_index = count($turns) - 1;
 
         if ($last_index >= 0 && $turns[$last_index]['role'] === 'user') {
@@ -1701,18 +1761,28 @@ RULE;
      * @param array                 $articles   Artículos devueltos por `search_similar_articles`
      *                                          (stdClass).
      * @param \App\Models\User|null $owner_user Dueño del bot, para el link a su tienda online.
+     * @param array                 $carried_articles Productos del turno anterior (van bajo su propio encabezado).
+     * @param array<int,string>     $photo_urls id => URL de los artículos con foto cargada.
      *
      * @return string
      */
-    private function build_catalog_block(array $articles, $owner_user = null): string
+    private function build_catalog_block(array $articles, $owner_user = null, array $carried_articles = [], array $photo_urls = []): string
     {
-        if (empty($articles)) {
+        if (empty($articles) && empty($carried_articles)) {
             return self::CATALOG_EMPTY;
         }
 
         $lines = [];
         foreach ($articles as $article) {
-            $lines[] = $this->format_article_line($article, $owner_user);
+            $lines[] = $this->format_article_line($article, $owner_user, $photo_urls);
+        }
+
+        // Con productos arrastrados el bloque abre igual con el encabezado normal (no con CATALOG_EMPTY).
+        if (! empty($carried_articles)) {
+            $lines[] = WhatsappTurnCatalogHelper::CARRIED_HEADER;
+            foreach ($carried_articles as $article) {
+                $lines[] = $this->format_article_line($article, $owner_user, $photo_urls);
+            }
         }
 
         return self::CATALOG_HEADER."\n".implode("\n", $lines);
@@ -1725,10 +1795,11 @@ RULE;
      *
      * @param array|object          $article
      * @param \App\Models\User|null $owner_user Dueño del bot, para el link a su tienda online.
+     * @param array<int,string>     $photo_urls id => URL de los artículos con foto cargada.
      *
      * @return string
      */
-    private function format_article_line($article, $owner_user = null): string
+    private function format_article_line($article, $owner_user = null, array $photo_urls = []): string
     {
         $name  = (string) $this->article_field($article, 'name', '');
         $price = $this->article_field($article, 'final_price', null);
@@ -1761,6 +1832,13 @@ RULE;
         $bar_code = trim((string) $this->article_field($article, 'bar_code', ''));
         if ($bar_code !== '') {
             $line .= ' | Código: '.$bar_code;
+        }
+
+        // Ticket 172: la Ref interna (`art<ID>`) es la llave con la que el modelo marca la foto (el `bar_code`
+        // es nullable y no sirve de llave) y `Foto: sí|no` le dice si hay algo que mandar. Sin id no hay Ref.
+        $article_id = (int) $this->article_field($article, 'id', 0);
+        if ($article_id > 0) {
+            $line .= ' | Foto: '.(isset($photo_urls[$article_id]) ? 'sí' : 'no').' | Ref: art'.$article_id;
         }
 
         return $line;
