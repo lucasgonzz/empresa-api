@@ -427,6 +427,14 @@ class AccionesIaHelper {
             $estado .= ' (el último intento de confirmarla falló: '.$accion->error_mensaje.')';
         }
 
+        // Una compra con factura confirmada cuya compra se borró NO está cargada: sin esto el modelo la daba por hecha (P5).
+        $compra_borrada = PropuestaCompraConFacturaIaHelper::nota_de_compra_borrada($accion);
+
+        if (!is_null($compra_borrada)) {
+
+            $estado .= ' · '.$compra_borrada;
+        }
+
         /*
          * 🔴 La tarjeta de una tarea dice el id de SU TAREA (misión asistente-seguimiento-de-tarea,
          * 10/10/2026). Una tarea no tiene número ni nombre único, así que "pasala al miércoles" o "ya la

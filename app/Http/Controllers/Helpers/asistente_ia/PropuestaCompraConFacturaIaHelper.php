@@ -1188,8 +1188,11 @@ class PropuestaCompraConFacturaIaHelper
         /* Por dónde llega el aviso, sin prometer lo que no va a venir: ver cierre_del_escaneo(). */
         $cierre = self::cierre_del_escaneo($contexto, $avisa_por_whatsapp);
 
+        // El N° de una compra nueva que antes tuvo otra tarjeta de esta charla y esa compra se borró (P5): se explica.
+        $numero_reusado = !$destino['adjuntada'] && self::numero_que_quedo_libre($contexto, $accion, $orden);
+
         return [
-            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado, $otra_factura, $destino['descartada_num'], $escaneo_fallido) . $cierre,
+            'texto'             => self::que_paso($orden, $proveedor, $destino['adjuntada'], $creado, $otra_factura, $destino['descartada_num'], $escaneo_fallido, $numero_reusado) . $cierre,
             /*
              * Compras es la solapa 'compras' de la ruta 'provider' de la SPA (/proveedores/compras).
              * Hasta el 10/10/2026 iba name 'proveedores', que no existe en router/index.js y dejaba
@@ -1208,7 +1211,87 @@ class PropuestaCompraConFacturaIaHelper
             ],
             'provider_id'       => (int) $proveedor->id,
             'provider_order_id' => (int) $orden->id,
+            // El N° que ve el dueño en Compras (se reusa si la compra que lo tenía se borró): lo lee numero_que_quedo_libre().
+            'provider_order_num' => (int) $orden->num,
         ];
+    }
+
+    /**
+     * Si el N° de la compra recién creada es el mismo que anunció otra tarjeta `compra_con_factura` confirmada de
+     * esta conversación cuya compra ya no existe (el número de una compra borrada vuelve a quedar libre y
+     * `Controller::num()` lo reparte de nuevo). Se usa para que el resultado lo explique y no parezca un duplicado
+     * (misión asistente-diario-20261128, P5).
+     *
+     * Las tarjetas viejas, sin `provider_order_num` en el resultado, se comparan por «Compra N° <num> » en su texto.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  \App\Models\AiMessageAction  $accion  La tarjeta que se está confirmando.
+     * @param  \App\Models\ProviderOrder  $orden  La compra recién creada.
+     * @return bool
+     */
+    protected static function numero_que_quedo_libre(ContextoDeCargaIa $contexto, AiMessageAction $accion, ProviderOrder $orden): bool
+    {
+        if (is_null($contexto->conversation)) {
+
+            return false;
+        }
+
+        $anteriores = AiMessageAction::where('ai_conversation_id', (int) $contexto->conversation->id)
+            ->where('tipo', AiMessageAction::TIPO_COMPRA_CON_FACTURA)
+            ->where('estado', AiMessageAction::ESTADO_CONFIRMADA)
+            ->where('id', '!=', (int) $accion->id)
+            ->get();
+
+        foreach ($anteriores as $anterior) {
+
+            $resultado = is_object($anterior->resultado) ? (array) $anterior->resultado : (is_array($anterior->resultado) ? $anterior->resultado : []);
+
+            $compra_id = isset($resultado['provider_order_id']) ? (int) $resultado['provider_order_id'] : 0;
+
+            if ($compra_id <= 0 || !is_null(ProviderOrder::where('user_id', $contexto->owner_id)->find($compra_id))) {
+
+                continue;
+            }
+
+            // El N° que anunció esa tarjeta: el guardado o, en las viejas, el que dice su texto.
+            $texto = isset($resultado['texto']) ? (string) $resultado['texto'] : '';
+
+            if ((isset($resultado['provider_order_num']) && (int) $resultado['provider_order_num'] === (int) $orden->num)
+                || strpos($texto, 'Compra N° ' . (int) $orden->num . ' ') !== false) {
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La nota para el historial del modelo cuando una tarjeta de compra con factura confirmada apunta a una compra
+     * que ya se borró: «la factura NO está cargada». Null si la tarjeta no es de ese tipo, no está confirmada o
+     * su compra sigue viva (misión asistente-diario-20261128, P5: el modelo deducía «ya está cargada» de la
+     * tarjeta que seguía diciendo «confirmada»).
+     *
+     * @param  \App\Models\AiMessageAction  $accion
+     * @return string|null
+     */
+    public static function nota_de_compra_borrada(AiMessageAction $accion)
+    {
+        if ((string) $accion->tipo !== AiMessageAction::TIPO_COMPRA_CON_FACTURA || (string) $accion->estado !== AiMessageAction::ESTADO_CONFIRMADA) {
+
+            return null;
+        }
+
+        $resultado = is_object($accion->resultado) ? (array) $accion->resultado : [];
+
+        $compra_id = isset($resultado['provider_order_id']) ? (int) $resultado['provider_order_id'] : 0;
+
+        if ($compra_id <= 0 || !is_null(ProviderOrder::where('user_id', (int) $accion->user_id)->find($compra_id))) {
+
+            return null;
+        }
+
+        return 'esa compra ya no existe (la borraron): la factura NO está cargada';
     }
 
     /**
@@ -1388,14 +1471,16 @@ class PropuestaCompraConFacturaIaHelper
      * @param  int|null  $descartada_num  N° de la compra que la tarjeta prometió y ya no servía, o null.
      * @param  bool  $escaneo_fallido  La compra solo tuvo escaneos que fallaron sin leer nada (misión
      *                                 agente-mejoras-uso-real): la frase lo dice.
+     * @param  bool  $numero_reusado  El N° de la compra nueva lo había tenido otra compra de la charla que se borró.
      * @return string
      */
-    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado, $otra_factura = null, $descartada_num = null, $escaneo_fallido = false)
+    protected static function que_paso(ProviderOrder $orden, Provider $proveedor, $adjuntada, $proveedor_creado, $otra_factura = null, $descartada_num = null, $escaneo_fallido = false, $numero_reusado = false)
     {
         if (!$adjuntada) {
 
             $frase = 'Creé la Compra N° ' . $orden->num . ' de ' . $proveedor->name
-                . ($proveedor_creado ? ' (proveedor nuevo, lo di de alta)' : '') . '.';
+                . ($proveedor_creado ? ' (proveedor nuevo, lo di de alta)' : '')
+                . ($numero_reusado ? ' (el N° ' . $orden->num . ' quedó libre porque la compra anterior con ese número se borró)' : '') . '.';
 
             /*
              * Sin "entre la propuesta y tu sí" (revisión independiente, 19/10/2026): en "resuelto" y
