@@ -88,7 +88,7 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
             );
         }
 
-        $lugar = self::lugar_del_ajuste($contexto, EntradaDeCargaIa::texto($input, 'deposito'));
+        $lugar = self::lugar_del_ajuste($contexto, self::deposito_dicho_o_heredado($contexto, $input));
 
         if (RespuestaDeCargaIa::es_negativa($lugar)) {
 
@@ -317,6 +317,53 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
     }
 
     /**
+     * El depósito de la llamada: el que mandó el modelo o, si no mandó ninguno y corrige una tarjeta de lote con
+     * `reemplaza_a`, el de esa tarjeta (la clave guarda su id de depósito). Así una corrección no vuelve a preguntar.
+     *
+     * @param  ContextoDeCargaIa  $contexto
+     * @param  array  $input
+     * @return string  El texto del depósito ('' si no hay ninguno).
+     */
+    protected static function deposito_dicho_o_heredado(ContextoDeCargaIa $contexto, array $input): string
+    {
+        $dicho = EntradaDeCargaIa::texto($input, 'deposito');
+
+        $reemplaza_a = (int) EntradaDeCargaIa::valor($input, 'reemplaza_a');
+
+        if ($dicho !== '' || $reemplaza_a <= 0) {
+
+            return $dicho;
+        }
+
+        $tarjeta = AiMessageAction::where('ai_conversation_id', $contexto->conversation->id)
+            ->where('tipo', AiMessageAction::TIPO_AJUSTE_STOCK_LOTE)
+            ->where('id', $reemplaza_a)
+            ->first();
+
+        if (is_null($tarjeta) || strpos((string) $tarjeta->clave, 'ajuste_stock_lote:') !== 0) {
+
+            return '';
+        }
+
+        $address_id = (int) substr((string) $tarjeta->clave, strlen('ajuste_stock_lote:'));
+
+        if ($address_id <= 0) {
+
+            return '';
+        }
+
+        foreach (self::depositos_del_dueno($contexto->owner_id) as $deposito) {
+
+            if ((int) $deposito->id === $address_id) {
+
+                return self::nombre_de_deposito($deposito);
+            }
+        }
+
+        return '';
+    }
+
+    /**
      * Las tarjetas de lote anteriores que esta llamada va a reemplazar, separadas por depósito.
      *
      * Son las `propuesta` de la conversación con la MISMA clave (el reemplazo por clave de `crear()`) y la de id
@@ -355,6 +402,12 @@ class PropuestaAjusteDeStockPorLoteIaHelper extends PropuestaStockIaHelper
         $resultado = ['mismas' => [], 'otro_deposito' => []];
 
         foreach ($tarjetas as $tarjeta) {
+
+            // Un conteo vencido (más de HORAS_VENCIMIENTO horas) ya no vale: no se hereda y pisaría el stock de hoy.
+            if ($tarjeta->vencio()) {
+
+                continue;
+            }
 
             $resultado[(string) $tarjeta->clave === (string) $clave ? 'mismas' : 'otro_deposito'][] = $tarjeta;
         }
