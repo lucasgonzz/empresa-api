@@ -63,11 +63,11 @@ class CotizacionEnvioGuardHelperRonda2Test extends TestCase
         $this->assertFalse($r['derivo']);
         $this->assertSame($frase, $r['body']);
 
-        // Una oración del modelo que repite el mínimo de compra junto al costo ya no se rescata (revisión 2 C: en la
-        // oración del modelo todo importe es costo de envío; ante la duda se deriva).
+        // La oración del comercio repetida tal cual (aun escrita con tilde) no se deriva; con un cambio («supera» en vez
+        // de «no supera») el modelo arma otra condición y se deriva (ver gratuidad_con_cifra_condiciones_y_lugares_se_derivan).
         $r = CotizacionEnvioGuardHelper::revisar('Si el pedido no supera los $80.000 el costo de envío es $7.000.', [self::DICHO_285]);
 
-        $this->assertTrue($r['derivo']);
+        $this->assertFalse($r['derivo']);
     }
 
     /**
