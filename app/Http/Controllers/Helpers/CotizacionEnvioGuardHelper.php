@@ -269,23 +269,30 @@ class CotizacionEnvioGuardHelper
      */
     const PATRON_UMBRAL_DEL_IMPORTE = '/\b(?:m[ií]nimo|m[ií]n|supera\w*|superior\w*|a\s+partir|desde|m[aá]s\s+de|mayor\w*|menor\w*|menos\s+de|hasta|alcanz\w*|lleg\w*|total|compras?|pedidos?|[oó]rdenes|orden)\b/iu';
 
-    /** Condiciones o excepciones que una afirmación de gratuidad del comercio puede traer («si…», «salvo…», «pero…»). */
-    const PATRON_CONDICION_DE_GRATUIDAD = '/\b(?:si|siempre\s+que|cuando|salvo|excepto|menos|pero|aunque|solo|s[oó]lo|solamente|m[ií]nimo|a\s+partir|desde|superior\w*|supera\w*)\b/iu';
+    /**
+     * Condiciones, umbrales o excepciones que una oración del comercio puede traer («si…», «salvo…», «mínimo de
+     * compra», «supera», «desde», «hasta», «más de», «por pedido»). Una oración del comercio con alguna de ellas NO
+     * habilita a rescatar una afirmación del modelo: el modelo la repetiría sin la condición.
+     */
+    const PATRON_CONDICION_DE_GRATUIDAD = '/\b(?:si|siempre\s+que|cuando|salvo|excepto|menos|pero|aunque|solo|s[oó]lo|solamente|m[ií]nimo|a\s+partir|desde|hasta|m[aá]s\s+de|menos\s+de|mayor\w*|menor\w*|superior\w*|supera\w*|alcanz\w*|lleg\w*|compras?|pedidos?)\b/iu';
 
     /** Referencia genérica a la zona del propio cliente («para su zona», «en tu localidad»): no nombra ningún lugar. */
     const PATRON_ZONA_GENERICA = '/\b(?:su|tu|sus)\s+(?:zona|localidad|domicilio|barrio|ciudad|direcci[oó]n)\b/iu';
 
+    /** Palabras que cortan un nombre de lugar y las que, al empezarlo, indican que no es un lugar («tu pedido»). */
+    const PALABRAS_QUE_CORTAN_UN_LUGAR = ['el', 'la', 'los', 'las', 'lo', 'un', 'una', 'y', 'e', 'o', 'u', 'no', 'sin', 'con', 'por', 'que', 'se', 'es', 'son', 'sale', 'salen', 'queda', 'quedan', 'cuesta', 'cuestan', 'vale', 'valen', 'tiene', 'tienen', 'esta', 'estan', 'cobra', 'cobramos', 'cobran', 'del', 'de', 'al', 'a', 'en', 'para', 'hasta', 'hacia', 'desde', 'como', 'si', 'pero', 'asi', 'gratis', 'gratuito', 'costo', 'precio', 'envio', 'envios', 'total', 'sera', 'seria', 'saldria', 'va', 'van', 'tu', 'su', 'mi', 'tus', 'sus', 'mis', 'este', 'esta', 'ese', 'esa', 'esto', 'eso', 'todo', 'toda', 'cada', 'ahi', 'aca', 'aqui', 'breve', 'ahora', 'hoy'];
+
     /**
      * ¿La oración que el filtro sacaría repite lo que ya dijo una persona del negocio en este chat?
      *
-     * Criterio (decisión del Coordinador, ronda 2): sólo se rescata si repite lo que el comercio dijo en UNA MISMA
-     * oración suya; ante la duda, se deriva.
-     *  (a) Gratuidad (sin importes): la oración del comercio afirma gratuidad de un envío SIN condición ni excepción
-     *      («mínimo de compra», «salvo…») y, si el modelo nombra una zona, esa zona está en la misma oración (o la
-     *      oración del comercio habla de «su zona», sin nombrar lugares).
-     *  (b) Importe: cada cifra del modelo está en una oración del comercio que habla de envío y donde esa cifra cumple
-     *      el MISMO papel (costo de envío o umbral; ver importes_con_papel()); y si el modelo nombra una zona, la
-     *      zona está en esa oración (o es la de «su zona»). Un total no se rescata con un importe de envío.
+     * Criterio (decisión del Coordinador, rondas 2 y 3): ante la duda, se deriva. Sólo se rescata si:
+     *  (0) es la misma oración del comercio, tal cual (salvo mayúsculas, espacios y puntuación final); o
+     *  (a) afirma gratuidad SIN ninguna cifra, y hay una oración del comercio que habla de envío, afirma gratuidad
+     *      sin condición ni cifra y contiene los lugares que nombra el modelo (o habla de «su zona»); o
+     *  (b) trae importes y NO es una gratuidad: todos sus importes se tratan como costo de envío (en la oración del
+     *      modelo no se clasifica el papel) y cada cifra aparece como costo de envío en UNA oración del comercio que
+     *      habla de envío, SIN condición, y que contiene los lugares que nombra el modelo (o habla de «su zona»).
+     * Un total no se rescata con un importe de envío.
      *
      * @param  string  $oracion  La oración del modelo.
      * @param  array<int, string>  $dichos_del_negocio  Mensajes que escribió una persona del negocio.
@@ -297,7 +304,8 @@ class CotizacionEnvioGuardHelper
             return false;
         }
 
-        $importes = self::importes_con_papel($oracion);
+        // En la oración del MODELO no se clasifica el papel: todo importe suyo se trata como costo de envío.
+        $importes = self::importes_con_papel($oracion, false);
 
         // Si quedó algún importe que no se pudo leer como cifra («siete mil»), no se puede comparar: se deriva.
         $sin_cifras = preg_replace(self::PATRON_CIFRA_DEL_IMPORTE, ' ', $oracion);
@@ -307,13 +315,11 @@ class CotizacionEnvioGuardHelper
         }
 
         $es_gratuidad = ! count($importes) && preg_match(self::PATRON_GRATUIDAD, $oracion);
-        $es_importe   = count($importes) && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion);
+        $es_importe   = count($importes) && ! preg_match(self::PATRON_GRATUIDAD, $oracion)
+            && preg_match(self::PATRON_ENVIO, $oracion) && ! preg_match(self::PATRON_TOTAL, $oracion);
 
-        if (! $es_gratuidad && ! $es_importe) {
-            return false;
-        }
-
-        $zonas = self::zonas_nombradas($oracion);
+        $zonas    = self::zonas_nombradas($oracion);
+        $textual  = self::normalizar_oracion($oracion);
 
         foreach ($dichos_del_negocio as $dicho) {
 
@@ -325,19 +331,23 @@ class CotizacionEnvioGuardHelper
 
             foreach ($frases as $frase) {
 
-                if (! preg_match(self::PATRON_ENVIO, $frase) || ! self::zonas_en_la_frase($zonas, $frase)) {
-                    continue;
-                }
-
-                // (a) Gratuidad sin condición ni importe en la oración del comercio.
-                if ($es_gratuidad
-                    && preg_match(self::PATRON_GRATUIDAD, $frase)
-                    && ! preg_match(self::PATRON_CONDICION_DE_GRATUIDAD, $frase)
-                    && ! count(self::importes_con_papel($frase))) {
+                // (0) La misma oración que escribió el comercio.
+                if ($textual !== '' && $textual === self::normalizar_oracion($frase)) {
                     return true;
                 }
 
-                // (b) Cada cifra del modelo, con el mismo papel, en esta misma oración del comercio.
+                if (! ($es_gratuidad || $es_importe) || ! preg_match(self::PATRON_ENVIO, $frase)
+                    || ! self::zonas_en_la_frase($zonas, $frase)
+                    || preg_match(self::PATRON_CONDICION_DE_GRATUIDAD, $frase)) {
+                    continue;
+                }
+
+                // (a) Gratuidad sin condición ni cifra en la oración del comercio.
+                if ($es_gratuidad && preg_match(self::PATRON_GRATUIDAD, $frase) && ! count(self::importes_con_papel($frase))) {
+                    return true;
+                }
+
+                // (b) Cada cifra del modelo, como costo, en esta misma oración del comercio.
                 if ($es_importe && self::importes_incluidos($importes, self::importes_con_papel($frase))) {
                     return true;
                 }
@@ -348,13 +358,41 @@ class CotizacionEnvioGuardHelper
     }
 
     /**
+     * La oración en minúsculas, sin acentos, con los espacios colapsados y sin signos al principio ni al final: sirve
+     * para saber si dos oraciones son la misma.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    private static function normalizar_oracion(string $texto): string
+    {
+        $texto = self::sin_acentos(mb_strtolower($texto));
+        $texto = (string) preg_replace('/\s+/u', ' ', $texto);
+
+        return trim($texto, " \t\n\r.!?…¡¿*_-•·");
+    }
+
+    /**
+     * El texto sin tildes ni diéresis (la ñ se conserva), para comparar lugares escritos con o sin acento.
+     *
+     * @param  string  $texto
+     * @return string
+     */
+    private static function sin_acentos(string $texto): string
+    {
+        return strtr($texto, ['á' => 'a', 'é' => 'e', 'í' => 'i', 'ó' => 'o', 'ú' => 'u', 'ü' => 'u', 'Á' => 'A', 'É' => 'E', 'Í' => 'I', 'Ó' => 'O', 'Ú' => 'U']);
+    }
+
+    /**
      * Los importes de una oración con su papel: «costo» (lo que cuesta el envío) o «umbral» (mínimo de compra, tope,
      * total). El papel sale del tramo de texto entre el importe anterior (o el inicio) y éste.
      *
      * @param  string  $texto
+     * @param  bool  $clasificar  false = todo importe es «costo» (así se tratan las oraciones del modelo: una palabra
+     *                         como «pedido» o «hasta» no lo vuelve umbral); true = se distingue (oraciones del comercio).
      * @return array<int, array{cifra: string, papel: string}>
      */
-    private static function importes_con_papel(string $texto): array
+    private static function importes_con_papel(string $texto, bool $clasificar = true): array
     {
         $resultado = [];
 
@@ -381,7 +419,7 @@ class CotizacionEnvioGuardHelper
             $cifra = preg_replace('/\D/', '', $numero);
 
             if ($cifra !== '') {
-                $resultado[] = ['cifra' => $cifra, 'papel' => preg_match(self::PATRON_UMBRAL_DEL_IMPORTE, $tramo) ? 'umbral' : 'costo'];
+                $resultado[] = ['cifra' => $cifra, 'papel' => ($clasificar && preg_match(self::PATRON_UMBRAL_DEL_IMPORTE, $tramo)) ? 'umbral' : 'costo'];
             }
 
             $desde = $inicio + strlen($encontrado[0][0]);
@@ -419,20 +457,46 @@ class CotizacionEnvioGuardHelper
     }
 
     /**
-     * Los lugares que nombra la oración del modelo: palabras con mayúscula después de «a», «en», «para», «hacia» o
-     * «hasta» (un barrio, una ciudad).
+     * Los lugares que nombra la oración del modelo, sin importar mayúsculas ni acentos: lo que sigue a «a», «al»,
+     * «en», «para», «hacia», «hasta», «de» o «del» («la calera», «el interior», «otra provincia»), sin el artículo.
+     * Lo que no es un lugar («tu pedido») se ignora; lo que no es un lugar pero no se puede distinguir se incluye, y
+     * entonces la oración se deriva (ante la duda, derivar).
      *
      * @param  string  $oracion
-     * @return array<int, string>  En minúsculas.
+     * @return array<int, string>  En minúsculas y sin acentos.
      */
     private static function zonas_nombradas(string $oracion): array
     {
         $zonas = [];
 
-        if (preg_match_all('/\b(?i:a|en|para|hacia|hasta)\s+((?:\p{Lu}\p{L}*)(?:\s+(?:(?:de|del|la|el)\s+)?\p{Lu}\p{L}*)*)/u', $oracion, $encontradas)) {
+        $texto = self::sin_acentos(mb_strtolower($oracion));
 
-            foreach ($encontradas[1] as $zona) {
-                $zonas[] = mb_strtolower(trim($zona));
+        if (! preg_match_all('/\b(?:a|al|en|para|hacia|hasta|del|de)\s+(\p{L}+(?:\s+\p{L}+){0,3})/u', $texto, $encontradas)) {
+            return $zonas;
+        }
+
+        foreach ($encontradas[1] as $candidato) {
+
+            $palabras = preg_split('/\s+/', $candidato, -1, PREG_SPLIT_NO_EMPTY);
+
+            // Un artículo al principio no cuenta: «a la calera» es «calera».
+            if (count($palabras) && in_array($palabras[0], ['la', 'el', 'los', 'las'], true)) {
+                array_shift($palabras);
+            }
+
+            $lugar = [];
+
+            foreach ($palabras as $palabra) {
+
+                if (in_array($palabra, self::PALABRAS_QUE_CORTAN_UN_LUGAR, true)) {
+                    break;
+                }
+
+                $lugar[] = $palabra;
+            }
+
+            if (count($lugar)) {
+                $zonas[] = implode(' ', $lugar);
             }
         }
 
@@ -443,7 +507,7 @@ class CotizacionEnvioGuardHelper
      * ¿Cada lugar que nombró el modelo está en la oración del comercio? Si la oración del comercio habla de «su
      * zona» (sin nombrar lugares), vale para cualquier zona del cliente.
      *
-     * @param  array<int, string>  $zonas
+     * @param  array<int, string>  $zonas  Ya normalizadas (zonas_nombradas()).
      * @param  string  $frase
      * @return bool
      */
@@ -453,10 +517,10 @@ class CotizacionEnvioGuardHelper
             return true;
         }
 
-        $en_minuscula = mb_strtolower($frase);
+        $normalizada = self::sin_acentos(mb_strtolower($frase));
 
         foreach ($zonas as $zona) {
-            if (mb_strpos($en_minuscula, $zona) === false) {
+            if (mb_strpos($normalizada, $zona) === false) {
                 return false;
             }
         }

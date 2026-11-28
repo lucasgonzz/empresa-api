@@ -52,9 +52,13 @@ class CotizacionEnvioGuardHelperRonda2Test extends TestCase
      */
     public function lo_que_repite_una_oracion_del_comercio_no_se_deriva()
     {
+        // Con [285] el $7.000 sólo está en una oración condicionada al monto del pedido: el modelo la repetiría sin
+        // la condición, así que se deriva (revisión 2 A). Sin condición en la oración del comercio, no se deriva.
         $frase = 'El envío sale $7.000.';
 
-        $r = CotizacionEnvioGuardHelper::revisar($frase, [self::DICHO_285]);
+        $this->assertTrue(CotizacionEnvioGuardHelper::revisar($frase, [self::DICHO_285])['derivo']);
+
+        $r = CotizacionEnvioGuardHelper::revisar($frase, ['El costo de envío es $7.000. Retiro gratis en el local.']);
 
         $this->assertFalse($r['derivo']);
         $this->assertSame($frase, $r['body']);
