@@ -594,7 +594,9 @@ class Fotos_y_alternativas_del_agente_Test extends TestCase
         $metodo->setAccessible(true);
 
         $sin_objetivo = $metodo->invoke($servicio, $this->config->fresh());
-        $this->config->agent_objective        = 'buy_online';
+        // Objetivo «pedido por WhatsApp»: no depende de `users.online` (el de tienda online sin tienda
+        // cargada no agrega capa, regla del test 28), así que la capa del objetivo siempre se suma.
+        $this->config->agent_objective        = 'order_by_whatsapp';
         $this->config->agent_objective_detail = 'Recordale que paga con Mercado Pago.';
         $this->config->save();
         $con_objetivo = $metodo->invoke($servicio, $this->config->fresh());
