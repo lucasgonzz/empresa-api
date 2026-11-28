@@ -328,6 +328,7 @@ class WhatsappChatHelper
         // enviada y entregada (con la etiqueta «Simulado», porque responde a un entrante simulado).
         if ($chat->is_test) {
             self::mark_ai_message_sent($message, WhatsappBotSendService::id_de_prueba());
+            self::send_extra_ai_photos($message, $chat, $config);
 
             return self::ENVIO_HECHO;
         }
@@ -339,6 +340,7 @@ class WhatsappChatHelper
             ]);
 
             self::mark_ai_message_sent($message, null);
+            self::send_extra_ai_photos($message, $chat, $config);
 
             return self::ENVIO_HECHO;
         }
@@ -383,6 +385,9 @@ class WhatsappChatHelper
 
         self::mark_ai_message_sent($message, $wa_message_id);
 
+        // Las fotos 2 a 4 de la respuesta (ticket 172) salen DESPUÉS de que la principal quedó enviada.
+        self::send_extra_ai_photos($message, $chat, $config);
+
         // «El local» del admin (misión el-local-fase-2, 3/11/2026): el agente del negocio contestó. Va acá, en el embudo
         // único de la respuesta del agente, y solo si salió de verdad: ni la simulación de arriba ni el modo demostración
         // le contestaron a nadie. Sin teléfono ni texto: el panel solo necesita saber que pasó.
@@ -394,6 +399,58 @@ class WhatsappChatHelper
         }
 
         return self::ENVIO_HECHO;
+    }
+
+    /**
+     * Manda las fotos 2 a 4 de una respuesta del agente (ticket 172: «pasame la foto de las cajas»).
+     *
+     * La respuesta principal ya salió con la primera foto y el texto como epígrafe; las demás viajan en
+     * `ai_extra_media_urls` y salen acá, en orden, cada una como imagen suelta sin texto y como fila
+     * saliente propia (`source = 'ia'`, ya enviada) para que la conversación las muestre. Se llama UNA sola
+     * vez por mensaje porque cuelga de `send_pending_ai_message()`, después de ganar el claim: no hay doble
+     * envío. En el chat de prueba y en simulación no se llama a Kapso. Si Kapso rechaza una foto la fila
+     * queda con `delivery_status = 'fallido'` y su `send_error`; no se reintenta (el texto ya salió).
+     *
+     * @param  WhatsappChatMessage  $message  Respuesta principal, ya marcada como enviada.
+     * @param  WhatsappChat  $chat  Chat al que se le responde.
+     * @param  WhatsappBotConfig  $config  Configuración del bot del dueño.
+     * @return void
+     */
+    private static function send_extra_ai_photos(WhatsappChatMessage $message, WhatsappChat $chat, WhatsappBotConfig $config)
+    {
+        // Sólo las URLs con valor: una lista vacía o nula (el 100% de las respuestas de antes) no hace nada.
+        $urls = array_values(array_filter((array) $message->ai_extra_media_urls, function ($url) {
+            return trim((string) $url) !== '';
+        }));
+
+        foreach ($urls as $url) {
+            try {
+                // Prueba y simulación (sin demostración) no salen a Kapso; el id ficticio las deja enviadas.
+                if ($chat->is_test || ($chat->last_inbound_simulated && ! $config->esta_en_modo_demostracion())) {
+                    $wa_message_id = $chat->is_test ? WhatsappBotSendService::id_de_prueba() : null;
+                    $error         = null;
+                } else {
+                    $wa_message_id = (new WhatsappBotSendService())->send_image($chat->phone, ['link' => $url], '', $config);
+                    $error         = is_null($wa_message_id) ? 'WhatsApp rechazó el envío de la foto.' : null;
+                }
+            } catch (\Throwable $exception) {
+                $wa_message_id = null;
+                $error         = 'No se pudo enviar la foto por WhatsApp: '.$exception->getMessage();
+            }
+
+            // Fila saliente de la foto: enviada si Kapso la aceptó (o si no hacía falta mandarla); con el
+            // error a la vista si no. `ai_status` queda 'enviado' en ambos casos: no hay borrador que confirmar.
+            $photo_message = self::store_outbound_message($chat, '', $wa_message_id, 'ia', null, null, 'image', $url, 'enviado', is_null($error) ? [] : [
+                'delivery_status' => 'fallido',
+                'send_error'      => $error,
+            ]);
+
+            if (is_null($error) && is_null($wa_message_id)) {
+                // Simulación sin id: igual que la principal, queda enviada sin `wa_message_id`.
+                $photo_message->delivery_status = 'entregado';
+                $photo_message->save();
+            }
+        }
     }
 
     /**

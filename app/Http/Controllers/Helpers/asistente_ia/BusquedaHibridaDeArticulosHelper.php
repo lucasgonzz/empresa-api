@@ -65,6 +65,8 @@ class BusquedaHibridaDeArticulosHelper
         'otros', 'otras', 'mas', 'menos', 'dale', 'ok', 'si', 'no', 'mandame', 'mandar', 'manda', 'pasame', 'pasar',
         'enviame', 'foto', 'fotos', 'imagen', 'imagenes', 'consulta', 'consultar', 'info', 'informacion', 'ver',
         'saber', 'hacer', 'cual', 'cuales', 'donde',
+        // Formas de pedir un envío ("¿me pasás la foto?"): sin esto "pasas" generaba un LIKE '%pasa%' de basura.
+        'pasas', 'mandas', 'mostras', 'mostrame', 'mostrar', 'envias', 'enviar', 'podes', 'podrias',
     ];
 
     /** Tokens que, antes de la palabra, la dejan "relacionada" con otra (P/BORDEADORA: de qué es, no qué es). */
@@ -270,7 +272,7 @@ class BusquedaHibridaDeArticulosHelper
                     $query->orWhere('name', 'like', '%' . $raiz . '%');
                 }
             })
-            ->select('id', 'name')
+            ->select('id', 'name', 'stock')
             ->get()
             ->all();
     }
@@ -307,9 +309,12 @@ class BusquedaHibridaDeArticulosHelper
      *   null en el grupo combinado (cobertura >= 2).
      * - Sin ninguna coincidencia en una palabra de letras → el candidato se descarta.
      *
-     * @param array<int, object|array> $filas    Candidatos con id y name.
+     * Cada encaje lleva además `stock` (decimal o null si la fila no trae el dato), que `ordenar`
+     * usa para poner primero lo que se puede vender.
+     *
+     * @param array<int, object|array> $filas    Candidatos con id, name y (opcional) stock.
      * @param array<int, string>       $palabras Palabras de la consulta (letras y números).
-     * @return array<int, array{id:int, name:string, cobertura:int, nivel:int, cola:?int}>
+     * @return array<int, array{id:int, name:string, stock:?float, cobertura:int, nivel:int, cola:?int}>
      */
     public static function coincidencias(array $filas, array $palabras): array
     {
@@ -319,6 +324,10 @@ class BusquedaHibridaDeArticulosHelper
             $id     = (int) (is_array($fila) ? $fila['id'] : $fila->id);
             $nombre = (string) (is_array($fila) ? $fila['name'] : $fila->name);
             $tokens = self::tokens($nombre);
+
+            // Stock de la fila (null si no viene o no tiene dato: sin control de stock).
+            $stock_crudo = is_array($fila) ? (isset($fila['stock']) ? $fila['stock'] : null) : (isset($fila->stock) ? $fila->stock : null);
+            $stock       = is_null($stock_crudo) ? null : (float) $stock_crudo;
 
             $cobertura    = 0;
             $nivel        = null;
@@ -357,6 +366,7 @@ class BusquedaHibridaDeArticulosHelper
             $resultado[] = [
                 'id'        => $id,
                 'name'      => $nombre,
+                'stock'     => $stock,
                 'cobertura' => $cobertura,
                 'nivel'     => $nivel,
                 'cola'      => $cobertura >= 2 ? null : $cola,
@@ -371,8 +381,10 @@ class BusquedaHibridaDeArticulosHelper
      * alternancia estricta. La similitud ordena SÓLO dentro del grupo o de cada cola; nunca mueve un
      * candidato de grupo, de cola, de nivel ni de turno.
      *
-     * - Grupo: cobertura desc, nivel asc, similitud desc, id asc.
-     * - Cola de cada palabra: nivel asc, similitud desc, id asc.
+     * - Grupo: cobertura desc, nivel asc, stock (con stock, sin dato, agotado), similitud desc, id asc.
+     * - Cola de cada palabra: nivel asc, stock (con stock, sin dato, agotado), similitud desc, id asc.
+     *   El stock va antes que la similitud porque ofrecer una opción agotada no le sirve al cliente
+     *   (ticket 172: Konan y Dogo, con stock, quedaban detrás de seis amoladoras sin stock).
      * - `alternar`: en cada vuelta toma la cabeza de cada cola no vacía, en el orden de la consulta.
      *
      * Con `$similitudes` vacío es el pre-orden (sin vectores) que decide qué candidatos sobreviven al tope.
@@ -405,6 +417,9 @@ class BusquedaHibridaDeArticulosHelper
             if ($a['nivel'] !== $b['nivel']) {
                 return $a['nivel'] <=> $b['nivel'];
             }
+            if (self::nivel_de_stock($a) !== self::nivel_de_stock($b)) {
+                return self::nivel_de_stock($a) <=> self::nivel_de_stock($b);
+            }
             $sim_a = $similitud_de($a);
             $sim_b = $similitud_de($b);
             if ($sim_a !== $sim_b) {
@@ -421,6 +436,9 @@ class BusquedaHibridaDeArticulosHelper
                 if ($a['nivel'] !== $b['nivel']) {
                     return $a['nivel'] <=> $b['nivel'];
                 }
+                if (self::nivel_de_stock($a) !== self::nivel_de_stock($b)) {
+                    return self::nivel_de_stock($a) <=> self::nivel_de_stock($b);
+                }
                 $sim_a = $similitud_de($a);
                 $sim_b = $similitud_de($b);
                 if ($sim_a !== $sim_b) {
@@ -433,6 +451,22 @@ class BusquedaHibridaDeArticulosHelper
         }
 
         return array_merge($combinado, self::alternar(array_values($colas)));
+    }
+
+    /**
+     * Nivel de stock de un encaje para ordenar: 0 si tiene stock (> 0), 1 si no hay dato (null: sin
+     * control de stock, se puede ofrecer), 2 si está agotado (<= 0).
+     *
+     * @param array $encaje Encaje con la clave `stock` (ausente = sin dato).
+     * @return int
+     */
+    protected static function nivel_de_stock(array $encaje): int
+    {
+        if (! isset($encaje['stock'])) {
+            return 1;
+        }
+
+        return (float) $encaje['stock'] > 0 ? 0 : 2;
     }
 
     /**
