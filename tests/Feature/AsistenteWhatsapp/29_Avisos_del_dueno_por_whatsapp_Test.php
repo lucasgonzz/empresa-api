@@ -186,7 +186,10 @@ class Avisos_del_dueno_por_whatsapp_Test extends RecordatoriosTestCase
         $this->assertSame('2026-10-16', $avisos[0]['fecha']);
         $this->assertSame('10:05', $avisos[0]['hora']);
         $this->assertSame('Pedido N° 78 de la tienda: Gabriel Domínguez, $188.000', $avisos[0]['detalle']);
-        $this->assertStringContainsString('*N° 78* de Gabriel Domínguez, por $188.000', $avisos[0]['texto']);
+        // Formato nuevo del aviso (misión asistente-diario-20261128, P1): el N°, el comprador y el total van en líneas separadas.
+        $this->assertStringContainsString('*N° 78*', $avisos[0]['texto']);
+        $this->assertStringContainsString('Comprador: Gabriel Domínguez', $avisos[0]['texto']);
+        $this->assertStringContainsString('Total: *$188.000*', $avisos[0]['texto']);
         $this->assertNull($avisos[0]['tarea_id']);
         $this->assertSame('/online', $avisos[0]['ruta']);
 

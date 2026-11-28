@@ -110,6 +110,8 @@ class U213_Compra_borrada_no_figura_cargada_Test extends ComprasDelAgenteTestCas
             'provider_id'              => $this->ferretotal->id,
             'user_id'                  => $this->comercio->id,
             'provider_order_status_id' => ProviderOrderStatus::firstOrCreate(['name' => 'En proceso'])->id,
+            // El modelo no genera el N°: se pasa uno explícito (la aserción de CA11 exige que la compra viva tenga número).
+            'num'                      => 9001,
         ]);
     }
 
