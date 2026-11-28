@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Helpers;
 
 use App\Http\Controllers\Helpers\asistente_ia\BusquedaPorPalabrasIaHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Http\Controllers\Helpers\asistente_ia\TiendaDelNegocioIaHelper;
 use App\Http\Controllers\Helpers\sale\VentasSinCobrarHelper;
 use App\Models\Address;
@@ -298,6 +299,8 @@ class ConsultasSistemaIaHelper
      *    En Truvari el asistente dijo «la consulta no trae la presentación» e inventó «6» («lo tomé del
      *    ejemplo del Rutini»); el dueño se lo explicó cinco veces.
      *  - `precio_es_por`: «caja de N» o «unidad del listado».
+     *  - Sólo con listas de precio (P6, asistente-diario-20261128): `precio` (el de la lista, que pisa al final_price de la
+     *    fila al hacer array_merge sin cambiar su posición), `precio_de_la_lista` y `precios_por_lista`.
      *  - Con $con_costo, `costo` y `costo_es_por`: con la presentación multiplicando, el costo cargado es el
      *    de UNA unidad suelta (el precio sale de costo × margen × presentación), no el de la caja. El
      *    asistente le dijo «costo $5.060 la caja» a un costo por botella.
@@ -343,6 +346,9 @@ class ConsultasSistemaIaHelper
             ? Article::withTrashed()->with('provider')->whereIn('id', $ids)->get(['id', 'price', 'cost', 'presentacion', 'provider_id'])->keyBy('id')
             : collect();
 
+        // Con listas de precio, el precio de venta es el de la lista (en UNA consulta para todo el lote).
+        $con_listas = count($ids) ? self::precios_con_listas($owner_id, $ids, $owner) : [];
+
         $extras = [];
 
         foreach ($articulos as $articulo) {
@@ -355,10 +361,80 @@ class ConsultasSistemaIaHelper
                 'link_tienda'         => TiendaDelNegocioIaHelper::link_del_articulo($tienda, $articulo, $owner_id),
             ];
 
-            $extras[$id] = array_merge($extras[$id], self::presentacion_y_unidades($articulo, $de_precio->get($id), $owner, $con_costo));
+            $precio_resuelto = isset($con_listas[$id]) ? $con_listas[$id]['precio'] : null;
+
+            $extras[$id] = array_merge($extras[$id], self::presentacion_y_unidades($articulo, $de_precio->get($id), $owner, $con_costo, $precio_resuelto));
+
+            // Al final de la fila, sólo con listas: sin listas la fila queda idéntica a la de siempre.
+            if (isset($con_listas[$id])) {
+
+                $extras[$id]['precio_de_la_lista'] = $con_listas[$id]['precio_de_la_lista'];
+                $extras[$id]['precios_por_lista'] = $con_listas[$id]['precios_por_lista'];
+                // El `precio` base de la fila (final_price) se pisa en stock_de_articulos() con éste.
+                $extras[$id]['precio'] = $con_listas[$id]['precio'];
+            }
         }
 
         return $extras;
+    }
+
+    /**
+     * El precio de venta de cada artículo cuando la cuenta trabaja con listas de precio (misión
+     * asistente-diario-20261128, P6). Vacío si la cuenta no usa listas: el llamador deja la fila como siempre.
+     *
+     * 🔴 Con listas, `articles.final_price` es un número que NO se le cobra a nadie: el precio de venta lo
+     * resuelve ArticlePricesHelper::resolver_precio_de_venta() (la única cascada), y se informa de qué lista es y
+     * el precio de TODAS (por `position` ascendente; la lista «Precio final» vale `articles.final_price`).
+     *
+     * @param  int  $owner_id
+     * @param  array<int, int>  $ids  Ids de artículos.
+     * @param  \App\Models\User|null  $owner  El dueño de la cuenta.
+     * @return array<int, array{precio: float, precio_de_la_lista: string|null, precios_por_lista: array}>  id => datos.
+     */
+    public static function precios_con_listas(int $owner_id, array $ids, $owner): array
+    {
+        if (is_null($owner) || !UserHelper::uses_listas_de_precio($owner) || !count($ids)) {
+
+            return [];
+        }
+
+        $articulos = Article::withTrashed()->with('price_types')->where('user_id', $owner_id)->whereIn('id', $ids)->get(['id', 'price', 'final_price']);
+
+        $resultado = [];
+
+        foreach ($articulos as $articulo) {
+
+            $resuelto = ArticlePricesHelper::resolver_precio_de_venta($articulo, $owner);
+
+            // Las listas del artículo por position ascendente (desempate por id), sólo las que tienen precio.
+            $listas = $articulo->price_types->sortBy(function ($lista) {
+                return sprintf('%010d-%010d', is_null($lista->position) ? 0 : (int) $lista->position, (int) $lista->id);
+            });
+
+            $por_lista = [];
+
+            foreach ($listas as $lista) {
+
+                $precio_de_la_lista = PriceTypeHelper::es_lista_precio_final($lista) ? $articulo->final_price : $lista->pivot->final_price;
+
+                if (is_null($precio_de_la_lista)) {
+
+                    continue;
+                }
+
+                $por_lista[] = ['lista' => (string) $lista->name, 'precio' => (float) $precio_de_la_lista];
+            }
+
+            $precio = !is_null($resuelto['final_price']) ? (float) $resuelto['final_price'] : (!is_null($articulo->final_price) ? (float) $articulo->final_price : (float) $articulo->price);
+
+            $resultado[(int) $articulo->id] = [
+                'precio'             => $precio,
+                'precio_de_la_lista' => is_null($resuelto['price_type_name']) ? null : (string) $resuelto['price_type_name'],
+                'precios_por_lista'  => $por_lista,
+            ];
+        }
+
+        return $resultado;
     }
 
     /**
@@ -368,9 +444,10 @@ class ConsultasSistemaIaHelper
      * @param  \App\Models\Article|null  $completo  El artículo con price, cost, presentacion y provider.
      * @param  \App\Models\User|null  $owner
      * @param  bool  $con_costo
+     * @param  float|null  $precio_resuelto  El precio de venta de la lista, si la cuenta usa listas (P6); si no, el final_price.
      * @return array<string, mixed>
      */
-    protected static function presentacion_y_unidades($articulo, $completo, $owner, $con_costo): array
+    protected static function presentacion_y_unidades($articulo, $completo, $owner, $con_costo, $precio_resuelto = null): array
     {
         $presentacion = !is_null($completo) && is_numeric($completo->presentacion) && (float) $completo->presentacion > 0
             ? (float) $completo->presentacion
@@ -379,7 +456,7 @@ class ConsultasSistemaIaHelper
         $multiplica = !is_null($completo) && !is_null($presentacion) && $presentacion > 1
             && ArticleHelper::presentacion_multiplica_el_precio($completo, $owner);
 
-        $precio = $articulo->final_price !== null ? (float) $articulo->final_price : (float) $articulo->price;
+        $precio = !is_null($precio_resuelto) ? (float) $precio_resuelto : ($articulo->final_price !== null ? (float) $articulo->final_price : (float) $articulo->price);
 
         $numero = is_null($presentacion) ? '' : rtrim(rtrim(number_format($presentacion, 2, '.', ''), '0'), '.');
 

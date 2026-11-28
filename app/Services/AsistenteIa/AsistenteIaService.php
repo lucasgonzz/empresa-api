@@ -2987,7 +2987,9 @@ REGLA;
   proveedor, rubro) y las columnas que pidan (rubro es la categoría, subrubro la subcategoría,
   margen_cargado el margen de ganancia): trae TODAS las filas y el precio de venta. Nunca lo armes
   con exportar_excel a partir de una página de una consulta. El precio de venta de un artículo es
-  su precio final; `price` es el precio manual y suele estar vacío: nunca lo informes como precio.
+  su precio final, salvo que el negocio trabaje con listas de precios: ahí el precio de venta es el de cada
+  lista (precios_por_lista) y siempre decís de qué lista es; `price` es el precio manual y suele estar vacío:
+  nunca lo informes como precio.
 - 🔴 El link de un archivo (/asistente/archivo/…) lo pasás SOLO si te lo devolvió una herramienta,
   copiado tal cual: nunca lo escribas de memoria ni lo armes. Si la persona dice que no le abre,
   volvé a llamar a la herramienta y pasá el link NUEVO que devuelva; si no lo regeneraste, no digas

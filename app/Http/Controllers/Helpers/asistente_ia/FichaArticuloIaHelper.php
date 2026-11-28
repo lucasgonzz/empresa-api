@@ -3,8 +3,11 @@
 namespace App\Http\Controllers\Helpers\asistente_ia;
 
 use App\Http\Controllers\Helpers\ArticleHelper;
+use App\Http\Controllers\Helpers\UserHelper;
+use App\Http\Controllers\Helpers\article\ArticlePricesHelper;
 use App\Models\Address;
 use App\Models\Article;
+use App\Models\User;
 
 /**
  * La ficha de un artículo para la tarjeta que abre el hover sobre una mención del chat (misión
@@ -71,7 +74,7 @@ class FichaArticuloIaHelper
             // tarjeta de hover la pinta un <img> de la SPA.
             'imagen_url'        => ArticleHelper::primera_imagen_publica($article),
             'codigo'            => self::codigo($article),
-            'precio'            => self::precio($article),
+            'precio'            => self::precio($article, $owner_id),
             'proveedor'         => is_null($article->provider) ? null : (string) $article->provider->name,
             'stock_total'       => is_null($article->stock) ? 0.0 : (float) $article->stock,
             'tiene_depositos'   => $tiene_depositos,
@@ -193,15 +196,30 @@ class FichaArticuloIaHelper
     }
 
     /**
-     * El precio de venta actual: el final y, si no está cargado, el de lista. Es el mismo criterio
-     * que ConsultasSistemaIaHelper::stock_de_articulos(), que es de donde salió el id de la
-     * mención — la tarjeta no puede decir un precio distinto del que el asistente acaba de nombrar.
+     * El precio de venta actual: con listas de precio, el de la lista que se cobra (el resolvedor único
+     * ArticlePricesHelper::resolver_precio_de_venta(), misión asistente-diario-20261128, P6); sin listas, el final y,
+     * si no está cargado, el de lista. Es el mismo criterio que ConsultasSistemaIaHelper::stock_de_articulos(), que
+     * es de donde salió el id de la mención — la tarjeta no puede decir un precio distinto del que el asistente
+     * acaba de nombrar.
      *
-     * @param  Article  $article
+     * @param  Article  $article  Con `price_types` cargadas.
+     * @param  int  $owner_id  Dueño de la cuenta.
      * @return float
      */
-    protected static function precio($article): float
+    protected static function precio($article, $owner_id = 0): float
     {
+        $dueno = (int) $owner_id > 0 ? User::find((int) $owner_id) : null;
+
+        if (!is_null($dueno) && UserHelper::uses_listas_de_precio($dueno)) {
+
+            $resuelto = ArticlePricesHelper::resolver_precio_de_venta($article, $dueno);
+
+            if (!is_null($resuelto['final_price'])) {
+
+                return (float) $resuelto['final_price'];
+            }
+        }
+
         if (!is_null($article->final_price)) {
 
             return (float) $article->final_price;
