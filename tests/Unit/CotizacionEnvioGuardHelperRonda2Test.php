@@ -148,4 +148,44 @@ class CotizacionEnvioGuardHelperRonda2Test extends TestCase
         $r = CotizacionEnvioGuardHelper::revisar('El envío sale $7.000.', ['el costo de envio es $7.000']);
         $this->assertFalse($r['derivo']);
     }
+
+    /**
+     * Revisión 3: criterio mecánico. Todas las palabras con contenido de la oración del modelo (lugares incluidos)
+     * tienen que estar en UNA oración del comercio sin condición; si no, se deriva. Lo que ya estaba en la oración
+     * del comercio, con otras palabras de relleno, no se deriva.
+     *
+     * @group whatsapp
+     * @test
+     */
+    public function las_palabras_con_contenido_del_modelo_tienen_que_estar_en_la_oracion_del_comercio()
+    {
+        $gratis = 'En Córdoba Capital el envío es sin cargo.';
+        $costo  = 'El costo de envío a Córdoba Capital es $7.000.';
+
+        $deriva = [
+            [$gratis, 'Carlos Paz tiene envío sin cargo.'],
+            [$gratis, 'En Córdoba Capital y La Calera el envío es sin cargo.'],
+            [$gratis, 'Córdoba Capital y Carlos Paz tienen envío sin cargo.'],
+            [$gratis, 'El envío es sin cargo en toda la provincia.'],
+            [$costo, 'El envío a Córdoba Capital y La Calera sale $7.000.'],
+            [$costo, 'La Calera y Córdoba Capital: el envío sale $7.000.'],
+            [$costo, 'El envío sale $7.000 a todo el país.'],
+        ];
+
+        foreach ($deriva as $caso) {
+
+            $r = CotizacionEnvioGuardHelper::revisar($caso[1], [$caso[0]]);
+
+            $this->assertTrue($r['derivo'], 'Tiene que derivarse: ' . $caso[1] . ' (comercio: ' . $caso[0] . ')');
+        }
+
+        $r = CotizacionEnvioGuardHelper::revisar('El envío a Córdoba Capital sale $7.000.', [$costo]);
+
+        $this->assertFalse($r['derivo']);
+        $this->assertSame('El envío a Córdoba Capital sale $7.000.', $r['body']);
+
+        $r = CotizacionEnvioGuardHelper::revisar('En Córdoba Capital el envío no tiene costo.', [$gratis]);
+
+        $this->assertFalse($r['derivo'], 'La misma gratuidad con otras palabras de relleno no se deriva.');
+    }
 }
